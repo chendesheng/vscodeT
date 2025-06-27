@@ -13,6 +13,14 @@ pub const TreeNode = struct {
     size_left: usize,
     lf_left: usize,
 
+    fn pieceSize(self: *const TreeNode) usize {
+        return if (self.piece != null) self.piece.?.length else 0;
+    }
+
+    fn pieceLineFeedCnt(self: *const TreeNode) usize {
+        return if (self.piece != null) self.piece.?.lineFeedCnt else 0;
+    }
+
     fn isLeaf(self: *const TreeNode) bool {
         return self.left == SENTINEL and self.right == SENTINEL;
     }
@@ -182,7 +190,7 @@ fn calculateSize(node: *TreeNode) usize {
         return 0;
     }
 
-    return node.size_left + (if (node.piece != null) node.piece.?.length else 0) + calculateSize(node.right);
+    return node.size_left + node.pieceSize() + calculateSize(node.right);
 }
 
 fn calculateLF(node: *TreeNode) usize {
@@ -190,7 +198,7 @@ fn calculateLF(node: *TreeNode) usize {
         return 0;
     }
 
-    return node.lf_left + (if (node.piece != null) node.piece.?.lineFeedCnt else 0) + calculateLF(node.right);
+    return node.lf_left + node.pieceLineFeedCnt() + calculateLF(node.right);
 }
 
 fn resetSentinel() void {
@@ -203,8 +211,8 @@ pub fn leftRotate(root: *TreeNode, x: *TreeNode) *TreeNode {
     var y = x.right;
 
     // fix size_left
-    y.size_left += x.size_left + (if (x.piece != null) x.piece.?.length else 0);
-    y.lf_left += x.lf_left + (if (x.piece != null) x.piece.?.lineFeedCnt else 0);
+    y.size_left += x.size_left + x.pieceSize();
+    y.lf_left += x.lf_left + x.pieceLineFeedCnt();
     x.right = y.left;
 
     if (y.left != SENTINEL) {
@@ -235,8 +243,8 @@ pub fn rightRotate(root: *TreeNode, y: *TreeNode) *TreeNode {
     x.parent = y.parent;
 
     // fix size_left
-    y.size_left -= x.size_left + (if (x.piece != null) x.piece.?.length else 0);
-    y.lf_left -= x.lf_left + (if (x.piece != null) x.piece.?.lineFeedCnt else 0);
+    y.size_left -= x.size_left + x.pieceSize();
+    y.lf_left -= x.lf_left + x.pieceLineFeedCnt();
 
     if (y.parent == SENTINEL) {
         newRoot = x;
