@@ -169,10 +169,8 @@ pub const PieceTreeBase = struct {
         var chunks = ArrayList(*StringBuffer).init(self.allocator);
         defer chunks.deinit();
 
-        const iterator = self.root.iterator();
-        while (true) {
-            const node = iterator.current();
-
+        const iter = self.root.iterator();
+        while (iter.next()) |node| {
             const averageBufferSize = AverageBufferSize;
             const min = averageBufferSize - @divFloor(averageBufferSize, 3);
             const max = min * 2;
@@ -186,10 +184,6 @@ pub const PieceTreeBase = struct {
                 replaceEOL(&tempChunk, self.getEOL());
                 chunks.append(try StringBuffer.create(self.allocator, tempChunk.items));
                 tempChunk.replaceRange(0, tempChunk.items.len, str);
-            }
-
-            if (!iterator.moveNext()) {
-                break;
             }
         }
 
@@ -417,12 +411,9 @@ pub const PieceTreeBase = struct {
 
     fn getContentOfSubTree(self: *PieceTreeBase, root: *TreeNode) ArrayList(u8) {
         const str = ArrayList(u8).init(self.allocator);
-        const iterator = root.iterator();
-        while (true) {
-            str.append(self.getNodeContent(iterator.current()));
-            if (!iterator.moveNext()) {
-                break;
-            }
+        const iter = root.iterator();
+        while (iter.next()) |node| {
+            str.append(self.getNodeContent(node));
         }
         return str;
     }

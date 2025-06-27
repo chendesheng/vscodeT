@@ -122,33 +122,35 @@ pub const TreeNode = struct {
 
 pub const Iterator = struct {
     _root: *TreeNode,
-    _current: *TreeNode,
-
-    fn isRightChild(self: *Iterator, node: *TreeNode) bool {
-        if (node == self._root) return false;
-        if (node.parent == null) return false;
-        if (node.parent.right == node) return true;
-        return false;
-    }
+    _next: ?*TreeNode,
 
     fn create(root: *TreeNode) Iterator {
         return .{
             ._root = root,
-            ._current = leftest(root),
+            ._next = leftest(root),
         };
     }
 
-    pub fn current(self: *const Iterator) *const TreeNode {
-        return self._current;
+    pub fn next(self: *Iterator) ?*const TreeNode {
+        const node = self._next;
+        if (self.moveNext()) {
+            return node;
+        }
+        return null;
     }
 
-    pub fn moveNext(self: *Iterator) bool {
-        const _next = self._current.next();
-        if (_next == SENTINEL or _next == self._root.parent) {
+    fn moveNext(self: *Iterator) bool {
+        if (self._next == null) {
             return false;
         }
 
-        self._current = _next;
+        const _next = self._next.?.next();
+        if (_next == SENTINEL or _next == self._root.parent) {
+            self._next = null;
+            return false;
+        }
+
+        self._next = _next;
         return true;
     }
 };
@@ -576,15 +578,10 @@ fn mockPiece(length: usize, lineFeedCnt: u32) Piece {
 
 fn expectAllRedNodesChildrenAreBlack(root: *TreeNode) !void {
     var iter = root.iterator();
-    while (true) {
-        const node = iter.current();
+    while (iter.next()) |node| {
         if (node.color == .red) {
             try std.testing.expectEqual(node.left.color, .black);
             try std.testing.expectEqual(node.right.color, .black);
-        }
-
-        if (!iter.moveNext()) {
-            break;
         }
     }
 }
@@ -592,18 +589,13 @@ fn expectAllRedNodesChildrenAreBlack(root: *TreeNode) !void {
 fn expectBlackHeightsAreEqual(root: *TreeNode) !void {
     var iter = root.iterator();
     var blackHeight: ?usize = null;
-    while (true) {
-        const node = iter.current();
+    while (iter.next()) |node| {
         if (node.isLeaf()) {
             if (blackHeight == null) {
                 blackHeight = node.blackHeight();
             } else {
                 try std.testing.expectEqual(blackHeight, node.blackHeight());
             }
-        }
-
-        if (!iter.moveNext()) {
-            break;
         }
     }
 }
