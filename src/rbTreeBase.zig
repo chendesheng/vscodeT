@@ -13,20 +13,20 @@ pub const TreeNode = struct {
     size_left: usize,
     lf_left: usize,
 
-    fn isLeaf(self: *TreeNode) bool {
+    fn isLeaf(self: *const TreeNode) bool {
         return self.left == SENTINEL and self.right == SENTINEL;
     }
 
-    fn blackHeight(self: *TreeNode) usize {
+    fn blackHeight(self: *const TreeNode) usize {
         if (self == SENTINEL) return 0; // FIXME: return error??
 
-        var h = 0;
-        var current = self;
-        while (current != SENTINEL) {
-            current = current.parent.?;
-            if (current.color == .black) {
+        var h: usize = 0;
+        var current: ?*const TreeNode = self;
+        while (current != null) {
+            if (current.?.color == .black) {
                 h += 1;
             }
+            current = current.?.parent;
         }
         return h;
     }
@@ -55,17 +55,17 @@ pub const TreeNode = struct {
 
         var node = self;
         while (node.parent != SENTINEL) {
-            if (node.parent.left == node) {
+            if (node.parent.?.left == node) {
                 break;
             }
 
-            node = node.parent;
+            node = node.parent.?;
         }
 
         if (node.parent == SENTINEL) {
             return SENTINEL;
         } else {
-            return node.parent;
+            return node.parent.?;
         }
     }
 
@@ -76,7 +76,7 @@ pub const TreeNode = struct {
 
         var node = self;
         while (node.parent != SENTINEL) {
-            if (node.parent.right == node) {
+            if (node.parent.?.right == node) {
                 break;
             }
 
@@ -90,7 +90,7 @@ pub const TreeNode = struct {
         }
     }
 
-    pub fn create(allocator: Allocator, p: Piece) !*TreeNode {
+    pub fn create(allocator: Allocator, p: ?Piece) !*TreeNode {
         const node = try allocator.create(TreeNode);
         node.* = TreeNode{
             .left = SENTINEL,
@@ -130,7 +130,7 @@ pub const Iterator = struct {
         };
     }
 
-    pub fn current(self: *Iterator) *TreeNode {
+    pub fn current(self: *const Iterator) *const TreeNode {
         return self._current;
     }
 
@@ -182,7 +182,7 @@ fn calculateSize(node: *TreeNode) usize {
         return 0;
     }
 
-    return node.size_left + node.piece.?.length + calculateSize(node.right);
+    return node.size_left + (if (node.piece != null) node.piece.?.length else 0) + calculateSize(node.right);
 }
 
 fn calculateLF(node: *TreeNode) usize {
@@ -190,7 +190,7 @@ fn calculateLF(node: *TreeNode) usize {
         return 0;
     }
 
-    return node.lf_left + node.piece.?.lineFeedCnt + calculateLF(node.right);
+    return node.lf_left + (if (node.piece != null) node.piece.?.lineFeedCnt else 0) + calculateLF(node.right);
 }
 
 fn resetSentinel() void {
@@ -565,13 +565,13 @@ fn mockPiece(length: usize, lineFeedCnt: u32) Piece {
     };
 }
 
-fn expectAllRedNodesChildrenAreBlack(root: *TreeNode) void {
-    const iter = root.iterator();
+fn expectAllRedNodesChildrenAreBlack(root: *TreeNode) !void {
+    var iter = root.iterator();
     while (true) {
         const node = iter.current();
         if (node.color == .red) {
-            std.testing.expectEqual(node.left.color, .black);
-            std.testing.expectEqual(node.right.color, .black);
+            try std.testing.expectEqual(node.left.color, .black);
+            try std.testing.expectEqual(node.right.color, .black);
         }
 
         if (!iter.moveNext()) {
@@ -580,8 +580,8 @@ fn expectAllRedNodesChildrenAreBlack(root: *TreeNode) void {
     }
 }
 
-fn expectBlackHeightsAreEqual(root: *TreeNode) void {
-    const iter = root.iterator();
+fn expectBlackHeightsAreEqual(root: *TreeNode) !void {
+    var iter = root.iterator();
     var blackHeight: ?usize = null;
     while (true) {
         const node = iter.current();
@@ -589,7 +589,7 @@ fn expectBlackHeightsAreEqual(root: *TreeNode) void {
             if (blackHeight == null) {
                 blackHeight = node.blackHeight();
             } else {
-                std.testing.expectEqual(blackHeight, node.blackHeight());
+                try std.testing.expectEqual(blackHeight, node.blackHeight());
             }
         }
 
@@ -633,4 +633,34 @@ test "total lf" {
     const total: usize = calculateLF(root);
 
     try std.testing.expectEqual(n * p.lineFeedCnt, total);
+}
+
+test "children of red nodes are black" {
+    const allocator = std.testing.allocator;
+    var root = SENTINEL;
+    defer freeTree(allocator, root);
+
+    const n = 100;
+
+    for (0..n) |_| {
+        const node = try TreeNode.create(allocator, null);
+        root = insertLeft(root, root, node);
+    }
+
+    try expectAllRedNodesChildrenAreBlack(root);
+}
+
+test "black heights are equal" {
+    const allocator = std.testing.allocator;
+    var root = SENTINEL;
+    defer freeTree(allocator, root);
+
+    const n = 100;
+
+    for (0..n) |_| {
+        const node = try TreeNode.create(allocator, null);
+        root = insertRight(root, root, node);
+    }
+
+    try expectBlackHeightsAreEqual(root);
 }
