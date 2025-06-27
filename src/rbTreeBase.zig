@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const Piece = @import("pieceTreeBase.zig").Piece;
 
 pub const TreeNode = struct {
-    parent: ?*TreeNode,
+    parent: *TreeNode,
     left: *TreeNode,
     right: *TreeNode,
     color: NodeColor,
@@ -63,17 +63,17 @@ pub const TreeNode = struct {
 
         var node = self;
         while (node.parent != SENTINEL) {
-            if (node.parent.?.left == node) {
+            if (node.parent.left == node) {
                 break;
             }
 
-            node = node.parent.?;
+            node = node.parent;
         }
 
         if (node.parent == SENTINEL) {
             return SENTINEL;
         } else {
-            return node.parent.?;
+            return node.parent;
         }
     }
 
@@ -84,7 +84,7 @@ pub const TreeNode = struct {
 
         var node = self;
         while (node.parent != SENTINEL) {
-            if (node.parent.?.right == node) {
+            if (node.parent.right == node) {
                 break;
             }
 
@@ -114,7 +114,7 @@ pub const TreeNode = struct {
     }
 
     pub fn detach(self: *TreeNode) void {
-        self.parent = null;
+        self.parent = undefined;
         self.left = undefined;
         self.right = undefined;
     }
@@ -159,7 +159,7 @@ const NodeColor = enum {
 };
 
 var sentinelValue: TreeNode = .{
-    .parent = null,
+    .parent = undefined,
     .left = &sentinelValue,
     .right = &sentinelValue,
     .color = .black,
@@ -221,10 +221,10 @@ pub fn leftRotate(root: *TreeNode, x: *TreeNode) *TreeNode {
     y.parent = x.parent;
     if (x.parent == SENTINEL) {
         newRoot = y;
-    } else if (x.parent.?.left == x) {
-        x.parent.?.left = y;
+    } else if (x.parent.left == x) {
+        x.parent.left = y;
     } else {
-        x.parent.?.right = y;
+        x.parent.right = y;
     }
     y.left = x;
     x.parent = y;
@@ -248,10 +248,10 @@ pub fn rightRotate(root: *TreeNode, y: *TreeNode) *TreeNode {
 
     if (y.parent == SENTINEL) {
         newRoot = x;
-    } else if (y == y.parent.?.right) {
-        y.parent.?.right = x;
+    } else if (y == y.parent.right) {
+        y.parent.right = x;
     } else {
-        y.parent.?.left = x;
+        y.parent.left = x;
     }
 
     x.right = y;
@@ -290,10 +290,10 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
 
     const yWasRed = y.color == .red;
 
-    if (y == y.parent.?.left) {
-        y.parent.?.left = x;
+    if (y == y.parent.left) {
+        y.parent.left = x;
     } else {
-        y.parent.?.right = x;
+        y.parent.right = x;
     }
 
     if (y == z) {
@@ -317,10 +317,10 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
         if (z == newRoot) {
             newRoot = y;
         } else {
-            if (z == z.parent.?.left) {
-                z.parent.?.left = y;
+            if (z == z.parent.left) {
+                z.parent.left = y;
             } else {
-                z.parent.?.right = y;
+                z.parent.right = y;
             }
         }
 
@@ -340,19 +340,19 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
 
     z.detach();
 
-    if (x.parent.?.left == x) {
+    if (x.parent.left == x) {
         const newSizeLeft = calculateSize(x);
         const newLFLeft = calculateLF(x);
-        if (newSizeLeft != x.parent.?.size_left or newLFLeft != x.parent.?.lf_left) {
-            const delta = newSizeLeft - x.parent.?.size_left;
-            const lf_delta = newLFLeft - x.parent.?.lf_left;
-            x.parent.?.size_left = newSizeLeft;
-            x.parent.?.lf_left = newLFLeft;
-            updateTreeMetadata(newRoot, x.parent.?, delta, lf_delta);
+        if (newSizeLeft != x.parent.size_left or newLFLeft != x.parent.lf_left) {
+            const delta = newSizeLeft - x.parent.size_left;
+            const lf_delta = newLFLeft - x.parent.lf_left;
+            x.parent.size_left = newSizeLeft;
+            x.parent.lf_left = newLFLeft;
+            updateTreeMetadata(newRoot, x.parent, delta, lf_delta);
         }
     }
 
-    recomputeTreeMetadata(newRoot, x.parent.?);
+    recomputeTreeMetadata(newRoot, x.parent);
 
     if (yWasRed) {
         resetSentinel();
@@ -361,58 +361,58 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
 
     var w: *TreeNode = undefined;
     while (x != newRoot and x.color == .black) {
-        if (x == x.parent.?.left) {
-            w = x.parent.?.right;
+        if (x == x.parent.left) {
+            w = x.parent.right;
 
             if (w.color == .red) {
                 w.color = .black;
-                x.parent.?.color = .red;
-                newRoot = leftRotate(newRoot, x.parent.?);
-                w = x.parent.?.right;
+                x.parent.color = .red;
+                newRoot = leftRotate(newRoot, x.parent);
+                w = x.parent.right;
             }
 
             if (w.left.color == .black and w.right.color == .black) {
                 w.color = .red;
-                x = x.parent.?;
+                x = x.parent;
             } else {
                 if (w.right.color == .black) {
                     w.left.color = .black;
                     w.color = .red;
                     newRoot = rightRotate(newRoot, w);
-                    w = x.parent.?.right;
+                    w = x.parent.right;
                 }
 
-                w.color = x.parent.?.color;
-                x.parent.?.color = .black;
+                w.color = x.parent.color;
+                x.parent.color = .black;
                 w.right.color = .black;
-                newRoot = leftRotate(newRoot, x.parent.?);
+                newRoot = leftRotate(newRoot, x.parent);
                 x = newRoot;
             }
         } else {
-            w = x.parent.?.left;
+            w = x.parent.left;
 
             if (w.color == .red) {
                 w.color = .black;
-                x.parent.?.color = .red;
-                newRoot = rightRotate(newRoot, x.parent.?);
-                w = x.parent.?.left;
+                x.parent.color = .red;
+                newRoot = rightRotate(newRoot, x.parent);
+                w = x.parent.left;
             }
 
             if (w.left.color == .black and w.right.color == .black) {
                 w.color = .red;
-                x = x.parent.?;
+                x = x.parent;
             } else {
                 if (w.left.color == .black) {
                     w.right.color = .black;
                     w.color = .red;
                     newRoot = leftRotate(newRoot, w);
-                    w = x.parent.?.left;
+                    w = x.parent.left;
                 }
 
-                w.color = x.parent.?.color;
-                x.parent.?.color = .black;
+                w.color = x.parent.color;
+                x.parent.color = .black;
                 w.left.color = .black;
-                newRoot = rightRotate(newRoot, x.parent.?);
+                newRoot = rightRotate(newRoot, x.parent);
                 x = newRoot;
             }
         }
@@ -465,41 +465,41 @@ fn fixInsert(root: *TreeNode, node: *TreeNode) *TreeNode {
     var newRoot = root;
     recomputeTreeMetadata(newRoot, x);
 
-    while (x != newRoot and x.parent.?.color == .red) {
-        if (x.parent == x.parent.?.parent.?.left) {
-            const y = x.parent.?.parent.?.right;
+    while (x != newRoot and x.parent.color == .red) {
+        if (x.parent == x.parent.parent.left) {
+            const y = x.parent.parent.right;
 
             if (y.color == .red) {
-                x.parent.?.color = .black;
+                x.parent.color = .black;
                 y.color = .black;
-                x.parent.?.parent.?.color = .red;
-                x = x.parent.?.parent.?;
+                x.parent.parent.color = .red;
+                x = x.parent.parent;
             } else {
-                if (x == x.parent.?.right) {
-                    x = x.parent.?;
+                if (x == x.parent.right) {
+                    x = x.parent;
                     newRoot = leftRotate(newRoot, x);
                 }
 
-                x.parent.?.color = .black;
-                x.parent.?.parent.?.color = .red;
-                newRoot = rightRotate(newRoot, x.parent.?.parent.?);
+                x.parent.color = .black;
+                x.parent.parent.color = .red;
+                newRoot = rightRotate(newRoot, x.parent.parent);
             }
         } else {
-            const y = x.parent.?.parent.?.left;
+            const y = x.parent.parent.left;
 
             if (y.color == .red) {
-                x.parent.?.color = .black;
+                x.parent.color = .black;
                 y.color = .black;
-                x.parent.?.parent.?.color = .red;
-                x = x.parent.?.parent.?;
+                x.parent.parent.color = .red;
+                x = x.parent.parent;
             } else {
-                if (x == x.parent.?.left) {
-                    x = x.parent.?;
+                if (x == x.parent.left) {
+                    x = x.parent;
                     newRoot = rightRotate(newRoot, x);
                 }
-                x.parent.?.color = .black;
-                x.parent.?.parent.?.color = .red;
-                newRoot = leftRotate(newRoot, x.parent.?.parent.?);
+                x.parent.color = .black;
+                x.parent.parent.color = .red;
+                newRoot = leftRotate(newRoot, x.parent.parent);
             }
         }
     }
@@ -512,12 +512,12 @@ pub fn updateTreeMetadata(root: *TreeNode, node: *TreeNode, delta: usize, lineFe
     var x = node;
     // node length change or line feed count change
     while (x != root and x != SENTINEL) {
-        if (x.parent.?.left == x) {
-            x.parent.?.size_left += delta;
-            x.parent.?.lf_left += lineFeedCntDelta;
+        if (x.parent.left == x) {
+            x.parent.size_left += delta;
+            x.parent.lf_left += lineFeedCntDelta;
         }
 
-        x = x.parent.?;
+        x = x.parent;
     }
 }
 
@@ -527,8 +527,8 @@ fn recomputeTreeMetadata(root: *TreeNode, node: *TreeNode) void {
     var x = node;
 
     // go upwards till the node whose left subtree is changed.
-    while (x != root and x == x.parent.?.right) {
-        x = x.parent.?;
+    while (x != root and x == x.parent.right) {
+        x = x.parent;
     }
 
     if (x == root) {
@@ -537,7 +537,7 @@ fn recomputeTreeMetadata(root: *TreeNode, node: *TreeNode) void {
     }
 
     // x is the node whose right subtree is changed.
-    x = x.parent.?;
+    x = x.parent;
 
     delta = calculateSize(x.left) - x.size_left;
     lf_delta = calculateLF(x.left) - x.lf_left;
@@ -546,12 +546,12 @@ fn recomputeTreeMetadata(root: *TreeNode, node: *TreeNode) void {
 
     // go upwards till root. O(logN)
     while (x != root and (delta != 0 or lf_delta != 0)) {
-        if (x.parent.?.left == x) {
-            x.parent.?.size_left += delta;
-            x.parent.?.lf_left += lf_delta;
+        if (x.parent.left == x) {
+            x.parent.size_left += delta;
+            x.parent.lf_left += lf_delta;
         }
 
-        x = x.parent.?;
+        x = x.parent;
     }
 }
 
