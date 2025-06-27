@@ -290,7 +290,7 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
 
     const yWasRed = y.color == .red;
 
-    if (y == y.parent.left) {
+    if (y == y.parent.?.left) {
         y.parent.?.left = x;
     } else {
         y.parent.?.right = x;
@@ -340,7 +340,7 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
 
     z.detach();
 
-    if (x.parent.left == x) {
+    if (x.parent.?.left == x) {
         const newSizeLeft = calculateSize(x);
         const newLFLeft = calculateLF(x);
         if (newSizeLeft != x.parent.?.size_left or newLFLeft != x.parent.?.lf_left) {
@@ -348,18 +348,18 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
             const lf_delta = newLFLeft - x.parent.?.lf_left;
             x.parent.?.size_left = newSizeLeft;
             x.parent.?.lf_left = newLFLeft;
-            updateTreeMetadata(newRoot, x.parent, delta, lf_delta);
+            updateTreeMetadata(newRoot, x.parent.?, delta, lf_delta);
         }
     }
 
-    recomputeTreeMetadata(newRoot, x.parent);
+    recomputeTreeMetadata(newRoot, x.parent.?);
 
     if (yWasRed) {
         resetSentinel();
         return newRoot;
     }
 
-    var w: ?*TreeNode = null;
+    var w: *TreeNode = undefined;
     while (x != newRoot and x.color == .black) {
         if (x == x.parent.?.left) {
             w = x.parent.?.right;
@@ -373,7 +373,7 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
 
             if (w.left.color == .black and w.right.color == .black) {
                 w.color = .red;
-                x = x.parent;
+                x = x.parent.?;
             } else {
                 if (w.right.color == .black) {
                     w.left.color = .black;
@@ -393,7 +393,7 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
 
             if (w.color == .red) {
                 w.color = .black;
-                x.parent.?.color == .red;
+                x.parent.?.color = .red;
                 newRoot = rightRotate(newRoot, x.parent.?);
                 w = x.parent.?.left;
             }
@@ -508,7 +508,8 @@ fn fixInsert(root: *TreeNode, node: *TreeNode) *TreeNode {
     return newRoot;
 }
 
-pub fn updateTreeMetadata(root: *TreeNode, x: *TreeNode, delta: usize, lineFeedCntDelta: usize) void {
+pub fn updateTreeMetadata(root: *TreeNode, node: *TreeNode, delta: usize, lineFeedCntDelta: usize) void {
+    var x = node;
     // node length change or line feed count change
     while (x != root and x != SENTINEL) {
         if (x.parent.?.left == x) {
@@ -516,7 +517,7 @@ pub fn updateTreeMetadata(root: *TreeNode, x: *TreeNode, delta: usize, lineFeedC
             x.parent.?.lf_left += lineFeedCntDelta;
         }
 
-        x = x.parent;
+        x = x.parent.?;
     }
 }
 
@@ -671,4 +672,25 @@ test "black heights are equal" {
     }
 
     try expectBlackHeightsAreEqual(root);
+}
+
+test "delete node" {
+    const allocator = std.testing.allocator;
+    var root = SENTINEL;
+    defer freeTree(allocator, root);
+
+    const n = 10;
+    const p = mockPiece(100, 10);
+
+    for (0..n) |_| {
+        const node = try TreeNode.create(allocator, p);
+        root = insertRight(root, root, node);
+    }
+
+    const nodeToDelete = root.right;
+    root = rbDelete(root, nodeToDelete);
+    defer allocator.destroy(nodeToDelete);
+
+    try std.testing.expectEqual((n - 1) * p.length, calculateSize(root));
+    try std.testing.expectEqual((n - 1) * p.lineFeedCnt, calculateLF(root));
 }
