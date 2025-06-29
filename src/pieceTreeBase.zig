@@ -51,7 +51,6 @@ const StringBuffer = struct {
     }
 };
 
-const EMPTY_STRING = "";
 const AverageBufferSize = 65535;
 
 fn createLineStartsFast(allocator: Allocator, str: []const u8) !ArrayList(usize) {
@@ -1596,7 +1595,7 @@ pub const PieceTreeBase = struct {
 
     fn getNodeContent(self: *PieceTreeBase, node: *const TreeNode) []const u8 {
         if (node == SENTINEL) {
-            return EMPTY_STRING;
+            return "";
         }
 
         return self.getPieceContent(&(node.piece.?));
