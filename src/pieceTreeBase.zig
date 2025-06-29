@@ -7,11 +7,6 @@ const TreeNode = rbt.TreeNode;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
-const CharCode = enum(u8) {
-    CarriageReturn = '\r',
-    LineFeed = '\n',
-};
-
 const StringBuffer = struct {
     buffer: ArrayList(u8),
     lineStarts: ArrayList(usize),
