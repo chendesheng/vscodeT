@@ -119,11 +119,13 @@ const PieceTreeSearchCache = struct {
     }
 
     fn get(self: *const PieceTreeSearchCache, offset: usize) ?CacheEntry {
-        if (self._cache.items.len == 0) {
+        const len = self._cache.items.len;
+        if (len == 0) {
             return null;
         }
 
-        for (self._cache.items.len - 1..0) |i| {
+        var i: usize = len - 1;
+        while (i >= 0) : (i -= 1) {
             const nodePos = self._cache.items[i];
             if (nodePos.nodeStartOffset <= offset and nodePos.nodeStartOffset + nodePos.node.piece.?.length >= offset) {
                 return nodePos;
@@ -133,11 +135,13 @@ const PieceTreeSearchCache = struct {
     }
 
     fn get2(self: *const PieceTreeSearchCache, lineNumber: usize) ?CacheEntry {
-        if (self._cache.items.len == 0) {
+        const len = self._cache.items.len;
+        if (len == 0) {
             return null;
         }
 
-        for (self._cache.items.len - 1..0) |i| {
+        var i: usize = len - 1;
+        while (i >= 0) : (i -= 1) {
             const nodePos = self._cache.items[i];
             if (nodePos.nodeStartLineNumber != null and nodePos.nodeStartLineNumber.? < lineNumber and nodePos.nodeStartLineNumber.? + nodePos.node.piece.?.lineFeedCnt >= lineNumber) {
                 return nodePos;
@@ -510,7 +514,7 @@ pub const PieceTreeBase = struct {
 
             if (danglingCR) {
                 if (buffer.charCodeAt(pieceStartOffset) == '\n') {
-                    // pretend the \n was in the previous piece..
+                    // pretend the \n was in the previous piece.
                     pieceStartOffset += 1;
                     pieceLength -= 1;
                 }
@@ -530,16 +534,17 @@ pub const PieceTreeBase = struct {
                 } else {
                     try currentLine.appendSlice(buffer.substr(pieceStartOffset, pieceLength));
                 }
-                break;
+                continue;
             }
 
-            // add the text before the first line start in self piece
+            // add the text before the first line start in this piece
             try currentLine.appendSlice(if (self._EOLNormalized) buffer.substring(pieceStartOffset, @max(pieceStartOffset, lineStarts[pieceStartLine + 1] - self._EOLLength)) else sliceLineFeeds(buffer.substring(pieceStartOffset, lineStarts[pieceStartLine + 1])));
             try lines.append(currentLine);
 
             for (pieceStartLine + 1..pieceEndLine) |line| {
                 currentLine = ArrayList(u8).init(self.allocator);
                 try currentLine.appendSlice(if (self._EOLNormalized) buffer.substring(lineStarts[line], lineStarts[line + 1] - self._EOLLength) else sliceLineFeeds(buffer.substring(lineStarts[line], lineStarts[line + 1])));
+
                 try lines.append(currentLine);
             }
 
@@ -640,12 +645,12 @@ pub const PieceTreeBase = struct {
         return self._getCharCode(nodePos);
     }
 
-    pub fn getNearestChunk(self: *const PieceTreeBase, offset: usize) []u8 {
+    pub fn getNearestChunk(self: *const PieceTreeBase, offset: usize) []const u8 {
         const nodePos = self.nodeAt(offset);
         if (nodePos.remainder == nodePos.node.piece.?.length) {
             // the offset is at the head of next node.
             const matchingNode = nodePos.node.next();
-            if (!matchingNode || matchingNode == SENTINEL) {
+            if (matchingNode == SENTINEL) {
                 return "";
             }
 
@@ -884,7 +889,8 @@ pub const PieceTreeBase = struct {
 
         var newNode = try self.rbInsertLeft(node, newPieces.items[newPieces.items.len - 1]);
         if (newPieces.items.len >= 2) {
-            for (newPieces.items.len - 2..0) |k| {
+            for (0..newPieces.items.len - 1) |i| {
+                const k = newPieces.items.len - 1 - i - 1;
                 newNode = try self.rbInsertLeft(newNode, newPieces.items[k]);
             }
         }
@@ -1096,8 +1102,8 @@ pub const PieceTreeBase = struct {
         return newPieces;
     }
 
-    fn getLinesRawContent(self: *PieceTreeBase) []u8 {
-        return self.getContentOfSubTree(self.root);
+    fn getLinesRawContent(self: *PieceTreeBase) !ArrayList(u8) {
+        return try self.getContentOfSubTree(self.root);
     }
 
     pub fn getLineRawContent(self: *PieceTreeBase, lineNumber: usize, endOffset: usize) !ArrayList(u8) {
@@ -1629,11 +1635,11 @@ pub const PieceTreeBase = struct {
         return z;
     }
 
-    fn getContentOfSubTree(self: *PieceTreeBase, root: *TreeNode) ArrayList(u8) {
-        const str = ArrayList(u8).init(self.allocator);
-        const iter = root.iterator();
+    fn getContentOfSubTree(self: *PieceTreeBase, root: *TreeNode) !ArrayList(u8) {
+        var str = ArrayList(u8).init(self.allocator);
+        var iter = root.iterator();
         while (iter.next()) |node| {
-            str.append(self.getNodeContent(node));
+            try str.appendSlice(self.getNodeContent(node));
         }
         return str;
     }
@@ -1786,13 +1792,35 @@ test "normalize EOL" {
     var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
     defer tree.deinit();
 
-    const lines = try tree.getLinesContent();
-    for (lines.items) |line| {
-        line.deinit();
-    }
-    defer lines.deinit();
-
     try tree.normalizeEOL(.LF);
+    const content = try tree.getLinesRawContent();
+    defer content.deinit();
+
+    try std.testing.expect(tree._EOLNormalized);
+    try std.testing.expectEqualSlices(u8, "First\nSecond\nThird\n", content.items);
+}
+
+test "getLinesContent" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\r\nThird\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    defer tree.deinit();
+
+    const lines = try tree.getLinesContent();
+    defer lines.deinit();
+    defer {
+        for (lines.items) |line| {
+            line.deinit();
+        }
+    }
+
+    try std.testing.expectEqual(4, lines.items.len);
+    try std.testing.expectEqualSlices(u8, "First", lines.items[0].items);
+    try std.testing.expectEqualSlices(u8, "Second", lines.items[1].items);
+    try std.testing.expectEqualSlices(u8, "Third", lines.items[2].items);
+    try std.testing.expectEqualSlices(u8, "", lines.items[3].items);
 }
 
 test "insert" {
@@ -1859,4 +1887,17 @@ test "getLineLength" {
     defer tree.deinit();
 
     try std.testing.expectEqual(5, tree.getLineLength(1));
+}
+
+test "getNearestChunk" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
+        try StringBuffer.init(allocator, "Fourth\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    defer tree.deinit();
+
+    const chunk = tree.getNearestChunk(buffers[0].length());
+    try std.testing.expectEqualSlices(u8, "Fourth\n", chunk);
 }

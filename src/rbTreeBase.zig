@@ -132,26 +132,15 @@ pub const Iterator = struct {
     }
 
     pub fn next(self: *Iterator) ?*const TreeNode {
-        const node = self._next;
-        if (self.moveNext()) {
-            return node;
-        }
-        return null;
-    }
+        const ret = self._next;
 
-    fn moveNext(self: *Iterator) bool {
         if (self._next == null or self._next == SENTINEL) {
-            return false;
-        }
-
-        const _next = self._next.?.next();
-        if (_next == SENTINEL or _next == self._root.parent) {
             self._next = null;
-            return false;
+            return null;
         }
 
-        self._next = _next;
-        return true;
+        self._next = self._next.?.next();
+        return ret;
     }
 };
 
