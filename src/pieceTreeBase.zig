@@ -7,45 +7,6 @@ const TreeNode = rbt.TreeNode;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
-const StringBuffer = struct {
-    buffer: ArrayList(u8),
-    lineStarts: ArrayList(usize),
-
-    fn init(allocator: Allocator, str: []const u8) !StringBuffer {
-        var buffer = ArrayList(u8).init(allocator);
-        try buffer.appendSlice(str);
-        return .{
-            .buffer = buffer,
-            .lineStarts = try createLineStartsFast(allocator, str),
-        };
-    }
-
-    fn deinit(self: *const StringBuffer) void {
-        self.buffer.deinit();
-        self.lineStarts.deinit();
-    }
-
-    fn length(self: *const StringBuffer) usize {
-        return self.buffer.items.len;
-    }
-
-    fn charCodeAt(self: *const StringBuffer, i: usize) u8 {
-        return self.buffer.items[i];
-    }
-
-    fn substring(self: *const StringBuffer, start: usize, end: usize) []const u8 {
-        return self.buffer.items[start..end];
-    }
-
-    fn substr(self: *const StringBuffer, start: usize, len: usize) []const u8 {
-        return self.buffer.items[start .. start + len];
-    }
-
-    fn append(self: *StringBuffer, value: []const u8) !void {
-        try self.buffer.appendSlice(value);
-    }
-};
-
 const AverageBufferSize = 65535;
 
 fn createLineStartsFast(allocator: Allocator, str: []const u8) !ArrayList(usize) {
@@ -95,6 +56,95 @@ pub const Piece = struct {
 const EOL = enum {
     CRLF,
     LF,
+};
+
+const StringBuffer = struct {
+    buffer: ArrayList(u8),
+    lineStarts: ArrayList(usize),
+
+    fn init(allocator: Allocator, str: []const u8) !StringBuffer {
+        var buffer = ArrayList(u8).init(allocator);
+        try buffer.appendSlice(str);
+        return .{
+            .buffer = buffer,
+            .lineStarts = try createLineStartsFast(allocator, str),
+        };
+    }
+
+    fn deinit(self: *const StringBuffer) void {
+        self.buffer.deinit();
+        self.lineStarts.deinit();
+    }
+
+    fn length(self: *const StringBuffer) usize {
+        return self.buffer.items.len;
+    }
+
+    fn charCodeAt(self: *const StringBuffer, i: usize) u8 {
+        return self.buffer.items[i];
+    }
+
+    fn substring(self: *const StringBuffer, start: usize, end: usize) []const u8 {
+        return self.buffer.items[start..end];
+    }
+
+    fn substr(self: *const StringBuffer, start: usize, len: usize) []const u8 {
+        return self.buffer.items[start .. start + len];
+    }
+
+    fn append(self: *StringBuffer, value: []const u8) !void {
+        try self.buffer.appendSlice(value);
+    }
+};
+
+// Readonly snapshot for piece tree.
+// In a real multiple thread environment, to make snapshot reading always work correctly, we need to
+// 1. Make TreeNode.piece immutable, then reading and writing can run in parallel.
+// 2. TreeNode/Buffers normalization should not happen during snapshot reading.
+const PieceTreeSnapshot = struct {
+    _pieces: ArrayList(*const Piece),
+    _index: ?usize, // null is for BOM
+    _tree: *const PieceTreeBase,
+    _BOM: []const u8,
+
+    fn init(tree: *const PieceTreeBase, BOM: []const u8) !PieceTreeSnapshot {
+        var pieces = ArrayList(*const Piece).init(tree.allocator);
+
+        var iter = tree.root.iterator();
+        while (iter.next()) |node| {
+            if (node.piece) |*piece| {
+                try pieces.append(piece);
+            }
+        }
+
+        return .{
+            ._pieces = pieces,
+            ._index = if (BOM.len > 0) null else 0,
+            ._tree = tree,
+            ._BOM = BOM,
+        };
+    }
+
+    fn deinit(self: *const PieceTreeSnapshot) void {
+        self._pieces.deinit();
+    }
+
+    fn read(self: *PieceTreeSnapshot) ?[]const u8 {
+        if (self._index == null) {
+            self._index = 0;
+            return self._BOM;
+        }
+
+        const i = self._index.?;
+
+        if (i >= self._pieces.items.len) {
+            return null;
+        }
+
+        const ret = self._tree.getPieceContent(self._pieces.items[i]);
+        self._index = i + 1;
+        return ret;
+    }
 };
 
 const CacheEntry = struct {
@@ -320,6 +370,10 @@ pub const PieceTreeBase = struct {
     pub fn setEOL(self: *PieceTreeBase, eol: EOL) void {
         self._EOL = eol;
         self.normalizeEOL(self._EOL);
+    }
+
+    pub fn createSnapshot(self: *PieceTreeBase, BOM: []u8) !PieceTreeSnapshot {
+        return try PieceTreeSnapshot.init(self, BOM);
     }
 
     pub fn equal(self: *const PieceTreeBase, other: *const PieceTreeBase) !bool {
@@ -1605,11 +1659,11 @@ pub const PieceTreeBase = struct {
     }
 
     fn getNodeContent(self: *const PieceTreeBase, node: *const TreeNode) []const u8 {
-        if (node == SENTINEL) {
-            return "";
+        if (node.piece) |*piece| {
+            return self.getPieceContent(piece);
         }
 
-        return self.getPieceContent(&(node.piece.?));
+        return "";
     }
 
     fn getPieceContent(self: *const PieceTreeBase, piece: *const Piece) []const u8 {
@@ -1900,4 +1954,21 @@ test "getNearestChunk" {
 
     const chunk = tree.getNearestChunk(buffers[0].length());
     try std.testing.expectEqualSlices(u8, "Fourth\n", chunk);
+}
+
+test "create snapshot" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
+        try StringBuffer.init(allocator, "Fourth\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    defer tree.deinit();
+
+    var snapshot = try tree.createSnapshot("");
+    defer snapshot.deinit();
+
+    try std.testing.expectEqualSlices(u8, "First\nSecond\nThird\n", snapshot.read().?);
+    try std.testing.expectEqualSlices(u8, "Fourth\n", snapshot.read().?);
+    try std.testing.expectEqual(null, snapshot.read());
 }
