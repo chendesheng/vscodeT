@@ -772,8 +772,8 @@ pub const PieceTreeBase = struct {
         self.computeBufferMetadata();
     }
 
-    pub fn delete(self: *PieceTreeBase, offset: usize, cnt: usize) void {
-        self._lastVisitedLine.reset();
+    pub fn delete(self: *PieceTreeBase, offset: usize, cnt: usize) !void {
+        try self._lastVisitedLine.reset();
 
         if (cnt <= 0 or self.root == SENTINEL) {
             return;
@@ -789,60 +789,60 @@ pub const PieceTreeBase = struct {
             const endSplitPosInBuffer = self.positionInBuffer(startNode, endPosition.remainder, null).?;
 
             if (startPosition.nodeStartOffset == offset) {
-                if (cnt == startNode.piece.length) { // delete node
+                if (cnt == startNode.piece.?.length) { // delete node
                     const next = startNode.next();
                     self.rbDelete(startNode);
-                    self.validateCRLFWithPrevNode(next);
+                    try self.validateCRLFWithPrevNode(next);
                     self.computeBufferMetadata();
                     return;
                 }
                 self.deleteNodeHead(startNode, endSplitPosInBuffer);
                 self._searchCache.validate(offset);
-                self.validateCRLFWithPrevNode(startNode);
+                try self.validateCRLFWithPrevNode(startNode);
                 self.computeBufferMetadata();
                 return;
             }
 
-            if (startPosition.nodeStartOffset + startNode.piece.length == offset + cnt) {
+            if (startPosition.nodeStartOffset + startNode.piece.?.length == offset + cnt) {
                 self.deleteNodeTail(startNode, startSplitPosInBuffer);
-                self.validateCRLFWithNextNode(startNode);
+                try self.validateCRLFWithNextNode(startNode);
                 self.computeBufferMetadata();
                 return;
             }
 
             // delete content in the middle, self node will be splitted to nodes
-            self.shrinkNode(startNode, startSplitPosInBuffer, endSplitPosInBuffer);
+            try self.shrinkNode(startNode, startSplitPosInBuffer, endSplitPosInBuffer);
             self.computeBufferMetadata();
             return;
         }
 
-        const nodesToDel = ArrayList(*TreeNode).init(self.allocator);
+        var nodesToDel = ArrayList(*TreeNode).init(self.allocator);
         defer nodesToDel.deinit();
 
         const startSplitPosInBuffer = self.positionInBuffer(startNode, startPosition.remainder, null).?;
         self.deleteNodeTail(startNode, startSplitPosInBuffer);
         self._searchCache.validate(offset);
-        if (startNode.piece.length == 0) {
-            nodesToDel.push(startNode);
+        if (startNode.piece.?.length == 0) {
+            try nodesToDel.append(startNode);
         }
 
         // update last touched node
         const endSplitPosInBuffer = self.positionInBuffer(endNode, endPosition.remainder, null).?;
         self.deleteNodeHead(endNode, endSplitPosInBuffer);
-        if (endNode.piece.length == 0) {
-            nodesToDel.push(endNode);
+        if (endNode.piece.?.length == 0) {
+            try nodesToDel.append(endNode);
         }
 
         // delete nodes in between
-        const secondNode = startNode.next();
-        _ = secondNode;
+        var node = startNode.next();
+        while (node != SENTINEL and node != endNode) {
+            try nodesToDel.append(node);
+            node = node.next();
+        }
 
-        // TODO:
-        // for (let node = secondNode; node != SENTINEL && node !== endNode; node = node.next())
-
-        const prev = if (startNode.piece.length == 0) startNode.prev() else startNode;
-        self.deleteNodes(nodesToDel);
-        self.validateCRLFWithNextNode(prev);
+        const prev = if (startNode.piece.?.length == 0) startNode.prev() else startNode;
+        self.deleteNodes(nodesToDel.items);
+        try self.validateCRLFWithNextNode(prev);
         self.computeBufferMetadata();
     }
 
@@ -1233,8 +1233,8 @@ pub const PieceTreeBase = struct {
         const newEndOffset = self.offsetInBuffer(piece.bufferIndex, newEnd);
         const newLineFeedCnt = self.getLineFeedCnt(piece.bufferIndex, piece.start, newEnd);
 
-        const lf_delta: isize = @intCast(newLineFeedCnt - originalLFCnt);
-        const size_delta: isize = @intCast(newEndOffset - originalEndOffset);
+        const lf_delta = usizeDiff(newLineFeedCnt, originalLFCnt);
+        const size_delta = usizeDiff(newEndOffset, originalEndOffset);
         const newLength: usize = @intCast(@as(isize, @intCast(piece.length)) + size_delta);
 
         node.piece = .{
@@ -1256,9 +1256,9 @@ pub const PieceTreeBase = struct {
         const newStart = pos;
         const newLineFeedCnt = self.getLineFeedCnt(piece.bufferIndex, newStart, piece.end);
         const newStartOffset = self.offsetInBuffer(piece.bufferIndex, newStart);
-        const lf_delta = newLineFeedCnt - originalLFCnt;
-        const size_delta = originalStartOffset - newStartOffset;
-        const newLength = piece.length + size_delta;
+        const lf_delta = usizeDiff(newLineFeedCnt, originalLFCnt);
+        const size_delta = usizeDiff(originalStartOffset, newStartOffset);
+        const newLength: usize = @intCast(@as(isize, @intCast(piece.length)) + size_delta);
         node.piece = .{
             .bufferIndex = piece.bufferIndex,
             .start = newStart,
@@ -1270,7 +1270,7 @@ pub const PieceTreeBase = struct {
         self.updateTreeMetadata(node, size_delta, lf_delta);
     }
 
-    fn shrinkNode(self: *PieceTreeBase, node: *TreeNode, start: BufferCursor, end: BufferCursor) void {
+    fn shrinkNode(self: *PieceTreeBase, node: *TreeNode, start: BufferCursor, end: BufferCursor) !void {
         const piece = node.piece.?;
         const originalStartPos = piece.start;
         const originalEndPos = piece.end;
@@ -1290,10 +1290,10 @@ pub const PieceTreeBase = struct {
             .length = newLength,
         };
 
-        self.updateTreeMetadata(node, newLength - oldLength, newLineFeedCnt - oldLFCnt);
+        self.updateTreeMetadata(node, @intCast(@as(isize, @intCast(newLength)) - @as(isize, @intCast(oldLength))), @intCast(@as(isize, @intCast(newLineFeedCnt)) - @as(isize, @intCast(oldLFCnt))));
 
         // new right piece, end, originalEndPos
-        const newPiece = .{
+        const newPiece: Piece = .{
             .bufferIndex = piece.bufferIndex,
             .start = end,
             .end = originalEndPos,
@@ -1301,8 +1301,8 @@ pub const PieceTreeBase = struct {
             .length = self.offsetInBuffer(piece.bufferIndex, originalEndPos) - self.offsetInBuffer(piece.bufferIndex, end),
         };
 
-        const newNode = self.rbInsertLeft(node, newPiece);
-        self.validateCRLFWithPrevNode(newNode);
+        const newNode: *TreeNode = try self.rbInsertLeft(node, newPiece);
+        try self.validateCRLFWithPrevNode(newNode);
     }
 
     fn appendToNode(self: *PieceTreeBase, node: *TreeNode, value: []const u8) !void {
@@ -1334,7 +1334,7 @@ pub const PieceTreeBase = struct {
         const newLength = node.piece.?.length + val.len;
         const oldLineFeedCnt = node.piece.?.lineFeedCnt;
         const newLineFeedCnt = self.getLineFeedCnt(0, node.piece.?.start, newEnd);
-        const lf_delta = newLineFeedCnt - oldLineFeedCnt;
+        const lf_delta = usizeDiff(newLineFeedCnt, oldLineFeedCnt);
 
         node.piece = .{
             .bufferIndex = node.piece.?.bufferIndex,
@@ -1345,7 +1345,7 @@ pub const PieceTreeBase = struct {
         };
 
         self._lastChangeBufferPos = newEnd;
-        self.updateTreeMetadata(node, @intCast(val.len), @intCast(lf_delta));
+        self.updateTreeMetadata(node, @intCast(val.len), lf_delta);
     }
 
     fn nodeAt(self: *PieceTreeBase, offset: usize) NodePosition {
@@ -1519,51 +1519,37 @@ pub const PieceTreeBase = struct {
     }
 
     fn fixCRLF(self: *PieceTreeBase, prev: *TreeNode, next: *TreeNode) !void {
-        var nodesToDel = ArrayList(*TreeNode).init(self.allocator);
-        defer nodesToDel.deinit();
-
         // update node
-        const lineStarts = self._buffers.items[prev.piece.?.bufferIndex].lineStarts;
-        var newEnd: BufferCursor = undefined;
-        if (prev.piece.?.end.column == 0) {
-            // it means, last line ends with \r, not \r\n
-            newEnd = .{ .line = prev.piece.?.end.line - 1, .column = lineStarts.items[prev.piece.?.end.line] - lineStarts.items[prev.piece.?.end.line - 1] };
-        } else {
-            // \r\n
-            newEnd = .{ .line = prev.piece.?.end.line, .column = prev.piece.?.end.column - 1 };
-        }
+        const prevPiece = prev.piece.?;
+        const prevPieceEnd = prevPiece.end;
+        const lineStarts = self._buffers.items[prevPiece.bufferIndex].lineStarts.items;
 
-        const prevNewLength = prev.piece.?.length - 1;
-        const prevNewLFCnt = prev.piece.?.lineFeedCnt - 1;
         prev.piece = .{
-            .bufferIndex = prev.piece.?.bufferIndex,
-            .start = prev.piece.?.start,
-            .end = newEnd,
-            .lineFeedCnt = prevNewLFCnt,
-            .length = prevNewLength,
+            .bufferIndex = prevPiece.bufferIndex,
+            .start = prevPiece.start,
+            .end = if (prevPieceEnd.column == 0)
+                // it means, last line ends with \r, not \r\n
+                .{ .line = prevPieceEnd.line - 1, .column = lineStarts[prevPieceEnd.line] - lineStarts[prevPieceEnd.line - 1] }
+            else
+                .{ .line = prevPieceEnd.line, .column = prevPieceEnd.column - 1 },
+            .lineFeedCnt = prevPiece.lineFeedCnt - 1,
+            .length = prevPiece.length - 1,
         };
 
         self.updateTreeMetadata(prev, -1, -1);
-        if (prev.piece.?.length == 0) {
-            try nodesToDel.append(prev);
-        }
 
         // update nextNode
-        const newStart: BufferCursor = .{ .line = next.piece.?.start.line + 1, .column = 0 };
-        const newLength = next.piece.?.length - 1;
-        const newLineFeedCnt = self.getLineFeedCnt(next.piece.?.bufferIndex, newStart, next.piece.?.end);
+        const nextPiece = next.piece.?;
+        const newStart = BufferCursor{ .line = nextPiece.start.line + 1, .column = 0 };
         next.piece = .{
-            .bufferIndex = next.piece.?.bufferIndex,
+            .bufferIndex = nextPiece.bufferIndex,
             .start = newStart,
-            .end = next.piece.?.end,
-            .lineFeedCnt = newLineFeedCnt,
-            .length = newLength,
+            .end = nextPiece.end,
+            .lineFeedCnt = self.getLineFeedCnt(nextPiece.bufferIndex, newStart, nextPiece.end),
+            .length = nextPiece.length - 1,
         };
 
         self.updateTreeMetadata(next, -1, -1);
-        if (next.piece.?.length == 0) {
-            try nodesToDel.append(next);
-        }
 
         // create new piece which contains \r\n
         const pieces = try self.createNewPieces("\r\n");
@@ -1572,7 +1558,12 @@ pub const PieceTreeBase = struct {
         _ = try self.rbInsertRight(prev, pieces.items[0]);
 
         // delete empty nodes
-        self.deleteNodes(nodesToDel.items);
+        if (prev.piece.?.length == 0) {
+            self.rbDelete(prev);
+        }
+        if (next.piece.?.length == 0) {
+            self.rbDelete(next);
+        }
     }
 
     fn adjustCarriageReturnFromNext(self: *PieceTreeBase, value: []const u8, node: *TreeNode) bool {
@@ -1582,19 +1573,17 @@ pub const PieceTreeBase = struct {
                 // move '\n' forward
                 // value += '\n';
 
-                if (nextNode.piece.?.length == 1) {
+                const piece = nextNode.piece.?;
+                if (piece.length == 1) {
                     self.rbDelete(nextNode);
                 } else {
-                    const piece = nextNode.piece.?;
-                    const newStart: BufferCursor = .{ .line = piece.start.line + 1, .column = 0 };
-                    const newLength = piece.length - 1;
-                    const newLineFeedCnt = self.getLineFeedCnt(piece.bufferIndex, newStart, piece.end);
+                    const newStart = BufferCursor{ .line = piece.start.line + 1, .column = 0 };
                     nextNode.piece = .{
                         .bufferIndex = piece.bufferIndex,
                         .start = newStart,
                         .end = piece.end,
-                        .lineFeedCnt = newLineFeedCnt,
-                        .length = newLength,
+                        .lineFeedCnt = self.getLineFeedCnt(piece.bufferIndex, newStart, piece.end),
+                        .length = piece.length - 1,
                     };
 
                     self.updateTreeMetadata(nextNode, -1, -1);
@@ -1726,6 +1715,10 @@ fn replaceEOL(target: *ArrayList(u8), eol: EOL) !void {
     }
 }
 
+fn usizeDiff(a: usize, b: usize) isize {
+    return @as(isize, @intCast(a)) - @as(isize, @intCast(b));
+}
+
 test "replace EOL" {
     const allocator = std.testing.allocator;
     var target = ArrayList(u8).init(allocator);
@@ -1810,4 +1803,17 @@ test "insert" {
     try tree.insert(0, "Hi", false);
     const line = try tree.getLineContent(1);
     try std.testing.expectEqualSlices(u8, "HiFirst", line);
+}
+
+test "delete" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    defer tree.deinit();
+
+    try tree.delete(0, 1);
+    const line = try tree.getLineContent(1);
+    try std.testing.expectEqualSlices(u8, "First"[1..], line);
 }
