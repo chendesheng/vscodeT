@@ -247,10 +247,10 @@ pub const PieceTreeBase = struct {
         try self._buffers.append(try StringBuffer.init(self.allocator, ""));
 
         var lastNode: ?*TreeNode = null;
-        for (0.., chunks) |i, chunk| {
+        for (1.., chunks) |i, chunk| {
             if (chunk.length() > 0) {
                 const piece = Piece{
-                    .bufferIndex = i + 1,
+                    .bufferIndex = i,
                     .start = .{ .line = 0, .column = 0 },
                     .end = .{ .line = chunk.lineStarts.items.len - 1, .column = chunk.length() - chunk.lineStarts.items[chunk.lineStarts.items.len - 1] },
                     .lineFeedCnt = chunk.lineStarts.items.len - 1,
@@ -351,23 +351,28 @@ pub const PieceTreeBase = struct {
         return ret;
     }
 
-    fn getOffsetAt(self: *PieceTreeBase, lineNumber: usize, column: usize) usize {
-        var leftLen = 0; // inorder
+    pub fn getOffsetAt(self: *const PieceTreeBase, lineNumber: usize, column: usize) usize {
+        var leftLen: usize = 0; // inorder
 
         var x = self.root;
+        var line = lineNumber;
 
         while (x != SENTINEL) {
-            if (x.left != SENTINEL and x.lf_left + 1 >= lineNumber) {
+            const piece = x.piece.?;
+            if (x.left != SENTINEL and x.lf_left + 1 >= line) {
                 x = x.left;
-            } else if (x.lf_left + x.piece.lineFeedCnt + 1 >= lineNumber) {
+            } else if (x.lf_left + piece.lineFeedCnt + 1 >= line) {
                 leftLen += x.size_left;
                 // lineNumber >= 2
-                const accumualtedValInCurrentIndex = self.getAccumulatedValue(x, lineNumber - x.lf_left - 2);
+                const accumualtedValInCurrentIndex = if (line < x.lf_left + 2)
+                    0
+                else
+                    self.getAccumulatedValue(x, line - x.lf_left - 2);
                 leftLen += accumualtedValInCurrentIndex + column - 1;
-                return leftLen;
+                break;
             } else {
-                lineNumber -= x.lf_left + x.piece.lineFeedCnt;
-                leftLen += x.size_left + x.piece.length;
+                line -= x.lf_left + piece.lineFeedCnt;
+                leftLen += x.size_left + piece.length;
                 x = x.right;
             }
         }
@@ -617,25 +622,25 @@ pub const PieceTreeBase = struct {
         }
     }
 
-    pub fn getLineCharCode(self: *PieceTreeBase, lineNumber: usize, index: usize) u8 {
+    pub fn getLineCharCode(self: *const PieceTreeBase, lineNumber: usize, index: usize) u8 {
         const nodePos = self.nodeAt2(lineNumber, index + 1);
         return self._getCharCode(nodePos);
     }
 
-    pub fn getLineLength(self: *PieceTreeBase, lineNumber: usize) usize {
+    pub fn getLineLength(self: *const PieceTreeBase, lineNumber: usize) usize {
         if (lineNumber == self.getLineCount()) {
             const startOffset = self.getOffsetAt(lineNumber, 1);
             return self.getLength() - startOffset;
         }
-        return self.getOffsetAt(lineNumber + 1, 1) - self.getOffsetAt(lineNumber, 1) - self.getEOL().len;
+        return self.getOffsetAt(lineNumber + 1, 1) - self.getOffsetAt(lineNumber, 1) - self._EOLLength;
     }
 
-    pub fn getCharCode(self: *PieceTreeBase, offset: usize) usize {
+    pub fn getCharCode(self: *const PieceTreeBase, offset: usize) usize {
         const nodePos = self.nodeAt(offset);
         return self._getCharCode(nodePos);
     }
 
-    pub fn getNearestChunk(self: *PieceTreeBase, offset: usize) []u8 {
+    pub fn getNearestChunk(self: *const PieceTreeBase, offset: usize) []u8 {
         const nodePos = self.nodeAt(offset);
         if (nodePos.remainder == nodePos.node.piece.?.length) {
             // the offset is at the head of next node.
@@ -1209,14 +1214,14 @@ pub const PieceTreeBase = struct {
         return .{ .index = lineCnt, .remainder = pos.column };
     }
 
-    fn getAccumulatedValue(self: *PieceTreeBase, node: *TreeNode, index: usize) usize {
+    fn getAccumulatedValue(self: *const PieceTreeBase, node: *const TreeNode, index: usize) usize {
         const piece = node.piece.?;
-        const lineStarts = self._buffers.items[piece.bufferIndex].lineStarts;
+        const lineStarts = self._buffers.items[piece.bufferIndex].lineStarts.items;
         const expectedLineStartIndex = piece.start.line + index + 1;
         if (expectedLineStartIndex > piece.end.line) {
-            return lineStarts.items[piece.end.line] + piece.end.column - lineStarts.items[piece.start.line] + piece.start.column;
+            return lineStarts[piece.end.line] + piece.end.column - lineStarts[piece.start.line] - piece.start.column;
         } else {
-            return lineStarts.items[expectedLineStartIndex] - lineStarts.items[piece.start.line] - piece.start.column;
+            return lineStarts[expectedLineStartIndex] - lineStarts[piece.start.line] - piece.start.column;
         }
     }
 
@@ -1780,7 +1785,6 @@ test "normalize EOL" {
 
     const lines = try tree.getLinesContent();
     for (lines.items) |line| {
-        std.debug.print("line {s}\n", .{line.items});
         line.deinit();
     }
     defer lines.deinit();
@@ -1829,4 +1833,27 @@ test "equal" {
     defer tree2.deinit();
 
     try std.testing.expect(try tree1.equal(&tree2));
+}
+
+test "getOffsetAt" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    defer tree.deinit();
+
+    try std.testing.expectEqual(0, tree.getOffsetAt(1, 1));
+    try std.testing.expectEqual(6, tree.getOffsetAt(2, 1));
+}
+
+test "getLineLength" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    defer tree.deinit();
+
+    try std.testing.expectEqual(5, tree.getLineLength(1));
 }
