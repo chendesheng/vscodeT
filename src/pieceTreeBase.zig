@@ -920,9 +920,9 @@ pub const PieceTreeBase = struct {
         var res = ret;
         const piece = node.piece.?;
         const bufferIndex = piece.bufferIndex;
-        const lineStarts = self._buffers.items[bufferIndex].lineStarts;
+        const lineStarts = self._buffers.items[bufferIndex].lineStarts.items;
 
-        const startOffset = lineStarts.items[piece.start.line] + piece.start.column;
+        const startOffset = lineStarts[piece.start.line] + piece.start.column;
 
         const offset = startOffset + remainder;
 
@@ -936,13 +936,13 @@ pub const PieceTreeBase = struct {
 
         while (low <= high) {
             mid = low + ((high - low) / 2) | 0;
-            midStart = lineStarts.items[mid];
+            midStart = lineStarts[mid];
 
             if (mid == high) {
                 break;
             }
 
-            midStop = lineStarts.items[mid + 1];
+            midStop = lineStarts[mid + 1];
 
             if (offset < midStart) {
                 high = mid - 1;
@@ -972,13 +972,13 @@ pub const PieceTreeBase = struct {
             return end.line - start.line;
         }
 
-        const lineStarts = self._buffers.items[bufferIndex].lineStarts;
-        if (end.line == lineStarts.items.len - 1) { // it means, there is no \n after end, otherwise, there will be one more lineStart.
+        const lineStarts = self._buffers.items[bufferIndex].lineStarts.items;
+        if (end.line == lineStarts.len - 1) { // it means, there is no \n after end, otherwise, there will be one more lineStart.
             return end.line - start.line;
         }
 
-        const nextLineStartOffset = lineStarts.items[end.line + 1];
-        const endOffset = lineStarts.items[end.line] + end.column;
+        const nextLineStartOffset = lineStarts[end.line + 1];
+        const endOffset = lineStarts[end.line] + end.column;
         if (nextLineStartOffset > endOffset + 1) { // there are more than 1 character after end, which means it can't be \n
             return end.line - start.line;
         }
@@ -996,8 +996,8 @@ pub const PieceTreeBase = struct {
     }
 
     fn offsetInBuffer(self: *const PieceTreeBase, bufferIndex: usize, cursor: BufferCursor) usize {
-        const lineStarts = self._buffers.items[bufferIndex].lineStarts;
-        return lineStarts.items[cursor.line] + cursor.column;
+        const lineStarts = self._buffers.items[bufferIndex].lineStarts.items;
+        return lineStarts[cursor.line] + cursor.column;
     }
 
     fn deleteNodes(self: *PieceTreeBase, nodes: []const *TreeNode) void {
@@ -1027,22 +1027,24 @@ pub const PieceTreeBase = struct {
                 }
 
                 const buf = try StringBuffer.init(self.allocator, splitText);
+                const lineStarts = buf.lineStarts.items;
                 try newPieces.append(.{
                     .bufferIndex = self._buffers.items.len,
                     .start = .{ .line = 0, .column = 0 },
-                    .end = .{ .line = buf.lineStarts.items.len - 1, .column = splitText.len - buf.lineStarts.items[buf.lineStarts.items.len - 1] },
-                    .lineFeedCnt = buf.lineStarts.items.len - 1,
+                    .end = .{ .line = lineStarts.len - 1, .column = splitText.len - lineStarts[lineStarts.len - 1] },
+                    .lineFeedCnt = lineStarts.len - 1,
                     .length = splitText.len,
                 });
                 try self._buffers.append(buf);
             }
 
             const buf = try StringBuffer.init(self.allocator, txt);
+            const lineStarts = buf.lineStarts.items;
             try newPieces.append(.{
                 .bufferIndex = self._buffers.items.len,
                 .start = .{ .line = 0, .column = 0 },
-                .end = .{ .line = buf.lineStarts.items.len - 1, .column = txt.len - buf.lineStarts.items[buf.lineStarts.items.len - 1] },
-                .lineFeedCnt = buf.lineStarts.items.len - 1,
+                .end = .{ .line = lineStarts.len - 1, .column = txt.len - lineStarts[lineStarts.len - 1] },
+                .lineFeedCnt = lineStarts.len - 1,
                 .length = txt.len,
             });
             try self._buffers.append(buf);
@@ -1319,6 +1321,7 @@ pub const PieceTreeBase = struct {
         const startOffset = self._buffers.items[0].length();
         try self._buffers.items[0].append(val);
         const lineStarts = try createLineStartsFast(self.allocator, val);
+        defer lineStarts.deinit();
         for (0.., lineStarts.items) |i, lineStart| {
             lineStarts.items[i] = lineStart + startOffset;
         }
@@ -1479,14 +1482,14 @@ pub const PieceTreeBase = struct {
         }
 
         const piece = val.piece.?;
-        const lineStarts = self._buffers.items[piece.bufferIndex].lineStarts;
+        const lineStarts = self._buffers.items[piece.bufferIndex].lineStarts.items;
         const line = piece.start.line;
-        const startOffset = lineStarts.items[line] + piece.start.column;
-        if (line == lineStarts.items.len - 1) {
+        const startOffset = lineStarts[line] + piece.start.column;
+        if (line == lineStarts.len - 1) {
             // last line, so there is no line feed at the end of this line
             return false;
         }
-        const nextLineStartOffset = lineStarts.items[line + 1];
+        const nextLineStartOffset = lineStarts[line + 1];
         if (nextLineStartOffset > startOffset + 1) {
             return false;
         }
