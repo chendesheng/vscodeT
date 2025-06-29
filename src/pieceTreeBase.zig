@@ -118,7 +118,7 @@ const PieceTreeSearchCache = struct {
         self._cache.deinit();
     }
 
-    fn get(self: *PieceTreeSearchCache, offset: usize) ?CacheEntry {
+    fn get(self: *const PieceTreeSearchCache, offset: usize) ?CacheEntry {
         if (self._cache.items.len == 0) {
             return null;
         }
@@ -132,7 +132,7 @@ const PieceTreeSearchCache = struct {
         return null;
     }
 
-    fn get2(self: *PieceTreeSearchCache, lineNumber: usize) ?CacheEntry {
+    fn get2(self: *const PieceTreeSearchCache, lineNumber: usize) ?CacheEntry {
         if (self._cache.items.len == 0) {
             return null;
         }
@@ -184,7 +184,7 @@ const LastVisitedLine = struct {
         };
     }
 
-    fn deinit(self: *LastVisitedLine) void {
+    fn deinit(self: *const LastVisitedLine) void {
         self.value.deinit();
     }
 
@@ -226,7 +226,7 @@ pub const PieceTreeBase = struct {
         return tree;
     }
 
-    pub fn deinit(self: *PieceTreeBase) void {
+    pub fn deinit(self: *const PieceTreeBase) void {
         rbt.freeTree(self.allocator, self.root);
         for (self._buffers.items) |buffer| {
             buffer.deinit();
@@ -318,7 +318,7 @@ pub const PieceTreeBase = struct {
         self.normalizeEOL(self._EOL);
     }
 
-    pub fn equal(self: *PieceTreeBase, other: *PieceTreeBase) bool {
+    pub fn equal(self: *const PieceTreeBase, other: *const PieceTreeBase) !bool {
         if (self.getLength() != other.getLength()) {
             return false;
         }
@@ -326,23 +326,23 @@ pub const PieceTreeBase = struct {
             return false;
         }
 
-        var offset = 0;
-        var iter = self.root.iterator();
+        var offset: usize = 0;
         var ret = true;
 
+        var iter = self.root.iterator();
         while (iter.next()) |node| {
             if (node == SENTINEL) {
                 continue;
             }
 
             const str = self.getNodeContent(node);
-            const len = str.length;
             const startPosition = other.nodeAt(offset);
-            const endPosition = other.nodeAt(offset + len);
-            const val = other.getValueInRange2(startPosition, endPosition);
+            const endPosition = other.nodeAt(offset + str.len);
+            const val = try other.getValueInRange2(startPosition, endPosition);
+            defer val.deinit();
 
-            offset += len;
-            if (!std.mem.eql(str, val)) {
+            offset += str.len;
+            if (!std.mem.eql(u8, str, val.items)) {
                 ret = false;
                 break;
             }
@@ -441,12 +441,14 @@ pub const PieceTreeBase = struct {
         return value;
     }
 
-    pub fn getValueInRange2(self: *PieceTreeBase, startPosition: NodePosition, endPosition: NodePosition) ArrayList(u8) {
+    pub fn getValueInRange2(self: *const PieceTreeBase, startPosition: NodePosition, endPosition: NodePosition) !ArrayList(u8) {
         if (startPosition.node == endPosition.node) {
             const node = startPosition.node;
             const buffer = self._buffers.items[node.piece.?.bufferIndex];
             const startOffset = self.offsetInBuffer(node.piece.?.bufferIndex, node.piece.?.start);
-            return buffer.substring(startOffset + startPosition.remainder, startOffset + endPosition.remainder);
+            var ret = ArrayList(u8).init(self.allocator);
+            try ret.appendSlice(buffer.substring(startOffset + startPosition.remainder, startOffset + endPosition.remainder));
+            return ret;
         }
 
         var x = startPosition.node;
@@ -454,7 +456,7 @@ pub const PieceTreeBase = struct {
         const buffer = self._buffers.items[piece.bufferIndex];
         const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
         var ret = ArrayList(u8).init(self.allocator);
-        ret.appendSlice(buffer.substring(startOffset + startPosition.remainder, startOffset + piece.length));
+        try ret.appendSlice(buffer.substring(startOffset + startPosition.remainder, startOffset + piece.length));
 
         x = x.next();
         while (x != SENTINEL) {
@@ -463,10 +465,10 @@ pub const PieceTreeBase = struct {
             const stOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
 
             if (x == endPosition.node) {
-                ret.appendSlice(buf.substring(stOffset, stOffset + endPosition.remainder));
+                try ret.appendSlice(buf.substring(stOffset, stOffset + endPosition.remainder));
                 break;
             } else {
-                ret.appendSlice(buf.substr(stOffset, piece.length));
+                try ret.appendSlice(buf.substr(stOffset, piece.length));
             }
 
             x = x.next();
@@ -562,11 +564,11 @@ pub const PieceTreeBase = struct {
         return lines;
     }
 
-    pub fn getLength(self: *PieceTreeBase) usize {
+    pub fn getLength(self: *const PieceTreeBase) usize {
         return self._length;
     }
 
-    pub fn getLineCount(self: *PieceTreeBase) usize {
+    pub fn getLineCount(self: *const PieceTreeBase) usize {
         return self._lineCnt;
     }
 
@@ -988,7 +990,7 @@ pub const PieceTreeBase = struct {
         }
     }
 
-    fn offsetInBuffer(self: *PieceTreeBase, bufferIndex: usize, cursor: BufferCursor) usize {
+    fn offsetInBuffer(self: *const PieceTreeBase, bufferIndex: usize, cursor: BufferCursor) usize {
         const lineStarts = self._buffers.items[bufferIndex].lineStarts;
         return lineStarts.items[cursor.line] + cursor.column;
     }
@@ -1342,7 +1344,7 @@ pub const PieceTreeBase = struct {
         self.updateTreeMetadata(node, @intCast(val.len), lf_delta);
     }
 
-    fn nodeAt(self: *PieceTreeBase, offset: usize) NodePosition {
+    fn nodeAt(self: *const PieceTreeBase, offset: usize) NodePosition {
         var offs = offset;
         var x = self.root;
         if (self._searchCache.get(offs)) |cache| {
@@ -1588,7 +1590,7 @@ pub const PieceTreeBase = struct {
         return false;
     }
 
-    fn getNodeContent(self: *PieceTreeBase, node: *const TreeNode) []const u8 {
+    fn getNodeContent(self: *const PieceTreeBase, node: *const TreeNode) []const u8 {
         if (node == SENTINEL) {
             return "";
         }
@@ -1596,7 +1598,7 @@ pub const PieceTreeBase = struct {
         return self.getPieceContent(&(node.piece.?));
     }
 
-    fn getPieceContent(self: *PieceTreeBase, piece: *const Piece) []const u8 {
+    fn getPieceContent(self: *const PieceTreeBase, piece: *const Piece) []const u8 {
         const buffer = self._buffers.items[piece.bufferIndex];
         const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
         const endOffset = self.offsetInBuffer(piece.bufferIndex, piece.end);
@@ -1810,4 +1812,21 @@ test "delete" {
     try tree.delete(0, 1);
     const line = try tree.getLineContent(1);
     try std.testing.expectEqualSlices(u8, "First"[1..], line);
+}
+
+test "equal" {
+    const allocator = std.testing.allocator;
+    var buffers1 = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
+    };
+    const tree1 = try PieceTreeBase.init(allocator, &buffers1, .LF);
+    defer tree1.deinit();
+
+    var buffers2 = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
+    };
+    const tree2 = try PieceTreeBase.init(allocator, &buffers2, .LF);
+    defer tree2.deinit();
+
+    try std.testing.expect(try tree1.equal(&tree2));
 }
