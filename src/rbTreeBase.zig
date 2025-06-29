@@ -140,7 +140,7 @@ pub const Iterator = struct {
     }
 
     fn moveNext(self: *Iterator) bool {
-        if (self._next == null) {
+        if (self._next == null or self._next == SENTINEL) {
             return false;
         }
 
@@ -346,8 +346,8 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
         const newSizeLeft = calculateSize(x);
         const newLFLeft = calculateLF(x);
         if (newSizeLeft != x.parent.size_left or newLFLeft != x.parent.lf_left) {
-            const delta = newSizeLeft - x.parent.size_left;
-            const lf_delta = newLFLeft - x.parent.lf_left;
+            const delta: isize = @intCast(newSizeLeft - x.parent.size_left);
+            const lf_delta: isize = @intCast(newLFLeft - x.parent.lf_left);
             x.parent.size_left = newSizeLeft;
             x.parent.lf_left = newLFLeft;
             updateTreeMetadata(newRoot, x.parent, delta, lf_delta);
@@ -426,6 +426,12 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
     return newRoot;
 }
 
+//      node              node
+//     /  \              /  \
+//    a   b     ---->   a    b
+//                       \
+//                        z
+//
 pub fn insertLeft(root: *TreeNode, node: ?*TreeNode, z: *TreeNode) *TreeNode {
     var newRoot = root;
     const x = newRoot;
@@ -444,6 +450,13 @@ pub fn insertLeft(root: *TreeNode, node: ?*TreeNode, z: *TreeNode) *TreeNode {
     return fixInsert(newRoot, z);
 }
 
+//
+//     node              node
+//    /  \              /  \
+//   a   b    <----   a    b
+//                        /
+//                       z
+//
 pub fn insertRight(root: *TreeNode, node: ?*TreeNode, z: *TreeNode) *TreeNode {
     var newRoot = root;
     const x = newRoot;
@@ -510,13 +523,15 @@ fn fixInsert(root: *TreeNode, node: *TreeNode) *TreeNode {
     return newRoot;
 }
 
-pub fn updateTreeMetadata(root: *TreeNode, node: *TreeNode, delta: usize, lineFeedCntDelta: usize) void {
+pub fn updateTreeMetadata(root: *TreeNode, node: *TreeNode, delta: isize, lineFeedCntDelta: isize) void {
     var x = node;
     // node length change or line feed count change
     while (x != root and x != SENTINEL) {
         if (x.parent.left == x) {
-            x.parent.size_left += delta;
-            x.parent.lf_left += lineFeedCntDelta;
+            const sizeLeft: isize = @intCast(x.parent.size_left);
+            const lfLeft: isize = @intCast(x.parent.lf_left);
+            x.parent.size_left = @intCast(sizeLeft + delta);
+            x.parent.lf_left = @intCast(lfLeft + lineFeedCntDelta);
         }
 
         x = x.parent;
@@ -566,7 +581,7 @@ pub fn freeTree(allocator: Allocator, root: *TreeNode) void {
     allocator.destroy(root);
 }
 
-fn mockPiece(length: usize, lineFeedCnt: u32) Piece {
+fn mockPiece(length: usize, lineFeedCnt: usize) Piece {
     return .{
         .bufferIndex = 0,
         .start = .{ .line = 0, .column = 0 },
