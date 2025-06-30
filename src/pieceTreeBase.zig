@@ -802,7 +802,7 @@ pub const PieceTreeBase = struct {
 
                 var newPieces: ArrayList(Piece) = undefined;
                 if (appendLF or prependCR) {
-                    const newVal = try std.mem.join(self.allocator, "", &[_][]const u8{
+                    const newVal = try std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{
                         if (prependCR) "\r" else "",
                         value,
                         if (appendLF) "\n" else "",
@@ -1381,7 +1381,7 @@ pub const PieceTreeBase = struct {
         defer if (val.ptr != value.ptr) self.allocator.free(val);
 
         if (self.adjustCarriageReturnFromNext(val, node)) {
-            val = try std.mem.join(self.allocator, "", &[_][]const u8{ val, "\n" });
+            val = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ val, "\n" });
         }
 
         const hitCRLF = self.shouldCheckCRLF() and strStartWithLF(val) and self.endWithCR(node);
