@@ -749,7 +749,8 @@ pub const PieceTreeBase = struct {
                 try self.insertContentToNodeLeft(value, node);
                 self._searchCache.validate(offset);
             } else if (nodeStartOffset + node.piece.?.length > offset) {
-                var val = value;
+                var appendLF = false;
+                var prependCR = false;
 
                 // we are inserting into the middle of a node.
                 var nodesToDel = ArrayList(*TreeNode).init(self.allocator);
@@ -763,7 +764,7 @@ pub const PieceTreeBase = struct {
                     .length = self.offsetInBuffer(bufferIndex, piece.end) - self.offsetInBuffer(bufferIndex, insertPosInBuffer),
                 };
 
-                if (self.shouldCheckCRLF() and strEndWithCR(val)) {
+                if (self.shouldCheckCRLF() and strEndWithCR(value)) {
                     const headOfRight = self.nodeCharCodeAt(node, remainder);
 
                     if (headOfRight == '\n') { // \n
@@ -776,22 +777,18 @@ pub const PieceTreeBase = struct {
                             .length = newRightPiece.length - 1,
                         };
 
-                        const newVal = try std.mem.join(self.allocator, "", &[_][]const u8{ val, "\n" });
-                        defer self.allocator.free(newVal);
-                        val = newVal;
+                        appendLF = true;
                     }
                 }
 
                 // reuse node for content before insertion point.
-                if (self.shouldCheckCRLF() and strStartWithLF(val)) {
+                if (self.shouldCheckCRLF() and strStartWithLF(value)) {
                     const tailOfLeft = self.nodeCharCodeAt(node, remainder - 1);
                     if (tailOfLeft == '\r') { // \r
                         const previousPos = self.positionInBuffer(node, remainder - 1, null).?;
                         self.deleteNodeTail(node, previousPos);
 
-                        const newVal = try std.mem.join(self.allocator, "", &[_][]const u8{ "\r", val });
-                        defer self.allocator.free(newVal);
-                        val = newVal;
+                        prependCR = true;
 
                         if (node.piece.?.length == 0) {
                             try nodesToDel.append(node);
@@ -803,7 +800,18 @@ pub const PieceTreeBase = struct {
                     self.deleteNodeTail(node, insertPosInBuffer);
                 }
 
-                const newPieces = try self.createNewPieces(val);
+                var newPieces: ArrayList(Piece) = undefined;
+                if (appendLF or prependCR) {
+                    const newVal = try std.mem.join(self.allocator, "", &[_][]const u8{
+                        if (prependCR) "\r" else "",
+                        value,
+                        if (appendLF) "\n" else "",
+                    });
+                    defer self.allocator.free(newVal);
+                    newPieces = try self.createNewPieces(newVal);
+                } else {
+                    newPieces = try self.createNewPieces(value);
+                }
                 defer newPieces.deinit();
 
                 if (newRightPiece.length > 0) {
@@ -1370,11 +1378,10 @@ pub const PieceTreeBase = struct {
 
     fn appendToNode(self: *PieceTreeBase, node: *TreeNode, value: []const u8) !void {
         var val = value;
+        defer if (val.ptr != value.ptr) self.allocator.free(val);
 
         if (self.adjustCarriageReturnFromNext(val, node)) {
-            const newVal = try std.mem.join(self.allocator, "", &[_][]const u8{ val, "\n" });
-            defer self.allocator.free(newVal);
-            val = newVal;
+            val = try std.mem.join(self.allocator, "", &[_][]const u8{ val, "\n" });
         }
 
         const hitCRLF = self.shouldCheckCRLF() and strStartWithLF(val) and self.endWithCR(node);
