@@ -800,19 +800,16 @@ pub const PieceTreeBase = struct {
                     self.deleteNodeTail(node, insertPosInBuffer);
                 }
 
-                var newPieces: ArrayList(Piece) = undefined;
-                if (appendLF or prependCR) {
-                    const newVal = try std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{
-                        if (prependCR) "\r" else "",
-                        value,
-                        if (appendLF) "\n" else "",
-                    });
-                    defer self.allocator.free(newVal);
-                    newPieces = try self.createNewPieces(newVal);
-                } else {
-                    newPieces = try self.createNewPieces(value);
-                }
+                var newPieces: ArrayList(Piece) = try self.createNewPieces(value);
                 defer newPieces.deinit();
+                if (prependCR or appendLF) {
+                    if (prependCR) {
+                        try newPieces.insert(0, try self.createNewPiece("\r"));
+                    }
+                    if (appendLF) {
+                        try newPieces.append(try self.createNewPiece("\n"));
+                    }
+                }
 
                 if (newRightPiece.length > 0) {
                     _ = try self.rbInsertRight(node, newRightPiece);
@@ -1116,6 +1113,12 @@ pub const PieceTreeBase = struct {
             return newPieces;
         }
 
+        var newPieces = ArrayList(Piece).init(self.allocator);
+        try newPieces.append(try self.createNewPiece(text));
+        return newPieces;
+    }
+
+    fn createNewPiece(self: *PieceTreeBase, text: []const u8) !Piece {
         var startOffset = self._buffers.items[0].length();
         const lineStarts = try createLineStartsFast(self.allocator, text);
         defer lineStarts.deinit();
@@ -1156,9 +1159,7 @@ pub const PieceTreeBase = struct {
         };
         self._lastChangeBufferPos = endPos;
 
-        var newPieces = ArrayList(Piece).init(self.allocator);
-        try newPieces.append(newPiece);
-        return newPieces;
+        return newPiece;
     }
 
     fn getLinesRawContent(self: *PieceTreeBase) !ArrayList(u8) {
@@ -1620,10 +1621,9 @@ pub const PieceTreeBase = struct {
         self.updateTreeMetadata(next, -1, -1);
 
         // create new piece which contains \r\n
-        const pieces = try self.createNewPieces("\r\n");
-        defer pieces.deinit();
+        const newPiece = try self.createNewPiece("\r\n");
 
-        _ = try self.rbInsertRight(prev, pieces.items[0]);
+        _ = try self.rbInsertRight(prev, newPiece);
 
         // delete empty nodes
         if (prev.piece.?.length == 0) {
