@@ -193,8 +193,10 @@ const PieceTreeSearchCache = struct {
         var i: usize = len - 1;
         while (i >= 0) : (i -= 1) {
             const nodePos = self._cache.items[i];
-            if (nodePos.nodeStartLineNumber != null and nodePos.nodeStartLineNumber.? < lineNumber and nodePos.nodeStartLineNumber.? + nodePos.node.piece.?.lineFeedCnt >= lineNumber) {
-                return nodePos;
+            if (nodePos.nodeStartLineNumber) |n| {
+                if (n < lineNumber and n + nodePos.node.piece.?.lineFeedCnt >= lineNumber) {
+                    return nodePos;
+                }
             }
         }
         return null;
