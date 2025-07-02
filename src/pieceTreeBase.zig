@@ -1175,13 +1175,14 @@ pub const PieceTreeBase = struct {
             const cache = cache_.?;
             x = cache.node;
             const piece = x.piece.?;
-            const prevAccumulatedValue = self.getAccumulatedValue(x, lineNumber -% cache.nodeStartLineNumber.? -% 1);
+            const nodeStartLineNumber = cache.nodeStartLineNumber.?;
+            const prevAccumulatedValue = if (lineNumber < nodeStartLineNumber + 1) 0 else self.getAccumulatedValue(x, lineNumber - nodeStartLineNumber - 1);
             const buffer = self._buffers.items[piece.bufferIndex];
             const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
-            if (cache.nodeStartLineNumber.? + piece.lineFeedCnt == lineNumber) {
+            if (nodeStartLineNumber + piece.lineFeedCnt == lineNumber) {
                 try ret.appendSlice(buffer.substring(startOffset + prevAccumulatedValue, startOffset + piece.length));
             } else {
-                const accumulatedValue = self.getAccumulatedValue(x, lineNumber -% cache.nodeStartLineNumber.?);
+                const accumulatedValue = if (lineNumber < nodeStartLineNumber) 0 else self.getAccumulatedValue(x, lineNumber - nodeStartLineNumber);
                 try ret.resize(0);
                 try ret.appendSlice(buffer.substring(startOffset + prevAccumulatedValue, startOffset + accumulatedValue - endOffset));
                 return ret;
