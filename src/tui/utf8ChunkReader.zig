@@ -44,7 +44,6 @@ pub const UTF8ChunkReader = struct {
             return chunk;
         } else if (safeUtf8Bytes.len < chunk.items.len) {
             self._tempBytesLen = chunk.items.len - safeUtf8Bytes.len;
-            std.debug.print("self._tempBytesLen: {}\n", .{self._tempBytesLen});
             mem.copyForwards(u8, self._tempBytes[0..self._tempBytesLen], chunk.items[safeUtf8Bytes.len..chunk.items.len]);
 
             for (0..self._tempBytesLen) |_| {

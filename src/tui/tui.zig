@@ -3,6 +3,7 @@ const std = @import("std");
 const ArrayList = std.ArrayList;
 const posix = std.posix;
 const termios = posix.system.termios;
+const Allocator = std.mem.Allocator;
 
 pub fn enableRawMode() !termios {
     const orig_termios = try posix.tcgetattr(posix.STDIN_FILENO);
@@ -35,6 +36,14 @@ pub fn disableRawMode(orig_termios: termios) !void {
 
 pub fn writeAll(writer: anytype, text: []const u8) !void {
     try writer.writeAll(text);
+}
+
+pub fn enterAltScreen(out: anytype) !void {
+    try writeAll(out, "\x1b[?1049h");
+}
+
+pub fn exitAltScreen(out: anytype) !void {
+    try writeAll(out, "\x1b[?1049l");
 }
 
 pub fn getTerminalSize() !struct { width: u16, height: u16 } {
@@ -80,4 +89,24 @@ pub fn getCursorPosition() !struct { row: usize, col: usize } {
     const col = try std.fmt.parseUnsigned(usize, col_str, 10);
 
     return .{ .row = row, .col = col };
+}
+
+pub fn moveCursor(out: anytype, row: usize, col: usize) !void {
+    var buf: [32]u8 = undefined;
+    const text = try std.fmt.bufPrint(buf[0..], "\x1b[{d};{d}H", .{ row, col });
+    try writeAll(out, text);
+}
+
+pub fn moveCursorBy(out: anytype, row: isize, col: isize) !void {
+    var buf: [32]u8 = undefined;
+    const text = try std.fmt.bufPrint(buf[0..], "\x1b[{d};{d}H", .{ row, col });
+    try writeAll(out, text);
+}
+
+pub fn hideCursor(out: anytype) !void {
+    try writeAll(out, "\x1b[?25l");
+}
+
+pub fn showCursor(out: anytype) !void {
+    try writeAll(out, "\x1b[?25h");
 }

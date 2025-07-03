@@ -54,16 +54,16 @@ pub const Piece = struct {
     lineFeedCnt: usize,
 };
 
-const EOL = enum {
+pub const EOL = enum {
     CRLF,
     LF,
 };
 
-const StringBuffer = struct {
+pub const StringBuffer = struct {
     buffer: ArrayList(u8),
     lineStarts: ArrayList(usize),
 
-    fn init(allocator: Allocator, str: []const u8) !StringBuffer {
+    pub fn init(allocator: Allocator, str: []const u8) !StringBuffer {
         var buffer = ArrayList(u8).init(allocator);
         try buffer.appendSlice(str);
         return .{
@@ -72,12 +72,19 @@ const StringBuffer = struct {
         };
     }
 
-    fn deinit(self: *const StringBuffer) void {
+    pub fn initFromArrayList(allocator: Allocator, buffer: ArrayList(u8)) !StringBuffer {
+        return .{
+            .buffer = buffer,
+            .lineStarts = try createLineStartsFast(allocator, buffer.items),
+        };
+    }
+
+    pub fn deinit(self: *const StringBuffer) void {
         self.buffer.deinit();
         self.lineStarts.deinit();
     }
 
-    fn length(self: *const StringBuffer) usize {
+    pub fn length(self: *const StringBuffer) usize {
         return self.buffer.items.len;
     }
 
@@ -192,13 +199,16 @@ const PieceTreeSearchCache = struct {
         }
 
         var i: usize = len - 1;
-        while (i >= 0) : (i -= 1) {
+        while (i >= 0) {
             const nodePos = self._cache.items[i];
             if (nodePos.nodeStartLineNumber) |n| {
                 if (n < lineNumber and n + nodePos.node.piece.?.lineFeedCnt >= lineNumber) {
                     return nodePos;
                 }
             }
+
+            if (i == 0) break;
+            i -= 1;
         }
         return null;
     }
