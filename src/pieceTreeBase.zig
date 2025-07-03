@@ -6,7 +6,7 @@ const SENTINEL = rbt.SENTINEL;
 const TreeNode = rbt.TreeNode;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const safeUtf8Prefix = @import("utf8Helper.zig").safeUtf8Prefix;
+const safeUtf8Prefix = @import("tui/utf8Helper.zig").safeUtf8Prefix;
 
 const AverageBufferSize = 65535;
 
