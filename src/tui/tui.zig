@@ -30,6 +30,14 @@ pub fn enableRawMode() !termios {
     return orig_termios;
 }
 
+pub fn enableLineWrap(out: anytype) !void {
+    try writeAll(out, "\x1b[?7h");
+}
+
+pub fn disableLineWrap(out: anytype) !void {
+    try writeAll(out, "\x1b[?7l");
+}
+
 pub fn disableRawMode(orig_termios: termios) !void {
     try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.FLUSH, orig_termios);
 }
@@ -46,7 +54,17 @@ pub fn exitAltScreen(out: anytype) !void {
     try writeAll(out, "\x1b[?1049l");
 }
 
-pub fn getTerminalSize() !struct { width: u16, height: u16 } {
+pub const Point = struct {
+    col: usize,
+    row: usize,
+};
+
+pub const Size = struct {
+    width: usize,
+    height: usize,
+};
+
+pub fn getTerminalSize() !Size {
     var size: posix.winsize = undefined;
     _ = posix.system.ioctl(posix.STDOUT_FILENO, posix.T.IOCGWINSZ, @intFromPtr(&size));
     return .{
@@ -59,7 +77,7 @@ pub fn clearScreen(out: anytype) !void {
     try writeAll(out, "\x1b[2J"); // clear screen
 }
 
-pub fn getCursorPosition() !struct { row: usize, col: usize } {
+pub fn getCursorPosition() !Point {
     const stdout = std.io.getStdOut();
     const stdin = std.io.getStdIn();
 
@@ -91,9 +109,9 @@ pub fn getCursorPosition() !struct { row: usize, col: usize } {
     return .{ .row = row, .col = col };
 }
 
-pub fn moveCursor(out: anytype, row: usize, col: usize) !void {
+pub fn moveCursor(out: anytype, point: Point) !void {
     var buf: [32]u8 = undefined;
-    const text = try std.fmt.bufPrint(buf[0..], "\x1b[{d};{d}H", .{ row, col });
+    const text = try std.fmt.bufPrint(buf[0..], "\x1b[{d};{d}H", .{ point.row, point.col });
     try writeAll(out, text);
 }
 
