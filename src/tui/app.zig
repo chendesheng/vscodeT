@@ -110,7 +110,7 @@ const View = struct {
         const out = self.writer;
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
         const row = self.cursorPosition.row - self.scrollPosition.row + 1;
-        const col = self.cursorPosition.col + lineNumberGutterWidth;
+        const col = lineNumberGutterWidth + clamp(self.cursorPosition.col, 1, tree.getLineLength(self.cursorPosition.row) + 1);
         try tui.moveCursor(out, .{ .row = row, .col = col });
     }
 
@@ -120,20 +120,21 @@ const View = struct {
         switch (action) {
             .Up => {
                 newRow -= 1;
+                newRow = clamp(newRow, 1, tree.getLineCount());
             },
             .Down => {
                 newRow += 1;
+                newRow = clamp(newRow, 1, tree.getLineCount());
             },
             .Left => {
                 newCol -= 1;
+                newCol = clamp(newCol, 1, tree.getLineLength(newRow) + 1);
             },
             .Right => {
                 newCol += 1;
+                newCol = clamp(newCol, 1, tree.getLineLength(newRow) + 1);
             },
         }
-
-        newRow = clamp(newRow, 1, tree.getLineCount());
-        newCol = clamp(newCol, 1, tree.getLineLength(newRow) + 1);
 
         self.cursorPosition.row = newRow;
         self.cursorPosition.col = newCol;
