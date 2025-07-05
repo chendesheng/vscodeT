@@ -183,11 +183,14 @@ const PieceTreeSearchCache = struct {
         }
 
         var i: usize = len - 1;
-        while (i >= 0) : (i -= 1) {
+        while (i >= 0) {
             const nodePos = self._cache.items[i];
             if (nodePos.nodeStartOffset <= offset and nodePos.nodeStartOffset + nodePos.node.piece.?.length >= offset) {
                 return nodePos;
             }
+
+            if (i == 0) break;
+            i -= 1;
         }
         return null;
     }
@@ -374,6 +377,7 @@ pub const PieceTreeBase = struct {
 
     fn rbDelete(self: *PieceTreeBase, node: *TreeNode) void {
         self.root = rbt.rbDelete(self.root, node);
+        self.allocator.destroy(node);
     }
 
     pub fn getEOL(self: *PieceTreeBase) []const u8 {
@@ -451,18 +455,19 @@ pub const PieceTreeBase = struct {
         return leftLen;
     }
 
-    pub fn getPositionAt(self: *PieceTreeBase, off: usize) Position {
-        var offset = @floor(off);
+    pub fn getPositionAt(self: *const PieceTreeBase, off: usize) Position {
+        var offset = off;
         offset = @max(0, offset);
 
         var x = self.root;
-        var lfCnt = 0;
+        var lfCnt: usize = 0;
         const originalOffset = offset;
 
         while (x != SENTINEL) {
+            const piece = x.piece.?;
             if (x.size_left != 0 and x.size_left >= offset) {
                 x = x.left;
-            } else if (x.size_left + x.piece.length >= offset) {
+            } else if (x.size_left + piece.length >= offset) {
                 const out = self.getIndexOf(x, offset - x.size_left);
 
                 lfCnt += x.lf_left + out.index;
@@ -475,8 +480,8 @@ pub const PieceTreeBase = struct {
 
                 return Position.create(lfCnt + 1, out.remainder + 1);
             } else {
-                offset -= x.size_left + x.piece.length;
-                lfCnt += x.lf_left + x.piece.lineFeedCnt;
+                offset -= x.size_left + piece.length;
+                lfCnt += x.lf_left + piece.lineFeedCnt;
 
                 if (x.right == SENTINEL) {
                     // last node
@@ -994,7 +999,7 @@ pub const PieceTreeBase = struct {
         try self.validateCRLFWithPrevNode(newNode);
     }
 
-    fn positionInBuffer(self: *PieceTreeBase, node: *TreeNode, remainder: usize, ret: ?BufferCursor) ?BufferCursor {
+    fn positionInBuffer(self: *const PieceTreeBase, node: *const TreeNode, remainder: usize, ret: ?BufferCursor) ?BufferCursor {
         var res = ret;
         const piece = node.piece.?;
         const bufferIndex = piece.bufferIndex;
@@ -1013,7 +1018,7 @@ pub const PieceTreeBase = struct {
         var midStart: usize = 0;
 
         while (low <= high) {
-            mid = low + ((high - low) / 2) | 0;
+            mid = low + ((high - low) / 2);
             midStart = lineStarts[mid];
 
             if (mid == high) {
@@ -1043,7 +1048,7 @@ pub const PieceTreeBase = struct {
         };
     }
 
-    fn getLineFeedCnt(self: *PieceTreeBase, bufferIndex: usize, start: BufferCursor, end: BufferCursor) usize {
+    fn getLineFeedCnt(self: *const PieceTreeBase, bufferIndex: usize, start: BufferCursor, end: BufferCursor) usize {
         // we don't need to worry about start: abc\r|\n, or abc|\r, or abc|\n, or abc|\r\n doesn't change the fact that, there is one line break after start.
         // now let's take care of end: abc\r|\n, if end is in between \r and \n, we need to add line feed count by 1
         if (end.column == 0) {
@@ -1232,7 +1237,7 @@ pub const PieceTreeBase = struct {
                     try ret.appendSlice(buffer.substring(startOffset + prevAccumulatedValue, startOffset + piece.length));
                     break;
                 } else {
-                    line = line + piece.lineFeedCnt - x.lf_left;
+                    line -= x.lf_left + piece.lineFeedCnt;
                     nodeStartOffset += x.size_left + piece.length;
                     x = x.right;
                 }
@@ -1253,7 +1258,7 @@ pub const PieceTreeBase = struct {
                 return ret;
             } else {
                 const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
-                try ret.appendSlice(buffer.substring(startOffset, startOffset + piece.length));
+                try ret.appendSlice(buffer.substr(startOffset, piece.length));
             }
 
             x = x.next();
@@ -1279,12 +1284,12 @@ pub const PieceTreeBase = struct {
         self._searchCache.validate(len);
     }
 
-    fn getIndexOf(self: *PieceTreeBase, node: *TreeNode, accumulatedValue: usize) struct { index: usize, remainder: usize } {
+    fn getIndexOf(self: *const PieceTreeBase, node: *const TreeNode, accumulatedValue: usize) struct { index: usize, remainder: usize } {
         const piece = node.piece.?;
         const pos = self.positionInBuffer(node, accumulatedValue, null).?;
         const lineCnt = pos.line - piece.start.line;
 
-        if (self.offsetInBuffer(piece.bufferIndex, piece.end) - self.positionInBuffer(piece.bufferIndex, piece.start, null) == accumulatedValue) {
+        if (self.offsetInBuffer(piece.bufferIndex, piece.end) - self.offsetInBuffer(piece.bufferIndex, piece.start) == accumulatedValue) {
             // we are checking the end of this node, so a CRLF check is necessary.
             const realLineCnt = self.getLineFeedCnt(piece.bufferIndex, piece.start, pos);
             if (realLineCnt != lineCnt) {
@@ -1384,7 +1389,7 @@ pub const PieceTreeBase = struct {
             .length = self.offsetInBuffer(piece.bufferIndex, originalEndPos) - self.offsetInBuffer(piece.bufferIndex, end),
         };
 
-        const newNode: *TreeNode = try self.rbInsertLeft(node, newPiece);
+        const newNode: *TreeNode = try self.rbInsertRight(node, newPiece);
         try self.validateCRLFWithPrevNode(newNode);
     }
 
@@ -1797,7 +1802,7 @@ fn replaceEOL(target: *ArrayList(u8), eol: EOL) !void {
     }
 }
 
-fn usizeDiff(a: usize, b: usize) isize {
+pub fn usizeDiff(a: usize, b: usize) isize {
     return @as(isize, @intCast(a)) - @as(isize, @intCast(b));
 }
 
@@ -1896,6 +1901,37 @@ test "getLinesContent" {
 }
 
 test "insert" {
+    const Case = struct {
+        source: []const u8,
+        offset: usize,
+        text: []const u8,
+        expectedLines: []const []const u8,
+    };
+
+    const cases = [_]Case{
+        .{ .source = "First\nSecond\nThird\n", .offset = 0, .text = "Hi", .expectedLines = &[_][]const u8{"HiFirst"} },
+        .{ .source = "First\nSecond\nThird\n", .offset = 1, .text = "Hi", .expectedLines = &[_][]const u8{"FHiirst"} },
+        .{ .source = "First\nSecond\nThird\n", .offset = 10, .text = "Hi", .expectedLines = &[_][]const u8{ "First", "SecoHind" } },
+        .{ .source = "First\nSecond\nThird\n", .offset = "First\nSecond\nThird\n".len, .text = "Hi", .expectedLines = &[_][]const u8{ "First", "Second", "Third", "Hi" } },
+    };
+
+    for (cases) |c| {
+        const allocator = std.testing.allocator;
+        var buffers = [_]StringBuffer{
+            try StringBuffer.init(allocator, c.source),
+        };
+        var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+        defer tree.deinit();
+
+        try tree.insert(c.offset, c.text, false);
+        for (c.expectedLines, 1..) |expectedLine, lineNumber| {
+            const line = try tree.getLineContent(lineNumber);
+            try std.testing.expectEqualSlices(u8, expectedLine, line);
+        }
+    }
+}
+
+test "multiple inserts" {
     const allocator = std.testing.allocator;
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
@@ -1903,12 +1939,57 @@ test "insert" {
     var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
     defer tree.deinit();
 
-    try tree.insert(0, "Hi", false);
-    const line = try tree.getLineContent(1);
-    try std.testing.expectEqualSlices(u8, "HiFirst", line);
+    try tree.insert(0, "a", false);
+    try std.testing.expectEqualSlices(u8, "aFirst", try tree.getLineContent(1));
+    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
+    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+
+    try tree.insert(1, "a", false);
+    try std.testing.expectEqualSlices(u8, "aaFirst", try tree.getLineContent(1));
+    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
+    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+
+    try tree.insert(1, "b", false);
+    try std.testing.expectEqualSlices(u8, "abaFirst", try tree.getLineContent(1));
+    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
+    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+
+    try tree.insert(16, "World", false);
+    try std.testing.expectEqualSlices(u8, "abaFirst", try tree.getLineContent(1));
+    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
+    try std.testing.expectEqualSlices(u8, "WorldThird", try tree.getLineContent(3));
 }
 
 test "delete" {
+    const Case = struct {
+        source: []const u8,
+        offset: usize,
+        count: usize,
+        expectedLines: []const []const u8,
+    };
+
+    const cases = [_]Case{
+        .{ .source = "First\nSecond\nThird\n", .offset = 6, .count = 1, .expectedLines = &[_][]const u8{ "First", "econd", "Third" } },
+        .{ .source = "First\nSecond\nThird\n", .offset = 0, .count = 1, .expectedLines = &[_][]const u8{"irst"} },
+    };
+
+    const allocator = std.testing.allocator;
+    for (cases) |c| {
+        var buffers = [_]StringBuffer{
+            try StringBuffer.init(allocator, c.source),
+        };
+        var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+        defer tree.deinit();
+
+        try tree.delete(c.offset, c.count);
+        for (c.expectedLines, 1..) |expectedLine, lineNumber| {
+            const line = try tree.getLineContent(lineNumber);
+            try std.testing.expectEqualSlices(u8, expectedLine, line);
+        }
+    }
+}
+
+test "insert then delete" {
     const allocator = std.testing.allocator;
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
@@ -1916,9 +1997,18 @@ test "delete" {
     var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
     defer tree.deinit();
 
-    try tree.delete(0, 1);
-    const line = try tree.getLineContent(1);
-    try std.testing.expectEqualSlices(u8, "First"[1..], line);
+    try tree.insert(6, "a", false);
+    try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
+    try std.testing.expectEqualSlices(u8, "aSecond", try tree.getLineContent(2));
+    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+
+    try tree.insert(7, "a", false);
+    try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
+    try std.testing.expectEqualSlices(u8, "aaSecond", try tree.getLineContent(2));
+    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+
+    try tree.delete(7, 1);
+    try std.testing.expectEqualSlices(u8, "aSecond", try tree.getLineContent(2));
 }
 
 test "equal" {
@@ -1948,6 +2038,7 @@ test "getOffsetAt" {
 
     try std.testing.expectEqual(0, tree.getOffsetAt(1, 1));
     try std.testing.expectEqual(6, tree.getOffsetAt(2, 1));
+    try std.testing.expectEqual(7, tree.getOffsetAt(2, 2));
 }
 
 test "getLineLength" {
@@ -1989,4 +2080,17 @@ test "create snapshot" {
     try std.testing.expectEqualSlices(u8, "First\nSecond\nThird\n", snapshot.read().?);
     try std.testing.expectEqualSlices(u8, "Fourth\n", snapshot.read().?);
     try std.testing.expectEqual(null, snapshot.read());
+}
+
+test "getPositionAt" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    defer tree.deinit();
+
+    try std.testing.expectEqual(Position{ .lineNumber = 1, .column = 1 }, tree.getPositionAt(0));
+    try std.testing.expectEqual(Position{ .lineNumber = 1, .column = 2 }, tree.getPositionAt(1));
+    try std.testing.expectEqual(Position{ .lineNumber = 2, .column = 5 }, tree.getPositionAt(10));
 }

@@ -77,6 +77,10 @@ pub fn clearScreen(out: anytype) !void {
     try writeAll(out, "\x1b[2J"); // clear screen
 }
 
+pub fn clearToEndOfScreen(out: anytype) !void {
+    try writeAll(out, "\x1b[J");
+}
+
 pub fn getCursorPosition() !Point {
     const stdout = std.io.getStdOut();
     const stdin = std.io.getStdIn();

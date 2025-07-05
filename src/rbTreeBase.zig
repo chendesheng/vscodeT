@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Piece = @import("pieceTreeBase.zig").Piece;
+const usizeDiff = @import("pieceTreeBase.zig").usizeDiff;
 
 pub const TreeNode = struct {
     parent: *TreeNode,
@@ -335,8 +336,8 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
         const newSizeLeft = calculateSize(x);
         const newLFLeft = calculateLF(x);
         if (newSizeLeft != x.parent.size_left or newLFLeft != x.parent.lf_left) {
-            const delta: isize = @intCast(newSizeLeft - x.parent.size_left);
-            const lf_delta: isize = @intCast(newLFLeft - x.parent.lf_left);
+            const delta: isize = usizeDiff(newSizeLeft, x.parent.size_left);
+            const lf_delta: isize = usizeDiff(newLFLeft, x.parent.lf_left);
             x.parent.size_left = newSizeLeft;
             x.parent.lf_left = newLFLeft;
             updateTreeMetadata(newRoot, x.parent, delta, lf_delta);

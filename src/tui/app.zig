@@ -60,29 +60,23 @@ const View = struct {
         defer tui.showCursor(out) catch {};
 
         const from = self.scrollPosition.row;
-        const to: usize = self.scrollPosition.row + self.size.height;
-        log("getLineContent {d}..{d}", .{ from, to });
+        const to: usize = @min(self.scrollPosition.row + self.size.height, tree.getLineCount());
         for (from..to) |i| {
             const line = try tree.getLineContent(i);
 
-            if (line.len < self.scrollPosition.col) {
-                for (0..self.size.width) |_| {
+            try tui.writeAll(out, line[0..]);
+            if (line.len <= self.size.width) {
+                for (line.len..self.size.width) |_| {
                     try tui.writeAll(out, " ");
                 }
-            } else if (line.len <= self.scrollPosition.col + self.size.width) {
-                try tui.writeAll(out, line[self.scrollPosition.col - 1 .. line.len]);
-
-                for (line.len..self.scrollPosition.col - 1 + self.size.width) |_| {
-                    try tui.writeAll(out, " ");
-                }
-            } else {
-                try tui.writeAll(out, line[self.scrollPosition.col - 1 ..]);
             }
 
             if (i < to - 1) {
                 try tui.writeAll(out, "\r\n");
             }
         }
+
+        try tui.clearToEndOfScreen(out);
     }
 
     fn drawCursor(self: *const View) !void {
@@ -90,41 +84,62 @@ const View = struct {
         try tui.moveCursor(out, self.cursorPosition);
     }
 
-    fn moveCursor(self: *View, action: MoveAction, lineCount: usize) !void {
-        var newX = self.cursorPosition.col;
-        var newY = self.cursorPosition.row;
+    fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeBase) !void {
+        var newCol = self.cursorPosition.col;
+        var newRow = self.cursorPosition.row;
         switch (action) {
             .Up => {
-                if (newY > 1) {
-                    newY -= 1;
+                if (newRow > 1) {
+                    newRow -= 1;
                 } else if (self.scrollPosition.row > 1) {
                     self.scrollPosition.row -= 1;
                 }
             },
             .Down => {
-                if (newY < self.size.height) {
-                    newY += 1;
-                } else if (self.scrollPosition.row + self.size.height <= lineCount) {
+                if (newRow < self.size.height) {
+                    if (self.scrollPosition.row + newRow < tree.getLineCount()) {
+                        newRow += 1;
+                    }
+                } else if (self.scrollPosition.row + self.size.height <= tree.getLineCount()) {
                     self.scrollPosition.row += 1;
                 }
             },
             .Left => {
-                if (newX > 1) {
-                    newX -= 1;
-                } else if (self.scrollPosition.col > 1) {
-                    self.scrollPosition.col -= 1;
+                if (newCol > 1) {
+                    newCol -= 1;
                 }
             },
             .Right => {
-                if (newX < self.size.width) {
-                    newX += 1;
-                } else if (self.scrollPosition.col <= self.size.width) {
-                    self.scrollPosition.col += 1;
-                }
+                newCol += 1;
             },
         }
-        self.cursorPosition.col = newX;
-        self.cursorPosition.row = newY;
+        self.cursorPosition.row = newRow;
+
+        const lineLength = tree.getLineLength(self.cursorPosition.row + self.scrollPosition.row - 1);
+        if (newCol > lineLength) {
+            newCol = lineLength;
+        }
+        self.cursorPosition.col = newCol;
+    }
+
+    fn updateCursorPosition(self: *View, tree: *const PieceTreeBase, offset: usize) !void {
+        const pos = tree.getPositionAt(offset);
+        self.cursorPosition.row = pos.lineNumber - self.scrollPosition.row + 1;
+        self.cursorPosition.col = pos.column;
+    }
+
+    fn insertAtCursor(self: *View, tree: *PieceTreeBase, text: []const u8) !void {
+        const offset = tree.getOffsetAt(self.cursorPosition.row, self.cursorPosition.col);
+        try tree.insert(offset, text, false);
+        try self.updateCursorPosition(tree, offset + text.len);
+    }
+
+    fn deleteLeftOfCursor(self: *View, tree: *PieceTreeBase) !void {
+        const offset = tree.getOffsetAt(self.cursorPosition.row, self.cursorPosition.col);
+        if (offset > 0) {
+            try tree.delete(offset - 1, 1);
+            try self.updateCursorPosition(tree, offset - 1);
+        }
     }
 };
 
@@ -150,7 +165,6 @@ fn log(comptime fmt: []const u8, args: anytype) void {
 }
 
 pub fn main() !void {
-    log("start", .{});
     const stdout = std.io.getStdOut();
     const out = stdout.writer();
 
@@ -172,10 +186,7 @@ pub fn main() !void {
     var tree = try readFile(allocator, pathArg.items);
     defer tree.deinit();
 
-    log("line count: {d}", .{tree.getLineCount()});
-
     const size = try tui.getTerminalSize();
-    log("size: {d}x{d}", .{ size.width, size.height });
 
     var view = View{
         .writer = out.any(),
@@ -185,23 +196,35 @@ pub fn main() !void {
     };
     try view.drawVisibleLines(&tree);
 
+    var contentChanged = false;
+
     var buf: [3]u8 = undefined;
     while (true) {
         const n = try posix.read(posix.STDIN_FILENO, &buf);
-        if (n == 1 and buf[0] == 'q') break;
+        if (n == 1) {
+            if (buf[0] == 'q') {
+                break;
+            } else if (buf[0] == 0x7f) {
+                try view.deleteLeftOfCursor(&tree);
+                contentChanged = true;
+            } else {
+                try view.insertAtCursor(&tree, buf[0..n]);
+                contentChanged = true;
+            }
+        }
 
         var newView = view;
 
         if (n > 0) {
             if (buf[0] == '\x1b' and buf[1] == '[') {
                 if (buf[2] == 'A') {
-                    try newView.moveCursor(.Up, tree.getLineCount());
+                    try newView.moveCursor(.Up, &tree);
                 } else if (buf[2] == 'B') {
-                    try newView.moveCursor(.Down, tree.getLineCount());
+                    try newView.moveCursor(.Down, &tree);
                 } else if (buf[2] == 'C') {
-                    try newView.moveCursor(.Right, tree.getLineCount());
+                    try newView.moveCursor(.Right, &tree);
                 } else if (buf[2] == 'D') {
-                    try newView.moveCursor(.Left, tree.getLineCount());
+                    try newView.moveCursor(.Left, &tree);
                 }
             }
         }
@@ -215,6 +238,10 @@ pub fn main() !void {
         } else if (cursorChanged) {
             view = newView;
             try view.drawCursor();
+        } else if (contentChanged) {
+            view = newView;
+            try view.drawVisibleLines(&tree);
+            contentChanged = false;
         }
     }
 }
