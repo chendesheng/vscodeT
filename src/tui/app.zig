@@ -46,27 +46,53 @@ fn getFirstArg() !ArrayList(u8) {
     return firstArg;
 }
 
+fn getLineNumberGutterWidth(tree: *const PieceTreeBase) usize {
+    const lineCount = tree.getLineCount();
+    const maxLineNumberWidth = std.fmt.count("{d}", .{lineCount});
+    return maxLineNumberWidth + 1;
+}
+
 const View = struct {
     writer: io.AnyWriter,
     size: Size,
     scrollPosition: Point,
     cursorPosition: Point,
 
+    fn drawLineNumberGutter(self: *const View, lineNumberGutterWidth: usize, lineNumber: usize) !void {
+        const out = self.writer;
+        const lineNumberWidth = std.fmt.count("{d}", .{lineNumber});
+        for (lineNumberWidth..lineNumberGutterWidth - 1) |_| {
+            try tui.writeAll(out, " ");
+        }
+
+        var buf: [64]u8 = undefined;
+        try tui.writeAll(out, try std.fmt.bufPrint(&buf, "{d} ", .{lineNumber}));
+        try tui.writeAll(out, " ");
+    }
+
     fn drawVisibleLines(self: *const View, tree: *PieceTreeBase) !void {
         const out = self.writer;
         try tui.moveCursor(out, .{ .col = 1, .row = 1 });
-        defer tui.moveCursor(out, self.cursorPosition) catch {};
+        defer self.drawCursor(tree) catch {};
         try tui.hideCursor(out);
         defer tui.showCursor(out) catch {};
 
+        const lineCount = tree.getLineCount();
+        const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
         const from = self.scrollPosition.row;
-        const to: usize = @min(self.scrollPosition.row + self.size.height, tree.getLineCount());
+        const to: usize = @min(self.scrollPosition.row + self.size.height, lineCount);
+        // log("from: {d}, to: {d}, count: {d}\n", .{ from, to, tree.getLineCount() });
+
+        const width = self.size.width - lineNumberGutterWidth;
+
         for (from..to) |i| {
             const line = try tree.getLineContent(i);
 
+            try self.drawLineNumberGutter(lineNumberGutterWidth, i);
+
             try tui.writeAll(out, line[0..]);
-            if (line.len <= self.size.width) {
-                for (line.len..self.size.width) |_| {
+            if (line.len <= width) {
+                for (line.len..width) |_| {
                     try tui.writeAll(out, " ");
                 }
             }
@@ -79,9 +105,12 @@ const View = struct {
         try tui.clearToEndOfScreen(out);
     }
 
-    fn drawCursor(self: *const View) !void {
+    fn drawCursor(self: *const View, tree: *const PieceTreeBase) !void {
         const out = self.writer;
-        try tui.moveCursor(out, self.cursorPosition);
+        const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
+        const row = self.cursorPosition.row - self.scrollPosition.row + 1;
+        const col = self.cursorPosition.col + lineNumberGutterWidth + 1;
+        try tui.moveCursor(out, .{ .row = row, .col = col });
     }
 
     fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeBase) !void {
@@ -89,43 +118,44 @@ const View = struct {
         var newRow = self.cursorPosition.row;
         switch (action) {
             .Up => {
-                if (newRow > 1) {
-                    newRow -= 1;
-                } else if (self.scrollPosition.row > 1) {
-                    self.scrollPosition.row -= 1;
-                }
+                newRow -= 1;
             },
             .Down => {
-                if (newRow < self.size.height) {
-                    if (self.scrollPosition.row + newRow < tree.getLineCount()) {
-                        newRow += 1;
-                    }
-                } else if (self.scrollPosition.row + self.size.height <= tree.getLineCount()) {
-                    self.scrollPosition.row += 1;
-                }
+                newRow += 1;
             },
             .Left => {
-                if (newCol > 1) {
-                    newCol -= 1;
-                }
+                newCol -= 1;
             },
             .Right => {
                 newCol += 1;
             },
         }
-        self.cursorPosition.row = newRow;
 
-        const lineLength = tree.getLineLength(self.cursorPosition.row + self.scrollPosition.row - 1);
-        if (newCol > lineLength) {
-            newCol = lineLength;
-        }
+        newRow = clamp(newRow, 1, tree.getLineCount());
+        newCol = clamp(newCol, 1, tree.getLineLength(newRow));
+
+        self.cursorPosition.row = newRow;
         self.cursorPosition.col = newCol;
+
+        if (newRow < self.scrollPosition.row) {
+            self.scrollPosition.row = newRow;
+        } else if (newRow >= self.scrollPosition.row + self.size.height) {
+            self.scrollPosition.row = newRow - self.size.height + 1;
+        }
     }
 
     fn updateCursorPosition(self: *View, tree: *const PieceTreeBase, offset: usize) !void {
         const pos = tree.getPositionAt(offset);
-        self.cursorPosition.row = pos.lineNumber - self.scrollPosition.row + 1;
+        log("pos: {d},{d}", .{ pos.lineNumber, pos.column });
+
+        if (pos.lineNumber < self.scrollPosition.row) {
+            self.scrollPosition.row = pos.lineNumber;
+        } else if (pos.lineNumber >= self.scrollPosition.row + self.size.height) {
+            self.scrollPosition.row = pos.lineNumber - self.size.height + 1;
+        }
+        self.cursorPosition.row = pos.lineNumber;
         self.cursorPosition.col = pos.column;
+        log("pos2: {d},{d}", .{ self.cursorPosition.row, self.cursorPosition.col });
     }
 
     fn insertAtCursor(self: *View, tree: *PieceTreeBase, text: []const u8) !void {
@@ -188,6 +218,7 @@ pub fn main() !void {
     defer tree.deinit();
 
     const size = try tui.getTerminalSize();
+    log("size: {d}x{d}", .{ size.width, size.height });
 
     var view = View{
         .writer = out.any(),
@@ -238,7 +269,7 @@ pub fn main() !void {
             try view.drawVisibleLines(&tree);
         } else if (cursorChanged) {
             view = newView;
-            try view.drawCursor();
+            try view.drawCursor(&tree);
         } else if (contentChanged) {
             view = newView;
             try view.drawVisibleLines(&tree);

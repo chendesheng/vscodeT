@@ -1811,6 +1811,10 @@ pub fn usizeDiff(a: usize, b: usize) isize {
     return @as(isize, @intCast(a)) - @as(isize, @intCast(b));
 }
 
+pub fn usizeAdd(a: usize, b: isize) usize {
+    return @intCast(@as(isize, @intCast(a)) + b);
+}
+
 test "replace EOL" {
     const allocator = std.testing.allocator;
     var target = ArrayList(u8).init(allocator);
@@ -2014,6 +2018,28 @@ test "insert then delete" {
 
     try tree.delete(7, 1);
     try std.testing.expectEqualSlices(u8, "aSecond", try tree.getLineContent(2));
+}
+
+test "insert enter then delete" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    defer tree.deinit();
+
+    for (1..10) |i| {
+        const offset = tree.getOffsetAt(i, 1);
+        try tree.insert(offset, "\n", false);
+    }
+
+    for (1..11) |i| {
+        const line = try tree.getLineContent(i);
+        std.debug.print("line: {d}: {s}\n", .{ i, line });
+    }
+    const offset = tree.getOffsetAt(10, 1);
+    try tree.delete(offset - 1, 1);
+    try std.testing.expectEqual(9, tree.getLineCount());
 }
 
 test "equal" {

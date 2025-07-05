@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Piece = @import("pieceTreeBase.zig").Piece;
 const usizeDiff = @import("pieceTreeBase.zig").usizeDiff;
+const usizeAdd = @import("pieceTreeBase.zig").usizeAdd;
 
 pub const TreeNode = struct {
     parent: *TreeNode,
@@ -336,8 +337,8 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
         const newSizeLeft = calculateSize(x);
         const newLFLeft = calculateLF(x);
         if (newSizeLeft != x.parent.size_left or newLFLeft != x.parent.lf_left) {
-            const delta: isize = usizeDiff(newSizeLeft, x.parent.size_left);
-            const lf_delta: isize = usizeDiff(newLFLeft, x.parent.lf_left);
+            const delta = usizeDiff(newSizeLeft, x.parent.size_left);
+            const lf_delta = usizeDiff(newLFLeft, x.parent.lf_left);
             x.parent.size_left = newSizeLeft;
             x.parent.lf_left = newLFLeft;
             updateTreeMetadata(newRoot, x.parent, delta, lf_delta);
@@ -518,10 +519,8 @@ pub fn updateTreeMetadata(root: *TreeNode, node: *TreeNode, delta: isize, lineFe
     // node length change or line feed count change
     while (x != root and x != SENTINEL) {
         if (x.parent.left == x) {
-            const sizeLeft: isize = @intCast(x.parent.size_left);
-            const lfLeft: isize = @intCast(x.parent.lf_left);
-            x.parent.size_left = @intCast(sizeLeft + delta);
-            x.parent.lf_left = @intCast(lfLeft + lineFeedCntDelta);
+            x.parent.size_left = usizeAdd(x.parent.size_left, delta);
+            x.parent.lf_left = usizeAdd(x.parent.lf_left, lineFeedCntDelta);
         }
 
         x = x.parent;
@@ -529,8 +528,8 @@ pub fn updateTreeMetadata(root: *TreeNode, node: *TreeNode, delta: isize, lineFe
 }
 
 fn recomputeTreeMetadata(root: *TreeNode, node: *TreeNode) void {
-    var delta: usize = 0;
-    var lf_delta: usize = 0;
+    var delta: isize = 0;
+    var lf_delta: isize = 0;
     var x = node;
 
     // go upwards till the node whose left subtree is changed.
@@ -546,16 +545,16 @@ fn recomputeTreeMetadata(root: *TreeNode, node: *TreeNode) void {
     // x is the node whose right subtree is changed.
     x = x.parent;
 
-    delta = calculateSize(x.left) - x.size_left;
-    lf_delta = calculateLF(x.left) - x.lf_left;
-    x.size_left += delta;
-    x.lf_left += lf_delta;
+    delta = usizeDiff(calculateSize(x.left), x.size_left);
+    lf_delta = usizeDiff(calculateLF(x.left), x.lf_left);
+    x.size_left = usizeAdd(x.size_left, delta);
+    x.lf_left = usizeAdd(x.lf_left, lf_delta);
 
     // go upwards till root. O(logN)
     while (x != root and (delta != 0 or lf_delta != 0)) {
         if (x.parent.left == x) {
-            x.parent.size_left += delta;
-            x.parent.lf_left += lf_delta;
+            x.parent.size_left = usizeAdd(x.parent.size_left, delta);
+            x.parent.lf_left = usizeAdd(x.parent.lf_left, lf_delta);
         }
 
         x = x.parent;
