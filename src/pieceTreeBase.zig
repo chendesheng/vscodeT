@@ -705,7 +705,12 @@ pub const PieceTreeBase = struct {
     }
 
     pub fn getLineLength(self: *const PieceTreeBase, lineNumber: usize) usize {
-        if (lineNumber == self.getLineCount()) {
+        const lineCnt = self.getLineCount();
+        if (lineNumber > lineCnt) {
+            return 0;
+        }
+
+        if (lineNumber == lineCnt) {
             const startOffset = self.getOffsetAt(lineNumber, 1);
             return self.getLength() - startOffset;
         }
@@ -2050,6 +2055,7 @@ test "getLineLength" {
     defer tree.deinit();
 
     try std.testing.expectEqual(5, tree.getLineLength(1));
+    try std.testing.expectEqual(0, tree.getLineLength(100));
 }
 
 test "getNearestChunk" {
