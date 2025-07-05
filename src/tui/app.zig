@@ -49,7 +49,7 @@ fn getFirstArg() !ArrayList(u8) {
 fn getLineNumberGutterWidth(tree: *const PieceTreeBase) usize {
     const lineCount = tree.getLineCount();
     const maxLineNumberWidth = std.fmt.count("{d}", .{lineCount});
-    return maxLineNumberWidth + 1;
+    return maxLineNumberWidth + 2;
 }
 
 const View = struct {
@@ -60,6 +60,7 @@ const View = struct {
 
     fn drawLineNumberGutter(self: *const View, lineNumberGutterWidth: usize, lineNumber: usize) !void {
         const out = self.writer;
+
         const lineNumberWidth = std.fmt.count("{d}", .{lineNumber});
         for (lineNumberWidth..lineNumberGutterWidth - 1) |_| {
             try tui.writeAll(out, " ");
@@ -67,7 +68,6 @@ const View = struct {
 
         var buf: [64]u8 = undefined;
         try tui.writeAll(out, try std.fmt.bufPrint(&buf, "{d} ", .{lineNumber}));
-        try tui.writeAll(out, " ");
     }
 
     fn drawVisibleLines(self: *const View, tree: *PieceTreeBase) !void {
@@ -90,7 +90,8 @@ const View = struct {
 
             try self.drawLineNumberGutter(lineNumberGutterWidth, i);
 
-            try tui.writeAll(out, line[0..]);
+            try tui.writeAll(out, line);
+            try tui.writeAll(out, "⏎");
             if (line.len <= width) {
                 for (line.len..width) |_| {
                     try tui.writeAll(out, " ");
@@ -109,7 +110,7 @@ const View = struct {
         const out = self.writer;
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
         const row = self.cursorPosition.row - self.scrollPosition.row + 1;
-        const col = self.cursorPosition.col + lineNumberGutterWidth + 1;
+        const col = self.cursorPosition.col + lineNumberGutterWidth;
         try tui.moveCursor(out, .{ .row = row, .col = col });
     }
 
@@ -132,7 +133,7 @@ const View = struct {
         }
 
         newRow = clamp(newRow, 1, tree.getLineCount());
-        newCol = clamp(newCol, 1, tree.getLineLength(newRow));
+        newCol = clamp(newCol, 1, tree.getLineLength(newRow) + 1);
 
         self.cursorPosition.row = newRow;
         self.cursorPosition.col = newCol;
