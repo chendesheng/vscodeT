@@ -132,3 +132,22 @@ pub fn hideCursor(out: anytype) !void {
 pub fn showCursor(out: anytype) !void {
     try writeAll(out, "\x1b[?25h");
 }
+
+var g_orig_termios: ?std.posix.termios = null;
+pub fn rememberOrigTermios(t: std.posix.termios) void {
+    g_orig_termios = t;
+}
+
+pub const panic = std.debug.FullPanic(myPanic);
+
+pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    if (g_orig_termios) |t| {
+        _ = std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, t) catch {};
+    }
+    std.debug.print("\x1b[?1049l", .{}); // leave alt-screen
+    std.debug.print("\x1b[?7h", .{}); // re-enable autowrap
+
+    std.debug.defaultPanic(msg, first_trace_addr);
+
+    std.process.exit(1);
+}

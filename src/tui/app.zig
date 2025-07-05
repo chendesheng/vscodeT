@@ -169,6 +169,7 @@ pub fn main() !void {
     const out = stdout.writer();
 
     const orig_termios = try tui.enableRawMode();
+    tui.rememberOrigTermios(orig_termios);
     defer tui.disableRawMode(orig_termios) catch unreachable;
 
     try tui.enterAltScreen(out);
