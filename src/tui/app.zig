@@ -1,5 +1,6 @@
 const std = @import("std");
 const io = std.io;
+const fs = std.fs;
 const posix = std.posix;
 const tui = @import("tui.zig");
 const Size = tui.Size;
@@ -8,6 +9,7 @@ const UTF8ChunkReader = @import("utf8ChunkReader.zig").UTF8ChunkReader;
 const ArrayList = std.ArrayList;
 const StringBuffer = @import("../pieceTreeBase.zig").StringBuffer;
 const PieceTreeBase = @import("../pieceTreeBase.zig").PieceTreeBase;
+const logger = @import("logger.zig");
 
 const MoveAction = enum {
     Up,
@@ -30,7 +32,9 @@ fn readFile(allocator: std.mem.Allocator, path: []const u8) !PieceTreeBase {
         try buffers.append(try StringBuffer.initFromArrayList(allocator, chunk));
     }
 
-    return try PieceTreeBase.init(allocator, buffers.items, .LF);
+    var tree = try PieceTreeBase.init(allocator, buffers.items, .LF);
+    tree._logger = logger.writer();
+    return tree;
 }
 
 fn clamp(value: usize, min: usize, max: usize) usize {
@@ -81,7 +85,6 @@ const View = struct {
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
         const from = self.scrollPosition.row;
         const to: usize = @min(self.scrollPosition.row + self.size.height, lineCount);
-        // log("from: {d}, to: {d}, count: {d}\n", .{ from, to, tree.getLineCount() });
 
         const width = self.size.width - lineNumberGutterWidth;
 
@@ -148,7 +151,6 @@ const View = struct {
 
     fn updateCursorPosition(self: *View, tree: *const PieceTreeBase, offset: usize) !void {
         const pos = tree.getPositionAt(offset);
-        log("pos: {d},{d}", .{ pos.lineNumber, pos.column });
 
         if (pos.lineNumber < self.scrollPosition.row) {
             self.scrollPosition.row = pos.lineNumber;
@@ -157,7 +159,6 @@ const View = struct {
         }
         self.cursorPosition.row = pos.lineNumber;
         self.cursorPosition.col = pos.column;
-        log("pos2: {d},{d}", .{ self.cursorPosition.row, self.cursorPosition.col });
     }
 
     fn insertAtCursor(self: *View, tree: *PieceTreeBase, text: []const u8) !void {
@@ -183,20 +184,10 @@ fn equalSize(a: Size, b: Size) bool {
     return a.width == b.width and a.height == b.height;
 }
 
-fn log(comptime fmt: []const u8, args: anytype) void {
-    const file = std.fs.cwd().openFile("debug.log", .{
-        .mode = .write_only,
-    }) catch blk: {
-        // If file doesn't exist, create it
-        break :blk std.fs.cwd().createFile("debug.log", .{}) catch unreachable;
-    };
-
-    defer file.close();
-    file.seekFromEnd(0) catch unreachable;
-    std.fmt.format(file.writer(), fmt ++ "\n", args) catch unreachable;
-}
-
 pub fn main() !void {
+    try logger.init("debug.log");
+    defer logger.deinit();
+
     const stdout = std.io.getStdOut();
     const out = stdout.writer();
 
@@ -220,7 +211,6 @@ pub fn main() !void {
     defer tree.deinit();
 
     const size = try tui.getTerminalSize();
-    log("size: {d}x{d}", .{ size.width, size.height });
 
     var view = View{
         .writer = out.any(),
@@ -242,7 +232,7 @@ pub fn main() !void {
                 try view.deleteLeftOfCursor(&tree);
                 contentChanged = true;
             } else {
-                try view.insertAtCursor(&tree, buf[0..n]);
+                try view.insertAtCursor(&tree, buf[0..1]);
                 contentChanged = true;
             }
         }
