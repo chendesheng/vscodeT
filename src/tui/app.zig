@@ -45,6 +45,9 @@ fn getFirstArg() !ArrayList(u8) {
     const allocator = std.heap.page_allocator;
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
+    if (args.len < 2) {
+        return error.NoPathProvided;
+    }
     var firstArg = ArrayList(u8).init(allocator);
     try firstArg.appendSlice(args[1]);
     return firstArg;
