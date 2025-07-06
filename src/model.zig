@@ -1,5 +1,7 @@
+const std = @import("std");
 const Range = @import("range.zig").Range;
 const TextChange = @import("textChange.zig").TextChange;
+const ArrayList = @import("std").ArrayList;
 
 pub const EOL = enum {
     CRLF,
@@ -43,7 +45,25 @@ pub const ReverseSingleEditOperation = struct {
 };
 
 pub const ApplyEditsResult = struct {
-    reverseEdits: ?[]const ReverseSingleEditOperation,
-    changes: []const InternalModelContentChange,
-    trimAutoWhitespaceLineNumbers: ?[]const usize,
+    reverseEdits: ?ArrayList(ReverseSingleEditOperation),
+    changes: ArrayList(InternalModelContentChange),
+    trimAutoWhitespaceLineNumbers: ?ArrayList(usize),
+
+    pub fn deinit(self: *const ApplyEditsResult) void {
+        if (self.reverseEdits) |edits| {
+            for (edits.items) |edit| {
+                edits.allocator.free(edit.text);
+                edits.allocator.free(edit.textChange.oldText);
+                edits.allocator.free(edit.textChange.newText);
+            }
+            edits.deinit();
+        }
+        for (self.changes.items) |change| {
+            self.changes.allocator.free(change.text);
+        }
+        self.changes.deinit();
+        if (self.trimAutoWhitespaceLineNumbers) |lines| {
+            lines.deinit();
+        }
+    }
 };
