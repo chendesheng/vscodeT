@@ -32,7 +32,7 @@ fn readFile(allocator: std.mem.Allocator, path: []const u8) !PieceTreeBase {
         try buffers.append(try StringBuffer.initFromArrayList(allocator, chunk));
     }
 
-    var tree = try PieceTreeBase.init(allocator, buffers.items, .LF);
+    var tree = try PieceTreeBase.init(allocator, buffers.items, .LF, false);
     tree._logger = logger.writer();
     return tree;
 }

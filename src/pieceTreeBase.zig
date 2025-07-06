@@ -9,6 +9,7 @@ const TreeNode = rbt.TreeNode;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const safeUtf8Prefix = @import("tui/utf8Helper.zig").safeUtf8Prefix;
+const strings = @import("strings.zig");
 
 const AverageBufferSize = 65535;
 
@@ -281,7 +282,7 @@ pub const PieceTreeBase = struct {
 
     _logger: ?fs.File.Writer,
 
-    pub fn init(allocator: Allocator, chunks: []StringBuffer, eol: EOL) !PieceTreeBase {
+    pub fn init(allocator: Allocator, chunks: []const StringBuffer, eol: EOL, eolNormalized: bool) !PieceTreeBase {
         var tree = PieceTreeBase{
             .allocator = allocator,
             .root = SENTINEL,
@@ -289,7 +290,7 @@ pub const PieceTreeBase = struct {
             ._lineCnt = 1,
             ._length = 0,
             ._EOL = eol,
-            ._EOLNormalized = false,
+            ._EOLNormalized = eolNormalized,
             ._EOLLength = if (eol == .CRLF) 2 else 1,
             ._lastChangeBufferPos = .{ .line = 0, .column = 0 },
             ._searchCache = PieceTreeSearchCache.init(allocator, 1),
@@ -311,7 +312,7 @@ pub const PieceTreeBase = struct {
         self._lastVisitedLine.deinit();
     }
 
-    fn resetBuffers(self: *PieceTreeBase, chunks: []StringBuffer) !void {
+    fn resetBuffers(self: *PieceTreeBase, chunks: []const StringBuffer) !void {
         if (self._buffers.items.len > 0) {
             for (self._buffers.items) |buffer| {
                 buffer.deinit();
@@ -716,6 +717,7 @@ pub const PieceTreeBase = struct {
         }
     }
 
+    // FIXME: utf8
     pub fn getLineCharCode(self: *const PieceTreeBase, lineNumber: usize, index: usize) u8 {
         const nodePos = self.nodeAt2(lineNumber, index + 1);
         return self._getCharCode(nodePos);
@@ -763,7 +765,7 @@ pub const PieceTreeBase = struct {
     // #region Piece Table
     pub fn insert(self: *PieceTreeBase, offset: usize, value: []const u8, eolNormalized: bool) !void {
         if (self._logger != null) {
-            const escaped = try escapeString(value, self.allocator);
+            const escaped = try strings.escapeNewLine(value, self.allocator);
             defer self.allocator.free(escaped);
             self.log("insert({d}, \"{s}\", {s})\n", .{ offset, escaped, if (eolNormalized) "true" else "false" });
         }
@@ -1768,7 +1770,7 @@ pub const PieceTreeBase = struct {
         const buffer = self._buffers.items[piece.bufferIndex];
         const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
         const endOffset = self.offsetInBuffer(piece.bufferIndex, piece.end);
-        const content = escapeString(buffer.substring(startOffset, endOffset), self.allocator) catch unreachable;
+        const content = strings.escapeNewLine(buffer.substring(startOffset, endOffset), self.allocator) catch unreachable;
         defer self.allocator.free(content);
 
         writer.print("bufferIndex={d}; start={d},{d}; end={d},{d}; length={d}; lineFeedCnt={d}; content=\"{s}\"\n", .{
@@ -1847,7 +1849,7 @@ fn sliceLineFeeds(str: []const u8) []const u8 {
     return str[0 .. str.len - lineFeedLength];
 }
 
-fn replaceEOL(target: *ArrayList(u8), eol: EOL) !void {
+pub fn replaceEOL(target: *ArrayList(u8), eol: EOL) !void {
     var i = target.items.len - 1;
 
     while (true) {
@@ -1871,20 +1873,6 @@ fn replaceEOL(target: *ArrayList(u8), eol: EOL) !void {
         if (i == 0) break;
         i -= 1;
     }
-}
-
-fn escapeString(str: []const u8, allocator: Allocator) ![]const u8 {
-    var result = ArrayList(u8).init(allocator);
-    for (str) |ch| {
-        if (ch == '\n') {
-            try result.appendSlice("\\n");
-        } else if (ch == '\r') {
-            try result.appendSlice("\\r");
-        } else {
-            try result.append(ch);
-        }
-    }
-    return result.toOwnedSlice();
 }
 
 pub fn usizeDiff(a: usize, b: usize) isize {
@@ -1926,7 +1914,7 @@ test "replace EOL" {
 
 test "create empty" {
     const allocator = std.testing.allocator;
-    var tree = try PieceTreeBase.init(allocator, &[_]StringBuffer{}, .LF);
+    var tree = try PieceTreeBase.init(allocator, &[_]StringBuffer{}, .LF, false);
     defer tree.deinit();
 }
 
@@ -1935,7 +1923,7 @@ test "create from string" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     try std.testing.expectEqual(tree.getLineCount(), 4);
@@ -1955,7 +1943,7 @@ test "normalize EOL" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\r\nThird\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     try tree.normalizeEOL(.LF);
@@ -1971,7 +1959,7 @@ test "getLinesContent" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\r\nThird\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     const lines = try tree.getLinesContent();
@@ -2009,7 +1997,7 @@ test "insert" {
         var buffers = [_]StringBuffer{
             try StringBuffer.init(allocator, c.source),
         };
-        var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+        var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
         defer tree.deinit();
 
         try tree.insert(c.offset, c.text, false);
@@ -2025,7 +2013,7 @@ test "multiple inserts" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     try tree.insert(0, "a", false);
@@ -2067,7 +2055,7 @@ test "delete" {
         var buffers = [_]StringBuffer{
             try StringBuffer.init(allocator, c.source),
         };
-        var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+        var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
         defer tree.deinit();
 
         try tree.delete(c.offset, c.count);
@@ -2083,7 +2071,7 @@ test "insert then delete" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     try tree.insert(6, "a", false);
@@ -2105,7 +2093,7 @@ test "insert enter then delete" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     // tree._logger = std.io.getStdErr().writer();
     defer tree.deinit();
 
@@ -2128,7 +2116,7 @@ test "insert return" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     // tree._logger = std.io.getStdErr().writer();
     defer tree.deinit();
 
@@ -2146,13 +2134,13 @@ test "equal" {
     var buffers1 = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
     };
-    const tree1 = try PieceTreeBase.init(allocator, &buffers1, .LF);
+    const tree1 = try PieceTreeBase.init(allocator, &buffers1, .LF, false);
     defer tree1.deinit();
 
     var buffers2 = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
     };
-    const tree2 = try PieceTreeBase.init(allocator, &buffers2, .LF);
+    const tree2 = try PieceTreeBase.init(allocator, &buffers2, .LF, false);
     defer tree2.deinit();
 
     try std.testing.expect(try tree1.equal(&tree2));
@@ -2163,7 +2151,7 @@ test "getOffsetAt" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     try std.testing.expectEqual(0, tree.getOffsetAt(1, 1));
@@ -2176,7 +2164,7 @@ test "getLineLength" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     try std.testing.expectEqual(5, tree.getLineLength(1));
@@ -2189,7 +2177,7 @@ test "getNearestChunk" {
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
         try StringBuffer.init(allocator, "Fourth\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     const chunk = tree.getNearestChunk(buffers[0].length());
@@ -2202,7 +2190,7 @@ test "create snapshot" {
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
         try StringBuffer.init(allocator, "Fourth\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     var snapshot = try tree.createSnapshot("");
@@ -2218,7 +2206,7 @@ test "getPositionAt" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First\nSecond\nThird\n"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     try std.testing.expectEqual(Position{ .lineNumber = 1, .column = 1 }, tree.getPositionAt(0));
@@ -2231,7 +2219,7 @@ test "no eol" {
     var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "First"),
     };
-    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF, false);
     defer tree.deinit();
 
     try std.testing.expectEqual(1, tree.getLineCount());
