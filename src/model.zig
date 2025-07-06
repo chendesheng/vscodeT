@@ -1,4 +1,10 @@
 const Range = @import("range.zig").Range;
+const TextChange = @import("textChange.zig").TextChange;
+
+pub const EOL = enum {
+    CRLF,
+    LF,
+};
 
 pub const EndOfLinePreference = enum {
     TextDefined,
@@ -28,8 +34,16 @@ pub const InternalModelContentChange = struct {
     forceMoveMarkers: bool,
 };
 
+pub const ReverseSingleEditOperation = struct {
+    sortIndex: i64,
+    identifier: ?SingleEditOperationIdentifier,
+    range: Range,
+    text: []const u8,
+    textChange: TextChange,
+};
+
 pub const ApplyEditsResult = struct {
-    reverseEdits: ?[]const ValidAnnotatedEditOperation,
+    reverseEdits: ?[]const ReverseSingleEditOperation,
     changes: []const InternalModelContentChange,
     trimAutoWhitespaceLineNumbers: ?[]const usize,
 };

@@ -6,9 +6,9 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const createLineStarts = @import("pieceTreeBase.zig").createLineStarts;
 const createLineStartsFast = @import("pieceTreeBase.zig").createLineStartsFast;
-const EOL = @import("pieceTreeBase.zig").EOL;
+const EOL = @import("model.zig").EOL;
 const PieceTreeTextBuffer = @import("pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
-const replaceEOL = @import("pieceTreeBase.zig").replaceEOL;
+const replaceEOL = @import("eolCounter.zig").replaceEOL;
 
 pub const PieceTreeTextBufferFactory = struct {
     _allocator: Allocator,
@@ -44,7 +44,7 @@ pub const PieceTreeTextBufferFactory = struct {
         if (self._normalizeEOL and ((eol == .CRLF and (self._cr > 0 or self._lf > 0)) or (eol == .LF and (self._cr > 0 or self._crlf > 0)))) {
             // Normalize Pieces
             for (chunks.items) |chunk| {
-                try replaceEOL(chunk.buffer, eol);
+                try replaceEOL(&chunk.buffer, eol);
                 chunk.lineStarts = try createLineStartsFast(self._allocator, chunk.buffer.items);
             }
         }

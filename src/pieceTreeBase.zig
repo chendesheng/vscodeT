@@ -9,6 +9,9 @@ const TreeNode = rbt.TreeNode;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const safeUtf8Prefix = @import("tui/utf8Helper.zig").safeUtf8Prefix;
+const EOL = @import("model.zig").EOL;
+const replaceEOL = @import("eolCounter.zig").replaceEOL;
+const eolToString = @import("eolCounter.zig").eolToString;
 const strings = @import("strings.zig");
 
 const AverageBufferSize = 65535;
@@ -114,11 +117,6 @@ pub const Piece = struct {
     end: BufferCursor,
     length: usize,
     lineFeedCnt: usize,
-};
-
-pub const EOL = enum {
-    CRLF,
-    LF,
 };
 
 pub const StringBuffer = struct {
@@ -570,7 +568,7 @@ pub const PieceTreeBase = struct {
         return Position.create(1, 1);
     }
 
-    pub fn getValueInRange(self: *PieceTreeBase, range: Range, eol_: ?EOL) ArrayList(u8) {
+    pub fn getValueInRange(self: *const PieceTreeBase, range: Range, eol_: ?EOL) !ArrayList(u8) {
         self.log("getValueInRange({d}, {d}, {d}, {d}, {s})\n", .{ range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn, if (eol_) |eol| if (eol == .CRLF) ".CRLF" else ".LF" else "null" });
 
         if (range.startLineNumber == range.endLineNumber and range.startColumn == range.endColumn) {
@@ -580,10 +578,10 @@ pub const PieceTreeBase = struct {
         const startPosition = self.nodeAt2(range.startLineNumber, range.startColumn);
         const endPosition = self.nodeAt2(range.endLineNumber, range.endColumn);
 
-        const value = self.getValueInRange2(startPosition, endPosition);
+        var value = try self.getValueInRange2(startPosition, endPosition);
         if (eol_) |eol| {
-            if (eol != self._EOL || !self._EOLNormalized) {
-                replaceEOL(&value, eol);
+            if (eol != self._EOL or !self._EOLNormalized) {
+                try replaceEOL(&value, eol);
                 return value;
             }
 
@@ -591,7 +589,7 @@ pub const PieceTreeBase = struct {
                 // if (sts.mem.eql(eol, "\r\n")) {}
                 return value;
             }
-            replaceEOL(&value, eol);
+            try replaceEOL(&value, eol);
             return value;
         }
         return value;
@@ -729,7 +727,7 @@ pub const PieceTreeBase = struct {
         return self._lineCnt;
     }
 
-    pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) ![]u8 {
+    pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) ![]const u8 {
         self.log("getLineContent({d})\n", .{lineNumber});
 
         if (self._lastVisitedLine.lineNumber == lineNumber) {
@@ -1573,40 +1571,41 @@ pub const PieceTreeBase = struct {
         return undefined;
     }
 
-    fn nodeAt2(self: *PieceTreeBase, lineNumber: usize, column: usize) NodePosition {
+    fn nodeAt2(self: *const PieceTreeBase, lineNumber: usize, column: usize) NodePosition {
         var x = self.root;
-        var nodeStartOffset = 0;
+        var nodeStartOffset: usize = 0;
+        var col = column;
+        var line = lineNumber;
 
         while (x != SENTINEL) {
-            if (x.left != SENTINEL and x.lf_left >= lineNumber - 1) {
+            const piece = x.piece.?;
+            if (x.left != SENTINEL and x.lf_left >= line - 1) {
                 x = x.left;
-            } else if (x.lf_left + x.piece.?.lineFeedCnt > lineNumber - 1) {
-                const prevAccumualtedValue =
-                    if (lineNumber < x.lf_left + 2) 0 else self.getAccumulatedValue(x, lineNumber - x.lf_left - 2);
-                const accumulatedValue =
-                    if (lineNumber < x.lf_left + 1) 0 else self.getAccumulatedValue(x, lineNumber - x.lf_left - 1);
+            } else if (x.lf_left + piece.lineFeedCnt > line - 1) {
+                const prevAccumualtedValue = if (line < x.lf_left + 2) 0 else self.getAccumulatedValue(x, line - x.lf_left - 2);
+                const accumulatedValue = if (line < x.lf_left + 1) 0 else self.getAccumulatedValue(x, line - x.lf_left - 1);
                 nodeStartOffset += x.size_left;
 
                 return .{
                     .node = x,
-                    .reminder = std.math.minInt(prevAccumualtedValue + column - 1, accumulatedValue),
+                    .remainder = @intCast(@min(prevAccumualtedValue + col - 1, accumulatedValue)),
                     .nodeStartOffset = nodeStartOffset,
                 };
-            } else if (x.lf_left + x.piece.?.lineFeedCnt == lineNumber - 1) {
-                const prevAccumualtedValue = self.getAccumulatedValue(x, lineNumber - x.lf_left - 2);
-                if (prevAccumualtedValue + column - 1 <= x.piece.?.length) {
+            } else if (x.lf_left + piece.lineFeedCnt == line - 1) {
+                const prevAccumualtedValue = if (line < x.lf_left + 2) 0 else self.getAccumulatedValue(x, line - x.lf_left - 2);
+                if (prevAccumualtedValue + col - 1 <= piece.length) {
                     return .{
                         .node = x,
-                        .remainder = prevAccumualtedValue + column - 1,
+                        .remainder = prevAccumualtedValue + col - 1,
                         .nodeStartOffset = nodeStartOffset,
                     };
                 } else {
-                    column -= x.piece.?.length - prevAccumualtedValue;
+                    col -= piece.length - prevAccumualtedValue;
                     break;
                 }
             } else {
-                lineNumber -= x.lf_left + x.piece.?.lineFeedCnt;
-                nodeStartOffset += x.size_left + x.piece.?.length;
+                line -= x.lf_left + piece.lineFeedCnt;
+                nodeStartOffset += x.size_left + piece.length;
                 x = x.right;
             }
         }
@@ -1614,24 +1613,33 @@ pub const PieceTreeBase = struct {
         // search in order, to find the node contains position.column
         x = x.next();
         while (x != SENTINEL) {
-            if (x.piece.?.lineFeedCnt > 0) {
-                const accumualtedValue = self.getAccumulatedValue(x, 0);
+            const piece = x.piece.?;
+
+            if (piece.lineFeedCnt > 0) {
                 return .{
                     .node = x,
-                    .remainder = std.math.minInt(column - 1, accumualtedValue),
+                    .remainder = @min(col - 1, self.getAccumulatedValue(x, 0)),
                     .nodeStartOffset = self.offsetOfNode(x),
                 };
             } else {
-                column -= x.piece.?.length;
+                if (piece.length >= col - 1) {
+                    return .{
+                        .node = x,
+                        .remainder = col - 1,
+                        .nodeStartOffset = self.offsetOfNode(x),
+                    };
+                } else {
+                    col -= piece.length;
+                }
             }
 
             x = x.next();
         }
 
-        return undefined;
+        unreachable;
     }
 
-    fn nodeCharCodeAt(self: *PieceTreeBase, node: *TreeNode, offset: usize) u8 {
+    fn nodeCharCodeAt(self: *const PieceTreeBase, node: *const TreeNode, offset: usize) u8 {
         const piece = node.piece.?;
         if (piece.lineFeedCnt < 1) {
             return 0;
@@ -1642,27 +1650,29 @@ pub const PieceTreeBase = struct {
         return buffer.charCodeAt(newOffset);
     }
 
-    fn offsetOfNode(self: *PieceTreeBase, node: *TreeNode) usize {
+    fn offsetOfNode(self: *const PieceTreeBase, node: *const TreeNode) usize {
         if (node == SENTINEL) {
             return 0;
         }
+
+        var currentNode = node;
         var pos = node.size_left;
-        while (node != self.root) {
-            if (node.parent.right == node) {
-                pos += node.parent.size_left + node.parent.piece.length;
+        while (currentNode != self.root) {
+            if (currentNode.parent.right == currentNode) {
+                pos += currentNode.parent.size_left + currentNode.parent.piece.?.length;
             }
 
-            node = node.parent;
+            currentNode = currentNode.parent;
         }
 
         return pos;
     }
 
-    fn shouldCheckCRLF(self: *PieceTreeBase) bool {
+    fn shouldCheckCRLF(self: *const PieceTreeBase) bool {
         return !(self._EOLNormalized and self._EOL == .LF);
     }
 
-    fn startWithLF(self: *PieceTreeBase, val: *TreeNode) bool {
+    fn startWithLF(self: *const PieceTreeBase, val: *const TreeNode) bool {
         if (val == SENTINEL or val.piece.?.lineFeedCnt == 0) {
             return false;
         }
@@ -1682,7 +1692,7 @@ pub const PieceTreeBase = struct {
         return self._buffers.items[piece.bufferIndex].charCodeAt(startOffset) == '\n';
     }
 
-    fn endWithCR(self: *PieceTreeBase, val: *TreeNode) bool {
+    fn endWithCR(self: *const PieceTreeBase, val: *const TreeNode) bool {
         if (val == SENTINEL or val.piece.?.lineFeedCnt == 0) {
             return false;
         }
@@ -1872,14 +1882,6 @@ fn toEOL(eol: []const u8) EOL {
     }
 }
 
-fn eolToString(eol: EOL) []const u8 {
-    if (eol == .CRLF) {
-        return "\r\n";
-    } else {
-        return "\n";
-    }
-}
-
 fn lineFeedLen(lineFeed: EOL) usize {
     switch (lineFeed) {
         .CRLF => return 2,
@@ -1906,32 +1908,6 @@ fn sliceLineFeeds(str: []const u8) []const u8 {
     }
 
     return str[0 .. str.len - lineFeedLength];
-}
-
-pub fn replaceEOL(target: *ArrayList(u8), eol: EOL) !void {
-    var i = target.items.len - 1;
-
-    while (true) {
-        const ch = target.items[i];
-        const ch_prev = if (i > 0) target.items[i - 1] else 0;
-
-        var replace: usize = 0;
-        if (ch_prev == '\r' and ch == '\n') {
-            i -= 1;
-            replace = if (eol != .CRLF) 2 else 0;
-        } else if (ch == '\r') {
-            replace = 1;
-        } else if (ch == '\n') {
-            replace = if (eol != .LF) 1 else 0;
-        }
-
-        if (replace > 0) {
-            try target.replaceRange(i, replace, eolToString(eol));
-        }
-
-        if (i == 0) break;
-        i -= 1;
-    }
 }
 
 pub fn usizeDiff(a: usize, b: usize) isize {

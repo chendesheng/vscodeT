@@ -1,4 +1,6 @@
 const std = @import("std");
+const ArrayList = std.ArrayList;
+const EOL = @import("model.zig").EOL;
 
 const Unknown = 0;
 const Invalid = 3;
@@ -73,4 +75,38 @@ test "countEOL" {
     try std.testing.expectEqual(5, result.firstLineLength);
     try std.testing.expectEqual(0, result.lastLineLength);
     try std.testing.expectEqual(.LF, result.eol);
+}
+
+pub fn eolToString(eol: EOL) []const u8 {
+    if (eol == .CRLF) {
+        return "\r\n";
+    } else {
+        return "\n";
+    }
+}
+
+pub fn replaceEOL(target: *ArrayList(u8), eol: EOL) !void {
+    var i = target.items.len - 1;
+
+    while (true) {
+        const ch = target.items[i];
+        const ch_prev = if (i > 0) target.items[i - 1] else 0;
+
+        var replace: usize = 0;
+        if (ch_prev == '\r' and ch == '\n') {
+            i -= 1;
+            replace = if (eol != .CRLF) 2 else 0;
+        } else if (ch == '\r') {
+            replace = 1;
+        } else if (ch == '\n') {
+            replace = if (eol != .LF) 1 else 0;
+        }
+
+        if (replace > 0) {
+            try target.replaceRange(i, replace, eolToString(eol));
+        }
+
+        if (i == 0) break;
+        i -= 1;
+    }
 }
