@@ -84,24 +84,28 @@ const View = struct {
         const lineCount = tree.getLineCount();
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
         const from = self.scrollPosition.row;
-        const to: usize = @min(self.scrollPosition.row + self.size.height, lineCount);
+        const to: usize = @min(self.scrollPosition.row + self.size.height - 1, lineCount);
 
         const width = self.size.width - lineNumberGutterWidth;
 
-        for (from..to) |i| {
+        for (from..to + 1) |i| {
             const line = try tree.getLineContent(i);
 
             try self.drawLineNumberGutter(lineNumberGutterWidth, i);
 
             try tui.writeAll(out, line);
-            try tui.writeAll(out, "⏎");
+
+            if (i < to) {
+                try tui.writeAll(out, "⏎");
+            }
+
             if (line.len <= width) {
                 for (line.len..width) |_| {
                     try tui.writeAll(out, " ");
                 }
             }
 
-            if (i < to - 1) {
+            if (i < to) {
                 try tui.writeAll(out, "\r\n");
             }
         }
@@ -174,6 +178,16 @@ const View = struct {
             try self.updateCursorPosition(tree, offset - 1);
         }
     }
+
+    fn resize(self: *View, newSize: Size, tree: *const PieceTreeBase) !void {
+        self.size = newSize;
+
+        const lineCount = tree.getLineCount();
+
+        if (self.scrollPosition.row + self.size.height > lineCount) {
+            self.scrollPosition.row = lineCount - self.size.height + 1;
+        }
+    }
 };
 
 fn equalPosition(a: Point, b: Point) bool {
@@ -200,6 +214,8 @@ pub fn main() !void {
 
     try tui.disableLineWrap(out);
     defer tui.enableLineWrap(out) catch {};
+
+    try tui.installSigWinch();
 
     const pathArg = try getFirstArg();
     defer pathArg.deinit();
@@ -254,8 +270,14 @@ pub fn main() !void {
             }
         }
 
+        var scrollChanged = !equalPosition(newView.scrollPosition, view.scrollPosition);
+
+        if (try tui.resizedSize()) |newSize| {
+            scrollChanged = true;
+            try newView.resize(newSize, &tree);
+        }
+
         const cursorChanged = !equalPosition(newView.cursorPosition, view.cursorPosition);
-        const scrollChanged = !equalPosition(newView.scrollPosition, view.scrollPosition);
 
         if (scrollChanged) {
             view = newView;

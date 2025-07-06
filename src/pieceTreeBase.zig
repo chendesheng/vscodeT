@@ -2225,3 +2225,15 @@ test "getPositionAt" {
     try std.testing.expectEqual(Position{ .lineNumber = 1, .column = 2 }, tree.getPositionAt(1));
     try std.testing.expectEqual(Position{ .lineNumber = 2, .column = 5 }, tree.getPositionAt(10));
 }
+
+test "no eol" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    defer tree.deinit();
+
+    try std.testing.expectEqual(1, tree.getLineCount());
+    try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
+}

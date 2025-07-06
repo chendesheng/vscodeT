@@ -151,3 +151,26 @@ pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
 
     std.process.exit(1);
 }
+
+var resized = std.atomic.Value(bool).init(false);
+
+fn handleSigWinch(_: i32) callconv(.C) void {
+    resized.store(true, .seq_cst);
+}
+
+pub fn resizedSize() !?Size {
+    if (resized.swap(false, .seq_cst)) {
+        return try getTerminalSize();
+    } else {
+        return null;
+    }
+}
+
+pub fn installSigWinch() !void {
+    var sa: posix.Sigaction = .{
+        .handler = .{ .handler = handleSigWinch },
+        .mask = posix.empty_sigset,
+        .flags = 0,
+    };
+    posix.sigaction(posix.SIG.WINCH, &sa, null);
+}
