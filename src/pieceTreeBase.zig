@@ -13,7 +13,7 @@ const strings = @import("strings.zig");
 
 const AverageBufferSize = 65535;
 
-fn createLineStartsFast(allocator: Allocator, str: []const u8) !ArrayList(usize) {
+pub fn createLineStartsFast(allocator: Allocator, str: []const u8) !ArrayList(usize) {
     var r = ArrayList(usize).init(allocator);
     try r.append(0);
 
@@ -31,6 +31,65 @@ fn createLineStartsFast(allocator: Allocator, str: []const u8) !ArrayList(usize)
         }
     }
     return r;
+}
+
+pub const LineStarts = struct {
+    lineStarts: ArrayList(usize),
+    cr: usize,
+    lf: usize,
+    crlf: usize,
+    isBasicASCII: bool,
+};
+
+pub fn createLineStarts(allocator: Allocator, str: []const u8) !LineStarts {
+    var r = ArrayList(usize).init(allocator);
+    defer r.deinit();
+
+    r[0] = 0;
+    var rLength = 1;
+    var cr = 0;
+    var lf = 0;
+    var crlf = 0;
+    var isBasicASCII = true;
+
+    var i: usize = 0;
+    while (i < str.len) : (i += 1) {
+        const chr = str[i];
+        if (chr == '\r') {
+            if (i + 1 < str.len and str[i + 1] == '\n') {
+                // \r\n... case
+                crlf += 1;
+                r[rLength] = i + 2;
+                rLength += 1;
+                i += 1; // skip \n
+            } else {
+                cr += 1;
+                // \r... case
+                r[rLength] = i + 1;
+                rLength += 1;
+            }
+        } else if (chr == '\n') {
+            lf += 1;
+            r[rLength] = i + 1;
+            rLength += 1;
+        } else {
+            if (isBasicASCII) {
+                if (chr != '\t' and (chr < 32 or chr > 126)) {
+                    isBasicASCII = false;
+                }
+            }
+        }
+    }
+
+    const result = LineStarts{
+        .lineStarts = r,
+        .cr = cr,
+        .lf = lf,
+        .crlf = crlf,
+        .isBasicASCII = isBasicASCII,
+    };
+
+    return result;
 }
 
 const NodePosition = struct {

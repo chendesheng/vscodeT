@@ -83,6 +83,18 @@ pub fn isNullOrEmpty(str: ?[]const u8) bool {
     return str == null or str.?.len == 0;
 }
 
+pub const UTF8_BOM_CHARACTER: []const u8 = "\xef\xbb\xbf";
+
+pub fn startsWithUTF8BOM(str: []const u8) bool {
+    return str.len >= 3 and std.mem.eql(u8, str[0..3], UTF8_BOM_CHARACTER);
+}
+
+test "startsWithUTF8BOM" {
+    try std.testing.expectEqual(false, startsWithUTF8BOM(""));
+    try std.testing.expectEqual(false, startsWithUTF8BOM("Hello"));
+    try std.testing.expectEqual(true, startsWithUTF8BOM("\xef\xbb\xbfHello"));
+}
+
 pub fn escapeNewLine(str: []const u8, allocator: Allocator) ![]const u8 {
     var result = ArrayList(u8).init(allocator);
     for (str) |ch| {
