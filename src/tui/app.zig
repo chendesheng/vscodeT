@@ -230,11 +230,12 @@ pub fn main() !void {
                 break;
             } else if (buf[0] == 0x7f) {
                 try view.deleteLeftOfCursor(&tree);
-                contentChanged = true;
+            } else if (buf[0] == '\r') {
+                try view.insertAtCursor(&tree, "\n");
             } else {
                 try view.insertAtCursor(&tree, buf[0..1]);
-                contentChanged = true;
             }
+            contentChanged = true;
         }
 
         var newView = view;
