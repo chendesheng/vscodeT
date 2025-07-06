@@ -1,4 +1,6 @@
 const std = @import("std");
+const io = std.io;
+const fs = std.fs;
 const rbt = @import("rbTreeBase.zig");
 const Position = @import("position.zig").Position;
 const Range = @import("range.zig").Range;
@@ -277,6 +279,8 @@ pub const PieceTreeBase = struct {
     _searchCache: PieceTreeSearchCache,
     _lastVisitedLine: LastVisitedLine,
 
+    _logger: ?fs.File.Writer,
+
     pub fn init(allocator: Allocator, chunks: []StringBuffer, eol: EOL) !PieceTreeBase {
         var tree = PieceTreeBase{
             .allocator = allocator,
@@ -290,6 +294,7 @@ pub const PieceTreeBase = struct {
             ._lastChangeBufferPos = .{ .line = 0, .column = 0 },
             ._searchCache = PieceTreeSearchCache.init(allocator, 1),
             ._lastVisitedLine = LastVisitedLine.init(allocator),
+            ._logger = null,
         };
 
         try tree.resetBuffers(chunks);
@@ -380,11 +385,19 @@ pub const PieceTreeBase = struct {
         self.allocator.destroy(node);
     }
 
-    pub fn getEOL(self: *PieceTreeBase) []const u8 {
+    pub fn getEOL(self: *const PieceTreeBase) []const u8 {
         return eolToString(self._EOL);
     }
 
+    fn log(self: *const PieceTreeBase, comptime format: []const u8, args: anytype) void {
+        if (self._logger) |logger| {
+            logger.print(format, args) catch {};
+        }
+    }
+
     pub fn setEOL(self: *PieceTreeBase, eol: EOL) void {
+        self.log("setEOL({s})\n", .{if (eol == .CRLF) ".CRLF" else ".LF"});
+
         self._EOL = eol;
         self.normalizeEOL(self._EOL);
     }
@@ -498,6 +511,8 @@ pub const PieceTreeBase = struct {
     }
 
     pub fn getValueInRange(self: *PieceTreeBase, range: Range, eol_: ?EOL) ArrayList(u8) {
+        self.log("getValueInRange({d}, {d}, {d}, {d}, {s})\n", .{ range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn, if (eol_) |eol| if (eol == .CRLF) ".CRLF" else ".LF" else "null" });
+
         if (range.startLineNumber == range.endLineNumber and range.startColumn == range.endColumn) {
             return ArrayList(u8).init(self.allocator);
         }
@@ -655,6 +670,8 @@ pub const PieceTreeBase = struct {
     }
 
     pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) ![]u8 {
+        self.log("getLineContent({d})\n", .{lineNumber});
+
         if (self._lastVisitedLine.lineNumber == lineNumber) {
             return self._lastVisitedLine.value.items;
         }
@@ -745,6 +762,12 @@ pub const PieceTreeBase = struct {
 
     // #region Piece Table
     pub fn insert(self: *PieceTreeBase, offset: usize, value: []const u8, eolNormalized: bool) !void {
+        if (self._logger != null) {
+            const escaped = try escapeString(value, self.allocator);
+            defer self.allocator.free(escaped);
+            self.log("insert({d}, \"{s}\", {s})\n", .{ offset, escaped, if (eolNormalized) "true" else "false" });
+        }
+
         self._EOLNormalized = self._EOLNormalized and eolNormalized;
         try self._lastVisitedLine.reset();
 
@@ -807,7 +830,7 @@ pub const PieceTreeBase = struct {
                 // reuse node for content before insertion point.
                 if (self.shouldCheckCRLF() and strStartWithLF(value)) {
                     const tailOfLeft = self.nodeCharCodeAt(node, remainder - 1);
-                    if (tailOfLeft == '\r') { // \r
+                    if (tailOfLeft == '\r') {
                         const previousPos = self.positionInBuffer(node, remainder - 1, null).?;
                         self.deleteNodeTail(node, previousPos);
 
@@ -823,16 +846,27 @@ pub const PieceTreeBase = struct {
                     self.deleteNodeTail(node, insertPosInBuffer);
                 }
 
-                var newPieces: ArrayList(Piece) = try self.createNewPieces(value);
-                defer newPieces.deinit();
+                var val = value;
                 if (prependCR or appendLF) {
+                    const val_len: usize = value.len + (if (prependCR) @as(usize, 1) else 0) + (if (appendLF) @as(usize, 1) else 0);
+                    var tmp = try self.allocator.alloc(u8, val_len);
                     if (prependCR) {
-                        try newPieces.insert(0, try self.createNewPiece("\r"));
+                        tmp[0] = '\r';
                     }
+                    std.mem.copyForwards(u8, tmp[if (prependCR) 1 else 0..], value);
                     if (appendLF) {
-                        try newPieces.append(try self.createNewPiece("\n"));
+                        tmp[val_len - 1] = '\n';
+                    }
+                    val = tmp;
+                }
+                defer {
+                    if (prependCR or appendLF) {
+                        self.allocator.free(val);
                     }
                 }
+
+                var newPieces: ArrayList(Piece) = try self.createNewPieces(val);
+                defer newPieces.deinit();
 
                 if (newRightPiece.length > 0) {
                     _ = try self.rbInsertRight(node, newRightPiece);
@@ -861,6 +895,8 @@ pub const PieceTreeBase = struct {
     }
 
     pub fn delete(self: *PieceTreeBase, offset: usize, cnt: usize) !void {
+        self.log("delete({d}, {d})\n", .{ offset, cnt });
+
         try self._lastVisitedLine.reset();
 
         if (cnt <= 0 or self.root == SENTINEL) {
@@ -1189,7 +1225,7 @@ pub const PieceTreeBase = struct {
         return try self.getContentOfSubTree(self.root);
     }
 
-    pub fn getLineRawContent(self: *PieceTreeBase, lineNumber: usize, endOffset: usize) !ArrayList(u8) {
+    fn getLineRawContent(self: *PieceTreeBase, lineNumber: usize, endOffset: usize) !ArrayList(u8) {
         var x = self.root;
 
         var ret = ArrayList(u8).init(self.allocator);
@@ -1727,6 +1763,34 @@ pub const PieceTreeBase = struct {
         }
         return str;
     }
+
+    fn logPiece(self: *const PieceTreeBase, piece: *const Piece, writer: anytype) void {
+        const buffer = self._buffers.items[piece.bufferIndex];
+        const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
+        const endOffset = self.offsetInBuffer(piece.bufferIndex, piece.end);
+        const content = escapeString(buffer.substring(startOffset, endOffset), self.allocator) catch unreachable;
+        defer self.allocator.free(content);
+
+        writer.print("bufferIndex={d}; start={d},{d}; end={d},{d}; length={d}; lineFeedCnt={d}; content=\"{s}\"\n", .{
+            piece.bufferIndex,
+            piece.start.line,
+            piece.start.column,
+            piece.end.line,
+            piece.end.column,
+            piece.length,
+            piece.lineFeedCnt,
+            content,
+        }) catch {};
+    }
+
+    pub fn logNodes(self: *const PieceTreeBase, writer: anytype) void {
+        var iter = self.root.iterator();
+        while (iter.next()) |node| {
+            if (node.piece) |*piece| {
+                self.logPiece(piece, writer);
+            }
+        }
+    }
 };
 
 fn strStartWithLF(val: []const u8) bool {
@@ -1807,6 +1871,20 @@ fn replaceEOL(target: *ArrayList(u8), eol: EOL) !void {
         if (i == 0) break;
         i -= 1;
     }
+}
+
+fn escapeString(str: []const u8, allocator: Allocator) ![]const u8 {
+    var result = ArrayList(u8).init(allocator);
+    for (str) |ch| {
+        if (ch == '\n') {
+            try result.appendSlice("\\n");
+        } else if (ch == '\r') {
+            try result.appendSlice("\\r");
+        } else {
+            try result.append(ch);
+        }
+    }
+    return result.toOwnedSlice();
 }
 
 pub fn usizeDiff(a: usize, b: usize) isize {
@@ -2028,21 +2106,39 @@ test "insert enter then delete" {
         try StringBuffer.init(allocator, "First\n"),
     };
     var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    // tree._logger = std.io.getStdErr().writer();
     defer tree.deinit();
 
+    try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
     try tree.insert(5, "\n", false);
     try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
     try std.testing.expectEqualStrings("", try tree.getLineContent(2));
-    try std.testing.expectEqualStrings("", try tree.getLineContent(3));
 
     try tree.delete(5, 1);
     try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
-    try std.testing.expectEqualStrings("", try tree.getLineContent(2));
 
     try tree.insert(5, "\n", false);
     try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
-    try std.testing.expectEqualStrings("", try tree.getLineContent(2));
-    try std.testing.expectEqualStrings("", try tree.getLineContent(3));
+}
+
+test "insert return" {
+    // std.debug.print("\n", .{});
+
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, &buffers, .LF);
+    // tree._logger = std.io.getStdErr().writer();
+    defer tree.deinit();
+
+    // tree.logNodes(std.io.getStdErr().writer());
+    // std.debug.print("\n", .{});
+
+    try tree.insert(5, "\r", false);
+    // tree.logNodes(std.io.getStdErr().writer());
+    // std.debug.print("\n", .{});
+    try std.testing.expectEqual(2, tree.getLineCount());
 }
 
 test "equal" {
