@@ -9,6 +9,7 @@ const createLineStartsFast = @import("pieceTreeBase.zig").createLineStartsFast;
 const EOL = @import("model.zig").EOL;
 const PieceTreeTextBuffer = @import("pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const replaceEOL = @import("eolCounter.zig").replaceEOL;
+const safeUtf8Prefix = @import("tui/utf8Helper.zig").safeUtf8Prefix;
 
 pub const PieceTreeTextBufferFactory = struct {
     _allocator: Allocator,
@@ -43,28 +44,34 @@ pub const PieceTreeTextBufferFactory = struct {
 
         if (self._normalizeEOL and ((eol == .CRLF and (self._cr > 0 or self._lf > 0)) or (eol == .LF and (self._cr > 0 or self._crlf > 0)))) {
             // Normalize Pieces
-            for (chunks.items) |chunk| {
+            for (chunks.items) |*chunk| {
                 try replaceEOL(&chunk.buffer, eol);
                 chunk.lineStarts = try createLineStartsFast(self._allocator, chunk.buffer.items);
             }
         }
 
         return PieceTreeTextBuffer
-            .init(self._allocator, chunks, self._BOM, eol, self._containsRTL, self._containsUnusualLineTerminators, self._isBasicASCII, self._normalizeEOL);
+            .init(self._allocator, chunks.items, self._BOM, eol, self._containsRTL, self._containsUnusualLineTerminators, self._isBasicASCII, self._normalizeEOL);
     }
 
     pub fn getFirstLineText(self: *const PieceTreeTextBufferFactory, lengthLimit: usize) ![]const u8 {
         // TODO: handle \r\n
         return std.mem.sliceTo(self._chunks.items[0].buffer.items[0..lengthLimit], '\n');
     }
+
+    pub fn deinit(self: *const PieceTreeTextBufferFactory) void {
+        self._chunks.deinit();
+    }
 };
 
 pub const PieceTreeBufferBuilder = struct {
     chunks: ArrayList(StringBuffer),
     BOM: []const u8,
-    _hasPreviousChar: bool,
-    _previousChar: u8,
-    _tmpLineStarts: ArrayList(usize),
+    // previousChar can be '\r' or a partial UTF-8 sequence
+    // since UTF-8 has at most 4 bytes, 3 is enough for a partial sequence
+    _previousCharLen: u2,
+    _previousChar: [3]u8,
+    // _tmpLineStarts: ArrayList(usize),  -- this is not needed anymore, because the createLineStarts no needs to have UintArray
 
     cr: usize,
     lf: usize,
@@ -73,14 +80,13 @@ pub const PieceTreeBufferBuilder = struct {
     containsUnusualLineTerminators: bool,
     isBasicASCII: bool,
 
-    pub fn init(allocator: Allocator) !PieceTreeBufferBuilder {
+    pub fn init(allocator: Allocator) PieceTreeBufferBuilder {
         return PieceTreeBufferBuilder{
             .chunks = ArrayList(StringBuffer).init(allocator),
             .BOM = "",
 
-            ._hasPreviousChar = false,
-            ._previousChar = 0,
-            ._tmpLineStarts = ArrayList(usize).init(allocator),
+            ._previousCharLen = 0,
+            ._previousChar = undefined,
 
             .cr = 0,
             .lf = 0,
@@ -97,7 +103,7 @@ pub const PieceTreeBufferBuilder = struct {
         }
 
         if (self.chunks.items.len == 0) {
-            if (strings.startsWithUTF8BOM(chunk.text)) {
+            if (strings.startsWithUTF8BOM(chunk)) {
                 self.BOM = strings.UTF8_BOM_CHARACTER;
             } else {
                 self.BOM = "";
@@ -105,14 +111,24 @@ pub const PieceTreeBufferBuilder = struct {
         }
 
         const lastChar = chunk[chunk.len - 1];
-        if (lastChar == '\r' or (lastChar >= 0xD800 and lastChar <= 0xDFFF)) {
-            self._acceptChunk1(chunk[0 .. chunk.len - 1], false);
-            self._hasPreviousChar = true;
-            self._previousChar = lastChar;
+        if (lastChar == '\r') {
+            try self._acceptChunk1(chunk[0 .. chunk.len - 1], false);
+            self._previousCharLen = 1;
+            self._previousChar[0] = lastChar;
         } else {
-            self._acceptChunk1(chunk, false);
-            self._hasPreviousChar = false;
-            self._previousChar = lastChar;
+            const chunk2 = safeUtf8Prefix(chunk, chunk.len);
+            try self._acceptChunk1(chunk2, false);
+            if (chunk2.len < chunk.len) {
+                std.debug.assert(chunk.len - chunk2.len < 4);
+
+                self._previousCharLen = @intCast(chunk.len - chunk2.len);
+
+                for (chunk2.len..chunk.len) |i| {
+                    self._previousChar[i - chunk2.len] = chunk[i];
+                }
+            } else {
+                self._previousCharLen = 0;
+            }
         }
     }
 
@@ -122,17 +138,24 @@ pub const PieceTreeBufferBuilder = struct {
             return;
         }
 
-        if (self._hasPreviousChar) {
-            self._accpetChunk2(self._previousChar + chunk);
-        } else {
-            self._acceptChunk2(chunk);
-        }
+        try self._acceptChunk2(chunk);
     }
 
     fn _acceptChunk2(self: *PieceTreeBufferBuilder, chunk: []const u8) !void {
-        const lineStarts = try createLineStarts(self.chunks.allocator, chunk);
+        var buffer = ArrayList(u8).init(self.chunks.allocator);
+        if (self._getPreviousChar()) |previousChar| {
+            try buffer.appendSlice(previousChar);
+        }
+        try buffer.appendSlice(chunk);
 
-        self.chunks.append(StringBuffer.initFromArrayList(self.chunks.allocator, lineStarts.lineStarts));
+        var stringBuffer = StringBuffer{
+            .buffer = buffer,
+            .lineStarts = undefined,
+        };
+        const lineStarts = try createLineStarts(self.chunks.allocator, buffer.items);
+        stringBuffer.lineStarts = lineStarts.lineStarts;
+
+        try self.chunks.append(stringBuffer);
         self.cr += lineStarts.cr;
         self.lf += lineStarts.lf;
         self.crlf += lineStarts.crlf;
@@ -149,7 +172,7 @@ pub const PieceTreeBufferBuilder = struct {
     }
 
     pub fn finish(self: *PieceTreeBufferBuilder, normalizeEOL: bool) !PieceTreeTextBufferFactory {
-        self._finish();
+        try self._finish();
         return PieceTreeTextBufferFactory{
             ._chunks = self.chunks,
             ._allocator = self.chunks.allocator,
@@ -164,21 +187,62 @@ pub const PieceTreeBufferBuilder = struct {
         };
     }
 
-    fn _finish(self: *PieceTreeBufferBuilder) void {
+    fn _getPreviousChar(self: *PieceTreeBufferBuilder) ?[]const u8 {
+        if (self._previousCharLen == 0) {
+            return null;
+        }
+        return self._previousChar[0..self._previousCharLen];
+    }
+
+    fn _finish(self: *PieceTreeBufferBuilder) !void {
         if (self.chunks.items.len == 0) {
-            self._acceptChunk1("", true);
+            try self._acceptChunk1("", true);
         }
 
-        if (self._hasPreviousChar) {
-            self._hasPreviousChar = false;
+        if (self._getPreviousChar()) |previousChar| {
             // recreate last chunk
-            const lastChunk = self.chunks.items[self.chunks.items.len - 1];
-            lastChunk.append(self._previousChar);
+            var lastChunk = self.chunks.items[self.chunks.items.len - 1];
+            try lastChunk.buffer.appendSlice(previousChar);
+
             const newLineStarts = try createLineStartsFast(self.chunks.allocator, lastChunk.buffer.items);
+            lastChunk.lineStarts.deinit();
             lastChunk.lineStarts = newLineStarts;
-            if (self._previousChar == '\r') {
+            if (previousChar[0] == '\r') {
                 self.cr += 1;
             }
         }
     }
 };
+
+test "PieceTreeBufferBuilder" {
+    const allocator = std.testing.allocator;
+    var builder = PieceTreeBufferBuilder.init(allocator);
+
+    try builder.acceptChunk("Hello");
+    try builder.acceptChunk("World");
+
+    var factory = try builder.finish(false);
+    defer factory.deinit();
+
+    var buffer = try factory.create(.LF);
+    defer buffer.deinit();
+
+    try std.testing.expectEqualStrings("HelloWorld", try buffer.getLineContent(1));
+}
+
+test "PieceTreeBufferBuilder unicode" {
+    const allocator = std.testing.allocator;
+    var builder = PieceTreeBufferBuilder.init(allocator);
+
+    const str = "你好世界";
+    try builder.acceptChunk(str[0..5]);
+    try builder.acceptChunk(str[5..]);
+
+    var factory = try builder.finish(false);
+    defer factory.deinit();
+
+    var buffer = try factory.create(.LF);
+    defer buffer.deinit();
+
+    try std.testing.expectEqualStrings("你好世界", try buffer.getLineContent(1));
+}
