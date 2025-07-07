@@ -42,17 +42,20 @@ pub const LineStarts = struct {
     lf: usize,
     crlf: usize,
     isBasicASCII: bool,
+
+    fn deinit(self: *const LineStarts) void {
+        self.lineStarts.deinit();
+    }
 };
 
 pub fn createLineStarts(allocator: Allocator, str: []const u8) !LineStarts {
     var r = ArrayList(usize).init(allocator);
-    defer r.deinit();
 
-    r[0] = 0;
-    var rLength = 1;
-    var cr = 0;
-    var lf = 0;
-    var crlf = 0;
+    try r.append(0);
+    var rLength: usize = 1;
+    var cr: usize = 0;
+    var lf: usize = 0;
+    var crlf: usize = 0;
     var isBasicASCII = true;
 
     var i: usize = 0;
@@ -62,18 +65,18 @@ pub fn createLineStarts(allocator: Allocator, str: []const u8) !LineStarts {
             if (i + 1 < str.len and str[i + 1] == '\n') {
                 // \r\n... case
                 crlf += 1;
-                r[rLength] = i + 2;
+                try r.append(i + 2);
                 rLength += 1;
                 i += 1; // skip \n
             } else {
                 cr += 1;
                 // \r... case
-                r[rLength] = i + 1;
+                try r.append(i + 1);
                 rLength += 1;
             }
         } else if (chr == '\n') {
             lf += 1;
-            r[rLength] = i + 1;
+            try r.append(i + 1);
             rLength += 1;
         } else {
             if (isBasicASCII) {
@@ -2259,4 +2262,22 @@ test "no eol" {
 
     try std.testing.expectEqual(1, tree.getLineCount());
     try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
+}
+
+test "createLineStarts" {
+    const allocator = std.testing.allocator;
+    const lineStarts = try createLineStarts(allocator, "First\nSecond\nThird\n");
+    defer lineStarts.deinit();
+
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 0, 6, 13, 19 }, lineStarts.lineStarts.items);
+    try std.testing.expect(lineStarts.isBasicASCII);
+}
+
+test "createLineStarts unicode" {
+    const allocator = std.testing.allocator;
+    const lineStarts = try createLineStarts(allocator, "第一\n第二\n第三\n");
+    defer lineStarts.deinit();
+
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 0, 7, 14, 21 }, lineStarts.lineStarts.items);
+    try std.testing.expect(!lineStarts.isBasicASCII);
 }
