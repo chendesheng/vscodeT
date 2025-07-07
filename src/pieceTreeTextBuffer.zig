@@ -780,3 +780,23 @@ test "delete cross line" {
 
     try std.testing.expectEqualStrings("Hld", try buffer.getLineContent(1));
 }
+
+test "replace" {
+    const allocator = std.testing.allocator;
+    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+        try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
+    }, "", .LF, false, false, true, false);
+    defer buffer.deinit();
+
+    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+        ValidAnnotatedEditOperation.fromRangeAndText(Range{
+            .startLineNumber = 1,
+            .startColumn = 1,
+            .endLineNumber = 1,
+            .endColumn = 6,
+        }, "nihao"),
+    }, true, true);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("nihao", try buffer.getLineContent(1));
+}
