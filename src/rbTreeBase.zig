@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Piece = @import("pieceTreeBase.zig").Piece;
-const usizeDiff = @import("pieceTreeBase.zig").usizeDiff;
+const usizeSub = @import("pieceTreeBase.zig").usizeSub;
 const usizeAdd = @import("pieceTreeBase.zig").usizeAdd;
 
 pub const TreeNode = struct {
@@ -337,8 +337,8 @@ pub fn rbDelete(root: *TreeNode, z: *TreeNode) *TreeNode {
         const newSizeLeft = calculateSize(x);
         const newLFLeft = calculateLF(x);
         if (newSizeLeft != x.parent.size_left or newLFLeft != x.parent.lf_left) {
-            const delta = usizeDiff(newSizeLeft, x.parent.size_left);
-            const lf_delta = usizeDiff(newLFLeft, x.parent.lf_left);
+            const delta = usizeSub(newSizeLeft, x.parent.size_left);
+            const lf_delta = usizeSub(newLFLeft, x.parent.lf_left);
             x.parent.size_left = newSizeLeft;
             x.parent.lf_left = newLFLeft;
             updateTreeMetadata(newRoot, x.parent, delta, lf_delta);
@@ -545,8 +545,8 @@ fn recomputeTreeMetadata(root: *TreeNode, node: *TreeNode) void {
     // x is the node whose right subtree is changed.
     x = x.parent;
 
-    delta = usizeDiff(calculateSize(x.left), x.size_left);
-    lf_delta = usizeDiff(calculateLF(x.left), x.lf_left);
+    delta = usizeSub(calculateSize(x.left), x.size_left);
+    lf_delta = usizeSub(calculateLF(x.left), x.lf_left);
     x.size_left = usizeAdd(x.size_left, delta);
     x.lf_left = usizeAdd(x.lf_left, lf_delta);
 

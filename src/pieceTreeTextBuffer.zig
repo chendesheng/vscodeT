@@ -19,7 +19,7 @@ const Position = @import("position.zig").Position;
 const Rg = @import("range.zig");
 const Range = Rg.Range;
 const StringBuffer = PB.StringBuffer;
-const usizeDiff = PB.usizeDiff;
+const usizeSub = PB.usizeSub;
 const usizeAdd = PB.usizeAdd;
 const TextChange = @import("textChange.zig").TextChange;
 const replaceEOL = @import("eolCounter.zig").replaceEOL;
@@ -149,7 +149,7 @@ pub const PieceTreeTextBuffer = struct {
         const actualEOLLength: usize = if (actualEOL == .CRLF) 2 else 1;
 
         if (desiredEOLLength != actualEOLLength) {
-            const delta = usizeDiff(actualEOLLength, desiredEOLLength);
+            const delta = usizeSub(actualEOLLength, desiredEOLLength);
             const eolCount = range.endLineNumber - range.startLineNumber;
             eolOffsetCompensation = delta * @as(isize, @intCast(eolCount));
         }
@@ -380,14 +380,14 @@ pub const PieceTreeTextBuffer = struct {
 
         var reverseEdits: ?ArrayList(ReverseSingleEditOperation) = null;
         if (computeUndoEdits) {
-            var reverseRangeDeltaOffset: usize = 0;
+            var reverseRangeDeltaOffset: isize = 0;
             var reverseOperations = ArrayList(ReverseSingleEditOperation).init(allocator);
             for (operations.items, 0..) |op, i| {
                 const reverseRange = reverseRanges.items[i];
                 const bufferText = try self.getValueInRange(op.range, .TextDefined);
                 defer bufferText.deinit();
-                const reverseRangeOffset = op.rangeOffset + reverseRangeDeltaOffset;
-                reverseRangeDeltaOffset = usizeAdd(reverseRangeDeltaOffset, usizeDiff(op.text.len, bufferText.items.len));
+                const reverseRangeOffset = usizeAdd(op.rangeOffset, reverseRangeDeltaOffset);
+                reverseRangeDeltaOffset = reverseRangeDeltaOffset + usizeSub(op.text.len, bufferText.items.len);
 
                 try reverseOperations.append(ReverseSingleEditOperation{
                     .sortIndex = op.sortIndex,
@@ -710,4 +710,31 @@ test "insert" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("HelloHello", try buffer.getLineContent(1));
+}
+
+test "delete" {
+    const allocator = std.testing.allocator;
+    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+        try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
+    }, "", .LF, false, false, false, false);
+    defer buffer.deinit();
+
+    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+        ValidAnnotatedEditOperation{
+            .identifier = null,
+            .range = Range{
+                .startLineNumber = 1,
+                .startColumn = 1,
+                .endLineNumber = 1,
+                .endColumn = 5,
+            },
+            .text = null,
+            .forceMoveMarkers = false,
+            .isAutoWhitespaceEdit = false,
+            ._isTracked = false,
+        },
+    }, true, true);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("World\r\n", try buffer.getLineContent(1));
 }

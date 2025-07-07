@@ -1421,8 +1421,8 @@ pub const PieceTreeBase = struct {
         const newEndOffset = self.offsetInBuffer(piece.bufferIndex, newEnd);
         const newLineFeedCnt = self.getLineFeedCnt(piece.bufferIndex, piece.start, newEnd);
 
-        const lf_delta = usizeDiff(newLineFeedCnt, originalLFCnt);
-        const size_delta = usizeDiff(newEndOffset, originalEndOffset);
+        const lf_delta = usizeSub(newLineFeedCnt, originalLFCnt);
+        const size_delta = usizeSub(newEndOffset, originalEndOffset);
         const newLength: usize = @intCast(@as(isize, @intCast(piece.length)) + size_delta);
 
         node.piece = .{
@@ -1444,8 +1444,8 @@ pub const PieceTreeBase = struct {
         const newStart = pos;
         const newLineFeedCnt = self.getLineFeedCnt(piece.bufferIndex, newStart, piece.end);
         const newStartOffset = self.offsetInBuffer(piece.bufferIndex, newStart);
-        const lf_delta = usizeDiff(newLineFeedCnt, originalLFCnt);
-        const size_delta = usizeDiff(originalStartOffset, newStartOffset);
+        const lf_delta = usizeSub(newLineFeedCnt, originalLFCnt);
+        const size_delta = usizeSub(originalStartOffset, newStartOffset);
         const newLength: usize = @intCast(@as(isize, @intCast(piece.length)) + size_delta);
         node.piece = .{
             .bufferIndex = piece.bufferIndex,
@@ -1522,7 +1522,7 @@ pub const PieceTreeBase = struct {
         const newLength = node.piece.?.length + val.len;
         const oldLineFeedCnt = node.piece.?.lineFeedCnt;
         const newLineFeedCnt = self.getLineFeedCnt(0, node.piece.?.start, newEnd);
-        const lf_delta = usizeDiff(newLineFeedCnt, oldLineFeedCnt);
+        const lf_delta = usizeSub(newLineFeedCnt, oldLineFeedCnt);
 
         node.piece = .{
             .bufferIndex = node.piece.?.bufferIndex,
@@ -1910,7 +1910,7 @@ fn sliceLineFeeds(str: []const u8) []const u8 {
     return str[0 .. str.len - lineFeedLength];
 }
 
-pub fn usizeDiff(a: usize, b: usize) isize {
+pub fn usizeSub(a: usize, b: usize) isize {
     return @as(isize, @intCast(a)) - @as(isize, @intCast(b));
 }
 

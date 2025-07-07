@@ -1,4 +1,4 @@
-const usizeDiff = @import("pieceTreeBase.zig").usizeDiff;
+const usizeSub = @import("pieceTreeBase.zig").usizeSub;
 const Position = @import("position.zig").Position;
 
 pub const Range = struct {
@@ -32,11 +32,11 @@ pub fn compareRangesUsingEnds(a: *const Range, b: *const Range) isize {
     if (a.endLineNumber == b.endLineNumber) {
         if (a.endColumn == b.endColumn) {
             if (a.startLineNumber == b.startLineNumber) {
-                return usizeDiff(a.startColumn, b.startColumn);
+                return usizeSub(a.startColumn, b.startColumn);
             }
-            return usizeDiff(a.startLineNumber, b.startLineNumber);
+            return usizeSub(a.startLineNumber, b.startLineNumber);
         }
-        return usizeDiff(a.endColumn, b.endColumn);
+        return usizeSub(a.endColumn, b.endColumn);
     }
-    return usizeDiff(a.endLineNumber, b.endLineNumber);
+    return usizeSub(a.endLineNumber, b.endLineNumber);
 }
