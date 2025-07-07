@@ -261,7 +261,7 @@ pub const PieceTreeTextBuffer = struct {
         var mightContainNonBasicASCII = self._mightContainNonBasicASCII;
         var canReduceOperations = true;
 
-        var operations = ArrayList(*const ValidatedEditOperation).init(allocator);
+        var operations = ArrayList(ValidatedEditOperation).init(allocator);
         defer operations.deinit();
         for (rawOperations, 0..) |*op, i| {
             if (canReduceOperations and op._isTracked) {
@@ -309,7 +309,7 @@ pub const PieceTreeTextBuffer = struct {
                 }
             }
 
-            try operations.append(&ValidatedEditOperation{
+            try operations.append(ValidatedEditOperation{
                 .sortIndex = @intCast(i),
                 .identifier = op.identifier,
                 .range = validatedRange,
@@ -322,10 +322,12 @@ pub const PieceTreeTextBuffer = struct {
                 .forceMoveMarkers = op.forceMoveMarkers,
                 .isAutoWhitespaceEdit = op.isAutoWhitespaceEdit,
             });
+
+            std.debug.print("rangeOffset: {d}\n", .{operations.items[i].rangeOffset});
         }
 
         // Sort operations ascending
-        std.sort.heap(*const ValidatedEditOperation, operations.items, {}, _sortOpsAscending);
+        std.sort.heap(ValidatedEditOperation, operations.items, {}, _sortOpsAscending);
 
         var hasTouchingRanges = false;
         for (operations.items[0 .. operations.items.len - 1], 0..) |op, i| {
@@ -454,7 +456,7 @@ pub const PieceTreeTextBuffer = struct {
 
     // Transform operations such that they represent the same logic edit,
     // but that they also do not cause OOM crashes.
-    fn _reduceOperations(self: *PieceTreeTextBuffer, operations: *ArrayList(*const ValidatedEditOperation)) !void {
+    fn _reduceOperations(self: *PieceTreeTextBuffer, operations: *ArrayList(ValidatedEditOperation)) !void {
         if (operations.items.len < 1000) {
             // We know from empirical testing that a thousand edits work fine regardless of their shape.
             return;
@@ -470,10 +472,10 @@ pub const PieceTreeTextBuffer = struct {
         // e.g. a formatter inserting ridiculous ammounts of \n on a model with a single line
         // Therefore, the strategy is to collapse all the operations into a huge single edit operation
         try operations.resize(1);
-        operations.items[0] = &(try self._toSingleEditOperation(operations.items));
+        operations.items[0] = try self._toSingleEditOperation(operations.items);
     }
 
-    fn _toSingleEditOperation(self: *PieceTreeTextBuffer, operations: []*const ValidatedEditOperation) !ValidatedEditOperation {
+    fn _toSingleEditOperation(self: *PieceTreeTextBuffer, operations: []ValidatedEditOperation) !ValidatedEditOperation {
         const allocator = self._pieceTree.allocator;
         var forceMoveMarkers = false;
         const firstEditRange = operations[0].range;
@@ -530,10 +532,10 @@ pub const PieceTreeTextBuffer = struct {
         };
     }
 
-    fn _doApplyEdits(self: *PieceTreeTextBuffer, operations: []*const ValidatedEditOperation) !ArrayList(InternalModelContentChange) {
+    fn _doApplyEdits(self: *PieceTreeTextBuffer, operations: []ValidatedEditOperation) !ArrayList(InternalModelContentChange) {
         const allocator = self._pieceTree.allocator;
         const sortedOperations = operations;
-        std.sort.heap(*const ValidatedEditOperation, sortedOperations, {}, _sortOpDescending);
+        std.sort.heap(ValidatedEditOperation, sortedOperations, {}, _sortOpDescending);
         var contentChanges = ArrayList(InternalModelContentChange).init(allocator);
 
         // operations are from bottom to top
@@ -579,12 +581,12 @@ pub const PieceTreeTextBuffer = struct {
 };
 
 // Assumes `operations` are validated and sorted ascending
-fn _getInverseEditRanges(allocator: Allocator, operators: []*const ValidatedEditOperation) !ArrayList(Range) {
+fn _getInverseEditRanges(allocator: Allocator, operators: []ValidatedEditOperation) !ArrayList(Range) {
     var result = std.ArrayList(Range).init(allocator);
 
     var prevOpEndLineNumber: usize = 0;
     var prevOpEndColumn: usize = 0;
-    var prevOp: ?*const ValidatedEditOperation = null;
+    var prevOp: ?ValidatedEditOperation = null;
     for (operators) |op| {
         var startLineNumber: usize = undefined;
         var startColumn: usize = undefined;
@@ -643,7 +645,7 @@ fn _getInverseEditRanges(allocator: Allocator, operators: []*const ValidatedEdit
     return result;
 }
 
-fn _sortOpsAscending(context: void, a: *const ValidatedEditOperation, b: *const ValidatedEditOperation) bool {
+fn _sortOpsAscending(context: void, a: ValidatedEditOperation, b: ValidatedEditOperation) bool {
     _ = context;
 
     const r = Rg.compareRangesUsingEnds(&a.range, &b.range);
@@ -653,10 +655,10 @@ fn _sortOpsAscending(context: void, a: *const ValidatedEditOperation, b: *const 
     return r < 0;
 }
 
-fn _sortOpDescending(context: void, a: *const ValidatedEditOperation, b: *const ValidatedEditOperation) bool {
+fn _sortOpDescending(context: void, a: ValidatedEditOperation, b: ValidatedEditOperation) bool {
     _ = context;
 
-    const r = Rg.compareRangesUsingEnds(&a.range, &b.range);
+    const r = Rg.compareRangesUsingEnds(&b.range, &a.range);
     if (r == 0) {
         return b.sortIndex < a.sortIndex;
     }
@@ -712,11 +714,38 @@ test "insert" {
     try std.testing.expectEqualStrings("HelloHello", try buffer.getLineContent(1));
 }
 
+test "apply two inserts" {
+    const allocator = std.testing.allocator;
+    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+        try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
+    }, "", .LF, false, false, true, false);
+    defer buffer.deinit();
+
+    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+        ValidAnnotatedEditOperation.fromRangeAndText(Range{
+            .startLineNumber = 1,
+            .startColumn = 2,
+            .endLineNumber = 1,
+            .endColumn = 2,
+        }, "Hello"),
+        ValidAnnotatedEditOperation.fromRangeAndText(Range{
+            .startLineNumber = 2,
+            .startColumn = 1,
+            .endLineNumber = 2,
+            .endColumn = 1,
+        }, "nihao"),
+    }, true, true);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("HHelloello", try buffer.getLineContent(1));
+    try std.testing.expectEqualStrings("nihaoWorld", try buffer.getLineContent(2));
+}
+
 test "delete" {
     const allocator = std.testing.allocator;
     var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
         try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
-    }, "", .LF, false, false, false, false);
+    }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
     const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
@@ -736,7 +765,7 @@ test "delete cross line" {
     const allocator = std.testing.allocator;
     var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
         try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
-    }, "", .LF, false, false, false, false);
+    }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
     var result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{

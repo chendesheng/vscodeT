@@ -37,6 +37,16 @@ pub const ValidAnnotatedEditOperation = struct {
             ._isTracked = false,
         };
     }
+    pub fn fromRangeAndText(range: Range, text: []const u8) ValidAnnotatedEditOperation {
+        return ValidAnnotatedEditOperation{
+            .identifier = null,
+            .range = range,
+            .text = text,
+            .forceMoveMarkers = false,
+            .isAutoWhitespaceEdit = false,
+            ._isTracked = false,
+        };
+    }
 };
 
 pub const InternalModelContentChange = struct {
