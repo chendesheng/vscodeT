@@ -23,6 +23,7 @@ const usizeSub = PB.usizeSub;
 const usizeAdd = PB.usizeAdd;
 const TextChange = @import("textChange.zig").TextChange;
 const replaceEOL = @import("eolCounter.zig").replaceEOL;
+const safeUtf8Substring = @import("tui/utf8Helper.zig").safeUtf8Substring;
 
 const ValidatedEditOperation = struct {
     sortIndex: i64,
@@ -157,28 +158,26 @@ pub const PieceTreeTextBuffer = struct {
         return usizeAdd(endOffset - startOffset, eolOffsetCompensation);
     }
 
-    pub fn getCharacterCountInRange(self: *const PieceTreeTextBuffer, range: Range, eol: EndOfLinePreference) usize {
+    pub fn getCharacterCountInRange(self: *PieceTreeTextBuffer, range: Range, eol: EndOfLinePreference) !usize {
         if (self._mightContainNonBasicASCII) {
             // we must count by iterating
-            var result = 0;
+            var result: usize = 0;
 
             const fromLineNumber = range.startLineNumber;
             const toLineNumber = range.endLineNumber;
             for (fromLineNumber..toLineNumber + 1) |lineNumber| {
-                const lineContent = self.getLineContent(lineNumber);
+                const lineContent = try self.getLineContent(lineNumber);
+
                 const fromOffset = if (lineNumber == fromLineNumber) range.startColumn - 1 else 0;
                 const toOffset = if (lineNumber == toLineNumber) range.endColumn - 1 else lineContent.len;
-                // FIXME: utf8
-                for (fromOffset..toOffset) |offset| {
+                const utf8View = try std.unicode.Utf8View.init(safeUtf8Substring(lineContent, fromOffset, toOffset));
+                var iter = utf8View.iterator();
+                while (iter.nextCodepointSlice()) |_| {
                     result += 1;
-                    offset += 1;
                 }
             }
 
-            result += (switch (self._getEndOfLine(eol)) {
-                .LF => 1,
-                .CRLF => 2,
-            }) * (toLineNumber - fromLineNumber);
+            result += (if (self._getEndOfLine(eol) == .CRLF) @as(usize, @intCast(2)) else 1) * (toLineNumber - fromLineNumber);
 
             return result;
         }
@@ -795,4 +794,19 @@ test "replace" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("nihao", try buffer.getLineContent(1));
+}
+
+test "getCharacterCountInRange" {
+    const allocator = std.testing.allocator;
+    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+        try StringBuffer.init(allocator, "你好Hello\nWorld\r\n"),
+    }, "", .LF, false, false, false, false);
+    defer buffer.deinit();
+
+    try std.testing.expectEqual(5, try buffer.getCharacterCountInRange(Range{
+        .startLineNumber = 1,
+        .startColumn = 1,
+        .endLineNumber = 1,
+        .endColumn = 10,
+    }, .TextDefined));
 }
