@@ -498,12 +498,14 @@ pub const PieceTreeTextBuffer = struct {
             forceMoveMarkers = forceMoveMarkers or operation.forceMoveMarkers;
 
             // (1) -- Push old text
-            try result.append((try self.getValueInRange(Range{
+            const oldText = try self.getValueInRange(Range{
                 .startLineNumber = lastEndLineNumber,
                 .startColumn = lastEndColumn,
                 .endLineNumber = lastEndLineNumber,
                 .endColumn = lastEndColumn,
-            }, .TextDefined)).items);
+            }, .TextDefined);
+            defer oldText.deinit();
+            try result.append(oldText.items);
 
             // (2) -- Push new text
             if (operation.text.len > 0) {
@@ -656,13 +658,7 @@ fn _sortOpsAscending(context: void, a: ValidatedEditOperation, b: ValidatedEditO
 }
 
 fn _sortOpDescending(context: void, a: ValidatedEditOperation, b: ValidatedEditOperation) bool {
-    _ = context;
-
-    const r = Rg.compareRangesUsingEnds(&b.range, &a.range);
-    if (r == 0) {
-        return b.sortIndex < a.sortIndex;
-    }
-    return r < 0;
+    return _sortOpsAscending(context, b, a);
 }
 
 fn _sortReverseOpsAscending(context: void, a: ReverseSingleEditOperation, b: ReverseSingleEditOperation) bool {
