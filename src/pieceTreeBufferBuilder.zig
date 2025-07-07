@@ -38,7 +38,7 @@ pub const PieceTreeTextBufferFactory = struct {
         return .LF;
     }
 
-    fn create(self: *const PieceTreeTextBufferFactory, defaultEOL: EOL) !PieceTreeTextBuffer {
+    pub fn create(self: *const PieceTreeTextBufferFactory, defaultEOL: EOL) !PieceTreeTextBuffer {
         const eol = self._getEOL(defaultEOL);
         const chunks = self._chunks;
 

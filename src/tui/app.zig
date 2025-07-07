@@ -5,11 +5,12 @@ const posix = std.posix;
 const tui = @import("tui.zig");
 const Size = tui.Size;
 const Point = tui.Point;
-const UTF8ChunkReader = @import("utf8ChunkReader.zig").UTF8ChunkReader;
 const ArrayList = std.ArrayList;
-const StringBuffer = @import("../pieceTreeBase.zig").StringBuffer;
-const PieceTreeBase = @import("../pieceTreeBase.zig").PieceTreeBase;
 const logger = @import("logger.zig");
+const PieceTreeBufferBuilder = @import("../pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
+const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
+const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOperation;
+const Range = @import("../range.zig").Range;
 
 const MoveAction = enum {
     Up,
@@ -18,23 +19,25 @@ const MoveAction = enum {
     Right,
 };
 
-fn readFile(allocator: std.mem.Allocator, path: []const u8) !PieceTreeBase {
+var readerBuffer: [65535]u8 = undefined;
+
+fn readFile(allocator: std.mem.Allocator, path: []const u8) !PieceTreeTextBuffer {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
+    var builder = PieceTreeBufferBuilder.init(allocator);
     const reader = file.reader();
-
-    var chunkReader = UTF8ChunkReader.init(allocator, reader.any());
-    var buffers = ArrayList(StringBuffer).init(allocator);
-    defer buffers.deinit();
-
-    while (try chunkReader.readAlloc(65535)) |chunk| {
-        try buffers.append(try StringBuffer.initFromArrayList(allocator, chunk));
+    while (true) {
+        const len = try reader.readAll(&readerBuffer);
+        if (len == 0) {
+            break;
+        }
+        try builder.acceptChunk(readerBuffer[0..len]);
     }
 
-    var tree = try PieceTreeBase.init(allocator, buffers.items, .LF, false);
-    tree._logger = logger.writer();
-    return tree;
+    const factory = try builder.finish(false);
+    defer factory.deinit();
+    return try factory.create(.LF);
 }
 
 fn clamp(value: usize, min: usize, max: usize) usize {
@@ -53,7 +56,7 @@ fn getFirstArg() !ArrayList(u8) {
     return firstArg;
 }
 
-fn getLineNumberGutterWidth(tree: *const PieceTreeBase) usize {
+fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
     const lineCount = tree.getLineCount();
     const maxLineNumberWidth = std.fmt.count("{d}", .{lineCount});
     return maxLineNumberWidth + 2;
@@ -77,7 +80,7 @@ const View = struct {
         try tui.writeAll(out, try std.fmt.bufPrint(&buf, "{d} ", .{lineNumber}));
     }
 
-    fn drawVisibleLines(self: *const View, tree: *PieceTreeBase) !void {
+    fn drawVisibleLines(self: *const View, tree: *PieceTreeTextBuffer) !void {
         const out = self.writer;
         try tui.moveCursor(out, .{ .col = 1, .row = 1 });
         defer self.drawCursor(tree) catch {};
@@ -116,7 +119,7 @@ const View = struct {
         try tui.clearToEndOfScreen(out);
     }
 
-    fn drawCursor(self: *const View, tree: *const PieceTreeBase) !void {
+    fn drawCursor(self: *const View, tree: *const PieceTreeTextBuffer) !void {
         const out = self.writer;
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
         const row = self.cursorPosition.row - self.scrollPosition.row + 1;
@@ -124,7 +127,7 @@ const View = struct {
         try tui.moveCursor(out, .{ .row = row, .col = col });
     }
 
-    fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeBase) !void {
+    fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeTextBuffer) !void {
         var newCol = self.cursorPosition.col;
         var newRow = self.cursorPosition.row;
         switch (action) {
@@ -156,7 +159,7 @@ const View = struct {
         }
     }
 
-    fn updateCursorPosition(self: *View, tree: *const PieceTreeBase, offset: usize) !void {
+    fn updateCursorPosition(self: *View, tree: *const PieceTreeTextBuffer, offset: usize) !void {
         const pos = tree.getPositionAt(offset);
 
         if (pos.lineNumber < self.scrollPosition.row) {
@@ -168,21 +171,30 @@ const View = struct {
         self.cursorPosition.col = pos.column;
     }
 
-    fn insertAtCursor(self: *View, tree: *PieceTreeBase, text: []const u8) !void {
+    fn insertAtCursor(self: *View, tree: *PieceTreeTextBuffer, text: []const u8) !void {
         const offset = tree.getOffsetAt(self.cursorPosition.row, self.cursorPosition.col);
-        try tree.insert(offset, text, false);
+        _ = try tree.applyEdits(&[_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRangeAndText(Range{
+            .startLineNumber = self.cursorPosition.row,
+            .startColumn = self.cursorPosition.col,
+            .endLineNumber = self.cursorPosition.row,
+            .endColumn = self.cursorPosition.col,
+        }, text)}, false, false);
         try self.updateCursorPosition(tree, offset + text.len);
     }
 
-    fn deleteLeftOfCursor(self: *View, tree: *PieceTreeBase) !void {
-        const offset = tree.getOffsetAt(self.cursorPosition.row, self.cursorPosition.col);
-        if (offset > 0) {
-            try tree.delete(offset - 1, 1);
-            try self.updateCursorPosition(tree, offset - 1);
-        }
+    fn deleteLeftOfCursor(self: *View, tree: *PieceTreeTextBuffer) !void {
+        const startPos = self.cursorPosition;
+        const offset = tree.getOffsetAt(startPos.row, startPos.col);
+        try self.updateCursorPosition(tree, offset - 1);
+        _ = try tree.applyEdits(&[_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRange(Range{
+            .startLineNumber = self.cursorPosition.row,
+            .startColumn = self.cursorPosition.col,
+            .endLineNumber = startPos.row,
+            .endColumn = startPos.col,
+        })}, false, false);
     }
 
-    fn resize(self: *View, newSize: Size, tree: *const PieceTreeBase) !void {
+    fn resize(self: *View, newSize: Size, tree: *const PieceTreeTextBuffer) !void {
         self.size = newSize;
 
         const lineCount = tree.getLineCount();
