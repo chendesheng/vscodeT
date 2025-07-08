@@ -11,6 +11,7 @@ const PieceTreeBufferBuilder = @import("../pieceTreeBufferBuilder.zig").PieceTre
 const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOperation;
 const Range = @import("../range.zig").Range;
+const Utf8StreamIterator = @import("utf8Helper.zig").Utf8StreamIterator;
 
 const MoveAction = enum {
     Up,
@@ -205,12 +206,9 @@ const View = struct {
     }
 };
 
-fn equalPosition(a: Point, b: Point) bool {
-    return a.col == b.col and a.row == b.row;
-}
-
-fn equalSize(a: Size, b: Size) bool {
-    return a.width == b.width and a.height == b.height;
+fn initUtf8StreamIterator(fd: posix.fd_t) Utf8StreamIterator(16) {
+    const file = std.fs.File{ .handle = fd };
+    return Utf8StreamIterator(16).init(file.reader().any());
 }
 
 pub fn main() !void {
@@ -252,58 +250,62 @@ pub fn main() !void {
     try view.drawVisibleLines(&tree);
 
     var contentChanged = false;
+    var scrollChanged = false;
 
-    var buf: [3]u8 = undefined;
+    var reader = Utf8StreamIterator(16).init(std.io.getStdIn().reader().any());
     while (true) {
-        const n = try posix.read(posix.STDIN_FILENO, &buf);
-        if (n == 1) {
-            if (buf[0] == 'q') {
+        if (try reader.nextCodepointSlice()) |unit| {
+            var oldView = view;
+
+            if (unit[0] == 'q') {
                 break;
-            } else if (buf[0] == 0x7f) {
+            } else if (unit[0] == 0x7f) {
                 try view.deleteLeftOfCursor(&tree);
-            } else if (buf[0] == '\r') {
+                contentChanged = true;
+            } else if (unit[0] == '\r') {
                 try view.insertAtCursor(&tree, "\n");
-            } else {
-                try view.insertAtCursor(&tree, buf[0..1]);
-            }
-            contentChanged = true;
-        }
-
-        var newView = view;
-
-        if (n > 0) {
-            if (buf[0] == '\x1b' and buf[1] == '[') {
-                if (buf[2] == 'A') {
-                    try newView.moveCursor(.Up, &tree);
-                } else if (buf[2] == 'B') {
-                    try newView.moveCursor(.Down, &tree);
-                } else if (buf[2] == 'C') {
-                    try newView.moveCursor(.Right, &tree);
-                } else if (buf[2] == 'D') {
-                    try newView.moveCursor(.Left, &tree);
+                contentChanged = true;
+            } else if (unit[0] == '\x1b') {
+                if (try reader.nextCodepointSlice()) |unit2| {
+                    if (unit2[0] == '[') {
+                        if (try reader.nextCodepointSlice()) |unit3| {
+                            if (unit3[0] == 'A') {
+                                try view.moveCursor(.Up, &tree);
+                            } else if (unit3[0] == 'B') {
+                                try view.moveCursor(.Down, &tree);
+                            } else if (unit3[0] == 'C') {
+                                try view.moveCursor(.Right, &tree);
+                            } else if (unit3[0] == 'D') {
+                                try view.moveCursor(.Left, &tree);
+                            }
+                        }
+                    }
                 }
+            } else {
+                try view.insertAtCursor(&tree, unit);
+                contentChanged = true;
             }
-        }
 
-        var scrollChanged = !equalPosition(newView.scrollPosition, view.scrollPosition);
+            if (try tui.resizedSize()) |newSize| {
+                scrollChanged = true;
+                try view.resize(newSize, &tree);
+            } else {
+                scrollChanged = !oldView.scrollPosition.equals(view.scrollPosition);
+            }
 
-        if (try tui.resizedSize()) |newSize| {
-            scrollChanged = true;
-            try newView.resize(newSize, &tree);
-        }
+            if (scrollChanged) {
+                try view.drawVisibleLines(&tree);
+            }
 
-        const cursorChanged = !equalPosition(newView.cursorPosition, view.cursorPosition);
+            const cursorChanged = !oldView.cursorPosition.equals(view.cursorPosition);
+            if (cursorChanged) {
+                try view.drawCursor(&tree);
+            }
 
-        if (scrollChanged) {
-            view = newView;
-            try view.drawVisibleLines(&tree);
-        } else if (cursorChanged) {
-            view = newView;
-            try view.drawCursor(&tree);
-        } else if (contentChanged) {
-            view = newView;
-            try view.drawVisibleLines(&tree);
-            contentChanged = false;
+            if (contentChanged) {
+                try view.drawVisibleLines(&tree);
+                contentChanged = false;
+            }
         }
     }
 }

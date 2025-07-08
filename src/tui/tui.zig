@@ -57,11 +57,19 @@ pub fn exitAltScreen(out: anytype) !void {
 pub const Point = struct {
     col: usize,
     row: usize,
+
+    pub fn equals(self: *const Point, other: Point) bool {
+        return self.row == other.row and self.col == other.col;
+    }
 };
 
 pub const Size = struct {
     width: usize,
     height: usize,
+
+    pub fn equals(self: *const Size, other: Size) bool {
+        return self.width == other.width and self.height == other.height;
+    }
 };
 
 pub fn getTerminalSize() !Size {

@@ -321,8 +321,6 @@ pub const PieceTreeTextBuffer = struct {
                 .forceMoveMarkers = op.forceMoveMarkers,
                 .isAutoWhitespaceEdit = op.isAutoWhitespaceEdit,
             });
-
-            std.debug.print("rangeOffset: {d}\n", .{operations.items[i].rangeOffset});
         }
 
         // Sort operations ascending
