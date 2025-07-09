@@ -12,6 +12,7 @@ const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer.zig").PieceTreeTextB
 const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOperation;
 const Range = @import("../range.zig").Range;
 const Utf8StreamIterator = @import("utf8Helper.zig").Utf8StreamIterator;
+const ansi = @import("ansi.zig");
 
 const MoveAction = enum {
     Up,
@@ -186,6 +187,9 @@ const View = struct {
     fn deleteLeftOfCursor(self: *View, tree: *PieceTreeTextBuffer) !void {
         const startPos = self.cursorPosition;
         const offset = tree.getOffsetAt(startPos.row, startPos.col);
+        if (offset == 0) {
+            return;
+        }
         try self.updateCursorPosition(tree, offset - 1);
         _ = try tree.applyEdits(&[_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRange(Range{
             .startLineNumber = self.cursorPosition.row,
@@ -222,6 +226,9 @@ pub fn main() !void {
     tui.rememberOrigTermios(orig_termios);
     defer tui.disableRawMode(orig_termios) catch unreachable;
 
+    try tui.enableBracketedPaste(out);
+    defer tui.disableBracketedPaste(out) catch {};
+
     try tui.enterAltScreen(out);
     defer tui.exitAltScreen(out) catch {};
 
@@ -252,60 +259,74 @@ pub fn main() !void {
     var contentChanged = false;
     var scrollChanged = false;
 
-    var reader = Utf8StreamIterator(16).init(std.io.getStdIn().reader().any());
+    var inputBuffer = try ArrayList(u8).initCapacity(allocator, 1024);
+    defer inputBuffer.deinit();
+
     while (true) {
-        if (try reader.nextCodepointSlice()) |unit| {
-            var oldView = view;
+        inputBuffer.clearRetainingCapacity();
+        const input = try tui.readFd(posix.STDIN_FILENO, &inputBuffer);
+        const tokens = try ansi.tokenize(allocator, input);
+        defer tokens.deinit();
 
-            if (unit[0] == 'q') {
-                break;
-            } else if (unit[0] == 0x7f) {
-                try view.deleteLeftOfCursor(&tree);
-                contentChanged = true;
-            } else if (unit[0] == '\r') {
-                try view.insertAtCursor(&tree, "\n");
-                contentChanged = true;
-            } else if (unit[0] == '\x1b') {
-                if (try reader.nextCodepointSlice()) |unit2| {
-                    if (unit2[0] == '[') {
-                        if (try reader.nextCodepointSlice()) |unit3| {
-                            if (unit3[0] == 'A') {
-                                try view.moveCursor(.Up, &tree);
-                            } else if (unit3[0] == 'B') {
-                                try view.moveCursor(.Down, &tree);
-                            } else if (unit3[0] == 'C') {
-                                try view.moveCursor(.Right, &tree);
-                            } else if (unit3[0] == 'D') {
-                                try view.moveCursor(.Left, &tree);
-                            }
-                        }
+        var oldView = view;
+        var isPasting = false;
+
+        for (tokens.items) |token| {
+            switch (token) {
+                .string => {
+                    if (token.string[0] == 'q') {
+                        return;
+                    } else if (token.string[0] == 0x7f) {
+                        try view.deleteLeftOfCursor(&tree);
+                        contentChanged = true;
+                    } else if (token.string[0] == '\r') {
+                        try view.insertAtCursor(&tree, "\n");
+                        contentChanged = true;
+                    } else if (isPasting) {
+                        try view.insertAtCursor(&tree, token.string);
+                        contentChanged = true;
+                    } else {
+                        try view.insertAtCursor(&tree, token.string);
+                        contentChanged = true;
                     }
-                }
-            } else {
-                try view.insertAtCursor(&tree, unit);
-                contentChanged = true;
+                },
+                .csi => {
+                    switch (token.csi.final) {
+                        'A' => try view.moveCursor(.Up, &tree),
+                        'B' => try view.moveCursor(.Down, &tree),
+                        'C' => try view.moveCursor(.Right, &tree),
+                        'D' => try view.moveCursor(.Left, &tree),
+                        '~' => {
+                            if (token.isBracketedPasteStart()) {
+                                isPasting = true;
+                            } else if (token.isBracketedPasteEnd()) {
+                                isPasting = false;
+                            }
+                        },
+                        else => unreachable,
+                    }
+                },
             }
+        }
 
-            if (try tui.resizedSize()) |newSize| {
-                scrollChanged = true;
-                try view.resize(newSize, &tree);
-            } else {
-                scrollChanged = !oldView.scrollPosition.equals(view.scrollPosition);
-            }
+        if (try tui.resizedSize()) |newSize| {
+            scrollChanged = true;
+            try view.resize(newSize, &tree);
+        } else {
+            scrollChanged = !oldView.scrollPosition.equals(view.scrollPosition);
+        }
 
-            if (scrollChanged) {
-                try view.drawVisibleLines(&tree);
-            }
+        if (scrollChanged) {
+            try view.drawVisibleLines(&tree);
+        }
 
-            const cursorChanged = !oldView.cursorPosition.equals(view.cursorPosition);
-            if (cursorChanged) {
-                try view.drawCursor(&tree);
-            }
+        if (!oldView.cursorPosition.equals(view.cursorPosition)) {
+            try view.drawCursor(&tree);
+        }
 
-            if (contentChanged) {
-                try view.drawVisibleLines(&tree);
-                contentChanged = false;
-            }
+        if (contentChanged) {
+            try view.drawVisibleLines(&tree);
+            contentChanged = false;
         }
     }
 }

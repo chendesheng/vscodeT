@@ -23,7 +23,7 @@ pub fn enableRawMode() !termios {
     raw.oflag.OPOST = false;
 
     raw.cc[@intFromEnum(posix.system.V.MIN)] = 0;
-    raw.cc[@intFromEnum(posix.system.V.TIME)] = 1;
+    raw.cc[@intFromEnum(posix.system.V.TIME)] = 0;
 
     try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.FLUSH, raw);
 
@@ -36,6 +36,14 @@ pub fn enableLineWrap(out: anytype) !void {
 
 pub fn disableLineWrap(out: anytype) !void {
     try writeAll(out, "\x1b[?7l");
+}
+
+pub fn enableBracketedPaste(out: anytype) !void {
+    try writeAll(out, "\x1b[?2004h");
+}
+
+pub fn disableBracketedPaste(out: anytype) !void {
+    try writeAll(out, "\x1b[?2004l");
 }
 
 pub fn disableRawMode(orig_termios: termios) !void {
@@ -152,8 +160,12 @@ pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     if (g_orig_termios) |t| {
         _ = std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, t) catch {};
     }
-    std.debug.print("\x1b[?1049l", .{}); // leave alt-screen
-    std.debug.print("\x1b[?7h", .{}); // re-enable autowrap
+
+    const stdout = std.io.getStdOut();
+    const out = stdout.writer();
+
+    exitAltScreen(out) catch {};
+    enableLineWrap(out) catch {};
 
     std.debug.defaultPanic(msg, first_trace_addr);
 
@@ -181,4 +193,17 @@ pub fn installSigWinch() !void {
         .flags = 0,
     };
     posix.sigaction(posix.SIG.WINCH, &sa, null);
+}
+
+pub fn readFd(fd: posix.fd_t, buffer: *ArrayList(u8)) ![]const u8 {
+    var tmp: [32]u8 = undefined;
+    while (true) {
+        const n = try posix.read(fd, &tmp);
+        if (n > 0) {
+            try buffer.appendSlice(tmp[0..n]);
+        } else {
+            break;
+        }
+    }
+    return buffer.items;
 }
