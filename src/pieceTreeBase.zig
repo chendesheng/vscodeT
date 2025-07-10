@@ -366,11 +366,11 @@ pub const PieceTreeBase = struct {
             ._logger = logger,
         };
 
-        if (tree._logger != null) {
+        if (tree._logger) |w| {
             tree.log("init(allocator, &[_]StringBuffer{{", .{});
             for (chunks) |chunk| {
-                try chunk.logInit(tree._logger.?);
-                try tree._logger.?.print(",\n", .{});
+                try chunk.logInit(w);
+                try w.print(",\n", .{});
             }
             tree.log("}}, {s}, {s})\n", .{
                 if (eol == .CRLF) ".CRLF" else ".LF",
