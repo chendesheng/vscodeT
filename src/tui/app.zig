@@ -143,16 +143,14 @@ const View = struct {
             },
             .Left => {
                 newCol -= 1;
-                newCol = clamp(newCol, 1, tree.getLineLength(newRow) + 1);
             },
             .Right => {
                 newCol += 1;
-                newCol = clamp(newCol, 1, tree.getLineLength(newRow) + 1);
             },
         }
 
         self.cursorPosition.row = newRow;
-        self.cursorPosition.col = newCol;
+        self.cursorPosition.col = clamp(newCol, 1, tree.getLineLength(newRow) + 1);
 
         if (newRow < self.scrollPosition.row) {
             self.scrollPosition.row = newRow;
