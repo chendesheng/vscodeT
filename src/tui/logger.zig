@@ -23,7 +23,7 @@ pub fn write(text: []const u8) void {
     }
 }
 
-pub fn init(filepath: []const u8) !void {
+pub fn openLoggerFile(filepath: []const u8) !fs.File {
     const file = std.fs.cwd().openFile(filepath, .{
         .mode = .write_only,
     }) catch blk: {
@@ -31,8 +31,11 @@ pub fn init(filepath: []const u8) !void {
         break :blk try std.fs.cwd().createFile(filepath, .{});
     };
     try file.seekFromEnd(0);
+    return file;
+}
 
-    loggerFile = file;
+pub fn init(filepath: []const u8) !void {
+    loggerFile = try openLoggerFile(filepath);
 }
 
 pub fn deinit() void {

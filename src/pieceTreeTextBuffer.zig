@@ -57,7 +57,7 @@ pub const PieceTreeTextBuffer = struct {
             ._mightContainNonBasicASCII = !isBasicASCII,
             ._mightContainRTL = containsRTL,
             ._mightContainUnusualLineTerminators = containsUnusualLineTerminators,
-            ._pieceTree = try PieceTreeBase.init(allocator, chunks, eol, eolNormalized),
+            ._pieceTree = try PieceTreeBase.init(allocator, null, chunks, eol, eolNormalized),
         };
     }
 
