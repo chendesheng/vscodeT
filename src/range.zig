@@ -1,16 +1,146 @@
+const std = @import("std");
 const usizeSub = @import("pieceTreeBase.zig").usizeSub;
 const Position = @import("position.zig").Position;
+const fmt = std.fmt;
 
 pub const Range = struct {
+    //  Line number on which the range starts (starts at 1).
     startLineNumber: usize,
+    // Column on which the range starts in line `startLineNumber` (starts at 1).
     startColumn: usize,
+    // Line number on which the range ends.
     endLineNumber: usize,
+    // Column on which the range ends in line `endLineNumber`.
     endColumn: usize,
+
+    pub fn init(startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColumn: usize) Range {
+        if ((startLineNumber > endLineNumber) or (startLineNumber == endLineNumber and startColumn > endColumn)) {
+            return .{
+                .startLineNumber = endLineNumber,
+                .startColumn = endColumn,
+                .endLineNumber = startLineNumber,
+                .endColumn = startColumn,
+            };
+        } else {
+            return .{
+                .startLineNumber = startLineNumber,
+                .startColumn = startColumn,
+                .endLineNumber = endLineNumber,
+                .endColumn = endColumn,
+            };
+        }
+    }
 
     pub fn isEmpty(self: *const Range) bool {
         return self.startLineNumber == self.endLineNumber and self.startColumn == self.endColumn;
     }
 
+    // Test if `otherRange` is strictly in `range` (must start after, and end before). If the ranges are equal, will return false.
+    pub fn strictContainsRange(self: *const Range, otherRange: *const Range) bool {
+        if (otherRange.startLineNumber < self.startLineNumber or otherRange.endLineNumber < self.startLineNumber) {
+            return false;
+        }
+        if (otherRange.startLineNumber > self.endLineNumber or otherRange.endLineNumber > self.endLineNumber) {
+            return false;
+        }
+        if (otherRange.startLineNumber == self.startLineNumber and otherRange.startColumn <= self.startColumn) {
+            return false;
+        }
+        if (otherRange.endLineNumber == self.endLineNumber and otherRange.endColumn >= self.endColumn) {
+            return false;
+        }
+        return true;
+    }
+
+    // A reunion of the two ranges.
+    // The smallest position will be used as the start point, and the largest one as the end point.
+    pub fn plusRange(a: *const Range, b: *const Range) Range {
+        var startLineNumber: usize = undefined;
+        var startColumn: usize = undefined;
+        var endLineNumber: usize = undefined;
+        var endColumn: usize = undefined;
+
+        if (b.startLineNumber < a.startLineNumber) {
+            startLineNumber = b.startLineNumber;
+            startColumn = b.startColumn;
+        } else if (b.startLineNumber == a.startLineNumber) {
+            startLineNumber = b.startLineNumber;
+            startColumn = @min(b.startColumn, a.startColumn);
+        } else {
+            startLineNumber = a.startLineNumber;
+            startColumn = a.startColumn;
+        }
+
+        if (b.endLineNumber > a.endLineNumber) {
+            endLineNumber = b.endLineNumber;
+            endColumn = b.endColumn;
+        } else if (b.endLineNumber == a.endLineNumber) {
+            endLineNumber = b.endLineNumber;
+            endColumn = @max(b.endColumn, a.endColumn);
+        } else {
+            endLineNumber = a.endLineNumber;
+            endColumn = a.endColumn;
+        }
+
+        return Range{
+            .startLineNumber = startLineNumber,
+            .startColumn = startColumn,
+            .endLineNumber = endLineNumber,
+            .endColumn = endColumn,
+        };
+    }
+
+    // A intersection of the two ranges.
+    pub fn intersectRanges(a: *const Range, b: *const Range) ?Range {
+        var resultStartLineNumber = a.startLineNumber;
+        var resultStartColumn = a.startLineNumber;
+        var resultEndLineNumber = a.endLineNumber;
+        var resultEndColumn = a.endColumn;
+        const otherStartLineNumber = b.startLineNumber;
+        const otherStartColumn = b.startColumn;
+        const otherEndLineNumber = b.endLineNumber;
+        const otherEndColumn = b.endColumn;
+
+        if (resultStartLineNumber < otherStartLineNumber) {
+            resultStartLineNumber = otherStartLineNumber;
+            resultStartColumn = otherStartColumn;
+        } else if (resultStartLineNumber == otherStartLineNumber) {
+            resultStartColumn = @max(resultStartColumn, otherStartColumn);
+        }
+
+        if (resultEndLineNumber > otherEndLineNumber) {
+            resultEndLineNumber = otherEndLineNumber;
+            resultEndColumn = otherEndColumn;
+        } else if (resultEndLineNumber == otherEndLineNumber) {
+            resultEndColumn = @min(resultEndColumn, otherEndColumn);
+        }
+
+        // Check if selection is now empty
+        if (resultStartLineNumber > resultEndLineNumber) {
+            return null;
+        }
+        if (resultStartLineNumber == resultEndLineNumber and resultStartColumn > resultEndColumn) {
+            return null;
+        }
+        return Range{
+            .startLineNumber = resultStartLineNumber,
+            .startColumn = resultStartColumn,
+            .endLineNumber = resultEndLineNumber,
+            .endColumn = resultEndColumn,
+        };
+    }
+
+    // Test if range `a` equals `b`.
+    pub fn equalsRange(self: *const ?Range, other: *const ?Range) bool {
+        return (self != null and
+            other != null and
+            self.startLineNumber == other.startLineNumber and
+            self.startColumn == other.startColumn and
+            self.endLineNumber == other.endLineNumber and
+            self.endColumn == other.endColumn);
+    }
+
+    // Return the end position (which will be after or equal to the start position)
     pub fn getEndPosition(self: *const Range) Position {
         return Position{
             .lineNumber = self.endLineNumber,
@@ -18,13 +148,184 @@ pub const Range = struct {
         };
     }
 
+    // Return the start position (which will be before or equal to the end position)
     pub fn getStartPosition(self: *const Range) Position {
         return Position{
             .lineNumber = self.startLineNumber,
             .column = self.startColumn,
         };
     }
+
+    // Transform to a user presentable string representation.
+    pub fn toString(self: *const Range) ![]const u8 {
+        var buf: [1024]u8 = undefined;
+        return try fmt.bufPrint(&buf, "[{d},{d} -> {d},{d}]", .{ self.startLineNumber, self.startColumn, self.endLineNumber, self.endColumn });
+    }
+
+    // Create a new range using this range's start position, and using endLineNumber and endColumn as the end position.
+    pub fn setEndPosition(self: *Range, endLineNumber: usize, endColumn: usize) Range {
+        return Range{
+            .startLineNumber = self.startLineNumber,
+            .startColumn = self.startColumn,
+            .endLineNumber = endLineNumber,
+            .endColumn = endColumn,
+        };
+    }
+
+    // Create a new range using this range's end position, and using startLineNumber and startColumn as the start position.
+    pub fn setStartPosition(self: *Range, startLineNumber: usize, startColumn: usize) Range {
+        return Range{
+            .startLineNumber = startLineNumber,
+            .startColumn = startColumn,
+            .endLineNumber = self.endLineNumber,
+            .endColumn = self.endColumn,
+        };
+    }
+
+    // Create a new empty range using this range's end position.
+    pub fn collapseToEnd(self: *const Range) Range {
+        return Range{
+            .startLineNumber = self.endLineNumber,
+            .startColumn = self.endColumn,
+            .endLineNumber = self.endLineNumber,
+            .endColumn = self.endColumn,
+        };
+    }
+
+    // Moves the range by the given amount of lines.
+    pub fn delta(self: *const Range, lineCount: usize) Range {
+        return Range{
+            .startLineNumber = self.startLineNumber + lineCount,
+            .startColumn = self.startColumn,
+            .endLineNumber = self.endLineNumber + lineCount,
+            .endColumn = self.endColumn,
+        };
+    }
+
+    pub fn isSingleLine(self: *const Range) bool {
+        return self.startLineNumber == self.endLineNumber;
+    }
+
+    // Test if `position` is in `range`. If the position is at the edges, will return true.
+    pub fn containsPosition(self: *const Range, position: *const Position) bool {
+        if (position.lineNumber < self.startLineNumber or position.lineNumber > self.endLineNumber) {
+            return false;
+        }
+        if (position.lineNumber == self.startLineNumber and position.column < self.startColumn) {
+            return false;
+        }
+        if (position.lineNumber == self.endLineNumber and position.column > self.endColumn) {
+            return false;
+        }
+        return true;
+    }
+
+    // Test if `otherRange` is in `range`. If the ranges are equal, will return true.
+    pub fn containsRange(self: *const Range, otherRange: *const Range) bool {
+        if (otherRange.startLineNumber < self.startLineNumber or otherRange.endLineNumber < self.startLineNumber) {
+            return false;
+        }
+        if (otherRange.startLineNumber > self.endLineNumber or otherRange.endLineNumber > self.endLineNumber) {
+            return false;
+        }
+        if (otherRange.startLineNumber == self.startLineNumber and otherRange.startColumn < self.startColumn) {
+            return false;
+        }
+        if (otherRange.endLineNumber == self.endLineNumber and otherRange.endColumn > self.endColumn) {
+            return false;
+        }
+        return true;
+    }
 };
+
+// Create a new range from two positions.
+pub fn fromPositions(start: Position, end: ?Position) Range {
+    return Range{
+        .startLineNumber = start.lineNumber,
+        .startColumn = start.column,
+        .endLineNumber = end.lineNumber,
+        .endColumn = end.column,
+    };
+}
+
+// Test if the two ranges are touching in any way.
+pub fn areIntersectingOrTouching(a: *const Range, b: *const Range) bool {
+    // Check if `a` is before `b`
+    if (a.endLineNumber < b.startLineNumber or (a.endLineNumber == b.startLineNumber and a.endColumn < b.startColumn)) {
+        return false;
+    }
+
+    // Check if `b` is before `a`
+    if (b.endLineNumber < a.startLineNumber or (b.endLineNumber == a.startLineNumber and b.endColumn < a.startColumn)) {
+        return false;
+    }
+
+    // These ranges must intersect
+    return true;
+}
+
+// Test if the two ranges are intersecting. If the ranges are touching it returns true.
+pub fn areIntersecting(a: *const Range, b: *const Range) bool {
+    // Check if `a` is before `b`
+    if (a.endLineNumber < b.startLineNumber or (a.endLineNumber == b.startLineNumber and a.endColumn <= b.startColumn)) {
+        return false;
+    }
+
+    // Check if `b` is before `a`
+    if (b.endLineNumber < a.startLineNumber or (b.endLineNumber == a.startLineNumber and b.endColumn <= a.startColumn)) {
+        return false;
+    }
+
+    // These ranges must intersect
+    return true;
+}
+
+// Test if the two ranges are intersecting, but not touching at all.
+pub fn areOnlyIntersecting(a: *const Range, b: *const Range) bool {
+    // Check if `a` is before `b`
+    if (a.endLineNumber < (b.startLineNumber - 1) or (a.endLineNumber == b.startLineNumber and a.endColumn < (b.startColumn - 1))) {
+        return false;
+    }
+
+    // Check if `b` is before `a`
+    if (b.endLineNumber < (a.startLineNumber - 1) or (b.endLineNumber == a.startLineNumber and b.endColumn < (a.startColumn - 1))) {
+        return false;
+    }
+
+    // These ranges must intersect
+    return true;
+}
+
+// A function that compares ranges, useful for sorting ranges
+// It will first compare ranges on the startPosition and then on the endPosition
+pub fn compareRangesUsingStarts(a: *const Range, b: *const Range) isize {
+    if (a != null and b != null) {
+        const aStartLineNumber = a.startLineNumber | 0;
+        const bStartLineNumber = b.startLineNumber | 0;
+
+        if (aStartLineNumber == bStartLineNumber) {
+            const aStartColumn = a.startColumn | 0;
+            const bStartColumn = b.startColumn | 0;
+
+            if (aStartColumn == bStartColumn) {
+                const aEndLineNumber = a.endLineNumber | 0;
+                const bEndLineNumber = b.endLineNumber | 0;
+
+                if (aEndLineNumber == bEndLineNumber) {
+                    const aEndColumn = a.endColumn | 0;
+                    const bEndColumn = b.endColumn | 0;
+                    return aEndColumn - bEndColumn;
+                }
+                return aEndLineNumber - bEndLineNumber;
+            }
+            return aStartColumn - bStartColumn;
+        }
+        return aStartLineNumber - bStartLineNumber;
+    }
+    const aExists = if (a != null) 1 else 0;
+    const bExists = if (b != null) 1 else 0;
+    return aExists - bExists;
+}
 
 // A function that compares ranges, useful for sorting ranges
 // It will first compare ranges on the endPosition and then on the startPosition
@@ -39,4 +340,125 @@ pub fn compareRangesUsingEnds(a: *const Range, b: *const Range) isize {
         return usizeSub(a.endColumn, b.endColumn);
     }
     return usizeSub(a.endLineNumber, b.endLineNumber);
+}
+
+// Test if the range spans multiple lines.
+pub fn spansMultipleLines(range: *const Range) bool {
+    return range.endLineNumber > range.startLineNumber;
+}
+
+test "empty range" {
+    const s = Range.init(1, 1, 1, 1);
+    try std.testing.expectEqual(1, s.startLineNumber);
+    try std.testing.expectEqual(1, s.startColumn);
+    try std.testing.expectEqual(1, s.endLineNumber);
+    try std.testing.expectEqual(1, s.endColumn);
+    try std.testing.expectEqual(true, s.isEmpty());
+}
+
+test "swap start and stop same line" {
+    const s = Range.init(1, 2, 1, 1);
+    try std.testing.expectEqual(1, s.startLineNumber);
+    try std.testing.expectEqual(1, s.startColumn);
+    try std.testing.expectEqual(1, s.endLineNumber);
+    try std.testing.expectEqual(2, s.endColumn);
+    try std.testing.expectEqual(false, s.isEmpty());
+}
+
+test "swap start and stop" {
+    const s = Range.init(2, 1, 1, 2);
+    try std.testing.expectEqual(1, s.startLineNumber);
+    try std.testing.expectEqual(2, s.startColumn);
+    try std.testing.expectEqual(2, s.endLineNumber);
+    try std.testing.expectEqual(1, s.endColumn);
+    try std.testing.expectEqual(false, s.isEmpty());
+}
+
+test "no swap same line" {
+    const s = Range.init(1, 1, 1, 2);
+    try std.testing.expectEqual(1, s.startLineNumber);
+    try std.testing.expectEqual(1, s.startColumn);
+    try std.testing.expectEqual(1, s.endLineNumber);
+    try std.testing.expectEqual(2, s.endColumn);
+    try std.testing.expectEqual(false, s.isEmpty());
+}
+
+test "no swap" {
+    const s = Range.init(1, 1, 2, 1);
+    try std.testing.expectEqual(1, s.startLineNumber);
+    try std.testing.expectEqual(1, s.startColumn);
+    try std.testing.expectEqual(2, s.endLineNumber);
+    try std.testing.expectEqual(1, s.endColumn);
+    try std.testing.expectEqual(false, s.isEmpty());
+}
+
+test "compareRangesUsingEnds" {
+    var a: Range = undefined;
+    var b: Range = undefined;
+
+    a = Range.init(1, 1, 1, 3);
+    b = Range.init(1, 2, 1, 4);
+    try std.testing.expect(compareRangesUsingEnds(&a, &b) < 0);
+
+    a = Range.init(1, 1, 1, 3);
+    b = Range.init(1, 1, 1, 4);
+    try std.testing.expect(compareRangesUsingEnds(&a, &b) < 0);
+
+    a = Range.init(1, 2, 1, 3);
+    b = Range.init(1, 1, 1, 4);
+    try std.testing.expect(compareRangesUsingEnds(&a, &b) < 0);
+
+    a = Range.init(1, 1, 1, 4);
+    b = Range.init(1, 1, 1, 4);
+    try std.testing.expect(compareRangesUsingEnds(&a, &b) == 0);
+
+    a = Range.init(1, 2, 1, 4);
+    b = Range.init(1, 1, 1, 4);
+    try std.testing.expect(compareRangesUsingEnds(&a, &b) > 0);
+
+    a = Range.init(1, 1, 1, 5);
+    b = Range.init(1, 2, 1, 4);
+    try std.testing.expect(compareRangesUsingEnds(&a, &b) > 0);
+
+    a = Range.init(1, 1, 2, 4);
+    b = Range.init(1, 1, 1, 4);
+    try std.testing.expect(compareRangesUsingEnds(&a, &b) > 0);
+
+    a = Range.init(1, 2, 5, 1);
+    b = Range.init(1, 1, 1, 4);
+    try std.testing.expect(compareRangesUsingEnds(&a, &b) > 0);
+}
+
+test "containsPosition" {
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsPosition(&Position.init(1, 3)));
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsPosition(&Position.init(2, 1)));
+    try std.testing.expect(Range.init(2, 2, 5, 10).containsPosition(&Position.init(2, 2)));
+    try std.testing.expect(Range.init(2, 2, 5, 10).containsPosition(&Position.init(2, 3)));
+    try std.testing.expect(Range.init(2, 2, 5, 10).containsPosition(&Position.init(3, 1)));
+    try std.testing.expect(Range.init(2, 2, 5, 10).containsPosition(&Position.init(5, 9)));
+    try std.testing.expect(Range.init(2, 2, 5, 10).containsPosition(&Position.init(5, 10)));
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsPosition(&Position.init(5, 11)));
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsPosition(&Position.init(6, 1)));
+}
+
+test "containsRange" {
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsRange(&Range.init(1, 3, 2, 2)));
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsRange(&Range.init(2, 1, 2, 2)));
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsRange(&Range.init(2, 2, 5, 11)));
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsRange(&Range.init(2, 2, 6, 1)));
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsRange(&Range.init(5, 9, 6, 1)));
+    try std.testing.expect(!Range.init(2, 2, 5, 10).containsRange(&Range.init(5, 10, 6, 1)));
+    try std.testing.expect(Range.init(2, 2, 5, 10).containsRange(&Range.init(2, 2, 5, 10)));
+    try std.testing.expect(Range.init(2, 2, 5, 10).containsRange(&Range.init(2, 3, 5, 9)));
+    try std.testing.expect(Range.init(2, 2, 5, 10).containsRange(&Range.init(3, 100, 4, 100)));
+}
+
+test "areIntersecting" {
+    try std.testing.expect(!areIntersecting(&Range.init(2, 2, 3, 2), &Range.init(4, 2, 5, 2)));
+    try std.testing.expect(!areIntersecting(&Range.init(4, 2, 5, 2), &Range.init(2, 2, 3, 2)));
+    try std.testing.expect(!areIntersecting(&Range.init(4, 2, 5, 2), &Range.init(5, 2, 6, 2)));
+    try std.testing.expect(!areIntersecting(&Range.init(5, 2, 6, 2), &Range.init(4, 2, 5, 2)));
+    try std.testing.expect(areIntersecting(&Range.init(2, 2, 2, 7), &Range.init(2, 4, 2, 6)));
+    try std.testing.expect(areIntersecting(&Range.init(2, 2, 2, 7), &Range.init(2, 4, 2, 9)));
+    try std.testing.expect(areIntersecting(&Range.init(2, 4, 2, 9), &Range.init(2, 2, 2, 7)));
 }

@@ -4,6 +4,13 @@ pub const Position = struct {
     lineNumber: usize,
     column: usize,
 
+    pub fn init(line: usize, col: usize) Position {
+        return .{
+            .lineNumber = line,
+            .column = col,
+        };
+    }
+
     pub fn create(line: usize, col: usize) Position {
         return .{
             .lineNumber = line,
