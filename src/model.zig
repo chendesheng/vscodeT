@@ -222,3 +222,12 @@ const ModelOptionsChangedEvent = struct {
     trimAutoWhitespace: bool,
     bracketPairColorizationOptions: bool,
 };
+
+// Describes the behavior of decorations when typing/editing near their edges.
+// Note: Please do not edit the values, as they very carefully match `DecorationRangeBehavior`
+pub const TrackedRangeStickiness = enum(u2) {
+    AlwaysGrowsWhenTypingAtEdges = 0,
+    NeverGrowsWhenTypingAtEdges = 1,
+    GrowsOnlyWhenTypingBefore = 2,
+    GrowsOnlyWhenTypingAfter = 3,
+};
