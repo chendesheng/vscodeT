@@ -15,6 +15,13 @@ pub const UndoRedoElementType = enum {
 pub const UndoRedoElement = union(UndoRedoElementType) {
     Resource: ResourceUndoRedoElement,
     Workspace: WorkspaceUndoRedoElement,
+
+    pub fn confirmBeforeUndo(self: *UndoRedoElement) ?bool {
+        return switch (self.*) {
+            .Resource => |resource| resource.confirmBeforeUndo,
+            .Workspace => |workspace| workspace.confirmBeforeUndo,
+        };
+    }
 };
 
 pub const ResourceUndoRedoElement = struct {
@@ -99,4 +106,8 @@ pub const UndoRedoSource = struct {
     }
 
     pub const None = UndoRedoSource.init();
+};
+
+const UriComparisonKeyComputer = struct {
+    getComparisonKey: *const fn (self: *const UriComparisonKeyComputer, uri: Uri) []const u8,
 };

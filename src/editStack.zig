@@ -38,9 +38,7 @@ pub const EditStackElement = union(StackElementKind) {
             .singleModel => |singleModel| {
                 singleModel.open();
             },
-            .multiModel => |multiModel| {
-                multiModel.open();
-            },
+            .multiModel => {},
         }
     }
 
@@ -362,6 +360,7 @@ pub const MultiModelEditStackElement = struct {
     _isOpen: bool,
     _editStackElementsArr: ArrayList(SingleModelEditStackElement),
     _editStackElementsMap: std.HashMap(Uri, SingleModelEditStackElement, UriContext, 0.5),
+    _delegate: ?UndoRedoDelegate,
 
     pub fn init(label: []const u8, code: []const u8, editStackElements: []SingleModelEditStackElement) !MultiModelEditStackElement {
         const allocator = editStackElements[0].getAllocator();
@@ -377,6 +376,7 @@ pub const MultiModelEditStackElement = struct {
             ._isOpen = true,
             ._editStackElementsArr = arr,
             ._editStackElementsMap = editStackElementsMap,
+            ._delegate = null,
         };
     }
 
@@ -385,12 +385,14 @@ pub const MultiModelEditStackElement = struct {
         self._editStackElementsMap.deinit();
     }
 
-    pub fn prepareUndoRedo(self: *MultiModelEditStackElement) void {
-        self._isOpen = false;
+    pub fn setDelegate(self: *MultiModelEditStackElement, delegate: UndoRedoDelegate) void {
+        self._delegate = delegate;
     }
 
-    pub fn open(self: *MultiModelEditStackElement) void {
-        self._isOpen = true;
+    pub fn prepareUndoRedo(self: *MultiModelEditStackElement) void {
+        if (self._delegate) |delegate| {
+            delegate.prepareUndoRedo(self);
+        }
     }
 
     pub fn matchesResource(self: *MultiModelEditStackElement, resource: Uri) bool {
@@ -425,14 +427,15 @@ pub const MultiModelEditStackElement = struct {
 
     pub fn undo(self: *MultiModelEditStackElement) void {
         self._isOpen = false;
-        for (self._editStackElementsArr.items) |item| {
-            item.undo();
+
+        for (self._editStackElementsArr.items) |editStackElement| {
+            editStackElement.undo();
         }
     }
 
     pub fn redo(self: *MultiModelEditStackElement) void {
-        for (self._editStackElementsArr.items) |item| {
-            item.redo();
+        for (self._editStackElementsArr.items) |editStackElement| {
+            editStackElement.redo();
         }
     }
 
@@ -446,6 +449,14 @@ pub const MultiModelEditStackElement = struct {
 
     pub fn split(self: *MultiModelEditStackElement) []SingleModelEditStackElement {
         return self._editStackElementsArr.items;
+    }
+
+    pub fn toString(self: *MultiModelEditStackElement) !ArrayList(u8) {
+        return ArrayList(u8).init(self.getAllocator());
+    }
+
+    fn getAllocator(self: *MultiModelEditStackElement) Allocator {
+        return self._editStackElementsArr.items[0].getAllocator();
     }
 };
 
@@ -522,6 +533,10 @@ pub const EditStack = struct {
 // A callback that can compute the cursor state after applying a series of edit operations.
 // A callback that can compute the resulting cursors state after some edit operations have been executed.
 const CursorStateComputer = fn (inverseEditOperations: []ValidEditOperation) ?[]Selection;
+
+const UndoRedoDelegate = struct {
+    prepareUndoRedo: fn (self: *UndoRedoDelegate, element: *const MultiModelEditStackElement) void,
+};
 
 fn compareTextChangeWithIndex(a: struct { textChange: TextChange, index: usize }, b: struct { textChange: TextChange, index: usize }) bool {
     if (a.textChange.oldPosition == b.textChange.oldPosition) {
