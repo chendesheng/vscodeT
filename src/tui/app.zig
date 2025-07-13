@@ -202,8 +202,8 @@ const View = struct {
 
         const lineCount = tree.getLineCount();
 
-        if (self.scrollPosition.row + self.size.height > lineCount) {
-            self.scrollPosition.row = lineCount - self.size.height + 1;
+        if (self.scrollPosition.row + self.size.height > lineCount and lineCount + 1 > self.size.height) {
+            self.scrollPosition.row = lineCount + 1 - self.size.height;
         }
     }
 };
