@@ -7,12 +7,7 @@ pub const UndoRedo = struct {
     }
 };
 
-pub const UndoRedoElementType = enum {
-    Resource,
-    Workspace,
-};
-
-pub const UndoRedoElement = union(UndoRedoElementType) {
+pub const UndoRedoElement = union(enum) {
     Resource: ResourceUndoRedoElement,
     Workspace: WorkspaceUndoRedoElement,
 
@@ -110,4 +105,12 @@ pub const UndoRedoSource = struct {
 
 const UriComparisonKeyComputer = struct {
     getComparisonKey: *const fn (self: *const UriComparisonKeyComputer, uri: Uri) []const u8,
+
+    pub fn eql(self: *const UriComparisonKeyComputer, other: *const UriComparisonKeyComputer) bool {
+        return self.getComparisonKey == other.getComparisonKey;
+    }
+};
+
+const Disposable = struct {
+    dispose: *const fn (self: *Disposable) void,
 };

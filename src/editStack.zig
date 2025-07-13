@@ -3,6 +3,7 @@ const io = std.io;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Uri = std.Uri;
+const UriHashMap = @import("model.zig").UriHashMap;
 const TextModel = @import("textModel.zig").TextModel;
 const UndoRedoService = @import("undoRedoService.zig").UndoRedoService;
 const Selection = @import("selection.zig").Selection;
@@ -12,13 +13,10 @@ const compressConsecutiveTextChanges = @import("textChange.zig").compressConsecu
 const UndoRedoGroup = @import("undoRedo.zig").UndoRedoGroup;
 const SingleEditOperation = @import("editOperation.zig").SingleEditOperation;
 const ValidEditOperation = @import("model.zig").ValidEditOperation;
+const Disposable = @import("undoRedo.zig").Disposable;
+const uriToString = @import("model.zig").uriToString;
 
-pub const StackElementKind = enum {
-    singleModel,
-    multiModel,
-};
-
-pub const EditStackElement = union(StackElementKind) {
+pub const EditStackElement = union(enum) {
     singleModel: SingleModelEditStackElement,
     multiModel: MultiModelEditStackElement,
 
@@ -63,14 +61,53 @@ pub const EditStackElement = union(StackElementKind) {
             },
         }
     }
+
+    pub fn setModel(self: *EditStackElement, model: TextModelOrUri) void {
+        switch (self.*) {
+            .singleModel => |singleModel| {
+                singleModel.setModel(model);
+            },
+            .multiModel => |multiModel| {
+                multiModel.setModel(model);
+            },
+        }
+    }
+
+    pub fn undo(self: *EditStackElement) void {
+        switch (self.*) {
+            .singleModel => |singleModel| {
+                singleModel.undo();
+            },
+            .multiModel => |multiModel| {
+                multiModel.undo();
+            },
+        }
+    }
+
+    pub fn redo(self: *EditStackElement) void {
+        switch (self.*) {
+            .singleModel => |singleModel| {
+                singleModel.redo();
+            },
+            .multiModel => |multiModel| {
+                multiModel.redo();
+            },
+        }
+    }
+
+    pub fn toString(self: *EditStackElement) !ArrayList(u8) {
+        switch (self.*) {
+            .singleModel => |singleModel| {
+                return try singleModel.toString();
+            },
+            .multiModel => |multiModel| {
+                return try multiModel.toString();
+            },
+        }
+    }
 };
 
-pub const SingleModelEditStackDataKind = enum {
-    unserialized,
-    serialized,
-};
-
-pub const SingleModelEditStackData = union(SingleModelEditStackDataKind) {
+pub const SingleModelEditStackData = union(enum) {
     unserialized: SingleModelEditStackDataUnserialized,
     serialized: []const u8,
 };
@@ -203,33 +240,54 @@ pub const SingleModelEditStackDataUnserialized = struct {
     }
 };
 
-pub const SingleModelEditStackElement = struct {
+const TextModelOrUri = union(enum) {
     model: TextModel,
+    uri: Uri,
+
+    pub fn getUri(self: *TextModelOrUri) Uri {
+        switch (self.*) {
+            .model => |model| return model.uri(),
+            .uri => |uri| return uri,
+        }
+    }
+};
+
+pub const SingleModelEditStackElement = struct {
+    model: TextModelOrUri,
     _data: SingleModelEditStackData,
     label: []const u8,
     code: []const u8,
+    confirmBeforeUndo: ?bool,
+    allocator: Allocator,
 
-    pub fn getAllocator(self: *const SingleModelEditStackElement) Allocator {
-        return self.model.getAllocator();
-    }
-
-    pub fn init(label: []const u8, code: []const u8, model: TextModel, beforeCursorState: []Selection) SingleModelEditStackElement {
+    pub fn init(allocator: Allocator, label: []const u8, code: []const u8, model: TextModelOrUri, beforeCursorState: []Selection) SingleModelEditStackElement {
         return SingleModelEditStackElement{
+            .allocator = allocator,
             .model = model,
             ._data = SingleModelEditStackData{ .unserialized = SingleModelEditStackDataUnserialized.create(model, beforeCursorState) },
             .label = label,
             .code = code,
+            .confirmBeforeUndo = null,
         };
     }
 
     pub fn toString(self: *const SingleModelEditStackElement) !ArrayList(u8) {
-        const allocator = self.getAllocator();
-        const data = try SingleModelEditStackDataUnserialized.deserialize(allocator, self._data.serialized);
-        defer data.deinit();
+        const allocator = self.allocator;
+        const data = switch (self._data) {
+            .unserialized => |data| data,
+            .serialized => |data| try SingleModelEditStackDataUnserialized.deserialize(allocator, data),
+        };
+        defer {
+            switch (self._data) {
+                .unserialized => {},
+                .serialized => data.deinit(),
+            }
+        }
 
         var result = std.ArrayList(u8).init(allocator);
         for (data.changes.items) |change| {
-            try result.append(try change.toString(allocator));
+            try result.appendSlice(try change.toString(allocator));
+            try result.appendSlice(", ");
         }
         return result;
     }
@@ -241,12 +299,12 @@ pub const SingleModelEditStackElement = struct {
         return false;
     }
 
-    pub fn setModel(self: *SingleModelEditStackElement, model: TextModel) void {
+    pub fn setModel(self: *SingleModelEditStackElement, model: TextModelOrUri) void {
         self.model = model;
     }
 
     pub fn resource(self: *const SingleModelEditStackElement) Uri {
-        return self.model.uri();
+        return self.model.getUri();
     }
 
     pub fn canAppend(self: *const SingleModelEditStackElement, model: TextModel) bool {
@@ -278,7 +336,7 @@ pub const SingleModelEditStackElement = struct {
     pub fn open(self: *SingleModelEditStackElement) void {
         switch (self._data) {
             .serialized => |data| {
-                const allocator = self.getAllocator();
+                const allocator = self.allocator;
                 self._data = try SingleModelEditStackDataUnserialized.deserialize(allocator, data);
                 allocator.free(data);
             },
@@ -293,7 +351,7 @@ pub const SingleModelEditStackElement = struct {
                 dat.deinit();
             },
         }
-        const data = try SingleModelEditStackDataUnserialized.deserialize(self.getAllocator(), self._data.serialized);
+        const data = try SingleModelEditStackDataUnserialized.deserialize(self.allocator, self._data.serialized);
         defer data.deinit();
         self.model._applyUndo(data.changes, data.beforeEOL, data.beforeVersionId, data.beforeCursorState);
     }
@@ -305,7 +363,7 @@ pub const SingleModelEditStackElement = struct {
                 dat.deinit();
             },
         }
-        const data = try SingleModelEditStackDataUnserialized.deserialize(self.getAllocator(), self._data.serialized);
+        const data = try SingleModelEditStackDataUnserialized.deserialize(self.allocator, self._data.serialized);
         defer data.deinit();
         self.model._applyRedo(data.changes, data.afterEOL, data.afterVersionId, data.afterCursorState);
     }
@@ -314,7 +372,7 @@ pub const SingleModelEditStackElement = struct {
         switch (self._data) {
             .unserialized => |dat| {
                 const data = try dat.serialize();
-                defer self.getAllocator().free(data);
+                defer self.allocator.free(data);
                 return data.len + 168; // heap overhead, FIXME: is this the same in zig?
             },
             .serialized => |data| {
@@ -324,53 +382,25 @@ pub const SingleModelEditStackElement = struct {
     }
 };
 
-pub const UriContext = struct {
-    pub fn hash(self: @This(), s: Uri) u64 {
-        _ = self;
-        var buf: [32]u8 = undefined;
-        const stream = std.io.fixedBufferStream(&buf);
-        var writer = stream.writer();
-        if (s.host) |host| {
-            writer.writeInt(u64, std.hash.Wyhash.hash(0, host.raw), .big);
-        }
-        writer.writeInt(u64, std.hash.Wyhash.hash(0, s.path.raw), .big);
-        if (s.password) |password| {
-            writer.writeInt(u64, std.hash.Wyhash.hash(0, password.raw), .big);
-        }
-        if (s.query) |query| {
-            writer.writeInt(u64, std.hash.Wyhash.hash(0, query.raw), .big);
-        }
-        if (s.fragment) |fragment| {
-            writer.writeInt(u64, std.hash.Wyhash.hash(0, fragment.raw), .big);
-        }
-        return std.hash.Wyhash.hash(0, &buf);
-    }
-    pub fn eql(self: @This(), a: Uri, b: Uri) bool {
-        _ = self;
-        _ = a;
-        _ = b;
-        return false;
-    }
-};
-
 pub const MultiModelEditStackElement = struct {
+    allocator: Allocator,
     label: []const u8,
     code: []const u8,
 
     _isOpen: bool,
     _editStackElementsArr: ArrayList(SingleModelEditStackElement),
-    _editStackElementsMap: std.HashMap(Uri, SingleModelEditStackElement, UriContext, 0.5),
+    _editStackElementsMap: UriHashMap(SingleModelEditStackElement),
     _delegate: ?UndoRedoDelegate,
 
-    pub fn init(label: []const u8, code: []const u8, editStackElements: []SingleModelEditStackElement) !MultiModelEditStackElement {
-        const allocator = editStackElements[0].getAllocator();
-        const editStackElementsMap = std.HashMap(Uri, SingleModelEditStackElement, UriContext, 0.5).init(allocator);
+    pub fn init(allocator: Allocator, label: []const u8, code: []const u8, editStackElements: []SingleModelEditStackElement) !MultiModelEditStackElement {
+        const editStackElementsMap = UriHashMap(SingleModelEditStackElement).init(allocator);
         const arr = ArrayList(SingleModelEditStackElement).init(allocator);
         try arr.appendSlice(editStackElements);
         for (arr.items) |item| {
             try editStackElementsMap.put(item.resource(), item);
         }
         return MultiModelEditStackElement{
+            .allocator = allocator,
             .label = label,
             .code = code,
             ._isOpen = true,
@@ -389,20 +419,43 @@ pub const MultiModelEditStackElement = struct {
         self._delegate = delegate;
     }
 
-    pub fn prepareUndoRedo(self: *MultiModelEditStackElement) void {
+    pub fn prepareUndoRedo(self: *MultiModelEditStackElement) ?Disposable {
         if (self._delegate) |delegate| {
-            delegate.prepareUndoRedo(self);
+            return delegate.prepareUndoRedo(self);
         }
+        return null;
+    }
+
+    pub fn getMissingModels(self: *MultiModelEditStackElement) !ArrayList(Uri) {
+        var result = ArrayList(Uri).init(self.allocator);
+        for (self._editStackElementsArr.items) |editStackElement| {
+            switch (editStackElement.model) {
+                .model => {},
+                .uri => |uri| {
+                    try result.append(uri);
+                },
+            }
+        }
+        return result;
+    }
+
+    pub fn resources(self: *MultiModelEditStackElement) !ArrayList(Uri) {
+        var result = ArrayList(Uri).init(self.allocator);
+        var iter = self._editStackElementsMap.valueIterator();
+        while (iter.next()) |item| {
+            try result.append(item.resource());
+        }
+        return result;
     }
 
     pub fn matchesResource(self: *MultiModelEditStackElement, resource: Uri) bool {
         return self._editStackElementsMap.contains(resource);
     }
 
-    pub fn setModel(self: *MultiModelEditStackElement, model: TextModel) void {
-        const key = model.uri();
+    pub fn setModel(self: *MultiModelEditStackElement, model: TextModelOrUri) void {
+        const key = model.getUri();
         if (self._editStackElementsMap.contains(key)) {
-            self._editStackElementsMap.get(key)!.setModel(model);
+            self._editStackElementsMap.get(key).?.setModel(model);
         }
     }
 
@@ -440,9 +493,8 @@ pub const MultiModelEditStackElement = struct {
     }
 
     pub fn heapSize(self: *const MultiModelEditStackElement, resource: Uri) usize {
-        const item = self._editStackElementsMap.get(resource);
-        if (item) |item2| {
-            return item2.heapSize();
+        if (self._editStackElementsMap.get(resource)) |item| {
+            return item.heapSize();
         }
         return 0;
     }
@@ -452,11 +504,26 @@ pub const MultiModelEditStackElement = struct {
     }
 
     pub fn toString(self: *MultiModelEditStackElement) !ArrayList(u8) {
-        return ArrayList(u8).init(self.getAllocator());
-    }
+        const allocator = self.allocator;
+        const result = ArrayList(u8).init(allocator);
+        result.append('{');
+        for (self._editStackElementsArr.items, 0..) |editStackElement, index| {
+            const s = try editStackElement.toString();
+            defer s.deinit();
 
-    fn getAllocator(self: *MultiModelEditStackElement) Allocator {
-        return self._editStackElementsArr.items[0].getAllocator();
+            const url = try uriToString(editStackElement.resource(), allocator);
+            defer allocator.free(url);
+
+            try result.appendSlice(url);
+            try result.appendSlice(": ");
+            try result.appendSlice(s.items);
+
+            if (index < self._editStackElementsArr.items.len - 1) {
+                try result.appendSlice(", ");
+            }
+        }
+        result.append('}');
+        return result;
     }
 };
 
@@ -535,7 +602,7 @@ pub const EditStack = struct {
 const CursorStateComputer = fn (inverseEditOperations: []ValidEditOperation) ?[]Selection;
 
 const UndoRedoDelegate = struct {
-    prepareUndoRedo: fn (self: *UndoRedoDelegate, element: *const MultiModelEditStackElement) void,
+    prepareUndoRedo: fn (self: *UndoRedoDelegate, element: *const MultiModelEditStackElement) ?Disposable,
 };
 
 fn compareTextChangeWithIndex(a: struct { textChange: TextChange, index: usize }, b: struct { textChange: TextChange, index: usize }) bool {

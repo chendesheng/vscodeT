@@ -12,12 +12,7 @@ const ArrayList = std.ArrayList;
 // intermediates  = { 0x20..0x2F }   ; optional
 // final         = 0x40..0x7E      ; mandatory
 
-pub const AnsiTokenType = enum(u2) {
-    string,
-    csi,
-};
-
-pub const AnsiToken = union(AnsiTokenType) {
+pub const AnsiToken = union(enum) {
     pub const Csi = struct {
         parameters: []const u8,
         intermediate: []const u8,
