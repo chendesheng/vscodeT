@@ -619,11 +619,12 @@ pub const UndoRedoService = struct {
                 self._pushElement(ResourceStackElement.init(resourceStackElement, resourceLabel, strResource, group.id, group.nextOrder(), source.id, source.nextOrder()));
             },
             .workspaceStackElement => |workspaceStackElement| {
-                var seen = std.AutoHashMap(Uri, void).init(std.heap.page_allocator);
+                const allocator = self._uriComparisonKeyComputers.allocator;
+                var seen = std.StringHashMap(void).init(allocator);
                 defer seen.deinit();
-                var resourceLabels = ArrayList(Uri).init(std.heap.page_allocator);
+                var resourceLabels = ArrayList(Uri).init(allocator);
                 defer resourceLabels.deinit();
-                var strResources = ArrayList(Uri).init(std.heap.page_allocator);
+                var strResources = ArrayList(Uri).init(allocator);
                 defer strResources.deinit();
                 for (workspaceStackElement.resources) |resource| {
                     const resourceLabel = getResourceLabel(resource);
@@ -676,7 +677,7 @@ pub const UndoRedoService = struct {
 
     fn _splitPastWorkspaceElement(self: *UndoRedoService, toRemove: WorkspaceStackElement, ignoreResources: ?RemovedResources) !void {
         const individualArr = toRemove.actual.split();
-        var individualMap = std.AutoHashMap(Uri, ResourceStackElement).init(std.heap.page_allocator);
+        var individualMap = std.StringHashMap(ResourceStackElement).init(self._uriComparisonKeyComputers.allocator);
         defer individualMap.deinit();
         for (individualArr) |_element| {
             const resourceLabel = getResourceLabel(_element.resource);
@@ -696,7 +697,7 @@ pub const UndoRedoService = struct {
 
     fn _splitFutureWorkspaceElement(self: *UndoRedoService, toRemove: WorkspaceStackElement, ignoreResources: ?RemovedResources) !void {
         const individualArr = toRemove.actual.split();
-        var individualMap = std.AutoHashMap(Uri, ResourceStackElement).init(std.heap.page_allocator);
+        var individualMap = std.StringHashMap(ResourceStackElement).init(self._uriComparisonKeyComputers.allocator);
         defer individualMap.deinit();
         for (individualArr) |_element| {
             const resourceLabel = getResourceLabel(_element.resource);
