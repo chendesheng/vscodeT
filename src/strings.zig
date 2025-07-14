@@ -126,3 +126,30 @@ test "escapeNewLine" {
     defer allocator.free(result2);
     try std.testing.expectEqualStrings("Hello\\nWorld\\r\\n", result2);
 }
+
+pub fn singleLetterHash(n: u64) u8 {
+    const LETTERS_CNT: u8 = ('Z' - 'A' + 1);
+
+    const n1 = @as(u8, @intCast(@mod(n, @as(u64, @intCast(2 * LETTERS_CNT)))));
+
+    if (n1 < LETTERS_CNT) {
+        return 'a' + n1;
+    }
+
+    return 'A' + n1 - LETTERS_CNT;
+}
+
+test "singleLetterHash" {
+    for (0..25, 'a'..'z') |i, c| {
+        try std.testing.expectEqual(c, singleLetterHash(i));
+    }
+    for (26..51, 'A'..'Z') |i, c| {
+        try std.testing.expectEqual(c, singleLetterHash(i));
+    }
+    for (52..77, 'a'..'z') |i, c| {
+        try std.testing.expectEqual(c, singleLetterHash(i));
+    }
+    for (78..103, 'A'..'Z') |i, c| {
+        try std.testing.expectEqual(c, singleLetterHash(i));
+    }
+}

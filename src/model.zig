@@ -430,3 +430,175 @@ test "UriHashMap" {
     try map.put(uri2, 2);
     try std.testing.expectEqual(map.get(uri2), 2);
 }
+
+// Configures text that is injected into the view without changing the underlying document.
+pub const InjectedTextOptions = struct {
+    // Sets the text to inject. Must be a single line.
+    content: []const u8,
+
+    // @internal
+    // tokens: ?[]TokenArray,
+
+    // If set, the decoration will be rendered inline with the text with this CSS class name.
+    inlineClassName: ?[]const u8,
+
+    // If there is an `inlineClassName` which affects letter spacing.
+    inlineClassNameAffectsLetterSpacing: bool,
+
+    // This field allows to attach data to this injected text.
+    // The data can be read when injected texts at a given position are queried.
+    attachedData: ?*anyopaque,
+
+    // Configures cursor stops around injected text.
+    // Defaults to {@link InjectedTextCursorStops.Both}.
+    cursorStops: ?InjectedTextCursorStops,
+};
+
+pub const InjectedTextCursorStops = enum {
+    Both,
+    Right,
+    Left,
+    None,
+};
+
+// Vertical Lane in the overview ruler of the editor.
+pub const OverviewRulerLane = enum(u3) {
+    Left = 1,
+    Center = 2,
+    Right = 4,
+    Full = 7,
+};
+
+// Vertical Lane in the glyph margin of the editor.
+pub const GlyphMarginLane = enum(u2) {
+    Left = 1,
+    Center = 2,
+    Right = 3,
+};
+
+// Position in the minimap to render the decoration.
+pub const MinimapPosition = enum(u2) {
+    Inline = 1,
+    Gutter = 2,
+};
+
+// Section header style.
+pub const MinimapSectionHeaderStyle = enum(u2) {
+    Normal = 1,
+    Underlined = 2,
+};
+
+// Options for rendering a model decoration in the overview ruler.
+pub const ModelDecorationOverviewRulerOptions = struct {
+    // The position in the overview ruler.
+    position: OverviewRulerLane,
+};
+
+// Options for rendering a model decoration in the minimap.
+pub const ModelDecorationMinimapOptions = struct {
+    // The position in the minimap.
+    position: MinimapPosition,
+    // If the decoration is for a section header, which header style.
+    sectionHeaderStyle: ?MinimapSectionHeaderStyle,
+    // If the decoration is for a section header, the header text.
+    sectionHeaderText: ?[]u8,
+};
+
+pub const ModelDecorationGlyphMarginOptions = struct {
+    // The position in the glyph margin.
+    position: GlyphMarginLane,
+
+    // Whether the glyph margin lane in {@link position} should be rendered even
+    // outside of this decoration's range.
+    persistLane: ?bool,
+};
+
+// Options for a model decoration.
+pub const ModelDecorationOptions = struct {
+    // A debug description that can be used for inspecting model decorations.
+    // @internal
+    description: []const u8,
+    // Customize the growing behavior of the decoration when typing at the edges of the decoration.
+    // Defaults to TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges
+    stickiness: ?TrackedRangeStickiness,
+    // CSS class name describing the decoration.
+    className: ?[]const u8,
+    // Indicates whether the decoration should span across the entire line when it continues onto the next line.
+    shouldFillLineOnLineBreak: ?bool,
+    blockClassName: ?[]const u8,
+    // Indicates if this block should be rendered after the last line.
+    // In this case, the range must be empty and set to the last line.
+    blockIsAfterEnd: ?bool,
+    blockDoesNotCollapse: ?bool,
+    blockPadding: ?[4]usize,
+    // Message to be rendered when hovering over the glyph margin decoration.
+    glyphMarginHoverMessage: ?[]const u8,
+    // Array of MarkdownString to render as the decoration message.
+    hoverMessage: ?[]const u8,
+    // Array of MarkdownString to render as the line number message.
+    lineNumberHoverMessage: ?[]const u8,
+    // Should the decoration expand to encompass a whole line.
+    isWholeLine: ?bool,
+    // Always render the decoration (even when the range it encompasses is collapsed).
+    showIfCollapsed: ?bool,
+    // Collapse the decoration if its entire range is being replaced via an edit.
+    // @internal
+    collapseOnReplaceEdit: ?bool,
+    // Specifies the stack order of a decoration.
+    // A decoration with greater stack order is always in front of a decoration with
+    // a lower stack order when the decorations are on the same line.
+    zIndex: ?usize,
+    // If set, render this decoration in the overview ruler.
+    overviewRuler: ?ModelDecorationOverviewRulerOptions,
+    // If set, render this decoration in the minimap.
+    minimap: ?ModelDecorationMinimapOptions,
+    // If set, the decoration will be rendered in the glyph margin with this CSS class name.
+    glyphMarginClassName: ?[]const u8,
+    // If set and the decoration has {@link glyphMarginClassName} set, render this decoration
+    // with the specified {@link IModelDecorationGlyphMarginOptions} in the glyph margin.
+    glyphMargin: ?ModelDecorationGlyphMarginOptions,
+    // If set, the decoration will override the line height of the lines it spans. Maximum value is 300px.
+    lineHeight: ?usize,
+    // If set, the decoration will be rendered in the lines decorations with this CSS class name.
+    linesDecorationsClassName: ?[]const u8,
+    // Controls the tooltip text of the line decoration.
+    linesDecorationsTooltip: ?[]const u8,
+    // If set, the decoration will be rendered on the line number.
+    lineNumberClassName: ?[]const u8,
+    // If set, the decoration will be rendered in the lines decorations with
+    firstLineDecorationClassName: ?[]const u8,
+    // If set, the decoration will be rendered in the margin (covering its full width) with this CSS class name.
+    marginClassName: ?[]const u8,
+    // If set, the decoration will be rendered inline with the text with this CSS class name.
+    // Please use this only for CSS rules that must impact the text. For example, use `className`
+    // to have a background color decoration.
+    inlineClassName: ?[]const u8,
+    // If there is an `inlineClassName` which affects letter spacing.
+    inlineClassNameAffectsLetterSpacing: ?bool,
+    // If set, the decoration will be rendered before the text with this CSS class name.
+    beforeContentClassName: ?[]const u8,
+    // If set, the decoration will be rendered after the text with this CSS class name.
+    afterContentClassName: ?[]const u8,
+    // If set, text will be injected in the view after the range.
+    after: ?InjectedTextOptions,
+    // If set, text will be injected in the view before the range.
+    before: ?InjectedTextOptions,
+    // If set, this decoration will not be rendered for comment tokens.
+    // @internal
+    hideInCommentTokens: ?bool,
+    // If set, this decoration will not be rendered for string tokens.
+    // @internal
+    hideInStringTokens: ?bool,
+};
+
+// A decoration in the model.
+pub const ModelDecoration = struct {
+    // Identifier for a decoration.
+    id: []const u8,
+    // Identifier for a decoration's owner.
+    ownerId: usize,
+    // Range that this decoration covers.
+    range: Range,
+    // Options associated with this decoration.
+    options: ModelDecorationOptions,
+};

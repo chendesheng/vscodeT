@@ -2,7 +2,7 @@ const std = @import("std");
 const Uri = std.Uri;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const UndoRedoElement = @import("undoRedo.zig").UndoRedoElement;
+const EditStackElement = @import("editStack.zig").EditStackElement;
 const UndoRedoGroup = @import("undoRedo.zig").UndoRedoGroup;
 const UndoRedoSource = @import("undoRedo.zig").UndoRedoSource;
 const UriContext = @import("editStack.zig").UriContext;
@@ -45,7 +45,7 @@ const WorkspaceVerificationError = struct {
 
 const ResourceStackElement = struct {
     id: u64,
-    actual: UndoRedoElement,
+    actual: EditStackElement,
     label: []const u8,
     confirmBeforeUndo: bool,
 
@@ -59,7 +59,7 @@ const ResourceStackElement = struct {
     sourceOrder: u64,
     isValid: bool,
 
-    pub fn init(actual: UndoRedoElement, resourceLabel: []const u8, strResource: []const u8, groupId: u64, groupOrder: u64, sourceId: u64, sourceOrder: u64) ResourceStackElement {
+    pub fn init(actual: EditStackElement, resourceLabel: []const u8, strResource: []const u8, groupId: u64, groupOrder: u64, sourceId: u64, sourceOrder: u64) ResourceStackElement {
         stackElementCount += 1;
         return ResourceStackElement{
             .id = stackElementCount,
@@ -145,7 +145,7 @@ const RemovedResources = struct {
 
 const WorkspaceStackElement = struct {
     id: u64,
-    actual: UndoRedoElement,
+    actual: EditStackElement,
     label: []const u8,
     confirmBeforeUndo: bool,
 
@@ -158,7 +158,7 @@ const WorkspaceStackElement = struct {
     removedResources: ?RemovedResources,
     invalidatedResources: ?RemovedResources,
 
-    pub fn init(actual: UndoRedoElement, resourceLabels: []const []const u8, strResources: []const []const u8, groupId: u64, groupOrder: u64, sourceId: u64, sourceOrder: u64) WorkspaceStackElement {
+    pub fn init(actual: EditStackElement, resourceLabels: []const []const u8, strResources: []const []const u8, groupId: u64, groupOrder: u64, sourceId: u64, sourceOrder: u64) WorkspaceStackElement {
         stackElementCount += 1;
         return WorkspaceStackElement{
             .id = stackElementCount,
@@ -339,7 +339,7 @@ const ResourceEditStack = struct {
         }
     }
 
-    pub fn setElementsValidFlag(self: *ResourceEditStack, isValid: bool, filter: fn (element: UndoRedoElement) bool) void {
+    pub fn setElementsValidFlag(self: *ResourceEditStack, isValid: bool, filter: fn (element: EditStackElement) bool) void {
         for (self._past.items) |element| {
             if (filter(element.actual)) {
                 self._setElementValidFlag(element, isValid);
@@ -433,9 +433,9 @@ const ResourceEditStack = struct {
     }
 
     pub fn getElements(self: *ResourceEditStack) PastFutureElements {
-        var past = ArrayList(UndoRedoElement).init(self.getAllocator());
+        var past = ArrayList(EditStackElement).init(self.getAllocator());
         defer past.deinit();
-        var future = ArrayList(UndoRedoElement).init(self.getAllocator());
+        var future = ArrayList(EditStackElement).init(self.getAllocator());
         defer future.deinit();
 
         for (self._past.items) |element| {
@@ -611,7 +611,7 @@ pub const UndoRedoService = struct {
         std.debug.print("{s}", .{str.items});
     }
 
-    pub fn pushElement(self: *UndoRedoService, element: UndoRedoElement, group: UndoRedoGroup, source: UndoRedoSource) void {
+    pub fn pushElement(self: *UndoRedoService, element: EditStackElement, group: UndoRedoGroup, source: UndoRedoSource) void {
         switch (element) {
             .resourceStackElement => |resourceStackElement| {
                 const resourceLabel = getResourceLabel(resourceStackElement.resource);
@@ -662,7 +662,7 @@ pub const UndoRedoService = struct {
         }
     }
 
-    pub fn getLastElement(self: *UndoRedoService, resource: Uri) ?UndoRedoElement {
+    pub fn getLastElement(self: *UndoRedoService, resource: Uri) ?EditStackElement {
         const strResource = self.getUriComparisonKey(resource);
         if (self._editStacks.contains(strResource)) {
             const editStack = self._editStacks.get(strResource).?;
@@ -727,7 +727,7 @@ pub const UndoRedoService = struct {
         }
     }
 
-    pub fn setElementsValidFlag(self: *UndoRedoService, resource: Uri, isValid: bool, filter: fn (element: UndoRedoElement) bool) void {
+    pub fn setElementsValidFlag(self: *UndoRedoService, resource: Uri, isValid: bool, filter: fn (element: EditStackElement) bool) void {
         const strResource = self.getUriComparisonKey(resource);
         if (self._editStacks.contains(strResource)) {
             const editStack = self._editStacks.get(strResource).?;

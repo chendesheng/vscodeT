@@ -1,45 +1,6 @@
 const std = @import("std");
 const Uri = std.Uri;
-
-pub const UndoRedo = struct {
-    pub fn init() UndoRedo {
-        return UndoRedo{};
-    }
-};
-
-pub const UndoRedoElement = union(enum) {
-    Resource: ResourceUndoRedoElement,
-    Workspace: WorkspaceUndoRedoElement,
-
-    pub fn confirmBeforeUndo(self: *UndoRedoElement) ?bool {
-        return switch (self.*) {
-            .Resource => |resource| resource.confirmBeforeUndo,
-            .Workspace => |workspace| workspace.confirmBeforeUndo,
-        };
-    }
-};
-
-pub const ResourceUndoRedoElement = struct {
-    // The resource impacted by this element.
-    resource: Uri,
-    // A user presentable label. May be localized.
-    label: []const u8,
-    // A code describing the operation. Will not be localized.
-    code: []const u8,
-    // Show a message to the user confirming when trying to undo this element
-    confirmBeforeUndo: ?bool,
-};
-
-pub const WorkspaceUndoRedoElement = struct {
-    // The resources impacted by this element.
-    resources: []const Uri,
-    // A user presentable label. May be localized.
-    label: []const u8,
-    // A code describing the operation. Will not be localized.
-    code: []const u8,
-    // Show a message to the user confirming when trying to undo this element
-    confirmBeforeUndo: ?bool,
-};
+const EditStackElement = @import("editStack.zig").EditStackElement;
 
 pub const ResourceEditStackSnapshot = struct {
     resource: Uri,
@@ -73,8 +34,8 @@ pub const UndoRedoGroup = struct {
 };
 
 pub const PastFutureElements = struct {
-    past: []const UndoRedoElement,
-    future: []const UndoRedoElement,
+    past: []const EditStackElement,
+    future: []const EditStackElement,
 };
 
 pub const UndoRedoSource = struct {
