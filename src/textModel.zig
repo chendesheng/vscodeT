@@ -15,6 +15,8 @@ const ValidEditOperation = Model.ValidEditOperation;
 const IdentifiedSingleEditOperation = Model.IdentifiedSingleEditOperation;
 const ValidAnnotatedEditOperation = Model.ValidAnnotatedEditOperation;
 const ModelDecoration = Model.ModelDecoration;
+const ModelDecorationOptions = Model.ModelDecorationOptions;
+const ModelDeltaDecoration = Model.ModelDeltaDecoration;
 const ModelContentChangedEvent = @import("textModelEvents.zig").ModelContentChangedEvent;
 const ModelRawContentChangedEvent = @import("textModelEvents.zig").ModelRawContentChangedEvent;
 const PieceTreeTextBuffer = @import("pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
@@ -44,7 +46,16 @@ const LineInjectedText = @import("textModelEvents.zig").LineInjectedText;
 const ModelRawLineChanged = @import("textModelEvents.zig").ModelRawLineChanged;
 const ModelRawLinesDeleted = @import("textModelEvents.zig").ModelRawLinesDeleted;
 const ModelRawLinesInserted = @import("textModelEvents.zig").ModelRawLinesInserted;
+const ModelDecorationsChangedEvent = @import("textModelEvents.zig").ModelDecorationsChangedEvent;
+const InternalModelContentChangeEvent = @import("textModelEvents.zig").InternalModelContentChangeEvent;
+const ModelOptionsChangedEvent = @import("textModelEvents.zig").ModelOptionsChangedEvent;
+const ModelInjectedTextChangedEvent = @import("textModelEvents.zig").ModelInjectedTextChangedEvent;
+const ModelLineHeightChangedEvent = @import("textModelEvents.zig").ModelLineHeightChangedEvent;
+const ModelLineHeightChanged = @import("textModelEvents.zig").ModelLineHeightChanged;
 const ArrayQueue = @import("ArrayQueue.zig").ArrayQueue;
+const Set = @import("Set.zig").Set;
+const SetWithKey = @import("Set.zig").SetWithKey;
+const Emitter = @import("event.zig").Emitter;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -139,6 +150,41 @@ pub const TextModel = struct {
     //#endregion
 
     _undoRedoService: *UndoRedoService,
+    //#region Events
+    _onWillDispose: Emitter(void),
+    _onDidChangeDecorations: DidChangeDecorationsEmitter,
+    _onDidChangeOptions: Emitter(ModelOptionsChangedEvent),
+    _onDidChangeAttached: Emitter(void),
+    _onDidChangeInjectedText: Emitter(ModelInjectedTextChangedEvent),
+    _onDidChangeLineHeight: Emitter(ModelLineHeightChangedEvent),
+    _eventEmitter: DidChangeContentEmitter,
+    //#endregion
+
+    pub fn onWillDispose(self: *TextModel, callback: fn () void) !void {
+        try self._onWillDispose.event(callback);
+    }
+
+    pub fn onDidChangeOptions(self: *TextModel, callback: fn (ModelOptionsChangedEvent) void) !void {
+        try self._onDidChangeOptions.event(callback);
+    }
+
+    pub fn onDidChangeAttached(self: *TextModel, callback: fn () void) !void {
+        try self._onDidChangeAttached.event(callback);
+    }
+
+    pub fn onDidChangeInjectedText(self: *TextModel, callback: fn (ModelInjectedTextChangedEvent) void) !void {
+        try self._onDidChangeInjectedText.event(callback);
+    }
+
+    pub fn onDidChangeLineHeight(self: *TextModel, callback: fn (ModelLineHeightChangedEvent) void) !void {
+        try self._onDidChangeLineHeight.event(callback);
+    }
+
+    pub fn onDidChangeContent(self: *TextModel, callback: fn (ModelContentChangedEvent) void) !void {
+        _ = self;
+        _ = callback;
+        // try self._eventEmitter.slowEvent(callback);
+    }
 
     pub fn init(allocator: Allocator, source: io.AnyReader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !TextModel {
         MODEL_ID += 1;
@@ -195,6 +241,12 @@ pub const TextModel = struct {
             ._trimAutoWhitespaceLines = null,
 
             ._undoRedoService = undoRedoService,
+
+            ._onWillDispose = Emitter(void).init(allocator),
+            ._onDidChangeDecorations = DidChangeDecorationsEmitter.init(allocator),
+            ._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator),
+            ._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator),
+            ._eventEmitter = DidChangeContentEmitter.init(allocator),
         };
     }
 
@@ -204,6 +256,11 @@ pub const TextModel = struct {
         self._decorations.deinit();
         allocator.free(self.id);
         allocator.free(self._associatedResource.path);
+        self._onWillDispose.deinit();
+        self._onDidChangeDecorations.deinit();
+        self._onDidChangeInjectedText.deinit();
+        self._onDidChangeLineHeight.deinit();
+        self._eventEmitter.deinit();
     }
 
     pub fn equalsTextBuffer(self: *const TextModel, other: *const PieceTreeTextBuffer) bool {
@@ -862,10 +919,18 @@ pub const TextModel = struct {
     }
 
     fn _applyUndoRedoEdits(self: *TextModel, edits: ArrayList(SingleEditOperation), eol: EOL, isUndoing: bool, isRedoing: bool, resultingAlternativeVersionId: i64, resultingSelection: ?[]Selection) void {
-        // this._onDidChangeDecorations.beginDeferredEmit();
-        // this._eventEmitter.beginDeferredEmit();
+        self._onDidChangeDecorations.beginDeferredEmit();
+        defer self._onDidChangeDecorations.endDeferredEmit();
+
+        self._eventEmitter.beginDeferredEmit();
+        defer self._eventEmitter.endDeferredEmit();
+
         self._isUndoing = isUndoing;
+        defer self._isUndoing = false;
+
         self._isRedoing = isRedoing;
+        defer self._isRedoing = false;
+
         self.applyEdits(edits, false);
         self.setEOL(eol);
         self._overwriteAlternativeVersionId(resultingAlternativeVersionId);
@@ -954,6 +1019,12 @@ pub const TextModel = struct {
     }
 
     pub fn applyEdits(self: *TextModel, rawOperations: []IdentifiedSingleEditOperation, computeUndoEdits: bool) !ArrayList(ValidEditOperation) {
+        self._onDidChangeDecorations.beginDeferredEmit();
+        defer self._onDidChangeDecorations.endDeferredEmit();
+
+        self._eventEmitter.beginDeferredEmit();
+        defer self._eventEmitter.endDeferredEmit();
+
         const operations = self._validateEditOperations(rawOperations);
         defer operations.deinit();
         return try self._doApplyEdits(operations.items, computeUndoEdits);
@@ -986,7 +1057,7 @@ pub const TextModel = struct {
             for (contentChanges) |change| {
                 const res = countEOL(change.text);
                 const eolCount = res.eolCount;
-                //self._onDidChangeDecorations.fire();
+                self._onDidChangeDecorations.fire();
 
                 const startLineNumber = change.range.startLineNumber;
                 const endLineNumber = change.range.endLineNumber;
@@ -1094,6 +1165,62 @@ pub const TextModel = struct {
     pub fn canRedo(self: *TextModel) bool {
         return self._undoRedoService.canRedo(self.uri());
     }
+
+    //#region Decorations
+
+    fn handleBeforeFireDecorationsChangedEvent(self: *TextModel, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) void {
+        // This is called before the decoration changed event is fired.
+
+        if (affectedInjectedTextLines != null and affectedInjectedTextLines.?.count() > 0) {
+            const affectedLines = affectedInjectedTextLines.?.list;
+
+            var lineChangeEvents = ArrayList(ModelRawLineChanged).init(self.getAllocator());
+            defer lineChangeEvents.deinit();
+
+            for (affectedLines.items) |lineNumber| {
+                try lineChangeEvents.append(ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), self._getInjectedTextInLine(lineNumber)));
+            }
+            self._onDidChangeInjectedText.fire(ModelInjectedTextChangedEvent.init(lineChangeEvents.items));
+        }
+        if (affectedLineHeights != null and affectedLineHeights.?.count() > 0) {
+            const affectedLines = affectedLineHeights.?.map.valueIterator();
+            var lineHeightChangeEvent = ArrayList(ModelLineHeightChanged).init(self.getAllocator());
+            defer lineHeightChangeEvent.deinit();
+
+            while (affectedLines.next()) |specialLineHeightChange| {
+                try lineHeightChangeEvent.append(ModelLineHeightChanged.init(specialLineHeightChange.ownerId, specialLineHeightChange.decorationId, specialLineHeightChange.lineNumber, specialLineHeightChange.lineHeight));
+            }
+            self._onDidChangeLineHeight.fire(ModelLineHeightChangedEvent.init(lineHeightChangeEvent.items));
+        }
+    }
+
+    // pub fn changeDecorations(comptime T: type, callback: fn (changeAccessor: ModelDecorationsChangeAccessor) T, ownerId: usize) ?T {
+    //     self._onDidChangeDecorations.beginDeferredEmit();
+    //     defer self._onDidChangeDecorations.endDeferredEmit();
+    //     return self._changeDecorations(ownerId, callback);
+    // }
+
+    pub fn deltaDecorations(self: *TextModel, oldDecorations: [][]u8, newDecorations: []ModelDeltaDecoration, ownerId: usize) ![][]u8 {
+        _ = ownerId;
+
+        if (oldDecorations.len == 0 and newDecorations.len == 0) {
+            // nothing to do
+            return &[_][]u8{};
+        }
+
+        self._deltaDecorationCallCnt += 1;
+        defer self._deltaDecorationCallCnt -= 1;
+        if (self._deltaDecorationCallCnt > 1) {
+            std.debug.print("Invoking deltaDecorations recursively could lead to leaking decorations.\n", .{});
+            // onUnexpectedError(new Error(`Invoking deltaDecorations recursively could lead to leaking decorations.`));
+        }
+        self._onDidChangeDecorations.beginDeferredEmit();
+        defer self._onDidChangeDecorations.endDeferredEmit();
+        // return try self._deltaDecorationsImpl(ownerId, oldDecorations, newDecorations);
+        return &[_][]u8{};
+    }
+
+    //#endregion
 };
 
 pub fn indentOfLine(line: []const u8) usize {
@@ -1171,3 +1298,202 @@ fn createTextBufferFactory(allocator: Allocator, reader: io.AnyReader) !PieceTre
     }
     return try builder.finish(false);
 }
+
+const LineHeightChangingDecoration = struct {
+    ownerId: u64,
+    decorationId: []const u8,
+    lineNumber: usize,
+    lineHeight: ?f64,
+
+    pub fn toKey(allocator: Allocator, obj: LineHeightChangingDecoration) ![]const u8 {
+        return try std.fmt.allocPrint(allocator, "{};{};{}", .{ obj.ownerId, obj.decorationId, obj.lineNumber });
+    }
+
+    pub fn init(ownerId: u64, decorationId: []const u8, lineNumber: usize, lineHeight: ?f64) LineHeightChangingDecoration {
+        return LineHeightChangingDecoration{
+            .ownerId = ownerId,
+            .decorationId = decorationId,
+            .lineNumber = lineNumber,
+            .lineHeight = lineHeight,
+        };
+    }
+};
+
+const DidChangeDecorationsEmitter = struct {
+    _actual: Emitter(ModelDecorationsChangedEvent),
+    allocator: Allocator,
+    _deferredCnt: usize,
+    _shouldFireDeferred: bool,
+    _affectsMinimap: bool,
+    _affectsOverviewRuler: bool,
+    _affectedInjectedTextLines: ?Set(usize),
+    _affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration),
+    _affectsGlyphMargin: bool,
+    _affectsLineNumber: bool,
+
+    handleBeforeFire: fn (affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) void,
+
+    pub fn init(allocator: Allocator, handleBeforeFire: fn (affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) void) DidChangeDecorationsEmitter {
+        return DidChangeDecorationsEmitter{
+            .allocator = allocator,
+            ._deferredCnt = 0,
+            ._shouldFireDeferred = false,
+            ._affectsMinimap = false,
+            ._affectsOverviewRuler = false,
+            ._affectsGlyphMargin = false,
+            ._affectsLineNumber = false,
+            .handleBeforeFire = handleBeforeFire,
+        };
+    }
+
+    pub fn deinit(self: *DidChangeDecorationsEmitter) void {
+        self._actual.deinit();
+    }
+
+    fn event(self: *DidChangeDecorationsEmitter, callback: fn (ModelDecorationsChangedEvent) void) !void {
+        try self._actual.event(callback);
+    }
+
+    pub fn hasListeners(self: *DidChangeDecorationsEmitter) bool {
+        return self._actual.hasListeners();
+    }
+
+    pub fn beginDeferredEmit(self: *DidChangeDecorationsEmitter) void {
+        self._deferredCnt += 1;
+    }
+
+    pub fn endDeferredEmit(self: *DidChangeDecorationsEmitter) void {
+        self._deferredCnt -= 1;
+        if (self._deferredCnt == 0) {
+            if (self._shouldFireDeferred) {
+                self.doFire();
+            }
+
+            if (self._affectedInjectedTextLines) |set| {
+                set.deinit();
+            }
+            self._affectedInjectedTextLines = null;
+            if (self._affectedLineHeights) |set| {
+                set.deinit();
+            }
+            self._affectedLineHeights = null;
+        }
+    }
+
+    pub fn recordLineAffectedByInjectedText(self: *DidChangeDecorationsEmitter, lineNumber: usize) void {
+        if (self._affectedInjectedTextLines == null) {
+            self._affectedInjectedTextLines = Set(usize).init(self.allocator);
+        }
+        _ = self._affectedInjectedTextLines.?.add(lineNumber);
+    }
+
+    pub fn recordLineAffectedByLineHeightChange(self: *DidChangeDecorationsEmitter, ownerId: u64, decorationId: []const u8, lineNumber: usize, lineHeight: ?f64) void {
+        if (self._affectedLineHeights == null) {
+            self._affectedLineHeights = SetWithKey(LineHeightChangingDecoration).init(self.allocator, LineHeightChangingDecoration.toKey);
+        }
+        self._affectedLineHeights.?.add(LineHeightChangingDecoration.init(ownerId, decorationId, lineNumber, lineHeight));
+    }
+
+    pub fn checkAffectedAndFire(self: *DidChangeDecorationsEmitter, options: ModelDecorationOptions) void {
+        self._affectsMinimap = options.minimap != null;
+        self._affectsOverviewRuler = options.overviewRuler != null;
+        self._affectsGlyphMargin = options.glyphMarginClassName != null;
+        self._affectsLineNumber = options.lineNumberClassName != null;
+        self.tryFire();
+    }
+
+    pub fn fire(self: *DidChangeDecorationsEmitter) void {
+        self._affectsMinimap = true;
+        self._affectsOverviewRuler = true;
+        self._affectsGlyphMargin = true;
+        self.tryFire();
+    }
+
+    pub fn tryFire(self: *DidChangeDecorationsEmitter) void {
+        if (self._deferredCnt == 0) {
+            self.doFire();
+        } else {
+            self._shouldFireDeferred = true;
+        }
+    }
+
+    pub fn doFire(self: *DidChangeDecorationsEmitter) void {
+        self.handleBeforeFire(self._affectedInjectedTextLines, self._affectedLineHeights);
+
+        const evt: ModelDecorationsChangedEvent = ModelDecorationsChangedEvent{
+            .affectsMinimap = self._affectsMinimap,
+            .affectsOverviewRuler = self._affectsOverviewRuler,
+            .affectsGlyphMargin = self._affectsGlyphMargin,
+            .affectsLineNumber = self._affectsLineNumber,
+        };
+        self._shouldFireDeferred = false;
+        self._affectsMinimap = false;
+        self._affectsOverviewRuler = false;
+        self._affectsGlyphMargin = false;
+        self._actual.fire(evt);
+    }
+};
+
+pub const DidChangeContentEmitter = struct {
+    // Both `fastEvent` and `slowEvent` work the same way and contain the same events, but first we invoke `fastEvent` and then `slowEvent`.
+    _fastEmitter: Emitter(InternalModelContentChangeEvent),
+    _slowEmitter: Emitter(InternalModelContentChangeEvent),
+
+    _deferredCnt: usize,
+    _deferredEvent: ?InternalModelContentChangeEvent,
+
+    pub fn init(allocator: Allocator) DidChangeContentEmitter {
+        return DidChangeContentEmitter{
+            ._fastEmitter = Emitter(InternalModelContentChangeEvent).init(allocator),
+            ._slowEmitter = Emitter(InternalModelContentChangeEvent).init(allocator),
+            ._deferredCnt = 0,
+            ._deferredEvent = null,
+        };
+    }
+
+    pub fn deinit(self: *DidChangeContentEmitter) void {
+        self._fastEmitter.deinit();
+        self._slowEmitter.deinit();
+    }
+
+    pub fn fastEvent(self: *DidChangeContentEmitter, callback: fn (InternalModelContentChangeEvent) void) !void {
+        try self._fastEmitter.event(callback);
+    }
+    pub fn slowEvent(self: *DidChangeContentEmitter, callback: fn (InternalModelContentChangeEvent) void) !void {
+        try self._slowEmitter.event(callback);
+    }
+
+    pub fn hasListeners(self: *DidChangeContentEmitter) bool {
+        return self._fastEmitter.hasListeners() or self._slowEmitter.hasListeners();
+    }
+
+    pub fn beginDeferredEmit(self: *DidChangeContentEmitter) void {
+        self._deferredCnt += 1;
+    }
+
+    pub fn endDeferredEmit(self: *DidChangeContentEmitter, resultingSelection: ?[]Selection) void {
+        self._deferredCnt -= 1;
+        if (self._deferredCnt == 0) {
+            if (self._deferredEvent) |evt| {
+                evt.rawContentChangedEvent.resultingSelection = resultingSelection;
+                const e = self._deferredEvent;
+                self._deferredEvent = null;
+                self._fastEmitter.fire(e);
+                self._slowEmitter.fire(e);
+            }
+        }
+    }
+
+    pub fn fire(self: *DidChangeContentEmitter, e: InternalModelContentChangeEvent) void {
+        if (self._deferredCnt > 0) {
+            if (self._deferredEvent) |evt| {
+                self._deferredEvent = evt.merge(e);
+            } else {
+                self._deferredEvent = e;
+            }
+            return;
+        }
+        self._fastEmitter.fire(e);
+        self._slowEmitter.fire(e);
+    }
+};

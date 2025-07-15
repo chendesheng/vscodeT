@@ -32,6 +32,33 @@ pub const ModelContentChangedEvent = struct {
     isEolChange: bool,
 };
 
+// An event describing that model decorations have changed.
+pub const ModelDecorationsChangedEvent = struct {
+    affectsMinimap: bool,
+    affectsOverviewRuler: bool,
+    affectsGlyphMargin: bool,
+    affectsLineNumber: bool,
+};
+
+// An event describing that some ranges of lines have been tokenized (their tokens have changed).
+// @internal
+pub const ModelTokensChangedEvent = struct {
+    semanticTokensApplied: bool,
+    ranges: []struct {
+        // The start of the range (inclusive)
+        fromLineNumber: usize,
+        // The end of the range (inclusive)
+        toLineNumber: usize,
+    },
+};
+
+pub const ModelOptionsChangedEvent = struct {
+    tabSize: bool,
+    indentSize: bool,
+    insertSpaces: bool,
+    trimAutoWhitespace: bool,
+};
+
 pub const RawContentChangedType = enum(u8) {
     flush = 1,
     lineChanged = 2,
@@ -249,5 +276,102 @@ pub const ModelRawContentChangedEvent = struct {
         const isUndoing = (a.isUndoing or b.isUndoing);
         const isRedoing = (a.isRedoing or b.isRedoing);
         return ModelRawContentChangedEvent.init(changes, versionId, isUndoing, isRedoing);
+    }
+};
+
+// An event describing a change in injected text.
+// @internal
+pub const ModelInjectedTextChangedEvent = struct {
+    changes: []ModelRawLineChanged,
+
+    pub fn init(changes: []ModelRawLineChanged) ModelInjectedTextChangedEvent {
+        return ModelInjectedTextChangedEvent{
+            .changes = changes,
+        };
+    }
+};
+
+// An event describing that a line height has changed in the model.
+// @internal
+pub const ModelLineHeightChanged = struct {
+    // Editor owner ID
+    ownerId: usize,
+    // The decoration ID that has changed.
+    decorationId: []const u8,
+    // The line that has changed.
+    lineNumber: usize,
+    // The line height on the line.
+    lineHeight: ?usize,
+
+    pub fn init(ownerId: usize, decorationId: []const u8, lineNumber: usize, lineHeight: ?usize) ModelLineHeightChanged {
+        return ModelLineHeightChanged{
+            .ownerId = ownerId,
+            .decorationId = decorationId,
+            .lineNumber = lineNumber,
+            .lineHeight = lineHeight,
+        };
+    }
+};
+
+// An event describing a change of a line height.
+// @internal
+pub const ModelLineHeightChangedEvent = struct {
+    changes: []ModelLineHeightChanged,
+
+    pub fn init(changes: []ModelLineHeightChanged) ModelLineHeightChangedEvent {
+        return ModelLineHeightChangedEvent{
+            .changes = changes,
+        };
+    }
+
+    pub fn affects(self: *const ModelLineHeightChangedEvent, rangeOrPosition: Range) bool {
+        if (Range.isIRange(rangeOrPosition)) {
+            for (self.changes) |change| {
+                if (change.lineNumber >= rangeOrPosition.startLineNumber and change.lineNumber <= rangeOrPosition.endLineNumber) {
+                    return true;
+                }
+            }
+            return false;
+        } else {
+            for (self.changes) |change| {
+                if (change.lineNumber == rangeOrPosition.lineNumber) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+};
+
+pub const InternalModelContentChangeEvent = struct {
+    rawContentChangedEvent: ModelRawContentChangedEvent,
+    contentChangedEvent: ModelContentChangedEvent,
+
+    pub fn merge(self: InternalModelContentChangeEvent, other: InternalModelContentChangeEvent) InternalModelContentChangeEvent {
+        const rawContentChangedEvent = ModelRawContentChangedEvent.merge(self.rawContentChangedEvent, other.rawContentChangedEvent);
+        const contentChangedEvent = InternalModelContentChangeEvent._mergeChangeEvents(self.contentChangedEvent, other.contentChangedEvent);
+        return InternalModelContentChangeEvent{
+            .rawContentChangedEvent = rawContentChangedEvent,
+            .contentChangedEvent = contentChangedEvent,
+        };
+    }
+
+    fn _mergeChangeEvents(a: ModelContentChangedEvent, b: ModelContentChangedEvent) ModelContentChangedEvent {
+        const changes = a.changes ++ b.changes;
+        const eol = b.eol;
+        const versionId = b.versionId;
+        const isUndoing = (a.isUndoing or b.isUndoing);
+        const isRedoing = (a.isRedoing or b.isRedoing);
+        const isFlush = (a.isFlush or b.isFlush);
+        const isEolChange = a.isEolChange and b.isEolChange; // both must be true to not confuse listeners who skip such edits
+        return ModelContentChangedEvent{
+            .changes = changes,
+            .eol = eol,
+            .isEolChange = isEolChange,
+            .versionId = versionId,
+            .isUndoing = isUndoing,
+            .isRedoing = isRedoing,
+            .isFlush = isFlush,
+        };
     }
 };

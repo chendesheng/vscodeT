@@ -602,3 +602,11 @@ pub const ModelDecoration = struct {
     // Options associated with this decoration.
     options: ModelDecorationOptions,
 };
+
+// New model decorations.
+pub const ModelDeltaDecoration = struct {
+    // Range that this decoration covers.
+    range: Range,
+    // Options associated with this decoration.
+    options: ModelDecorationOptions,
+};
