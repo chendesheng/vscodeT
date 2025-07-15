@@ -42,7 +42,9 @@ const UndoRedoGroup = @import("undoRedo.zig").UndoRedoGroup;
 const countEOL = @import("eolCounter.zig").countEOL;
 const LineInjectedText = @import("textModelEvents.zig").LineInjectedText;
 const ModelRawLineChanged = @import("textModelEvents.zig").ModelRawLineChanged;
+const ModelRawLinesDeleted = @import("textModelEvents.zig").ModelRawLinesDeleted;
 const ModelRawLinesInserted = @import("textModelEvents.zig").ModelRawLinesInserted;
+const ArrayQueue = @import("ArrayQueue.zig").ArrayQueue;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -957,151 +959,141 @@ pub const TextModel = struct {
         return try self._doApplyEdits(operations.items, computeUndoEdits);
     }
 
-
-	fn _doApplyEdits(self: *TextModel, rawOperations: []ValidAnnotatedEditOperation, computeUndoEdits: bool) !ArrayList(ValidEditOperation) {
+    fn _doApplyEdits(self: *TextModel, rawOperations: []ValidAnnotatedEditOperation, computeUndoEdits: bool) !ArrayList(ValidEditOperation) {
         const allocator = self.getAllocator();
-		const oldLineCount = self._buffer.getLineCount();
-		const result = try self._buffer.applyEdits(rawOperations, self._options.trimAutoWhitespace, computeUndoEdits);
-		const newLineCount = self._buffer.getLineCount();
+        const oldLineCount = self._buffer.getLineCount();
+        const result = try self._buffer.applyEdits(rawOperations, self._options.trimAutoWhitespace, computeUndoEdits);
+        const newLineCount = self._buffer.getLineCount();
 
-		const contentChanges = result.changes.items;
-		self._trimAutoWhitespaceLines = result.trimAutoWhitespaceLineNumbers;
+        const contentChanges = result.changes.items;
+        self._trimAutoWhitespaceLines = result.trimAutoWhitespaceLineNumbers;
 
-		if (contentChanges.len != 0) {
-			// We do a first pass to update decorations
-			// because we want to read decorations in the second pass
-			// where we will emit content change events
-			// and we want to read the final decorations
-			for (contentChanges) |change| {
-				self._decorationsTree.acceptReplace(change.rangeOffset, change.rangeLength, change.text.len, change.forceMoveMarkers);
-			}
+        if (contentChanges.len > 0) {
+            // We do a first pass to update decorations
+            // because we want to read decorations in the second pass
+            // where we will emit content change events
+            // and we want to read the final decorations
+            for (contentChanges) |change| {
+                self._decorationsTree.acceptReplace(change.rangeOffset, change.rangeLength, change.text.len, change.forceMoveMarkers);
+            }
 
-			var rawContentChanges = ArrayList(ModelRawChange).init(allocator);
-			defer rawContentChanges.deinit();
+            var rawContentChanges = ArrayList(ModelRawChange).init(allocator);
+            defer rawContentChanges.deinit();
 
-			self._increaseVersionId();
+            self._increaseVersionId();
 
-			var lineCount = oldLineCount;
-			for (contentChanges) |change| {
-				const res = countEOL(change.text);
+            var lineCount = oldLineCount;
+            for (contentChanges) |change| {
+                const res = countEOL(change.text);
                 const eolCount = res.eolCount;
-				//self._onDidChangeDecorations.fire();
+                //self._onDidChangeDecorations.fire();
 
-				const startLineNumber = change.range.startLineNumber;
-				const endLineNumber = change.range.endLineNumber;
+                const startLineNumber = change.range.startLineNumber;
+                const endLineNumber = change.range.endLineNumber;
 
-				const deletingLinesCnt: usize = endLineNumber - startLineNumber;
-				const insertingLinesCnt = eolCount;
-				const editingLinesCnt: usize = @min(deletingLinesCnt, insertingLinesCnt);
+                const deletingLinesCnt: usize = endLineNumber - startLineNumber;
+                const insertingLinesCnt = eolCount;
+                const editingLinesCnt: usize = @min(deletingLinesCnt, insertingLinesCnt);
 
-				const changeLineCountDelta:usize = (insertingLinesCnt - deletingLinesCnt);
+                const changeLineCountDelta: usize = (insertingLinesCnt - deletingLinesCnt);
 
-				const currentEditStartLineNumber: usize = newLineCount - lineCount - changeLineCountDelta + startLineNumber;
-				const firstEditLineNumber: usize = currentEditStartLineNumber;
-				const lastInsertedLineNumber: usize = currentEditStartLineNumber + insertingLinesCnt;
+                const currentEditStartLineNumber: usize = newLineCount - lineCount - changeLineCountDelta + startLineNumber;
+                const firstEditLineNumber: usize = currentEditStartLineNumber;
+                const lastInsertedLineNumber: usize = currentEditStartLineNumber + insertingLinesCnt;
 
-				const decorationsWithInjectedTextInEditedRange = self._decorationsTree.getInjectedTextInInterval(
-					self,
-					self.getOffsetAt(Position.init(firstEditLineNumber, 1)),
-					self.getOffsetAt(Position.init(lastInsertedLineNumber, self.getLineMaxColumn(lastInsertedLineNumber))),
-					0
-				);
+                const decorationsWithInjectedTextInEditedRange = self._decorationsTree.getInjectedTextInInterval(self, self.getOffsetAt(Position.init(firstEditLineNumber, 1)), self.getOffsetAt(Position.init(lastInsertedLineNumber, self.getLineMaxColumn(lastInsertedLineNumber))), 0);
 
-
-				const injectedTextInEditedRange = LineInjectedText.fromDecorations(decorationsWithInjectedTextInEditedRange);
+                const injectedTextInEditedRange = try LineInjectedText.fromDecorations(allocator, decorationsWithInjectedTextInEditedRange);
                 defer injectedTextInEditedRange.deinit();
 
-				var injectedTextInEditedRangeQueue = injectedTextInEditedRange;
+                {
+                    var injectedTextInEditedRangeQueue = ArrayQueue(LineInjectedText).init(injectedTextInEditedRange.items);
 
-                var j: usize = editingLinesCnt;
-				while (j >= 0) : (j -= 1) {
-					const editLineNumber = startLineNumber + j;
-					const currentEditLineNumber = currentEditStartLineNumber + j;
+                    var j: usize = editingLinesCnt;
+                    while (j >= 0) : (j -= 1) {
+                        const editLineNumber = startLineNumber + j;
+                        const currentEditLineNumber = currentEditStartLineNumber + j;
 
-					// injectedTextInEditedRangeQueue.takeFromEndWhile(r => r.lineNumber > currentEditLineNumber);
-					const decorationsInCurrentLine = injectedTextInEditedRangeQueue; //.takeFromEndWhile(r => r.lineNumber === currentEditLineNumber);
+                        _ = injectedTextInEditedRangeQueue.takeFromEndWhile(usize, currentEditLineNumber, struct {
+                            fn predicate(ctx: usize, r: LineInjectedText) bool {
+                                return r.lineNumber > ctx;
+                            }
+                        }.predicate);
+                        const decorationsInCurrentLine = injectedTextInEditedRangeQueue.takeFromEndWhile(usize, currentEditLineNumber, struct {
+                            fn predicate(ctx: usize, r: LineInjectedText) bool {
+                                return r.lineNumber == ctx;
+                            }
+                        }.predicate);
 
-					try rawContentChanges.append(
-                        ModelRawLineChanged.init(
+                        try rawContentChanges.append(ModelRawLineChanged.init(
                             editLineNumber,
                             self.getLineContent(editLineNumber),
                             decorationsInCurrentLine,
                         ));
-				}
+                    }
+                }
 
-				if (editingLinesCnt < deletingLinesCnt) {
-					// Must delete some lines
-					const spliceStartLineNumber = startLineNumber + editingLinesCnt;
-					try rawContentChanges.append(ModelRawLinesDeleted.init(spliceStartLineNumber + 1, endLineNumber));
-				}
+                if (editingLinesCnt < deletingLinesCnt) {
+                    // Must delete some lines
+                    const spliceStartLineNumber = startLineNumber + editingLinesCnt;
+                    try rawContentChanges.append(ModelRawLinesDeleted.init(spliceStartLineNumber + 1, endLineNumber));
+                }
 
-				if (editingLinesCnt < insertingLinesCnt) {
-					const injectedTextInEditedRangeQueue = injectedTextInEditedRange;
-					// Must insert some lines
-					const spliceLineNumber = startLineNumber + editingLinesCnt;
-					const cnt = insertingLinesCnt - editingLinesCnt;
-					const fromLineNumber = newLineCount - lineCount - cnt + spliceLineNumber + 1;
-					var injectedTexts: [](?[]LineInjectedText) = ArrayList(?[]LineInjectedText).init(allocator);
-					var newLines = ArrayList(u8).init(allocator);
+                if (editingLinesCnt < insertingLinesCnt) {
+                    var injectedTextInEditedRangeQueue = ArrayQueue(LineInjectedText).init(injectedTextInEditedRange.items);
+                    // Must insert some lines
+                    const spliceLineNumber = startLineNumber + editingLinesCnt;
+                    const cnt = insertingLinesCnt - editingLinesCnt;
+                    const fromLineNumber = newLineCount - lineCount - cnt + spliceLineNumber + 1;
+                    var injectedTexts = ArrayList(?[]LineInjectedText).init(allocator);
+                    var newLines = ArrayList([]const u8).init(allocator);
                     var i = 0;
-					while (i < cnt) : (i += 1) {
-						const lineNumber = fromLineNumber + i;
-						try newLines.append(try self.getLineContent(lineNumber));
+                    while (i < cnt) : (i += 1) {
+                        const lineNumber = fromLineNumber + i;
+                        try newLines.append(try self.getLineContent(lineNumber));
 
-						injectedTextInEditedRangeQueue.takeWhile(r => r.lineNumber < lineNumber);
-						try injectedTexts.append(injectedTextInEditedRangeQueue.takeWhile(r => r.lineNumber == lineNumber));
-					}
+                        _ = injectedTextInEditedRangeQueue.takeWhile(usize, lineNumber, struct {
+                            fn predicate(ctx: usize, r: LineInjectedText) bool {
+                                return r.lineNumber < ctx;
+                            }
+                        }.predicate);
+                        try injectedTexts.append(injectedTextInEditedRangeQueue.takeWhile(usize, lineNumber, struct {
+                            fn predicate(ctx: usize, r: LineInjectedText) bool {
+                                return r.lineNumber == ctx;
+                            }
+                        }.predicate));
+                    }
 
-					try rawContentChanges.append(
-						ModelRawLinesInserted.init(
-							spliceLineNumber + 1,
-							startLineNumber + insertingLinesCnt,
-							newLines,
-							injectedTexts
-						)
-					);
-				}
+                    try rawContentChanges.append(ModelRawLinesInserted.init(spliceLineNumber + 1, startLineNumber + insertingLinesCnt, newLines.items, injectedTexts.items));
+                }
 
-				lineCount += changeLineCountDelta;
-			}
+                lineCount += changeLineCountDelta;
+            }
 
-			self._emitContentChangedEvent(
-				ModelRawContentChangedEvent.init(
-					rawContentChanges.items,
-					self.getVersionId(),
-					self._isUndoing,
-					self._isRedoing
-				),
-				{
-					changes: contentChanges,
-					eol: self._buffer.getEOL(),
-					isEolChange: false,
-					versionId: self.getVersionId(),
-					isUndoing: self._isUndoing,
-					isRedoing: self._isRedoing,
-					isFlush: false
-				}
-			);
-		}
+            self._emitContentChangedEvent(
+                ModelRawContentChangedEvent.init(rawContentChanges.items, self.getVersionId(), self._isUndoing, self._isRedoing),
+                ModelContentChangedEvent{ .changes = contentChanges, .eol = self._buffer.getEOL(), .isEolChange = false, .versionId = self.getVersionId(), .isUndoing = self._isUndoing, .isRedoing = self._isRedoing, .isFlush = false },
+            );
+        }
 
-		return (result.reverseEdits == null ? null : result.reverseEdits);
-	}
+        return if (result.reverseEdits == null) null else result.reverseEdits;
+    }
 
-	pub fn undo(self: *TextModel) void {
-		self._undoRedoService.undo(self.uri());
-	}
+    pub fn undo(self: *TextModel) void {
+        self._undoRedoService.undo(self.uri());
+    }
 
-	pub fn canUndo(self: *TextModel) bool {
-		return self._undoRedoService.canUndo(self.uri());
-	}
+    pub fn canUndo(self: *TextModel) bool {
+        return self._undoRedoService.canUndo(self.uri());
+    }
 
-	pub fn redo(self: *TextModel) void {
-		self._undoRedoService.redo(self.uri());
-	}
+    pub fn redo(self: *TextModel) void {
+        self._undoRedoService.redo(self.uri());
+    }
 
-	pub fn canRedo(self: *TextModel) bool {
-		return self._undoRedoService.canRedo(self.uri());
-	}
+    pub fn canRedo(self: *TextModel) bool {
+        return self._undoRedoService.canRedo(self.uri());
+    }
 };
 
 pub fn indentOfLine(line: []const u8) usize {
