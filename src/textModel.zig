@@ -181,9 +181,12 @@ pub const TextModel = struct {
     }
 
     pub fn onDidChangeContent(self: *TextModel, callback: fn (ModelContentChangedEvent) void) !void {
-        _ = self;
-        _ = callback;
-        // try self._eventEmitter.slowEvent(callback);
+        try self._eventEmitter.slowEvent({}, struct {
+            fn cb(evt: InternalModelContentChangeEvent, ctx: void) void {
+                _ = ctx;
+                callback(evt.contentChangedEvent);
+            }
+        }.cb);
     }
 
     pub fn init(allocator: Allocator, source: io.AnyReader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !TextModel {
@@ -1456,11 +1459,11 @@ pub const DidChangeContentEmitter = struct {
         self._slowEmitter.deinit();
     }
 
-    pub fn fastEvent(self: *DidChangeContentEmitter, callback: fn (InternalModelContentChangeEvent) void) !void {
-        try self._fastEmitter.event(callback);
+    pub fn fastEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent) void) !void {
+        try self._fastEmitter.event(context, callback);
     }
-    pub fn slowEvent(self: *DidChangeContentEmitter, callback: fn (InternalModelContentChangeEvent) void) !void {
-        try self._slowEmitter.event(callback);
+    pub fn slowEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent) void) !void {
+        try self._slowEmitter.event(context, callback);
     }
 
     pub fn hasListeners(self: *DidChangeContentEmitter) bool {
