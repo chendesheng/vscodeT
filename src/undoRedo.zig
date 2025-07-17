@@ -57,11 +57,18 @@ pub const UndoRedoSource = struct {
         if (self.id == 0) {
             return 0;
         }
+        const order = self.order;
         self.order += 1;
-        return self.order;
+        return order;
     }
 
     pub const None = UndoRedoSource.init();
+};
+
+pub const UndoRedoSourceOrUri = union(enum) {
+    source: UndoRedoSource,
+    uri: Uri,
+    str: []const u8,
 };
 
 const UriComparisonKeyComputer = struct {

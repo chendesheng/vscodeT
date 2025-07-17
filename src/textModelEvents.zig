@@ -251,7 +251,7 @@ pub const ModelRawContentChangedEvent = struct {
 
     resultingSelection: ?[]Selection,
 
-    pub fn init(changes: []ModelRawChange, versionId: i64, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
+    pub fn init(changes: []const ModelRawChange, versionId: i64, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
         return ModelRawContentChangedEvent{
             .changes = changes,
             .versionId = versionId,
@@ -271,11 +271,14 @@ pub const ModelRawContentChangedEvent = struct {
     }
 
     pub fn merge(a: ModelRawContentChangedEvent, b: ModelRawContentChangedEvent) ModelRawContentChangedEvent {
-        const changes = ([]ModelRawChange).concat(a.changes).concat(b.changes);
+        const changes = ArrayList(ModelRawChange).init(a.changes.allocator);
+        changes.appendSlice(a.changes);
+        changes.appendSlice(b.changes);
+
         const versionId = b.versionId;
         const isUndoing = (a.isUndoing or b.isUndoing);
         const isRedoing = (a.isRedoing or b.isRedoing);
-        return ModelRawContentChangedEvent.init(changes, versionId, isUndoing, isRedoing);
+        return ModelRawContentChangedEvent.init(changes.toOwnedSlice(), versionId, isUndoing, isRedoing);
     }
 };
 

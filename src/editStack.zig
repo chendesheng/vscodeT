@@ -602,7 +602,7 @@ pub const EditStack = struct {
 const CursorStateComputer = fn (inverseEditOperations: []ValidEditOperation) ?[]Selection;
 
 const UndoRedoDelegate = struct {
-    prepareUndoRedo: fn (self: *UndoRedoDelegate, element: *const MultiModelEditStackElement) ?Disposable,
+    prepareUndoRedo: *const fn (self: *UndoRedoDelegate, element: *const MultiModelEditStackElement) ?Disposable,
 };
 
 fn compareTextChangeWithIndex(a: struct { textChange: TextChange, index: usize }, b: struct { textChange: TextChange, index: usize }) bool {

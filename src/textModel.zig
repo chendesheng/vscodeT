@@ -297,12 +297,11 @@ pub const TextModel = struct {
         }
 
         const e = self._options.createChangeEvent(newOpts);
-        _ = e;
         self._options = newOpts;
 
         // this._bracketPairs.handleDidChangeOptions(e);
         // this._decorationProvider.handleDidChangeOptions(e);
-        // this._onDidChangeOptions.fire(e);
+        self._onDidChangeOptions.fire(e);
     }
 
     pub fn detectIndentation(self: *TextModel, defaultInsertSpaces: bool, defaultTabSize: usize) void {
@@ -1037,6 +1036,8 @@ pub const TextModel = struct {
         const allocator = self.getAllocator();
         const oldLineCount = self._buffer.getLineCount();
         const result = try self._buffer.applyEdits(rawOperations, self._options.trimAutoWhitespace, computeUndoEdits);
+        defer result.deinit();
+
         const newLineCount = self._buffer.getLineCount();
 
         const contentChanges = result.changes.items;
@@ -1150,7 +1151,9 @@ pub const TextModel = struct {
             );
         }
 
-        return if (result.reverseEdits == null) null else result.reverseEdits;
+        const reverseEdits = result.reverseEdits;
+        result.reverseEdits = null;
+        return reverseEdits;
     }
 
     pub fn undo(self: *TextModel) void {
