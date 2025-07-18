@@ -19,85 +19,69 @@ pub const NodeColor = enum(u1) {
     Red,
 };
 
-const Constants = enum(i32) {
-    ColorMask = 0b00000001,
-    ColorMaskInverse = 0b11111110,
-    ColorOffset = 0,
-
-    IsVisitedMask = 0b00000010,
-    IsVisitedMaskInverse = 0b11111101,
-    IsVisitedOffset = 1,
-
-    IsForValidationMask = 0b00000100,
-    IsForValidationMaskInverse = 0b11111011,
-    IsForValidationOffset = 2,
-
-    StickinessMask = 0b00011000,
-    StickinessMaskInverse = 0b11100111,
-    StickinessOffset = 3,
-
-    CollapseOnReplaceEditMask = 0b00100000,
-    CollapseOnReplaceEditMaskInverse = 0b11011111,
-    CollapseOnReplaceEditOffset = 5,
-
-    IsMarginMask = 0b01000000,
-    IsMarginMaskInverse = 0b10111111,
-    IsMarginOffset = 6,
-
-    // Due to how deletion works (in order to avoid always walking the right subtree of the deleted node),
-    // the deltas for nodes can grow and shrink dramatically. It has been observed, in practice, that unless
-    // the deltas are corrected, integer overflow will occur.
-    //
-    // The integer overflow occurs when 53 bits are used in the numbers, but we will try to avoid it as
-    // a node's delta gets below a negative 30 bits number.
-    //
-    // MIN SMI (SMall Integer) as defined in v8.
-    // one bit is lost for boxing/unboxing flag.
-    // one bit is lost for sign flag.
-    // See https://thibaultlaurens.github.io/javascript/2013/04/29/how-the-v8-engine-works/#tagged-values
-    MIN_SAFE_DELTA = -(1 << 30),
-    // MAX SMI (SMall Integer) as defined in v8.
-    // one bit is lost for boxing/unboxing flag.
-    // one bit is lost for sign flag.
-    // See https://thibaultlaurens.github.io/javascript/2013/04/29/how-the-v8-engine-works/#tagged-values
-    MAX_SAFE_DELTA = 1 << 30,
+const Metadata = packed struct {
+    color: NodeColor,
+    isVisited: bool,
+    isForValidation: bool,
+    isInGlyphMargin: bool,
+    stickiness: TrackedRangeStickiness,
+    collapseOnReplaceEdit: bool,
+    isMargin: bool,
 };
 
-pub fn getNodeColor(node: IntervalNode) NodeColor {
-    return ((node.metadata & Constants.ColorMask) >> Constants.ColorOffset);
+// Due to how deletion works (in order to avoid always walking the right subtree of the deleted node),
+// the deltas for nodes can grow and shrink dramatically. It has been observed, in practice, that unless
+// the deltas are corrected, integer overflow will occur.
+//
+// The integer overflow occurs when 53 bits are used in the numbers, but we will try to avoid it as
+// a node's delta gets below a negative 30 bits number.
+//
+// MIN SMI (SMall Integer) as defined in v8.
+// one bit is lost for boxing/unboxing flag.
+// one bit is lost for sign flag.
+// See https://thibaultlaurens.github.io/javascript/2013/04/29/how-the-v8-engine-works/#tagged-values
+const MIN_SAFE_DELTA = -(1 << 30);
+// MAX SMI (SMall Integer) as defined in v8.
+// one bit is lost for boxing/unboxing flag.
+// one bit is lost for sign flag.
+// See https://thibaultlaurens.github.io/javascript/2013/04/29/how-the-v8-engine-works/#tagged-values
+const MAX_SAFE_DELTA = 1 << 30;
+
+pub fn getNodeColor(node: *const IntervalNode) NodeColor {
+    return node.metadata.color;
 }
 fn setNodeColor(node: *IntervalNode, color: NodeColor) void {
-    node.metadata = ((node.metadata & Constants.ColorMaskInverse) | (color << Constants.ColorOffset));
+    node.metadata.color = color;
 }
-fn getNodeIsVisited(node: *IntervalNode) bool {
-    return ((node.metadata & Constants.IsVisitedMask) >> Constants.IsVisitedOffset) == 1;
+fn getNodeIsVisited(node: *const IntervalNode) bool {
+    return node.metadata.isVisited;
 }
-fn setNodeIsVisited(node: *IntervalNode, value: bool) void {
-    node.metadata = ((node.metadata & Constants.IsVisitedMaskInverse) | ((if (value) 1 else 0) << Constants.IsVisitedOffset));
+fn setNodeIsVisited(node: *IntervalNode, value: bool) !void {
+    node.metadata.isVisited = value;
 }
-fn getNodeIsForValidation(node: *IntervalNode) bool {
-    return ((node.metadata & Constants.IsForValidationMask) >> Constants.IsForValidationOffset) == 1;
+fn getNodeIsForValidation(node: *const IntervalNode) bool {
+    return node.metadata.isForValidation;
 }
-fn setNodeIsForValidation(node: *IntervalNode, value: bool) void {
-    node.metadata = ((node.metadata & Constants.IsForValidationMaskInverse) | ((if (value) 1 else 0) << Constants.IsForValidationOffset));
+fn setNodeIsForValidation(node: *IntervalNode, value: bool) !void {
+    node.metadata.isForValidation = value;
 }
-fn getNodeIsInGlyphMargin(node: *IntervalNode) bool {
-    return ((node.metadata & Constants.IsMarginMask) >> Constants.IsMarginOffset) == 1;
+fn getNodeIsInGlyphMargin(node: *const IntervalNode) bool {
+    return node.metadata.isInGlyphMargin;
 }
-fn setNodeIsInGlyphMargin(node: *IntervalNode, value: bool) void {
-    node.metadata = ((node.metadata & Constants.IsMarginMaskInverse) | ((if (value) 1 else 0) << Constants.IsMarginOffset));
+fn setNodeIsInGlyphMargin(node: *IntervalNode, value: bool) !void {
+    node.metadata.isInGlyphMargin = value;
 }
-fn getNodeStickiness(node: *IntervalNode) TrackedRangeStickiness {
-    return ((node.metadata & Constants.StickinessMask) >> Constants.StickinessOffset);
+fn getNodeStickiness(node: *const IntervalNode) TrackedRangeStickiness {
+    return node.metadata.stickiness;
 }
-fn _setNodeStickiness(node: *IntervalNode, stickiness: TrackedRangeStickiness) void {
-    node.metadata = ((node.metadata & Constants.StickinessMaskInverse) | (stickiness << Constants.StickinessOffset));
+fn _setNodeStickiness(node: *IntervalNode, stickiness: TrackedRangeStickiness) !void {
+    node.metadata.stickiness = stickiness;
 }
-fn getCollapseOnReplaceEdit(node: *IntervalNode) bool {
-    return ((node.metadata & Constants.CollapseOnReplaceEditMask) >> Constants.CollapseOnReplaceEditOffset) == 1;
+fn getCollapseOnReplaceEdit(node: *const IntervalNode) bool {
+    return node.metadata.collapseOnReplaceEdit;
 }
-fn setCollapseOnReplaceEdit(node: *IntervalNode, value: bool) void {
-    node.metadata = ((node.metadata & Constants.CollapseOnReplaceEditMaskInverse) | ((if (value) 1 else 0) << Constants.CollapseOnReplaceEditOffset));
+fn setCollapseOnReplaceEdit(node: *IntervalNode, value: bool) !void {
+    node.metadata.collapseOnReplaceEdit = value;
 }
 pub fn setNodeStickiness(node: *IntervalNode, stickiness: TrackedRangeStickiness) void {
     _setNodeStickiness(node, stickiness);
@@ -105,7 +89,7 @@ pub fn setNodeStickiness(node: *IntervalNode, stickiness: TrackedRangeStickiness
 
 pub const IntervalNode = struct {
     // contains binary encoded information for color, visited, isForValidation and stickiness.
-    metadata: u32,
+    metadata: Metadata,
 
     left: *IntervalNode,
     right: *IntervalNode,
@@ -128,7 +112,15 @@ pub const IntervalNode = struct {
     pub fn init(allocator: Allocator, id: []const u8, start: usize, end: usize) !*IntervalNode {
         const node: *IntervalNode = try allocator.create(IntervalNode);
         node.* = IntervalNode{
-            .metadata = 0,
+            .metadata = .{
+                .color = .Red,
+                .isVisited = false,
+                .isForValidation = false,
+                .isInGlyphMargin = false,
+                .stickiness = .NeverGrowsWhenTypingAtEdges,
+                .collapseOnReplaceEdit = false,
+                .isMargin = false,
+            },
             .parent = node,
             .left = node,
             .right = node,
@@ -143,11 +135,6 @@ pub const IntervalNode = struct {
             .cachedAbsoluteEnd = end,
             .range = null,
         };
-        setNodeColor(node, .Red);
-        setNodeIsForValidation(node, false);
-        setNodeIsInGlyphMargin(node, false);
-        _setNodeStickiness(node, .NeverGrowsWhenTypingAtEdges);
-        setNodeIsVisited(node, false);
         return node;
     }
 
@@ -281,12 +268,21 @@ pub const IntervalTree = struct {
 
 var sentinelValue: IntervalNode = .{
     .metadata = 0,
-    .left = null,
-    .right = null,
-    .parent = null,
+    .left = &sentinelValue,
+    .right = &sentinelValue,
+    .parent = &sentinelValue,
     .start = 0,
+    .end = 0,
+    .delta = 0,
+    .maxEnd = 0,
+    .id = undefined,
+    .ownerId = 0,
+    .cachedVersionId = 0,
+    .cachedAbsoluteStart = 0,
+    .cachedAbsoluteEnd = 0,
+    .range = null,
 };
-pub const SENTINEL: *IntervalNode = &sentinelValue;
+pub var SENTINEL: *IntervalNode = &sentinelValue;
 
 //#region Delta Normalization
 fn normalizeDelta(T: IntervalTree) void {
@@ -538,7 +534,7 @@ fn noOverlapReplace(T: IntervalTree, start: usize, end: usize, textLength: usize
             node.start += editDelta;
             node.end += editDelta;
             node.delta += editDelta;
-            if (node.delta < Constants.MIN_SAFE_DELTA or node.delta > Constants.MAX_SAFE_DELTA) {
+            if (node.delta < MIN_SAFE_DELTA or node.delta > MAX_SAFE_DELTA) {
                 T.requestNormalizeDelta = true;
             }
             // cover case a) from above
@@ -902,7 +898,7 @@ fn rbTreeDelete(T: IntervalTree, z: IntervalNode) void {
 
         // x's delta is no longer influenced by z's delta
         x.delta += z.delta;
-        if (x.delta < Constants.MIN_SAFE_DELTA or x.delta > Constants.MAX_SAFE_DELTA) {
+        if (x.delta < MIN_SAFE_DELTA or x.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;
         }
         x.start += z.delta;
@@ -920,14 +916,14 @@ fn rbTreeDelete(T: IntervalTree, z: IntervalNode) void {
         x.start += y.delta;
         x.end += y.delta;
         x.delta += y.delta;
-        if (x.delta < Constants.MIN_SAFE_DELTA or x.delta > Constants.MAX_SAFE_DELTA) {
+        if (x.delta < MIN_SAFE_DELTA or x.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;
         }
 
         y.start += z.delta;
         y.end += z.delta;
         y.delta = z.delta;
-        if (y.delta < Constants.MIN_SAFE_DELTA or y.delta > Constants.MAX_SAFE_DELTA) {
+        if (y.delta < MIN_SAFE_DELTA or y.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;
         }
     }
@@ -1086,7 +1082,7 @@ fn leftRotate(T: IntervalTree, x: IntervalNode) void {
     const y = x.right; // set y.
 
     y.delta += x.delta; // y's delta is no longer influenced by x's delta
-    if (y.delta < Constants.MIN_SAFE_DELTA or y.delta > Constants.MAX_SAFE_DELTA) {
+    if (y.delta < MIN_SAFE_DELTA or y.delta > MAX_SAFE_DELTA) {
         T.requestNormalizeDelta = true;
     }
     y.start += x.delta;
@@ -1116,7 +1112,7 @@ fn rightRotate(T: IntervalTree, y: IntervalNode) void {
     var x = y.left;
 
     y.delta -= x.delta;
-    if (y.delta < Constants.MIN_SAFE_DELTA or y.delta > Constants.MAX_SAFE_DELTA) {
+    if (y.delta < MIN_SAFE_DELTA or y.delta > MAX_SAFE_DELTA) {
         T.requestNormalizeDelta = true;
     }
     y.start -= x.delta;
