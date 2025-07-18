@@ -13,6 +13,8 @@ const EOL = @import("model.zig").EOL;
 const replaceEOL = @import("eolCounter.zig").replaceEOL;
 const eolToString = @import("eolCounter.zig").eolToString;
 const strings = @import("strings.zig");
+const usizeSub = @import("utils.zig").usizeSub;
+const usizeAdd = @import("utils.zig").usizeAdd;
 
 const AverageBufferSize = 65535;
 
@@ -1931,14 +1933,6 @@ fn sliceLineFeeds(str: []const u8) []const u8 {
     }
 
     return str[0 .. str.len - lineFeedLength];
-}
-
-pub fn usizeSub(a: usize, b: usize) isize {
-    return @as(isize, @intCast(a)) - @as(isize, @intCast(b));
-}
-
-pub fn usizeAdd(a: usize, b: isize) usize {
-    return @intCast(@as(isize, @intCast(a)) + b);
 }
 
 test "replace EOL" {

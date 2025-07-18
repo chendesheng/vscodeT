@@ -144,7 +144,7 @@ pub const TextModel = struct {
     _instanceId: u8,
     _deltaDecorationCallCnt: usize,
     _lastDecorationId: usize,
-    _decorations: std.StringHashMap(IntervalNode),
+    _decorations: std.AutoHashMap(u64, *IntervalNode),
     _decorationsTree: DecorationsTrees,
     // _decorationProvider: ColorizedBracketPairsDecorationProvider,
     //#endregion
@@ -235,7 +235,7 @@ pub const TextModel = struct {
             ._instanceId = strings.singleLetterHash(MODEL_ID),
             ._lastDecorationId = 0,
             ._deltaDecorationCallCnt = 0,
-            ._decorations = std.StringHashMap(IntervalNode).init(allocator),
+            ._decorations = std.AutoHashMap(u64, *IntervalNode).init(allocator),
             ._decorationsTree = DecorationsTrees.init(),
 
             ._commandManager = EditStack.init(allocator),
@@ -1264,7 +1264,7 @@ pub const DecorationsTrees = struct {
         _ = self;
         _ = model;
     }
-    fn collectNodesPostOrder(self: *DecorationsTrees) []IntervalNode {
+    fn collectNodesPostOrder(self: *DecorationsTrees) []*IntervalNode {
         _ = self;
         return &[_]IntervalNode{};
     }

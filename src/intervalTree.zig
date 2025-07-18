@@ -1,8 +1,10 @@
 const std = @import("std");
-const Range = @import("textModel.zig").Range;
+const Range = @import("range.zig").Range;
 const TrackedRangeStickiness = @import("model.zig").TrackedRangeStickiness;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const usizeSub = @import("utils.zig").usizeSub;
+const usizeAdd = @import("utils.zig").usizeAdd;
 
 pub const ClassName = enum {
     EditorHintDecoration,
@@ -28,6 +30,25 @@ const Metadata = packed struct {
     collapseOnReplaceEdit: bool,
     isMargin: bool,
 };
+
+test "metadata" {
+    const metadata: Metadata = .{
+        .color = .Red,
+        .isVisited = false,
+        .isForValidation = false,
+        .isInGlyphMargin = false,
+        .stickiness = .NeverGrowsWhenTypingAtEdges,
+        .collapseOnReplaceEdit = false,
+        .isMargin = false,
+    };
+    try std.testing.expectEqual(metadata.color, .Red);
+    try std.testing.expectEqual(metadata.isVisited, false);
+    try std.testing.expectEqual(metadata.isForValidation, false);
+    try std.testing.expectEqual(metadata.isInGlyphMargin, false);
+    try std.testing.expectEqual(metadata.stickiness, .NeverGrowsWhenTypingAtEdges);
+    try std.testing.expectEqual(metadata.collapseOnReplaceEdit, false);
+    try std.testing.expectEqual(metadata.isMargin, false);
+}
 
 // Due to how deletion works (in order to avoid always walking the right subtree of the deleted node),
 // the deltas for nodes can grow and shrink dramatically. It has been observed, in practice, that unless
@@ -56,35 +77,32 @@ fn setNodeColor(node: *IntervalNode, color: NodeColor) void {
 fn getNodeIsVisited(node: *const IntervalNode) bool {
     return node.metadata.isVisited;
 }
-fn setNodeIsVisited(node: *IntervalNode, value: bool) !void {
+fn setNodeIsVisited(node: *IntervalNode, value: bool) void {
     node.metadata.isVisited = value;
 }
 fn getNodeIsForValidation(node: *const IntervalNode) bool {
     return node.metadata.isForValidation;
 }
-fn setNodeIsForValidation(node: *IntervalNode, value: bool) !void {
+fn setNodeIsForValidation(node: *IntervalNode, value: bool) void {
     node.metadata.isForValidation = value;
 }
 fn getNodeIsInGlyphMargin(node: *const IntervalNode) bool {
     return node.metadata.isInGlyphMargin;
 }
-fn setNodeIsInGlyphMargin(node: *IntervalNode, value: bool) !void {
+fn setNodeIsInGlyphMargin(node: *IntervalNode, value: bool) void {
     node.metadata.isInGlyphMargin = value;
 }
 fn getNodeStickiness(node: *const IntervalNode) TrackedRangeStickiness {
     return node.metadata.stickiness;
 }
-fn _setNodeStickiness(node: *IntervalNode, stickiness: TrackedRangeStickiness) !void {
+fn setNodeStickiness(node: *IntervalNode, stickiness: TrackedRangeStickiness) void {
     node.metadata.stickiness = stickiness;
 }
 fn getCollapseOnReplaceEdit(node: *const IntervalNode) bool {
     return node.metadata.collapseOnReplaceEdit;
 }
-fn setCollapseOnReplaceEdit(node: *IntervalNode, value: bool) !void {
+fn setCollapseOnReplaceEdit(node: *IntervalNode, value: bool) void {
     node.metadata.collapseOnReplaceEdit = value;
-}
-pub fn setNodeStickiness(node: *IntervalNode, stickiness: TrackedRangeStickiness) void {
-    _setNodeStickiness(node, stickiness);
 }
 
 pub const IntervalNode = struct {
@@ -97,10 +115,10 @@ pub const IntervalNode = struct {
 
     start: usize,
     end: usize,
-    delta: usize,
+    delta: isize,
     maxEnd: usize,
 
-    id: []const u8,
+    id: u64,
     ownerId: usize,
     // options: ModelDecorationOptions,
 
@@ -109,7 +127,7 @@ pub const IntervalNode = struct {
     cachedAbsoluteEnd: usize,
     range: ?Range,
 
-    pub fn init(allocator: Allocator, id: []const u8, start: usize, end: usize) !*IntervalNode {
+    pub fn init(allocator: Allocator, id: u64, start: usize, end: usize) !*IntervalNode {
         const node: *IntervalNode = try allocator.create(IntervalNode);
         node.* = IntervalNode{
             .metadata = .{
@@ -138,6 +156,10 @@ pub const IntervalNode = struct {
         return node;
     }
 
+    pub fn deinit(self: *IntervalNode, allocator: Allocator) void {
+        allocator.destroy(self);
+    }
+
     pub fn reset(self: *IntervalNode, versionId: usize, start: usize, end: usize, range: Range) void {
         self.start = start;
         self.end = end;
@@ -158,11 +180,21 @@ pub const IntervalNode = struct {
     }
 
     pub fn detach(self: *IntervalNode) void {
-        self.parent.left = undefined;
-        self.parent.right = undefined;
         self.parent = undefined;
+        self.left = undefined;
+        self.right = undefined;
     }
 };
+
+test "IntervalNode.init" {
+    const allocator = std.testing.allocator;
+    const node = try IntervalNode.init(allocator, 42, 0, 10);
+    defer allocator.destroy(node);
+    try std.testing.expectEqual(0, node.start);
+    try std.testing.expectEqual(10, node.end);
+    try std.testing.expectEqual(NodeColor.Red, node.metadata.color);
+    try std.testing.expectEqual(TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges, node.metadata.stickiness);
+}
 
 pub const IntervalTree = struct {
     root: *IntervalNode,
@@ -177,60 +209,73 @@ pub const IntervalTree = struct {
         };
     }
 
-    pub fn intervalSearch(self: *IntervalTree, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(IntervalNode) {
-        if (self.root == SENTINEL) {
-            return ArrayList(IntervalNode).init(self.allocator);
-        }
-        return _intervalSearch(self, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
-    }
-
-    pub fn search(self: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(IntervalNode) {
-        if (self.root == SENTINEL) {
-            return ArrayList(IntervalNode).init(self.allocator);
-        }
-        return _search(self, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
-    }
-
-    // Will not set `cachedAbsoluteStart` nor `cachedAbsoluteEnd` on the returned nodes!
-    pub fn collectNodesFromOwner(self: *IntervalTree, ownerId: usize) !ArrayList(IntervalNode) {
-        return _collectNodesFromOwner(self, ownerId);
-    }
-
-    // Will not set `cachedAbsoluteStart` nor `cachedAbsoluteEnd` on the returned nodes!
-    pub fn collectNodesPostOrder(self: *IntervalTree) ArrayList(IntervalNode) {
-        return _collectNodesPostOrder(self);
-    }
-
-    pub fn insert(self: *IntervalTree, node: IntervalNode) void {
-        rbTreeInsert(self, node);
-        self._normalizeDeltaIfNecessary();
-    }
-
-    pub fn delete(self: *IntervalTree, node: IntervalNode) void {
-        rbTreeDelete(self, node);
-        self._normalizeDeltaIfNecessary();
-    }
-
-    pub fn resolveNode(self: *IntervalTree, node: IntervalNode, cachedVersionId: usize) void {
-        const initialNode = node;
-        var delta: usize = 0;
-        while (node != self.root) {
-            if (node == node.parent.right) {
-                delta += node.parent.delta;
+    pub fn deinit(self: *IntervalTree) void {
+        const nodes = self.getAllInOrder() catch return;
+        defer nodes.deinit();
+        for (nodes.items) |node| {
+            if (node != SENTINEL) {
+                node.deinit(self.allocator);
             }
-            node = node.parent;
+        }
+    }
+
+    pub fn intervalSearch(self: *IntervalTree, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+        if (self.root == SENTINEL) {
+            return ArrayList(*IntervalNode).init(self.allocator);
+        }
+        return try _intervalSearch(self, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+    }
+
+    pub fn search(self: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+        if (self.root == SENTINEL) {
+            return ArrayList(*IntervalNode).init(self.allocator);
+        }
+        return try _search(self, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+    }
+
+    // Will not set `cachedAbsoluteStart` nor `cachedAbsoluteEnd` on the returned nodes!
+    pub fn collectNodesFromOwner(self: *IntervalTree, ownerId: usize) !ArrayList(*IntervalNode) {
+        return try _collectNodesFromOwner(self, ownerId);
+    }
+
+    // Will not set `cachedAbsoluteStart` nor `cachedAbsoluteEnd` on the returned nodes!
+    pub fn collectNodesPostOrder(self: *IntervalTree) !ArrayList(*IntervalNode) {
+        return try _collectNodesPostOrder(self);
+    }
+
+    pub fn insert(self: *IntervalTree, node: *IntervalNode) void {
+        _ = rbTreeInsert(self, node);
+        self._normalizeDeltaIfNecessary();
+    }
+
+    pub fn delete(self: *IntervalTree, node: *IntervalNode) void {
+        rbTreeDelete(self, node);
+        node.deinit(self.allocator);
+        self._normalizeDeltaIfNecessary();
+    }
+
+    pub fn resolveNode(self: *IntervalTree, node: *IntervalNode, cachedVersionId: usize) void {
+        var initialNode = node;
+        var delta: isize = 0;
+        var current = node;
+        while (current != self.root) {
+            if (current == current.parent.right) {
+                delta += current.parent.delta;
+            }
+            current = current.parent;
         }
 
-        const nodeStart = initialNode.start + delta;
-        const nodeEnd = initialNode.end + delta;
+        const nodeStart = usizeAdd(initialNode.start, delta);
+        const nodeEnd = usizeAdd(initialNode.end, delta);
         initialNode.setCachedOffsets(nodeStart, nodeEnd, cachedVersionId);
     }
 
-    pub fn acceptReplace(self: *IntervalTree, offset: usize, length: usize, textLength: usize, forceMoveMarkers: bool) void {
+    pub fn acceptReplace(self: *IntervalTree, offset: usize, length: usize, textLength: usize, forceMoveMarkers: bool) !void {
         // Our strategy is to remove all directly impacted nodes, and then add them back to the tree.
 
         // (1) collect all nodes that are intersecting this edit as nodes of interest
-        const nodesOfInterest = searchForEditing(self, offset, offset + length);
+        const nodesOfInterest = try searchForEditing(self, offset, offset + length);
+        defer nodesOfInterest.deinit();
 
         // (2) remove all nodes that are intersecting this edit
         for (nodesOfInterest.items) |node| {
@@ -248,13 +293,13 @@ pub const IntervalTree = struct {
             node.end = node.cachedAbsoluteEnd;
             nodeAcceptEdit(node, offset, (offset + length), textLength, forceMoveMarkers);
             node.maxEnd = node.end;
-            rbTreeInsert(self, node);
+            _ = rbTreeInsert(self, node);
         }
         self._normalizeDeltaIfNecessary();
     }
 
-    pub fn getAllInOrder(self: *IntervalTree) !ArrayList(IntervalNode) {
-        return _search(self, 0, false, 0, false);
+    pub fn getAllInOrder(self: *IntervalTree) !ArrayList(*IntervalNode) {
+        return try _search(self, 0, false, 0, false);
     }
 
     fn _normalizeDeltaIfNecessary(self: *IntervalTree) void {
@@ -266,8 +311,63 @@ pub const IntervalTree = struct {
     }
 };
 
+test "IntervalTree.init" {
+    const allocator = std.testing.allocator;
+    var tree = IntervalTree.init(allocator);
+    defer tree.deinit();
+    try std.testing.expectEqual(SENTINEL, tree.root);
+    try std.testing.expectEqual(false, tree.requestNormalizeDelta);
+}
+
+test "IntervalTree.insert" {
+    const allocator = std.testing.allocator;
+    var tree = IntervalTree.init(allocator);
+    defer tree.deinit();
+    const node = try IntervalNode.init(allocator, 42, 0, 10);
+    tree.insert(node);
+    tree.delete(node);
+    try std.testing.expectEqual(SENTINEL, tree.root);
+}
+
+test "acceptReplace single" {
+    const allocator = std.testing.allocator;
+    var tree = IntervalTree.init(allocator);
+    defer tree.deinit();
+    const node = try IntervalNode.init(allocator, 42, 0, 100);
+    tree.insert(node);
+    try tree.acceptReplace(10, 10, 20, false);
+    try std.testing.expectEqual(0, tree.root.start);
+    try std.testing.expectEqual(110, tree.root.end);
+}
+
+test "acceptReplace multiple" {
+    const allocator = std.testing.allocator;
+    var tree = IntervalTree.init(allocator);
+    defer tree.deinit();
+    const node1 = try IntervalNode.init(allocator, 42, 0, 100);
+    const node2 = try IntervalNode.init(allocator, 43, 150, 200);
+    tree.insert(node1);
+    tree.insert(node2);
+    try tree.acceptReplace(80, 50, 10, false);
+    const nodes = tree.getAllInOrder() catch return;
+    defer nodes.deinit();
+    try std.testing.expectEqual(nodes.items.len, 2);
+    try std.testing.expectEqual(nodes.items[0].start, 0);
+    try std.testing.expectEqual(nodes.items[0].end, 90);
+    try std.testing.expectEqual(nodes.items[1].start, 110);
+    try std.testing.expectEqual(nodes.items[1].end, 160);
+}
+
 var sentinelValue: IntervalNode = .{
-    .metadata = 0,
+    .metadata = .{
+        .color = .Black,
+        .isVisited = false,
+        .isForValidation = false,
+        .isInGlyphMargin = false,
+        .stickiness = .NeverGrowsWhenTypingAtEdges,
+        .collapseOnReplaceEdit = false,
+        .isMargin = false,
+    },
     .left = &sentinelValue,
     .right = &sentinelValue,
     .parent = &sentinelValue,
@@ -285,9 +385,9 @@ var sentinelValue: IntervalNode = .{
 pub var SENTINEL: *IntervalNode = &sentinelValue;
 
 //#region Delta Normalization
-fn normalizeDelta(T: IntervalTree) void {
+fn normalizeDelta(T: *IntervalTree) void {
     var node = T.root;
-    var delta: usize = 0;
+    var delta: isize = 0;
     while (node != SENTINEL) {
         if (node.left != SENTINEL and !getNodeIsVisited(node.left)) {
             // go left
@@ -303,8 +403,8 @@ fn normalizeDelta(T: IntervalTree) void {
         }
 
         // handle current node
-        node.start = delta + node.start;
-        node.end = delta + node.end;
+        node.start = usizeAdd(node.start, delta);
+        node.end = usizeAdd(node.end, delta);
         node.delta = 0;
         recomputeMaxEnd(node);
 
@@ -402,12 +502,12 @@ fn nodeAcceptEdit(node: *IntervalNode, start: usize, end: usize, textLength: usi
     }
 
     // Finish
-    const deltaColumn = (insertingCnt - deletingCnt);
+    const deltaColumn = usizeSub(insertingCnt, deletingCnt);
     if (!startDone) {
-        node.start = @max(0, nodeStart + deltaColumn);
+        node.start = @max(0, @as(isize, @intCast(nodeStart)) + deltaColumn);
     }
     if (!endDone) {
-        node.end = @max(0, nodeEnd + deltaColumn);
+        node.end = @max(0, @as(isize, @intCast(nodeEnd)) + deltaColumn);
     }
 
     if (node.start > node.end) {
@@ -415,7 +515,7 @@ fn nodeAcceptEdit(node: *IntervalNode, start: usize, end: usize, textLength: usi
     }
 }
 
-fn searchForEditing(T: IntervalTree, start: usize, end: usize) []IntervalNode {
+fn searchForEditing(T: *IntervalTree, start: usize, end: usize) !ArrayList(*IntervalNode) {
     // https://en.wikipedia.org/wiki/Interval_tree#Augmented_tree
     // Now, it is known that two intervals A and B overlap only when both
     // A.low <= B.high and A.high >= B.low. When searching the trees for
@@ -423,11 +523,11 @@ fn searchForEditing(T: IntervalTree, start: usize, end: usize) []IntervalNode {
     //  a) all nodes to the right of nodes whose low value is past the end of the given interval.
     //  b) all nodes that have their maximum 'high' value below the start of the given interval.
     var node = T.root;
-    var delta: usize = 0;
+    var delta: isize = 0;
     var nodeMaxEnd: usize = 0;
     var nodeStart: usize = 0;
     var nodeEnd: usize = 0;
-    var result = ArrayList(IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(T.allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -442,7 +542,7 @@ fn searchForEditing(T: IntervalTree, start: usize, end: usize) []IntervalNode {
 
         if (!getNodeIsVisited(node.left)) {
             // first time seeing this node
-            nodeMaxEnd = delta + node.maxEnd;
+            nodeMaxEnd = usizeAdd(node.maxEnd, delta);
             if (nodeMaxEnd < start) {
                 // cover case b) from above
                 // there is no need to search this node or its children
@@ -458,7 +558,7 @@ fn searchForEditing(T: IntervalTree, start: usize, end: usize) []IntervalNode {
         }
 
         // handle current node
-        nodeStart = delta + node.start;
+        nodeStart = usizeAdd(node.start, delta);
         if (nodeStart > end) {
             // cover case a) from above
             // there is no need to search this node or its right subtree
@@ -466,7 +566,7 @@ fn searchForEditing(T: IntervalTree, start: usize, end: usize) []IntervalNode {
             continue;
         }
 
-        nodeEnd = delta + node.end;
+        nodeEnd = usizeAdd(node.end, delta);
         if (nodeEnd >= start) {
             node.setCachedOffsets(nodeStart, nodeEnd, 0);
             try result.append(node);
@@ -486,7 +586,7 @@ fn searchForEditing(T: IntervalTree, start: usize, end: usize) []IntervalNode {
     return result;
 }
 
-fn noOverlapReplace(T: IntervalTree, start: usize, end: usize, textLength: usize) void {
+fn noOverlapReplace(T: *IntervalTree, start: usize, end: usize, textLength: usize) void {
     // https://en.wikipedia.org/wiki/Interval_tree#Augmented_tree
     // Now, it is known that two intervals A and B overlap only when both
     // A.low <= B.high and A.high >= B.low. When searching the trees for
@@ -494,10 +594,10 @@ fn noOverlapReplace(T: IntervalTree, start: usize, end: usize, textLength: usize
     //  a) all nodes to the right of nodes whose low value is past the end of the given interval.
     //  b) all nodes that have their maximum 'high' value below the start of the given interval.
     var node = T.root;
-    var delta: usize = 0;
+    var delta: isize = 0;
     var nodeMaxEnd: usize = 0;
     var nodeStart: usize = 0;
-    const editDelta = (textLength - (end - start));
+    const editDelta = usizeSub(textLength, end - start);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -513,7 +613,7 @@ fn noOverlapReplace(T: IntervalTree, start: usize, end: usize, textLength: usize
 
         if (!getNodeIsVisited(node.left)) {
             // first time seeing this node
-            nodeMaxEnd = delta + node.maxEnd;
+            nodeMaxEnd = usizeAdd(node.maxEnd, delta);
             if (nodeMaxEnd < start) {
                 // cover case b) from above
                 // there is no need to search this node or its children
@@ -529,10 +629,10 @@ fn noOverlapReplace(T: IntervalTree, start: usize, end: usize, textLength: usize
         }
 
         // handle current node
-        nodeStart = delta + node.start;
+        nodeStart = usizeAdd(node.start, delta);
         if (nodeStart > end) {
-            node.start += editDelta;
-            node.end += editDelta;
+            node.start = usizeAdd(node.start, editDelta);
+            node.end = usizeAdd(node.end, editDelta);
             node.delta += editDelta;
             if (node.delta < MIN_SAFE_DELTA or node.delta > MAX_SAFE_DELTA) {
                 T.requestNormalizeDelta = true;
@@ -560,9 +660,9 @@ fn noOverlapReplace(T: IntervalTree, start: usize, end: usize, textLength: usize
 
 //#region Searching
 
-fn _collectNodesFromOwner(T: IntervalTree, ownerId: usize) []IntervalNode {
+fn _collectNodesFromOwner(T: *IntervalTree, ownerId: usize) !ArrayList(*IntervalNode) {
     var node = T.root;
-    var result = ArrayList(IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(T.allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -597,9 +697,9 @@ fn _collectNodesFromOwner(T: IntervalTree, ownerId: usize) []IntervalNode {
     return result;
 }
 
-fn _collectNodesPostOrder(T: IntervalTree) ArrayList(IntervalNode) {
+fn _collectNodesPostOrder(T: *IntervalTree) !ArrayList(*IntervalNode) {
     var node = T.root;
-    var result = ArrayList(IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(T.allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -631,12 +731,12 @@ fn _collectNodesPostOrder(T: IntervalTree) ArrayList(IntervalNode) {
     return result;
 }
 
-fn _search(T: IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) ArrayList(IntervalNode) {
+fn _search(T: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
     var node = T.root;
-    var delta: usize = 0;
+    var delta: isize = 0;
     var nodeStart: usize = 0;
     var nodeEnd: usize = 0;
-    var result = ArrayList(IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(T.allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -656,13 +756,13 @@ fn _search(T: IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cac
         }
 
         // handle current node
-        nodeStart = delta + node.start;
-        nodeEnd = delta + node.end;
+        nodeStart = usizeAdd(node.start, delta);
+        nodeEnd = usizeAdd(node.end, delta);
 
         node.setCachedOffsets(nodeStart, nodeEnd, cachedVersionId);
 
         var include = true;
-        if (filterOwnerId and node.ownerId and node.ownerId != filterOwnerId) {
+        if (filterOwnerId != 0 and node.ownerId != 0 and node.ownerId != filterOwnerId) {
             include = false;
         }
         if (filterOutValidation and getNodeIsForValidation(node)) {
@@ -691,7 +791,7 @@ fn _search(T: IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cac
     return result;
 }
 
-fn _intervalSearch(T: IntervalTree, intervalStart: usize, intervalEnd: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) []IntervalNode {
+fn _intervalSearch(T: *IntervalTree, intervalStart: usize, intervalEnd: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
     // https://en.wikipedia.org/wiki/Interval_tree#Augmented_tree
     // Now, it is known that two intervals A and B overlap only when both
     // A.low <= B.high and A.high >= B.low. When searching the trees for
@@ -700,11 +800,11 @@ fn _intervalSearch(T: IntervalTree, intervalStart: usize, intervalEnd: usize, fi
     //  b) all nodes that have their maximum 'high' value below the start of the given interval.
 
     var node = T.root;
-    var delta: usize = 0;
+    var delta: isize = 0;
     var nodeMaxEnd: usize = 0;
     var nodeStart: usize = 0;
     var nodeEnd: usize = 0;
-    var result = ArrayList(IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(T.allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -719,7 +819,7 @@ fn _intervalSearch(T: IntervalTree, intervalStart: usize, intervalEnd: usize, fi
 
         if (!getNodeIsVisited(node.left)) {
             // first time seeing this node
-            nodeMaxEnd = delta + node.maxEnd;
+            nodeMaxEnd = usizeAdd(node.maxEnd, delta);
             if (nodeMaxEnd < intervalStart) {
                 // cover case b) from above
                 // there is no need to search this node or its children
@@ -735,7 +835,7 @@ fn _intervalSearch(T: IntervalTree, intervalStart: usize, intervalEnd: usize, fi
         }
 
         // handle current node
-        nodeStart = delta + node.start;
+        nodeStart = usizeAdd(node.start, delta);
         if (nodeStart > intervalEnd) {
             // cover case a) from above
             // there is no need to search this node or its right subtree
@@ -743,7 +843,7 @@ fn _intervalSearch(T: IntervalTree, intervalStart: usize, intervalEnd: usize, fi
             continue;
         }
 
-        nodeEnd = delta + node.end;
+        nodeEnd = usizeAdd(node.end, delta);
 
         if (nodeEnd >= intervalStart) {
             // There is overlap
@@ -783,7 +883,7 @@ fn _intervalSearch(T: IntervalTree, intervalStart: usize, intervalEnd: usize, fi
 //#endregion
 
 //#region Insertion
-fn rbTreeInsert(T: IntervalTree, newNode: IntervalNode) IntervalNode {
+fn rbTreeInsert(T: *IntervalTree, newNode: *IntervalNode) *IntervalNode {
     if (T.root == SENTINEL) {
         newNode.parent = SENTINEL;
         newNode.left = SENTINEL;
@@ -842,20 +942,20 @@ fn rbTreeInsert(T: IntervalTree, newNode: IntervalNode) IntervalNode {
     return newNode;
 }
 
-fn treeInsert(T: IntervalTree, z: IntervalNode) void {
-    var delta: usize = 0;
+fn treeInsert(T: *IntervalTree, z: *IntervalNode) void {
+    var delta: isize = 0;
     var x = T.root;
     const zAbsoluteStart = z.start;
     const zAbsoluteEnd = z.end;
     while (true) {
-        const cmp = intervalCompare(zAbsoluteStart, zAbsoluteEnd, x.start + delta, x.end + delta);
+        const cmp = intervalCompare(zAbsoluteStart, zAbsoluteEnd, usizeAdd(x.start, delta), usizeAdd(x.end, delta));
         if (cmp < 0) {
             // this node should be inserted to the left
             // => it is not affected by the node's delta
             if (x.left == SENTINEL) {
-                z.start -= delta;
-                z.end -= delta;
-                z.maxEnd -= delta;
+                z.start = usizeAdd(z.start, -delta);
+                z.end = usizeAdd(z.end, -delta);
+                z.maxEnd = usizeAdd(z.maxEnd, -delta);
                 x.left = z;
                 break;
             } else {
@@ -865,9 +965,9 @@ fn treeInsert(T: IntervalTree, z: IntervalNode) void {
             // this node should be inserted to the right
             // => it is not affected by the node's delta
             if (x.right == SENTINEL) {
-                z.start -= (delta + x.delta);
-                z.end -= (delta + x.delta);
-                z.maxEnd -= (delta + x.delta);
+                z.start = usizeAdd(z.start, -(delta + x.delta));
+                z.end = usizeAdd(z.end, -(delta + x.delta));
+                z.maxEnd = usizeAdd(z.maxEnd, -(delta + x.delta));
                 x.right = z;
                 break;
             } else {
@@ -885,9 +985,9 @@ fn treeInsert(T: IntervalTree, z: IntervalNode) void {
 //#endregion
 
 //#region Deletion
-fn rbTreeDelete(T: IntervalTree, z: IntervalNode) void {
-    var x: IntervalNode = undefined;
-    var y: IntervalNode = undefined;
+fn rbTreeDelete(T: *IntervalTree, z: *IntervalNode) void {
+    var x: *IntervalNode = undefined;
+    var y: *IntervalNode = undefined;
 
     // RB-DELETE except we don't swap z and y in case c)
     // i.e. we always delete what's pointed at by z.
@@ -901,8 +1001,8 @@ fn rbTreeDelete(T: IntervalTree, z: IntervalNode) void {
         if (x.delta < MIN_SAFE_DELTA or x.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;
         }
-        x.start += z.delta;
-        x.end += z.delta;
+        x.start = usizeAdd(x.start, z.delta);
+        x.end = usizeAdd(x.end, z.delta);
     } else if (z.right == SENTINEL) {
         x = z.left;
         y = z;
@@ -913,15 +1013,15 @@ fn rbTreeDelete(T: IntervalTree, z: IntervalNode) void {
         // y's delta is no longer influenced by z's delta,
         // but we don't want to walk the entire right-hand-side subtree of x.
         // we therefore maintain z's delta in y, and adjust only x
-        x.start += y.delta;
-        x.end += y.delta;
+        x.start = usizeAdd(x.start, y.delta);
+        x.end = usizeAdd(x.end, y.delta);
         x.delta += y.delta;
         if (x.delta < MIN_SAFE_DELTA or x.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;
         }
 
-        y.start += z.delta;
-        y.end += z.delta;
+        y.start = usizeAdd(y.start, z.delta);
+        y.end = usizeAdd(y.end, z.delta);
         y.delta = z.delta;
         if (y.delta < MIN_SAFE_DELTA or y.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;
@@ -999,7 +1099,7 @@ fn rbTreeDelete(T: IntervalTree, z: IntervalNode) void {
     }
 
     // RB-DELETE-FIXUP
-    var w: IntervalNode = undefined;
+    var w: *IntervalNode = undefined;
     while (x != T.root and getNodeColor(x) == NodeColor.Black) {
         if (x == x.parent.left) {
             w = x.parent.right;
@@ -1062,11 +1162,12 @@ fn rbTreeDelete(T: IntervalTree, z: IntervalNode) void {
     resetSentinel();
 }
 
-fn leftest(node: IntervalNode) IntervalNode {
-    while (node.left != SENTINEL) {
-        node = node.left;
+fn leftest(node: *IntervalNode) *IntervalNode {
+    var current = node;
+    while (current.left != SENTINEL) {
+        current = current.left;
     }
-    return node;
+    return current;
 }
 
 fn resetSentinel() void {
@@ -1078,15 +1179,15 @@ fn resetSentinel() void {
 //#endregion
 
 //#region Rotations
-fn leftRotate(T: IntervalTree, x: IntervalNode) void {
+fn leftRotate(T: *IntervalTree, x: *IntervalNode) void {
     const y = x.right; // set y.
 
     y.delta += x.delta; // y's delta is no longer influenced by x's delta
     if (y.delta < MIN_SAFE_DELTA or y.delta > MAX_SAFE_DELTA) {
         T.requestNormalizeDelta = true;
     }
-    y.start += x.delta;
-    y.end += x.delta;
+    y.start = usizeAdd(y.start, x.delta);
+    y.end = usizeAdd(y.end, x.delta);
 
     x.right = y.left; // turn y's left subtree into x's right subtree.
     if (y.left != SENTINEL) {
@@ -1108,15 +1209,15 @@ fn leftRotate(T: IntervalTree, x: IntervalNode) void {
     recomputeMaxEnd(y);
 }
 
-fn rightRotate(T: IntervalTree, y: IntervalNode) void {
+fn rightRotate(T: *IntervalTree, y: *IntervalNode) void {
     var x = y.left;
 
     y.delta -= x.delta;
     if (y.delta < MIN_SAFE_DELTA or y.delta > MAX_SAFE_DELTA) {
         T.requestNormalizeDelta = true;
     }
-    y.start -= x.delta;
-    y.end -= x.delta;
+    y.start = usizeAdd(y.start, -(x.delta));
+    y.end = usizeAdd(y.end, -(x.delta));
 
     y.left = x.right;
     if (x.right != SENTINEL) {
@@ -1147,7 +1248,7 @@ fn computeMaxEnd(node: *const IntervalNode) usize {
         }
     }
     if (node.right != SENTINEL) {
-        const rightMaxEnd = node.right.maxEnd + node.delta;
+        const rightMaxEnd = usizeAdd(node.right.maxEnd, node.delta);
         if (rightMaxEnd > maxEnd) {
             maxEnd = rightMaxEnd;
         }
@@ -1160,22 +1261,23 @@ pub fn recomputeMaxEnd(node: *IntervalNode) void {
 }
 
 fn recomputeMaxEndWalkToRoot(node: *IntervalNode) void {
-    while (node != SENTINEL) {
-        const maxEnd = computeMaxEnd(node);
+    var current = node;
+    while (current != SENTINEL) {
+        const maxEnd = computeMaxEnd(current);
 
-        if (node.maxEnd == maxEnd) {
+        if (current.maxEnd == maxEnd) {
             // no need to go further
             return;
         }
 
-        node.maxEnd = maxEnd;
-        node = node.parent;
+        current.maxEnd = maxEnd;
+        current = current.parent;
     }
 }
 
-pub fn intervalCompare(aStart: usize, aEnd: usize, bStart: usize, bEnd: usize) i32 {
+pub fn intervalCompare(aStart: usize, aEnd: usize, bStart: usize, bEnd: usize) isize {
     if (aStart == bStart) {
-        return aEnd - bEnd;
+        return usizeSub(aEnd, bEnd);
     }
-    return aStart - bStart;
+    return usizeSub(aStart, bStart);
 }
