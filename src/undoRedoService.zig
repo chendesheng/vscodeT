@@ -12,6 +12,8 @@ const UriComparisonKeyComputer = @import("undoRedo.zig").UriComparisonKeyCompute
 const Disposable = @import("undoRedo.zig").Disposable;
 const uriToString = @import("model.zig").uriToString;
 const UndoRedoSourceOrUri = @import("undoRedo.zig").UndoRedoSourceOrUri;
+const Pair = @import("utils.zig").Pair;
+const pair = @import("utils.zig").pair;
 
 const DEBUG = true;
 
@@ -819,9 +821,9 @@ pub const UndoRedoService = struct {
         return PastFutureElements{ .past = &[_]StackElement{}, .future = &[_]StackElement{} };
     }
 
-    fn _findClosestUndoElementWithSource(self: *UndoRedoService, sourceId: u64) Pair {
+    fn _findClosestUndoElementWithSource(self: *UndoRedoService, sourceId: u64) ResultPair {
         if (sourceId == 0) {
-            return Pair{ .first = null, .second = null };
+            return ResultPair{ .first = null, .second = null };
         }
 
         // find an element with the sourceId and with the highest sourceOrder ready to be undone
@@ -842,7 +844,7 @@ pub const UndoRedoService = struct {
             }
         }
 
-        return Pair{ .first = matchedElement, .second = matchedStrResource };
+        return ResultPair{ .first = matchedElement, .second = matchedStrResource };
     }
 
     pub fn canUndo(self: *UndoRedoService, resourceOrSource: UndoRedoSourceOrUri) bool {
@@ -1143,9 +1145,9 @@ pub const UndoRedoService = struct {
         // });
     }
 
-    fn _findClosestUndoElementInGroup(self: *UndoRedoService, groupId: u64) Pair {
+    fn _findClosestUndoElementInGroup(self: *UndoRedoService, groupId: u64) ResultPair {
         if (groupId == 0) {
-            return Pair{ .first = null, .second = null };
+            return ResultPair{ .first = null, .second = null };
         }
 
         // find another element with the same groupId and with the highest groupOrder ready to be undone
@@ -1166,7 +1168,7 @@ pub const UndoRedoService = struct {
             }
         }
 
-        return Pair{ .first = matchedElement, .second = matchedStrResource };
+        return pair(matchedElement, matchedStrResource);
     }
 
     fn _continueUndoInGroup(self: *UndoRedoService, groupId: u64, undoConfirmed: bool) void {
@@ -1174,8 +1176,8 @@ pub const UndoRedoService = struct {
             return;
         }
 
-        const pair = self._findClosestUndoElementInGroup(groupId);
-        const matchedStrResource = pair.second;
+        const res = self._findClosestUndoElementInGroup(groupId);
+        const matchedStrResource = res.second;
         if (matchedStrResource) {
             return self._undo(matchedStrResource, 0, undoConfirmed);
         }
@@ -1202,9 +1204,9 @@ pub const UndoRedoService = struct {
             if (editStack.getClosestPastElement()) |element| {
                 if (element.groupId() != 0) {
                     // this element is a part of a group, we need to make sure undoing in a group is in order
-                    const pair = self._findClosestUndoElementInGroup(element.groupId());
-                    const matchedElement = pair.first;
-                    const matchedStrResource = pair.second;
+                    const res = self._findClosestUndoElementInGroup(element.groupId());
+                    const matchedElement = res.first;
+                    const matchedStrResource = res.second;
                     if ((matchedElement == null or element != matchedElement) and matchedStrResource != null) {
                         // there is an element in the same group that should be undone before this one
                         return self._undo(matchedStrResource.?, sourceId, undoConfirmed);
@@ -1248,9 +1250,9 @@ pub const UndoRedoService = struct {
         return self._undo(strResource, sourceId, true);
     }
 
-    fn _findClosestRedoElementWithSource(self: *UndoRedoService, sourceId: u64) Pair {
+    fn _findClosestRedoElementWithSource(self: *UndoRedoService, sourceId: u64) ResultPair {
         if (sourceId == 0) {
-            return Pair{ .first = null, .second = null };
+            return ResultPair{ .first = null, .second = null };
         }
 
         // find an element with sourceId and with the lowest sourceOrder ready to be redone
@@ -1271,7 +1273,7 @@ pub const UndoRedoService = struct {
             }
         }
 
-        return Pair{ .first = matchedElement, .second = matchedStrResource };
+        return pair(matchedElement, matchedStrResource);
     }
 
     pub fn canRedo(self: *UndoRedoService, resourceOrSource: UndoRedoSourceOrUri) bool {
@@ -1399,14 +1401,11 @@ pub const UndoRedoService = struct {
         // });
     }
 
-    const Pair = struct {
-        first: ?StackElement,
-        second: ?[]const u8,
-    };
+    const ResultPair = Pair(?StackElement, ?[]const u8);
 
-    fn _findClosestRedoElementInGroup(self: *UndoRedoService, groupId: u64) Pair {
+    fn _findClosestRedoElementInGroup(self: *UndoRedoService, groupId: u64) ResultPair {
         if (groupId == 0) {
-            return Pair{ .first = null, .second = null };
+            return ResultPair{ .first = null, .second = null };
         }
 
         // find another element with the same groupId and with the lowest groupOrder ready to be redone
@@ -1427,7 +1426,7 @@ pub const UndoRedoService = struct {
             }
         }
 
-        return Pair{ .first = matchedElement, .second = matchedStrResource };
+        return pair(matchedElement, matchedStrResource);
     }
 
     fn _continueRedoInGroup(self: *UndoRedoService, groupId: u64) void {
@@ -1466,16 +1465,16 @@ pub const UndoRedoService = struct {
             const groupId = element.groupId();
             if (groupId != 0) {
                 // this element is a part of a group, we need to make sure redoing in a group is in order
-                const pair = self._findClosestRedoElementInGroup(groupId);
-                if (pair.first) |matchedElement| {
-                    if (pair.second) |matchedStrResource| {
+                const res = self._findClosestRedoElementInGroup(groupId);
+                if (res.first) |matchedElement| {
+                    if (res.second) |matchedStrResource| {
                         if (element != matchedElement and matchedStrResource) {
                             // there is an element in the same group that should be redone before this one
                             return self._redo(matchedStrResource);
                         }
                     }
                 } else {
-                    if (pair.second) |matchedStrResource| {
+                    if (res.second) |matchedStrResource| {
                         return self._redo(matchedStrResource);
                     }
                 }

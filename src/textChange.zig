@@ -4,6 +4,8 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const fs = std.fs;
 const strings = @import("strings.zig");
+const Pair = @import("utils.zig").Pair;
+const pair = @import("utils.zig").pair;
 
 pub const TextChange = struct {
     oldPosition: usize,
@@ -108,7 +110,7 @@ pub const TextChangeCompressor = struct {
     _currLen: usize,
     _currDeltaOffset: usize,
 
-    const SplitTextChange = struct { e1: TextChange, e2: TextChange };
+    const PairTextChange = Pair(TextChange, TextChange);
 
     pub fn init(allocator: Allocator, prevEdits: []TextChange, currEdits: []TextChange) TextChangeCompressor {
         return TextChangeCompressor{
@@ -163,19 +165,15 @@ pub const TextChangeCompressor = struct {
 
             if (currEdit.oldPosition < prevEdit.newPosition) {
                 const split = _splitCurr(currEdit, prevEdit.newPosition - currEdit.oldPosition);
-                const e1 = split.e1;
-                const e2 = split.e2;
-                try self._acceptCurr(e1);
-                currEdit = e2;
+                try self._acceptCurr(split.first);
+                currEdit = split.second;
                 continue;
             }
 
             if (prevEdit.newPosition < currEdit.oldPosition) {
                 const split = _splitPrev(prevEdit, currEdit.oldPosition - prevEdit.newPosition);
-                const e1 = split.e1;
-                const e2 = split.e2;
-                try self._acceptPrev(e1);
-                prevEdit = e2;
+                try self._acceptPrev(split.first);
+                prevEdit = split.second;
                 continue;
             }
 
@@ -193,23 +191,19 @@ pub const TextChangeCompressor = struct {
                 currEdit = self._getCurr(currIndex);
             } else if (currEdit.oldEnd < prevEdit.newEnd) {
                 const split = _splitPrev(prevEdit, currEdit.oldLength);
-                const e1 = split.e1;
-                const e2 = split.e2;
-                mergePrev = e1;
+                mergePrev = split.first;
                 mergeCurr = currEdit;
-                prevEdit = e2;
+                prevEdit = split.second;
                 currIndex += 1;
                 currEdit = self._getCurr(currIndex);
             } else {
                 const split = _splitCurr(currEdit, prevEdit.newLength);
-                const e1 = split.e1;
-                const e2 = split.e2;
 
                 mergePrev = prevEdit;
-                mergeCurr = e1;
+                mergeCurr = split.first;
                 prevIndex += 1;
                 prevEdit = self._getPrev(prevIndex);
-                currEdit = e2;
+                currEdit = split.second;
             }
 
             try self._result.append(TextChange{
@@ -263,44 +257,44 @@ pub const TextChangeCompressor = struct {
         };
     }
 
-    pub fn _splitPrev(edit: TextChange, offset: usize) SplitTextChange {
+    pub fn _splitPrev(edit: TextChange, offset: usize) PairTextChange {
         const preText = edit.newText[0..offset];
         const postText = edit.newText[offset..];
 
-        return SplitTextChange{
-            .e1 = TextChange{
+        return pair(
+            TextChange{
                 .oldPosition = edit.oldPosition,
                 .oldText = edit.oldText,
                 .newPosition = edit.newPosition,
                 .newText = preText,
             },
-            .e2 = TextChange{
+            TextChange{
                 .oldPosition = edit.oldEnd,
                 .oldText = "",
                 .newPosition = edit.newPosition + offset,
                 .newText = postText,
             },
-        };
+        );
     }
 
-    pub fn _splitCurr(edit: TextChange, offset: usize) SplitTextChange {
+    pub fn _splitCurr(edit: TextChange, offset: usize) PairTextChange {
         const preText = edit.oldText[0..offset];
         const postText = edit.oldText[offset..];
 
-        return SplitTextChange{
-            .e1 = TextChange{
+        return pair(
+            TextChange{
                 .oldPosition = edit.oldPosition,
                 .oldText = preText,
                 .newPosition = edit.newPosition,
                 .newText = edit.newText,
             },
-            .e2 = TextChange{
+            TextChange{
                 .oldPosition = edit.oldPosition + offset,
                 .oldText = postText,
                 .newPosition = edit.newEnd,
                 .newText = "",
             },
-        };
+        );
     }
 
     pub fn _merge(self: *TextChangeCompressor, edits: []TextChange) ![]TextChange {
@@ -335,9 +329,7 @@ pub const TextChangeCompressor = struct {
             return edits;
         }
 
-        for (0..edits.len) |i| {
-            const edit = edits[i];
-
+        for (edits) |edit| {
             if (edit.oldText == edit.newText) {
                 continue;
             }
