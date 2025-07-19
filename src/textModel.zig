@@ -56,6 +56,7 @@ const ArrayQueue = @import("ArrayQueue.zig").ArrayQueue;
 const Set = @import("Set.zig").Set;
 const SetWithKey = @import("Set.zig").SetWithKey;
 const Emitter = @import("event.zig").Emitter;
+const IndentSize = Model.IndentSize;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -115,7 +116,7 @@ pub const TextModel = struct {
     const LARGE_FILE_LINE_COUNT_THRESHOLD = 300 * 1000; // 300K lines
     const LARGE_FILE_HEAP_OPERATION_THRESHOLD = 256 * 1024 * 1024; // 256M characters, usually ~> 512MB memory usage
 
-    id: u64,
+    id: []const u8,
     isForSimpleWidget: bool,
     _associatedResource: Uri,
     _attachedEditorCount: usize,
@@ -160,6 +161,29 @@ pub const TextModel = struct {
     _eventEmitter: DidChangeContentEmitter,
     //#endregion
 
+    pub fn resolveOptions(textBuffer: PieceTreeTextBuffer, options: TextModelCreationOptions) TextModelResolvedOptions {
+        if (options.detectIndentation) {
+            const guessedIndentation = guessIndentation(textBuffer, options.tabSize, options.insertSpaces);
+            return TextModelResolvedOptions.init(
+                guessedIndentation.tabSize,
+                .{ .tabSize = 1 }, // TODO@Alex: guess indentSize independent of tabSize
+                guessedIndentation.insertSpaces,
+                options.defaultEOL,
+                options.trimAutoWhitespace,
+                options.bracketPairColorizationOptions,
+            );
+        }
+
+        return TextModelResolvedOptions.init(
+            options.tabSize,
+            options.indentSize,
+            options.insertSpaces,
+            options.defaultEOL,
+            options.trimAutoWhitespace,
+            options.bracketPairColorizationOptions,
+        );
+    }
+
     pub fn onWillDispose(self: *TextModel, callback: fn () void) !void {
         try self._onWillDispose.event(callback);
     }
@@ -189,7 +213,7 @@ pub const TextModel = struct {
         }.cb);
     }
 
-    pub fn init(allocator: Allocator, source: io.AnyReader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !TextModel {
+    pub fn init(allocator: Allocator, source: io.AnyReader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !*TextModel {
         MODEL_ID += 1;
         const buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
         const bufferLineCount = buffer.getLineCount();
@@ -209,21 +233,23 @@ pub const TextModel = struct {
             tooLargeForHeapOperation = false;
         }
 
-        return TextModel{
+        const model = try allocator.create(TextModel);
+        model.* = TextModel{
             .id = try fmt.allocPrint(allocator, "$model{d}", .{MODEL_ID}),
             .isForSimpleWidget = creationOptions.isForSimpleWidget,
             ._associatedResource = if (associatedResource) |url| url else .{
                 .scheme = "inmemory",
                 .user = null,
                 .password = null,
-                .host = "model",
+                .host = .{ .raw = "model" },
                 .port = null,
-                .path = try fmt.allocPrint(allocator, "/{d}", .{MODEL_ID}),
+                .path = .{ .raw = try fmt.allocPrint(allocator, "/{d}", .{MODEL_ID}) },
                 .query = null,
                 .fragment = null,
             },
             ._attachedEditorCount = 0,
             ._buffer = buffer,
+            ._options = resolveOptions(buffer, creationOptions),
             ._isTooLargeForSyncing = bufferTextLength > MODEL_SYNC_LIMIT,
             ._isTooLargeForTokenization = tooLargeForTokenization,
             ._isTooLargeForHeapOperation = tooLargeForHeapOperation,
@@ -236,9 +262,8 @@ pub const TextModel = struct {
             ._lastDecorationId = 0,
             ._deltaDecorationCallCnt = 0,
             ._decorations = std.AutoHashMap(u64, *IntervalNode).init(allocator),
-            ._decorationsTree = DecorationsTrees.init(),
-
-            ._commandManager = EditStack.init(allocator),
+            ._decorationsTree = DecorationsTrees.init(allocator),
+            ._commandManager = EditStack.init(model, undoRedoService),
             ._isUndoing = false,
             ._isRedoing = false,
             ._trimAutoWhitespaceLines = null,
@@ -246,19 +271,30 @@ pub const TextModel = struct {
             ._undoRedoService = undoRedoService,
 
             ._onWillDispose = Emitter(void).init(allocator),
-            ._onDidChangeDecorations = DidChangeDecorationsEmitter.init(allocator),
+            ._onDidChangeDecorations = DidChangeDecorationsEmitter.init(allocator, model, struct {
+                fn handle(m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) !void {
+                    const m1: *TextModel = @ptrCast(@alignCast(m));
+                    try m1.handleBeforeFireDecorationsChangedEvent(affectedInjectedTextLines, affectedLineHeights);
+                }
+            }.handle),
+            ._onDidChangeOptions = Emitter(ModelOptionsChangedEvent).init(allocator),
+            ._onDidChangeAttached = Emitter(void).init(allocator),
             ._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator),
             ._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator),
             ._eventEmitter = DidChangeContentEmitter.init(allocator),
         };
+        return model;
     }
 
     pub fn deinit(self: *TextModel) void {
-        const allocator = self._buffer.allocator;
+        const allocator = self._buffer.getAllocator();
         self._buffer.deinit();
         self._decorations.deinit();
         allocator.free(self.id);
-        allocator.free(self._associatedResource.path);
+        switch (self._associatedResource.path) {
+            .raw => |raw| allocator.free(raw),
+            .percent_encoded => |percent_encoded| allocator.free(percent_encoded),
+        }
         self._onWillDispose.deinit();
         self._onDidChangeDecorations.deinit();
         self._onDidChangeInjectedText.deinit();
@@ -1174,29 +1210,34 @@ pub const TextModel = struct {
 
     //#region Decorations
 
-    fn handleBeforeFireDecorationsChangedEvent(self: *TextModel, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) void {
+    fn handleBeforeFireDecorationsChangedEvent(self: *TextModel, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) !void {
         // This is called before the decoration changed event is fired.
 
-        if (affectedInjectedTextLines != null and affectedInjectedTextLines.?.count() > 0) {
-            const affectedLines = affectedInjectedTextLines.?.list;
+        if (affectedInjectedTextLines) |lines| {
+            if (lines.count() > 0) {
+                const affectedLines = lines.list;
 
-            var lineChangeEvents = ArrayList(ModelRawLineChanged).init(self.getAllocator());
-            defer lineChangeEvents.deinit();
+                var lineChangeEvents = ArrayList(ModelRawLineChanged).init(self.getAllocator());
+                defer lineChangeEvents.deinit();
 
-            for (affectedLines.items) |lineNumber| {
-                try lineChangeEvents.append(ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), self._getInjectedTextInLine(lineNumber)));
+                for (affectedLines.items) |lineNumber| {
+                    try lineChangeEvents.append(ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), try self._getInjectedTextInLine(lineNumber)));
+                }
+                self._onDidChangeInjectedText.fire(ModelInjectedTextChangedEvent.init(lineChangeEvents.items));
             }
-            self._onDidChangeInjectedText.fire(ModelInjectedTextChangedEvent.init(lineChangeEvents.items));
         }
-        if (affectedLineHeights != null and affectedLineHeights.?.count() > 0) {
-            const affectedLines = affectedLineHeights.?.map.valueIterator();
-            var lineHeightChangeEvent = ArrayList(ModelLineHeightChanged).init(self.getAllocator());
-            defer lineHeightChangeEvent.deinit();
+        if (affectedLineHeights) |items| {
+            var heights = items;
+            if (heights.count() > 0) {
+                var affectedLines = heights.map.valueIterator();
+                var lineHeightChangeEvent = ArrayList(ModelLineHeightChanged).init(self.getAllocator());
+                defer lineHeightChangeEvent.deinit();
 
-            while (affectedLines.next()) |specialLineHeightChange| {
-                try lineHeightChangeEvent.append(ModelLineHeightChanged.init(specialLineHeightChange.ownerId, specialLineHeightChange.decorationId, specialLineHeightChange.lineNumber, specialLineHeightChange.lineHeight));
+                while (affectedLines.next()) |specialLineHeightChange| {
+                    try lineHeightChangeEvent.append(ModelLineHeightChanged.init(specialLineHeightChange.ownerId, specialLineHeightChange.decorationId, specialLineHeightChange.lineNumber, specialLineHeightChange.lineHeight));
+                }
+                self._onDidChangeLineHeight.fire(ModelLineHeightChangedEvent.init(lineHeightChangeEvent.items));
             }
-            self._onDidChangeLineHeight.fire(ModelLineHeightChangedEvent.init(lineHeightChangeEvent.items));
         }
     }
 
@@ -1226,6 +1267,23 @@ pub const TextModel = struct {
         return &[_][]u8{};
     }
 
+    fn _getInjectedTextInLine(self: *TextModel, lineNumber: usize) ![]LineInjectedText {
+        const startOffset = self._buffer.getOffsetAt(lineNumber, 1);
+        const endOffset = startOffset + self._buffer.getLineLength(lineNumber);
+
+        const result = self._decorationsTree.getInjectedTextInInterval(self, startOffset, endOffset, 0);
+        const decorations = try LineInjectedText.fromDecorations(self.getAllocator(), result);
+        defer decorations.deinit();
+
+        var filtered = ArrayList(LineInjectedText).init(self.getAllocator());
+        for (decorations.items) |decoration| {
+            if (decoration.lineNumber == lineNumber) {
+                try filtered.append(decoration);
+            }
+        }
+        return filtered.toOwnedSlice();
+    }
+
     //#endregion
 };
 
@@ -1252,11 +1310,11 @@ pub const DecorationsTrees = struct {
     // This tree holds decorations that contain injected text.
     _injectedTextDecorationsTree: IntervalTree,
 
-    pub fn init() DecorationsTrees {
+    pub fn init(allocator: Allocator) DecorationsTrees {
         return DecorationsTrees{
-            ._decorationsTree0 = IntervalTree.init(),
-            ._decorationsTree1 = IntervalTree.init(),
-            ._injectedTextDecorationsTree = IntervalTree.init(),
+            ._decorationsTree0 = IntervalTree.init(allocator),
+            ._decorationsTree1 = IntervalTree.init(allocator),
+            ._injectedTextDecorationsTree = IntervalTree.init(allocator),
         };
     }
 
@@ -1287,14 +1345,44 @@ pub const DecorationsTrees = struct {
     }
 };
 
+test "TextModel.init" {
+    const allocator = std.testing.allocator;
+    const text = "Hello, world!";
+    var source = io.fixedBufferStream(text);
+    const reader = source.reader().any();
+    const defaultEOL = .LF;
+
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+
+    var textModel = try TextModel.init(allocator, reader, TextModelCreationOptions{
+        .tabSize = 4,
+        .indentSize = .{ .number = 4 },
+        .insertSpaces = true,
+        .detectIndentation = true,
+        .trimAutoWhitespace = true,
+        .defaultEOL = defaultEOL,
+        .isForSimpleWidget = false,
+        .largeFileOptimizations = false,
+        .bracketPairColorizationOptions = .{
+            .enabled = false,
+            .independentColorPoolPerBracketType = false,
+        },
+    }, null, &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+    // try std.testing.expectEqualStrings(text, textModel.getLineContent(1));
+}
+
 pub fn createTextBuffer(allocator: Allocator, source: io.AnyReader, defaultEOL: EOL) !PieceTreeTextBuffer {
     const factory = try createTextBufferFactory(allocator, source);
+    defer factory.deinit();
     return try factory.create(defaultEOL);
 }
 
 var readerBuffer: [65535]u8 = undefined;
 fn createTextBufferFactory(allocator: Allocator, reader: io.AnyReader) !PieceTreeTextBufferFactory {
-    const builder = PieceTreeBufferBuilder.init(allocator);
+    var builder = PieceTreeBufferBuilder.init(allocator);
     while (true) {
         const len = try reader.readAll(&readerBuffer);
         if (len == 0) {
@@ -1309,13 +1397,13 @@ const LineHeightChangingDecoration = struct {
     ownerId: u64,
     decorationId: []const u8,
     lineNumber: usize,
-    lineHeight: ?f64,
+    lineHeight: ?usize,
 
     pub fn toKey(allocator: Allocator, obj: LineHeightChangingDecoration) ![]const u8 {
         return try std.fmt.allocPrint(allocator, "{};{};{}", .{ obj.ownerId, obj.decorationId, obj.lineNumber });
     }
 
-    pub fn init(ownerId: u64, decorationId: []const u8, lineNumber: usize, lineHeight: ?f64) LineHeightChangingDecoration {
+    pub fn init(ownerId: u64, decorationId: []const u8, lineNumber: usize, lineHeight: ?usize) LineHeightChangingDecoration {
         return LineHeightChangingDecoration{
             .ownerId = ownerId,
             .decorationId = decorationId,
@@ -1337,10 +1425,12 @@ const DidChangeDecorationsEmitter = struct {
     _affectsGlyphMargin: bool,
     _affectsLineNumber: bool,
 
-    handleBeforeFire: fn (affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) void,
+    _model: *anyopaque,
+    handleBeforeFire: *const fn (m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) anyerror!void,
 
-    pub fn init(allocator: Allocator, handleBeforeFire: fn (affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) void) DidChangeDecorationsEmitter {
+    pub fn init(allocator: Allocator, model: *anyopaque, handleBeforeFire: *const fn (m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) anyerror!void) DidChangeDecorationsEmitter {
         return DidChangeDecorationsEmitter{
+            ._actual = Emitter(ModelDecorationsChangedEvent).init(allocator),
             .allocator = allocator,
             ._deferredCnt = 0,
             ._shouldFireDeferred = false,
@@ -1348,7 +1438,10 @@ const DidChangeDecorationsEmitter = struct {
             ._affectsOverviewRuler = false,
             ._affectsGlyphMargin = false,
             ._affectsLineNumber = false,
+            ._model = model,
             .handleBeforeFire = handleBeforeFire,
+            ._affectedInjectedTextLines = null,
+            ._affectedLineHeights = null,
         };
     }
 
@@ -1393,7 +1486,7 @@ const DidChangeDecorationsEmitter = struct {
         _ = self._affectedInjectedTextLines.?.add(lineNumber);
     }
 
-    pub fn recordLineAffectedByLineHeightChange(self: *DidChangeDecorationsEmitter, ownerId: u64, decorationId: []const u8, lineNumber: usize, lineHeight: ?f64) void {
+    pub fn recordLineAffectedByLineHeightChange(self: *DidChangeDecorationsEmitter, ownerId: u64, decorationId: []const u8, lineNumber: usize, lineHeight: ?usize) void {
         if (self._affectedLineHeights == null) {
             self._affectedLineHeights = SetWithKey(LineHeightChangingDecoration).init(self.allocator, LineHeightChangingDecoration.toKey);
         }
@@ -1424,7 +1517,7 @@ const DidChangeDecorationsEmitter = struct {
     }
 
     pub fn doFire(self: *DidChangeDecorationsEmitter) void {
-        self.handleBeforeFire(self._affectedInjectedTextLines, self._affectedLineHeights);
+        self.handleBeforeFire(self._model, self._affectedInjectedTextLines, self._affectedLineHeights);
 
         const evt: ModelDecorationsChangedEvent = ModelDecorationsChangedEvent{
             .affectsMinimap = self._affectsMinimap,

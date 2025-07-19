@@ -32,7 +32,7 @@ pub fn Set(comptime T: type) type {
             };
         }
 
-        pub fn deinit(self: *Self) void {
+        pub fn deinit(self: *const Self) void {
             self.list.deinit();
         }
 
@@ -55,7 +55,7 @@ pub fn Set(comptime T: type) type {
             }
         }
 
-        pub fn has(self: *Self, item: T) bool {
+        pub fn has(self: *const Self, item: T) bool {
             for (self.list.items) |i| {
                 if (equal(i, item)) {
                     return true;
@@ -65,7 +65,7 @@ pub fn Set(comptime T: type) type {
             return false;
         }
 
-        pub fn count(self: *Self) usize {
+        pub fn count(self: *const Self) usize {
             return self.list.items.len;
         }
     };

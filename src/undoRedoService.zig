@@ -1495,3 +1495,9 @@ pub const UndoRedoService = struct {
         }
     }
 };
+
+test "UndoRedoService.init" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+}

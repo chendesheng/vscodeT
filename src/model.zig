@@ -163,7 +163,7 @@ pub const TextModelResolvedOptions = struct {
     bracketPairColorizationOptions: BracketPairColorizationOptions,
 
     pub fn originalIndentSize(self: *const TextModelResolvedOptions) IndentSize {
-        return if (self._indentSizeIsTabSize) IndentSize.tabSize else IndentSize.number(self.indentSize);
+        return if (self._indentSizeIsTabSize) .{ .tabSize = 1 } else .{ .number = self.indentSize };
     }
 
     // @internal
@@ -177,6 +177,8 @@ pub const TextModelResolvedOptions = struct {
     ) TextModelResolvedOptions {
         var options = TextModelResolvedOptions{
             .tabSize = @max(1, tabSize),
+            .indentSize = undefined,
+            ._indentSizeIsTabSize = undefined,
             .insertSpaces = insertSpaces,
             .defaultEOL = defaultEOL,
             .trimAutoWhitespace = trimAutoWhitespace,
@@ -188,8 +190,8 @@ pub const TextModelResolvedOptions = struct {
                 options.indentSize = options.tabSize;
                 options._indentSizeIsTabSize = true;
             },
-            .number => {
-                options.indentSize = @max(1, indentSize);
+            .number => |n| {
+                options.indentSize = @max(1, n);
                 options._indentSizeIsTabSize = false;
             },
         }

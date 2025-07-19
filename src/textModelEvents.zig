@@ -100,23 +100,27 @@ pub const LineInjectedText = struct {
     pub fn fromDecorations(allocator: Allocator, decorations: []ModelDecoration) !ArrayList(LineInjectedText) {
         var result = ArrayList(LineInjectedText).init(allocator);
         for (decorations) |decoration| {
-            if (decoration.options.before and decoration.options.before.content.length > 0) {
-                try result.append(LineInjectedText{
-                    .ownerId = decoration.ownerId,
-                    .lineNumber = decoration.range.startLineNumber,
-                    .column = decoration.range.startColumn,
-                    .options = decoration.options.before,
-                    .order = 0,
-                });
+            if (decoration.options.before) |before| {
+                if (before.content.len > 0) {
+                    try result.append(LineInjectedText{
+                        .ownerId = decoration.ownerId,
+                        .lineNumber = decoration.range.startLineNumber,
+                        .column = decoration.range.startColumn,
+                        .options = before,
+                        .order = 0,
+                    });
+                }
             }
-            if (decoration.options.after and decoration.options.after.content.length > 0) {
-                try result.append(LineInjectedText{
-                    .ownerId = decoration.ownerId,
-                    .lineNumber = decoration.range.endLineNumber,
-                    .column = decoration.range.endColumn,
-                    .options = decoration.options.after,
-                    .order = 1,
-                });
+            if (decoration.options.after) |after| {
+                if (after.content.len > 0) {
+                    try result.append(LineInjectedText{
+                        .ownerId = decoration.ownerId,
+                        .lineNumber = decoration.range.endLineNumber,
+                        .column = decoration.range.endColumn,
+                        .options = after,
+                        .order = 1,
+                    });
+                }
             }
         }
         std.sort.heap(LineInjectedText, result.items, {}, struct {
@@ -251,7 +255,7 @@ pub const ModelRawContentChangedEvent = struct {
 
     resultingSelection: ?[]Selection,
 
-    pub fn init(changes: []const ModelRawChange, versionId: u32, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
+    pub fn init(changes: []const ModelRawChange, versionId: i64, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
         return ModelRawContentChangedEvent{
             .changes = changes,
             .versionId = versionId,

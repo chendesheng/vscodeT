@@ -71,7 +71,7 @@ pub const UndoRedoSourceOrUri = union(enum) {
     str: []const u8,
 };
 
-const UriComparisonKeyComputer = struct {
+pub const UriComparisonKeyComputer = struct {
     getComparisonKey: *const fn (self: *const UriComparisonKeyComputer, uri: Uri) []const u8,
 
     pub fn eql(self: *const UriComparisonKeyComputer, other: *const UriComparisonKeyComputer) bool {
@@ -79,6 +79,6 @@ const UriComparisonKeyComputer = struct {
     }
 };
 
-const Disposable = struct {
+pub const Disposable = struct {
     dispose: *const fn (self: *Disposable) void,
 };

@@ -40,7 +40,7 @@ pub const EditStackElement = union(enum) {
         }
     }
 
-    pub fn canAppend(self: *EditStackElement, model: TextModel) bool {
+    pub fn canAppend(self: *EditStackElement, model: *TextModel) bool {
         switch (self.*) {
             .singleModel => |singleModel| {
                 return singleModel.canAppend(model);
@@ -582,10 +582,10 @@ pub const MultiModelEditStackElement = struct {
 };
 
 pub const EditStack = struct {
-    _model: TextModel,
-    _undoRedoService: UndoRedoService,
+    _model: *TextModel,
+    _undoRedoService: *UndoRedoService,
 
-    pub fn init(model: TextModel, undoRedoService: UndoRedoService) EditStack {
+    pub fn init(model: *TextModel, undoRedoService: *UndoRedoService) EditStack {
         return EditStack{
             ._model = model,
             ._undoRedoService = undoRedoService,
