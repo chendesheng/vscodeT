@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = std.io;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const fs = std.fs;
@@ -17,6 +18,11 @@ pub const TextChange = struct {
             .newPosition = newPosition,
             .newText = newText,
         };
+    }
+
+    pub fn deinit(self: *const TextChange, allocator: Allocator) void {
+        allocator.free(self.oldText);
+        allocator.free(self.newText);
     }
 
     pub fn oldLength(self: *const TextChange) usize {
@@ -65,25 +71,19 @@ pub const TextChange = struct {
         + _wriateStringSize(self.oldText) + _wriateStringSize(self.newText);
     }
 
-    pub fn write(self: *const TextChange, writer: fs.File.Writer) !void {
+    pub fn write(self: *const TextChange, writer: io.AnyWriter) !void {
         try writer.writeInt(u32, @intCast(self.oldPosition), .big);
         try writer.writeInt(u32, @intCast(self.newPosition), .big);
         try _writeString(writer, self.oldText);
         try _writeString(writer, self.newText);
     }
 
-    pub fn read(reader: fs.File.Reader, allocator: Allocator, dest: *ArrayList(TextChange)) !void {
+    pub fn read(reader: io.AnyReader, allocator: Allocator, dest: *ArrayList(TextChange)) !void {
         const oldPosition = try reader.readInt(u32, .big);
         const newPosition = try reader.readInt(u32, .big);
         const oldText = try _readString(reader, allocator);
         const newText = try _readString(reader, allocator);
-
-        try dest.append(TextChange{
-            .oldPosition = oldPosition,
-            .oldText = oldText,
-            .newPosition = newPosition,
-            .newText = newText,
-        });
+        try dest.append(TextChange.init(oldPosition, oldText, newPosition, newText));
     }
 };
 
@@ -352,13 +352,13 @@ fn _wriateStringSize(str: []u8) usize {
     return 4 + 2 * str.len;
 }
 
-fn _writeString(writer: fs.File.Writer, str: []const u8) !void {
+fn _writeString(writer: io.AnyWriter, str: []const u8) !void {
     const len = str.len;
     try writer.writeInt(usize, len, .big);
     try writer.writeAll(str);
 }
 
-fn _readString(reader: fs.File.Reader, allocator: Allocator) ![]const u8 {
+fn _readString(reader: io.AnyReader, allocator: Allocator) ![]const u8 {
     const len = try reader.readInt(usize, .big);
     const str = try allocator.alloc(u8, len);
     _ = try reader.readAll(str);
@@ -366,15 +366,33 @@ fn _readString(reader: fs.File.Reader, allocator: Allocator) ![]const u8 {
 }
 
 test "textChange" {
-    const change = TextChange{
-        .oldPosition = 0,
-        .oldText = "Hello",
-        .newPosition = 0,
-        .newText = "World",
-    };
+    const change = TextChange.init(0, "Hello", 0, "World");
 
     const result = try change.toString(std.testing.allocator);
     defer std.testing.allocator.free(result);
 
     try std.testing.expectEqualStrings("(replaced@0 \"Hello\" with \"World\")", result);
+}
+
+test "textChange read/write" {
+    const allocator = std.testing.allocator;
+    const change = TextChange.init(0, "Hello", 0, "World");
+
+    var buf: [1024]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const writer = stream.writer().any();
+    try change.write(writer);
+
+    stream.reset();
+    const reader = stream.reader().any();
+    var readChanges = ArrayList(TextChange).init(allocator);
+    defer readChanges.deinit();
+    defer {
+        for (readChanges.items) |item| {
+            item.deinit(allocator);
+        }
+    }
+    try TextChange.read(reader, allocator, &readChanges);
+
+    try std.testing.expectEqualDeep(change, readChanges.items[0]);
 }
