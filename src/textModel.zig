@@ -124,8 +124,8 @@ pub const TextModel = struct {
     // languageSelectionListener: MutableDisposable(IDisposable),
 
     __isDisposing: bool,
-    _versionId: i64,
-    _alternativeVersionId: i64,
+    _versionId: u32,
+    _alternativeVersionId: u32,
     _initialUndoRedoSnapshot: ?ResourceEditStackSnapshot,
     _isTooLargeForSyncing: bool,
     _isTooLargeForTokenization: bool,
@@ -362,7 +362,7 @@ pub const TextModel = struct {
         return self._associatedResource;
     }
 
-    pub fn getVersionId(self: *const TextModel) i64 {
+    pub fn getVersionId(self: *const TextModel) u32 {
         return self._versionId;
     }
 
@@ -386,7 +386,7 @@ pub const TextModel = struct {
         return self._buffer.getMightContainNonBasicASCII();
     }
 
-    pub fn getAlternativeVersionId(self: *const TextModel) i64 {
+    pub fn getAlternativeVersionId(self: *const TextModel) u32 {
         return self._alternativeVersionId;
     }
 
@@ -403,11 +403,11 @@ pub const TextModel = struct {
         self._alternativeVersionId = self._versionId;
     }
 
-    pub fn _overwriteVersionId(self: *TextModel, versionId: i64) void {
+    pub fn _overwriteVersionId(self: *TextModel, versionId: u32) void {
         self._versionId = versionId;
     }
 
-    pub fn _overwriteAlternativeVersionId(self: *TextModel, versionId: i64) void {
+    pub fn _overwriteAlternativeVersionId(self: *TextModel, versionId: u32) void {
         self._alternativeVersionId = versionId;
     }
 
@@ -894,7 +894,7 @@ pub const TextModel = struct {
         return self._commandManager.pushEditOperation(beforeCursorState, editOperations, cursorStateComputer, group);
     }
 
-    pub fn _applyUndo(self: *TextModel, changes: []TextChange, eol: EOL, resultingAlternativeVersionId: i64, resultingSelection: ?[]Selection) void {
+    pub fn _applyUndo(self: *TextModel, changes: []TextChange, eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) void {
         const edits = ArrayList(TextChange).init(self.getAllocator());
         for (changes) |change| {
             const rangeStart = self.getOffsetAt(change.newPosition);
@@ -907,7 +907,7 @@ pub const TextModel = struct {
         self._applyUndoRedoEdits(edits, eol, true, false, resultingAlternativeVersionId, resultingSelection);
     }
 
-    pub fn _applyRedo(self: *TextModel, changes: []TextChange, eol: EOL, resultingAlternativeVersionId: i64, resultingSelection: ?[]Selection) void {
+    pub fn _applyRedo(self: *TextModel, changes: []TextChange, eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) void {
         const edits = ArrayList(SingleEditOperation).init(self.getAllocator());
         for (changes) |change| {
             const rangeStart = self.getOffsetAt(change.oldPosition);
@@ -920,7 +920,7 @@ pub const TextModel = struct {
         self._applyUndoRedoEdits(edits, eol, false, true, resultingAlternativeVersionId, resultingSelection);
     }
 
-    fn _applyUndoRedoEdits(self: *TextModel, edits: ArrayList(SingleEditOperation), eol: EOL, isUndoing: bool, isRedoing: bool, resultingAlternativeVersionId: i64, resultingSelection: ?[]Selection) void {
+    fn _applyUndoRedoEdits(self: *TextModel, edits: ArrayList(SingleEditOperation), eol: EOL, isUndoing: bool, isRedoing: bool, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) void {
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
 

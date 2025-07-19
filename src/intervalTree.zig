@@ -122,7 +122,7 @@ pub const IntervalNode = struct {
     ownerId: usize,
     // options: ModelDecorationOptions,
 
-    cachedVersionId: usize,
+    cachedVersionId: u32,
     cachedAbsoluteStart: usize,
     cachedAbsoluteEnd: usize,
     range: ?Range,
@@ -160,7 +160,7 @@ pub const IntervalNode = struct {
         allocator.destroy(self);
     }
 
-    pub fn reset(self: *IntervalNode, versionId: usize, start: usize, end: usize, range: Range) void {
+    pub fn reset(self: *IntervalNode, versionId: u32, start: usize, end: usize, range: ?Range) void {
         self.start = start;
         self.end = end;
         self.maxEnd = end;
@@ -170,7 +170,7 @@ pub const IntervalNode = struct {
         self.range = range;
     }
 
-    pub fn setCachedOffsets(self: *IntervalNode, absoluteStart: usize, absoluteEnd: usize, cachedVersionId: usize) void {
+    pub fn setCachedOffsets(self: *IntervalNode, absoluteStart: usize, absoluteEnd: usize, cachedVersionId: u32) void {
         if (self.cachedVersionId != cachedVersionId) {
             self.range = null;
         }
@@ -219,14 +219,14 @@ pub const IntervalTree = struct {
         }
     }
 
-    pub fn intervalSearch(self: *IntervalTree, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    pub fn intervalSearch(self: *IntervalTree, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         if (self.root == SENTINEL) {
             return ArrayList(*IntervalNode).init(self.allocator);
         }
         return try _intervalSearch(self, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
     }
 
-    pub fn search(self: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    pub fn search(self: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         if (self.root == SENTINEL) {
             return ArrayList(*IntervalNode).init(self.allocator);
         }
@@ -254,7 +254,7 @@ pub const IntervalTree = struct {
         self._normalizeDeltaIfNecessary();
     }
 
-    pub fn resolveNode(self: *IntervalTree, node: *IntervalNode, cachedVersionId: usize) void {
+    pub fn resolveNode(self: *IntervalTree, node: *IntervalNode, cachedVersionId: u32) void {
         var initialNode = node;
         var delta: isize = 0;
         var current = node;
@@ -731,7 +731,7 @@ fn _collectNodesPostOrder(T: *IntervalTree) !ArrayList(*IntervalNode) {
     return result;
 }
 
-fn _search(T: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+fn _search(T: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
     var node = T.root;
     var delta: isize = 0;
     var nodeStart: usize = 0;
@@ -791,7 +791,7 @@ fn _search(T: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, ca
     return result;
 }
 
-fn _intervalSearch(T: *IntervalTree, intervalStart: usize, intervalEnd: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+fn _intervalSearch(T: *IntervalTree, intervalStart: usize, intervalEnd: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
     // https://en.wikipedia.org/wiki/Interval_tree#Augmented_tree
     // Now, it is known that two intervals A and B overlap only when both
     // A.low <= B.high and A.high >= B.low. When searching the trees for

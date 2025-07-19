@@ -54,7 +54,7 @@ pub const EditStackElement = union(enum) {
     pub fn append(self: *EditStackElement, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) void {
         switch (self.*) {
             .singleModel => |singleModel| {
-                singleModel.append(model, textChanges, afterEOL, afterVersionId, afterCursorState);
+                singleModel.append(textChanges, afterEOL, afterVersionId, afterCursorState);
             },
             .multiModel => |multiModel| {
                 multiModel.append(model, textChanges, afterEOL, afterVersionId, afterCursorState);
@@ -294,7 +294,14 @@ pub const SingleModelEditStackElement = struct {
         return SingleModelEditStackElement{
             .allocator = allocator,
             .model = model,
-            ._data = SingleModelEditStackData{ .unserialized = SingleModelEditStackDataUnserialized.create(model, beforeCursorState) },
+            ._data = SingleModelEditStackData{
+                .unserialized = SingleModelEditStackDataUnserialized.create(
+                    allocator,
+                    model.getAlternativeVersionId(),
+                    model.getEOL(),
+                    beforeCursorState,
+                ),
+            },
             .label = label,
             .code = code,
             .confirmBeforeUndo = null,
@@ -350,10 +357,10 @@ pub const SingleModelEditStackElement = struct {
         };
     }
 
-    pub fn append(self: *SingleModelEditStackElement, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *SingleModelEditStackElement, textChanges: []TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
         switch (self._data) {
             .unserialized => |dat| {
-                try dat.append(model, textChanges, afterEOL, afterVersionId, afterCursorState);
+                try dat.append(textChanges, afterEOL, afterVersionId, afterCursorState);
             },
             .serialized => {},
         }
@@ -515,9 +522,9 @@ pub const MultiModelEditStackElement = struct {
         return false;
     }
 
-    pub fn append(self: *MultiModelEditStackElement, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *MultiModelEditStackElement, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
         if (self._editStackElementsMap.get(model.uri())) |editStackElement| {
-            try editStackElement.append(model, textChanges, afterEOL, afterVersionId, afterCursorState);
+            try editStackElement.append(textChanges, afterEOL, afterVersionId, afterCursorState);
         }
     }
 

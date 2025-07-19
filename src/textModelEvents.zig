@@ -251,7 +251,7 @@ pub const ModelRawContentChangedEvent = struct {
 
     resultingSelection: ?[]Selection,
 
-    pub fn init(changes: []const ModelRawChange, versionId: i64, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
+    pub fn init(changes: []const ModelRawChange, versionId: u32, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
         return ModelRawContentChangedEvent{
             .changes = changes,
             .versionId = versionId,
