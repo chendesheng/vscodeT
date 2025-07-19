@@ -153,3 +153,17 @@ test "singleLetterHash" {
         try std.testing.expectEqual(c, singleLetterHash(i));
     }
 }
+
+pub fn concat(allocator: Allocator, stra: []const u8, strb: []const u8) ![]const u8 {
+    var result = ArrayList(u8).init(allocator);
+    try result.appendSlice(stra);
+    try result.appendSlice(strb);
+    return result.toOwnedSlice();
+}
+
+test "concat" {
+    const allocator = std.testing.allocator;
+    const result = try concat(allocator, "Hello", "World");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("HelloWorld", result);
+}

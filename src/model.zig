@@ -7,7 +7,7 @@ const TextChange = @import("textChange.zig").TextChange;
 const ArrayList = @import("std").ArrayList;
 const default_max_load_percentage = @import("std").hash_map.default_max_load_percentage;
 
-pub const EOL = enum {
+pub const EOL = enum(u8) {
     CRLF,
     LF,
 };

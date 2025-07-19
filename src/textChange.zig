@@ -6,6 +6,8 @@ const fs = std.fs;
 const strings = @import("strings.zig");
 const Pair = @import("utils.zig").Pair;
 const pair = @import("utils.zig").pair;
+const usizeSub = @import("utils.zig").usizeSub;
+const usizeAdd = @import("utils.zig").usizeAdd;
 
 pub const TextChange = struct {
     oldPosition: usize,
@@ -70,7 +72,8 @@ pub const TextChange = struct {
     pub fn writeSize(self: *const TextChange) usize {
         return 4 // oldPosition
         + 4 // newPosition
-        + _wriateStringSize(self.oldText) + _wriateStringSize(self.newText);
+        + _wriateStringSize(self.oldText) //
+        + _wriateStringSize(self.newText);
     }
 
     pub fn write(self: *const TextChange, writer: io.AnyWriter) !void {
@@ -89,30 +92,30 @@ pub const TextChange = struct {
     }
 };
 
-pub fn compressConsecutiveTextChanges(allocator: Allocator, prevEdits: ?[]TextChange, currEdits: []TextChange) ![]TextChange {
+pub fn compressConsecutiveTextChanges(allocator: Allocator, prevEdits: ?[]const TextChange, currEdits: []const TextChange) ![]const TextChange {
     if (prevEdits == null or prevEdits.?.len == 0) {
         return currEdits;
     }
 
-    const compressor = TextChangeCompressor.init(allocator, prevEdits.?, currEdits);
+    var compressor = TextChangeCompressor.init(allocator, prevEdits.?, currEdits);
     return try compressor.compress();
 }
 
 pub const TextChangeCompressor = struct {
-    _prevEdits: []TextChange,
-    _currEdits: []TextChange,
+    _prevEdits: []const TextChange,
+    _currEdits: []const TextChange,
 
     _result: ArrayList(TextChange),
 
     _prevLen: usize,
-    _prevDeltaOffset: usize,
+    _prevDeltaOffset: isize,
 
     _currLen: usize,
-    _currDeltaOffset: usize,
+    _currDeltaOffset: isize,
 
     const PairTextChange = Pair(TextChange, TextChange);
 
-    pub fn init(allocator: Allocator, prevEdits: []TextChange, currEdits: []TextChange) TextChangeCompressor {
+    pub fn init(allocator: Allocator, prevEdits: []const TextChange, currEdits: []const TextChange) TextChangeCompressor {
         return TextChangeCompressor{
             ._prevEdits = prevEdits,
             ._currEdits = currEdits,
@@ -127,7 +130,7 @@ pub const TextChangeCompressor = struct {
         };
     }
 
-    pub fn compress(self: *TextChangeCompressor) ![]TextChange {
+    pub fn compress(self: *TextChangeCompressor) ![]const TextChange {
         var prevIndex: usize = 0;
         var currIndex: usize = 0;
 
@@ -136,42 +139,42 @@ pub const TextChangeCompressor = struct {
 
         while (prevIndex < self._prevLen or currIndex < self._currLen) {
             if (prevEdit == null) {
-                try self._acceptCurr(currEdit);
+                try self._acceptCurr(currEdit.?);
                 currIndex += 1;
                 currEdit = self._getCurr(currIndex);
                 continue;
             }
 
             if (currEdit == null) {
-                try self._acceptPrev(prevEdit);
+                try self._acceptPrev(prevEdit.?);
                 prevIndex += 1;
                 prevEdit = self._getPrev(prevIndex);
                 continue;
             }
 
-            if (currEdit.oldEnd <= prevEdit.newPosition) {
-                try self._acceptCurr(currEdit);
+            if (currEdit.?.oldEnd() <= prevEdit.?.newPosition) {
+                try self._acceptCurr(currEdit.?);
                 currIndex += 1;
                 currEdit = self._getCurr(currIndex);
                 continue;
             }
 
-            if (prevEdit.newEnd <= currEdit.oldPosition) {
-                try self._acceptPrev(prevEdit);
+            if (prevEdit.?.newEnd() <= currEdit.?.oldPosition) {
+                try self._acceptPrev(prevEdit.?);
                 prevIndex += 1;
                 prevEdit = self._getPrev(prevIndex);
                 continue;
             }
 
-            if (currEdit.oldPosition < prevEdit.newPosition) {
-                const split = _splitCurr(currEdit, prevEdit.newPosition - currEdit.oldPosition);
+            if (currEdit.?.oldPosition < prevEdit.?.newPosition) {
+                const split = _splitCurr(currEdit.?, prevEdit.?.newPosition - currEdit.?.oldPosition);
                 try self._acceptCurr(split.first);
                 currEdit = split.second;
                 continue;
             }
 
-            if (prevEdit.newPosition < currEdit.oldPosition) {
-                const split = _splitPrev(prevEdit, currEdit.oldPosition - prevEdit.newPosition);
+            if (prevEdit.?.newPosition < currEdit.?.oldPosition) {
+                const split = _splitPrev(prevEdit.?, currEdit.?.oldPosition - prevEdit.?.newPosition);
                 try self._acceptPrev(split.first);
                 prevEdit = split.second;
                 continue;
@@ -182,24 +185,24 @@ pub const TextChangeCompressor = struct {
             var mergePrev: TextChange = undefined;
             var mergeCurr: TextChange = undefined;
 
-            if (currEdit.oldEnd == prevEdit.newEnd) {
-                mergePrev = prevEdit;
-                mergeCurr = currEdit;
+            if (currEdit.?.oldEnd() == prevEdit.?.newEnd()) {
+                mergePrev = prevEdit.?;
+                mergeCurr = currEdit.?;
                 prevIndex += 1;
                 prevEdit = self._getPrev(prevIndex);
                 currIndex += 1;
                 currEdit = self._getCurr(currIndex);
-            } else if (currEdit.oldEnd < prevEdit.newEnd) {
-                const split = _splitPrev(prevEdit, currEdit.oldLength);
+            } else if (currEdit.?.oldEnd() < prevEdit.?.newEnd()) {
+                const split = _splitPrev(prevEdit.?, currEdit.?.oldLength());
                 mergePrev = split.first;
-                mergeCurr = currEdit;
+                mergeCurr = currEdit.?;
                 prevEdit = split.second;
                 currIndex += 1;
                 currEdit = self._getCurr(currIndex);
             } else {
-                const split = _splitCurr(currEdit, prevEdit.newLength);
+                const split = _splitCurr(currEdit.?, prevEdit.?.newLength());
 
-                mergePrev = prevEdit;
+                mergePrev = prevEdit.?;
                 mergeCurr = split.first;
                 prevIndex += 1;
                 prevEdit = self._getPrev(prevIndex);
@@ -212,47 +215,47 @@ pub const TextChangeCompressor = struct {
                 .newPosition = mergeCurr.newPosition,
                 .newText = mergeCurr.newText,
             });
-            self._prevDeltaOffset += mergePrev.newLength - mergePrev.oldLength;
-            self._currDeltaOffset += mergeCurr.newLength - mergeCurr.oldLength;
+            self._prevDeltaOffset = self._prevDeltaOffset + usizeSub(mergePrev.newLength(), mergePrev.oldLength());
+            self._currDeltaOffset = self._currDeltaOffset + usizeSub(mergeCurr.newLength(), mergeCurr.oldLength());
         }
 
-        const merged = try self._merge(self._result);
+        const merged = try self._merge(self._result.items);
         const cleaned = try self._removeNoOps(merged);
         return cleaned;
     }
 
     pub fn _acceptCurr(self: *TextChangeCompressor, currEdit: TextChange) !void {
         try self._result.append(_rebaseCurr(self._prevDeltaOffset, currEdit));
-        self._currDeltaOffset += currEdit.newLength - currEdit.oldLength;
+        self._currDeltaOffset = self._currDeltaOffset + usizeSub(currEdit.newLength(), currEdit.oldLength());
     }
 
-    pub fn _getCurr(self: *TextChangeCompressor, currIndex: usize) ?TextChange {
+    pub fn _getCurr(self: *const TextChangeCompressor, currIndex: usize) ?TextChange {
         return if (currIndex < self._currLen) self._currEdits[currIndex] else null;
     }
 
     pub fn _acceptPrev(self: *TextChangeCompressor, prevEdit: TextChange) !void {
         try self._result.append(_rebasePrev(self._currDeltaOffset, prevEdit));
-        self._prevDeltaOffset += prevEdit.newLength - prevEdit.oldLength;
+        self._prevDeltaOffset = self._prevDeltaOffset + usizeSub(prevEdit.newLength(), prevEdit.oldLength());
     }
 
-    pub fn _getPrev(self: *TextChangeCompressor, prevIndex: usize) ?TextChange {
+    pub fn _getPrev(self: *const TextChangeCompressor, prevIndex: usize) ?TextChange {
         return if (prevIndex < self._prevLen) self._prevEdits[prevIndex] else null;
     }
 
-    pub fn _rebaseCurr(prevDeltaOffset: usize, currEdit: TextChange) TextChange {
+    pub fn _rebaseCurr(prevDeltaOffset: isize, currEdit: TextChange) TextChange {
         return TextChange{
-            .oldPosition = currEdit.oldPosition - prevDeltaOffset,
+            .oldPosition = usizeAdd(currEdit.oldPosition, -prevDeltaOffset),
             .oldText = currEdit.oldText,
             .newPosition = currEdit.newPosition,
             .newText = currEdit.newText,
         };
     }
 
-    pub fn _rebasePrev(currDeltaOffset: usize, prevEdit: TextChange) TextChange {
+    pub fn _rebasePrev(currDeltaOffset: isize, prevEdit: TextChange) TextChange {
         return TextChange{
             .oldPosition = prevEdit.oldPosition,
             .oldText = prevEdit.oldText,
-            .newPosition = prevEdit.newPosition + currDeltaOffset,
+            .newPosition = usizeAdd(prevEdit.newPosition, currDeltaOffset),
             .newText = prevEdit.newText,
         };
     }
@@ -269,7 +272,7 @@ pub const TextChangeCompressor = struct {
                 .newText = preText,
             },
             TextChange{
-                .oldPosition = edit.oldEnd,
+                .oldPosition = edit.oldEnd(),
                 .oldText = "",
                 .newPosition = edit.newPosition + offset,
                 .newText = postText,
@@ -291,13 +294,14 @@ pub const TextChangeCompressor = struct {
             TextChange{
                 .oldPosition = edit.oldPosition + offset,
                 .oldText = postText,
-                .newPosition = edit.newEnd,
+                .newPosition = edit.newEnd(),
                 .newText = "",
             },
         );
     }
 
-    pub fn _merge(self: *TextChangeCompressor, edits: []TextChange) ![]TextChange {
+    pub fn _merge(self: *TextChangeCompressor, edits: []const TextChange) ![]const TextChange {
+        const allocator = self._result.allocator;
         if (edits.len == 0) {
             return edits;
         }
@@ -306,13 +310,13 @@ pub const TextChangeCompressor = struct {
         for (1..edits.len) |i| {
             const curr = edits[i];
 
-            if (prev.oldEnd == curr.oldPosition) {
+            if (prev.oldEnd() == curr.oldPosition) {
                 // Merge into `prev`
                 prev = TextChange{
                     .oldPosition = prev.oldPosition,
-                    .oldText = prev.oldText + curr.oldText,
+                    .oldText = try strings.concat(allocator, prev.oldText, curr.oldText),
                     .newPosition = prev.newPosition,
-                    .newText = prev.newText + curr.newText,
+                    .newText = try strings.concat(allocator, prev.newText, curr.newText),
                 };
             } else {
                 try self._result.append(prev);
@@ -324,13 +328,13 @@ pub const TextChangeCompressor = struct {
         return self._result.items;
     }
 
-    pub fn _removeNoOps(self: *TextChangeCompressor, edits: []TextChange) ![]TextChange {
+    pub fn _removeNoOps(self: *TextChangeCompressor, edits: []const TextChange) ![]const TextChange {
         if (edits.len == 0) {
             return edits;
         }
 
         for (edits) |edit| {
-            if (edit.oldText == edit.newText) {
+            if (std.mem.eql(u8, edit.oldText, edit.newText)) {
                 continue;
             }
             try self._result.append(edit);
@@ -340,18 +344,18 @@ pub const TextChangeCompressor = struct {
     }
 };
 
-fn _wriateStringSize(str: []u8) usize {
-    return 4 + 2 * str.len;
+fn _wriateStringSize(str: []const u8) usize {
+    return 4 + str.len;
 }
 
 fn _writeString(writer: io.AnyWriter, str: []const u8) !void {
-    const len = str.len;
-    try writer.writeInt(usize, len, .big);
+    const len: u32 = @intCast(str.len);
+    try writer.writeInt(u32, len, .big);
     try writer.writeAll(str);
 }
 
 fn _readString(reader: io.AnyReader, allocator: Allocator) ![]const u8 {
-    const len = try reader.readInt(usize, .big);
+    const len: usize = @intCast(try reader.readInt(u32, .big));
     const str = try allocator.alloc(u8, len);
     _ = try reader.readAll(str);
     return str;
