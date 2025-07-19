@@ -51,7 +51,7 @@ pub const EditStackElement = union(enum) {
         }
     }
 
-    pub fn append(self: *EditStackElement, model: TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) void {
+    pub fn append(self: *EditStackElement, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) void {
         switch (self.*) {
             .singleModel => |singleModel| {
                 singleModel.append(model, textChanges, afterEOL, afterVersionId, afterCursorState);
@@ -121,11 +121,10 @@ pub const SingleModelEditStackDataUnserialized = struct {
     afterCursorState: ?[]Selection,
     changes: ArrayList(TextChange),
 
-    pub fn create(model: TextModel, beforeCursorState: ?[]Selection) SingleModelEditStackDataUnserialized {
+    pub fn create(model: *TextModel, beforeCursorState: ?[]Selection) SingleModelEditStackDataUnserialized {
         const alternativeVersionId = model.getAlternativeVersionId();
         const eol = model.getEOL();
         return SingleModelEditStackDataUnserialized{
-            .model = model,
             .beforeVersionId = alternativeVersionId,
             .afterVersionId = alternativeVersionId,
             .beforeEOL = eol,
@@ -140,7 +139,7 @@ pub const SingleModelEditStackDataUnserialized = struct {
         self.changes.deinit();
     }
 
-    pub fn append(self: *SingleModelEditStackDataUnserialized, model: TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *SingleModelEditStackDataUnserialized, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) !void {
         _ = model;
 
         if (textChanges.len > 0) {
@@ -241,13 +240,22 @@ pub const SingleModelEditStackDataUnserialized = struct {
 };
 
 const TextModelOrUri = union(enum) {
-    model: TextModel,
+    model: *TextModel,
     uri: Uri,
 
     pub fn getUri(self: *TextModelOrUri) Uri {
         switch (self.*) {
             .model => |model| return model.uri(),
             .uri => |uri| return uri,
+        }
+    }
+
+    pub fn eqlModel(self: *TextModelOrUri, model: *TextModel) bool {
+        switch (self.*) {
+            .model => |m| return m == model,
+            .uri => {
+                return false;
+            },
         }
     }
 };
@@ -260,11 +268,11 @@ pub const SingleModelEditStackElement = struct {
     confirmBeforeUndo: ?bool,
     allocator: Allocator,
 
-    pub fn init(allocator: Allocator, label: []const u8, code: []const u8, model: TextModelOrUri, beforeCursorState: []Selection) SingleModelEditStackElement {
+    pub fn init(allocator: Allocator, label: []const u8, code: []const u8, model: *TextModel, beforeCursorState: []Selection) SingleModelEditStackElement {
         return SingleModelEditStackElement{
             .allocator = allocator,
             .model = model,
-            ._data = SingleModelEditStackData{ .unserialized = SingleModelEditStackDataUnserialized.create(model, beforeCursorState) },
+            ._data = SingleModelEditStackData{ .unserialized = SingleModelEditStackDataUnserialized.create(TextModelOrUri{ .model = model }, beforeCursorState) },
             .label = label,
             .code = code,
             .confirmBeforeUndo = null,
@@ -293,10 +301,16 @@ pub const SingleModelEditStackElement = struct {
     }
 
     pub fn matchesResource(self: *const SingleModelEditStackElement, res: Uri) bool {
-        // TODO
-        _ = self;
-        _ = res;
-        return false;
+        const allocator = self.allocator;
+        const uri = switch (self.model) {
+            .model => |model| model.uri(),
+            .uri => |uri| uri,
+        };
+        const uriStr = try uriToString(uri, allocator);
+        defer allocator.free(uriStr);
+        const resourceStr = try uriToString(res, allocator);
+        defer allocator.free(resourceStr);
+        return std.mem.eql(u8, uriStr, resourceStr);
     }
 
     pub fn setModel(self: *SingleModelEditStackElement, model: TextModelOrUri) void {
@@ -307,14 +321,14 @@ pub const SingleModelEditStackElement = struct {
         return self.model.getUri();
     }
 
-    pub fn canAppend(self: *const SingleModelEditStackElement, model: TextModel) bool {
-        return self.model == model and switch (self._data) {
+    pub fn canAppend(self: *const SingleModelEditStackElement, model: *TextModel) bool {
+        return self.model.eqlModel(model) and switch (self._data) {
             .serialized => true,
             .unserialized => false,
         };
     }
 
-    pub fn append(self: *SingleModelEditStackElement, model: TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *SingleModelEditStackElement, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) !void {
         switch (self._data) {
             .unserialized => |dat| {
                 try dat.append(model, textChanges, afterEOL, afterVersionId, afterCursorState);
@@ -345,27 +359,37 @@ pub const SingleModelEditStackElement = struct {
     }
 
     pub fn undo(self: *SingleModelEditStackElement) void {
-        switch (self._data) {
-            .unserialized => |dat| {
-                self._data = .{ .serialized = try dat.serialize() };
-                dat.deinit();
+        switch (self.model) {
+            .model => |model| {
+                switch (self._data) {
+                    .unserialized => |dat| {
+                        self._data = .{ .serialized = try dat.serialize() };
+                        dat.deinit();
+                    },
+                }
+                const data = try SingleModelEditStackDataUnserialized.deserialize(self.allocator, self._data.serialized);
+                defer data.deinit();
+                model._applyUndo(data.changes, data.beforeEOL, data.beforeVersionId, data.beforeCursorState);
             },
+            .uri => {},
         }
-        const data = try SingleModelEditStackDataUnserialized.deserialize(self.allocator, self._data.serialized);
-        defer data.deinit();
-        self.model._applyUndo(data.changes, data.beforeEOL, data.beforeVersionId, data.beforeCursorState);
     }
 
     pub fn redo(self: *SingleModelEditStackElement) void {
-        switch (self._data) {
-            .unserialized => |dat| {
-                self._data = .{ .serialized = try dat.serialize() };
-                dat.deinit();
+        switch (self.model) {
+            .model => |model| {
+                switch (self._data) {
+                    .unserialized => |dat| {
+                        self._data = .{ .serialized = try dat.serialize() };
+                        dat.deinit();
+                    },
+                }
+                const data = try SingleModelEditStackDataUnserialized.deserialize(self.allocator, self._data.serialized);
+                defer data.deinit();
+                model._applyRedo(data.changes, data.afterEOL, data.afterVersionId, data.afterCursorState);
             },
+            .uri => {},
         }
-        const data = try SingleModelEditStackDataUnserialized.deserialize(self.allocator, self._data.serialized);
-        defer data.deinit();
-        self.model._applyRedo(data.changes, data.afterEOL, data.afterVersionId, data.afterCursorState);
     }
 
     pub fn heapSize(self: *const SingleModelEditStackElement) usize {
@@ -454,8 +478,8 @@ pub const MultiModelEditStackElement = struct {
 
     pub fn setModel(self: *MultiModelEditStackElement, model: TextModelOrUri) void {
         const key = model.getUri();
-        if (self._editStackElementsMap.contains(key)) {
-            self._editStackElementsMap.get(key).?.setModel(model);
+        if (self._editStackElementsMap.get(key)) |editStackElement| {
+            editStackElement.setModel(model);
         }
     }
 
@@ -469,9 +493,10 @@ pub const MultiModelEditStackElement = struct {
         return false;
     }
 
-    pub fn append(self: *MultiModelEditStackElement, model: TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) void {
-        const editStackElement = self._editStackElementsMap.get(model.uri()) orelse return;
-        editStackElement.append(model, textChanges, afterEOL, afterVersionId, afterCursorState);
+    pub fn append(self: *MultiModelEditStackElement, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) !void {
+        if (self._editStackElementsMap.get(model.uri())) |editStackElement| {
+            try editStackElement.append(model, textChanges, afterEOL, afterVersionId, afterCursorState);
+        }
     }
 
     pub fn close(self: *MultiModelEditStackElement) void {
@@ -493,8 +518,8 @@ pub const MultiModelEditStackElement = struct {
     }
 
     pub fn heapSize(self: *const MultiModelEditStackElement, resource: Uri) usize {
-        if (self._editStackElementsMap.get(resource)) |item| {
-            return item.heapSize();
+        if (self._editStackElementsMap.get(resource)) |editStackElement| {
+            return editStackElement.heapSize();
         }
         return 0;
     }
@@ -539,13 +564,15 @@ pub const EditStack = struct {
     }
 
     pub fn pushStackElement(self: *EditStack) void {
-        const lastElement = self._undoRedoService.getLastElement(self._model.uri());
-        lastElement.close();
+        if (self._undoRedoService.getLastElement(self._model.uri())) |lastElement| {
+            lastElement.close();
+        }
     }
 
     pub fn popStackElement(self: *EditStack) EditStackElement {
-        const lastElement = self._undoRedoService.getLastElement(self._model.uri());
-        lastElement.open();
+        if (self._undoRedoService.getLastElement(self._model.uri())) |lastElement| {
+            lastElement.open();
+        }
     }
 
     pub fn clear(self: *EditStack) void {
@@ -553,9 +580,10 @@ pub const EditStack = struct {
     }
 
     fn _getOrCreateEditStackElement(self: *EditStack, beforeCursorState: ?[]Selection, group: ?UndoRedoGroup) EditStackElement {
-        const lastElement = self._undoRedoService.getLastElement(self._model.uri());
-        if (lastElement.canAppend(self._model)) {
-            return lastElement;
+        if (self._undoRedoService.getLastElement(self._model.uri())) |lastElement| {
+            if (lastElement.canAppend(self._model)) {
+                return lastElement;
+            }
         }
         const newElement = SingleModelEditStackElement.init("Typing", "undoredo.textBufferEdit", self._model, beforeCursorState);
         self._undoRedoService.pushElement(newElement, group);
@@ -570,12 +598,13 @@ pub const EditStack = struct {
 
     pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []SingleEditOperation, cursorStateComputer: ?[]Selection, group: ?UndoRedoGroup) ?[]Selection {
         const editStackElement = self._getOrCreateEditStackElement(beforeCursorState, group);
-        const inverseEditOperations = self._model.applyEdits(editOperations, true);
-        const afterCursorState = EditStack._computeCursorState(cursorStateComputer, inverseEditOperations);
+        const inverseEditOperations = try self._model.applyEdits(editOperations, true);
+        defer inverseEditOperations.deinit();
+        const afterCursorState = EditStack._computeCursorState(cursorStateComputer, inverseEditOperations.items);
 
         var textChangesWithIndex = ArrayList(struct { textChange: TextChange, index: usize }).init(self._model.getAllocator());
         defer textChangesWithIndex.deinit();
-        for (inverseEditOperations, 0..) |op, index| {
+        for (inverseEditOperations.items, 0..) |op, index| {
             try textChangesWithIndex.append(.{ .textChange = op.textChange, .index = index });
         }
         std.sort.heap(struct { textChange: TextChange, index: usize }, textChangesWithIndex.items, {}, compareTextChangeWithIndex);
@@ -585,7 +614,7 @@ pub const EditStack = struct {
         for (textChangesWithIndex.items) |item| {
             try textChanges.append(item.textChange);
         }
-        try editStackElement.append(self._model, textChanges.items, self._model.getEOL(), self._model.getAlternativeVersionId(), afterCursorState);
+        try editStackElement.append(self._model, textChanges.toOwnedSlice(), self._model.getEOL(), self._model.getAlternativeVersionId(), afterCursorState);
         return afterCursorState;
     }
 
