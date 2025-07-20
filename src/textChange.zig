@@ -98,7 +98,8 @@ pub fn compressConsecutiveTextChanges(allocator: Allocator, prevEdits: ?[]const 
     }
 
     var compressor = TextChangeCompressor.init(allocator, prevEdits.?, currEdits);
-    return try (try compressor.compress()).toOwnedSlice();
+    var result = try compressor.compress();
+    return try result.toOwnedSlice();
 }
 
 pub const TextChangeCompressor = struct {

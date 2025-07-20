@@ -15,10 +15,11 @@ const SingleEditOperation = @import("editOperation.zig").SingleEditOperation;
 const ValidEditOperation = @import("model.zig").ValidEditOperation;
 const Disposable = @import("undoRedo.zig").Disposable;
 const uriToString = @import("model.zig").uriToString;
+const TextModelCreationOptions = @import("model.zig").TextModelCreationOptions;
 
 pub const EditStackElement = union(enum) {
-    singleModel: SingleModelEditStackElement,
-    multiModel: MultiModelEditStackElement,
+    singleModel: *SingleModelEditStackElement,
+    multiModel: *MultiModelEditStackElement,
 
     pub fn close(self: *EditStackElement) !void {
         switch (self.*) {
@@ -293,7 +294,7 @@ pub const SingleModelEditStackElement = struct {
     pub fn init(allocator: Allocator, label: []const u8, code: []const u8, model: *TextModel, beforeCursorState: []Selection) SingleModelEditStackElement {
         return SingleModelEditStackElement{
             .allocator = allocator,
-            .model = model,
+            .model = .{ .model = model },
             ._data = SingleModelEditStackData{
                 .unserialized = SingleModelEditStackDataUnserialized.create(
                     allocator,
@@ -357,10 +358,11 @@ pub const SingleModelEditStackElement = struct {
         };
     }
 
-    pub fn append(self: *SingleModelEditStackElement, textChanges: []TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *SingleModelEditStackElement, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
         switch (self._data) {
             .unserialized => |dat| {
-                try dat.append(textChanges, afterEOL, afterVersionId, afterCursorState);
+                var d = dat;
+                try d.append(textChanges, afterEOL, afterVersionId, afterCursorState);
             },
             .serialized => {},
         }
@@ -421,7 +423,7 @@ pub const SingleModelEditStackElement = struct {
         }
     }
 
-    pub fn heapSize(self: *const SingleModelEditStackElement) usize {
+    pub fn heapSize(self: *const SingleModelEditStackElement) !usize {
         switch (self._data) {
             .unserialized => |dat| {
                 const data = try dat.serialize();
@@ -434,6 +436,42 @@ pub const SingleModelEditStackElement = struct {
         }
     }
 };
+
+test "SingleModelEditStackElement" {
+    const allocator = std.testing.allocator;
+    const text = "Hello, world!";
+    var source = io.fixedBufferStream(text);
+    const reader = source.reader().any();
+    const defaultEOL = .LF;
+
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+
+    var textModel = try TextModel.init(allocator, reader, TextModelCreationOptions{
+        .tabSize = 4,
+        .indentSize = .{ .number = 4 },
+        .insertSpaces = true,
+        .detectIndentation = true,
+        .trimAutoWhitespace = true,
+        .defaultEOL = defaultEOL,
+        .isForSimpleWidget = false,
+        .largeFileOptimizations = false,
+        .bracketPairColorizationOptions = .{
+            .enabled = false,
+            .independentColorPoolPerBracketType = false,
+        },
+    }, null, &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var element = SingleModelEditStackElement.init(allocator, "test", "test", textModel, &[_]Selection{});
+    try std.testing.expectEqualStrings("test", element.label);
+    try std.testing.expectEqualStrings("test", element.code);
+    try std.testing.expectEqual(null, element.confirmBeforeUndo);
+    try element.append(&[_]TextChange{TextChange.init(0, "a", 0, "b")}, .LF, 2, null);
+    const str = try element.toString();
+    std.debug.print("{s}\n", .{str.items});
+}
 
 pub const MultiModelEditStackElement = struct {
     allocator: Allocator,

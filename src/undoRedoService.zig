@@ -14,6 +14,8 @@ const uriToString = @import("model.zig").uriToString;
 const UndoRedoSourceOrUri = @import("undoRedo.zig").UndoRedoSourceOrUri;
 const Pair = @import("utils.zig").Pair;
 const pair = @import("utils.zig").pair;
+const SingleModelEditStackElement = @import("editStack.zig").SingleModelEditStackElement;
+const Selection = @import("selection.zig").Selection;
 
 const DEBUG = true;
 
@@ -190,7 +192,7 @@ const RemovedResources = struct {
 
 const WorkspaceStackElement = struct {
     id: u64,
-    actual: *const EditStackElement,
+    actual: EditStackElement,
     label: []const u8,
     confirmBeforeUndo: bool,
 
@@ -203,7 +205,7 @@ const WorkspaceStackElement = struct {
     removedResources: ?RemovedResources,
     invalidatedResources: ?RemovedResources,
 
-    pub fn init(actual: *const EditStackElement, resourceLabels: []const []const u8, strResources: []const []const u8, groupId: u64, groupOrder: u64, sourceId: u64, sourceOrder: u64) WorkspaceStackElement {
+    pub fn init(actual: EditStackElement, resourceLabels: []const []const u8, strResources: []const []const u8, groupId: u64, groupOrder: u64, sourceId: u64, sourceOrder: u64) WorkspaceStackElement {
         stackElementCount += 1;
         return WorkspaceStackElement{
             .id = stackElementCount,
@@ -266,11 +268,26 @@ const WorkspaceStackElement = struct {
         }
     }
 
-    pub fn toString(self: *WorkspaceStackElement) []const u8 {
+    pub fn toString(self: *const WorkspaceStackElement) []const u8 {
         var buf: [1024]u8 = undefined;
         return try std.fmt.bufPrint(&buf, "[id:{}] [group:{}] [{}]{}", .{ self.id, self.groupId, if (self.invalidatedResources) |_| "INVALID" else "  VALID", self.actual });
     }
 };
+
+// test "WorkspaceStackElement" {
+//     const allocator = std.testing.allocator;
+//     const workspaceStackElement = WorkspaceStackElement.init(
+//         .{ .singleModel = &SingleModelEditStackElement.init(allocator, "test", "test", undefined, &[_]Selection{}) },
+//         &[_][]const u8{"test"},
+//         &[_][]const u8{"test"},
+//         1,
+//         1,
+//         1,
+//         1,
+//     );
+//     std.testing.expectEqualStrings("test", workspaceStackElement.label);
+//     try std.testing.expectEqual(168, workspaceStackElement.actual.heapSize());
+// }
 
 var missingEditStack = ResourceEditStack.init("", "", std.heap.page_allocator);
 const ResourceEditStack = struct {
@@ -373,7 +390,7 @@ const ResourceEditStack = struct {
         }
     }
 
-    pub fn _setElementValidFlag(self: *ResourceEditStack, element: StackElement, isValid: bool) void {
+    fn _setElementValidFlag(self: *ResourceEditStack, element: StackElement, isValid: bool) void {
         switch (element.*) {
             .workspaceStackElement => |workspaceStackElement| {
                 workspaceStackElement.setValid(self.resourceLabel, self.strResource, isValid);
