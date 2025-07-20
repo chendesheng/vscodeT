@@ -6,6 +6,7 @@ const Range = @import("range.zig").Range;
 const TextChange = @import("textChange.zig").TextChange;
 const ArrayList = @import("std").ArrayList;
 const default_max_load_percentage = @import("std").hash_map.default_max_load_percentage;
+const SingleEditOperation = @import("editOperation.zig").SingleEditOperation;
 
 pub const EOL = enum(u8) {
     CRLF,
@@ -25,6 +26,8 @@ pub const SingleEditOperationIdentifier = struct {
 
 // A single edit operation, that has an identifier.
 pub const IdentifiedSingleEditOperation = struct {
+    op: SingleEditOperation,
+
     // An identifier associated with this single edit operation.
     identifier: ?SingleEditOperationIdentifier,
     // This indicates that this operation is inserting automatic whitespace

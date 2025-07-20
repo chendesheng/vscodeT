@@ -810,9 +810,9 @@ pub const TextModel = struct {
     fn _validateEditOperation(self: *TextModel, rawOperation: IdentifiedSingleEditOperation) ValidAnnotatedEditOperation {
         return ValidAnnotatedEditOperation{
             .identifier = rawOperation.identifier,
-            .range = self.validateRange(rawOperation.range),
-            .text = rawOperation.text,
-            .forceMoveMarkers = rawOperation.forceMoveMarkers,
+            .range = self.validateRange(rawOperation.op.range),
+            .text = rawOperation.op.text,
+            .forceMoveMarkers = rawOperation.op.forceMoveMarkers,
             .isAutoWhitespaceEdit = rawOperation.isAutoWhitespaceEdit,
             .isTracked = rawOperation.isTracked,
         };
@@ -827,16 +827,19 @@ pub const TextModel = struct {
         return result;
     }
 
-    pub fn pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations: []IdentifiedSingleEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) ?[]Selection {
+    pub fn pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations: []IdentifiedSingleEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
         self._onDidChangeDecorations.beginDeferredEmit();
-        self._eventEmitter.beginDeferredEmit();
-        return self._pushEditOperations(beforeCursorState, self._validateEditOperations(editOperations), cursorStateComputer, group);
+        defer self._onDidChangeDecorations.endDeferredEmit();
 
-        //this._eventEmitter.endDeferredEmit();
-        //this._onDidChangeDecorations.endDeferredEmit();
+        self._eventEmitter.beginDeferredEmit();
+        defer self._eventEmitter.endDeferredEmit();
+
+        const ops = self._validateEditOperations(editOperations);
+        defer ops.deinit();
+        return try self._pushEditOperations(beforeCursorState, ops, cursorStateComputer, group);
     }
 
-    fn _pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations: []ValidAnnotatedEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) ?[]Selection {
+    fn _pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations: ArrayList(ValidAnnotatedEditOperation), cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
         if (self._options.trimAutoWhitespace and self._trimAutoWhitespaceLines) {
             // Go through each saved line number and insert a trim whitespace edit
             // if it is safe to do so (no conflicts with other edits).
@@ -984,11 +987,9 @@ pub const TextModel = struct {
             // Do not confuse listeners by emitting any event after disposing
             return;
         }
-        _ = rawChange;
-        _ = change;
         // self._tokenizationTextModelPart.handleDidChangeContent(change);
         // self._bracketPairs.handleDidChangeContent(change);
-        // self._eventEmitter.fire(new InternalModelContentChangeEvent(rawChange, change));
+        self._eventEmitter.fire(InternalModelContentChangeEvent.init(rawChange, change));
     }
 
     fn _createContentChanged2(self: *TextModel, range: Range, rangeOffset: usize, rangeLength: usize, rangeEndPosition: Position, text: []const u8, isUndoing: bool, isRedoing: bool, isFlush: bool, isEolChange: bool) ModelContentChangedEvent {

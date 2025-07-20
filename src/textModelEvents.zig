@@ -354,6 +354,13 @@ pub const InternalModelContentChangeEvent = struct {
     rawContentChangedEvent: ModelRawContentChangedEvent,
     contentChangedEvent: ModelContentChangedEvent,
 
+    pub fn init(rawContentChangedEvent: ModelRawContentChangedEvent, contentChangedEvent: ModelContentChangedEvent) InternalModelContentChangeEvent {
+        return InternalModelContentChangeEvent{
+            .rawContentChangedEvent = rawContentChangedEvent,
+            .contentChangedEvent = contentChangedEvent,
+        };
+    }
+
     pub fn merge(self: InternalModelContentChangeEvent, other: InternalModelContentChangeEvent) InternalModelContentChangeEvent {
         const rawContentChangedEvent = ModelRawContentChangedEvent.merge(self.rawContentChangedEvent, other.rawContentChangedEvent);
         const contentChangedEvent = InternalModelContentChangeEvent._mergeChangeEvents(self.contentChangedEvent, other.contentChangedEvent);

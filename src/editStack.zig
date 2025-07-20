@@ -16,6 +16,10 @@ const ValidEditOperation = @import("model.zig").ValidEditOperation;
 const Disposable = @import("undoRedo.zig").Disposable;
 const uriToString = @import("model.zig").uriToString;
 const TextModelCreationOptions = @import("model.zig").TextModelCreationOptions;
+const ValidAnnotatedEditOperation = @import("model.zig").ValidAnnotatedEditOperation;
+const Pair = @import("utils.zig").Pair;
+const toIndexedPair = @import("utils.zig").toIndexedPair;
+const fromIndexedPair = @import("utils.zig").fromIndexedPair;
 
 pub const EditStackElement = union(enum) {
     singleModel: *SingleModelEditStackElement,
@@ -52,7 +56,7 @@ pub const EditStackElement = union(enum) {
         }
     }
 
-    pub fn append(self: *EditStackElement, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) void {
+    pub fn append(self: *EditStackElement, model: *TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: i64, afterCursorState: ?[]Selection) void {
         switch (self.*) {
             .singleModel => |singleModel| {
                 singleModel.append(textChanges, afterEOL, afterVersionId, afterCursorState);
@@ -457,7 +461,6 @@ test "SingleModelEditStackElement" {
     const text = "Hello, world!";
     var source = io.fixedBufferStream(text);
     const reader = source.reader().any();
-    const defaultEOL = .LF;
 
     var undoRedoService = UndoRedoService.init(allocator);
     defer undoRedoService.deinit();
@@ -468,7 +471,7 @@ test "SingleModelEditStackElement" {
         .insertSpaces = true,
         .detectIndentation = true,
         .trimAutoWhitespace = true,
-        .defaultEOL = defaultEOL,
+        .defaultEOL = .LF,
         .isForSimpleWidget = false,
         .largeFileOptimizations = false,
         .bracketPairColorizationOptions = .{
@@ -577,7 +580,7 @@ pub const MultiModelEditStackElement = struct {
         return false;
     }
 
-    pub fn append(self: *MultiModelEditStackElement, model: *TextModel, textChanges: []TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *MultiModelEditStackElement, model: *TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
         if (self._editStackElementsMap.get(model.uri())) |editStackElement| {
             try editStackElement.append(textChanges, afterEOL, afterVersionId, afterCursorState);
         }
@@ -680,25 +683,19 @@ pub const EditStack = struct {
         editStackElement.append(self._model, &[_]TextChange{}, eol, self._model.getVersionId(), null);
     }
 
-    pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []SingleEditOperation, cursorStateComputer: ?[]Selection, group: ?UndoRedoGroup) ?[]Selection {
+    pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []ValidAnnotatedEditOperation, cursorStateComputer: ?[]Selection, group: ?UndoRedoGroup) ?[]Selection {
         const editStackElement = self._getOrCreateEditStackElement(beforeCursorState, group);
         const inverseEditOperations = try self._model.applyEdits(editOperations, true);
         defer inverseEditOperations.deinit();
         const afterCursorState = EditStack._computeCursorState(cursorStateComputer, inverseEditOperations.items);
 
-        var textChangesWithIndex = ArrayList(struct { textChange: TextChange, index: usize }).init(self._model.getAllocator());
+        const textChangesWithIndex = try toIndexedPair(TextChange, self._model.getAllocator(), inverseEditOperations.items);
         defer textChangesWithIndex.deinit();
-        for (inverseEditOperations.items, 0..) |op, index| {
-            try textChangesWithIndex.append(.{ .textChange = op.textChange, .index = index });
-        }
-        std.sort.heap(struct { textChange: TextChange, index: usize }, textChangesWithIndex.items, {}, compareTextChangeWithIndex);
-
-        var textChanges = ArrayList(TextChange).init(self._model.getAllocator());
+        std.sort.heap(Pair(*const TextChange, usize), textChangesWithIndex.items, {}, lessThanTextChangeWithIndex);
+        const textChanges = try fromIndexedPair(TextChange, self._model.getAllocator(), textChangesWithIndex.items);
         defer textChanges.deinit();
-        for (textChangesWithIndex.items) |item| {
-            try textChanges.append(item.textChange);
-        }
-        try editStackElement.append(self._model, textChanges.toOwnedSlice(), self._model.getEOL(), self._model.getAlternativeVersionId(), afterCursorState);
+
+        try editStackElement.append(self._model, textChanges.items, self._model.getEOL(), self._model.getAlternativeVersionId(), afterCursorState);
         return afterCursorState;
     }
 
@@ -718,9 +715,9 @@ const UndoRedoDelegate = struct {
     prepareUndoRedo: *const fn (self: *UndoRedoDelegate, element: *const MultiModelEditStackElement) ?Disposable,
 };
 
-fn compareTextChangeWithIndex(a: struct { textChange: TextChange, index: usize }, b: struct { textChange: TextChange, index: usize }) bool {
-    if (a.textChange.oldPosition == b.textChange.oldPosition) {
-        return a.index - b.index < 0;
+fn lessThanTextChangeWithIndex(a: Pair(*const TextChange, usize), b: Pair(*const TextChange, usize)) bool {
+    if (a.first.oldPosition == b.first.oldPosition) {
+        return a.second - b.second < 0;
     }
-    return a.textChange.oldPosition - b.textChange.oldPosition < 0;
+    return a.first.oldPosition - b.first.oldPosition < 0;
 }

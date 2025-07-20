@@ -1,4 +1,5 @@
 const std = @import("std");
+const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -166,4 +167,146 @@ test "concat" {
     const result = try concat(allocator, "Hello", "World");
     defer allocator.free(result);
     try std.testing.expectEqualStrings("HelloWorld", result);
+}
+
+pub const String = union(enum) {
+    owned: ArrayList(u8),
+    borrowed: []const u8,
+
+    pub const Empty = String{ .borrowed = "" };
+
+    pub fn allocPrint(allocator: Allocator, comptime format: []const u8, args: anytype) !String {
+        const str = try fmt.allocPrint(allocator, format, args);
+        const arr = ArrayList(u8).fromOwnedSlice(allocator, str);
+        return String.initOwned(arr);
+    }
+
+    pub fn initOwned(arr: ArrayList(u8)) String {
+        return .{ .owned = arr };
+    }
+
+    pub fn initBorrowed(str: []const u8) String {
+        return .{ .borrowed = str };
+    }
+
+    pub fn deinit(self: *String) void {
+        switch (self.*) {
+            .owned => |*list| {
+                list.deinit();
+                self.* = Empty;
+            },
+            .borrowed => {},
+        }
+    }
+
+    pub fn ensureOwned(self: *String, allocator: Allocator) !void {
+        switch (self.*) {
+            .owned => {
+                return;
+            },
+            .borrowed => |str| {
+                var arr = ArrayList(u8).init(allocator);
+                try arr.appendSlice(str);
+                self.* = .{ .owned = arr };
+            },
+        }
+    }
+
+    pub fn items(self: *const String) []const u8 {
+        switch (self.*) {
+            .owned => |list| {
+                return list.items;
+            },
+            .borrowed => |str| {
+                return str;
+            },
+        }
+    }
+
+    fn isOwned(self: *const String) bool {
+        return switch (self.*) {
+            .owned => true,
+            .borrowed => false,
+        };
+    }
+
+    pub fn isEmpty(self: *const String) bool {
+        return switch (self.*) {
+            .owned => |list| list.items.len == 0,
+            .borrowed => |str| str.len == 0,
+        };
+    }
+
+    pub fn eql(self: *const String, other: String) bool {
+        return std.mem.eql(u8, self.items(), other.items());
+    }
+
+    pub fn len(self: *const String) usize {
+        return self.items().len;
+    }
+};
+
+test "String.initBorrowed" {
+    var str = String.initBorrowed("Hello");
+    defer str.deinit();
+    try std.testing.expectEqualStrings("Hello", str.items());
+}
+
+test "String.initOwned" {
+    const allocator = std.testing.allocator;
+    var arr = ArrayList(u8).init(allocator);
+    try arr.appendSlice("Hello");
+    var str = String.initOwned(arr);
+    defer str.deinit();
+    try std.testing.expectEqualStrings("Hello", str.items());
+}
+
+test "String.allocPrint" {
+    const allocator = std.testing.allocator;
+    var str = try String.allocPrint(allocator, "Hello {d}", .{123});
+    defer str.deinit();
+    try std.testing.expectEqualStrings("Hello 123", str.items());
+}
+
+test "String.ensureOwned" {
+    const allocator = std.testing.allocator;
+    var str = String.initBorrowed("Hello");
+    defer str.deinit();
+    try std.testing.expectEqual(false, str.isOwned());
+    try str.ensureOwned(allocator);
+    try std.testing.expectEqual(true, str.isOwned());
+    try str.ensureOwned(allocator);
+    try std.testing.expectEqual(true, str.isOwned());
+}
+
+test "String.isEmpty" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectEqual(true, String.Empty.isEmpty());
+    var str = String.initBorrowed("Hello");
+    defer str.deinit();
+    try std.testing.expectEqual(false, str.isEmpty());
+
+    str = try String.initOwned(allocator, "");
+    defer str.deinit();
+    try std.testing.expectEqual(true, str.isEmpty());
+}
+
+test "String.eql" {
+    const allocator = std.testing.allocator;
+    var str = try String.initOwned(allocator, "Hello");
+    defer str.deinit();
+    var str2 = String.initBorrowed("Hello");
+    defer str2.deinit();
+
+    try std.testing.expectEqual(true, str.eql(str2));
+    try std.testing.expectEqual(false, str.eql(String.initBorrowed("World")));
+    try std.testing.expectEqual(true, str.eql(str2));
+}
+
+test "String.len" {
+    const allocator = std.testing.allocator;
+    var str = try String.initOwned(allocator, "Hello");
+    defer str.deinit();
+    try std.testing.expectEqual(5, str.len());
+    try std.testing.expectEqual(0, String.Empty.len());
 }
