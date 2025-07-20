@@ -111,6 +111,13 @@ pub const EditStackElement = union(enum) {
 pub const SingleModelEditStackData = union(enum) {
     unserialized: SingleModelEditStackDataUnserialized,
     serialized: []const u8,
+
+    pub fn deinit(self: *SingleModelEditStackData) void {
+        switch (self.*) {
+            .unserialized => |*data| data.deinit(),
+            .serialized => {},
+        }
+    }
 };
 
 pub const SingleModelEditStackDataUnserialized = struct {
@@ -140,8 +147,9 @@ pub const SingleModelEditStackDataUnserialized = struct {
 
     pub fn append(self: *SingleModelEditStackDataUnserialized, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
         if (textChanges.len > 0) {
+            const items = try compressConsecutiveTextChanges(self.changes.allocator, self.changes.items, textChanges);
             try self.changes.resize(0);
-            try self.changes.appendSlice(try compressConsecutiveTextChanges(self.changes.allocator, self.changes.items, textChanges));
+            try self.changes.appendSlice(items);
         }
         self.afterEOL = afterEOL;
         self.afterVersionId = afterVersionId;
@@ -309,6 +317,10 @@ pub const SingleModelEditStackElement = struct {
         };
     }
 
+    pub fn deinit(self: *SingleModelEditStackElement) void {
+        self._data.deinit();
+    }
+
     pub fn toString(self: *const SingleModelEditStackElement) !ArrayList(u8) {
         const allocator = self.allocator;
         const data = switch (self._data) {
@@ -323,9 +335,13 @@ pub const SingleModelEditStackElement = struct {
         }
 
         var result = std.ArrayList(u8).init(allocator);
-        for (data.changes.items) |change| {
-            try result.appendSlice(try change.toString(allocator));
-            try result.appendSlice(", ");
+        for (data.changes.items, 0..) |change, index| {
+            const str = try change.toString(allocator);
+            defer allocator.free(str);
+            try result.appendSlice(str);
+            if (index < data.changes.items.len - 1) {
+                try result.appendSlice(", ");
+            }
         }
         return result;
     }
@@ -360,9 +376,8 @@ pub const SingleModelEditStackElement = struct {
 
     pub fn append(self: *SingleModelEditStackElement, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
         switch (self._data) {
-            .unserialized => |dat| {
-                var d = dat;
-                try d.append(textChanges, afterEOL, afterVersionId, afterCursorState);
+            .unserialized => |*dat| {
+                try dat.append(textChanges, afterEOL, afterVersionId, afterCursorState);
             },
             .serialized => {},
         }
@@ -370,7 +385,7 @@ pub const SingleModelEditStackElement = struct {
 
     pub fn close(self: *SingleModelEditStackElement) !void {
         switch (self._data) {
-            .unserialized => |dat| {
+            .unserialized => |*dat| {
                 defer dat.deinit();
                 self._data = .{ .unserialized = try dat.serialize() };
             },
@@ -393,7 +408,7 @@ pub const SingleModelEditStackElement = struct {
         switch (self.model) {
             .model => |model| {
                 switch (self._data) {
-                    .unserialized => |dat| {
+                    .unserialized => |*dat| {
                         self._data = .{ .serialized = try dat.serialize() };
                         dat.deinit();
                     },
@@ -410,7 +425,7 @@ pub const SingleModelEditStackElement = struct {
         switch (self.model) {
             .model => |model| {
                 switch (self._data) {
-                    .unserialized => |dat| {
+                    .unserialized => |*dat| {
                         self._data = .{ .serialized = try dat.serialize() };
                         dat.deinit();
                     },
@@ -425,7 +440,7 @@ pub const SingleModelEditStackElement = struct {
 
     pub fn heapSize(self: *const SingleModelEditStackElement) !usize {
         switch (self._data) {
-            .unserialized => |dat| {
+            .unserialized => |*dat| {
                 const data = try dat.serialize();
                 defer self.allocator.free(data);
                 return data.len + 168; // heap overhead, FIXME: is this the same in zig?
@@ -465,12 +480,14 @@ test "SingleModelEditStackElement" {
     defer textModel.deinit();
 
     var element = SingleModelEditStackElement.init(allocator, "test", "test", textModel, &[_]Selection{});
+    defer element.deinit();
     try std.testing.expectEqualStrings("test", element.label);
     try std.testing.expectEqualStrings("test", element.code);
     try std.testing.expectEqual(null, element.confirmBeforeUndo);
     try element.append(&[_]TextChange{TextChange.init(0, "a", 0, "b")}, .LF, 2, null);
     const str = try element.toString();
-    std.debug.print("{s}\n", .{str.items});
+    defer str.deinit();
+    try std.testing.expectEqualStrings("(replaced@0 \"a\" with \"b\")", str.items);
 }
 
 pub const MultiModelEditStackElement = struct {
