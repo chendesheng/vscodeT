@@ -98,20 +98,18 @@ pub fn compressConsecutiveTextChanges(allocator: Allocator, prevEdits: ?[]const 
     }
 
     var compressor = TextChangeCompressor.init(allocator, prevEdits.?, currEdits);
-    return try compressor.compress();
+    return try (try compressor.compress()).toOwnedSlice();
 }
 
 pub const TextChangeCompressor = struct {
     _prevEdits: []const TextChange,
     _currEdits: []const TextChange,
 
-    _result: ArrayList(TextChange),
-
-    _prevLen: usize,
     _prevDeltaOffset: isize,
 
-    _currLen: usize,
     _currDeltaOffset: isize,
+
+    _result: ArrayList(TextChange),
 
     const PairTextChange = Pair(TextChange, TextChange);
 
@@ -120,24 +118,21 @@ pub const TextChangeCompressor = struct {
             ._prevEdits = prevEdits,
             ._currEdits = currEdits,
 
-            ._result = ArrayList(TextChange).init(allocator),
-
-            ._prevLen = prevEdits.len,
             ._prevDeltaOffset = 0,
-
-            ._currLen = currEdits.len,
             ._currDeltaOffset = 0,
+
+            ._result = ArrayList(TextChange).init(allocator),
         };
     }
 
-    pub fn compress(self: *TextChangeCompressor) ![]const TextChange {
+    pub fn compress(self: *TextChangeCompressor) !ArrayList(TextChange) {
         var prevIndex: usize = 0;
         var currIndex: usize = 0;
 
         var prevEdit = self._getPrev(prevIndex);
         var currEdit = self._getCurr(currIndex);
 
-        while (prevIndex < self._prevLen or currIndex < self._currLen) {
+        while (prevIndex < self._prevEdits.len or currIndex < self._currEdits.len) {
             if (prevEdit == null) {
                 try self._acceptCurr(currEdit.?);
                 currIndex += 1;
@@ -219,9 +214,9 @@ pub const TextChangeCompressor = struct {
             self._currDeltaOffset = self._currDeltaOffset + usizeSub(mergeCurr.newLength(), mergeCurr.oldLength());
         }
 
-        const merged = try self._merge(self._result.items);
-        const cleaned = try self._removeNoOps(merged);
-        return cleaned;
+        try self._merge();
+        try self._removeNoOps();
+        return self._result;
     }
 
     pub fn _acceptCurr(self: *TextChangeCompressor, currEdit: TextChange) !void {
@@ -230,7 +225,7 @@ pub const TextChangeCompressor = struct {
     }
 
     pub fn _getCurr(self: *const TextChangeCompressor, currIndex: usize) ?TextChange {
-        return if (currIndex < self._currLen) self._currEdits[currIndex] else null;
+        return if (currIndex < self._currEdits.len) self._currEdits[currIndex] else null;
     }
 
     pub fn _acceptPrev(self: *TextChangeCompressor, prevEdit: TextChange) !void {
@@ -239,7 +234,7 @@ pub const TextChangeCompressor = struct {
     }
 
     pub fn _getPrev(self: *const TextChangeCompressor, prevIndex: usize) ?TextChange {
-        return if (prevIndex < self._prevLen) self._prevEdits[prevIndex] else null;
+        return if (prevIndex < self._prevEdits.len) self._prevEdits[prevIndex] else null;
     }
 
     pub fn _rebaseCurr(prevDeltaOffset: isize, currEdit: TextChange) TextChange {
@@ -300,47 +295,49 @@ pub const TextChangeCompressor = struct {
         );
     }
 
-    pub fn _merge(self: *TextChangeCompressor, edits: []const TextChange) ![]const TextChange {
-        const allocator = self._result.allocator;
-        if (edits.len == 0) {
-            return edits;
+    pub fn _merge(self: *TextChangeCompressor) !void {
+        if (self._result.items.len == 0) {
+            return;
         }
 
-        var prev = edits[0];
-        for (1..edits.len) |i| {
-            const curr = edits[i];
+        const allocator = self._result.allocator;
+        var result = &self._result;
+        var write_index: usize = 0;
+        var prev = &result.items[write_index];
+        for (1..result.items.len) |i| {
+            const curr = &result.items[i];
 
             if (prev.oldEnd() == curr.oldPosition) {
                 // Merge into `prev`
-                prev = TextChange{
-                    .oldPosition = prev.oldPosition,
-                    .oldText = try strings.concat(allocator, prev.oldText, curr.oldText),
-                    .newPosition = prev.newPosition,
-                    .newText = try strings.concat(allocator, prev.newText, curr.newText),
-                };
+                prev.oldText = try strings.concat(allocator, prev.oldText, curr.oldText);
+                prev.newText = try strings.concat(allocator, prev.newText, curr.newText);
             } else {
-                try self._result.append(prev);
-                prev = curr;
+                write_index += 1;
+                prev = &result.items[write_index];
+                if (prev != curr) {
+                    prev.* = curr.*;
+                }
             }
         }
-        try self._result.append(prev);
-
-        return self._result.items;
+        try self._result.resize(write_index);
     }
 
-    pub fn _removeNoOps(self: *TextChangeCompressor, edits: []const TextChange) ![]const TextChange {
-        if (edits.len == 0) {
-            return edits;
+    pub fn _removeNoOps(self: *TextChangeCompressor) !void {
+        if (self._result.items.len == 0) {
+            return;
         }
 
-        for (edits) |edit| {
+        var result = &self._result;
+        var write_index: usize = 0;
+        for (result.items) |edit| {
             if (std.mem.eql(u8, edit.oldText, edit.newText)) {
                 continue;
             }
-            try self._result.append(edit);
+            result.items[write_index] = edit;
+            write_index += 1;
         }
 
-        return self._result.items;
+        try result.resize(write_index);
     }
 };
 
