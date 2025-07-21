@@ -86,6 +86,28 @@ pub fn containsUnusualLineTerminators(str: []const u8) bool {
     return false;
 }
 
+pub fn htmlAttributeEncodeValue(allocator: Allocator, value: []const u8) ![]const u8 {
+    var result = ArrayList(u8).init(allocator);
+    for (value) |ch| {
+        switch (ch) {
+            '<' => try result.appendSlice("&lt;"),
+            '>' => try result.appendSlice("&gt;"),
+            '"' => try result.appendSlice("&quot;"),
+            '\'' => try result.appendSlice("&apos;"),
+            '&' => try result.appendSlice("&amp;"),
+            else => try result.append(ch),
+        }
+    }
+    return result.toOwnedSlice();
+}
+
+test "htmlAttributeEncodeValue" {
+    const allocator = std.testing.allocator;
+    const result = try htmlAttributeEncodeValue(allocator, "<Hello>");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("&lt;Hello&gt;", result);
+}
+
 pub fn isNullOrEmpty(str: ?[]const u8) bool {
     return str == null or str.?.len == 0;
 }

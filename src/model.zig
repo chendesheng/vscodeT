@@ -7,6 +7,7 @@ const TextChange = @import("textChange.zig").TextChange;
 const ArrayList = @import("std").ArrayList;
 const default_max_load_percentage = @import("std").hash_map.default_max_load_percentage;
 const SingleEditOperation = @import("editOperation.zig").SingleEditOperation;
+const strings = @import("strings.zig");
 
 pub const EOL = enum(u8) {
     CRLF,
@@ -594,18 +595,74 @@ pub const ModelDecorationOptions = struct {
     // If set, this decoration will not be rendered for string tokens.
     // @internal
     hideInStringTokens: ?bool,
+
+    pub fn init(description: []const u8, stickiness: TrackedRangeStickiness) ModelDecorationOptions {
+        return ModelDecorationOptions{
+            .description = description,
+            .blockClassName = null,
+            .blockDoesNotCollapse = null,
+            .blockIsAfterEnd = null,
+            .blockPadding = null,
+            .stickiness = stickiness,
+            .zIndex = 0,
+            .className = null,
+            .shouldFillLineOnLineBreak = null,
+            .hoverMessage = null,
+            .glyphMarginHoverMessage = null,
+            .lineNumberHoverMessage = null,
+            .isWholeLine = null,
+            .lineHeight = null,
+            .showIfCollapsed = null,
+            .collapseOnReplaceEdit = null,
+            .overviewRuler = null,
+            .minimap = null,
+            .glyphMargin = null,
+            .glyphMarginClassName = null,
+            .linesDecorationsClassName = null,
+            .lineNumberClassName = null,
+            .linesDecorationsTooltip = null,
+            .firstLineDecorationClassName = null,
+            .marginClassName = null,
+            .inlineClassName = null,
+            .inlineClassNameAffectsLetterSpacing = null,
+            .beforeContentClassName = null,
+            .afterContentClassName = null,
+            .after = null,
+            .before = null,
+            .hideInCommentTokens = null,
+            .hideInStringTokens = null,
+        };
+    }
+
+    fn initModelDecorationOptionsDefaults(options: *ModelDecorationOptions) void {
+        options.stickiness = options.stickiness orelse TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges;
+        options.zIndex = options.zIndex orelse 0;
+        options.className = if (options.className) |className| cleanClassName(className) else null;
+        options.overviewRuler = if (options.overviewRuler) |overviewRuler| ModelDecorationOverviewRulerOptions.init(overviewRuler) else null;
+        options.minimap = if (options.minimap) |minimap| ModelDecorationMinimapOptions.init(minimap) else null;
+        options.glyphMargin = if (options.glyphMargin) |glyphMargin| ModelDecorationGlyphMarginOptions.init(glyphMargin) else null;
+        options.glyphMarginClassName = if (options.glyphMarginClassName) |className| cleanClassName(className) else null;
+        options.linesDecorationsClassName = if (options.linesDecorationsClassName) |className| cleanClassName(className) else null;
+        options.lineNumberClassName = if (options.lineNumberClassName) |className| cleanClassName(className) else null;
+        options.linesDecorationsTooltip = if (options.linesDecorationsTooltip) |tooltip| strings.htmlAttributeEncodeValue(tooltip) else null;
+        options.firstLineDecorationClassName = if (options.firstLineDecorationClassName) |className| cleanClassName(className) else null;
+        options.marginClassName = if (options.marginClassName) |className| cleanClassName(className) else null;
+        options.inlineClassName = if (options.inlineClassName) |className| cleanClassName(className) else null;
+        options.beforeContentClassName = if (options.beforeContentClassName) |className| cleanClassName(className) else null;
+        options.afterContentClassName = if (options.afterContentClassName) |className| cleanClassName(className) else null;
+    }
 };
 
 // A decoration in the model.
 pub const ModelDecoration = struct {
     // Identifier for a decoration.
-    id: []const u8,
+    id: u64,
     // Identifier for a decoration's owner.
     ownerId: usize,
     // Range that this decoration covers.
     range: Range,
     // Options associated with this decoration.
-    options: ModelDecorationOptions,
+    options: *ModelDecorationOptions,
 };
 
 // New model decorations.
@@ -613,5 +670,16 @@ pub const ModelDeltaDecoration = struct {
     // Range that this decoration covers.
     range: Range,
     // Options associated with this decoration.
-    options: ModelDecorationOptions,
+    options: *ModelDecorationOptions,
 };
+
+pub fn cleanClassName(className: []const u8) []const u8 {
+    var write_index = 0;
+    for (className) |c| {
+        if ('a' <= c and c <= 'z' or '0' <= c and c <= '9' or c == '-' or c == '_') {
+            className[write_index] = c;
+            write_index += 1;
+        }
+    }
+    return className[0..write_index];
+}

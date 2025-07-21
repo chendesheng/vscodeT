@@ -57,6 +57,13 @@ const Set = @import("Set.zig").Set;
 const SetWithKey = @import("Set.zig").SetWithKey;
 const Emitter = @import("event.zig").Emitter;
 const IndentSize = Model.IndentSize;
+const TrackedRangeStickiness = Model.TrackedRangeStickiness;
+const cleanClassName = Model.cleanClassName;
+const ModelDecorationOverviewRulerOptions = Model.ModelDecorationOverviewRulerOptions;
+const ModelDecorationMinimapOptions = Model.ModelDecorationMinimapOptions;
+const ModelDecorationGlyphMarginOptions = Model.ModelDecorationGlyphMarginOptions;
+const InjectedTextOptions = Model.InjectedTextOptions;
+const InjectedTextCursorStops = Model.InjectedTextCursorStops;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -67,6 +74,13 @@ const StringOffsetValidationType = enum {
     Relaxed,
     // Not allowed in surrogate pairs
     SurrogatePairs,
+};
+
+const TRACKED_RANGE_OPTIONS = [_]*const ModelDecorationOptions{
+    &ModelDecorationOptions.init("tracked-range-always-grows-when-typing-at-edges", TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges),
+    &ModelDecorationOptions.init("tracked-range-never-grows-when-typing-at-edges", TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges),
+    &ModelDecorationOptions.init("tracked-range-grows-only-when-typing-before", TrackedRangeStickiness.GrowsOnlyWhenTypingBefore),
+    &ModelDecorationOptions.init("tracked-range-grows-only-when-typing-after", TrackedRangeStickiness.GrowsOnlyWhenTypingAfter),
 };
 
 pub const TextModelSnapshot = struct {
@@ -1242,15 +1256,20 @@ pub const TextModel = struct {
         }
     }
 
-    // pub fn changeDecorations(comptime T: type, callback: fn (changeAccessor: ModelDecorationsChangeAccessor) T, ownerId: usize) ?T {
-    //     self._onDidChangeDecorations.beginDeferredEmit();
-    //     defer self._onDidChangeDecorations.endDeferredEmit();
-    //     return self._changeDecorations(ownerId, callback);
-    // }
+    pub fn changeDecorations(self: *TextModel, comptime T: type, callback: fn (changeAccessor: ModelDecorationsChangeAccessor) T, ownerId: usize) ?T {
+        self._onDidChangeDecorations.beginDeferredEmit();
+        defer self._onDidChangeDecorations.endDeferredEmit();
+        return self._changeDecorations(T, ownerId, callback);
+    }
+
+    fn _changeDecorations(comptime T: type, self: *TextModel, ownerId: usize, callback: fn (changeAccessor: ModelDecorationsChangeAccessor) anyerror!T) !?T {
+        const changeAccessor = ModelDecorationsChangeAccessor.init(self, ownerId);
+        var result: ?T = null;
+        result = try callback(changeAccessor);
+        return result;
+    }
 
     pub fn deltaDecorations(self: *TextModel, oldDecorations: [][]u8, newDecorations: []ModelDeltaDecoration, ownerId: usize) ![][]u8 {
-        _ = ownerId;
-
         if (oldDecorations.len == 0 and newDecorations.len == 0) {
             // nothing to do
             return &[_][]u8{};
@@ -1264,25 +1283,324 @@ pub const TextModel = struct {
         }
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
-        // return try self._deltaDecorationsImpl(ownerId, oldDecorations, newDecorations);
-        return &[_][]u8{};
+        return try self._deltaDecorationsImpl(ownerId, oldDecorations, newDecorations);
+    }
+
+    fn _getTrackedRange(self: *TextModel, id: []const u8) ?Range {
+        return self.getDecorationRange(id);
+    }
+
+    fn _setTrackedRange(self: *TextModel, id: ?[]const u8, newRange: ?Range, newStickiness: TrackedRangeStickiness) !?[]const u8 {
+        const node = (if (id) |id_| self._decorations.get(id_) else null);
+
+        if (node == null) {
+            if (newRange == null) {
+                // node doesn't exist, the request is to delete => nothing to do
+                return null;
+            }
+            // node doesn't exist, the request is to set => add the tracked range
+            return try self._deltaDecorationsImpl(0, &[_][]const u8{}, &[_]ModelDeltaDecoration{.{ .range = newRange, .options = TRACKED_RANGE_OPTIONS[@intFromEnum(newStickiness)] }}, true);
+        }
+
+        if (newRange == null) {
+            // node exists, the request is to delete => delete node
+            self._decorationsTree.delete(node);
+            self._decorations.remove(node.id);
+            return null;
+        }
+
+        var node_ = node.?;
+        const newRange_ = newRange.?;
+
+        // node exists, the request is to set => change the tracked range and its options
+        const range = self._validateRangeRelaxedNoAllocations(newRange_);
+        const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
+        const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
+
+        self._decorationsTree.delete(node_);
+        node_.reset(self.getVersionId(), startOffset, endOffset, range);
+        node_.setOptions(TRACKED_RANGE_OPTIONS[@intFromEnum(newStickiness)]);
+        self._decorationsTree.insert(node_);
+        return node_.id;
+    }
+
+    pub fn removeAllDecorationsWithOwnerId(self: *TextModel, ownerId: usize) void {
+        if (self._isDisposed) {
+            return;
+        }
+        const nodes = try self._decorationsTree.collectNodesFromOwner(ownerId);
+        defer nodes.deinit();
+        for (nodes.items) |node| {
+            self._decorationsTree.delete(node);
+            self._decorations.remove(node.id);
+        }
+    }
+
+    pub fn getDecorationOptions(self: *TextModel, decorationId: []const u8) ?ModelDecorationOptions {
+        const node = self._decorations.get(decorationId);
+        if (node == null) {
+            return null;
+        }
+        return node.options;
+    }
+
+    pub fn getDecorationRange(self: *TextModel, decorationId: []const u8) ?Range {
+        const node = self._decorations.get(decorationId);
+        if (node == null) {
+            return null;
+        }
+        return self._decorationsTree.getNodeRange(self, node);
+    }
+
+    pub fn getLineDecorations(self: *TextModel, lineNumber: usize, ownerId: usize, filterOutValidation: bool) ![]ModelDecoration {
+        if (lineNumber < 1 or lineNumber > self.getLineCount()) {
+            return &[_]ModelDecoration{};
+        }
+        return try self.getLinesDecorations(lineNumber, lineNumber, ownerId, filterOutValidation);
+    }
+
+    pub fn getLinesDecorations(self: *TextModel, startLineNumber: usize, endLineNumber: usize, ownerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) ![]ModelDecoration {
+        const lineCount = self.getLineCount();
+        const startLineNumber_ = @min(lineCount, @max(1, startLineNumber));
+        const endLineNumber_ = @min(lineCount, @max(1, endLineNumber));
+        const endColumn = self.getLineMaxColumn(endLineNumber);
+        const range = Range.init(startLineNumber_, 1, endLineNumber_, endColumn);
+
+        var decorations = try self._getDecorationsInRange(range, ownerId, filterOutValidation, onlyMarginDecorations);
+        try decorations.appendSlice(try self._decorationProvider.getDecorationsInRange(range, ownerId, filterOutValidation));
+        return decorations.toOwnedSlice();
+    }
+
+    pub fn getDecorationsInRange(self: *TextModel, range: Range, ownerId: usize, filterOutValidation: bool, onlyMinimapDecorations: bool, onlyMarginDecorations: bool) ![]ModelDecoration {
+        const validatedRange = self.validateRange(range);
+
+        var decorations = try self._getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMarginDecorations);
+        try decorations.appendSlice(try self._decorationProvider.getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMinimapDecorations));
+        return decorations.toOwnedSlice();
+    }
+
+    pub fn getOverviewRulerDecorations(self: *TextModel, ownerId: usize, filterOutValidation: bool) ![]ModelDecoration {
+        var decorations = try self._decorationsTree.getAll(self, ownerId, filterOutValidation, true, false);
+        return decorations.toOwnedSlice();
+    }
+
+    pub fn getInjectedTextDecorations(self: *TextModel, ownerId: usize) ![]ModelDecoration {
+        var decorations = try self._decorationsTree.getAllInjectedText(self, ownerId);
+        return decorations.toOwnedSlice();
+    }
+
+    pub fn getCustomLineHeightsDecorations(self: *TextModel, ownerId: usize) ![]ModelDecoration {
+        var decorations = try self._decorationsTree.getAllCustomLineHeights(self, ownerId);
+        return decorations.toOwnedSlice();
     }
 
     fn _getInjectedTextInLine(self: *TextModel, lineNumber: usize) ![]LineInjectedText {
         const startOffset = self._buffer.getOffsetAt(lineNumber, 1);
         const endOffset = startOffset + self._buffer.getLineLength(lineNumber);
 
-        const result = self._decorationsTree.getInjectedTextInInterval(self, startOffset, endOffset, 0);
-        const decorations = try LineInjectedText.fromDecorations(self.getAllocator(), result);
-        defer decorations.deinit();
+        const result = try self._decorationsTree.getInjectedTextInInterval(self, startOffset, endOffset, 0);
+        defer result.deinit();
+        var modelDecorations = ArrayList(ModelDecoration).init(self.getAllocator());
+        defer modelDecorations.deinit();
+        for (result.items) |node| {
+            try modelDecorations.append(node.toModelDecoration());
+        }
+        var res = try LineInjectedText.fromDecorations(self.getAllocator(), modelDecorations.items);
+        return try res.toOwnedSlice();
+    }
 
-        var filtered = ArrayList(LineInjectedText).init(self.getAllocator());
-        for (decorations.items) |decoration| {
-            if (decoration.lineNumber == lineNumber) {
-                try filtered.append(decoration);
+    pub fn getAllDecorations(self: *TextModel, ownerId: usize, filterOutValidation: bool) ![]ModelDecoration {
+        var result = try self._decorationsTree.getAll(self, ownerId, filterOutValidation, false, false);
+        try result.appendSlice(try self._decorationProvider.getAllDecorations(ownerId, filterOutValidation));
+        return result.toOwnedSlice();
+    }
+
+    pub fn getAllMarginDecorations(self: *TextModel, ownerId: usize) ![]ModelDecoration {
+        var result = try self._decorationsTree.getAll(self, ownerId, false, false, true);
+        return result.toOwnedSlice();
+    }
+
+    fn _getDecorationsInRange(self: *TextModel, filterRange: Range, filterOwnerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+        const startOffset = self._buffer.getOffsetAt(filterRange.startLineNumber, filterRange.startColumn);
+        const endOffset = self._buffer.getOffsetAt(filterRange.endLineNumber, filterRange.endColumn);
+        return try self._decorationsTree.getAllInInterval(self, startOffset, endOffset, filterOwnerId, filterOutValidation, onlyMarginDecorations);
+    }
+
+    pub fn getRangeAt(self: *TextModel, start: usize, end: usize) Range {
+        return self._buffer.getRangeAt(start, end - start);
+    }
+
+    fn _changeDecorationImpl(self: *TextModel, ownerId: usize, decorationId: []const u8, _range: Range) void {
+        if (self._decorations.get(decorationId)) |node| {
+            if (node.options.after) {
+                const oldRange = self.getDecorationRange(decorationId);
+                self._onDidChangeDecorations.recordLineAffectedByInjectedText(oldRange.?.endLineNumber);
+            }
+
+            if (node.options.before) {
+                const oldRange = self.getDecorationRange(decorationId);
+                self._onDidChangeDecorations.recordLineAffectedByInjectedText(oldRange.?.startLineNumber);
+            }
+            if (node.options.lineHeight != null) {
+                const oldRange = self.getDecorationRange(decorationId);
+                self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, oldRange.?.startLineNumber, null);
+            }
+
+            const range = self._validateRangeRelaxedNoAllocations(_range);
+            const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
+            const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
+
+            self._decorationsTree.delete(node);
+            node.reset(self.getVersionId(), startOffset, endOffset, range);
+            self._decorationsTree.insert(node);
+            self._onDidChangeDecorations.checkAffectedAndFire(node.options);
+
+            if (node.options.after) {
+                self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.endLineNumber);
+            }
+            if (node.options.before) {
+                self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.startLineNumber);
+            }
+            if (node.options.lineHeight != null) {
+                self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, range.startLineNumber, node.options.lineHeight);
             }
         }
-        return filtered.toOwnedSlice();
+    }
+
+    fn _changeDecorationOptionsImpl(self: *TextModel, ownerId: usize, decorationId: []const u8, options: *ModelDecorationOptions) void {
+        if (self._decorations.get(decorationId)) |node| {
+            const nodeWasInOverviewRuler = (node.options.overviewRuler != null and node.options.overviewRuler.?.color != null);
+            const nodeIsInOverviewRuler = (options.overviewRuler != null and options.overviewRuler.?.color != null);
+
+            self._onDidChangeDecorations.checkAffectedAndFire(node.options);
+            self._onDidChangeDecorations.checkAffectedAndFire(options);
+
+            if (node.options.after or options.after) {
+                const nodeRange = self._decorationsTree.getNodeRange(self, node);
+                self._onDidChangeDecorations.recordLineAffectedByInjectedText(nodeRange.endLineNumber);
+            }
+            if (node.options.before or options.before) {
+                const nodeRange = self._decorationsTree.getNodeRange(self, node);
+                self._onDidChangeDecorations.recordLineAffectedByInjectedText(nodeRange.startLineNumber);
+            }
+            if (node.options.lineHeight != null or options.lineHeight != null) {
+                const nodeRange = self._decorationsTree.getNodeRange(self, node);
+                self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, nodeRange.startLineNumber, options.lineHeight);
+            }
+
+            const movedInOverviewRuler = nodeWasInOverviewRuler != nodeIsInOverviewRuler;
+            const changedWhetherInjectedText = isOptionsInjectedText(options) != isNodeInjectedText(node);
+            if (movedInOverviewRuler or changedWhetherInjectedText) {
+                self._decorationsTree.delete(node);
+                node.setOptions(options);
+                self._decorationsTree.insert(node);
+            } else {
+                node.setOptions(options);
+            }
+        }
+    }
+
+    fn _deltaDecorationsImpl(self: *TextModel, ownerId: usize, oldDecorationsIds: []const []const u8, newDecorations: []ModelDeltaDecoration, suppressEvents: bool) ![]const []const u8 {
+        const versionId = self.getVersionId();
+
+        const oldDecorationsLen = oldDecorationsIds.len;
+        var oldDecorationIndex: usize = 0;
+
+        const newDecorationsLen = newDecorations.len;
+        var newDecorationIndex: usize = 0;
+
+        self._onDidChangeDecorations.beginDeferredEmit();
+        defer self._onDidChangeDecorations.endDeferredEmit();
+
+        const result = ArrayList([]const u8).initCapacity(self.getAllocator(), newDecorationsLen);
+        while (oldDecorationIndex < oldDecorationsLen or newDecorationIndex < newDecorationsLen) {
+            var node: ?*IntervalNode = null;
+
+            if (oldDecorationIndex < oldDecorationsLen) {
+                // (1) get ourselves an old node
+                var decorationId: []const u8 = undefined;
+                while (true) {
+                    decorationId = oldDecorationsIds[oldDecorationIndex];
+                    oldDecorationIndex += 1;
+                    node = self._decorations.get(decorationId);
+
+                    if (node != null and oldDecorationIndex < oldDecorationsLen) {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+
+                // (2) remove the node from the tree (if it exists)
+                if (node) |node_| {
+                    if (node_.options.after) {
+                        const nodeRange = self._decorationsTree.getNodeRange(self, node_);
+                        self._onDidChangeDecorations.recordLineAffectedByInjectedText(nodeRange.endLineNumber);
+                    }
+                    if (node_.options.before) {
+                        const nodeRange = self._decorationsTree.getNodeRange(self, node_);
+                        self._onDidChangeDecorations.recordLineAffectedByInjectedText(nodeRange.startLineNumber);
+                    }
+                    if (node_.options.lineHeight != null) {
+                        const nodeRange = self._decorationsTree.getNodeRange(self, node_);
+                        self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, nodeRange.startLineNumber, null);
+                    }
+                    self._decorationsTree.delete(node_);
+
+                    if (!suppressEvents) {
+                        self._onDidChangeDecorations.checkAffectedAndFire(node_.options);
+                    }
+                }
+            }
+
+            if (newDecorationIndex < newDecorationsLen) {
+                // (3) create a new node if necessary
+                if (node == null) {
+                    self._lastDecorationId += 1;
+                    const internalDecorationId = self._lastDecorationId;
+                    const decorationId = try std.fmt.allocPrint(self.getAllocator(), "{d};{d}", .{ self._instanceId, internalDecorationId });
+                    node = try IntervalNode.init(self.getAllocator(), decorationId, 0, 0);
+                    try self._decorations.put(decorationId, node);
+                }
+
+                // (4) initialize node
+                var node_ = node.?;
+                const newDecoration = newDecorations[newDecorationIndex];
+                const range = self._validateRangeRelaxedNoAllocations(newDecoration.range);
+                const options = newDecoration.options; // TODO: normalize options ??
+                const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
+                const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
+
+                node_.ownerId = ownerId;
+                node_.reset(versionId, startOffset, endOffset, range);
+                node_.setOptions(options);
+
+                if (node_.options.after) {
+                    self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.endLineNumber);
+                }
+                if (node_.options.before) {
+                    self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.startLineNumber);
+                }
+                if (node_.options.lineHeight != null) {
+                    self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, node_.id, range.startLineNumber, node_.options.lineHeight);
+                }
+                if (!suppressEvents) {
+                    self._onDidChangeDecorations.checkAffectedAndFire(options);
+                }
+
+                self._decorationsTree.insert(node_);
+
+                result[newDecorationIndex] = node_.id;
+
+                newDecorationIndex += 1;
+            } else {
+                if (node) |node_| {
+                    self._decorations.remove(node_.id);
+                }
+            }
+        }
+
+        return result.toOwnedSlice();
     }
 
     //#endregion
@@ -1298,6 +1616,18 @@ pub fn indentOfLine(line: []const u8) usize {
         }
     }
     return indent;
+}
+
+fn isNodeInOverviewRuler(node: *IntervalNode) bool {
+    return (node.options.overviewRuler != null and node.options.overviewRuler.?.color != null);
+}
+
+fn isOptionsInjectedText(options: *const ModelDecorationOptions) bool {
+    return options.after != null or options.before != null;
+}
+
+fn isNodeInjectedText(node: *IntervalNode) bool {
+    return node.options.after != null or node.options.before != null;
 }
 
 pub const DecorationsTrees = struct {
@@ -1319,30 +1649,178 @@ pub const DecorationsTrees = struct {
         };
     }
 
-    fn ensureAllNodesHaveRanges(self: *DecorationsTrees, model: *TextModel) void {
-        _ = self;
-        _ = model;
-    }
-    fn collectNodesPostOrder(self: *DecorationsTrees) []*IntervalNode {
-        _ = self;
-        return &[_]IntervalNode{};
+    fn ensureAllNodesHaveRanges(self: *DecorationsTrees, host: *TextModel) void {
+        self.getAll(host, 0, false, false, false);
     }
 
-    fn acceptReplace(self: *DecorationsTrees, rangeOffset: usize, rangeLength: usize, textLength: usize, forceMoveMarkers: bool) void {
-        _ = self;
-        _ = rangeOffset;
-        _ = rangeLength;
-        _ = textLength;
-        _ = forceMoveMarkers;
+    fn _ensureNodesHaveRanges(host: *TextModel, nodes: ArrayList(*IntervalNode)) ArrayList(*IntervalNode) {
+        for (nodes.items) |node| {
+            if (node.range == null) {
+                node.range = host.getRangeAt(node.cachedAbsoluteStart, node.cachedAbsoluteEnd);
+            }
+        }
+        return nodes;
     }
 
-    fn getInjectedTextInInterval(self: *DecorationsTrees, model: *TextModel, start: usize, end: usize, maxLength: usize) []ModelDecoration {
-        _ = self;
-        _ = model;
-        _ = start;
-        _ = end;
-        _ = maxLength;
-        return &[_]ModelDecoration{};
+    pub fn getAllInInterval(self: *DecorationsTrees, host: *TextModel, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+        const versionId = host.getVersionId();
+        const result = try self._intervalSearch(start, end, filterOwnerId, filterOutValidation, versionId, onlyMarginDecorations);
+        return _ensureNodesHaveRanges(host, result);
+    }
+
+    fn _intervalSearch(self: *DecorationsTrees, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+        const r0 = self._decorationsTree0.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        defer r0.deinit();
+        const r1 = self._decorationsTree1.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        defer r1.deinit();
+        const r2 = self._injectedTextDecorationsTree.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        defer r2.deinit();
+
+        const result = ArrayList(*IntervalNode).init(self.allocator);
+        defer result.deinit();
+        try result.appendSlice(r0.items);
+        try result.appendSlice(r1.items);
+        try result.appendSlice(r2.items);
+        return result;
+    }
+
+    pub fn getInjectedTextInInterval(self: *DecorationsTrees, host: *TextModel, start: usize, end: usize, filterOwnerId: usize) !ArrayList(*IntervalNode) {
+        const versionId = host.getVersionId();
+        const result = try self._injectedTextDecorationsTree.intervalSearch(start, end, filterOwnerId, false, versionId, false);
+        return _ensureNodesHaveRanges(host, result);
+    }
+
+    pub fn getAllInjectedText(self: *DecorationsTrees, host: *TextModel, filterOwnerId: usize) !ArrayList(*IntervalNode) {
+        const versionId = host.getVersionId();
+        const result = self._injectedTextDecorationsTree.search(filterOwnerId, false, versionId, false);
+        var write_index = 0;
+        for (result.items) |node| {
+            if (node.options.showIfCollapsed or !node.range.isEmpty()) {
+                result.items[write_index] = node;
+                write_index += 1;
+            }
+        }
+        result.resize(write_index);
+        return result;
+    }
+
+    pub fn getAllCustomLineHeights(self: *DecorationsTrees, host: *TextModel, filterOwnerId: usize) !ArrayList(*IntervalNode) {
+        const versionId = host.getVersionId();
+        const result = self._search(filterOwnerId, false, false, versionId, false);
+        var write_index = 0;
+        for (result.items) |node| {
+            if (node.options.lineHeight != null) {
+                result.items[write_index] = node;
+                write_index += 1;
+            }
+        }
+        result.resize(write_index);
+        return result;
+    }
+
+    pub fn getAll(self: *DecorationsTrees, host: *TextModel, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+        const versionId = host.getVersionId();
+        const result = self._search(filterOwnerId, filterOutValidation, overviewRulerOnly, versionId, onlyMarginDecorations);
+        return self._ensureNodesHaveRanges(host, result);
+    }
+
+    fn _search(self: *DecorationsTrees, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+        if (overviewRulerOnly) {
+            return try self._decorationsTree1.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        } else {
+            const r0 = try self._decorationsTree0.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+            defer r0.deinit();
+            const r1 = try self._decorationsTree1.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+            defer r1.deinit();
+            const r2 = try self._injectedTextDecorationsTree.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+            defer r2.deinit();
+
+            const result = ArrayList(*IntervalNode).init(self.allocator);
+            defer result.deinit();
+            try result.appendSlice(r0.items);
+            try result.appendSlice(r1.items);
+            try result.appendSlice(r2.items);
+            return result;
+        }
+    }
+
+    pub fn collectNodesFromOwner(self: *DecorationsTrees, ownerId: usize) !ArrayList(*IntervalNode) {
+        const r0 = try self._decorationsTree0.collectNodesFromOwner(ownerId);
+        defer r0.deinit();
+        const r1 = try self._decorationsTree1.collectNodesFromOwner(ownerId);
+        defer r1.deinit();
+        const r2 = try self._injectedTextDecorationsTree.collectNodesFromOwner(ownerId);
+        defer r2.deinit();
+
+        const result = ArrayList(*IntervalNode).init(self.allocator);
+        defer result.deinit();
+        try result.appendSlice(r0.items);
+        try result.appendSlice(r1.items);
+        try result.appendSlice(r2.items);
+        return result;
+    }
+
+    pub fn collectNodesPostOrder(self: *DecorationsTrees) !ArrayList(*IntervalNode) {
+        const r0 = try self._decorationsTree0.collectNodesPostOrder();
+        defer r0.deinit();
+        const r1 = try self._decorationsTree1.collectNodesPostOrder();
+        defer r1.deinit();
+        const r2 = try self._injectedTextDecorationsTree.collectNodesPostOrder();
+        defer r2.deinit();
+
+        const result = ArrayList(*IntervalNode).init(self.allocator);
+        defer result.deinit();
+        try result.appendSlice(r0.items);
+        try result.appendSlice(r1.items);
+        try result.appendSlice(r2.items);
+        return result;
+    }
+
+    pub fn insert(self: *DecorationsTrees, node: *IntervalNode) void {
+        if (isNodeInjectedText(node)) {
+            self._injectedTextDecorationsTree.insert(node);
+        } else if (isNodeInOverviewRuler(node)) {
+            self._decorationsTree1.insert(node);
+        } else {
+            self._decorationsTree0.insert(node);
+        }
+    }
+
+    pub fn delete(self: *DecorationsTrees, node: *IntervalNode) void {
+        if (isNodeInjectedText(node)) {
+            self._injectedTextDecorationsTree.delete(node);
+        } else if (isNodeInOverviewRuler(node)) {
+            self._decorationsTree1.delete(node);
+        } else {
+            self._decorationsTree0.delete(node);
+        }
+    }
+
+    pub fn getNodeRange(self: *DecorationsTrees, host: *TextModel, node: *IntervalNode) Range {
+        const versionId = host.getVersionId();
+        if (node.cachedVersionId != versionId) {
+            self._resolveNode(node, versionId);
+        }
+        if (node.range == null) {
+            node.range = host.getRangeAt(node.cachedAbsoluteStart, node.cachedAbsoluteEnd);
+        }
+        return node.range;
+    }
+
+    fn _resolveNode(self: *DecorationsTrees, node: *IntervalNode, cachedVersionId: usize) void {
+        if (isNodeInjectedText(node)) {
+            self._injectedTextDecorationsTree.resolveNode(node, cachedVersionId);
+        } else if (isNodeInOverviewRuler(node)) {
+            self._decorationsTree1.resolveNode(node, cachedVersionId);
+        } else {
+            self._decorationsTree0.resolveNode(node, cachedVersionId);
+        }
+    }
+
+    pub fn acceptReplace(self: *DecorationsTrees, offset: usize, length: usize, textLength: usize, forceMoveMarkers: bool) void {
+        self._decorationsTree0.acceptReplace(offset, length, textLength, forceMoveMarkers);
+        self._decorationsTree1.acceptReplace(offset, length, textLength, forceMoveMarkers);
+        self._injectedTextDecorationsTree.acceptReplace(offset, length, textLength, forceMoveMarkers);
     }
 };
 
@@ -1494,7 +1972,7 @@ const DidChangeDecorationsEmitter = struct {
         self._affectedLineHeights.?.add(LineHeightChangingDecoration.init(ownerId, decorationId, lineNumber, lineHeight));
     }
 
-    pub fn checkAffectedAndFire(self: *DidChangeDecorationsEmitter, options: ModelDecorationOptions) void {
+    pub fn checkAffectedAndFire(self: *DidChangeDecorationsEmitter, options: *ModelDecorationOptions) void {
         self._affectsMinimap = options.minimap != null;
         self._affectsOverviewRuler = options.overviewRuler != null;
         self._affectsGlyphMargin = options.glyphMarginClassName != null;
@@ -1595,5 +2073,56 @@ pub const DidChangeContentEmitter = struct {
         }
         self._fastEmitter.fire(e);
         self._slowEmitter.fire(e);
+    }
+};
+
+// An accessor that can add, change or remove model decorations.
+// @internal
+pub const ModelDecorationsChangeAccessor = struct {
+    model: *TextModel,
+    ownerId: u64,
+
+    pub fn init(model: *TextModel, ownerId: u64) ModelDecorationsChangeAccessor {
+        return ModelDecorationsChangeAccessor{
+            .model = model,
+            .ownerId = ownerId,
+        };
+    }
+    // Add a new decoration.
+    // @param range Range that this decoration covers.
+    // @param options Options associated with this decoration.
+    // @return An unique identifier associated with this decoration.
+    fn addDecoration(self: *ModelDecorationsChangeAccessor, range: Range, options: ModelDecorationOptions) ![]const u8 {
+        return try self.model._deltaDecorationsImpl(self.ownerId, &[_][]const u8{}, &[_]ModelDeltaDecoration{.{ .range = range, .options = options }});
+    }
+    // Change the range that an existing decoration covers.
+    // @param id The unique identifier associated with the decoration.
+    // @param newRange The new range that this decoration covers.
+    fn changeDecoration(self: *ModelDecorationsChangeAccessor, id: []const u8, newRange: Range) void {
+        self.model._changeDecorationsImpl(self.ownerId, id, newRange);
+    }
+    // Change the options associated with an existing decoration.
+    // @param id The unique identifier associated with the decoration.
+    // @param newOptions The new options associated with this decoration.
+    fn changeDecorationOptions(self: *ModelDecorationsChangeAccessor, id: []const u8, newOptions: ModelDecorationOptions) void {
+        self.model._changeDecorationOptionsImpl(self.ownerId, id, newOptions);
+    }
+    // Remove an existing decoration.
+    // @param id The unique identifier associated with the decoration.
+    fn removeDecoration(self: *ModelDecorationsChangeAccessor, id: []const u8) void {
+        self.model._deltaDecorationsImpl(self.ownerId, &[_][]const u8{id}, &[_]ModelDeltaDecoration{}) catch unreachable;
+    }
+    // Perform a minimum amount of operations, in order to transform the decorations
+    // identified by `oldDecorations` to the decorations described by `newDecorations`
+    // and returns the new identifiers associated with the resulting decorations.
+    //
+    // @param oldDecorations Array containing previous decorations identifiers.
+    // @param newDecorations Array describing what decorations should result after the call.
+    // @return An array containing the new decorations identifiers.
+    fn deltaDecorations(self: *ModelDecorationsChangeAccessor, oldDecorations: []const []const u8, newDecorations: []const ModelDeltaDecoration) ![]const []const u8 {
+        if (oldDecorations.len == 0 and newDecorations.len == 0) {
+            return &[_][]const u8{};
+        }
+        return try self.model._deltaDecorationsImpl(self.ownerId, oldDecorations, newDecorations);
     }
 };

@@ -1,4 +1,6 @@
 const std = @import("std");
+const ModelDecoration = @import("model.zig").ModelDecoration;
+const ModelDecorationOptions = @import("model.zig").ModelDecorationOptions;
 const Range = @import("range.zig").Range;
 const TrackedRangeStickiness = @import("model.zig").TrackedRangeStickiness;
 const Allocator = std.mem.Allocator;
@@ -120,7 +122,7 @@ pub const IntervalNode = struct {
 
     id: u64,
     ownerId: usize,
-    // options: ModelDecorationOptions,
+    options: *ModelDecorationOptions,
 
     cachedVersionId: u32,
     cachedAbsoluteStart: usize,
@@ -152,6 +154,7 @@ pub const IntervalNode = struct {
             .cachedAbsoluteStart = start,
             .cachedAbsoluteEnd = end,
             .range = null,
+            .options = undefined,
         };
         return node;
     }
@@ -170,6 +173,19 @@ pub const IntervalNode = struct {
         self.range = range;
     }
 
+    pub fn setOptions(self: *IntervalNode, options: *ModelDecorationOptions) void {
+        self.options = options;
+        const className = self.options.className;
+        setNodeIsForValidation(self, (className == ClassName.EditorErrorDecoration or
+            className == ClassName.EditorWarningDecoration or
+            className == ClassName.EditorInfoDecoration));
+        setNodeIsInGlyphMargin(self, self.options.glyphMarginClassName != null);
+        if (self.options.stickiness) |stickiness| {
+            setNodeStickiness(self, stickiness);
+        }
+        setCollapseOnReplaceEdit(self, self.options.collapseOnReplaceEdit orelse false);
+    }
+
     pub fn setCachedOffsets(self: *IntervalNode, absoluteStart: usize, absoluteEnd: usize, cachedVersionId: u32) void {
         if (self.cachedVersionId != cachedVersionId) {
             self.range = null;
@@ -183,6 +199,15 @@ pub const IntervalNode = struct {
         self.parent = undefined;
         self.left = undefined;
         self.right = undefined;
+    }
+
+    pub fn toModelDecoration(self: *IntervalNode) ModelDecoration {
+        return ModelDecoration{
+            .id = self.id,
+            .ownerId = self.ownerId,
+            .range = self.range.?,
+            .options = self.options,
+        };
     }
 };
 
@@ -381,6 +406,7 @@ var sentinelValue: IntervalNode = .{
     .cachedAbsoluteStart = 0,
     .cachedAbsoluteEnd = 0,
     .range = null,
+    .options = undefined,
 };
 pub var SENTINEL: *IntervalNode = &sentinelValue;
 
@@ -850,7 +876,7 @@ fn _intervalSearch(T: *IntervalTree, intervalStart: usize, intervalEnd: usize, f
             node.setCachedOffsets(nodeStart, nodeEnd, cachedVersionId);
 
             var include = true;
-            if (filterOwnerId and node.ownerId and node.ownerId != filterOwnerId) {
+            if (filterOwnerId > 0 and node.ownerId > 0 and node.ownerId != filterOwnerId) {
                 include = false;
             }
             if (filterOutValidation and getNodeIsForValidation(node)) {

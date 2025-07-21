@@ -117,7 +117,7 @@ pub const PieceTreeTextBuffer = struct {
         const end = start + length;
         const startPosition = self.getPositionAt(start);
         const endPosition = self.getPositionAt(end);
-        return Range{ .start = startPosition, .end = endPosition };
+        return Range.init(startPosition.lineNumber, startPosition.column, endPosition.lineNumber, endPosition.column);
     }
 
     pub fn getValueInRange(self: *const PieceTreeTextBuffer, range: Range, eol: EndOfLinePreference) !ArrayList(u8) {
