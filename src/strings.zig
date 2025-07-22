@@ -2,6 +2,7 @@ const std = @import("std");
 const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const Utf8Iterator = std.unicode.Utf8Iterator;
 
 pub fn firstNonWhitespaceIndex(str: []const u8) ?usize {
     for (str, 0..) |c, i| {
@@ -308,14 +309,17 @@ test "String.isEmpty" {
     defer str.deinit();
     try std.testing.expectEqual(false, str.isEmpty());
 
-    str = try String.initOwned(allocator, "");
+    const arr = ArrayList(u8).init(allocator);
+    str = String.initOwned(arr);
     defer str.deinit();
     try std.testing.expectEqual(true, str.isEmpty());
 }
 
 test "String.eql" {
     const allocator = std.testing.allocator;
-    var str = try String.initOwned(allocator, "Hello");
+    var arr = ArrayList(u8).init(allocator);
+    try arr.appendSlice("Hello");
+    var str = String.initOwned(arr);
     defer str.deinit();
     var str2 = String.initBorrowed("Hello");
     defer str2.deinit();
@@ -327,8 +331,28 @@ test "String.eql" {
 
 test "String.len" {
     const allocator = std.testing.allocator;
-    var str = try String.initOwned(allocator, "Hello");
+    var arr = ArrayList(u8).init(allocator);
+    try arr.appendSlice("Hello");
+    var str = String.initOwned(arr);
     defer str.deinit();
     try std.testing.expectEqual(5, str.len());
     try std.testing.expectEqual(0, String.Empty.len());
+}
+
+pub fn getNextCodePoint(text: []const u8, len: usize, offset: usize) !u21 {
+    std.debug.assert(offset < len);
+    var it = Utf8Iterator{
+        .bytes = text,
+        .i = offset,
+    };
+    return try it.nextCodepoint();
+}
+
+pub fn getNextCodePointSize(text: []const u8, len: usize, offset: usize) !usize {
+    std.debug.assert(offset < len);
+    var it = Utf8Iterator{
+        .bytes = text,
+        .i = offset,
+    };
+    return (try it.nextCodepointSlice()).len;
 }

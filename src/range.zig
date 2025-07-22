@@ -1,5 +1,5 @@
 const std = @import("std");
-const usizeSub = @import("pieceTreeBase.zig").usizeSub;
+const usizeSub = @import("utils.zig").usizeSub;
 const Position = @import("position.zig").Position;
 const fmt = std.fmt;
 

@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const CharacterClassifier = @import("characterClassifier.zig").CharacterClassifier;
 
-const WordCharacterClass = enum(u2) {
+pub const WordCharacterClass = enum(u2) {
     Regular = 0,
     Whitespace = 1,
     WordSeparator = 2,
