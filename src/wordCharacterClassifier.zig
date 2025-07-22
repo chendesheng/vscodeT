@@ -1,0 +1,52 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const CharacterClassifier = @import("characterClassifier.zig").CharacterClassifier;
+
+const WordCharacterClass = enum(u2) {
+    Regular = 0,
+    Whitespace = 1,
+    WordSeparator = 2,
+};
+
+pub const WordCharacterClassifier = struct {
+    _classifier: CharacterClassifier(WordCharacterClass),
+
+    pub fn init(allocator: Allocator, wordSeparators: []const u8) !WordCharacterClassifier {
+        var self = WordCharacterClassifier{
+            ._classifier = CharacterClassifier(WordCharacterClass).init(allocator, WordCharacterClass.Regular),
+        };
+
+        for (wordSeparators) |char| {
+            try self._classifier.set(@intCast(char), WordCharacterClass.WordSeparator);
+        }
+
+        try self._classifier.set(' ', WordCharacterClass.Whitespace);
+        try self._classifier.set('\t', WordCharacterClass.Whitespace);
+
+        return self;
+    }
+
+    pub fn deinit(self: *WordCharacterClassifier) void {
+        self._classifier.deinit();
+    }
+
+    pub fn get(self: *WordCharacterClassifier, charCode: u21) WordCharacterClass {
+        return self._classifier.get(charCode);
+    }
+
+    pub fn set(self: *WordCharacterClassifier, charCode: u21, value: WordCharacterClass) void {
+        self._classifier.set(charCode, value);
+    }
+
+    pub fn clear(self: *WordCharacterClassifier) void {
+        self._classifier.clear();
+    }
+};
+
+test "WordCharacterClassifier" {
+    const allocator = std.testing.allocator;
+    var classifier = try WordCharacterClassifier.init(allocator, ".,;");
+    defer classifier.deinit();
+    try std.testing.expect(classifier.get(' ') == WordCharacterClass.Whitespace);
+    try std.testing.expect(classifier.get(',') == WordCharacterClass.WordSeparator);
+}
