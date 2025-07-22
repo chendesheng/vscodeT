@@ -1,0 +1,11 @@
+{
+  "zig.testArgs": [
+    "test",
+    "--test-filter",
+    "${filter}",
+    "${path}",
+    "-I/opt/homebrew/include",
+    "-L/opt/homebrew/lib",
+    "-lonig"
+  ]
+}

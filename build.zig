@@ -23,6 +23,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    exe.addLibraryPath(.{ .path = "/opt/homebrew/lib" });
+    exe.addIncludePath(.{ .path = "/opt/homebrew/include" });
+    exe.linkSystemLibrary("onig");
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
