@@ -2099,7 +2099,7 @@ pub const ModelDecorationsChangeAccessor = struct {
     // @param id The unique identifier associated with the decoration.
     // @param newRange The new range that this decoration covers.
     fn changeDecoration(self: *ModelDecorationsChangeAccessor, id: []const u8, newRange: Range) void {
-        self.model._changeDecorationsImpl(self.ownerId, id, newRange);
+        self.model._changeDecorationImpl(self.ownerId, id, newRange);
     }
     // Change the options associated with an existing decoration.
     // @param id The unique identifier associated with the decoration.
