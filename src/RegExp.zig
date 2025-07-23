@@ -120,7 +120,7 @@ pub const RegExp = struct {
     pub fn initWithSyntax(pattern: []const u8, option: Options, syntax_: OnigSyntax) !RegExp {
         var regex: c.OnigRegex = undefined;
         var errorInfos: c.OnigErrorInfo = undefined;
-        const res = c.onig_new(&regex, pattern.ptr, pattern.ptr + pattern.len, @bitCast(option), encondings[0], syntax_, &errorInfos);
+        const res = c.onig_new(&regex, pattern.ptr, pattern.ptr + pattern.len, @bitCast(option), &c.OnigEncodingUTF8, syntax_, &errorInfos);
         errdefer c.onig_free(regex);
         if (res != c.ONIG_NORMAL) {
             return Error.InvalidRegex;
@@ -424,4 +424,23 @@ test "SearchResultIterator match empty string" {
         defer current.deinit();
         try std.testing.expectEqualStrings("", current.groupN(0));
     }
+}
+
+test "utf8" {
+    try initialize(null);
+    defer uninitialize();
+
+    const regex = try RegExp.init("\\w", .{});
+    defer regex.deinit();
+
+    const input = "世界world和平peace";
+    var iter = regex.searchIterator(input, 0);
+    var utf8Iter = unicode.Utf8Iterator{ .bytes = input, .i = 0 };
+    while (iter.next()) |m| {
+        defer m.deinit();
+        const slice = utf8Iter.nextCodepointSlice() orelse unreachable;
+        try std.testing.expectEqualStrings(slice, m.groupN(0));
+    }
+
+    try std.testing.expect(utf8Iter.i > 0);
 }
