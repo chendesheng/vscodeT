@@ -1,16 +1,33 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
 const unicode = std.unicode;
 const WordCharacterClassifier = @import("wordCharacterClassifier.zig").WordCharacterClassifier;
 const WordCharacterClass = @import("wordCharacterClassifier.zig").WordCharacterClass;
 const RegExp = @import("RegExp.zig").RegExp;
+const SearchResultIterator = @import("RegExp.zig").SearchResultIterator;
 const RegExpExecResult = @import("RegExp.zig").RegExpExecResult;
 const strings = @import("strings.zig");
 const safeUtf8Substring = @import("tui/utf8Helper.zig").safeUtf8Substring;
 const DefaultWordSeparators = @import("wordCharacterClassifier.zig").DefaultWordSeparators;
 const lastCodepoint = @import("tui/utf8Helper.zig").lastCodepoint;
+const SearchResult = @import("RegExp.zig").SearchResult;
+const FindMatch = @import("model.zig").FindMatch;
+const Range = @import("range.zig").Range;
 
 const LIMIT_FIND_COUNT = 999;
+
+pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: []const SearchResult, captureMatches: bool) !FindMatch {
+    if (!captureMatches) {
+        return FindMatch.init(range, null);
+    }
+    const matches = ArrayList([]u8).init(allocator);
+    for (rawMatches) |*match| {
+        // FIXME: do we need to copy the string?
+        try matches.append(match.groupN(0));
+    }
+    return FindMatch.init(range, matches.toOwnedSlice());
+}
 
 fn leftIsWordBounday(wordSeparators: *const WordCharacterClassifier, text: []const u8, matchStartIndex: usize, matchLength: usize) bool {
     if (matchStartIndex == 0) {
@@ -91,18 +108,39 @@ test "isValidMatch" {
     try std.testing.expect(!isValidMatch(&wordSeparators, "hello! world", 11, 1, 5));
 }
 
+pub const SearchIteratorWithWordCharacterClassifier = struct {
+    _wordSeparators: ?*const WordCharacterClassifier,
+    _iterator: SearchResultIterator,
+
+    pub fn init(classifier: ?*const WordCharacterClassifier, searchRegex: *const RegExp, text: []const u8) SearchIteratorWithWordCharacterClassifier {
+        return SearchIteratorWithWordCharacterClassifier{
+            ._wordSeparators = classifier,
+            ._iterator = searchRegex.searchIterator(text),
+        };
+    }
+
+    pub fn next(self: *SearchIteratorWithWordCharacterClassifier) ?SearchResult {
+        if (self._wordSeparators) |wordSeparators| {
+            while (self._iterator.next()) |current| {
+                if (isValidMatch(wordSeparators, self._iterator.input, self._iterator.input.len, current.index(), current.length())) {
+                    return current;
+                }
+            }
+            return null;
+        } else {
+            return self._iterator.next();
+        }
+    }
+};
+
 pub const Searcher = struct {
     _wordSeparators: ?*WordCharacterClassifier,
     _searchRegex: *const RegExp,
-    _prevMatchStartIndex: ?usize,
-    _prevMatchLength: usize,
 
     pub fn init(wordSeparators: ?*WordCharacterClassifier, searchRegex: *const RegExp) Searcher {
         return Searcher{
             ._wordSeparators = wordSeparators,
             ._searchRegex = searchRegex,
-            ._prevMatchStartIndex = null,
-            ._prevMatchLength = 0,
         };
     }
 

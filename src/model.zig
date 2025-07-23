@@ -228,6 +228,23 @@ const ModelOptionsChangedEvent = struct {
     bracketPairColorizationOptions: bool,
 };
 
+pub const FindMatch = struct {
+    range: Range,
+    matches: ?[]const []const u8,
+
+    // @internal
+    pub fn init(range: Range, matches: ?[]const []const u8) FindMatch {
+        return FindMatch{
+            .range = range,
+            .matches = matches,
+        };
+    }
+
+    pub fn free(self: *const FindMatch, allocator: Allocator) void {
+        allocator.free(self.matches);
+    }
+};
+
 // Describes the behavior of decorations when typing/editing near their edges.
 // Note: Please do not edit the values, as they very carefully match `DecorationRangeBehavior`
 pub const TrackedRangeStickiness = enum(u2) {

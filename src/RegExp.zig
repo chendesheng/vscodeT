@@ -223,6 +223,10 @@ pub const SearchResult = struct {
         return self._region.index();
     }
 
+    pub fn length(self: *const SearchResult) usize {
+        return self._region.length();
+    }
+
     pub fn numberOfGroups(self: *const SearchResult) usize {
         return self._region.count();
     }
