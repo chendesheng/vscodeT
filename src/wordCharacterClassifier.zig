@@ -8,6 +8,8 @@ pub const WordCharacterClass = enum(u2) {
     WordSeparator = 2,
 };
 
+pub const DefaultWordSeparators = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+
 pub const WordCharacterClassifier = struct {
     _classifier: CharacterClassifier(WordCharacterClass),
 
@@ -30,7 +32,7 @@ pub const WordCharacterClassifier = struct {
         self._classifier.deinit();
     }
 
-    pub fn get(self: *WordCharacterClassifier, charCode: u21) WordCharacterClass {
+    pub fn get(self: *const WordCharacterClassifier, charCode: u21) WordCharacterClass {
         return self._classifier.get(charCode);
     }
 

@@ -38,7 +38,7 @@ pub fn CharacterClassifier(comptime T: type) type {
             }
         }
 
-        pub fn get(self: *Self, charCode: u21) T {
+        pub fn get(self: *const Self, charCode: u21) T {
             if (charCode < ASCII_MAP_SIZE) {
                 return self._asciiMap[@intCast(charCode)];
             } else {

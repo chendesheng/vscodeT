@@ -7,18 +7,21 @@ const RegExp = @import("RegExp.zig").RegExp;
 const RegExpExecResult = @import("RegExp.zig").RegExpExecResult;
 const strings = @import("strings.zig");
 const safeUtf8Substring = @import("tui/utf8Helper.zig").safeUtf8Substring;
+const DefaultWordSeparators = @import("wordCharacterClassifier.zig").DefaultWordSeparators;
+const lastCodepoint = @import("tui/utf8Helper.zig").lastCodepoint;
 
 const LIMIT_FIND_COUNT = 999;
 
-fn leftIsWordBounday(wordSeparators: WordCharacterClassifier, text: []const u8, matchStartIndex: usize, matchLength: usize) bool {
+fn leftIsWordBounday(wordSeparators: *const WordCharacterClassifier, text: []const u8, matchStartIndex: usize, matchLength: usize) bool {
     if (matchStartIndex == 0) {
         // Match starts at start of string
         return true;
     }
 
-    const charBefore = unicode.utf8Decode(safeUtf8Substring(text, matchStartIndex - 1, matchStartIndex)) catch {
+    const charBefore = lastCodepoint(text, matchStartIndex) catch {
         return true;
     };
+
     if (wordSeparators.get(charBefore) != WordCharacterClass.Regular) {
         // The character before the match is a word separator
         return true;
@@ -40,13 +43,18 @@ fn leftIsWordBounday(wordSeparators: WordCharacterClassifier, text: []const u8, 
     return false;
 }
 
-fn rightIsWordBounday(wordSeparators: WordCharacterClassifier, text: []const u8, textLength: usize, matchStartIndex: usize, matchLength: usize) bool {
+fn rightIsWordBounday(wordSeparators: *const WordCharacterClassifier, text: []const u8, textLength: usize, matchStartIndex: usize, matchLength: usize) bool {
     if (matchStartIndex + matchLength == textLength) {
         // Match ends at end of string
         return true;
     }
 
-    const charAfter = unicode.utf8Decode(text[matchStartIndex + matchLength ..]) catch {
+    var iter = unicode.Utf8Iterator{
+        .bytes = text,
+        .i = matchStartIndex + matchLength,
+    };
+
+    const charAfter = iter.nextCodepoint() orelse {
         return true;
     };
     if (wordSeparators.get(charAfter) != WordCharacterClass.Regular) {
@@ -60,7 +68,9 @@ fn rightIsWordBounday(wordSeparators: WordCharacterClassifier, text: []const u8,
     }
 
     if (matchLength > 0) {
-        const lastCharInMatch = text[matchStartIndex + matchLength - 1];
+        const lastCharInMatch = lastCodepoint(text, matchStartIndex + matchLength) catch {
+            return true;
+        };
         if (wordSeparators.get(lastCharInMatch) != WordCharacterClass.Regular) {
             // The last character in the match is a word separator
             return true;
@@ -70,17 +80,24 @@ fn rightIsWordBounday(wordSeparators: WordCharacterClassifier, text: []const u8,
     return false;
 }
 
-pub fn isValidMatch(wordSeparators: WordCharacterClassifier, text: []const u8, textLength: usize, matchStartIndex: usize, matchLength: usize) bool {
+pub fn isValidMatch(wordSeparators: *const WordCharacterClassifier, text: []const u8, textLength: usize, matchStartIndex: usize, matchLength: usize) bool {
     return leftIsWordBounday(wordSeparators, text, matchStartIndex, matchLength) and rightIsWordBounday(wordSeparators, text, textLength, matchStartIndex, matchLength);
 }
 
+test "isValidMatch" {
+    var wordSeparators = try WordCharacterClassifier.init(std.testing.allocator, DefaultWordSeparators);
+    defer wordSeparators.deinit();
+    try std.testing.expect(isValidMatch(&wordSeparators, "hello? world", 11, 0, 5));
+    try std.testing.expect(!isValidMatch(&wordSeparators, "hello! world", 11, 1, 5));
+}
+
 pub const Searcher = struct {
-    _wordSeparators: ?WordCharacterClassifier,
+    _wordSeparators: ?*WordCharacterClassifier,
     _searchRegex: *const RegExp,
     _prevMatchStartIndex: ?usize,
     _prevMatchLength: usize,
 
-    pub fn init(wordSeparators: ?WordCharacterClassifier, searchRegex: *const RegExp) Searcher {
+    pub fn init(wordSeparators: ?*WordCharacterClassifier, searchRegex: *const RegExp) Searcher {
         return Searcher{
             ._wordSeparators = wordSeparators,
             ._searchRegex = searchRegex,

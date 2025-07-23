@@ -12,6 +12,18 @@ pub fn safeUtf8Substring(str: []const u8, start: usize, end: usize) []const u8 {
     return safeUtf8Prefix(str[safeStart..], end - safeStart);
 }
 
+pub fn lastCodepoint(str: []const u8, limit: usize) !u21 {
+    if (limit == 0 or limit > str.len) {
+        unreachable;
+    }
+
+    const last = safeUtf8Substring(str, limit - 1, limit);
+    if (last.len == 0) {
+        return 0;
+    }
+    return try unicode.utf8Decode(last);
+}
+
 pub fn safeUtf8Prefix(str: []const u8, limit: usize) []const u8 {
     const n = @min(limit, str.len);
 
@@ -146,6 +158,7 @@ test "safeUtf8Substring" {
     try std.testing.expectEqualStrings("你好", safeUtf8Substring("你好吗", 1, 7));
     try std.testing.expectEqualStrings("你好", safeUtf8Substring("你好吗", 2, 7));
     try std.testing.expectEqualStrings("好", safeUtf8Substring("你好吗", 3, 7));
+    try std.testing.expectEqualStrings("吗", safeUtf8Substring("你好吗", "你好吗".len - 1, "你好吗".len));
 }
 
 test "Utf8StreamIterator" {
