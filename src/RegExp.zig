@@ -391,3 +391,28 @@ test "SearchResultIterator" {
     try std.testing.expectEqualSlices(u8, "234", matches.items[1]);
     try std.testing.expectEqualSlices(u8, "345", matches.items[2]);
 }
+
+test "SearchResultIterator not match" {
+    try initialize(null);
+    defer uninitialize();
+
+    const regex = try RegExp.init("[0-9]{3}", .{ .ignore_case = true });
+    defer regex.deinit();
+
+    var iter = regex.searchIterator("abc");
+    try std.testing.expect(iter.next() == null);
+}
+
+test "SearchResultIterator match empty string" {
+    try initialize(null);
+    defer uninitialize();
+
+    const regex = try RegExp.init("[0-9]?", .{ .ignore_case = true });
+    defer regex.deinit();
+
+    var iter = regex.searchIterator("abc");
+    while (iter.next()) |current| {
+        defer current.deinit();
+        try std.testing.expectEqualStrings("", current.groupN(0));
+    }
+}
