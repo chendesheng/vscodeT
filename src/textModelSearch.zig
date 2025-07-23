@@ -108,18 +108,18 @@ test "isValidMatch" {
     try std.testing.expect(!isValidMatch(&wordSeparators, "hello! world", 11, 1, 5));
 }
 
-pub const SearchIteratorWithWordCharacterClassifier = struct {
+pub const Searcher = struct {
     _wordSeparators: ?*const WordCharacterClassifier,
     _iterator: SearchResultIterator,
 
-    pub fn init(classifier: ?*const WordCharacterClassifier, searchRegex: *const RegExp, text: []const u8) SearchIteratorWithWordCharacterClassifier {
-        return SearchIteratorWithWordCharacterClassifier{
+    pub fn init(classifier: ?*const WordCharacterClassifier, searchRegex: *const RegExp, text: []const u8, start: usize) Searcher {
+        return Searcher{
             ._wordSeparators = classifier,
-            ._iterator = searchRegex.searchIterator(text),
+            ._iterator = searchRegex.searchIterator(text, start),
         };
     }
 
-    pub fn next(self: *SearchIteratorWithWordCharacterClassifier) ?SearchResult {
+    pub fn next(self: *Searcher) ?SearchResult {
         if (self._wordSeparators) |wordSeparators| {
             while (self._iterator.next()) |current| {
                 if (isValidMatch(wordSeparators, self._iterator.input, self._iterator.input.len, current.index(), current.length())) {
@@ -130,68 +130,5 @@ pub const SearchIteratorWithWordCharacterClassifier = struct {
         } else {
             return self._iterator.next();
         }
-    }
-};
-
-pub const Searcher = struct {
-    _wordSeparators: ?*WordCharacterClassifier,
-    _searchRegex: *const RegExp,
-
-    pub fn init(wordSeparators: ?*WordCharacterClassifier, searchRegex: *const RegExp) Searcher {
-        return Searcher{
-            ._wordSeparators = wordSeparators,
-            ._searchRegex = searchRegex,
-        };
-    }
-
-    pub fn reset(self: *Searcher, lastIndex: usize) void {
-        _ = lastIndex;
-        self._prevMatchStartIndex = null;
-        self._prevMatchLength = 0;
-    }
-
-    pub fn next(self: *Searcher, text: []const u8) ?RegExpExecResult {
-        const textLength = text.len;
-
-        var m: ?RegExpExecResult = null;
-        while (true) {
-            if (self._prevMatchStartIndex + self._prevMatchLength == textLength) {
-                // Reached the end of the line
-                return null;
-            }
-
-            m = self._searchRegex.exec(text);
-            if (m == null) {
-                return null;
-            }
-
-            const matchStartIndex = m.index;
-            const matchLength = m.matches[0].len;
-            if (matchStartIndex == self._prevMatchStartIndex and matchLength == self._prevMatchLength) {
-                if (matchLength == 0) {
-                    // the search result is an empty string and won't advance `regex.lastIndex`, so `regex.exec` will stuck here
-                    // we attempt to recover from that by advancing by two if surrogate pair found and by one otherwise
-                    const size = try strings.getNextCodePointSize(text, textLength, self._searchRegex.lastIndex);
-                    self._searchRegex.lastIndex += size;
-                    continue;
-                }
-                // Exit early if the regex matches the same range twice
-                return null;
-            }
-            self._prevMatchStartIndex = matchStartIndex;
-            self._prevMatchLength = matchLength;
-
-            if (self._wordSeparators) |wordSeparators| {
-                if (isValidMatch(wordSeparators, text, textLength, matchStartIndex, matchLength)) {
-                    return m;
-                }
-            }
-
-            if (m == null) {
-                break;
-            }
-        }
-
-        return null;
     }
 };

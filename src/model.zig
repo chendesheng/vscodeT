@@ -8,6 +8,8 @@ const ArrayList = @import("std").ArrayList;
 const default_max_load_percentage = @import("std").hash_map.default_max_load_percentage;
 const SingleEditOperation = @import("editOperation.zig").SingleEditOperation;
 const strings = @import("strings.zig");
+const RegExp = @import("RegExp.zig").RegExp;
+const WordCharacterClassifier = @import("wordCharacterClassifier.zig").WordCharacterClassifier;
 
 pub const EOL = enum(u8) {
     CRLF,
@@ -78,6 +80,24 @@ pub const ValidAnnotatedEditOperation = struct {
             .forceMoveMarkers = false,
             .isAutoWhitespaceEdit = false,
             ._isTracked = false,
+        };
+    }
+};
+
+// @internal
+pub const SearchData = struct {
+    // The regex to search for. Always defined.
+    regex: *const RegExp,
+    // The word separator classifier.
+    wordSeparators: ?*const WordCharacterClassifier,
+    // The simple string to search for (if possible).
+    simpleSearch: ?[]const u8,
+
+    pub fn init(regex: *const RegExp, wordSeparators: ?*const WordCharacterClassifier, simpleSearch: ?[]const u8) SearchData {
+        return SearchData{
+            .regex = regex,
+            .wordSeparators = wordSeparators,
+            .simpleSearch = simpleSearch,
         };
     }
 };
@@ -241,7 +261,9 @@ pub const FindMatch = struct {
     }
 
     pub fn free(self: *const FindMatch, allocator: Allocator) void {
-        allocator.free(self.matches);
+        if (self.matches) |matches| {
+            allocator.free(matches);
+        }
     }
 };
 

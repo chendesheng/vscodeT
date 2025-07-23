@@ -15,6 +15,10 @@ const eolToString = @import("eolCounter.zig").eolToString;
 const strings = @import("strings.zig");
 const usizeSub = @import("utils.zig").usizeSub;
 const usizeAdd = @import("utils.zig").usizeAdd;
+const FindMatch = @import("model.zig").FindMatch;
+const SearchData = @import("model.zig").SearchData;
+const Searcher = @import("textModelSearch.zig").Searcher;
+const createFindMatch = @import("textModelSearch.zig").createFindMatch;
 
 const AverageBufferSize = 65535;
 
@@ -842,6 +846,62 @@ pub const PieceTreeBase = struct {
             const targetEnd = startOffset + nodePos.node.piece.?.length;
             return buffer.substring(targetOffset, targetEnd);
         }
+    }
+
+    pub fn findMatchesInNode(
+        self: *const PieceTreeBase,
+        node: *TreeNode,
+        startLineNumber: usize,
+        startColumn: usize,
+        startCursor: BufferCursor,
+        endCursor: BufferCursor,
+        searchData: SearchData,
+        captureMatches: bool,
+        limitResultCount: usize,
+    ) !ArrayList(FindMatch) {
+        const buffer = self._buffers.items[node.piece.bufferIndex];
+        const startOffsetInBuffer = self.offsetInBuffer(node.piece.bufferIndex, node.piece.start);
+        const start = self.offsetInBuffer(node.piece.bufferIndex, startCursor);
+        const end = self.offsetInBuffer(node.piece.bufferIndex, endCursor);
+
+        // Reset regex to search from the beginning
+        var ret: BufferCursor = .{ .line = 0, .column = 0 };
+        var searchText: []const u8 = undefined;
+        var offsetInBufferBase: usize = 0;
+
+        if (searchData.wordSeparators != null) {
+            searchText = buffer.buffer.substring(start, end);
+            offsetInBufferBase = start;
+        } else {
+            searchText = buffer.buffer;
+            offsetInBufferBase = 0;
+        }
+
+        var result = ArrayList(FindMatch).init(self.allocator);
+        var iter = Searcher.init(searchData.wordSeparators, searchData.regex, searchText, offsetInBufferBase);
+
+        while (iter.next()) |m| {
+            const index = m.index();
+            if (offsetInBufferBase + index >= end) {
+                break;
+            }
+            const mLength = m.length();
+            ret = self.positionInBuffer(node, offsetInBufferBase + index - startOffsetInBuffer, ret);
+            const lineFeedCnt = self.getLineFeedCnt(node.piece.bufferIndex, startCursor, ret);
+            const retStartColumn = if (ret.line == startCursor.line) ret.column - startCursor.column + startColumn else ret.column + 1;
+            const retEndColumn = retStartColumn + mLength;
+            const range = Range.init(startLineNumber + lineFeedCnt, retStartColumn, startLineNumber + lineFeedCnt, retEndColumn);
+            try result.append(createFindMatch(self.allocator, range, m, captureMatches));
+
+            if (offsetInBufferBase + index + mLength >= end) {
+                break;
+            }
+            if (result.items.len >= limitResultCount) {
+                break;
+            }
+        }
+
+        return result;
     }
 
     // #region Piece Table

@@ -175,8 +175,8 @@ pub const RegExp = struct {
         };
     }
 
-    pub fn searchIterator(self: *const RegExp, input: []const u8) SearchResultIterator {
-        return SearchResultIterator.init(self, input);
+    pub fn searchIterator(self: *const RegExp, input: []const u8, start: usize) SearchResultIterator {
+        return SearchResultIterator.init(self, input, start);
     }
 
     pub fn encoding(self: *const RegExp) Encoding {
@@ -251,11 +251,11 @@ pub const SearchResultIterator = struct {
     _input: []const u8,
     _lastIndex: usize,
 
-    pub fn init(regex: *const RegExp, input: []const u8) SearchResultIterator {
+    pub fn init(regex: *const RegExp, input: []const u8, start: usize) SearchResultIterator {
         return SearchResultIterator{
             ._regex = regex,
             ._input = input,
-            ._lastIndex = 0,
+            ._lastIndex = start,
         };
     }
 
@@ -381,7 +381,7 @@ test "SearchResultIterator" {
     const regex = try RegExp.init("[0-9]{3}", .{ .ignore_case = true });
     defer regex.deinit();
 
-    var iter = regex.searchIterator("12345");
+    var iter = regex.searchIterator("12345", 0);
 
     var matches = ArrayList([]const u8).init(std.testing.allocator);
     defer matches.deinit();
@@ -403,7 +403,7 @@ test "SearchResultIterator not match" {
     const regex = try RegExp.init("[0-9]{3}", .{ .ignore_case = true });
     defer regex.deinit();
 
-    var iter = regex.searchIterator("abc");
+    var iter = regex.searchIterator("abc", 0);
     try std.testing.expect(iter.next() == null);
 }
 
@@ -414,7 +414,7 @@ test "SearchResultIterator match empty string" {
     const regex = try RegExp.init("[0-9]?", .{ .ignore_case = true });
     defer regex.deinit();
 
-    var iter = regex.searchIterator("abc");
+    var iter = regex.searchIterator("abc", 0);
     while (iter.next()) |current| {
         defer current.deinit();
         try std.testing.expectEqualStrings("", current.groupN(0));
