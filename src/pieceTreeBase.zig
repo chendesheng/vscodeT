@@ -607,8 +607,8 @@ pub const PieceTreeBase = struct {
             return ArrayList(u8).init(self.allocator);
         }
 
-        const startPosition = self.nodeAt2(range.startLineNumber, range.startColumn);
-        const endPosition = self.nodeAt2(range.endLineNumber, range.endColumn);
+        const startPosition = self.nodeAt2(range.startLineNumber, range.startColumn).?;
+        const endPosition = self.nodeAt2(range.endLineNumber, range.endColumn).?;
 
         var value = try self.getValueInRange2(startPosition, endPosition);
         if (eol_) |eol| {
@@ -808,7 +808,7 @@ pub const PieceTreeBase = struct {
 
     // FIXME: utf8
     pub fn getLineCharCode(self: *const PieceTreeBase, lineNumber: usize, index: usize) u8 {
-        const nodePos = self.nodeAt2(lineNumber, index + 1);
+        const nodePos = self.nodeAt2(lineNumber, index + 1).?;
         return self._getCharCode(nodePos);
     }
 
@@ -903,17 +903,19 @@ pub const PieceTreeBase = struct {
         }
     }
 
-    pub fn findMatchesLineByLine(self: *const PieceTreeBase, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
+    pub fn findMatchesLineByLine(self: *PieceTreeBase, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
         var result = ArrayList(FindMatch).init(self.allocator);
 
-        var startPosition = self.nodeAt2(searchRange.startLineNumber, searchRange.startColumn);
-        if (startPosition == null) {
+        const startPosition_ = self.nodeAt2(searchRange.startLineNumber, searchRange.startColumn);
+        if (startPosition_ == null) {
             return result;
         }
-        const endPosition = self.nodeAt2(searchRange.endLineNumber, searchRange.endColumn);
-        if (endPosition == null) {
+        const endPosition_ = self.nodeAt2(searchRange.endLineNumber, searchRange.endColumn);
+        if (endPosition_ == null) {
             return result;
         }
+        var startPosition = startPosition_.?;
+        const endPosition = endPosition_.?;
         var start = self.positionInBuffer(startPosition.node, startPosition.remainder);
         const end = self.positionInBuffer(endPosition.node, endPosition.remainder);
 
@@ -926,13 +928,14 @@ pub const PieceTreeBase = struct {
 
         var currentNode = startPosition.node;
         while (currentNode != endPosition.node) {
-            const lineBreakCnt = self.getLineFeedCnt(currentNode.piece.bufferIndex, start, currentNode.piece.end);
+            const piece = currentNode.piece.?;
+            const lineBreakCnt = self.getLineFeedCnt(piece.bufferIndex, start, piece.end);
 
             if (lineBreakCnt >= 1) {
                 // last line break position
-                const lineStarts = self._buffers.items[currentNode.piece.bufferIndex].lineStarts;
-                const startOffsetInBuffer = self.offsetInBuffer(currentNode.piece.bufferIndex, currentNode.piece.start);
-                const nextLineStartOffset = lineStarts[start.line + lineBreakCnt];
+                const lineStarts = self._buffers.items[piece.bufferIndex].lineStarts;
+                const startOffsetInBuffer = self.offsetInBuffer(piece.bufferIndex, piece.start);
+                const nextLineStartOffset = lineStarts.items[start.line + lineBreakCnt];
                 const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn else 1;
                 try self.findMatchesInNode(currentNode, startLineNumber, startColumn, start, self.positionInBuffer(currentNode, nextLineStartOffset - startOffsetInBuffer), searchData, captureMatches, limitResultCount, &result);
 
@@ -946,26 +949,26 @@ pub const PieceTreeBase = struct {
             const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn - 1 else 0;
             // search for the remaining content
             if (startLineNumber == searchRange.endLineNumber) {
-                const text = self.getLineContent(startLineNumber).substring(startColumn, searchRange.endColumn - 1);
+                const text = (try self.getLineContent(startLineNumber))[startColumn .. searchRange.endColumn - 1];
                 try _findMatchesInLine(self.allocator, searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
                 return result;
             }
 
-            try _findMatchesInLine(self.allocator, searchData, self.getLineContent(startLineNumber).substr(startColumn), startLineNumber, startColumn, &result, captureMatches, limitResultCount);
+            try _findMatchesInLine(self.allocator, searchData, (try self.getLineContent(startLineNumber))[startColumn..], startLineNumber, startColumn, &result, captureMatches, limitResultCount);
 
             if (result.items.len >= limitResultCount) {
                 return result;
             }
 
             startLineNumber += 1;
-            startPosition = self.nodeAt2(startLineNumber, 1);
+            startPosition = self.nodeAt2(startLineNumber, 1).?;
             currentNode = startPosition.node;
             start = self.positionInBuffer(startPosition.node, startPosition.remainder);
         }
 
         if (startLineNumber == searchRange.endLineNumber) {
             const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn - 1 else 0;
-            const text = self.getLineContent(startLineNumber).substring(startColumn, searchRange.endColumn - 1);
+            const text = (try self.getLineContent(startLineNumber))[startColumn .. searchRange.endColumn - 1];
             try _findMatchesInLine(self.allocator, searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
             return result;
         }
@@ -1759,7 +1762,7 @@ pub const PieceTreeBase = struct {
         return undefined;
     }
 
-    fn nodeAt2(self: *const PieceTreeBase, lineNumber: usize, column: usize) NodePosition {
+    fn nodeAt2(self: *const PieceTreeBase, lineNumber: usize, column: usize) ?NodePosition {
         var x = self.root;
         var nodeStartOffset: usize = 0;
         var col = column;
@@ -1824,7 +1827,7 @@ pub const PieceTreeBase = struct {
             x = x.next();
         }
 
-        unreachable;
+        return null;
     }
 
     fn nodeCharCodeAt(self: *const PieceTreeBase, node: *const TreeNode, offset: usize) u8 {
@@ -2215,6 +2218,31 @@ test "findMatchesInNode" {
     }
     try std.testing.expectEqual(1, result.items.len);
     try std.testing.expectEqualDeep(FindMatch.init(Range.init(2, 1, 2, 4), &[_][]const u8{"Sec"}), result.items[0]);
+}
+
+test "findMatchesLineByLine" {
+    try re.initialize(null);
+    defer re.uninitialize();
+
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\r\nThird\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+    var regex = try RegExp.init("i", .{});
+    defer regex.deinit();
+    const searchData = SearchData{ .wordSeparators = null, .regex = &regex, .simpleSearch = null };
+    const result = try tree.findMatchesLineByLine(Range.init(1, 1, 3, 4), searchData, true, 10);
+    defer {
+        for (result.items) |item| {
+            item.free(allocator);
+        }
+        result.deinit();
+    }
+    try std.testing.expectEqual(2, result.items.len);
+    try std.testing.expectEqualDeep(FindMatch.init(Range.init(1, 2, 1, 3), &[_][]const u8{"i"}), result.items[0]);
+    try std.testing.expectEqualDeep(FindMatch.init(Range.init(3, 3, 3, 4), &[_][]const u8{"i"}), result.items[1]);
 }
 
 test "_findMatchesInLine simple search" {
