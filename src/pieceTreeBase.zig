@@ -859,7 +859,8 @@ pub const PieceTreeBase = struct {
         searchData: SearchData,
         captureMatches: bool,
         limitResultCount: usize,
-    ) !ArrayList(FindMatch) {
+        result: *ArrayList(FindMatch),
+    ) !void {
         const buffer = self._buffers.items[node.piece.bufferIndex];
         const startOffsetInBuffer = self.offsetInBuffer(node.piece.bufferIndex, node.piece.start);
         const start = self.offsetInBuffer(node.piece.bufferIndex, startCursor);
@@ -878,7 +879,6 @@ pub const PieceTreeBase = struct {
             offsetInBufferBase = 0;
         }
 
-        var result = ArrayList(FindMatch).init(self.allocator);
         var iter = Searcher.init(searchData.wordSeparators, searchData.regex, searchText, offsetInBufferBase);
 
         while (iter.next()) |m| {
@@ -901,11 +901,82 @@ pub const PieceTreeBase = struct {
                 break;
             }
         }
-
-        return result;
     }
 
-    fn _findMatchesInLine(searchData: SearchData, text: []const u8, lineNumber: usize, deltaOffset: usize, captureMatches: bool, limitResultCount: usize, result: *ArrayList(FindMatch)) !void {
+    pub fn findMatchesLineByLine(self: *const PieceTreeBase, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
+		var result = ArrayList(FindMatch).init(self.allocator);
+		var searcher = Searcher.init(searchData.wordSeparators, searchData.regex);
+
+		var startPosition = self.nodeAt2(searchRange.startLineNumber, searchRange.startColumn);
+		if (startPosition == null) {
+			return result;
+		}
+		const endPosition = self.nodeAt2(searchRange.endLineNumber, searchRange.endColumn);
+		if (endPosition == null) {
+			return result;
+		}
+		var start = self.positionInBuffer(startPosition.node, startPosition.remainder);
+		const end = self.positionInBuffer(endPosition.node, endPosition.remainder);
+
+		if (startPosition.node == endPosition.node) {
+			try self.findMatchesInNode(startPosition.node, searcher, searchRange.startLineNumber, searchRange.startColumn, start, end, searchData, captureMatches, limitResultCount, &result);
+			return result;
+		}
+
+		var startLineNumber = searchRange.startLineNumber;
+
+		var currentNode = startPosition.node;
+		while (currentNode != endPosition.node) {
+			const lineBreakCnt = self.getLineFeedCnt(currentNode.piece.bufferIndex, start, currentNode.piece.end);
+
+			if (lineBreakCnt >= 1) {
+				// last line break position
+				const lineStarts = self._buffers.items[currentNode.piece.bufferIndex].lineStarts;
+				const startOffsetInBuffer = self.offsetInBuffer(currentNode.piece.bufferIndex, currentNode.piece.start);
+				const nextLineStartOffset = lineStarts[start.line + lineBreakCnt];
+				const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn else 1;
+				try self.findMatchesInNode(currentNode, searcher, startLineNumber, startColumn, start, self.positionInBuffer(currentNode, nextLineStartOffset - startOffsetInBuffer), searchData, captureMatches, limitResultCount, &result);
+
+				if (result.items.len >= limitResultCount) {
+					return result;
+				}
+
+				startLineNumber += lineBreakCnt;
+			}
+
+			const startColumn = startLineNumber == searchRange.startLineNumber ? searchRange.startColumn - 1 : 0;
+			// search for the remaining content
+			if (startLineNumber == searchRange.endLineNumber) {
+				const text = self.getLineContent(startLineNumber).substring(startColumn, searchRange.endColumn - 1);
+				try _findMatchesInLine(searchData, searcher, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
+				return result;
+			}
+
+			try _findMatchesInLine(searchData, searcher, self.getLineContent(startLineNumber).substr(startColumn), startLineNumber, startColumn, resultLen, result, captureMatches, limitResultCount);
+
+			if (result.items.len >= limitResultCount) {
+				return result;
+			}
+
+			startLineNumber++;
+			startPosition = self.nodeAt2(startLineNumber, 1);
+			currentNode = startPosition.node;
+			start = self.positionInBuffer(startPosition.node, startPosition.remainder);
+		}
+
+		if (startLineNumber == searchRange.endLineNumber) {
+			const startColumn = startLineNumber == searchRange.startLineNumber ? searchRange.startColumn - 1 : 0;
+			const text = self.getLineContent(startLineNumber).substring(startColumn, searchRange.endColumn - 1);
+			try _findMatchesInLine(searchData, searcher, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
+			return result;
+		}
+
+		const startColumn = startLineNumber == searchRange.startLineNumber ? searchRange.startColumn : 1;
+		try self.findMatchesInNode(endPosition.node, searcher, startLineNumber, startColumn, start, end, searchData, captureMatches, limitResultCount, resultLen, result);
+		return result;
+	}
+
+    fn _findMatchesInLine(searchData: SearchData, text: []const u8, lineNumber: usize, deltaOffset: usize, result: *ArrayList(FindMatch), captureMatches: bool, limitResultCount: usize) !void {
         const wordSeparators = searchData.wordSeparators;
         if (!captureMatches and searchData.simpleSearch) {
             const searchString = searchData.simpleSearch;
