@@ -19,6 +19,7 @@ const FindMatch = @import("model.zig").FindMatch;
 const SearchData = @import("model.zig").SearchData;
 const Searcher = @import("textModelSearch.zig").Searcher;
 const createFindMatch = @import("textModelSearch.zig").createFindMatch;
+const isValidMatch = @import("textModelSearch.zig").isValidMatch;
 
 const AverageBufferSize = 65535;
 
@@ -902,6 +903,44 @@ pub const PieceTreeBase = struct {
         }
 
         return result;
+    }
+
+    fn _findMatchesInLine(searchData: SearchData, text: []const u8, lineNumber: usize, deltaOffset: usize, captureMatches: bool, limitResultCount: usize, result: *ArrayList(FindMatch)) !void {
+        const wordSeparators = searchData.wordSeparators;
+        if (!captureMatches and searchData.simpleSearch) {
+            const searchString = searchData.simpleSearch;
+            const searchStringLen = searchString.len;
+            const textLength = text.len;
+
+            var lastMatchIndex: isize = -searchStringLen;
+            while (true) {
+                if (std.mem.indexOf(u8, text, searchString)) |index| {
+                    lastMatchIndex = @intCast(index);
+                } else {
+                    break;
+                }
+
+                if (!wordSeparators || isValidMatch(wordSeparators, text, textLength, lastMatchIndex, searchStringLen)) {
+                    try result.append(FindMatch.init(Range.init(lineNumber, lastMatchIndex + 1 + deltaOffset, lineNumber, lastMatchIndex + 1 + searchStringLen + deltaOffset), null));
+                    if (result.items.len >= limitResultCount) {
+                        return;
+                    }
+                }
+            }
+            return;
+        }
+
+        var iter = Searcher.init(searchData.wordSeparators, searchData.regex, text, 0);
+
+        while (iter.next()) |m| {
+            const index = m.index();
+            const mLength = m.length();
+            try result.append(createFindMatch(Range.init(lineNumber, index + 1 + deltaOffset, lineNumber, index + 1 + mLength + deltaOffset), m, captureMatches));
+            if (result.items.len >= limitResultCount) {
+                return;
+            }
+        }
+        return;
     }
 
     // #region Piece Table
