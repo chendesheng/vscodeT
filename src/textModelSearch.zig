@@ -1,21 +1,24 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const unicode = std.unicode;
 const WordCharacterClassifier = @import("wordCharacterClassifier.zig").WordCharacterClassifier;
 const WordCharacterClass = @import("wordCharacterClassifier.zig").WordCharacterClass;
 const RegExp = @import("RegExp.zig").RegExp;
 const RegExpExecResult = @import("RegExp.zig").RegExpExecResult;
 const strings = @import("strings.zig");
+const safeUtf8Substring = @import("tui/utf8Helper.zig").safeUtf8Substring;
 
 const LIMIT_FIND_COUNT = 999;
 
-// FIXME: handle utf8
 fn leftIsWordBounday(wordSeparators: WordCharacterClassifier, text: []const u8, matchStartIndex: usize, matchLength: usize) bool {
     if (matchStartIndex == 0) {
         // Match starts at start of string
         return true;
     }
 
-    const charBefore = text[matchStartIndex - 1];
+    const charBefore = unicode.utf8Decode(safeUtf8Substring(text, matchStartIndex - 1, matchStartIndex)) catch {
+        return true;
+    };
     if (wordSeparators.get(charBefore) != WordCharacterClass.Regular) {
         // The character before the match is a word separator
         return true;
@@ -37,14 +40,15 @@ fn leftIsWordBounday(wordSeparators: WordCharacterClassifier, text: []const u8, 
     return false;
 }
 
-// FIXME: handle utf8
 fn rightIsWordBounday(wordSeparators: WordCharacterClassifier, text: []const u8, textLength: usize, matchStartIndex: usize, matchLength: usize) bool {
     if (matchStartIndex + matchLength == textLength) {
         // Match ends at end of string
         return true;
     }
 
-    const charAfter = text[matchStartIndex + matchLength];
+    const charAfter = unicode.utf8Decode(text[matchStartIndex + matchLength ..]) catch {
+        return true;
+    };
     if (wordSeparators.get(charAfter) != WordCharacterClass.Regular) {
         // The character after the match is a word separator
         return true;
@@ -72,11 +76,11 @@ pub fn isValidMatch(wordSeparators: WordCharacterClassifier, text: []const u8, t
 
 pub const Searcher = struct {
     _wordSeparators: ?WordCharacterClassifier,
-    _searchRegex: RegExp,
+    _searchRegex: *const RegExp,
     _prevMatchStartIndex: ?usize,
     _prevMatchLength: usize,
 
-    pub fn init(wordSeparators: ?WordCharacterClassifier, searchRegex: RegExp) Searcher {
+    pub fn init(wordSeparators: ?WordCharacterClassifier, searchRegex: *const RegExp) Searcher {
         return Searcher{
             ._wordSeparators = wordSeparators,
             ._searchRegex = searchRegex,
@@ -86,7 +90,7 @@ pub const Searcher = struct {
     }
 
     pub fn reset(self: *Searcher, lastIndex: usize) void {
-        self._searchRegex.lastIndex = lastIndex;
+        _ = lastIndex;
         self._prevMatchStartIndex = null;
         self._prevMatchLength = 0;
     }
