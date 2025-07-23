@@ -17,16 +17,16 @@ const Range = @import("range.zig").Range;
 
 const LIMIT_FIND_COUNT = 999;
 
-pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: []const SearchResult, captureMatches: bool) !FindMatch {
+pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchResult, captureMatches: bool) !FindMatch {
     if (!captureMatches) {
         return FindMatch.init(range, null);
     }
-    const matches = ArrayList([]u8).init(allocator);
-    for (rawMatches) |*match| {
+    var matches = ArrayList([]const u8).init(allocator);
+    for (0..rawMatches.numberOfGroups()) |i| {
         // FIXME: do we need to copy the string?
-        try matches.append(match.groupN(0));
+        try matches.append(rawMatches.groupN(i));
     }
-    return FindMatch.init(range, matches.toOwnedSlice());
+    return FindMatch.init(range, try matches.toOwnedSlice());
 }
 
 fn leftIsWordBounday(wordSeparators: *const WordCharacterClassifier, text: []const u8, matchStartIndex: usize, matchLength: usize) bool {
@@ -109,20 +109,24 @@ test "isValidMatch" {
 }
 
 pub const Searcher = struct {
-    _wordSeparators: ?*const WordCharacterClassifier,
+    wordSeparators: ?*const WordCharacterClassifier,
     _iterator: SearchResultIterator,
 
     pub fn init(classifier: ?*const WordCharacterClassifier, searchRegex: *const RegExp, text: []const u8, start: usize) Searcher {
         return Searcher{
-            ._wordSeparators = classifier,
+            .wordSeparators = classifier,
             ._iterator = searchRegex.searchIterator(text, start),
         };
     }
 
+    pub fn reset(self: *Searcher, input: []const u8, offset: usize) void {
+        self._iterator.reset(input, offset);
+    }
+
     pub fn next(self: *Searcher) ?SearchResult {
-        if (self._wordSeparators) |wordSeparators| {
+        if (self.wordSeparators) |wordSeparators| {
             while (self._iterator.next()) |current| {
-                if (isValidMatch(wordSeparators, self._iterator.input, self._iterator.input.len, current.index(), current.length())) {
+                if (isValidMatch(wordSeparators, self._iterator._input, self._iterator._input.len, current.index(), current.length())) {
                     return current;
                 }
             }

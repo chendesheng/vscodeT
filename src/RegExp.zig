@@ -259,6 +259,11 @@ pub const SearchResultIterator = struct {
         };
     }
 
+    pub fn reset(self: *SearchResultIterator, input: []const u8, offset: usize) void {
+        self._input = input;
+        self._lastIndex = offset;
+    }
+
     pub fn next(self: *SearchResultIterator) ?SearchResult {
         if (self._regex.searchFrom(self._input, self._lastIndex)) |res| {
             self._lastIndex = nextIndex(&res);
