@@ -1,6 +1,8 @@
 const std = @import("std");
 const StringHashMap = std.StringHashMap;
 const Allocator = std.mem.Allocator;
+const unicode = std.unicode;
+const ArrayList = std.ArrayList;
 
 // oniguruma.zig
 const c = @cImport({
@@ -126,7 +128,6 @@ pub const RegExp = struct {
 
         return RegExp{
             .regex = regex,
-            .lastIndex = null,
         };
     }
 
@@ -150,40 +151,32 @@ pub const RegExp = struct {
         return true;
     }
 
-    pub fn exec(self: *RegExp, input: []const u8) ?RegExpExecResult {
-        const region = c.onig_region_new();
-        defer c.onig_region_free(region, 1);
+    pub fn search(self: *const RegExp, input: []const u8) ?SearchResult {
+        return self.searchFrom(input, 0);
+    }
 
-        const r = c.onig_search(
-            self.regex,
-            input.ptr,
-            input.ptr + input.len,
-            input.ptr,
-            input.ptr + input.len,
-            region,
-            c.ONIG_OPTION_DEFAULT,
-        );
-        if (r == c.ONIG_MISMATCH) {
+    pub fn searchFrom(self: *const RegExp, input: []const u8, start: usize) ?SearchResult {
+        if (start >= input.len) {
             return null;
         }
 
-        return RegExpExecResult{
-            .matches = region,
-            .captures = region,
-            .index = 0,
-        };
-    }
+        const region = Region.init();
 
-    pub fn search(self: *const RegExp, input: []const u8) ?Region {
-        const region = Region.init(input, self);
-
-        const r = c.onig_search(self.regex, input.ptr, input.ptr + input.len, input.ptr, input.ptr + input.len, region._region, c.ONIG_OPTION_DEFAULT);
+        const r = c.onig_search(self.regex, input.ptr, input.ptr + input.len, input.ptr + start, input.ptr + input.len, region._region, c.ONIG_OPTION_DEFAULT);
         if (r == c.ONIG_MISMATCH) {
             region.deinit();
             return null;
         }
 
-        return region;
+        return SearchResult{
+            ._region = region,
+            ._input = input,
+            ._regex = self,
+        };
+    }
+
+    pub fn searchIterator(self: *const RegExp, input: []const u8) SearchResultIterator {
+        return SearchResultIterator.init(self, input);
     }
 
     pub fn encoding(self: *const RegExp) Encoding {
@@ -208,8 +201,6 @@ pub const RegExp = struct {
         if (res < 0) {
             return Error.UndefinedNameReference;
         }
-        // I don't like return u32 type.
-        // I think we should avoid having duplicate group names.
         return nums[0..@intCast(res)];
     }
 
@@ -219,13 +210,81 @@ pub const RegExp = struct {
     }
 };
 
+pub const SearchResult = struct {
+    _region: Region,
+    _input: []const u8,
+    _regex: *const RegExp,
+
+    pub fn deinit(self: *const SearchResult) void {
+        self._region.deinit();
+    }
+
+    pub fn index(self: *const SearchResult) usize {
+        return self._region.index();
+    }
+
+    pub fn numberOfGroups(self: *const SearchResult) usize {
+        return self._region.count();
+    }
+
+    pub fn groupN(self: *const SearchResult, n: usize) []const u8 {
+        if (n >= self.numberOfGroups()) {
+            unreachable;
+        }
+        const rg = self._region.range(n);
+        return self._input[rg[0]..rg[1]];
+    }
+
+    // FIXME: group name is not unique
+    pub fn group(self: *const SearchResult, name: []const u8) ![]const u8 {
+        const num = try self._regex.nameToGroupNumber(name);
+        return self.groupN(num);
+    }
+};
+
+pub const SearchResultIterator = struct {
+    _regex: *const RegExp,
+    _input: []const u8,
+    _lastIndex: usize,
+
+    pub fn init(regex: *const RegExp, input: []const u8) SearchResultIterator {
+        return SearchResultIterator{
+            ._regex = regex,
+            ._input = input,
+            ._lastIndex = 0,
+        };
+    }
+
+    pub fn next(self: *SearchResultIterator) ?SearchResult {
+        if (self._regex.searchFrom(self._input, self._lastIndex)) |res| {
+            self._lastIndex = nextIndex(&res);
+            return res;
+        }
+        return null;
+    }
+
+    fn nextIndex(current: *const SearchResult) usize {
+        const input = current._input;
+        const index = current.index();
+        const rest = input[index..];
+        if (rest.len == 0) {
+            return input.len;
+        }
+        const len = unicode.utf8ByteSequenceLength(rest[0]) catch {
+            return input.len;
+        };
+        if (rest.len <= len) {
+            return input.len;
+        }
+        return index + len;
+    }
+};
+
 pub const Region = struct {
     _region: *c.OnigRegion,
-    _str: []const u8, // borrowed
-    _regex: *const RegExp, // borrowed
 
-    pub fn init(input: []const u8, regex: *const RegExp) Region {
-        return Region{ ._region = c.onig_region_new(), ._str = input, ._regex = regex };
+    pub fn init() Region {
+        return Region{ ._region = c.onig_region_new() };
     }
 
     pub fn deinit(self: *const Region) void {
@@ -240,25 +299,19 @@ pub const Region = struct {
         return @intCast(self._region.num_regs);
     }
 
-    pub fn groupN(self: *const Region, n: usize) []const u8 {
+    pub fn length(self: *const Region) usize {
+        const rg = self.range(0);
+        return rg[1] - rg[0];
+    }
+
+    pub fn range(self: *const Region, n: usize) [2]usize {
         if (n >= self.count()) {
             unreachable;
         }
         const beg: usize = @intCast(self._region.beg[n]);
         const end: usize = @intCast(self._region.end[n]);
-        return self._str[beg..end];
+        return [2]usize{ beg, end };
     }
-
-    pub fn group(self: *const Region, name: []const u8) ![]const u8 {
-        const num = try self._regex.nameToGroupNumber(name);
-        return self.groupN(num);
-    }
-};
-
-pub const RegExpExecResult = struct {
-    index: usize,
-    input: []const u8,
-    groups: ?StringHashMap([]const u8),
 };
 
 test "numberOfNames" {
@@ -287,27 +340,54 @@ test "search" {
     try initialize(null);
     defer uninitialize();
 
-    const regex = try RegExp.init("abc([a-z]*)f", .{ .ignore_case = true });
-    defer regex.deinit();
-
-    const region = regex.search("Abcdefg");
-    try std.testing.expect(region != null);
-    try std.testing.expectEqual(2, region.?.count());
-    try std.testing.expectEqualStrings("Abcdef", region.?.groupN(0));
-    try std.testing.expectEqualStrings("de", region.?.groupN(1));
-}
-
-test "search2" {
-    try initialize(null);
-    defer uninitialize();
-
     const regex = try RegExp.init("abc(?<name>[a-z]*)f", .{ .ignore_case = true });
     defer regex.deinit();
 
-    const region = regex.search("111Abcdefg");
-    try std.testing.expect(region != null);
-    try std.testing.expectEqual(2, region.?.count());
-    try std.testing.expectEqualStrings("Abcdef", region.?.groupN(0));
-    try std.testing.expectEqualStrings("de", region.?.groupN(1));
-    try std.testing.expectEqualStrings("de", region.?.group("name") catch unreachable);
+    const result = regex.search("111Abcdefg");
+
+    try std.testing.expect(result != null);
+
+    const res = result.?;
+    defer res.deinit();
+    try std.testing.expectEqual(2, res.numberOfGroups());
+    try std.testing.expectEqual(3, res.index());
+    try std.testing.expectEqualStrings("Abcdef", res.groupN(0));
+    try std.testing.expectEqualStrings("de", res.groupN(1));
+    try std.testing.expectEqualStrings("de", res.group("name") catch unreachable);
+}
+
+test "searchFrom" {
+    try initialize(null);
+    defer uninitialize();
+
+    const regex = try RegExp.init("[0-9]{3}", .{ .ignore_case = true });
+    defer regex.deinit();
+
+    if (regex.searchFrom("12345", 2)) |result| {
+        try std.testing.expectEqualStrings("345", result.groupN(0));
+    } else {
+        unreachable;
+    }
+}
+
+test "SearchResultIterator" {
+    try initialize(null);
+    defer uninitialize();
+
+    const regex = try RegExp.init("[0-9]{3}", .{ .ignore_case = true });
+    defer regex.deinit();
+
+    var iter = regex.searchIterator("12345");
+
+    var matches = ArrayList([]const u8).init(std.testing.allocator);
+    defer matches.deinit();
+    while (iter.next()) |current| {
+        defer current.deinit();
+        try matches.append(current.groupN(0));
+    }
+
+    try std.testing.expectEqual(3, matches.items.len);
+    try std.testing.expectEqualSlices(u8, "123", matches.items[0]);
+    try std.testing.expectEqualSlices(u8, "234", matches.items[1]);
+    try std.testing.expectEqualSlices(u8, "345", matches.items[2]);
 }
