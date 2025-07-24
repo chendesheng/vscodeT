@@ -165,6 +165,11 @@ pub const StringBuffer = struct {
         return self.buffer.items[i];
     }
 
+    fn codepointAt(self: *const StringBuffer, i: usize) u21 {
+        const range = safeUtf8Range(self.buffer.items, i, i + 1);
+        return std.unicode.utf8Decode(self.buffer.items[range[0]..range[1]]) catch unreachable;
+    }
+
     fn codepointRelativeRange(self: *const StringBuffer, i: usize) [2]isize {
         const range = safeUtf8Range(self.buffer.items, i, i + 1);
         return [2]isize{ usizeSub(range[0], i), usizeSub(range[1], i) };
@@ -792,53 +797,72 @@ pub const PieceTreeBase = struct {
         return self._lastVisitedLine.value.items;
     }
 
-    fn _getCharCode(self: *PieceTreeBase, nodePos: NodePosition) u8 {
+    const BufferIndexOffset = struct {
+        bufferIndex: usize,
+        offset: usize,
+
+        fn init(bufferIndex: usize, offset: usize) BufferIndexOffset {
+            return BufferIndexOffset{
+                .bufferIndex = bufferIndex,
+                .offset = offset,
+            };
+        }
+    };
+
+    fn _nodePositionToBufferOffset(self: *const PieceTreeBase, nodePos: NodePosition) ?BufferIndexOffset {
         if (nodePos.remainder == nodePos.node.piece.?.length) {
             // the char we want to fetch is at the head of next node.
             const matchingNode = nodePos.node.next();
             if (matchingNode == SENTINEL) {
-                return 0;
+                return null;
             }
 
             const piece = matchingNode.piece.?;
-            const buffer = self._buffers.items[piece.bufferIndex];
             const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
-            return buffer.charCodeAt(startOffset);
+            return .init(piece.bufferIndex, startOffset);
         } else {
             const piece = nodePos.node.piece.?;
-            const buffer = self._buffers.items[piece.bufferIndex];
             const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
             const targetOffset = startOffset + nodePos.remainder;
+            return .init(piece.bufferIndex, targetOffset);
+        }
+    }
 
-            return buffer.charCodeAt(targetOffset);
+    fn _getCharCode(self: *const PieceTreeBase, nodePos: NodePosition) u8 {
+        if (self._nodePositionToBufferOffset(nodePos)) |res| {
+            const buffer = self._buffers.items[res.bufferIndex];
+            return buffer.charCodeAt(res.offset);
+        } else {
+            return 0;
+        }
+    }
+
+    fn _getCodepoint(self: *const PieceTreeBase, nodePos: NodePosition) u21 {
+        if (self._nodePositionToBufferOffset(nodePos)) |res| {
+            const buffer = self._buffers.items[res.bufferIndex];
+            return buffer.codepointAt(res.offset);
+        } else {
+            return 0;
         }
     }
 
     fn _getCodepointRelativeRange(self: *const PieceTreeBase, nodePos: NodePosition) [2]isize {
-        if (nodePos.remainder == nodePos.node.piece.?.length) {
-            // the char we want to fetch is at the head of next node.
-            const matchingNode = nodePos.node.next();
-            if (matchingNode == SENTINEL) {
-                return [2]isize{ 0, 0 };
-            }
-
-            const piece = matchingNode.piece.?;
-            const buffer = self._buffers.items[piece.bufferIndex];
-            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
-            return buffer.codepointRelativeRange(startOffset);
+        if (self._nodePositionToBufferOffset(nodePos)) |res| {
+            const buffer = self._buffers.items[res.bufferIndex];
+            return buffer.codepointRelativeRange(res.offset);
         } else {
-            const piece = nodePos.node.piece.?;
-            const buffer = self._buffers.items[piece.bufferIndex];
-            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
-            const targetOffset = startOffset + nodePos.remainder;
-
-            return buffer.codepointRelativeRange(targetOffset);
+            return [2]isize{ 0, 0 };
         }
     }
 
     pub fn getLineCharCode(self: *const PieceTreeBase, lineNumber: usize, index: usize) u8 {
         const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
         return self._getCharCode(nodePos);
+    }
+
+    pub fn getLineCodepoint(self: *const PieceTreeBase, lineNumber: usize, index: usize) u21 {
+        const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
+        return self._getCodepoint(nodePos);
     }
 
     pub fn getLineCodepointRange(self: *const PieceTreeBase, lineNumber: usize, index: usize) [2]usize {

@@ -211,6 +211,10 @@ pub const PieceTreeTextBuffer = struct {
         return self._pieceTree.getLineCharCode(lineNumber, offset);
     }
 
+    pub fn getLineCodepoint(self: *const PieceTreeTextBuffer, lineNumber: usize, offset: usize) u21 {
+        return self._pieceTree.getLineCodepoint(lineNumber, offset);
+    }
+
     pub fn getLineCodepointRange(self: *const PieceTreeTextBuffer, lineNumber: usize, offset: usize) [2]usize {
         return self._pieceTree.getLineCodepointRange(lineNumber, offset);
     }
