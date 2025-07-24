@@ -13,8 +13,92 @@ const lastCodepoint = @import("tui/utf8Helper.zig").lastCodepoint;
 const SearchResult = @import("RegExp.zig").SearchResult;
 const FindMatch = @import("model.zig").FindMatch;
 const Range = @import("range.zig").Range;
+const SearchData = @import("model.zig").SearchData;
+const getMapForWordSeparators = @import("wordCharacterClassifier.zig").getMapForWordSeparators;
 
 const LIMIT_FIND_COUNT = 999;
+
+pub const SearchParams = struct {
+    searchString: []const u8,
+    isRegex: bool,
+    matchCase: bool,
+    wordSeparators: ?[]const u8,
+
+    pub fn init(searchString: []const u8, isRegex: bool, matchCase: bool, wordSeparators: ?[]const u8) SearchParams {
+        return SearchParams{
+            .searchString = searchString,
+            .isRegex = isRegex,
+            .matchCase = matchCase,
+            .wordSeparators = wordSeparators,
+        };
+    }
+
+    pub fn parseSearchRequest(self: *SearchParams, allocator: Allocator) !?SearchData {
+        if (self.searchString.len == 0) {
+            return null;
+        }
+
+        // Try to create a RegExp out of the params
+        var multiline: bool = false;
+        if (self.isRegex) {
+            multiline = isMultilineRegexSource(self.searchString);
+        } else {
+            multiline = (std.mem.indexOf(u8, self.searchString, "\n") != null);
+        }
+
+        const regex: ?RegExp = strings.createRegExp(allocator, self.searchString, false, .{
+            .ignore_case = self.matchCase,
+            .multiline = multiline,
+        }) catch null;
+
+        if (regex == null) {
+            return null;
+        }
+
+        var canUseSimpleSearch = (!self.isRegex and !multiline);
+        if (canUseSimpleSearch and std.ascii.toLower(self.searchString) != std.ascii.toUpper(self.searchString)) {
+            // casing might make a difference
+            canUseSimpleSearch = self.matchCase;
+        }
+
+        const classifier = if (self.wordSeparators) |wordSeparators| try getMapForWordSeparators(allocator, wordSeparators) else null;
+        const simpleSearch = if (canUseSimpleSearch) self.searchString else null;
+        return SearchData.init(regex, classifier, simpleSearch);
+    }
+};
+
+pub fn isMultilineRegexSource(searchString: []const u8) bool {
+    if (searchString.len == 0) {
+        return false;
+    }
+
+    const len = searchString.len;
+    for (0..len) |i| {
+        const chCode = searchString[i];
+
+        if (chCode == '\n') {
+            return true;
+        }
+
+        if (chCode == '\\') {
+
+            // move to next char
+            i += 1;
+
+            if (i >= len) {
+                // string ends with a \
+                break;
+            }
+
+            const nextChCode = searchString[i];
+            if (nextChCode == 'n' or nextChCode == 'r' or nextChCode == 'W') {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
 
 pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchResult, captureMatches: bool) !FindMatch {
     if (!captureMatches) {
@@ -27,6 +111,59 @@ pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchRes
     }
     return FindMatch.init(range, try matches.toOwnedSlice());
 }
+
+pub const LineFeedCounter = struct {
+    _lineFeedsOffsets: ArrayList(usize),
+
+    pub fn init(allocator: Allocator, text: []const u8) LineFeedCounter {
+        var lineFeedsOffsets = ArrayList(usize).init(allocator);
+        for (0..text.len) |i| {
+            if (text[i] == '\n') {
+                try lineFeedsOffsets.append(i);
+            }
+        }
+        return LineFeedCounter{
+            ._lineFeedsOffsets = lineFeedsOffsets,
+        };
+    }
+
+    pub fn deinit(self: *LineFeedCounter) void {
+        self._lineFeedsOffsets.deinit();
+    }
+
+    pub fn findLineFeedCountBeforeOffset(self: *LineFeedCounter, offset: usize) usize {
+        const lineFeedsOffsets = self._lineFeedsOffsets.items;
+        if (lineFeedsOffsets.len == 0) {
+            // no line feeds
+            return 0;
+        }
+
+        var min: usize = 0;
+        var max: usize = lineFeedsOffsets.len - 1;
+
+        if (offset <= lineFeedsOffsets[0]) {
+            // before first line feed
+            return 0;
+        }
+
+        while (min < max) {
+            const mid = min + ((max - min) / 2);
+
+            if (lineFeedsOffsets[mid] >= offset) {
+                max = mid - 1;
+            } else {
+                if (lineFeedsOffsets[mid + 1] >= offset) {
+                    // bingo!
+                    min = mid;
+                    max = mid;
+                } else {
+                    min = mid + 1;
+                }
+            }
+        }
+        return min + 1;
+    }
+};
 
 fn leftIsWordBounday(wordSeparators: *const WordCharacterClassifier, text: []const u8, matchStartIndex: usize, matchLength: usize) bool {
     if (matchStartIndex == 0) {

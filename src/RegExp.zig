@@ -634,3 +634,25 @@ test "error" {
     std.debug.print("\n", .{});
     try std.testing.expectError(Error.ErrEndPatternWithUnmatchedParenthesis, RegExp.init("(aa", .{}));
 }
+
+pub fn escapeRegExp(allocator: Allocator, input: []const u8) !ArrayList(u8) {
+    var result = ArrayList(u8).init(allocator);
+
+    for (input) |ch| {
+        if (ch == '(' or ch == ')' or ch == '[' or ch == ']' or ch == '{' or ch == '}' or ch == '.' or ch == '+' or ch == '?' or ch == '|' or ch == '\\' or ch == '^' or ch == '$') {
+            try result.append('\\');
+        }
+        try result.append(ch);
+    }
+
+    return result;
+}
+
+test "escapeRegExp" {
+    try initialize(null);
+    defer uninitialize();
+
+    const escaped = try escapeRegExp(std.testing.allocator, "ab(c)");
+    defer escaped.deinit();
+    try std.testing.expectEqualStrings("ab\\(c\\)", escaped.items);
+}

@@ -52,3 +52,41 @@ test "WordCharacterClassifier" {
     try std.testing.expect(classifier.get(' ') == WordCharacterClass.Whitespace);
     try std.testing.expect(classifier.get(',') == WordCharacterClass.WordSeparator);
 }
+
+var wordClassifierCache: ?std.StringHashMap(WordCharacterClassifier) = null;
+
+pub fn freeWordClassifierCache() void {
+    if (wordClassifierCache) |*cache| {
+        var iter = cache.valueIterator();
+        while (iter.next()) |value| {
+            value.deinit();
+        }
+        cache.clearAndFree();
+        cache.deinit();
+        wordClassifierCache = null;
+    }
+}
+
+pub fn getMapForWordSeparators(allocator: Allocator, wordSeparators: []const u8) !*WordCharacterClassifier {
+    if (wordClassifierCache == null) {
+        wordClassifierCache = std.StringHashMap(WordCharacterClassifier).init(allocator);
+    }
+
+    if (wordClassifierCache) |*cache| {
+        const res = try cache.getOrPut(wordSeparators);
+        if (!res.found_existing) {
+            res.value_ptr.* = try WordCharacterClassifier.init(allocator, wordSeparators);
+        }
+        return res.value_ptr;
+    }
+
+    unreachable;
+}
+
+test "getMapForWordSeparators" {
+    const allocator = std.testing.allocator;
+    defer freeWordClassifierCache();
+    const classifier1 = try getMapForWordSeparators(allocator, ".,;");
+    const classifier2 = try getMapForWordSeparators(allocator, ".,;");
+    try std.testing.expect(classifier1 == classifier2);
+}

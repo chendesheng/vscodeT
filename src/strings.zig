@@ -3,6 +3,10 @@ const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Utf8Iterator = std.unicode.Utf8Iterator;
+const re = @import("RegExp.zig");
+const RegExp = re.RegExp;
+const RegExpOptions = re.Options;
+const escapeRegExp = re.escapeRegExp;
 
 pub fn firstNonWhitespaceIndex(str: []const u8) ?usize {
     for (str, 0..) |c, i| {
@@ -355,4 +359,19 @@ pub fn getNextCodePointSize(text: []const u8, len: usize, offset: usize) !usize 
         .i = offset,
     };
     return (try it.nextCodepointSlice()).len;
+}
+
+pub fn createRegExp(allocator: Allocator, searchString: []const u8, wholeWord: bool, options: RegExpOptions) !RegExp {
+    if (!searchString) {
+        unreachable;
+    }
+
+    var escapedSearchString = try escapeRegExp(allocator, searchString);
+
+    if (wholeWord) {
+        try escapedSearchString.insertSlice(0, "\\b");
+        try escapedSearchString.appendSlice("\\b");
+    }
+
+    return RegExp.init(escapedSearchString, options);
 }
