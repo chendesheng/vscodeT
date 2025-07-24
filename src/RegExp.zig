@@ -3,6 +3,7 @@ const StringHashMap = std.StringHashMap;
 const Allocator = std.mem.Allocator;
 const unicode = std.unicode;
 const ArrayList = std.ArrayList;
+const BUILD_MODE = @import("builtin").mode;
 
 // oniguruma.zig
 const c = @cImport({
@@ -10,10 +11,176 @@ const c = @cImport({
 });
 
 pub const Error = error{
-    InitializeFailed,
-    InvalidRegex,
-    UndefinedNameReference,
+    ValueIsNotSet,
+    Mismatch,
+    NoSupportConfig,
+    Abort,
+    ErrMemory,
+    ErrTypeBug,
+    ErrParserBug,
+    ErrStackBug,
+    ErrUnexpectedBytecode,
+    ErrMatchStackLimitOver,
+    ErrParseDepthLimitOver,
+    ErrRetryLimitInMatchOver,
+    ErrRetryLimitInSearchOver,
+    ErrSubexpCallLimitInSearchOver,
+    ErrDefaultEncodingIsNotSet,
+    ErrSpecifiedEncodingCantConvertToWideChar,
+    ErrFailToInitialize,
+    ErrInvalidArgument,
+    ErrEndPatternAtLeftBrace,
+    ErrEndPatternAtLeftBracket,
+    ErrEmptyCharClass,
+    ErrPrematureEndOfCharClass,
+    ErrEndPatternAtEscape,
+    ErrEndPatternAtMeta,
+    ErrEndPatternAtControl,
+    ErrMetaCodeSyntax,
+    ErrControlCodeSyntax,
+    ErrCharClassValueAtEndOfRange,
+    ErrCharClassValueAtStartOfRange,
+    ErrUnmatchedRangeSpecifierInCharClass,
+    ErrTargetOfRepeatOperatorNotSpecified,
+    ErrTargetOfRepeatOperatorInvalid,
+    ErrNestedRepeatOperator,
+    ErrUnmatchedCloseParenthesis,
+    ErrEndPatternWithUnmatchedParenthesis,
+    ErrEndPatternInGroup,
+    ErrUndefinedGroupOption,
+    ErrInvalidGroupOption,
+    ErrInvalidPosixBracketType,
+    ErrInvalidLookBehindPattern,
+    ErrInvalidRepeatRangePattern,
+    ErrTooBigNumber,
+    ErrTooBigNumberForRepeatRange,
+    ErrUpperSmallerThanLowerInRepeatRange,
+    ErrEmptyRangeInCharClass,
+    ErrMismatchCodeLengthInClassRange,
+    ErrTooManyMultiByteRanges,
+    ErrTooShortMultiByteString,
+    ErrTooBigBackrefNumber,
+    ErrInvalidBackref,
+    ErrNumberedBackrefOrCallNotAllowed,
+    ErrTooManyCaptures,
+    ErrTooLongWideCharValue,
+    ErrUndefinedOperator,
+    ErrEmptyGroupName,
+    ErrInvalidGroupName,
+    ErrInvalidCharInGroupName,
+    ErrUndefinedNameReference,
+    ErrUndefinedGroupReference,
+    ErrMultiplexDefinedName,
+    ErrMultiplexDefinitionNameCall,
+    ErrNeverEndingRecursion,
+    ErrGroupNumberOverForCaptureHistory,
+    ErrInvalidCharPropertyName,
+    ErrInvalidIfElseSyntax,
+    ErrInvalidAbsentGroupPattern,
+    ErrInvalidAbsentGroupGeneratorPattern,
+    ErrInvalidCalloutPattern,
+    ErrInvalidCalloutName,
+    ErrUndefinedCalloutName,
+    ErrInvalidCalloutBody,
+    ErrInvalidCalloutTagName,
+    ErrInvalidCalloutArg,
+    ErrInvalidCodePointValue,
+    ErrTooBigWideCharValue,
+    ErrNotSupportedEncodingCombination,
+    ErrInvalidCombinationOfOptions,
+    ErrTooManyUserDefinedObjects,
+    ErrTooLongPropertyName,
+    ErrVeryInefficientPattern,
+    ErrLibraryIsNotInitialized,
+    UnknownError,
 };
+
+pub fn errorCodeToError(code: c_int) Error {
+    return switch (code) {
+        c.ONIG_VALUE_IS_NOT_SET => Error.ValueIsNotSet,
+        c.ONIG_MISMATCH => Error.Mismatch,
+        c.ONIG_NO_SUPPORT_CONFIG => Error.NoSupportConfig,
+        c.ONIG_ABORT => Error.Abort,
+        c.ONIGERR_MEMORY => Error.ErrMemory,
+        c.ONIGERR_TYPE_BUG => Error.ErrTypeBug,
+        c.ONIGERR_PARSER_BUG => Error.ErrParserBug,
+        c.ONIGERR_STACK_BUG => Error.ErrStackBug,
+        c.ONIGERR_UNEXPECTED_BYTECODE => Error.ErrUnexpectedBytecode,
+        c.ONIGERR_MATCH_STACK_LIMIT_OVER => Error.ErrMatchStackLimitOver,
+        c.ONIGERR_PARSE_DEPTH_LIMIT_OVER => Error.ErrParseDepthLimitOver,
+        c.ONIGERR_RETRY_LIMIT_IN_MATCH_OVER => Error.ErrRetryLimitInMatchOver,
+        c.ONIGERR_RETRY_LIMIT_IN_SEARCH_OVER => Error.ErrRetryLimitInSearchOver,
+        c.ONIGERR_SUBEXP_CALL_LIMIT_IN_SEARCH_OVER => Error.ErrSubexpCallLimitInSearchOver,
+        c.ONIGERR_DEFAULT_ENCODING_IS_NOT_SET => Error.ErrDefaultEncodingIsNotSet,
+        c.ONIGERR_SPECIFIED_ENCODING_CANT_CONVERT_TO_WIDE_CHAR => Error.ErrSpecifiedEncodingCantConvertToWideChar,
+        c.ONIGERR_FAIL_TO_INITIALIZE => Error.ErrFailToInitialize,
+        c.ONIGERR_INVALID_ARGUMENT => Error.ErrInvalidArgument,
+        c.ONIGERR_END_PATTERN_AT_LEFT_BRACE => Error.ErrEndPatternAtLeftBrace,
+        c.ONIGERR_END_PATTERN_AT_LEFT_BRACKET => Error.ErrEndPatternAtLeftBracket,
+        c.ONIGERR_EMPTY_CHAR_CLASS => Error.ErrEmptyCharClass,
+        c.ONIGERR_PREMATURE_END_OF_CHAR_CLASS => Error.ErrPrematureEndOfCharClass,
+        c.ONIGERR_END_PATTERN_AT_ESCAPE => Error.ErrEndPatternAtEscape,
+        c.ONIGERR_END_PATTERN_AT_META => Error.ErrEndPatternAtMeta,
+        c.ONIGERR_END_PATTERN_AT_CONTROL => Error.ErrEndPatternAtControl,
+        c.ONIGERR_META_CODE_SYNTAX => Error.ErrMetaCodeSyntax,
+        c.ONIGERR_CONTROL_CODE_SYNTAX => Error.ErrControlCodeSyntax,
+        c.ONIGERR_CHAR_CLASS_VALUE_AT_END_OF_RANGE => Error.ErrCharClassValueAtEndOfRange,
+        c.ONIGERR_CHAR_CLASS_VALUE_AT_START_OF_RANGE => Error.ErrCharClassValueAtStartOfRange,
+        c.ONIGERR_UNMATCHED_RANGE_SPECIFIER_IN_CHAR_CLASS => Error.ErrUnmatchedRangeSpecifierInCharClass,
+        c.ONIGERR_TARGET_OF_REPEAT_OPERATOR_NOT_SPECIFIED => Error.ErrTargetOfRepeatOperatorNotSpecified,
+        c.ONIGERR_TARGET_OF_REPEAT_OPERATOR_INVALID => Error.ErrTargetOfRepeatOperatorInvalid,
+        c.ONIGERR_NESTED_REPEAT_OPERATOR => Error.ErrNestedRepeatOperator,
+        c.ONIGERR_UNMATCHED_CLOSE_PARENTHESIS => Error.ErrUnmatchedCloseParenthesis,
+        c.ONIGERR_END_PATTERN_WITH_UNMATCHED_PARENTHESIS => Error.ErrEndPatternWithUnmatchedParenthesis,
+        c.ONIGERR_END_PATTERN_IN_GROUP => Error.ErrEndPatternInGroup,
+        c.ONIGERR_UNDEFINED_GROUP_OPTION => Error.ErrUndefinedGroupOption,
+        c.ONIGERR_INVALID_GROUP_OPTION => Error.ErrInvalidGroupOption,
+        c.ONIGERR_INVALID_POSIX_BRACKET_TYPE => Error.ErrInvalidPosixBracketType,
+        c.ONIGERR_INVALID_LOOK_BEHIND_PATTERN => Error.ErrInvalidLookBehindPattern,
+        c.ONIGERR_INVALID_REPEAT_RANGE_PATTERN => Error.ErrInvalidRepeatRangePattern,
+        c.ONIGERR_TOO_BIG_NUMBER => Error.ErrTooBigNumber,
+        c.ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE => Error.ErrTooBigNumberForRepeatRange,
+        c.ONIGERR_UPPER_SMALLER_THAN_LOWER_IN_REPEAT_RANGE => Error.ErrUpperSmallerThanLowerInRepeatRange,
+        c.ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS => Error.ErrEmptyRangeInCharClass,
+        c.ONIGERR_MISMATCH_CODE_LENGTH_IN_CLASS_RANGE => Error.ErrMismatchCodeLengthInClassRange,
+        c.ONIGERR_TOO_MANY_MULTI_BYTE_RANGES => Error.ErrTooManyMultiByteRanges,
+        c.ONIGERR_TOO_SHORT_MULTI_BYTE_STRING => Error.ErrTooShortMultiByteString,
+        c.ONIGERR_TOO_BIG_BACKREF_NUMBER => Error.ErrTooBigBackrefNumber,
+        c.ONIGERR_INVALID_BACKREF => Error.ErrInvalidBackref,
+        c.ONIGERR_NUMBERED_BACKREF_OR_CALL_NOT_ALLOWED => Error.ErrNumberedBackrefOrCallNotAllowed,
+        c.ONIGERR_TOO_MANY_CAPTURES => Error.ErrTooManyCaptures,
+        c.ONIGERR_TOO_LONG_WIDE_CHAR_VALUE => Error.ErrTooLongWideCharValue,
+        c.ONIGERR_UNDEFINED_OPERATOR => Error.ErrUndefinedOperator,
+        c.ONIGERR_EMPTY_GROUP_NAME => Error.ErrEmptyGroupName,
+        c.ONIGERR_INVALID_GROUP_NAME => Error.ErrInvalidGroupName,
+        c.ONIGERR_INVALID_CHAR_IN_GROUP_NAME => Error.ErrInvalidCharInGroupName,
+        c.ONIGERR_UNDEFINED_NAME_REFERENCE => Error.ErrUndefinedNameReference,
+        c.ONIGERR_UNDEFINED_GROUP_REFERENCE => Error.ErrUndefinedGroupReference,
+        c.ONIGERR_MULTIPLEX_DEFINED_NAME => Error.ErrMultiplexDefinedName,
+        c.ONIGERR_MULTIPLEX_DEFINITION_NAME_CALL => Error.ErrMultiplexDefinitionNameCall,
+        c.ONIGERR_NEVER_ENDING_RECURSION => Error.ErrNeverEndingRecursion,
+        c.ONIGERR_GROUP_NUMBER_OVER_FOR_CAPTURE_HISTORY => Error.ErrGroupNumberOverForCaptureHistory,
+        c.ONIGERR_INVALID_CHAR_PROPERTY_NAME => Error.ErrInvalidCharPropertyName,
+        c.ONIGERR_INVALID_IF_ELSE_SYNTAX => Error.ErrInvalidIfElseSyntax,
+        c.ONIGERR_INVALID_ABSENT_GROUP_PATTERN => Error.ErrInvalidAbsentGroupPattern,
+        c.ONIGERR_INVALID_ABSENT_GROUP_GENERATOR_PATTERN => Error.ErrInvalidAbsentGroupGeneratorPattern,
+        c.ONIGERR_INVALID_CALLOUT_PATTERN => Error.ErrInvalidCalloutPattern,
+        c.ONIGERR_INVALID_CALLOUT_NAME => Error.ErrInvalidCalloutName,
+        c.ONIGERR_UNDEFINED_CALLOUT_NAME => Error.ErrUndefinedCalloutName,
+        c.ONIGERR_INVALID_CALLOUT_BODY => Error.ErrInvalidCalloutBody,
+        c.ONIGERR_INVALID_CALLOUT_TAG_NAME => Error.ErrInvalidCalloutTagName,
+        c.ONIGERR_INVALID_CALLOUT_ARG => Error.ErrInvalidCalloutArg,
+        c.ONIGERR_INVALID_CODE_POINT_VALUE => Error.ErrInvalidCodePointValue,
+        c.ONIGERR_TOO_BIG_WIDE_CHAR_VALUE => Error.ErrTooBigWideCharValue,
+        c.ONIGERR_NOT_SUPPORTED_ENCODING_COMBINATION => Error.ErrNotSupportedEncodingCombination,
+        c.ONIGERR_INVALID_COMBINATION_OF_OPTIONS => Error.ErrInvalidCombinationOfOptions,
+        c.ONIGERR_TOO_MANY_USER_DEFINED_OBJECTS => Error.ErrTooManyUserDefinedObjects,
+        c.ONIGERR_TOO_LONG_PROPERTY_NAME => Error.ErrTooLongPropertyName,
+        c.ONIGERR_VERY_INEFFICIENT_PATTERN => Error.ErrVeryInefficientPattern,
+        c.ONIGERR_LIBRARY_IS_NOT_INITIALIZED => Error.ErrLibraryIsNotInitialized,
+        else => Error.UnknownError,
+    };
+}
 
 const max_encoders = 30;
 const Encoding = c.OnigEncoding;
@@ -54,7 +221,8 @@ pub fn initialize(defaultSyntax: ?OnigSyntax) !void {
 
     const res = c.onig_initialize(&encondings, max_encoders);
     if (res < 0) {
-        return Error.InitializeFailed;
+        printError(res, null);
+        return errorCodeToError(res);
     }
 
     if (defaultSyntax) |syntax| {
@@ -110,6 +278,17 @@ pub var OnigSyntaxRuby: OnigSyntax = &c.OnigSyntaxRuby;
 pub var OnigSyntaxPython: OnigSyntax = &c.OnigSyntaxPython;
 pub var OnigSyntaxOniguruma: OnigSyntax = &c.OnigSyntaxOniguruma;
 
+fn printError(res: c_int, errorInfos: ?*const c.OnigErrorInfo) void {
+    if (BUILD_MODE != .Debug and BUILD_MODE != .DebugSafe) {
+        return;
+    }
+
+    var s: [c.ONIG_MAX_ERROR_MESSAGE_LEN]u8 = undefined;
+    _ = c.onig_error_code_to_str(&s, res, if (errorInfos) |i| i else null);
+    const p: [*:0]const u8 = @ptrCast(&s);
+    std.debug.print("RegExp Error: {s}\n", .{std.mem.span(p)});
+}
+
 pub const RegExp = struct {
     regex: c.OnigRegex,
 
@@ -123,7 +302,8 @@ pub const RegExp = struct {
         const res = c.onig_new(&regex, pattern.ptr, pattern.ptr + pattern.len, @bitCast(option), &c.OnigEncodingUTF8, syntax_, &errorInfos);
         errdefer c.onig_free(regex);
         if (res != c.ONIG_NORMAL) {
-            return Error.InvalidRegex;
+            printError(res, &errorInfos);
+            return errorCodeToError(res);
         }
 
         return RegExp{
@@ -195,16 +375,16 @@ pub const RegExp = struct {
         return @intCast(c.onig_number_of_names(self.regex));
     }
 
-    fn nameToGroupNumbers(self: *const RegExp, name: []const u8) Error![]const u32 {
+    fn nameToGroupNumbers(self: *const RegExp, name: []const u8) ![]const u32 {
         var nums: [*c]u32 = undefined;
         const res = c.onig_name_to_group_numbers(self.regex, name.ptr, name.ptr + name.len, &nums);
         if (res < 0) {
-            return Error.UndefinedNameReference;
+            return errorCodeToError(res);
         }
         return nums[0..@intCast(res)];
     }
 
-    fn nameToGroupNumber(self: *const RegExp, name: []const u8) Error!usize {
+    fn nameToGroupNumber(self: *const RegExp, name: []const u8) !usize {
         const nums = try self.nameToGroupNumbers(name);
         return @intCast(nums[0]);
     }
@@ -436,11 +616,21 @@ test "utf8" {
     const input = "世界world和平peace";
     var iter = regex.searchIterator(input, 0);
     var utf8Iter = unicode.Utf8Iterator{ .bytes = input, .i = 0 };
+    var n: usize = 0;
     while (iter.next()) |m| {
         defer m.deinit();
         const slice = utf8Iter.nextCodepointSlice() orelse unreachable;
         try std.testing.expectEqualStrings(slice, m.groupN(0));
+        n += 1;
     }
 
-    try std.testing.expect(utf8Iter.i > 0);
+    try std.testing.expectEqual(unicode.utf8CountCodepoints(input), n);
+}
+
+test "error" {
+    try initialize(null);
+    defer uninitialize();
+
+    std.debug.print("\n", .{});
+    try std.testing.expectError(Error.ErrEndPatternWithUnmatchedParenthesis, RegExp.init("(aa", .{}));
 }
