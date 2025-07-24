@@ -205,9 +205,12 @@ pub const PieceTreeTextBuffer = struct {
         return try self._pieceTree.getLineContent(lineNumber);
     }
 
-    // FIXME: utf8
     pub fn getLineCharCode(self: *const PieceTreeTextBuffer, lineNumber: usize, index: usize) u8 {
         return self._pieceTree.getLineCharCode(lineNumber, index);
+    }
+
+    pub fn getLineCodepointRange(self: *const PieceTreeTextBuffer, lineNumber: usize, index: usize) [2]usize {
+        return self._pieceTree.getLineCodepointRange(lineNumber, index);
     }
 
     pub fn getCharCode(self: *const PieceTreeTextBuffer, offset: usize) u8 {

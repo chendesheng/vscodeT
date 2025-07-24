@@ -755,33 +755,33 @@ pub const TextModel = struct {
         const endColumn = end.column;
 
         if (validationType == StringOffsetValidationType.SurrogatePairs) {
-            const charCodeBeforeStart = if (startColumn > 1) self._buffer.getLineCharCode(startLineNumber, startColumn - 2) else 0;
-            const charCodeBeforeEnd = if (endColumn > 1 and endColumn <= self._buffer.getLineLength(endLineNumber)) self._buffer.getLineCharCode(endLineNumber, endColumn - 2) else 0;
+            const rangeBeforeStart = if (startColumn > 1) self._buffer.getLineCodepointRange(startLineNumber, startColumn - 2) else [2]usize{ 0, 0 };
+            const rangeBeforeEnd = if (endColumn > 1 and endColumn <= self._buffer.getLineLength(endLineNumber)) self._buffer.getLineCodepointRange(endLineNumber, endColumn - 2) else [2]usize{ 0, 0 };
 
-            const startInsideSurrogatePair = unicode.utf8ByteSequenceLength(charCodeBeforeStart) catch 0;
-            const endInsideSurrogatePair = unicode.utf8ByteSequenceLength(charCodeBeforeEnd) catch 0;
+            const startInsideCodepoint = rangeBeforeStart[1] >= startColumn;
+            const endInsideCodepoint = rangeBeforeEnd[0] <= endColumn;
 
-            if (startInsideSurrogatePair > 0 and endInsideSurrogatePair > 0) {
+            if (!startInsideCodepoint and !endInsideCodepoint) {
                 return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
             }
 
-            // if (startLineNumber == endLineNumber and startColumn == endColumn) {
-            //     // do not expand a collapsed range, simply move it to a valid location
-            //     return Range.init(startLineNumber, startColumn - 1, endLineNumber, endColumn - 1);
-            // }
+            if (startLineNumber == endLineNumber and startColumn == endColumn) {
+                // do not expand a collapsed range, simply move it to a valid location
+                return Range.init(startLineNumber, startColumn - 1, endLineNumber, endColumn - 1);
+            }
 
-            // if (startInsideSurrogatePair and endInsideSurrogatePair) {
-            //     // expand range at both ends
-            //     return Range.init(startLineNumber, startColumn - 1, endLineNumber, endColumn + 1);
-            // }
+            if (startInsideCodepoint and endInsideCodepoint) {
+                // expand range at both ends
+                return Range.init(startLineNumber, rangeBeforeStart[0], endLineNumber, rangeBeforeEnd[1]);
+            }
 
-            // if (startInsideSurrogatePair) {
-            //     // only expand range at the start
-            //     return Range.init(startLineNumber, startColumn - 1, endLineNumber, endColumn);
-            // }
+            if (startInsideCodepoint) {
+                // only expand range at the start
+                return Range.init(startLineNumber, rangeBeforeStart[0], endLineNumber, endColumn);
+            }
 
             // only expand range at the end
-            return Range.init(startLineNumber, startColumn, endLineNumber, endColumn + 1);
+            return Range.init(startLineNumber, startColumn, endLineNumber, rangeBeforeEnd[1]);
         }
 
         return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);

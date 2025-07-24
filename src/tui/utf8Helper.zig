@@ -2,14 +2,20 @@ const std = @import("std");
 const unicode = std.unicode;
 
 pub fn safeUtf8Substring(str: []const u8, start: usize, end: usize) []const u8 {
+    const range = safeUtf8Range(str, start, end);
+    return str[range[0]..range[1]];
+}
+
+pub fn safeUtf8Range(str: []const u8, start: usize, end: usize) [2]usize {
     if (start == end) {
-        return "";
+        return [2]usize{ start, end };
     }
 
     std.debug.assert(start < end);
 
     const safeStart = if (start > 0) safeUtf8Prefix(str, start).len else 0;
-    return safeUtf8Prefix(str[safeStart..], end - safeStart);
+    const safeEnd = safeStart + safeUtf8Prefix(str[safeStart..], end - safeStart).len;
+    return [2]usize{ safeStart, safeEnd };
 }
 
 pub fn lastCodepoint(str: []const u8, limit: usize) !u21 {

@@ -9,6 +9,7 @@ const TreeNode = rbt.TreeNode;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const safeUtf8Prefix = @import("tui/utf8Helper.zig").safeUtf8Prefix;
+const safeUtf8Range = @import("tui/utf8Helper.zig").safeUtf8Range;
 const EOL = @import("model.zig").EOL;
 const replaceEOL = @import("eolCounter.zig").replaceEOL;
 const eolToString = @import("eolCounter.zig").eolToString;
@@ -162,6 +163,10 @@ pub const StringBuffer = struct {
 
     fn charCodeAt(self: *const StringBuffer, i: usize) u8 {
         return self.buffer.items[i];
+    }
+
+    fn codepointRange(self: *const StringBuffer, i: usize) [2]usize {
+        return safeUtf8Range(self.buffer.items, i, i + 1);
     }
 
     fn substring(self: *const StringBuffer, start: usize, end: usize) []const u8 {
@@ -806,10 +811,34 @@ pub const PieceTreeBase = struct {
         }
     }
 
-    // FIXME: utf8
+    fn _getCodepointRange(self: *const PieceTreeBase, nodePos: NodePosition) [2]usize {
+        if (nodePos.remainder == nodePos.node.piece.?.length) {
+            // the char we want to fetch is at the head of next node.
+            const matchingNode = nodePos.node.next();
+            if (!matchingNode) {
+                return [2]usize{ 0, 0 };
+            }
+
+            const buffer = self._buffers.items[matchingNode.piece.?.bufferIndex];
+            const startOffset = self.offsetInBuffer(matchingNode.piece.?.bufferIndex, matchingNode.piece.?.start);
+            return buffer.codepointRange(startOffset);
+        } else {
+            const buffer = self._buffers.items[nodePos.node.piece.?.bufferIndex];
+            const startOffset = self.offsetInBuffer(nodePos.node.piece.?.bufferIndex, nodePos.node.piece.?.start);
+            const targetOffset = startOffset + nodePos.remainder;
+
+            return buffer.codepointRange(targetOffset);
+        }
+    }
+
     pub fn getLineCharCode(self: *const PieceTreeBase, lineNumber: usize, index: usize) u8 {
         const nodePos = self.nodeAt2(lineNumber, index + 1).?;
         return self._getCharCode(nodePos);
+    }
+
+    pub fn getLineCodepointRange(self: *const PieceTreeBase, lineNumber: usize, index: usize) [2]usize {
+        const nodePos = self.nodeAt2(lineNumber, index + 1).?;
+        return self._getCodepointRange(nodePos);
     }
 
     pub fn getLineLength(self: *const PieceTreeBase, lineNumber: usize) usize {
@@ -828,6 +857,11 @@ pub const PieceTreeBase = struct {
     pub fn getCharCode(self: *const PieceTreeBase, offset: usize) usize {
         const nodePos = self.nodeAt(offset);
         return self._getCharCode(nodePos);
+    }
+
+    pub fn getCodepointRange(self: *const PieceTreeBase, offset: usize) [2]usize {
+        const nodePos = self.nodeAt(offset);
+        return self._getCodepointRange(nodePos);
     }
 
     pub fn getNearestChunk(self: *const PieceTreeBase, offset: usize) []const u8 {
