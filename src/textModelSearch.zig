@@ -8,7 +8,6 @@ const RegExp = @import("RegExp.zig").RegExp;
 const SearchResultIterator = @import("RegExp.zig").SearchResultIterator;
 const RegExpExecResult = @import("RegExp.zig").RegExpExecResult;
 const strings = @import("strings.zig");
-const safeUtf8Substring = @import("tui/utf8Helper.zig").safeUtf8Substring;
 const DefaultWordSeparators = @import("wordCharacterClassifier.zig").DefaultWordSeparators;
 const lastCodepoint = @import("tui/utf8Helper.zig").lastCodepoint;
 const SearchResult = @import("RegExp.zig").SearchResult;

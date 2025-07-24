@@ -73,10 +73,10 @@ const LONG_LINE_BOUNDARY = 10000;
 const LINE_HEIGHT_CEILING = 300;
 
 const StringOffsetValidationType = enum {
-    // Even allowed in surrogate pairs
+    // Even allowed in utf8 codepoint
     Relaxed,
-    // Not allowed in surrogate pairs
-    SurrogatePairs,
+    // Not allowed in utf8 codepoint
+    Strict,
 };
 
 const TRACKED_RANGE_OPTIONS = [_]*const ModelDecorationOptions{
@@ -517,7 +517,7 @@ pub const TextModel = struct {
         return self._buffer.getCharacterCountInRange(self.validateRange(rawRange), eol);
     }
 
-    pub fn getLineCount(self: *TextModel) usize {
+    pub fn getLineCount(self: *const TextModel) usize {
         return self._buffer.getLineCount();
     }
 
@@ -557,21 +557,21 @@ pub const TextModel = struct {
 
     pub fn getLineMaxColumn(self: *const TextModel, lineNumber: usize) usize {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
-            return error.IllegalValueForLineNumber;
+            unreachable;
         }
-        return self._buffer.getLineLength(lineNumber) + 1;
+        return self._buffer.getLineLength(lineNumber) + 1; // add 1 for the line break
     }
 
     pub fn getLineFirstNonWhitespaceColumn(self: *const TextModel, lineNumber: usize) usize {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
-            return error.IllegalValueForLineNumber;
+            unreachable;
         }
         return self._buffer.getLineFirstNonWhitespaceColumn(lineNumber);
     }
 
     pub fn getLineLastNonWhitespaceColumn(self: *const TextModel, lineNumber: usize) usize {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
-            return error.IllegalValueForLineNumber;
+            unreachable;
         }
         return self._buffer.getLineLastNonWhitespaceColumn(lineNumber);
     }
@@ -651,7 +651,7 @@ pub const TextModel = struct {
             return false;
         }
 
-        if (validationType == StringOffsetValidationType.SurrogatePairs) {
+        if (validationType == StringOffsetValidationType.Strict) {
             // !!At this point, column > 1
             const rangeBefore = self._buffer.getLineCodepointRange(lineNumber, column - 2);
             return rangeBefore[1] < column;
@@ -680,38 +680,30 @@ pub const TextModel = struct {
             return Position.init(lineNumber, maxColumn);
         }
 
-        if (validationType == StringOffsetValidationType.SurrogatePairs) {
+        if (validationType == StringOffsetValidationType.Strict) {
             // If the position would end up in the middle of a high-low surrogate pair,
             // we move it to before the pair
             // !!At this point, column > 1
-            var i = column - 2;
-            while (i > 0) : (i -= 1) {
-                const charCodeBefore = self._buffer.getLineCharCode(lineNumber, i);
-                _ = unicode.utf8ByteSequenceLength(charCodeBefore) catch {
-                    continue;
-                };
-                return Position.init(lineNumber, i);
-            }
+            const range = self._buffer.getLineCodepointRange(lineNumber, column - 1);
+            return Position.init(lineNumber, range[0] + 1);
         }
 
         return Position.init(lineNumber, column);
     }
 
     pub fn validatePosition(self: *TextModel, position: Position) Position {
-        const validationType = StringOffsetValidationType.SurrogatePairs;
+        const validationType = StringOffsetValidationType.Strict;
 
-        // Avoid object allocation and cover most likely case
-        if (position == Position) {
-            if (self._isValidPosition(position.lineNumber, position.column, validationType)) {
-                return position;
-            }
+        // most likely case
+        if (self._isValidPosition(position.lineNumber, position.column, validationType)) {
+            return position;
         }
 
         return self._validatePosition(position.lineNumber, position.column, validationType);
     }
 
     pub fn isValidRange(self: *TextModel, range: Range) bool {
-        return self._isValidRange(range, StringOffsetValidationType.SurrogatePairs);
+        return self._isValidRange(range, StringOffsetValidationType.Strict);
     }
 
     fn _isValidRange(self: *TextModel, range: Range, validationType: StringOffsetValidationType) bool {
@@ -720,23 +712,10 @@ pub const TextModel = struct {
         const endLineNumber = range.endLineNumber;
         const endColumn = range.endColumn;
 
-        if (!self._isValidPosition(startLineNumber, startColumn, StringOffsetValidationType.Relaxed)) {
+        if (!self._isValidPosition(startLineNumber, startColumn, validationType)) {
             return false;
         }
-        if (!self._isValidPosition(endLineNumber, endColumn, StringOffsetValidationType.Relaxed)) {
-            return false;
-        }
-
-        if (validationType == StringOffsetValidationType.SurrogatePairs) {
-            const charCodeBeforeStart = if (startColumn > 1) self._buffer.getLineCharCode(startLineNumber, startColumn - 2) else 0;
-            const charCodeBeforeEnd = if (endColumn > 1 and endColumn <= self._buffer.getLineLength(endLineNumber)) self._buffer.getLineCharCode(endLineNumber, endColumn - 2) else 0;
-
-            const startInsideSurrogatePair = unicode.utf8ByteSequenceLength(charCodeBeforeStart) catch 0;
-            const endInsideSurrogatePair = unicode.utf8ByteSequenceLength(charCodeBeforeEnd) catch 0;
-
-            if (startInsideSurrogatePair > 0 and endInsideSurrogatePair > 0) {
-                return true;
-            }
+        if (!self._isValidPosition(endLineNumber, endColumn, validationType)) {
             return false;
         }
 
@@ -744,7 +723,7 @@ pub const TextModel = struct {
     }
 
     pub fn validateRange(self: *TextModel, _range: Range) Range {
-        const validationType = StringOffsetValidationType.SurrogatePairs;
+        const validationType = StringOffsetValidationType.Strict;
 
         // Avoid object allocation and cover most likely case
         if (self._isValidRange(_range, validationType)) {
@@ -759,34 +738,10 @@ pub const TextModel = struct {
         const endLineNumber = end.lineNumber;
         const endColumn = end.column;
 
-        if (validationType == StringOffsetValidationType.SurrogatePairs) {
-            const rangeBeforeStart = if (startColumn > 1) self._buffer.getLineCodepointRange(startLineNumber, startColumn - 2) else [2]usize{ 0, 0 };
-            const rangeBeforeEnd = if (endColumn > 1 and endColumn <= self._buffer.getLineLength(endLineNumber)) self._buffer.getLineCodepointRange(endLineNumber, endColumn - 2) else [2]usize{ 0, 0 };
-
-            const startInsideCodepoint = rangeBeforeStart[1] >= startColumn;
-            const endInsideCodepoint = rangeBeforeEnd[0] <= endColumn;
-
-            if (!startInsideCodepoint and !endInsideCodepoint) {
-                return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
-            }
-
-            if (startLineNumber == endLineNumber and startColumn == endColumn) {
-                // do not expand a collapsed range, simply move it to a valid location
-                return Range.init(startLineNumber, startColumn - 1, endLineNumber, endColumn - 1);
-            }
-
-            if (startInsideCodepoint and endInsideCodepoint) {
-                // expand range at both ends
-                return Range.init(startLineNumber, rangeBeforeStart[0], endLineNumber, rangeBeforeEnd[1]);
-            }
-
-            if (startInsideCodepoint) {
-                // only expand range at the start
-                return Range.init(startLineNumber, rangeBeforeStart[0], endLineNumber, endColumn);
-            }
-
-            // only expand range at the end
-            return Range.init(startLineNumber, startColumn, endLineNumber, rangeBeforeEnd[1]);
+        if (validationType == StringOffsetValidationType.Strict) {
+            const startCodepointRange = self._buffer.getLineCodepointRange(startLineNumber, startColumn - 1);
+            const endCodepointRange = self._buffer.getLineCodepointRange(endLineNumber, endColumn - 1);
+            return Range.init(startLineNumber, startCodepointRange[0] + 1, endLineNumber, endCodepointRange[1] + 1);
         }
 
         return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
@@ -1833,33 +1788,91 @@ pub const DecorationsTrees = struct {
     }
 };
 
-test "TextModel.init" {
-    const allocator = std.testing.allocator;
-    const text = "Hello, world!";
+fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: *UndoRedoService) !*TextModel {
     var source = io.fixedBufferStream(text);
     const reader = source.reader().any();
-    const defaultEOL = .LF;
 
-    var undoRedoService = UndoRedoService.init(allocator);
-    defer undoRedoService.deinit();
-
-    var textModel = try TextModel.init(allocator, reader, TextModelCreationOptions{
+    return try TextModel.init(allocator, reader, TextModelCreationOptions{
         .tabSize = 4,
         .indentSize = .{ .number = 4 },
         .insertSpaces = true,
         .detectIndentation = true,
         .trimAutoWhitespace = true,
-        .defaultEOL = defaultEOL,
+        .defaultEOL = .LF,
         .isForSimpleWidget = false,
         .largeFileOptimizations = false,
         .bracketPairColorizationOptions = .{
             .enabled = false,
             .independentColorPoolPerBracketType = false,
         },
-    }, null, &undoRedoService);
+    }, null, undoRedoService);
+}
+
+test "TextModel.init" {
+    const allocator = std.testing.allocator;
+    const text = "Hello, world!";
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
     defer allocator.destroy(textModel);
     defer textModel.deinit();
-    // try std.testing.expectEqualStrings(text, textModel.getLineContent(1));
+}
+
+test "TextModel._isValidPosition" {
+    const allocator = std.testing.allocator;
+    const text = "你好, world!";
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+    try std.testing.expect(!textModel._isValidPosition(0, 1, .Relaxed));
+    try std.testing.expect(textModel._isValidPosition(1, 2, .Relaxed));
+    try std.testing.expect(textModel._isValidPosition(1, text.len + 1, .Relaxed));
+    try std.testing.expect(!textModel._isValidPosition(1, text.len + 2, .Relaxed));
+    try std.testing.expect(!textModel._isValidPosition(1, 2, .Strict));
+    try std.testing.expect(!textModel._isValidPosition(1, 3, .Strict));
+    try std.testing.expect(textModel._isValidPosition(1, 4, .Strict));
+    try std.testing.expect(!textModel._isValidPosition(1, 5, .Strict));
+    try std.testing.expect(!textModel._isValidPosition(1, 6, .Strict));
+    try std.testing.expect(textModel._isValidPosition(1, 7, .Strict));
+    try std.testing.expect(textModel._isValidPosition(1, 8, .Strict));
+}
+
+test "TextModel.validatePosition" {
+    const allocator = std.testing.allocator;
+    const text = "你好, world!";
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 0)));
+    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 1)));
+    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 2)));
+    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 3)));
+    try std.testing.expectEqual(Position.init(1, 4), textModel.validatePosition(Position.init(1, 4)));
+    try std.testing.expectEqual(Position.init(1, 4), textModel.validatePosition(Position.init(1, 5)));
+    try std.testing.expectEqual(Position.init(1, 4), textModel.validatePosition(Position.init(1, 6)));
+    try std.testing.expectEqual(Position.init(1, 7), textModel.validatePosition(Position.init(1, 7)));
+    try std.testing.expectEqual(Position.init(1, 8), textModel.validatePosition(Position.init(1, 8)));
+    try std.testing.expectEqual(Position.init(1, 9), textModel.validatePosition(Position.init(1, 9)));
+    try std.testing.expectEqual(Position.init(1, text.len + 1), textModel.validatePosition(Position.init(1, 100)));
+}
+
+test "TextModel.validateRange" {
+    const allocator = std.testing.allocator;
+    const text = "你好, world!";
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, text.len + 1), textModel.validateRange(Range.init(1, 1, 1, 100)));
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 4), textModel.validateRange(Range.init(1, 1, 1, 2)));
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 7), textModel.validateRange(Range.init(1, 2, 1, 5)));
 }
 
 pub fn createTextBuffer(allocator: Allocator, source: io.AnyReader, defaultEOL: EOL) !PieceTreeTextBuffer {

@@ -165,8 +165,9 @@ pub const StringBuffer = struct {
         return self.buffer.items[i];
     }
 
-    fn codepointRange(self: *const StringBuffer, i: usize) [2]usize {
-        return safeUtf8Range(self.buffer.items, i, i + 1);
+    fn codepointRelativeRange(self: *const StringBuffer, i: usize) [2]isize {
+        const range = safeUtf8Range(self.buffer.items, i, i + 1);
+        return [2]isize{ usizeSub(range[0], i), usizeSub(range[1], i) };
     }
 
     fn substring(self: *const StringBuffer, start: usize, end: usize) []const u8 {
@@ -612,8 +613,8 @@ pub const PieceTreeBase = struct {
             return ArrayList(u8).init(self.allocator);
         }
 
-        const startPosition = self.nodeAt2(range.startLineNumber, range.startColumn).?;
-        const endPosition = self.nodeAt2(range.endLineNumber, range.endColumn).?;
+        const startPosition = self.nodeAtPosition(range.startLineNumber, range.startColumn).?;
+        const endPosition = self.nodeAtPosition(range.endLineNumber, range.endColumn).?;
 
         var value = try self.getValueInRange2(startPosition, endPosition);
         if (eol_) |eol| {
@@ -795,50 +796,55 @@ pub const PieceTreeBase = struct {
         if (nodePos.remainder == nodePos.node.piece.?.length) {
             // the char we want to fetch is at the head of next node.
             const matchingNode = nodePos.node.next();
-            if (!matchingNode) {
+            if (matchingNode == SENTINEL) {
                 return 0;
             }
 
-            const buffer = self._buffers.items[matchingNode.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(matchingNode.piece.?.bufferIndex, matchingNode.piece.?.start);
+            const piece = matchingNode.piece.?;
+            const buffer = self._buffers.items[piece.bufferIndex];
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
             return buffer.charCodeAt(startOffset);
         } else {
-            const buffer = self._buffers.items[nodePos.node.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(nodePos.node.piece.?.bufferIndex, nodePos.node.piece.?.start);
+            const piece = nodePos.node.piece.?;
+            const buffer = self._buffers.items[piece.bufferIndex];
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
             const targetOffset = startOffset + nodePos.remainder;
 
             return buffer.charCodeAt(targetOffset);
         }
     }
 
-    fn _getCodepointRange(self: *const PieceTreeBase, nodePos: NodePosition) [2]usize {
+    fn _getCodepointRelativeRange(self: *const PieceTreeBase, nodePos: NodePosition) [2]isize {
         if (nodePos.remainder == nodePos.node.piece.?.length) {
             // the char we want to fetch is at the head of next node.
             const matchingNode = nodePos.node.next();
-            if (!matchingNode) {
-                return [2]usize{ 0, 0 };
+            if (matchingNode == SENTINEL) {
+                return [2]isize{ 0, 0 };
             }
 
-            const buffer = self._buffers.items[matchingNode.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(matchingNode.piece.?.bufferIndex, matchingNode.piece.?.start);
-            return buffer.codepointRange(startOffset);
+            const piece = matchingNode.piece.?;
+            const buffer = self._buffers.items[piece.bufferIndex];
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
+            return buffer.codepointRelativeRange(startOffset);
         } else {
-            const buffer = self._buffers.items[nodePos.node.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(nodePos.node.piece.?.bufferIndex, nodePos.node.piece.?.start);
+            const piece = nodePos.node.piece.?;
+            const buffer = self._buffers.items[piece.bufferIndex];
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
             const targetOffset = startOffset + nodePos.remainder;
 
-            return buffer.codepointRange(targetOffset);
+            return buffer.codepointRelativeRange(targetOffset);
         }
     }
 
     pub fn getLineCharCode(self: *const PieceTreeBase, lineNumber: usize, index: usize) u8 {
-        const nodePos = self.nodeAt2(lineNumber, index + 1).?;
+        const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
         return self._getCharCode(nodePos);
     }
 
     pub fn getLineCodepointRange(self: *const PieceTreeBase, lineNumber: usize, index: usize) [2]usize {
-        const nodePos = self.nodeAt2(lineNumber, index + 1).?;
-        return self._getCodepointRange(nodePos);
+        const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
+        const range = self._getCodepointRelativeRange(nodePos);
+        return [2]usize{ usizeAdd(index, range[0]), usizeAdd(index, range[1]) };
     }
 
     pub fn getLineLength(self: *const PieceTreeBase, lineNumber: usize) usize {
@@ -859,11 +865,6 @@ pub const PieceTreeBase = struct {
         return self._getCharCode(nodePos);
     }
 
-    pub fn getCodepointRange(self: *const PieceTreeBase, offset: usize) [2]usize {
-        const nodePos = self.nodeAt(offset);
-        return self._getCodepointRange(nodePos);
-    }
-
     pub fn getNearestChunk(self: *const PieceTreeBase, offset: usize) []const u8 {
         const nodePos = self.nodeAt(offset);
         if (nodePos.remainder == nodePos.node.piece.?.length) {
@@ -873,14 +874,16 @@ pub const PieceTreeBase = struct {
                 return "";
             }
 
-            const buffer = self._buffers.items[matchingNode.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(matchingNode.piece.?.bufferIndex, matchingNode.piece.?.start);
-            return buffer.substring(startOffset, startOffset + matchingNode.piece.?.length);
+            const piece = matchingNode.piece.?;
+            const buffer = self._buffers.items[piece.bufferIndex];
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
+            return buffer.substring(startOffset, startOffset + piece.length);
         } else {
-            const buffer = self._buffers.items[nodePos.node.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(nodePos.node.piece.?.bufferIndex, nodePos.node.piece.?.start);
+            const piece = nodePos.node.piece.?;
+            const buffer = self._buffers.items[piece.bufferIndex];
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
             const targetOffset = startOffset + nodePos.remainder;
-            const targetEnd = startOffset + nodePos.node.piece.?.length;
+            const targetEnd = startOffset + piece.length;
             return buffer.substring(targetOffset, targetEnd);
         }
     }
@@ -940,11 +943,11 @@ pub const PieceTreeBase = struct {
     pub fn findMatchesLineByLine(self: *PieceTreeBase, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
         var result = ArrayList(FindMatch).init(self.allocator);
 
-        const startPosition_ = self.nodeAt2(searchRange.startLineNumber, searchRange.startColumn);
+        const startPosition_ = self.nodeAtPosition(searchRange.startLineNumber, searchRange.startColumn);
         if (startPosition_ == null) {
             return result;
         }
-        const endPosition_ = self.nodeAt2(searchRange.endLineNumber, searchRange.endColumn);
+        const endPosition_ = self.nodeAtPosition(searchRange.endLineNumber, searchRange.endColumn);
         if (endPosition_ == null) {
             return result;
         }
@@ -995,7 +998,7 @@ pub const PieceTreeBase = struct {
             }
 
             startLineNumber += 1;
-            startPosition = self.nodeAt2(startLineNumber, 1).?;
+            startPosition = self.nodeAtPosition(startLineNumber, 1).?;
             currentNode = startPosition.node;
             start = self.positionInBuffer(startPosition.node, startPosition.remainder);
         }
@@ -1796,7 +1799,7 @@ pub const PieceTreeBase = struct {
         return undefined;
     }
 
-    fn nodeAt2(self: *const PieceTreeBase, lineNumber: usize, column: usize) ?NodePosition {
+    fn nodeAtPosition(self: *const PieceTreeBase, lineNumber: usize, column: usize) ?NodePosition {
         var x = self.root;
         var nodeStartOffset: usize = 0;
         var col = column;

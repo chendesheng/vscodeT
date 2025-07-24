@@ -6,6 +6,7 @@ pub fn safeUtf8Substring(str: []const u8, start: usize, end: usize) []const u8 {
     return str[range[0]..range[1]];
 }
 
+// expand range to include the whole utf8 codepoint
 pub fn safeUtf8Range(str: []const u8, start: usize, end: usize) [2]usize {
     if (start == end) {
         return [2]usize{ start, end };
@@ -14,7 +15,13 @@ pub fn safeUtf8Range(str: []const u8, start: usize, end: usize) [2]usize {
     std.debug.assert(start < end);
 
     const safeStart = if (start > 0) safeUtf8Prefix(str, start).len else 0;
-    const safeEnd = safeStart + safeUtf8Prefix(str[safeStart..], end - safeStart).len;
+    if (end == str.len) {
+        return [2]usize{ safeStart, end };
+    }
+
+    const right = safeUtf8Prefix(str, end).len;
+    const safeEnd = if (right == end) right else right + @as(usize, @intCast(unicode.utf8ByteSequenceLength(str[right]) catch unreachable));
+
     return [2]usize{ safeStart, safeEnd };
 }
 
@@ -154,16 +161,21 @@ test "ascii" {
     }
 }
 
+test "lastCodepoint" {
+    try std.testing.expectEqual('好', lastCodepoint("你好", "你好".len));
+}
+
 test "safeUtf8Substring" {
-    try std.testing.expectEqualStrings("", safeUtf8Substring("你好", 0, 2));
+    try std.testing.expectEqualStrings("你", safeUtf8Substring("你好", 0, 2));
     try std.testing.expectEqualStrings("你", safeUtf8Substring("你好", 0, 3));
-    try std.testing.expectEqualStrings("你", safeUtf8Substring("你好", 0, 4));
-    try std.testing.expectEqualStrings("你", safeUtf8Substring("你好", 0, 5));
+    try std.testing.expectEqualStrings("你好", safeUtf8Substring("你好", 0, 4));
+    try std.testing.expectEqualStrings("你好", safeUtf8Substring("你好", 0, 5));
     try std.testing.expectEqualStrings("你好", safeUtf8Substring("你好", 0, 6));
-    try std.testing.expectEqualStrings("你好", safeUtf8Substring("你好吗", 0, 7));
-    try std.testing.expectEqualStrings("你好", safeUtf8Substring("你好吗", 1, 7));
-    try std.testing.expectEqualStrings("你好", safeUtf8Substring("你好吗", 2, 7));
-    try std.testing.expectEqualStrings("好", safeUtf8Substring("你好吗", 3, 7));
+    try std.testing.expectEqualStrings("你好吗", safeUtf8Substring("你好吗", 0, 7));
+    try std.testing.expectEqualStrings("你好吗", safeUtf8Substring("你好吗", 1, 7));
+    try std.testing.expectEqualStrings("你好吗", safeUtf8Substring("你好吗", 2, 7));
+    try std.testing.expectEqualStrings("好", safeUtf8Substring("你好吗", 3, 6));
+    try std.testing.expectEqualStrings("好吗", safeUtf8Substring("你好吗", 3, 7));
     try std.testing.expectEqualStrings("吗", safeUtf8Substring("你好吗", "你好吗".len - 1, "你好吗".len));
 }
 
