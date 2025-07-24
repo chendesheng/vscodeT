@@ -1570,6 +1570,93 @@ pub const TextModel = struct {
     //#endregion
 };
 
+fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: *UndoRedoService) !*TextModel {
+    var source = io.fixedBufferStream(text);
+    const reader = source.reader().any();
+
+    return try TextModel.init(allocator, reader, TextModelCreationOptions{
+        .tabSize = 4,
+        .indentSize = .{ .number = 4 },
+        .insertSpaces = true,
+        .detectIndentation = true,
+        .trimAutoWhitespace = true,
+        .defaultEOL = .LF,
+        .isForSimpleWidget = false,
+        .largeFileOptimizations = false,
+        .bracketPairColorizationOptions = .{
+            .enabled = false,
+            .independentColorPoolPerBracketType = false,
+        },
+    }, null, undoRedoService);
+}
+
+test "TextModel.init" {
+    const allocator = std.testing.allocator;
+    const text = "Hello, world!";
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+}
+
+test "TextModel._isValidPosition" {
+    const allocator = std.testing.allocator;
+    const text = "你好, world!";
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+    try std.testing.expect(!textModel._isValidPosition(0, 1, .Relaxed));
+    try std.testing.expect(textModel._isValidPosition(1, 2, .Relaxed));
+    try std.testing.expect(textModel._isValidPosition(1, text.len + 1, .Relaxed));
+    try std.testing.expect(!textModel._isValidPosition(1, text.len + 2, .Relaxed));
+    try std.testing.expect(!textModel._isValidPosition(1, 2, .Strict));
+    try std.testing.expect(!textModel._isValidPosition(1, 3, .Strict));
+    try std.testing.expect(textModel._isValidPosition(1, 4, .Strict));
+    try std.testing.expect(!textModel._isValidPosition(1, 5, .Strict));
+    try std.testing.expect(!textModel._isValidPosition(1, 6, .Strict));
+    try std.testing.expect(textModel._isValidPosition(1, 7, .Strict));
+    try std.testing.expect(textModel._isValidPosition(1, 8, .Strict));
+}
+
+test "TextModel.validatePosition" {
+    const allocator = std.testing.allocator;
+    const text = "你好, world!";
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 0)));
+    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 1)));
+    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 2)));
+    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 3)));
+    try std.testing.expectEqual(Position.init(1, 4), textModel.validatePosition(Position.init(1, 4)));
+    try std.testing.expectEqual(Position.init(1, 4), textModel.validatePosition(Position.init(1, 5)));
+    try std.testing.expectEqual(Position.init(1, 4), textModel.validatePosition(Position.init(1, 6)));
+    try std.testing.expectEqual(Position.init(1, 7), textModel.validatePosition(Position.init(1, 7)));
+    try std.testing.expectEqual(Position.init(1, 8), textModel.validatePosition(Position.init(1, 8)));
+    try std.testing.expectEqual(Position.init(1, 9), textModel.validatePosition(Position.init(1, 9)));
+    try std.testing.expectEqual(Position.init(1, text.len + 1), textModel.validatePosition(Position.init(1, 100)));
+}
+
+test "TextModel.validateRange" {
+    const allocator = std.testing.allocator;
+    const text = "你好, world!";
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, text.len + 1), textModel.validateRange(Range.init(1, 1, 1, 100)));
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 4), textModel.validateRange(Range.init(1, 1, 1, 2)));
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 7), textModel.validateRange(Range.init(1, 2, 1, 5)));
+}
+
 pub fn indentOfLine(line: []const u8) usize {
     var indent: usize = 0;
     for (line) |c| {
@@ -1787,94 +1874,6 @@ pub const DecorationsTrees = struct {
         self._injectedTextDecorationsTree.acceptReplace(offset, length, textLength, forceMoveMarkers);
     }
 };
-
-fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: *UndoRedoService) !*TextModel {
-    var source = io.fixedBufferStream(text);
-    const reader = source.reader().any();
-
-    return try TextModel.init(allocator, reader, TextModelCreationOptions{
-        .tabSize = 4,
-        .indentSize = .{ .number = 4 },
-        .insertSpaces = true,
-        .detectIndentation = true,
-        .trimAutoWhitespace = true,
-        .defaultEOL = .LF,
-        .isForSimpleWidget = false,
-        .largeFileOptimizations = false,
-        .bracketPairColorizationOptions = .{
-            .enabled = false,
-            .independentColorPoolPerBracketType = false,
-        },
-    }, null, undoRedoService);
-}
-
-test "TextModel.init" {
-    const allocator = std.testing.allocator;
-    const text = "Hello, world!";
-    var undoRedoService = UndoRedoService.init(allocator);
-    defer undoRedoService.deinit();
-    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
-    defer allocator.destroy(textModel);
-    defer textModel.deinit();
-}
-
-test "TextModel._isValidPosition" {
-    const allocator = std.testing.allocator;
-    const text = "你好, world!";
-    var undoRedoService = UndoRedoService.init(allocator);
-    defer undoRedoService.deinit();
-    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
-    defer allocator.destroy(textModel);
-    defer textModel.deinit();
-    try std.testing.expect(!textModel._isValidPosition(0, 1, .Relaxed));
-    try std.testing.expect(textModel._isValidPosition(1, 2, .Relaxed));
-    try std.testing.expect(textModel._isValidPosition(1, text.len + 1, .Relaxed));
-    try std.testing.expect(!textModel._isValidPosition(1, text.len + 2, .Relaxed));
-    try std.testing.expect(!textModel._isValidPosition(1, 2, .Strict));
-    try std.testing.expect(!textModel._isValidPosition(1, 3, .Strict));
-    try std.testing.expect(textModel._isValidPosition(1, 4, .Strict));
-    try std.testing.expect(!textModel._isValidPosition(1, 5, .Strict));
-    try std.testing.expect(!textModel._isValidPosition(1, 6, .Strict));
-    try std.testing.expect(textModel._isValidPosition(1, 7, .Strict));
-    try std.testing.expect(textModel._isValidPosition(1, 8, .Strict));
-}
-
-test "TextModel.validatePosition" {
-    const allocator = std.testing.allocator;
-    const text = "你好, world!";
-    var undoRedoService = UndoRedoService.init(allocator);
-    defer undoRedoService.deinit();
-    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
-    defer allocator.destroy(textModel);
-    defer textModel.deinit();
-
-    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 0)));
-    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 1)));
-    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 2)));
-    try std.testing.expectEqual(Position.init(1, 1), textModel.validatePosition(Position.init(1, 3)));
-    try std.testing.expectEqual(Position.init(1, 4), textModel.validatePosition(Position.init(1, 4)));
-    try std.testing.expectEqual(Position.init(1, 4), textModel.validatePosition(Position.init(1, 5)));
-    try std.testing.expectEqual(Position.init(1, 4), textModel.validatePosition(Position.init(1, 6)));
-    try std.testing.expectEqual(Position.init(1, 7), textModel.validatePosition(Position.init(1, 7)));
-    try std.testing.expectEqual(Position.init(1, 8), textModel.validatePosition(Position.init(1, 8)));
-    try std.testing.expectEqual(Position.init(1, 9), textModel.validatePosition(Position.init(1, 9)));
-    try std.testing.expectEqual(Position.init(1, text.len + 1), textModel.validatePosition(Position.init(1, 100)));
-}
-
-test "TextModel.validateRange" {
-    const allocator = std.testing.allocator;
-    const text = "你好, world!";
-    var undoRedoService = UndoRedoService.init(allocator);
-    defer undoRedoService.deinit();
-    var textModel = try createTestTextModel(allocator, text, &undoRedoService);
-    defer allocator.destroy(textModel);
-    defer textModel.deinit();
-
-    try std.testing.expectEqualDeep(Range.init(1, 1, 1, text.len + 1), textModel.validateRange(Range.init(1, 1, 1, 100)));
-    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 4), textModel.validateRange(Range.init(1, 1, 1, 2)));
-    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 7), textModel.validateRange(Range.init(1, 2, 1, 5)));
-}
-
 pub fn createTextBuffer(allocator: Allocator, source: io.AnyReader, defaultEOL: EOL) !PieceTreeTextBuffer {
     const factory = try createTextBufferFactory(allocator, source);
     defer factory.deinit();
