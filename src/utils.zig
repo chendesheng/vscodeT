@@ -61,3 +61,7 @@ test "fromIndexedPair" {
     try std.testing.expectEqual(2, result.items[1]);
     try std.testing.expectEqual(3, result.items[2]);
 }
+
+pub fn clamp(value: anytype, min: @TypeOf(value), max: @TypeOf(value)) @TypeOf(value) {
+    return @max(min, @min(value, max));
+}

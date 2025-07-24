@@ -17,6 +17,8 @@ const ValidAnnotatedEditOperation = Model.ValidAnnotatedEditOperation;
 const ModelDecoration = Model.ModelDecoration;
 const ModelDecorationOptions = Model.ModelDecorationOptions;
 const ModelDeltaDecoration = Model.ModelDeltaDecoration;
+const SearchData = Model.SearchData;
+const FindMatch = Model.FindMatch;
 const ModelContentChangedEvent = @import("textModelEvents.zig").ModelContentChangedEvent;
 const ModelRawContentChangedEvent = @import("textModelEvents.zig").ModelRawContentChangedEvent;
 const PieceTreeTextBuffer = @import("pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
@@ -64,6 +66,7 @@ const ModelDecorationMinimapOptions = Model.ModelDecorationMinimapOptions;
 const ModelDecorationGlyphMarginOptions = Model.ModelDecorationGlyphMarginOptions;
 const InjectedTextOptions = Model.InjectedTextOptions;
 const InjectedTextCursorStops = Model.InjectedTextCursorStops;
+const utils = @import("utils.zig");
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -448,6 +451,11 @@ pub const TextModel = struct {
         return self._buffer.getOffsetAt(position);
     }
 
+    pub fn getPositionAt(self: *const TextModel, rawOffset: usize) Position {
+        const offset = utils.clamp(rawOffset, 0, self._buffer.getLength());
+        return self._buffer.getPositionAt(offset);
+    }
+
     fn _increaseVersionId(self: *TextModel) void {
         self._versionId += 1;
         self._alternativeVersionId = self._versionId;
@@ -645,11 +653,8 @@ pub const TextModel = struct {
 
         if (validationType == StringOffsetValidationType.SurrogatePairs) {
             // !!At this point, column > 1
-            const charCodeBefore = self._buffer.getLineCharCode(lineNumber, column - 2);
-            unicode.utf8ByteSequenceLength(charCodeBefore) catch {
-                return false;
-            };
-            return true;
+            const rangeBefore = self._buffer.getLineCodepointRange(lineNumber, column - 2);
+            return rangeBefore[1] < column;
         }
 
         return true;
@@ -789,12 +794,16 @@ pub const TextModel = struct {
 
     pub fn modifyPosition(self: *TextModel, rawPosition: Position, offset: usize) Position {
         const candidate = self.getOffsetAt(rawPosition) + offset;
-        return self.getPositionAt(std.math.min(self._buffer.getLength(), std.math.max(0, candidate)));
+        return self.getPositionAt(candidate);
     }
 
     pub fn getFullModelRange(self: *TextModel) Range {
         const lineCount = self.getLineCount();
         return Range.init(1, 1, lineCount, self.getLineMaxColumn(lineCount));
+    }
+
+    pub fn findMatchesLineByLine(self: *TextModel, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
+        return self._buffer.findMatchesLineByLine(searchRange, searchData, captureMatches, limitResultCount);
     }
 
     pub fn pushStackElement(self: *TextModel) void {

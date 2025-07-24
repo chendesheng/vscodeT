@@ -14,6 +14,8 @@ const ValidAnnotatedEditOperation = Model.ValidAnnotatedEditOperation;
 const ApplyEditsResult = Model.ApplyEditsResult;
 const InternalModelContentChange = Model.InternalModelContentChange;
 const ReverseSingleEditOperation = Model.ReverseSingleEditOperation;
+const SearchData = Model.SearchData;
+const FindMatch = Model.FindMatch;
 const EOL = Model.EOL;
 const Position = @import("position.zig").Position;
 const Rg = @import("range.zig");
@@ -579,6 +581,10 @@ pub const PieceTreeTextBuffer = struct {
         }
 
         return contentChanges;
+    }
+
+    pub fn findMatchesLineByLine(self: *PieceTreeTextBuffer, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
+        return self._pieceTree.findMatchesLineByLine(searchRange, searchData, captureMatches, limitResultCount);
     }
 
     pub fn getAllocator(self: *const PieceTreeTextBuffer) Allocator {
