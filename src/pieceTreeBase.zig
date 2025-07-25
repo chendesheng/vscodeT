@@ -353,6 +353,12 @@ const LastVisitedLine = struct {
         self.lineNumber = 0;
         try self.value.resize(0);
     }
+
+    fn copyValue(self: *LastVisitedLine) !ArrayList(u8) {
+        var ret = ArrayList(u8).init(self.value.allocator);
+        try ret.appendSlice(self.value.items);
+        return ret;
+    }
 };
 
 pub const PieceTreeBase = struct {
@@ -770,31 +776,30 @@ pub const PieceTreeBase = struct {
         return self._lineCnt;
     }
 
-    pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) ![]const u8 {
+    pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) !ArrayList(u8) {
         self.log("getLineContent({d})\n", .{lineNumber});
 
         if (self._lastVisitedLine.lineNumber == lineNumber) {
-            return self._lastVisitedLine.value.items;
+            return try self._lastVisitedLine.copyValue();
         }
 
-        const oldValue = self._lastVisitedLine.value;
-        defer oldValue.deinit();
-
+        try self._lastVisitedLine.reset();
         self._lastVisitedLine.lineNumber = lineNumber;
 
+        var ret: ArrayList(u8) = undefined;
         if (lineNumber == self._lineCnt) {
-            self._lastVisitedLine.value = try self.getLineRawContent(lineNumber, 0);
+            ret = try self.getLineRawContent(lineNumber, 0);
         } else if (self._EOLNormalized) {
-            self._lastVisitedLine.value = try self.getLineRawContent(lineNumber, self._EOLLength);
+            ret = try self.getLineRawContent(lineNumber, self._EOLLength);
         } else {
-            var ret = try self.getLineRawContent(lineNumber, 0);
+            ret = try self.getLineRawContent(lineNumber, 0);
             for (0..getEOLLength(ret.items)) |_| {
                 _ = ret.pop();
             }
-            self._lastVisitedLine.value = ret;
         }
 
-        return self._lastVisitedLine.value.items;
+        try self._lastVisitedLine.value.appendSlice(ret.items);
+        return ret;
     }
 
     const BufferIndexOffset = struct {
@@ -1010,12 +1015,17 @@ pub const PieceTreeBase = struct {
             const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn - 1 else 0;
             // search for the remaining content
             if (startLineNumber == searchRange.endLineNumber) {
-                const text = (try self.getLineContent(startLineNumber))[startColumn .. searchRange.endColumn - 1];
-                try _findMatchesInLine(self.allocator, searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
+                const lineContent = try self.getLineContent(startLineNumber);
+                defer lineContent.deinit();
+                const text = lineContent.items[startColumn .. searchRange.endColumn - 1];
+                try _findMatchesInLine(searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
                 return result;
             }
 
-            try _findMatchesInLine(self.allocator, searchData, (try self.getLineContent(startLineNumber))[startColumn..], startLineNumber, startColumn, &result, captureMatches, limitResultCount);
+            const lineContent = try self.getLineContent(startLineNumber);
+            defer lineContent.deinit();
+            const text = lineContent.items[startColumn..];
+            try _findMatchesInLine(searchData, text, startLineNumber, startColumn, &result, captureMatches, limitResultCount);
 
             if (result.items.len >= limitResultCount) {
                 return result;
@@ -1029,8 +1039,10 @@ pub const PieceTreeBase = struct {
 
         if (startLineNumber == searchRange.endLineNumber) {
             const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn - 1 else 0;
-            const text = (try self.getLineContent(startLineNumber))[startColumn .. searchRange.endColumn - 1];
-            try _findMatchesInLine(self.allocator, searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
+            const lineContent = try self.getLineContent(startLineNumber);
+            defer lineContent.deinit();
+            const text = lineContent.items[startColumn .. searchRange.endColumn - 1];
+            try _findMatchesInLine(searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
             return result;
         }
 
@@ -1039,7 +1051,7 @@ pub const PieceTreeBase = struct {
         return result;
     }
 
-    fn _findMatchesInLine(allocator: Allocator, searchData: SearchData, text: []const u8, lineNumber: usize, deltaOffset: usize, result: *ArrayList(FindMatch), captureMatches: bool, limitResultCount: usize) !void {
+    fn _findMatchesInLine(searchData: SearchData, text: []const u8, lineNumber: usize, deltaOffset: usize, result: *ArrayList(FindMatch), captureMatches: bool, limitResultCount: usize) !void {
         if (!captureMatches) {
             if (searchData.simpleSearch) |searchString| {
                 const searchStringLen = searchString.len;
@@ -1064,9 +1076,10 @@ pub const PieceTreeBase = struct {
             }
         }
 
-        var iter = Searcher.init(searchData.wordSeparators, &searchData.regex, text, 0);
+        const allocator = result.allocator;
+        var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, text, 0);
 
-        while (iter.next()) |m| {
+        while (searcher.next()) |m| {
             const index = m.index();
             const mLength = m.length();
             try result.append(try createFindMatch(allocator, Range.init(lineNumber, index + 1 + deltaOffset, lineNumber, index + 1 + mLength + deltaOffset), m, captureMatches));
@@ -2208,13 +2221,17 @@ test "create from string" {
     try std.testing.expectEqual(tree.getLineCount(), 4);
 
     const line1 = try tree.getLineContent(1);
-    try std.testing.expectEqualSlices(u8, "First", line1);
+    defer line1.deinit();
+    try std.testing.expectEqualSlices(u8, "First", line1.items);
     const line2 = try tree.getLineContent(2);
-    try std.testing.expectEqualSlices(u8, "Second", line2);
+    defer line2.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2.items);
     const line3 = try tree.getLineContent(3);
-    try std.testing.expectEqualSlices(u8, "Third", line3);
+    defer line3.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3.items);
     const line4 = try tree.getLineContent(4);
-    try std.testing.expectEqualSlices(u8, "", line4);
+    defer line4.deinit();
+    try std.testing.expectEqualSlices(u8, "", line4.items);
 }
 
 test "normalize EOL" {
@@ -2316,7 +2333,7 @@ test "_findMatchesInLine simple search" {
     const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = "wor" };
     var result = ArrayList(FindMatch).init(allocator);
     defer result.deinit();
-    try PieceTreeBase._findMatchesInLine(allocator, searchData, "hello world", 1, 0, &result, false, 100);
+    try PieceTreeBase._findMatchesInLine(searchData, "hello world", 1, 0, &result, false, 100);
     defer {
         for (result.items) |item| {
             item.free(allocator);
@@ -2336,7 +2353,7 @@ test "_findMatchesInLine regex search" {
     const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = null };
     var result = ArrayList(FindMatch).init(allocator);
     defer result.deinit();
-    try PieceTreeBase._findMatchesInLine(allocator, searchData, "hello world", 1, 0, &result, false, 100);
+    try PieceTreeBase._findMatchesInLine(searchData, "hello world", 1, 0, &result, false, 100);
     defer {
         for (result.items) |item| {
             item.free(allocator);
@@ -2372,7 +2389,8 @@ test "insert" {
         try tree.insert(c.offset, c.text, false);
         for (c.expectedLines, 1..) |expectedLine, lineNumber| {
             const line = try tree.getLineContent(lineNumber);
-            try std.testing.expectEqualSlices(u8, expectedLine, line);
+            defer line.deinit();
+            try std.testing.expectEqualSlices(u8, expectedLine, line.items);
         }
     }
 }
@@ -2386,24 +2404,48 @@ test "multiple inserts" {
     defer tree.deinit();
 
     try tree.insert(0, "a", false);
-    try std.testing.expectEqualSlices(u8, "aFirst", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1 = try tree.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualSlices(u8, "aFirst", line1.items);
+    const line2 = try tree.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2.items);
+    const line3 = try tree.getLineContent(3);
+    defer line3.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3.items);
 
     try tree.insert(1, "a", false);
-    try std.testing.expectEqualSlices(u8, "aaFirst", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1_2 = try tree.getLineContent(1);
+    defer line1_2.deinit();
+    try std.testing.expectEqualSlices(u8, "aaFirst", line1_2.items);
+    const line2_2 = try tree.getLineContent(2);
+    defer line2_2.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2_2.items);
+    const line3_2 = try tree.getLineContent(3);
+    defer line3_2.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3_2.items);
 
     try tree.insert(1, "b", false);
-    try std.testing.expectEqualSlices(u8, "abaFirst", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1_3 = try tree.getLineContent(1);
+    defer line1_3.deinit();
+    try std.testing.expectEqualSlices(u8, "abaFirst", line1_3.items);
+    const line2_3 = try tree.getLineContent(2);
+    defer line2_3.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2_3.items);
+    const line3_3 = try tree.getLineContent(3);
+    defer line3_3.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3_3.items);
 
     try tree.insert(16, "World", false);
-    try std.testing.expectEqualSlices(u8, "abaFirst", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "WorldThird", try tree.getLineContent(3));
+    const line1_4 = try tree.getLineContent(1);
+    defer line1_4.deinit();
+    try std.testing.expectEqualSlices(u8, "abaFirst", line1_4.items);
+    const line2_4 = try tree.getLineContent(2);
+    defer line2_4.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2_4.items);
+    const line3_4 = try tree.getLineContent(3);
+    defer line3_4.deinit();
+    try std.testing.expectEqualSlices(u8, "WorldThird", line3_4.items);
 }
 
 test "delete" {
@@ -2430,7 +2472,8 @@ test "delete" {
         try tree.delete(c.offset, c.count);
         for (c.expectedLines, 1..) |expectedLine, lineNumber| {
             const line = try tree.getLineContent(lineNumber);
-            try std.testing.expectEqualSlices(u8, expectedLine, line);
+            defer line.deinit();
+            try std.testing.expectEqualSlices(u8, expectedLine, line.items);
         }
     }
 }
@@ -2444,17 +2487,31 @@ test "insert then delete" {
     defer tree.deinit();
 
     try tree.insert(6, "a", false);
-    try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "aSecond", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1 = try tree.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualSlices(u8, "First", line1.items);
+    const line2 = try tree.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualSlices(u8, "aSecond", line2.items);
+    const line3 = try tree.getLineContent(3);
+    defer line3.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3.items);
 
     try tree.insert(7, "a", false);
-    try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "aaSecond", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1_2 = try tree.getLineContent(1);
+    defer line1_2.deinit();
+    try std.testing.expectEqualSlices(u8, "First", line1_2.items);
+    const line2_2 = try tree.getLineContent(2);
+    defer line2_2.deinit();
+    try std.testing.expectEqualSlices(u8, "aaSecond", line2_2.items);
+    const line3_2 = try tree.getLineContent(3);
+    defer line3_2.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3_2.items);
 
     try tree.delete(7, 1);
-    try std.testing.expectEqualSlices(u8, "aSecond", try tree.getLineContent(2));
+    const line2_3 = try tree.getLineContent(2);
+    defer line2_3.deinit();
+    try std.testing.expectEqualSlices(u8, "aSecond", line2_3.items);
 }
 
 test "insert enter then delete" {
@@ -2465,17 +2522,27 @@ test "insert enter then delete" {
     var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
     // tree._logger = std.io.getStdErr().writer();
     defer tree.deinit();
-
-    try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
+    const line1 = try tree.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualStrings("First", line1.items);
     try tree.insert(5, "\n", false);
-    try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
-    try std.testing.expectEqualStrings("", try tree.getLineContent(2));
+
+    const line1_2 = try tree.getLineContent(1);
+    defer line1_2.deinit();
+    try std.testing.expectEqualStrings("First", line1_2.items);
+    const line2 = try tree.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("", line2.items);
 
     try tree.delete(5, 1);
-    try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
+    const line1_3 = try tree.getLineContent(1);
+    defer line1_3.deinit();
+    try std.testing.expectEqualStrings("First", line1_3.items);
 
     try tree.insert(5, "\n", false);
-    try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
+    const line1_4 = try tree.getLineContent(1);
+    defer line1_4.deinit();
+    try std.testing.expectEqualStrings("First", line1_4.items);
 }
 
 test "insert return" {
@@ -2592,7 +2659,9 @@ test "no eol" {
     defer tree.deinit();
 
     try std.testing.expectEqual(1, tree.getLineCount());
-    try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
+    const line = try tree.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualSlices(u8, "First", line.items);
 }
 
 test "createLineStarts" {

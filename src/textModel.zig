@@ -505,7 +505,7 @@ pub const TextModel = struct {
         return fullModelValue;
     }
 
-    pub fn getValueInRange(self: *TextModel, rawRange: Range, eol: EndOfLinePreference) ![]const u8 {
+    pub fn getValueInRange(self: *TextModel, rawRange: Range, eol: EndOfLinePreference) !ArrayList(u8) {
         return try self._buffer.getValueInRange(self.validateRange(rawRange), eol);
     }
 
@@ -521,7 +521,7 @@ pub const TextModel = struct {
         return self._buffer.getLineCount();
     }
 
-    pub fn getLineContent(self: *TextModel, lineNumber: usize) ![]const u8 {
+    pub fn getLineContent(self: *TextModel, lineNumber: usize) !ArrayList(u8) {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
             return error.IllegalValueForLineNumber;
         }
@@ -537,7 +537,7 @@ pub const TextModel = struct {
         return self._buffer.getLineLength(lineNumber);
     }
 
-    pub fn getLinesContent(self: *const TextModel) ![]const []const u8 {
+    pub fn getLinesContent(self: *const TextModel) !ArrayList(ArrayList(u8)) {
         if (self.isTooLargeForHeapOperation()) {
             return error.OperationWouldExceedHeapMemoryLimits;
         }
@@ -1117,7 +1117,7 @@ pub const TextModel = struct {
 
                         try rawContentChanges.append(ModelRawLineChanged.init(
                             editLineNumber,
-                            self.getLineContent(editLineNumber),
+                            try self.getLineContent(editLineNumber),
                             decorationsInCurrentLine,
                         ));
                     }
@@ -1136,7 +1136,7 @@ pub const TextModel = struct {
                     const cnt = insertingLinesCnt - editingLinesCnt;
                     const fromLineNumber = newLineCount - lineCount - cnt + spliceLineNumber + 1;
                     var injectedTexts = ArrayList(?[]LineInjectedText).init(allocator);
-                    var newLines = ArrayList([]const u8).init(allocator);
+                    var newLines = ArrayList(ArrayList(u8)).init(allocator);
                     var i = 0;
                     while (i < cnt) : (i += 1) {
                         const lineNumber = fromLineNumber + i;

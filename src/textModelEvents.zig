@@ -166,11 +166,11 @@ pub const ModelRawLineChanged = struct {
     // The line that has changed.
     lineNumber: usize,
     // The new value of the line.
-    detail: []const u8,
+    detail: ArrayList(u8),
     // The injected text on the line.
     injectedText: ?[]LineInjectedText,
 
-    pub fn init(lineNumber: usize, detail: []const u8, injectedText: ?[]LineInjectedText) ModelRawLineChanged {
+    pub fn init(lineNumber: usize, detail: ArrayList(u8), injectedText: ?[]LineInjectedText) ModelRawLineChanged {
         return ModelRawLineChanged{
             .lineNumber = lineNumber,
             .detail = detail,
