@@ -43,7 +43,7 @@ pub const SearchParams = struct {
         if (self.isRegex) {
             multiline = isMultilineRegexSource(self.searchString);
         } else {
-            multiline = (std.mem.indexOf(u8, self.searchString, "\n") != null);
+            multiline = std.mem.containsAtLeast(u8, self.searchString, 1, "\n");
         }
 
         const regex: ?RegExp = strings.createRegExp(allocator, self.searchString, self.isRegex, false, .{
@@ -73,7 +73,8 @@ pub fn isMultilineRegexSource(searchString: []const u8) bool {
     }
 
     const len = searchString.len;
-    for (0..len) |i| {
+    var i: usize = 0;
+    while (i < len) : (i += 1) {
         const chCode = searchString[i];
 
         if (chCode == '\n') {
@@ -98,6 +99,12 @@ pub fn isMultilineRegexSource(searchString: []const u8) bool {
     }
 
     return false;
+}
+
+test "isMultilineRegexSource" {
+    try std.testing.expect(!isMultilineRegexSource(""));
+    try std.testing.expect(isMultilineRegexSource("1\n2\n"));
+    try std.testing.expect(!isMultilineRegexSource("12"));
 }
 
 pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchResult, captureMatches: bool) !FindMatch {
