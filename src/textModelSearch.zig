@@ -115,7 +115,7 @@ pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchRes
 pub const LineFeedCounter = struct {
     _lineFeedsOffsets: ArrayList(usize),
 
-    pub fn init(allocator: Allocator, text: []const u8) LineFeedCounter {
+    pub fn init(allocator: Allocator, text: []const u8) !LineFeedCounter {
         var lineFeedsOffsets = ArrayList(usize).init(allocator);
         for (0..text.len) |i| {
             if (text[i] == '\n') {
@@ -131,6 +131,7 @@ pub const LineFeedCounter = struct {
         self._lineFeedsOffsets.deinit();
     }
 
+    // offset is exclusive
     pub fn findLineFeedCountBeforeOffset(self: *LineFeedCounter, offset: usize) usize {
         const lineFeedsOffsets = self._lineFeedsOffsets.items;
         if (lineFeedsOffsets.len == 0) {
@@ -164,6 +165,17 @@ pub const LineFeedCounter = struct {
         return min + 1;
     }
 };
+
+test "LineFeedCounter" {
+    var lineFeedCounter = try LineFeedCounter.init(std.testing.allocator, "1\n2\n");
+    defer lineFeedCounter.deinit();
+    try std.testing.expectEqual(0, lineFeedCounter.findLineFeedCountBeforeOffset(0));
+    try std.testing.expectEqual(0, lineFeedCounter.findLineFeedCountBeforeOffset(1));
+    try std.testing.expectEqual(1, lineFeedCounter.findLineFeedCountBeforeOffset(2));
+    try std.testing.expectEqual(1, lineFeedCounter.findLineFeedCountBeforeOffset(3));
+    try std.testing.expectEqual(2, lineFeedCounter.findLineFeedCountBeforeOffset(4));
+    try std.testing.expectEqual(2, lineFeedCounter.findLineFeedCountBeforeOffset(100));
+}
 
 fn leftIsWordBounday(wordSeparators: *const WordCharacterClassifier, text: []const u8, matchStartIndex: usize, matchLength: usize) bool {
     if (matchStartIndex == 0) {
