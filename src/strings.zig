@@ -403,3 +403,19 @@ test "createRegExp wholeWord" {
     try std.testing.expect(regex.isMatch("Hell"));
     try std.testing.expect(regex.isMatch("e Hell ye"));
 }
+
+pub fn containsEnglishLetter(str: []const u8) bool {
+    for (str) |c| {
+        switch (c) {
+            'a'...'z', 'A'...'Z' => return true,
+            else => continue,
+        }
+    }
+    return false;
+}
+
+test "containsEnglishLetter" {
+    try std.testing.expect(containsEnglishLetter("z"));
+    try std.testing.expect(containsEnglishLetter("Z"));
+    try std.testing.expect(!containsEnglishLetter("123"));
+}

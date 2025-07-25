@@ -56,16 +56,34 @@ pub const SearchParams = struct {
         }
 
         var canUseSimpleSearch = (!self.isRegex and !multiline);
-        if (canUseSimpleSearch and std.ascii.toLower(self.searchString) != std.ascii.toUpper(self.searchString)) {
+        if (canUseSimpleSearch and strings.containsEnglishLetter(self.searchString)) {
             // casing might make a difference
             canUseSimpleSearch = self.matchCase;
         }
 
         const classifier = if (self.wordSeparators) |wordSeparators| try getMapForWordSeparators(allocator, wordSeparators) else null;
         const simpleSearch = if (canUseSimpleSearch) self.searchString else null;
-        return SearchData.init(regex, classifier, simpleSearch);
+        return SearchData.init(regex.?, classifier, simpleSearch);
     }
 };
+
+test "SearchParams" {
+    const allocator = std.testing.allocator;
+    var params = SearchParams.init("Hello", false, false, null);
+    if (try params.parseSearchRequest(allocator)) |searchData| {
+        try std.testing.expect(searchData.regex.isMatch("Hello"));
+        try std.testing.expect(searchData.wordSeparators == null);
+        try std.testing.expect(searchData.simpleSearch == null);
+    } else {
+        unreachable;
+    }
+}
+
+test "SearchParams failed" {
+    const allocator = std.testing.allocator;
+    var params = SearchParams.init("(", true, false, null);
+    try std.testing.expectEqual(null, try params.parseSearchRequest(allocator));
+}
 
 pub fn isMultilineRegexSource(searchString: []const u8) bool {
     if (searchString.len == 0) {

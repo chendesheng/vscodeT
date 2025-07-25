@@ -87,13 +87,13 @@ pub const ValidAnnotatedEditOperation = struct {
 // @internal
 pub const SearchData = struct {
     // The regex to search for. Always defined.
-    regex: *const RegExp,
+    regex: RegExp,
     // The word separator classifier.
     wordSeparators: ?*const WordCharacterClassifier,
     // The simple string to search for (if possible).
     simpleSearch: ?[]const u8,
 
-    pub fn init(regex: *const RegExp, wordSeparators: ?*const WordCharacterClassifier, simpleSearch: ?[]const u8) SearchData {
+    pub fn init(regex: RegExp, wordSeparators: ?*const WordCharacterClassifier, simpleSearch: ?[]const u8) SearchData {
         return SearchData{
             .regex = regex,
             .wordSeparators = wordSeparators,

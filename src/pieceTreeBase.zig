@@ -933,7 +933,7 @@ pub const PieceTreeBase = struct {
         // Reset regex to search from the beginning
         var offsetInBufferBase: usize = 0;
 
-        var searcher = Searcher.init(searchData.wordSeparators, searchData.regex, undefined, 0);
+        var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, undefined, 0);
         if (searcher.wordSeparators != null) {
             offsetInBufferBase = start;
             searcher.reset(buffer.substring(start, end), 0);
@@ -1064,7 +1064,7 @@ pub const PieceTreeBase = struct {
             }
         }
 
-        var iter = Searcher.init(searchData.wordSeparators, searchData.regex, text, 0);
+        var iter = Searcher.init(searchData.wordSeparators, &searchData.regex, text, 0);
 
         while (iter.next()) |m| {
             const index = m.index();
@@ -2270,7 +2270,7 @@ test "findMatchesInNode" {
     defer result.deinit();
     var regex = try RegExp.init("Sec", .{});
     defer regex.deinit();
-    const searchData = SearchData{ .wordSeparators = null, .regex = &regex, .simpleSearch = null };
+    const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = null };
     try tree.findMatchesInNode(tree.root, 1, 1, BufferCursor{ .line = 0, .column = 0 }, BufferCursor{ .line = 2, .column = 0 }, searchData, true, 10, &result);
     defer {
         for (result.items) |item| {
@@ -2293,7 +2293,7 @@ test "findMatchesLineByLine" {
     defer tree.deinit();
     var regex = try RegExp.init("i", .{});
     defer regex.deinit();
-    const searchData = SearchData{ .wordSeparators = null, .regex = &regex, .simpleSearch = null };
+    const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = null };
     const result = try tree.findMatchesLineByLine(Range.init(1, 1, 3, 4), searchData, true, 10);
     defer {
         for (result.items) |item| {
@@ -2313,7 +2313,7 @@ test "_findMatchesInLine simple search" {
 
     var regex = try RegExp.init("wor", .{});
     defer regex.deinit();
-    const searchData = SearchData{ .wordSeparators = null, .regex = &regex, .simpleSearch = "wor" };
+    const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = "wor" };
     var result = ArrayList(FindMatch).init(allocator);
     defer result.deinit();
     try PieceTreeBase._findMatchesInLine(allocator, searchData, "hello world", 1, 0, &result, false, 100);
@@ -2333,7 +2333,7 @@ test "_findMatchesInLine regex search" {
 
     var regex = try RegExp.init("wor", .{});
     defer regex.deinit();
-    const searchData = SearchData{ .wordSeparators = null, .regex = &regex, .simpleSearch = null };
+    const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = null };
     var result = ArrayList(FindMatch).init(allocator);
     defer result.deinit();
     try PieceTreeBase._findMatchesInLine(allocator, searchData, "hello world", 1, 0, &result, false, 100);
