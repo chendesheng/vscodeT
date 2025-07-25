@@ -368,7 +368,7 @@ fn initArrayList(allocator: Allocator, str: []const u8) !ArrayList(u8) {
 }
 
 pub fn createRegExp(allocator: Allocator, searchString: []const u8, isRegex: bool, wholeWord: bool, options: RegExpOptions) !RegExp {
-    if (!searchString) {
+    if (searchString.len == 0) {
         unreachable;
     }
 
@@ -377,12 +377,29 @@ pub fn createRegExp(allocator: Allocator, searchString: []const u8, isRegex: boo
     }
 
     var escapedSearchString = if (isRegex) try initArrayList(allocator, searchString) else try escapeRegExp(allocator, searchString);
+    defer escapedSearchString.deinit();
 
     if (wholeWord) {
         try escapedSearchString.insertSlice(0, "\\b");
         try escapedSearchString.appendSlice("\\b");
     }
 
-    // FIXME: is regex own the input string?
-    return RegExp.init(escapedSearchString.toOwnedSlice(), options);
+    return RegExp.init(escapedSearchString.items, options);
+}
+
+test "createRegExp" {
+    const allocator = std.testing.allocator;
+    const regex = try createRegExp(allocator, "Hello?", false, false, .{});
+    defer regex.deinit();
+    try std.testing.expect(regex.isMatch("Hello?"));
+}
+
+test "createRegExp wholeWord" {
+    const allocator = std.testing.allocator;
+    const regex = try createRegExp(allocator, "Hell", false, true, .{});
+    defer regex.deinit();
+    try std.testing.expect(!regex.isMatch("Hello"));
+    try std.testing.expect(!regex.isMatch("eHell"));
+    try std.testing.expect(regex.isMatch("Hell"));
+    try std.testing.expect(regex.isMatch("e Hell ye"));
 }
