@@ -361,17 +361,28 @@ pub fn getNextCodePointSize(text: []const u8, len: usize, offset: usize) !usize 
     return (try it.nextCodepointSlice()).len;
 }
 
-pub fn createRegExp(allocator: Allocator, searchString: []const u8, wholeWord: bool, options: RegExpOptions) !RegExp {
+fn initArrayList(allocator: Allocator, str: []const u8) !ArrayList(u8) {
+    var arr = ArrayList(u8).init(allocator);
+    try arr.appendSlice(str);
+    return arr;
+}
+
+pub fn createRegExp(allocator: Allocator, searchString: []const u8, isRegex: bool, wholeWord: bool, options: RegExpOptions) !RegExp {
     if (!searchString) {
         unreachable;
     }
 
-    var escapedSearchString = try escapeRegExp(allocator, searchString);
+    if (isRegex and !wholeWord) {
+        return RegExp.init(searchString, options);
+    }
+
+    var escapedSearchString = if (isRegex) try initArrayList(allocator, searchString) else try escapeRegExp(allocator, searchString);
 
     if (wholeWord) {
         try escapedSearchString.insertSlice(0, "\\b");
         try escapedSearchString.appendSlice("\\b");
     }
 
-    return RegExp.init(escapedSearchString, options);
+    // FIXME: is regex own the input string?
+    return RegExp.init(escapedSearchString.toOwnedSlice(), options);
 }

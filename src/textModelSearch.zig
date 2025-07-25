@@ -46,7 +46,7 @@ pub const SearchParams = struct {
             multiline = (std.mem.indexOf(u8, self.searchString, "\n") != null);
         }
 
-        const regex: ?RegExp = strings.createRegExp(allocator, self.searchString, false, .{
+        const regex: ?RegExp = strings.createRegExp(allocator, self.searchString, self.isRegex, false, .{
             .ignore_case = self.matchCase,
             .multiline = multiline,
         }) catch null;
