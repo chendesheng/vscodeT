@@ -67,6 +67,9 @@ const ModelDecorationGlyphMarginOptions = Model.ModelDecorationGlyphMarginOption
 const InjectedTextOptions = Model.InjectedTextOptions;
 const InjectedTextCursorStops = Model.InjectedTextCursorStops;
 const utils = @import("utils.zig");
+const Rg = @import("range.zig");
+const SearchParams = @import("textModelSearch.zig").SearchParams;
+const TextModelSearch = @import("textModelSearch.zig").TextModelSearch;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -759,6 +762,72 @@ pub const TextModel = struct {
 
     pub fn findMatchesLineByLine(self: *TextModel, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
         return self._buffer.findMatchesLineByLine(searchRange, searchData, captureMatches, limitResultCount);
+    }
+
+    pub fn findMatches(self: *TextModel, searchString: []const u8, rawSearchScope: ?[]Range, isRegex: bool, matchCase: bool, wordSeparators: ?[]u8, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
+        const allocator = self.getAllocator();
+        var searchRanges = ArrayList(Range).init(allocator);
+        defer searchRanges.deinit();
+
+        if (rawSearchScope) |rawSearchRanges| {
+            for (rawSearchRanges) |rawSearchRange| {
+                const searchRange = self.validateRange(rawSearchRange);
+                try searchRanges.append(searchRange);
+            }
+        }
+
+        if (searchRanges.items.len == 0) {
+            try searchRanges.append(self.getFullModelRange());
+        }
+
+        std.sort.heap(Range, searchRanges.items, struct {
+            fn lessThan(d1: Range, d2: Range) bool {
+                return d1.lessThan(&d2);
+            }
+        }.lessThan);
+
+        const uniqueSearchRanges = ArrayList(Range).init(allocator);
+        defer uniqueSearchRanges.deinit();
+
+        for (searchRanges.items) |searchRange| {
+            if (uniqueSearchRanges.items.len > 0) {
+                const lastUnique = &uniqueSearchRanges.items[uniqueSearchRanges.items.len - 1];
+                if (Rg.areIntersecting(lastUnique, &searchRange)) {
+                    lastUnique.* = lastUnique.plusRange(&searchRange);
+                    continue;
+                }
+            }
+
+            try uniqueSearchRanges.append(searchRange);
+        }
+
+        var result = ArrayList(FindMatch).init(allocator);
+        if (!isRegex and std.mem.indexOf(searchString, "\n") == null) {
+            // not regex, not multi line
+            const searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
+            const searchData = try searchParams.parseSearchRequest(allocator);
+
+            if (!searchData) {
+                return result;
+            }
+
+            for (uniqueSearchRanges.items) |searchRange| {
+                // FIXME: limitResultCount seems wrong here
+                const tmp = try self.findMatchesLineByLine(searchRange, searchData, captureMatches, limitResultCount);
+                defer tmp.deinit();
+                try result.appendSlice(tmp.items);
+            }
+        } else {
+            for (uniqueSearchRanges.items) |searchRange| {
+                const searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
+                // FIXME: limitResultCount seems wrong here
+                const tmp = try TextModelSearch.findMatches(self, searchParams, searchRange, captureMatches, limitResultCount);
+                defer tmp.deinit();
+                try result.appendSlice(tmp.items);
+            }
+        }
+
+        return result;
     }
 
     pub fn pushStackElement(self: *TextModel) void {

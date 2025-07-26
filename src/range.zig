@@ -236,6 +236,10 @@ pub const Range = struct {
         }
         return true;
     }
+
+    pub fn lessThan(self: *const Range, other: *const Range) bool {
+        return self.startLineNumber < other.startLineNumber or self.startColumn < other.startColumn;
+    }
 };
 
 // Create a new range from two positions.
