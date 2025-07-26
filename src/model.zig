@@ -40,6 +40,19 @@ pub const IdentifiedSingleEditOperation = struct {
     // This indicates that this operation is in a set of operations that are tracked and should not be "simplified".
     // @internal
     _isTracked: ?bool,
+
+    pub fn init(range: Range, text: ?[]const u8) IdentifiedSingleEditOperation {
+        return IdentifiedSingleEditOperation{
+            .op = SingleEditOperation{
+                .range = range,
+                .text = text,
+                .forceMoveMarkers = false,
+            },
+            .identifier = null,
+            .isAutoWhitespaceEdit = null,
+            ._isTracked = null,
+        };
+    }
 };
 
 pub const ValidEditOperation = struct {

@@ -430,12 +430,18 @@ pub const TextModel = struct {
         return self._buffer.getMightContainUnusualLineTerminators();
     }
 
-    pub fn removeUnusualLineTerminators(self: *TextModel, selections: ?[]const Selection) void {
-        _ = self;
-        _ = selections;
-        // const matches = self.findMatches(strings.UNUSUAL_LINE_TERMINATORS.source, false, true, false, null, false, Constants.MAX_SAFE_SMALL_INTEGER);
-        // self._buffer.resetMightContainUnusualLineTerminators();
-        // self.pushEditOperations(selections, matches.map(m => ({ range: m.range, text: null })), () => null);
+    pub fn removeUnusualLineTerminators(self: *TextModel, selections: ?[]const Selection) !void {
+        const matches = try self.findMatches(strings.UNUSUAL_LINE_TERMINATORS, null, true, false, null, false, std.math.maxInt(usize));
+        defer matches.deinit();
+
+        self._buffer.resetMightContainUnusualLineTerminators();
+
+        var editOperations = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
+        defer editOperations.deinit();
+        for (matches.items) |match| {
+            try editOperations.append(IdentifiedSingleEditOperation.init(match.range, null));
+        }
+        try self.pushEditOperations(selections, editOperations.items, null, null);
     }
 
     pub fn mightContainNonBasicASCII(self: *const TextModel) bool {
@@ -802,7 +808,7 @@ pub const TextModel = struct {
         }
 
         var result = ArrayList(FindMatch).init(allocator);
-        if (!isRegex and std.mem.indexOf(searchString, "\n") == null) {
+        if (!isRegex and !strings.containsLF(searchString)) {
             // not regex, not multi line
             const searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
             const searchData = try searchParams.parseSearchRequest(allocator);
@@ -828,6 +834,44 @@ pub const TextModel = struct {
         }
 
         return result;
+    }
+
+    pub fn findNextMatch(self: *TextModel, searchString: []const u8, rawSearchStart: Position, isRegex: bool, matchCase: bool, wordSeparators: ?[]u8, captureMatches: bool) !?FindMatch {
+        const searchStart = self.validatePosition(rawSearchStart);
+
+        if (!isRegex and !strings.containsLF(searchString)) {
+            const searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
+            if (try searchParams.parseSearchRequest(self.getAllocator())) |searchData| {
+                defer searchData.regex.deinit();
+
+                const lineCount = self.getLineCount();
+                const searchRange = Range.init(searchStart.lineNumber, searchStart.column, lineCount, self.getLineMaxColumn(lineCount));
+                const ret = try self.findMatchesLineByLine(searchRange, searchData, captureMatches, 1);
+                defer ret.deinit();
+                // FIXME: what is this for?
+                _ = try TextModelSearch.findNextMatch(self, SearchParams.init(searchString, isRegex, matchCase, wordSeparators), searchStart, captureMatches);
+                if (ret.items.len > 0) {
+                    return ret.items[0];
+                }
+
+                const searchRange2 = Range.init(1, 1, searchStart.lineNumber, self.getLineMaxColumn(searchStart.lineNumber));
+                const ret2 = try self.findMatchesLineByLine(searchRange2, searchData, captureMatches, 1);
+                defer ret2.deinit();
+
+                if (ret2.items.len > 0) {
+                    return ret2.items[0];
+                }
+            } else {
+                return null;
+            }
+        }
+
+        return try TextModelSearch.findNextMatch(self, SearchParams.init(searchString, isRegex, matchCase, wordSeparators), searchStart, captureMatches);
+    }
+
+    pub fn findPreviousMatch(self: *TextModel, searchString: []const u8, rawSearchStart: Position, isRegex: bool, matchCase: bool, wordSeparators: ?[]u8, captureMatches: bool) !?FindMatch {
+        const searchStart = self.validatePosition(rawSearchStart);
+        return try TextModelSearch.findPreviousMatch(self, SearchParams.init(searchString, isRegex, matchCase, wordSeparators), searchStart, captureMatches);
     }
 
     pub fn pushStackElement(self: *TextModel) void {

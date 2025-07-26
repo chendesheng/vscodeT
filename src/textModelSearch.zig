@@ -46,7 +46,7 @@ pub const SearchParams = struct {
         if (self.isRegex) {
             multiline = isMultilineRegexSource(self.searchString);
         } else {
-            multiline = std.mem.containsAtLeast(u8, self.searchString, 1, "\n");
+            multiline = strings.containsLF(self.searchString);
         }
 
         const regex: ?RegExp = strings.createRegExp(allocator, self.searchString, self.isRegex, false, .{
