@@ -5,6 +5,7 @@ const Range = @import("range.zig").Range;
 const Selection = @import("selection.zig").Selection;
 const InjectedTextOptions = @import("model.zig").InjectedTextOptions;
 const ModelDecoration = @import("model.zig").ModelDecoration;
+const EOL = @import("model.zig").EOL;
 
 pub const ModelContentChange = struct {
     range: Range,
@@ -16,9 +17,9 @@ pub const ModelContentChange = struct {
 // An event describing a change in the text of a model.
 pub const ModelContentChangedEvent = struct {
     // The changes are ordered from the end of the document to the beginning, so they should be safe to apply in sequence.
-    changes: []ModelContentChange,
+    changes: ArrayList(ModelContentChange),
     // The (new) end-of-line character.
-    eol: []const u8,
+    eol: EOL,
     // The new version id the model has transitioned to.
     versionId: i64,
     // Flag that indicates that this event was generated while undoing.
@@ -97,7 +98,7 @@ pub const LineInjectedText = struct {
         return result;
     }
 
-    pub fn fromDecorations(allocator: Allocator, decorations: []ModelDecoration) !ArrayList(LineInjectedText) {
+    pub fn fromDecorations(allocator: Allocator, decorations: []const ModelDecoration) !ArrayList(LineInjectedText) {
         var result = ArrayList(LineInjectedText).init(allocator);
         for (decorations) |decoration| {
             if (decoration.options.before) |before| {
@@ -168,14 +169,18 @@ pub const ModelRawLineChanged = struct {
     // The new value of the line.
     detail: ArrayList(u8),
     // The injected text on the line.
-    injectedText: ?[]LineInjectedText,
+    injectedText: ?[]const LineInjectedText,
 
-    pub fn init(lineNumber: usize, detail: ArrayList(u8), injectedText: ?[]LineInjectedText) ModelRawLineChanged {
+    pub fn init(lineNumber: usize, detail: ArrayList(u8), injectedText: ?[]const LineInjectedText) ModelRawLineChanged {
         return ModelRawLineChanged{
             .lineNumber = lineNumber,
             .detail = detail,
             .injectedText = injectedText,
         };
+    }
+
+    pub fn deinit(self: *const ModelRawLineChanged) void {
+        self.detail.deinit();
     }
 };
 
@@ -203,17 +208,22 @@ pub const ModelRawLinesInserted = struct {
     // `toLineNumber` - `fromLineNumber` + 1 denotes the number of lines that were inserted
     toLineNumber: usize,
     // The text that was inserted
-    detail: []const []const u8,
+    detail: ArrayList(ArrayList(u8)),
     // The injected texts for every inserted line.
-    injectedTexts: [](?[]LineInjectedText),
+    injectedTexts: ArrayList(?[]const LineInjectedText),
 
-    pub fn init(fromLineNumber: usize, toLineNumber: usize, detail: []const []const u8, injectedTexts: [](?[]LineInjectedText)) ModelRawLinesInserted {
+    pub fn init(fromLineNumber: usize, toLineNumber: usize, detail: ArrayList(ArrayList(u8)), injectedTexts: ArrayList(?[]const LineInjectedText)) ModelRawLinesInserted {
         return ModelRawLinesInserted{
             .fromLineNumber = fromLineNumber,
             .toLineNumber = toLineNumber,
             .detail = detail,
             .injectedTexts = injectedTexts,
         };
+    }
+
+    pub fn deinit(self: *const ModelRawLinesInserted) void {
+        self.detail.deinit();
+        self.injectedTexts.deinit();
     }
 };
 
@@ -241,11 +251,19 @@ pub const ModelRawChange = union(RawContentChangedType) {
             .eolChanged => RawContentChangedType.eolChanged,
         };
     }
+
+    pub fn deinit(self: *const ModelRawChange) void {
+        switch (self.*) {
+            .lineChanged => self.lineChanged.deinit(),
+            .linesInserted => self.linesInserted.deinit(),
+            else => {},
+        }
+    }
 };
 
 // An event describing a change in the text of a model.
 pub const ModelRawContentChangedEvent = struct {
-    changes: []ModelRawChange,
+    changes: ArrayList(ModelRawChange),
     // The new version id the model has transitioned to.
     versionId: i64,
     // Flag that indicates that this event was generated while undoing.
@@ -255,7 +273,7 @@ pub const ModelRawContentChangedEvent = struct {
 
     resultingSelection: ?[]Selection,
 
-    pub fn init(changes: []const ModelRawChange, versionId: i64, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
+    pub fn init(changes: ArrayList(ModelRawChange), versionId: i64, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
         return ModelRawContentChangedEvent{
             .changes = changes,
             .versionId = versionId,
@@ -266,7 +284,7 @@ pub const ModelRawContentChangedEvent = struct {
     }
 
     pub fn containsEvent(self: *const ModelRawContentChangedEvent, changedType: RawContentChangedType) bool {
-        for (self.changes) |change| {
+        for (self.changes.items) |change| {
             if (change.changeType() == changedType) {
                 return true;
             }
@@ -274,15 +292,15 @@ pub const ModelRawContentChangedEvent = struct {
         return false;
     }
 
-    pub fn merge(a: ModelRawContentChangedEvent, b: ModelRawContentChangedEvent) ModelRawContentChangedEvent {
-        const changes = ArrayList(ModelRawChange).init(a.changes.allocator);
-        changes.appendSlice(a.changes);
-        changes.appendSlice(b.changes);
+    pub fn merge(a: ModelRawContentChangedEvent, b: ModelRawContentChangedEvent) !ModelRawContentChangedEvent {
+        var changes = ArrayList(ModelRawChange).init(a.changes.allocator);
+        try changes.appendSlice(a.changes.items);
+        try changes.appendSlice(b.changes.items);
 
         const versionId = b.versionId;
         const isUndoing = (a.isUndoing or b.isUndoing);
         const isRedoing = (a.isRedoing or b.isRedoing);
-        return ModelRawContentChangedEvent.init(changes.toOwnedSlice(), versionId, isUndoing, isRedoing);
+        return ModelRawContentChangedEvent.init(changes, versionId, isUndoing, isRedoing);
     }
 };
 
@@ -361,17 +379,19 @@ pub const InternalModelContentChangeEvent = struct {
         };
     }
 
-    pub fn merge(self: InternalModelContentChangeEvent, other: InternalModelContentChangeEvent) InternalModelContentChangeEvent {
-        const rawContentChangedEvent = ModelRawContentChangedEvent.merge(self.rawContentChangedEvent, other.rawContentChangedEvent);
-        const contentChangedEvent = InternalModelContentChangeEvent._mergeChangeEvents(self.contentChangedEvent, other.contentChangedEvent);
+    pub fn merge(self: InternalModelContentChangeEvent, other: InternalModelContentChangeEvent) !InternalModelContentChangeEvent {
+        const rawContentChangedEvent = try ModelRawContentChangedEvent.merge(self.rawContentChangedEvent, other.rawContentChangedEvent);
+        const contentChangedEvent = try InternalModelContentChangeEvent._mergeChangeEvents(self.contentChangedEvent, other.contentChangedEvent);
         return InternalModelContentChangeEvent{
             .rawContentChangedEvent = rawContentChangedEvent,
             .contentChangedEvent = contentChangedEvent,
         };
     }
 
-    fn _mergeChangeEvents(a: ModelContentChangedEvent, b: ModelContentChangedEvent) ModelContentChangedEvent {
-        const changes = a.changes ++ b.changes;
+    fn _mergeChangeEvents(a: ModelContentChangedEvent, b: ModelContentChangedEvent) !ModelContentChangedEvent {
+        var changes = ArrayList(ModelContentChange).init(a.changes.allocator);
+        try changes.appendSlice(a.changes.items);
+        try changes.appendSlice(b.changes.items);
         const eol = b.eol;
         const versionId = b.versionId;
         const isUndoing = (a.isUndoing or b.isUndoing);

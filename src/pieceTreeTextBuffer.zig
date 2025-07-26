@@ -13,7 +13,6 @@ const EndOfLinePreference = Model.EndOfLinePreference;
 const ValidAnnotatedEditOperation = Model.ValidAnnotatedEditOperation;
 const ApplyEditsResult = Model.ApplyEditsResult;
 const InternalModelContentChange = Model.InternalModelContentChange;
-const ReverseSingleEditOperation = Model.ReverseSingleEditOperation;
 const SearchData = Model.SearchData;
 const FindMatch = Model.FindMatch;
 const EOL = Model.EOL;
@@ -26,6 +25,8 @@ const usizeAdd = @import("utils.zig").usizeAdd;
 const TextChange = @import("textChange.zig").TextChange;
 const replaceEOL = @import("eolCounter.zig").replaceEOL;
 const safeUtf8Substring = @import("tui/utf8Helper.zig").safeUtf8Substring;
+const ModelContentChange = @import("textModelEvents.zig").ModelContentChange;
+const ValidEditOperation = @import("model.zig").ValidEditOperation;
 
 const ValidatedEditOperation = struct {
     sortIndex: i64,
@@ -43,7 +44,7 @@ const ValidatedEditOperation = struct {
 
 const TrimAutoWhitespaceCandidate = struct {
     lineNumber: usize,
-    oldContent: []const u8,
+    oldContent: ArrayList(u8),
 };
 
 pub const PieceTreeTextBuffer = struct {
@@ -369,10 +370,10 @@ pub const PieceTreeTextBuffer = struct {
                 if (op.isAutoWhitespaceEdit and op.range.isEmpty()) {
                     // Record already the future line numbers that might be auto whitespace removal candidates on next edit
                     for (reverseRange.startLineNumber..reverseRange.endLineNumber + 1) |lineNumber| {
-                        var currentLineContent: []const u8 = "";
+                        var currentLineContent = ArrayList(u8).init(allocator);
                         if (lineNumber == reverseRange.startLineNumber) {
                             currentLineContent = try self.getLineContent(op.range.startLineNumber);
-                            if (strings.firstNonWhitespaceIndex(currentLineContent) != null) {
+                            if (strings.firstNonWhitespaceIndex(currentLineContent.items) != null) {
                                 continue;
                             }
                         }
@@ -386,10 +387,10 @@ pub const PieceTreeTextBuffer = struct {
             }
         }
 
-        var reverseEdits: ?ArrayList(ReverseSingleEditOperation) = null;
+        var reverseEdits: ?ArrayList(ValidEditOperation) = null;
         if (computeUndoEdits) {
             var reverseRangeDeltaOffset: isize = 0;
-            var reverseOperations = ArrayList(ReverseSingleEditOperation).init(allocator);
+            var reverseOperations = ArrayList(ValidEditOperation).init(allocator);
             for (operations.items, 0..) |op, i| {
                 const reverseRange = reverseRanges.items[i];
                 const bufferText = try self.getValueInRange(op.range, .TextDefined);
@@ -397,7 +398,7 @@ pub const PieceTreeTextBuffer = struct {
                 const reverseRangeOffset = usizeAdd(op.rangeOffset, reverseRangeDeltaOffset);
                 reverseRangeDeltaOffset = reverseRangeDeltaOffset + usizeSub(op.text.len, bufferText.items.len);
 
-                try reverseOperations.append(ReverseSingleEditOperation{
+                try reverseOperations.append(ValidEditOperation{
                     .sortIndex = op.sortIndex,
                     .identifier = op.identifier,
                     .range = reverseRange,
@@ -413,7 +414,7 @@ pub const PieceTreeTextBuffer = struct {
 
             // Can only sort reverse operations when the order is not significant
             if (!hasTouchingRanges) {
-                std.sort.heap(ReverseSingleEditOperation, reverseOperations.items, {}, _sortReverseOpsAscending);
+                std.sort.heap(ValidEditOperation, reverseOperations.items, {}, _sortReverseOpsAscending);
             }
 
             reverseEdits = reverseOperations;
@@ -440,10 +441,10 @@ pub const PieceTreeTextBuffer = struct {
 
                 const prevContent = candidate.oldContent;
                 const lineContent = try self.getLineContent(lineNumber);
-                defer allocator.free(lineContent);
-                defer allocator.free(prevContent);
+                defer lineContent.deinit();
+                defer prevContent.deinit();
 
-                if (lineContent.len == 0 or std.mem.eql(u8, lineContent, prevContent) or strings.firstNonWhitespaceIndex(lineContent) != null) {
+                if (lineContent.items.len == 0 or std.mem.eql(u8, lineContent.items, prevContent.items) or strings.firstNonWhitespaceIndex(lineContent.items) != null) {
                     continue;
                 }
 
@@ -576,10 +577,12 @@ pub const PieceTreeTextBuffer = struct {
                 .endColumn = endColumn,
             };
             try contentChanges.append(InternalModelContentChange{
-                .range = contentChangeRange,
-                .rangeLength = op.rangeLength,
-                .text = op.text,
-                .rangeOffset = op.rangeOffset,
+                .modelContentChange = ModelContentChange{
+                    .range = contentChangeRange,
+                    .rangeOffset = op.rangeOffset,
+                    .rangeLength = op.rangeLength,
+                    .text = op.text,
+                },
                 .forceMoveMarkers = op.forceMoveMarkers,
             });
         }
@@ -675,10 +678,10 @@ fn _sortOpDescending(context: void, a: ValidatedEditOperation, b: ValidatedEditO
     return _sortOpsAscending(context, b, a);
 }
 
-fn _sortReverseOpsAscending(context: void, a: ReverseSingleEditOperation, b: ReverseSingleEditOperation) bool {
+fn _sortReverseOpsAscending(context: void, a: ValidEditOperation, b: ValidEditOperation) bool {
     _ = context;
 
-    return a.sortIndex < b.sortIndex;
+    return a.sortIndex.? < b.sortIndex.?;
 }
 
 fn _sortTrimAutoWhitespaceCandidatesDescending(context: void, a: TrimAutoWhitespaceCandidate, b: TrimAutoWhitespaceCandidate) bool {

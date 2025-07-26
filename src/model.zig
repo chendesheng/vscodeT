@@ -10,6 +10,7 @@ const SingleEditOperation = @import("editOperation.zig").SingleEditOperation;
 const strings = @import("strings.zig");
 const RegExp = @import("RegExp.zig").RegExp;
 const WordCharacterClassifier = @import("wordCharacterClassifier.zig").WordCharacterClassifier;
+const ModelContentChange = @import("textModelEvents.zig").ModelContentChange;
 
 pub const EOL = enum(u8) {
     CRLF,
@@ -65,6 +66,9 @@ pub const ValidEditOperation = struct {
     text: ?[]const u8,
     // @internal
     textChange: TextChange,
+
+    // reverse edit operations
+    sortIndex: ?i64,
 };
 
 pub const ValidAnnotatedEditOperation = struct {
@@ -116,37 +120,28 @@ pub const SearchData = struct {
 };
 
 pub const InternalModelContentChange = struct {
-    range: Range,
-    rangeOffset: usize,
-    rangeLength: usize,
-    text: []const u8,
+    modelContentChange: ModelContentChange,
     forceMoveMarkers: bool,
 };
 
-pub const ReverseSingleEditOperation = struct {
-    sortIndex: i64,
-    identifier: ?SingleEditOperationIdentifier,
-    range: Range,
-    text: []const u8,
-    textChange: TextChange,
-};
-
 pub const ApplyEditsResult = struct {
-    reverseEdits: ?ArrayList(ReverseSingleEditOperation),
+    reverseEdits: ?ArrayList(ValidEditOperation),
     changes: ArrayList(InternalModelContentChange),
     trimAutoWhitespaceLineNumbers: ?ArrayList(usize),
 
     pub fn deinit(self: *const ApplyEditsResult) void {
         if (self.reverseEdits) |edits| {
             for (edits.items) |edit| {
-                edits.allocator.free(edit.text);
+                if (edit.text) |text| {
+                    edits.allocator.free(text);
+                }
                 edits.allocator.free(edit.textChange.oldText);
                 edits.allocator.free(edit.textChange.newText);
             }
             edits.deinit();
         }
         for (self.changes.items) |change| {
-            self.changes.allocator.free(change.text);
+            self.changes.allocator.free(change.modelContentChange.text);
         }
         self.changes.deinit();
         if (self.trimAutoWhitespaceLineNumbers) |lines| {
