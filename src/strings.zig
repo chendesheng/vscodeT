@@ -184,18 +184,18 @@ test "singleLetterHash" {
     }
 }
 
-pub fn concat(allocator: Allocator, stra: []const u8, strb: []const u8) ![]const u8 {
+pub fn concat(allocator: Allocator, stra: []const u8, strb: []const u8) !ArrayList(u8) {
     var result = ArrayList(u8).init(allocator);
     try result.appendSlice(stra);
     try result.appendSlice(strb);
-    return result.toOwnedSlice();
+    return result;
 }
 
 test "concat" {
     const allocator = std.testing.allocator;
     const result = try concat(allocator, "Hello", "World");
-    defer allocator.free(result);
-    try std.testing.expectEqualStrings("HelloWorld", result);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("HelloWorld", result.items);
 }
 
 pub const String = union(enum) {
@@ -273,6 +273,35 @@ pub const String = union(enum) {
     pub fn len(self: *const String) usize {
         return self.items().len;
     }
+
+    pub fn substring(self: *const String, start: usize, end: usize) String {
+        return String.initBorrowed(self.items()[start..end]);
+    }
+
+    // transfer ownership to the caller
+    pub fn move(self: *String) String {
+        switch (self.*) {
+            .owned => |list| {
+                self.* = .initBorrowed(list.items);
+                return String.initOwned(list);
+            },
+            .borrowed => |str| {
+                return String.initBorrowed(str);
+            },
+        }
+    }
+
+    pub fn isBasicASCII_(self: *const String) bool {
+        return isBasicASCII(self.items());
+    }
+
+    pub fn containsRTL_(self: *const String) bool {
+        return containsRTL(self.items());
+    }
+
+    pub fn containsUnusualLineTerminators_(self: *const String) bool {
+        return containsUnusualLineTerminators(self.items());
+    }
 };
 
 test "String.initBorrowed" {
@@ -343,6 +372,30 @@ test "String.len" {
     defer str.deinit();
     try std.testing.expectEqual(5, str.len());
     try std.testing.expectEqual(0, String.Empty.len());
+}
+
+test "String.move" {
+    const allocator = std.testing.allocator;
+    var arr = ArrayList(u8).init(allocator);
+    try arr.appendSlice("Hello");
+    var str = String.initOwned(arr);
+
+    var str2 = try str.move();
+    defer str2.deinit();
+
+    // str2 still owns the memory after str is deinitialized
+    str.deinit();
+    try std.testing.expectEqualStrings("Hello", str2.items());
+}
+
+test "String.move borrowed" {
+    var str = String.initBorrowed("Hello");
+    defer str.deinit();
+
+    var str2 = try str.move();
+    defer str2.deinit();
+
+    try std.testing.expectEqualStrings("Hello", str2.items());
 }
 
 pub fn getNextCodePoint(text: []const u8, len: usize, offset: usize) !u21 {

@@ -6,12 +6,17 @@ const Selection = @import("selection.zig").Selection;
 const InjectedTextOptions = @import("model.zig").InjectedTextOptions;
 const ModelDecoration = @import("model.zig").ModelDecoration;
 const EOL = @import("model.zig").EOL;
+const String = @import("strings.zig").String;
 
 pub const ModelContentChange = struct {
     range: Range,
     rangeOffset: usize,
     rangeLength: usize,
-    text: []const u8,
+    text: String,
+
+    pub fn deinit(self: *ModelContentChange) void {
+        self.text.deinit();
+    }
 };
 
 // An event describing a change in the text of a model.
@@ -31,6 +36,13 @@ pub const ModelContentChangedEvent = struct {
     isFlush: bool,
     // Flag that indicates that this event describes an eol change.
     isEolChange: bool,
+
+    pub fn deinit(self: *const ModelContentChangedEvent) void {
+        for (self.changes.items) |*change| {
+            change.deinit();
+        }
+        self.changes.deinit();
+    }
 };
 
 // An event describing that model decorations have changed.

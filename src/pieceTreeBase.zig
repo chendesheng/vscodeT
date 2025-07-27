@@ -502,11 +502,11 @@ pub const PieceTreeBase = struct {
         }
     }
 
-    pub fn setEOL(self: *PieceTreeBase, eol: EOL) void {
+    pub fn setEOL(self: *PieceTreeBase, eol: EOL) !void {
         self.log("setEOL({s})\n", .{if (eol == .CRLF) ".CRLF" else ".LF"});
 
         self._EOL = eol;
-        self.normalizeEOL(self._EOL);
+        try self.normalizeEOL(self._EOL);
     }
 
     pub fn createSnapshot(self: *PieceTreeBase, BOM: []u8) !PieceTreeSnapshot {

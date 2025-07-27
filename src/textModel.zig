@@ -33,7 +33,6 @@ const io = std.io;
 const Range = @import("range.zig").Range;
 const TextChange = @import("textChange.zig").TextChange;
 const Selection = @import("selection.zig").Selection;
-const SingleEditOperation = @import("editOperation.zig").SingleEditOperation;
 const guessIndentation = @import("indentationGuesser.zig").guessIndentation;
 const GuessedIndentation = @import("indentationGuesser.zig").GuessedIndentation;
 const ResourceEditStackSnapshot = @import("undoRedo.zig").ResourceEditStackSnapshot;
@@ -71,6 +70,7 @@ const utils = @import("utils.zig");
 const Rg = @import("range.zig");
 const SearchParams = @import("textModelSearch.zig").SearchParams;
 const TextModelSearch = @import("textModelSearch.zig").TextModelSearch;
+const String = @import("strings.zig").String;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -104,6 +104,7 @@ pub const TextModelSnapshot = struct {
 
         const allocator = self._source.allocator;
         const result: ArrayList(u8) = ArrayList(u8).init(allocator);
+        defer result.deinit();
 
         while (true) {
             const tmp = self._source.read();
@@ -165,7 +166,7 @@ pub const TextModel = struct {
     // It is not globally unique in order to limit it to one character.
     _instanceId: u8,
     _deltaDecorationCallCnt: usize,
-    _lastDecorationId: usize,
+    _lastDecorationId: u32,
     _decorations: std.AutoHashMap(u64, *IntervalNode),
     _decorationsTree: DecorationsTrees,
     // _decorationProvider: ColorizedBracketPairsDecorationProvider,
@@ -241,7 +242,7 @@ pub const TextModel = struct {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
         const bufferLineCount = buffer.getLineCount();
-        const bufferTextLength = buffer.getValueLengthInRange(Range.init(1, 1, bufferLineCount, buffer.getLineLength(bufferLineCount) + 1), EndOfLinePreference.TextDefined);
+        const bufferTextLength = buffer.getValueLengthInRange(Range.init(1, 1, bufferLineCount, buffer.getLineLength(bufferLineCount) + 1), .TextDefined);
 
         var tooLargeForTokenization = false;
         var tooLargeForHeapOperation = false;
@@ -314,6 +315,9 @@ pub const TextModel = struct {
         const allocator = self._buffer.getAllocator();
         self._buffer.deinit();
         self._decorations.deinit();
+        if (self._initialUndoRedoSnapshot) |*snapshot| {
+            snapshot.deinit();
+        }
         allocator.free(self.id);
         switch (self._associatedResource.path) {
             .raw => |raw| allocator.free(raw),
@@ -486,18 +490,16 @@ pub const TextModel = struct {
         self._initialUndoRedoSnapshot = snapshot;
     }
 
-    pub fn getValue(self: *TextModel, eol: ?EndOfLinePreference, preserveBOM: bool) ![]const u8 {
+    pub fn getValue(self: *TextModel, eol: ?EndOfLinePreference, preserveBOM: bool) !ArrayList(u8) {
         if (self.isTooLargeForHeapOperation()) {
             return error.OperationWouldExceedHeapMemoryLimits;
         }
 
         const fullModelRange = self.getFullModelRange();
-        const fullModelValue = try self.getValueInRange(fullModelRange, eol);
+        var fullModelValue = try self.getValueInRange(fullModelRange, eol);
 
         if (preserveBOM) {
-            const allocator = self.getAllocator();
-            allocator.free(fullModelValue);
-            return try std.fmt.allocPrint(allocator, "{s}{s}", .{ self._buffer.getBOM(), fullModelValue });
+            try fullModelValue.insertSlice(0, self._buffer.getBOM());
         }
 
         return fullModelValue;
@@ -507,7 +509,7 @@ pub const TextModel = struct {
         return TextModelSnapshot.init(try self._buffer.createSnapshot(preserveBOM));
     }
 
-    pub fn getValueLength(self: *TextModel, eol: EndOfLinePreference, preserveBOM: bool) usize {
+    pub fn getValueLength(self: *TextModel, eol: ?EndOfLinePreference, preserveBOM: bool) usize {
         const fullModelRange = self.getFullModelRange();
         const fullModelValue = self.getValueLengthInRange(fullModelRange, eol);
 
@@ -518,16 +520,16 @@ pub const TextModel = struct {
         return fullModelValue;
     }
 
-    pub fn getValueInRange(self: *TextModel, rawRange: Range, eol: EndOfLinePreference) !ArrayList(u8) {
-        return try self._buffer.getValueInRange(self.validateRange(rawRange), eol);
+    pub fn getValueInRange(self: *TextModel, rawRange: Range, eol: ?EndOfLinePreference) !ArrayList(u8) {
+        return try self._buffer.getValueInRange(self.validateRange(rawRange), eol orelse EndOfLinePreference.TextDefined);
     }
 
-    pub fn getValueLengthInRange(self: *TextModel, rawRange: Range, eol: EndOfLinePreference) usize {
-        return self._buffer.getValueLengthInRange(self.validateRange(rawRange), eol);
+    pub fn getValueLengthInRange(self: *TextModel, rawRange: Range, eol: ?EndOfLinePreference) usize {
+        return self._buffer.getValueLengthInRange(self.validateRange(rawRange), eol orelse EndOfLinePreference.TextDefined);
     }
 
-    pub fn getCharacterCountInRange(self: *TextModel, rawRange: Range, eol: EndOfLinePreference) usize {
-        return self._buffer.getCharacterCountInRange(self.validateRange(rawRange), eol);
+    pub fn getCharacterCountInRange(self: *TextModel, rawRange: Range, eol: ?EndOfLinePreference) usize {
+        return self._buffer.getCharacterCountInRange(self.validateRange(rawRange), eol orelse EndOfLinePreference.TextDefined);
     }
 
     pub fn getLineCount(self: *const TextModel) usize {
@@ -902,22 +904,22 @@ pub const TextModel = struct {
         self._onDidChangeDecorations.endDeferredEmit();
     }
 
-    fn _validateEditOperation(self: *TextModel, rawOperation: *const IdentifiedSingleEditOperation) ValidAnnotatedEditOperation {
+    fn _validateEditOperation(self: *TextModel, rawOperation: *IdentifiedSingleEditOperation) ValidAnnotatedEditOperation {
         return ValidAnnotatedEditOperation{
             .identifier = rawOperation.identifier,
-            .range = self.validateRange(rawOperation.op.range),
-            .text = rawOperation.op.text,
-            .forceMoveMarkers = rawOperation.op.forceMoveMarkers,
+            .range = self.validateRange(rawOperation.range),
+            .text = if (rawOperation.text) |*text| text.move() else null,
+            .forceMoveMarkers = rawOperation.forceMoveMarkers,
             .isAutoWhitespaceEdit = rawOperation.isAutoWhitespaceEdit orelse false,
             ._isTracked = rawOperation._isTracked orelse false,
         };
     }
 
-    fn _validateEditOperations(self: *TextModel, rawOperations: []const IdentifiedSingleEditOperation) !ArrayList(ValidAnnotatedEditOperation) {
+    fn _validateEditOperations(self: *TextModel, rawOperations: []IdentifiedSingleEditOperation) !ArrayList(ValidAnnotatedEditOperation) {
         const allocator = self.getAllocator();
         var result = ArrayList(ValidAnnotatedEditOperation).init(allocator);
-        for (rawOperations) |rawOperation| {
-            try result.append(self._validateEditOperation(&rawOperation));
+        for (rawOperations) |*rawOperation| {
+            try result.append(self._validateEditOperation(rawOperation));
         }
         return result;
     }
@@ -927,15 +929,16 @@ pub const TextModel = struct {
         defer self._onDidChangeDecorations.endDeferredEmit();
 
         self._eventEmitter.beginDeferredEmit();
-        defer self._eventEmitter.endDeferredEmit();
+        defer self._eventEmitter.endDeferredEmit(null);
 
         const ops = try self._validateEditOperations(editOperations);
         defer ops.deinit();
         return try self._pushEditOperations(beforeCursorState, ops, cursorStateComputer, group);
     }
 
-    fn _pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations: ArrayList(ValidAnnotatedEditOperation), cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
-        if (self._options.trimAutoWhitespace and self._trimAutoWhitespaceLines) {
+    fn _pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations_: ArrayList(ValidAnnotatedEditOperation), cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
+        var editOperations = editOperations_;
+        if (self._options.trimAutoWhitespace and self._trimAutoWhitespaceLines != null) {
             // Go through each saved line number and insert a trim whitespace edit
             // if it is safe to do so (no conflicts with other edits).
 
@@ -946,10 +949,10 @@ pub const TextModel = struct {
             }).init(allocator);
             defer incomingEdits.deinit();
 
-            for (editOperations) |op| {
+            for (editOperations.items) |*op| {
                 try incomingEdits.append(.{
                     .range = self.validateRange(op.range),
-                    .text = op.text,
+                    .text = if (op.text) |*text| text.items() else null,
                 });
             }
 
@@ -976,7 +979,7 @@ pub const TextModel = struct {
             }
 
             if (editsAreNearCursors) {
-                for (self._trimAutoWhitespaceLines.items) |trimLineNumber| {
+                for (self._trimAutoWhitespaceLines.?.items) |trimLineNumber| {
                     const maxLineColumn = self.getLineMaxColumn(trimLineNumber);
 
                     var allowTrimLine = true;
@@ -992,12 +995,12 @@ pub const TextModel = struct {
                         // At this point:
                         //   editRange.startLineNumber <= trimLine <= editRange.endLineNumber
 
-                        if (trimLineNumber == editRange.startLineNumber and editRange.startColumn == maxLineColumn and editRange.isEmpty() and editText and editText.len > 0 and editText[0] == '\n') {
+                        if (trimLineNumber == editRange.startLineNumber and editRange.startColumn == maxLineColumn and editRange.isEmpty() and editText != null and editText.?.len > 0 and editText.?[0] == '\n') {
                             // This edit inserts a new line (and maybe other text) after `trimLine`
                             continue;
                         }
 
-                        if (trimLineNumber == editRange.startLineNumber and editRange.startColumn == 1 and editRange.isEmpty() and editText and editText.len > 0 and editText[editText.len - 1] == '\n') {
+                        if (trimLineNumber == editRange.startLineNumber and editRange.startColumn == 1 and editRange.isEmpty() and editText != null and editText.?.len > 0 and editText.?[editText.?.len - 1] == '\n') {
                             // This edit inserts a new line (and maybe other text) before `trimLine`
                             continue;
                         }
@@ -1009,13 +1012,7 @@ pub const TextModel = struct {
 
                     if (allowTrimLine) {
                         const trimRange = Range.init(trimLineNumber, 1, trimLineNumber, maxLineColumn);
-                        try editOperations.append(ValidAnnotatedEditOperation{
-                            .range = trimRange,
-                            .text = null,
-                            .forceMoveMarkers = false,
-                            .isAutoWhitespaceEdit = false,
-                            .isTracked = false,
-                        });
+                        try editOperations.append(ValidAnnotatedEditOperation.fromRange(trimRange));
                     }
                 }
             }
@@ -1023,43 +1020,53 @@ pub const TextModel = struct {
             self._trimAutoWhitespaceLines = null;
         }
         if (self._initialUndoRedoSnapshot == null) {
-            self._initialUndoRedoSnapshot = self._undoRedoService.createSnapshot(self.uri());
+            self._initialUndoRedoSnapshot = try self._undoRedoService.createSnapshot(self.uri());
         }
-        return self._commandManager.pushEditOperation(beforeCursorState, editOperations, cursorStateComputer, group);
+        return try self._commandManager.pushEditOperation(beforeCursorState, editOperations.items, cursorStateComputer, group);
     }
 
-    pub fn _applyUndo(self: *TextModel, changes: []TextChange, eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) void {
-        const edits = ArrayList(TextChange).init(self.getAllocator());
-        for (changes) |change| {
-            const rangeStart = self.getOffsetAt(change.newPosition);
-            const rangeEnd = rangeStart + change.newText.len;
+    pub fn _applyUndo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) !void {
+        var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
+        defer edits.deinit();
+        for (changes.items) |change| {
+            const rangeStart = self.getPositionAt(change.newPosition);
+            const rangeEnd = self.getPositionAt(change.newEnd());
             try edits.append(.{
                 .range = Range.init(rangeStart.lineNumber, rangeStart.column, rangeEnd.lineNumber, rangeEnd.column),
                 .text = change.oldText,
+                .forceMoveMarkers = false,
+                .identifier = null,
+                .isAutoWhitespaceEdit = null,
+                ._isTracked = null,
             });
         }
-        self._applyUndoRedoEdits(edits, eol, true, false, resultingAlternativeVersionId, resultingSelection);
+        try self._applyUndoRedoEdits(edits, eol, true, false, resultingAlternativeVersionId, resultingSelection);
     }
 
-    pub fn _applyRedo(self: *TextModel, changes: []TextChange, eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) void {
-        const edits = ArrayList(SingleEditOperation).init(self.getAllocator());
-        for (changes) |change| {
-            const rangeStart = self.getOffsetAt(change.oldPosition);
-            const rangeEnd = rangeStart + change.oldText.len;
+    pub fn _applyRedo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) !void {
+        var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
+        defer edits.deinit();
+        for (changes.items) |change| {
+            const rangeStart = self.getPositionAt(change.oldPosition);
+            const rangeEnd = self.getPositionAt(change.oldEnd());
             try edits.append(.{
                 .range = Range.init(rangeStart.lineNumber, rangeStart.column, rangeEnd.lineNumber, rangeEnd.column),
                 .text = change.newText,
+                .forceMoveMarkers = false,
+                .identifier = null,
+                .isAutoWhitespaceEdit = null,
+                ._isTracked = null,
             });
         }
-        self._applyUndoRedoEdits(edits, eol, false, true, resultingAlternativeVersionId, resultingSelection);
+        try self._applyUndoRedoEdits(edits, eol, false, true, resultingAlternativeVersionId, resultingSelection);
     }
 
-    fn _applyUndoRedoEdits(self: *TextModel, edits: ArrayList(SingleEditOperation), eol: EOL, isUndoing: bool, isRedoing: bool, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) void {
+    fn _applyUndoRedoEdits(self: *TextModel, edits: ArrayList(IdentifiedSingleEditOperation), eol: EOL, isUndoing: bool, isRedoing: bool, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) !void {
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
 
         self._eventEmitter.beginDeferredEmit();
-        defer self._eventEmitter.endDeferredEmit();
+        defer self._eventEmitter.endDeferredEmit(null);
 
         self._isUndoing = isUndoing;
         defer self._isUndoing = false;
@@ -1067,8 +1074,8 @@ pub const TextModel = struct {
         self._isRedoing = isRedoing;
         defer self._isRedoing = false;
 
-        self.applyEdits(edits, false);
-        self.setEOL(eol);
+        _ = try self.applyEdits(edits.items, false);
+        try self.setEOL(eol);
         self._overwriteAlternativeVersionId(resultingAlternativeVersionId);
         _ = resultingSelection;
     }
@@ -1087,15 +1094,17 @@ pub const TextModel = struct {
         self._eventEmitter.fire(InternalModelContentChangeEvent.init(rawChange, change));
     }
 
-    fn _createContentChanged2(self: *TextModel, range: Range, rangeOffset: usize, rangeLength: usize, rangeEndPosition: Position, text: []const u8, isUndoing: bool, isRedoing: bool, isFlush: bool, isEolChange: bool) ModelContentChangedEvent {
+    fn _createContentChanged2(self: *TextModel, range: Range, rangeOffset: usize, rangeLength: usize, rangeEndPosition: Position, text: String, isUndoing: bool, isRedoing: bool, isFlush: bool, isEolChange: bool) !ModelContentChangedEvent {
         _ = rangeEndPosition;
+        var changes = ArrayList(ModelContentChange).init(self.getAllocator());
+        try changes.append(.{
+            .range = range,
+            .rangeOffset = rangeOffset,
+            .rangeLength = rangeLength,
+            .text = text,
+        });
         return ModelContentChangedEvent{
-            .changes = &[_]ModelContentChange{.{
-                .range = range,
-                .rangeOffset = rangeOffset,
-                .rangeLength = rangeLength,
-                .text = text,
-            }},
+            .changes = changes,
             .eol = self._buffer.getEOL(),
             .isEolChange = isEolChange,
             .versionId = self.getVersionId(),
@@ -1105,35 +1114,51 @@ pub const TextModel = struct {
         };
     }
 
-    pub fn setEOL(self: *TextModel, eol: EOL) void {
+    pub fn setEOL(self: *TextModel, eol: EOL) !void {
         if (self._buffer.getEOL() == eol) {
             // Nothing to do
             return;
         }
 
         const oldFullModelRange = self.getFullModelRange();
-        const oldModelValueLength = self.getValueLengthInRange(oldFullModelRange, EndOfLinePreference.TextDefined);
+        const oldModelValueLength = self.getValueLengthInRange(oldFullModelRange, null);
         const endLineNumber = self.getLineCount();
         const endColumn = self.getLineMaxColumn(endLineNumber);
 
-        self._onBeforeEOLChange();
-        self._buffer.setEOL(eol);
+        try self._onBeforeEOLChange();
+        try self._buffer.setEOL(eol);
         self._increaseVersionId();
-        self._onAfterEOLChange();
+        try self._onAfterEOLChange();
 
-        self._emitContentChangedEvent(ModelRawContentChangedEvent.init(&[_]ModelRawChange{ModelRawChange{ .eolChanged = ModelRawEOLChanged.init() }}, self._versionId, false, false), self._createContentChanged2(Range.init(1, 1, endLineNumber, endColumn), 0, oldModelValueLength, Position.init(endLineNumber, endColumn), self.getValue(), false, false, false, true));
+        var rawChanges = ArrayList(ModelRawChange).init(self.getAllocator());
+        try rawChanges.append(.{ .eolChanged = ModelRawEOLChanged.init() });
+
+        var contentChanged = try self._createContentChanged2(
+            Range.init(1, 1, endLineNumber, endColumn),
+            0,
+            oldModelValueLength,
+            Position.init(endLineNumber, endColumn),
+            String.initOwned(try self.getValue(null, false)),
+            false,
+            false,
+            false,
+            true,
+        );
+        defer contentChanged.deinit();
+        self._emitContentChangedEvent(ModelRawContentChangedEvent.init(rawChanges, self._versionId, false, false), contentChanged);
     }
 
-    fn _onBeforeEOLChange(self: *TextModel) void {
+    fn _onBeforeEOLChange(self: *TextModel) !void {
         // Ensure all decorations get their `range` set.
-        self._decorationsTree.ensureAllNodesHaveRanges(&self);
+        try self._decorationsTree.ensureAllNodesHaveRanges(self);
     }
 
-    fn _onAfterEOLChange(self: *TextModel) void {
+    fn _onAfterEOLChange(self: *TextModel) !void {
         // Transform back `range` to offsets
         const versionId = self.getVersionId();
-        const allDecorations = self._decorationsTree.collectNodesPostOrder();
-        for (allDecorations) |node| {
+        var allDecorations = try self._decorationsTree.collectNodesPostOrder();
+        defer allDecorations.deinit();
+        for (allDecorations.items) |node| {
             const range = node.range.?; // the range is defined due to `_onBeforeEOLChange`
 
             const delta = node.cachedAbsoluteStart - node.start;
@@ -1152,7 +1177,18 @@ pub const TextModel = struct {
         }
     }
 
-    pub fn applyEdits(self: *TextModel, rawOperations: []const IdentifiedSingleEditOperation, computeUndoEdits: bool) !?ArrayList(ValidEditOperation) {
+    pub fn applyValidatedEdits(self: *TextModel, editOperations: []ValidAnnotatedEditOperation, computeUndoEdits: bool) !?ArrayList(ValidEditOperation) {
+        self._onDidChangeDecorations.beginDeferredEmit();
+        defer self._onDidChangeDecorations.endDeferredEmit();
+
+        self._eventEmitter.beginDeferredEmit();
+        defer self._eventEmitter.endDeferredEmit(null);
+
+        const result = try self._doApplyEdits(editOperations, computeUndoEdits);
+        return if (computeUndoEdits) result else null;
+    }
+
+    pub fn applyEdits(self: *TextModel, rawOperations: []IdentifiedSingleEditOperation, computeUndoEdits: bool) !?ArrayList(ValidEditOperation) {
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
 
@@ -1183,7 +1219,7 @@ pub const TextModel = struct {
             // where we will emit content change events
             // and we want to read the final decorations
             for (contentChanges) |change| {
-                try self._decorationsTree.acceptReplace(change.modelContentChange.rangeOffset, change.modelContentChange.rangeLength, change.modelContentChange.text.len, change.forceMoveMarkers);
+                try self._decorationsTree.acceptReplace(change.modelContentChange.rangeOffset, change.modelContentChange.rangeLength, change.modelContentChange.text.len(), change.forceMoveMarkers);
             }
 
             var rawContentChanges = ArrayList(ModelRawChange).init(allocator);
@@ -1198,7 +1234,7 @@ pub const TextModel = struct {
 
             var lineCount = oldLineCount;
             for (contentChanges) |change| {
-                const res = countEOL(change.modelContentChange.text);
+                const res = countEOL(change.modelContentChange.text.items());
                 const eolCount = res.eolCount;
                 self._onDidChangeDecorations.fire();
 
@@ -1290,22 +1326,23 @@ pub const TextModel = struct {
             }
 
             var changes = ArrayList(ModelContentChange).init(allocator);
-            defer changes.deinit();
             for (contentChanges) |change| {
                 try changes.append(change.modelContentChange);
             }
 
+            var changedEvent = ModelContentChangedEvent{
+                .changes = changes,
+                .eol = self._buffer.getEOL(),
+                .isEolChange = false,
+                .versionId = self.getVersionId(),
+                .isUndoing = self._isUndoing,
+                .isRedoing = self._isRedoing,
+                .isFlush = false,
+            };
+            defer changedEvent.deinit();
             self._emitContentChangedEvent(
                 ModelRawContentChangedEvent.init(rawContentChanges, self.getVersionId(), self._isUndoing, self._isRedoing),
-                ModelContentChangedEvent{
-                    .changes = changes,
-                    .eol = self._buffer.getEOL(),
-                    .isEolChange = false,
-                    .versionId = self.getVersionId(),
-                    .isUndoing = self._isUndoing,
-                    .isRedoing = self._isRedoing,
-                    .isFlush = false,
-                },
+                changedEvent,
             );
         }
 
@@ -1314,20 +1351,20 @@ pub const TextModel = struct {
         return reverseEdits;
     }
 
-    pub fn undo(self: *TextModel) void {
-        self._undoRedoService.undo(self.uri());
+    pub fn undo(self: *TextModel) !void {
+        try self._undoRedoService.undo(.{ .uri = self.uri() });
     }
 
-    pub fn canUndo(self: *TextModel) bool {
-        return self._undoRedoService.canUndo(self.uri());
+    pub fn canUndo(self: *TextModel) !bool {
+        return try self._undoRedoService.canUndo(.{ .uri = self.uri() });
     }
 
-    pub fn redo(self: *TextModel) void {
-        self._undoRedoService.redo(self.uri());
+    pub fn redo(self: *TextModel) !void {
+        try self._undoRedoService.redo(.{ .uri = self.uri() });
     }
 
-    pub fn canRedo(self: *TextModel) bool {
-        return self._undoRedoService.canRedo(self.uri());
+    pub fn canRedo(self: *TextModel) !bool {
+        return try self._undoRedoService.canRedo(.{ .uri = self.uri() });
     }
 
     //#region Decorations
@@ -1602,7 +1639,7 @@ pub const TextModel = struct {
         }
     }
 
-    fn _deltaDecorationsImpl(self: *TextModel, ownerId: usize, oldDecorationsIds: []const []const u8, newDecorations: []ModelDeltaDecoration, suppressEvents: bool) ![]const []const u8 {
+    fn _deltaDecorationsImpl(self: *TextModel, ownerId: usize, oldDecorationsIds: []const u64, newDecorations: []ModelDeltaDecoration, suppressEvents: bool) ![]const u64 {
         const versionId = self.getVersionId();
 
         const oldDecorationsLen = oldDecorationsIds.len;
@@ -1660,7 +1697,7 @@ pub const TextModel = struct {
                 if (node == null) {
                     self._lastDecorationId += 1;
                     const internalDecorationId = self._lastDecorationId;
-                    const decorationId = try std.fmt.allocPrint(self.getAllocator(), "{d};{d}", .{ self._instanceId, internalDecorationId });
+                    const decorationId: u64 = @as(u64, @intCast(self._instanceId)) << 32 | @as(u64, @intCast(internalDecorationId));
                     node = try IntervalNode.init(self.getAllocator(), decorationId, 0, 0);
                     try self._decorations.put(decorationId, node);
                 }
@@ -1812,6 +1849,33 @@ test "TextModel.applyEdits" {
     try std.testing.expectEqualStrings("yo, world!", line.items);
 }
 
+test "TextModel.pushEditOperations" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "Hello, world!", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var opts = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 1, 1, 6), String.initBorrowed("yo")),
+    };
+    _ = try textModel.pushEditOperations(null, &opts, null, UndoRedoGroup.init());
+
+    const line = try textModel.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("yo, world!", line.items);
+    try textModel.undo();
+    const line1 = try textModel.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualStrings("Hello, world!", line1.items);
+
+    try textModel.redo();
+    const line2 = try textModel.getLineContent(1);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("yo, world!", line2.items);
+}
+
 pub fn indentOfLine(line: []const u8) usize {
     var indent: usize = 0;
     for (line) |c| {
@@ -1847,16 +1911,19 @@ pub const DecorationsTrees = struct {
     // This tree holds decorations that contain injected text.
     _injectedTextDecorationsTree: IntervalTree,
 
+    allocator: Allocator,
+
     pub fn init(allocator: Allocator) DecorationsTrees {
         return DecorationsTrees{
+            .allocator = allocator,
             ._decorationsTree0 = IntervalTree.init(allocator),
             ._decorationsTree1 = IntervalTree.init(allocator),
             ._injectedTextDecorationsTree = IntervalTree.init(allocator),
         };
     }
 
-    fn ensureAllNodesHaveRanges(self: *DecorationsTrees, host: *TextModel) void {
-        self.getAll(host, 0, false, false, false);
+    fn ensureAllNodesHaveRanges(self: *DecorationsTrees, host: *TextModel) !void {
+        _ = try self.getAll(host, 0, false, false, false);
     }
 
     fn _ensureNodesHaveRanges(host: *TextModel, nodes: ArrayList(*IntervalNode)) !ArrayList(ModelDecoration) {
@@ -1892,7 +1959,7 @@ pub const DecorationsTrees = struct {
         const r2 = self._injectedTextDecorationsTree.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         defer r2.deinit();
 
-        const result = ArrayList(*IntervalNode).init(self.allocator);
+        var result = ArrayList(*IntervalNode).init(self.allocator);
         defer result.deinit();
         try result.appendSlice(r0.items);
         try result.appendSlice(r1.items);
@@ -1910,7 +1977,7 @@ pub const DecorationsTrees = struct {
         const versionId = host.getVersionId();
         const searchResult = self._injectedTextDecorationsTree.search(filterOwnerId, false, versionId, false);
         defer searchResult.deinit();
-        const result = try self._ensureNodesHaveRanges(host, searchResult);
+        const result = try _ensureNodesHaveRanges(host, searchResult);
         var write_index = 0;
         for (result) |i| {
             if (i.options.showIfCollapsed or !i.range.isEmpty()) {
@@ -1924,9 +1991,9 @@ pub const DecorationsTrees = struct {
 
     pub fn getAllCustomLineHeights(self: *DecorationsTrees, host: *TextModel, filterOwnerId: usize) !ArrayList(ModelDecoration) {
         const versionId = host.getVersionId();
-        const searchResult = self._search(filterOwnerId, false, false, versionId, false);
+        const searchResult = try self._search(filterOwnerId, false, false, versionId, false);
         defer searchResult.deinit();
-        const result = try self._ensureNodesHaveRanges(host, searchResult);
+        const result = try _ensureNodesHaveRanges(host, searchResult);
         var write_index = 0;
         for (result.items) |node| {
             if (node.options.lineHeight != null) {
@@ -1940,11 +2007,11 @@ pub const DecorationsTrees = struct {
 
     pub fn getAll(self: *DecorationsTrees, host: *TextModel, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, onlyMarginDecorations: bool) !ArrayList(ModelDecoration) {
         const versionId = host.getVersionId();
-        const result = self._search(filterOwnerId, filterOutValidation, overviewRulerOnly, versionId, onlyMarginDecorations);
-        return try self._ensureNodesHaveRanges(host, result);
+        const result = try self._search(filterOwnerId, filterOutValidation, overviewRulerOnly, versionId, onlyMarginDecorations);
+        return try _ensureNodesHaveRanges(host, result);
     }
 
-    fn _search(self: *DecorationsTrees, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    fn _search(self: *DecorationsTrees, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         if (overviewRulerOnly) {
             return try self._decorationsTree1.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         } else {
@@ -1955,7 +2022,7 @@ pub const DecorationsTrees = struct {
             const r2 = try self._injectedTextDecorationsTree.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
             defer r2.deinit();
 
-            const result = ArrayList(*IntervalNode).init(self.allocator);
+            var result = ArrayList(*IntervalNode).init(self.allocator);
             defer result.deinit();
             try result.appendSlice(r0.items);
             try result.appendSlice(r1.items);
@@ -1972,7 +2039,7 @@ pub const DecorationsTrees = struct {
         const r2 = try self._injectedTextDecorationsTree.collectNodesFromOwner(ownerId);
         defer r2.deinit();
 
-        const result = ArrayList(*IntervalNode).init(self.allocator);
+        var result = ArrayList(*IntervalNode).init(self.allocator);
         defer result.deinit();
         try result.appendSlice(r0.items);
         try result.appendSlice(r1.items);
@@ -1988,7 +2055,7 @@ pub const DecorationsTrees = struct {
         const r2 = try self._injectedTextDecorationsTree.collectNodesPostOrder();
         defer r2.deinit();
 
-        const result = ArrayList(*IntervalNode).init(self.allocator);
+        var result = ArrayList(*IntervalNode).init(self.allocator);
         defer result.deinit();
         try result.appendSlice(r0.items);
         try result.appendSlice(r1.items);
@@ -2283,8 +2350,8 @@ pub const ModelDecorationsChangeAccessor = struct {
     // @param range Range that this decoration covers.
     // @param options Options associated with this decoration.
     // @return An unique identifier associated with this decoration.
-    fn addDecoration(self: *ModelDecorationsChangeAccessor, range: Range, options: ModelDecorationOptions) ![]const u8 {
-        return try self.model._deltaDecorationsImpl(self.ownerId, &[_][]const u8{}, &[_]ModelDeltaDecoration{.{ .range = range, .options = options }});
+    fn addDecoration(self: *ModelDecorationsChangeAccessor, range: Range, options: ModelDecorationOptions) !u64 {
+        return try self.model._deltaDecorationsImpl(self.ownerId, &[_]u64{}, &[_]ModelDeltaDecoration{.{ .range = range, .options = options }});
     }
     // Change the range that an existing decoration covers.
     // @param id The unique identifier associated with the decoration.

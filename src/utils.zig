@@ -26,7 +26,7 @@ pub fn toIndexedPair(T: type, allocator: Allocator, items: []const T) !ArrayList
     return result;
 }
 
-pub fn fromIndexedPair(T: type, allocator: Allocator, items: []Pair(*const T, usize)) !ArrayList(T) {
+pub fn fromIndexedPair(T: type, allocator: Allocator, items: []Pair(*T, usize)) !ArrayList(T) {
     var result = ArrayList(T).init(allocator);
     for (items) |item| {
         try result.append(item.first.*);

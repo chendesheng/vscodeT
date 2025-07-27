@@ -8,14 +8,15 @@ const Pair = @import("utils.zig").Pair;
 const pair = @import("utils.zig").pair;
 const usizeSub = @import("utils.zig").usizeSub;
 const usizeAdd = @import("utils.zig").usizeAdd;
+const String = @import("strings.zig").String;
 
 pub const TextChange = struct {
     oldPosition: usize,
-    oldText: []const u8,
+    oldText: String,
     newPosition: usize,
-    newText: []const u8,
+    newText: String,
 
-    pub fn init(oldPosition: usize, oldText: []const u8, newPosition: usize, newText: []const u8) TextChange {
+    pub fn init(oldPosition: usize, oldText: String, newPosition: usize, newText: String) TextChange {
         return TextChange{
             .oldPosition = oldPosition,
             .oldText = oldText,
@@ -24,13 +25,13 @@ pub const TextChange = struct {
         };
     }
 
-    pub fn deinit(self: *const TextChange, allocator: Allocator) void {
-        allocator.free(self.oldText);
-        allocator.free(self.newText);
+    pub fn deinit(self: *TextChange) void {
+        self.oldText.deinit();
+        self.newText.deinit();
     }
 
     pub fn oldLength(self: *const TextChange) usize {
-        return self.oldText.len;
+        return self.oldText.len();
     }
 
     pub fn oldEnd(self: *const TextChange) usize {
@@ -38,7 +39,7 @@ pub const TextChange = struct {
     }
 
     pub fn newLength(self: *const TextChange) usize {
-        return self.newText.len;
+        return self.newText.len();
     }
 
     pub fn newEnd(self: *const TextChange) usize {
@@ -46,20 +47,20 @@ pub const TextChange = struct {
     }
 
     pub fn toString(self: *const TextChange, allocator: Allocator) ![]const u8 {
-        if (self.oldText.len == 0) {
-            const escaped = try strings.escapeNewLine(self.newText, allocator);
+        if (self.oldText.isEmpty()) {
+            const escaped = try strings.escapeNewLine(self.newText.items(), allocator);
             defer allocator.free(escaped);
             return try std.fmt.allocPrint(allocator, "(inserted@{d} \"{s}\")", .{ self.oldPosition, escaped });
         }
 
-        if (self.newText.len == 0) {
-            const escaped = try strings.escapeNewLine(self.oldText, allocator);
+        if (self.newText.isEmpty()) {
+            const escaped = try strings.escapeNewLine(self.oldText.items(), allocator);
             defer allocator.free(escaped);
             return try std.fmt.allocPrint(allocator, "(deleted@{d} \"{s}\")", .{ self.oldPosition, escaped });
         }
 
-        const escapedOldText = try strings.escapeNewLine(self.oldText, allocator);
-        const escapedNewText = try strings.escapeNewLine(self.newText, allocator);
+        const escapedOldText = try strings.escapeNewLine(self.oldText.items(), allocator);
+        const escapedNewText = try strings.escapeNewLine(self.newText.items(), allocator);
         defer allocator.free(escapedOldText);
         defer allocator.free(escapedNewText);
         return try std.fmt.allocPrint(allocator, "(replaced@{d} \"{s}\" with \"{s}\")", .{
@@ -72,34 +73,35 @@ pub const TextChange = struct {
     pub fn writeSize(self: *const TextChange) usize {
         return 4 // oldPosition
         + 4 // newPosition
-        + _wriateStringSize(self.oldText) //
-        + _wriateStringSize(self.newText);
+        + _wriateStringSize(self.oldText.items()) //
+        + _wriateStringSize(self.newText.items());
     }
 
     pub fn write(self: *const TextChange, writer: io.AnyWriter) !void {
         try writer.writeInt(u32, @intCast(self.oldPosition), .big);
         try writer.writeInt(u32, @intCast(self.newPosition), .big);
-        try _writeString(writer, self.oldText);
-        try _writeString(writer, self.newText);
+        try _writeString(writer, self.oldText.items());
+        try _writeString(writer, self.newText.items());
     }
 
     pub fn read(reader: io.AnyReader, allocator: Allocator, dest: *ArrayList(TextChange)) !void {
         const oldPosition = try reader.readInt(u32, .big);
         const newPosition = try reader.readInt(u32, .big);
-        const oldText = try _readString(reader, allocator);
-        const newText = try _readString(reader, allocator);
+        const oldText = String.initOwned(try _readString(reader, allocator));
+        const newText = String.initOwned(try _readString(reader, allocator));
         try dest.append(TextChange.init(oldPosition, oldText, newPosition, newText));
     }
 };
 
-pub fn compressConsecutiveTextChanges(allocator: Allocator, prevEdits: ?[]const TextChange, currEdits: []const TextChange) ![]const TextChange {
-    if (prevEdits == null or prevEdits.?.len == 0) {
-        return currEdits;
+pub fn compressConsecutiveTextChanges(allocator: Allocator, prevEdits: ArrayList(TextChange), currEdits: []const TextChange) !ArrayList(TextChange) {
+    if (prevEdits.items.len == 0) {
+        var result = ArrayList(TextChange).init(allocator);
+        try result.appendSlice(currEdits);
+        return result;
     }
 
-    var compressor = TextChangeCompressor.init(allocator, prevEdits.?, currEdits);
-    var result = try compressor.compress();
-    return try result.toOwnedSlice();
+    var compressor = TextChangeCompressor.init(allocator, prevEdits.items, currEdits);
+    return try compressor.compress();
 }
 
 pub const TextChangeCompressor = struct {
@@ -257,8 +259,8 @@ pub const TextChangeCompressor = struct {
     }
 
     pub fn _splitPrev(edit: TextChange, offset: usize) PairTextChange {
-        const preText = edit.newText[0..offset];
-        const postText = edit.newText[offset..];
+        const preText = edit.newText.substring(0, offset);
+        const postText = edit.newText.substring(offset, edit.newText.len());
 
         return pair(
             TextChange{
@@ -269,7 +271,7 @@ pub const TextChangeCompressor = struct {
             },
             TextChange{
                 .oldPosition = edit.oldEnd(),
-                .oldText = "",
+                .oldText = String.Empty,
                 .newPosition = edit.newPosition + offset,
                 .newText = postText,
             },
@@ -277,8 +279,8 @@ pub const TextChangeCompressor = struct {
     }
 
     pub fn _splitCurr(edit: TextChange, offset: usize) PairTextChange {
-        const preText = edit.oldText[0..offset];
-        const postText = edit.oldText[offset..];
+        const preText = edit.oldText.substring(0, offset);
+        const postText = edit.oldText.substring(offset, edit.oldText.len());
 
         return pair(
             TextChange{
@@ -291,7 +293,7 @@ pub const TextChangeCompressor = struct {
                 .oldPosition = edit.oldPosition + offset,
                 .oldText = postText,
                 .newPosition = edit.newEnd(),
-                .newText = "",
+                .newText = String.Empty,
             },
         );
     }
@@ -310,8 +312,12 @@ pub const TextChangeCompressor = struct {
 
             if (prev.oldEnd() == curr.oldPosition) {
                 // Merge into `prev`
-                prev.oldText = try strings.concat(allocator, prev.oldText, curr.oldText);
-                prev.newText = try strings.concat(allocator, prev.newText, curr.newText);
+                var oldText = prev.oldText;
+                defer oldText.deinit();
+                var newText = prev.newText;
+                defer newText.deinit();
+                prev.oldText = String.initOwned(try strings.concat(allocator, prev.oldText.items(), curr.oldText.items()));
+                prev.newText = String.initOwned(try strings.concat(allocator, prev.newText.items(), curr.newText.items()));
             } else {
                 write_index += 1;
                 prev = &result.items[write_index];
@@ -331,7 +337,7 @@ pub const TextChangeCompressor = struct {
         var result = &self._result;
         var write_index: usize = 0;
         for (result.items) |edit| {
-            if (std.mem.eql(u8, edit.oldText, edit.newText)) {
+            if (edit.oldText.eql(edit.newText)) {
                 continue;
             }
             result.items[write_index] = edit;
@@ -352,10 +358,12 @@ fn _writeString(writer: io.AnyWriter, str: []const u8) !void {
     try writer.writeAll(str);
 }
 
-fn _readString(reader: io.AnyReader, allocator: Allocator) ![]const u8 {
+fn _readString(reader: io.AnyReader, allocator: Allocator) !ArrayList(u8) {
     const len: usize = @intCast(try reader.readInt(u32, .big));
-    const str = try allocator.alloc(u8, len);
-    _ = try reader.readAll(str);
+    var str = try ArrayList(u8).initCapacity(allocator, len);
+    try str.resize(len);
+    const readLen = try reader.readAll(str.items);
+    std.debug.assert(readLen == len);
     return str;
 }
 
@@ -383,7 +391,7 @@ test "textChange read/write" {
     defer readChanges.deinit();
     defer {
         for (readChanges.items) |item| {
-            item.deinit(allocator);
+            item.deinit();
         }
     }
     try TextChange.read(reader, allocator, &readChanges);

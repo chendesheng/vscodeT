@@ -6,11 +6,11 @@ const Range = @import("range.zig").Range;
 const TextChange = @import("textChange.zig").TextChange;
 const ArrayList = @import("std").ArrayList;
 const default_max_load_percentage = @import("std").hash_map.default_max_load_percentage;
-const SingleEditOperation = @import("editOperation.zig").SingleEditOperation;
 const strings = @import("strings.zig");
 const RegExp = @import("RegExp.zig").RegExp;
 const WordCharacterClassifier = @import("wordCharacterClassifier.zig").WordCharacterClassifier;
 const ModelContentChange = @import("textModelEvents.zig").ModelContentChange;
+const String = @import("strings.zig").String;
 
 pub const EOL = enum(u8) {
     CRLF,
@@ -30,7 +30,13 @@ pub const SingleEditOperationIdentifier = struct {
 
 // A single edit operation, that has an identifier.
 pub const IdentifiedSingleEditOperation = struct {
-    op: SingleEditOperation,
+    // The range to replace. This can be empty to emulate a simple insert.
+    range: Range,
+    // The text to replace with. This can be null to emulate a simple delete.
+    text: ?String,
+    // This indicates that this operation has "insert" semantics.
+    // i.e. forceMoveMarkers = true => if `range` is collapsed, all markers at the position will be moved.
+    forceMoveMarkers: bool,
 
     // An identifier associated with this single edit operation.
     identifier: ?SingleEditOperationIdentifier,
@@ -42,13 +48,11 @@ pub const IdentifiedSingleEditOperation = struct {
     // @internal
     _isTracked: ?bool,
 
-    pub fn init(range: Range, text: ?[]const u8) IdentifiedSingleEditOperation {
+    pub fn init(range: Range, text: ?String) IdentifiedSingleEditOperation {
         return IdentifiedSingleEditOperation{
-            .op = SingleEditOperation{
-                .range = range,
-                .text = text,
-                .forceMoveMarkers = false,
-            },
+            .range = range,
+            .text = text,
+            .forceMoveMarkers = false,
             .identifier = null,
             .isAutoWhitespaceEdit = null,
             ._isTracked = null,
@@ -63,18 +67,25 @@ pub const ValidEditOperation = struct {
     // The range to replace. This can be empty to emulate a simple insert.
     range: Range,
     // The text to replace with. This can be empty to emulate a simple delete.
-    text: ?[]const u8,
+    text: ?String,
     // @internal
     textChange: TextChange,
 
     // reverse edit operations
     sortIndex: ?i64,
+
+    pub fn deinit(self: *ValidEditOperation) void {
+        if (self.text) |*text| {
+            text.deinit();
+        }
+        self.textChange.deinit();
+    }
 };
 
 pub const ValidAnnotatedEditOperation = struct {
     identifier: ?SingleEditOperationIdentifier,
     range: Range,
-    text: ?[]const u8,
+    text: ?String,
     forceMoveMarkers: bool,
     isAutoWhitespaceEdit: bool,
     _isTracked: bool,
@@ -89,7 +100,7 @@ pub const ValidAnnotatedEditOperation = struct {
             ._isTracked = false,
         };
     }
-    pub fn fromRangeAndText(range: Range, text: []const u8) ValidAnnotatedEditOperation {
+    pub fn fromRangeAndText(range: Range, text: String) ValidAnnotatedEditOperation {
         return ValidAnnotatedEditOperation{
             .identifier = null,
             .range = range,
@@ -129,19 +140,12 @@ pub const ApplyEditsResult = struct {
     changes: ArrayList(InternalModelContentChange),
     trimAutoWhitespaceLineNumbers: ?ArrayList(usize),
 
-    pub fn deinit(self: *const ApplyEditsResult) void {
+    pub fn deinit(self: *ApplyEditsResult) void {
         if (self.reverseEdits) |edits| {
-            for (edits.items) |edit| {
-                if (edit.text) |text| {
-                    edits.allocator.free(text);
-                }
-                edits.allocator.free(edit.textChange.oldText);
-                edits.allocator.free(edit.textChange.newText);
+            for (edits.items) |*edit| {
+                edit.deinit();
             }
             edits.deinit();
-        }
-        for (self.changes.items) |change| {
-            self.changes.allocator.free(change.modelContentChange.text);
         }
         self.changes.deinit();
         if (self.trimAutoWhitespaceLineNumbers) |lines| {
@@ -284,13 +288,11 @@ pub const TrackedRangeStickiness = enum(u2) {
     GrowsOnlyWhenTypingAfter = 3,
 };
 
-pub fn uriToString(uri: Uri, allocator: Allocator) ![]const u8 {
+pub fn uriToString(uri: Uri, allocator: Allocator) !ArrayList(u8) {
     var list = std.ArrayList(u8).init(allocator);
     const writer = list.writer();
 
-    try writer.print("{s}:", .{uri.scheme});
-
-    try writer.writeAll("//");
+    try writer.print("{s}://", .{uri.scheme});
 
     if (uri.user) |user| {
         switch (user) {
@@ -366,7 +368,7 @@ pub fn uriToString(uri: Uri, allocator: Allocator) ![]const u8 {
         }
     }
 
-    return list.toOwnedSlice();
+    return list;
 }
 
 test "uriToString" {
@@ -382,8 +384,8 @@ test "uriToString" {
     for (urls) |url| {
         const uri = try Uri.parse(url);
         const result = try uriToString(uri, allocator);
-        defer allocator.free(result);
-        try std.testing.expectEqualStrings(result, url);
+        defer result.deinit();
+        try std.testing.expectEqualStrings(url, result.items);
     }
 }
 
