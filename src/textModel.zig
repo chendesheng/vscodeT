@@ -1840,9 +1840,10 @@ test "TextModel.applyEdits" {
     defer allocator.destroy(textModel);
     defer textModel.deinit();
 
-    _ = try textModel.applyEdits(&[_]IdentifiedSingleEditOperation{
-        .init(Range.init(1, 1, 1, 6), "yo"),
-    }, false);
+    var ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 1, 1, 6), .initBorrowed("yo")),
+    };
+    _ = try textModel.applyEdits(&ops, false);
 
     const line = try textModel.getLineContent(1);
     defer line.deinit();
