@@ -1,6 +1,7 @@
 comptime {
-    _ = @import("basics/offsetRange.zig");
     _ = @import("basics/FixedArray.zig");
+    _ = @import("basics/offsetRange.zig");
+    _ = @import("basics/rangePriorityQueue.zig");
     _ = @import("editStack.zig");
     _ = @import("indentationGuesser.zig");
     _ = @import("intervalTree.zig");

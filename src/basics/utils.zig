@@ -66,3 +66,10 @@ test "fromIndexedPair" {
 pub fn clamp(value: anytype, min: @TypeOf(value), max: @TypeOf(value)) @TypeOf(value) {
     return @max(min, @min(value, max));
 }
+
+pub fn findIndex(T: type, items: []T, context: anytype, predicate: fn (T, @TypeOf(context)) bool) ?usize {
+    for (items, 0..) |item, index| {
+        if (predicate(item)) return index;
+    }
+    return null;
+}

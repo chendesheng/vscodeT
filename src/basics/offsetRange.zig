@@ -1,6 +1,7 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
+const usizeAdd = @import("utils.zig").usizeAdd;
 const clamp = @import("utils.zig").clamp;
 
 // A range of offsets (0-based).
@@ -53,8 +54,8 @@ pub const OffsetRange = struct {
         return self.start == self.endExclusive;
     }
 
-    pub fn delta(self: OffsetRange, offset: usize) OffsetRange {
-        return OffsetRange.init(self.start + offset, self.endExclusive + offset);
+    pub fn delta(self: OffsetRange, offset: isize) OffsetRange {
+        return OffsetRange.init(usizeAdd(self.start, offset), usizeAdd(self.endExclusive, offset));
     }
 
     pub fn deltaStart(self: OffsetRange, offset: usize) OffsetRange {
