@@ -1,4 +1,5 @@
 comptime {
+    _ = @import("basics/offsetRange.zig");
     _ = @import("basics/FixedArray.zig");
     _ = @import("editStack.zig");
     _ = @import("indentationGuesser.zig");
