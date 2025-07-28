@@ -73,3 +73,46 @@ pub fn findIndex(T: type, items: []T, context: anytype, predicate: fn (T, @TypeO
     }
     return null;
 }
+
+// Finds the last item where predicate is true using binary search.
+// `predicate` must be monotonous, i.e. `arr.map(predicate)` must be like `[true, ..., true, false, ..., false]`!
+//
+// @returns `undefined` if no item matches, otherwise the last item that matches the predicate.
+pub fn findLastMonotonous(comptime T: type, array: []const T, context: anytype, predicate: fn (T, @TypeOf(context)) bool) ?T {
+    const idx = findLastIdxMonotonous(T, array, context, predicate, 0, array.len);
+    return if (idx == -1) null else array[idx];
+}
+
+// Finds the last item where predicate is true using binary search.
+// `predicate` must be monotonous, i.e. `arr.map(predicate)` must be like `[true, ..., true, false, ..., false]`!
+// @returns `startIdx - 1` if predicate is false for all items, otherwise the index of the last item that matches the predicate.
+pub fn findLastIdxMonotonous(comptime T: type, array: []const T, context: anytype, predicate: fn (T, @TypeOf(context)) bool, startIdx: usize, endIdxEx: usize) usize {
+    var i = startIdx;
+    var j = endIdxEx;
+    while (i < j) {
+        const k = @divFloor(i + j, 2);
+        if (predicate(array[k], context)) {
+            i = k + 1;
+        } else {
+            j = k;
+        }
+    }
+    return i - 1;
+}
+
+// Finds the first item where predicate is true using binary search.
+// `predicate` must be monotonous, i.e. `arr.map(predicate)` must be like `[false, ..., false, true, ..., true]`!
+// @returns `endIdxEx` if predicate is false for all items, otherwise the index of the first item that matches the predicate.
+pub fn findFirstIdxMonotonousOrArrLen(comptime T: type, array: []T, context: anytype, predicate: fn (T, @TypeOf(context)) bool, startIdx: usize, endIdxEx: usize) usize {
+    var i = startIdx;
+    var j = endIdxEx;
+    while (i < j) {
+        const k = @divFloor(i + j, 2);
+        if (predicate(array[k], context)) {
+            j = k;
+        } else {
+            i = k + 1;
+        }
+    }
+    return i;
+}
