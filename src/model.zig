@@ -2,20 +2,16 @@ const std = @import("std");
 const io = std.io;
 const Uri = std.Uri;
 const Allocator = std.mem.Allocator;
-const Range = @import("range.zig").Range;
+const Range = @import("./basics/range.zig").Range;
 const TextChange = @import("textChange.zig").TextChange;
 const ArrayList = @import("std").ArrayList;
 const default_max_load_percentage = @import("std").hash_map.default_max_load_percentage;
-const strings = @import("strings.zig");
-const RegExp = @import("RegExp.zig").RegExp;
-const WordCharacterClassifier = @import("wordCharacterClassifier.zig").WordCharacterClassifier;
+const strings = @import("./basics/strings.zig");
+const RegExp = @import("./basics/RegExp.zig").RegExp;
+const WordCharacterClassifier = @import("./basics/wordCharacterClassifier.zig").WordCharacterClassifier;
 const ModelContentChange = @import("textModelEvents.zig").ModelContentChange;
-const String = @import("strings.zig").String;
-
-pub const EOL = enum(u8) {
-    CRLF,
-    LF,
-};
+const String = @import("./basics/strings.zig").String;
+const EOL = @import("./basics/eolCounter.zig").EOL;
 
 pub const EndOfLinePreference = enum {
     TextDefined,

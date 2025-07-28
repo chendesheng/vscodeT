@@ -1,14 +1,14 @@
 const std = @import("std");
 
-const strings = @import("strings.zig");
+const strings = @import("./basics/strings.zig");
 const StringBuffer = @import("pieceTreeBase.zig").StringBuffer;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const createLineStarts = @import("pieceTreeBase.zig").createLineStarts;
 const createLineStartsFast = @import("pieceTreeBase.zig").createLineStartsFast;
-const EOL = @import("model.zig").EOL;
+const EOL = @import("./basics/eolCounter.zig").EOL;
 const PieceTreeTextBuffer = @import("pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
-const replaceEOL = @import("eolCounter.zig").replaceEOL;
+const replaceEOL = @import("./basics/eolCounter.zig").replaceEOL;
 const safeUtf8Prefix = @import("tui/utf8Helper.zig").safeUtf8Prefix;
 
 pub const PieceTreeTextBufferFactory = struct {

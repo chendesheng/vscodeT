@@ -6,8 +6,8 @@ const Uri = std.Uri;
 const UriHashMap = @import("model.zig").UriHashMap;
 const TextModel = @import("textModel.zig").TextModel;
 const UndoRedoService = @import("undoRedoService.zig").UndoRedoService;
-const Selection = @import("selection.zig").Selection;
-const EOL = @import("model.zig").EOL;
+const Selection = @import("./basics/selection.zig").Selection;
+const EOL = @import("./basics/eolCounter.zig").EOL;
 const TextChange = @import("textChange.zig").TextChange;
 const compressConsecutiveTextChanges = @import("textChange.zig").compressConsecutiveTextChanges;
 const UndoRedoGroup = @import("undoRedo.zig").UndoRedoGroup;
@@ -16,10 +16,11 @@ const Disposable = @import("undoRedo.zig").Disposable;
 const uriToString = @import("model.zig").uriToString;
 const TextModelCreationOptions = @import("model.zig").TextModelCreationOptions;
 const ValidAnnotatedEditOperation = @import("model.zig").ValidAnnotatedEditOperation;
-const Pair = @import("utils.zig").Pair;
-const toIndexedPair = @import("utils.zig").toIndexedPair;
-const fromIndexedPair = @import("utils.zig").fromIndexedPair;
-const pair = @import("utils.zig").pair;
+const utils = @import("./basics/utils.zig");
+const Pair = utils.Pair;
+const toIndexedPair = utils.toIndexedPair;
+const fromIndexedPair = utils.fromIndexedPair;
+const pair = utils.pair;
 
 pub const EditStackElement = union(enum) {
     singleModel: SingleModelEditStackElement,
@@ -388,9 +389,9 @@ pub const SingleModelEditStackElement = struct {
 
     pub fn toString(self: *const SingleModelEditStackElement) !ArrayList(u8) {
         const allocator = self.allocator;
-        const data = switch (self._data) {
+        var data = switch (self._data) {
             .unserialized => |data| data,
-            .serialized => |data| try SingleModelEditStackDataUnserialized.deserialize(allocator, data),
+            .serialized => |data| try SingleModelEditStackDataUnserialized.deserialize(allocator, data.items),
         };
         defer {
             switch (self._data) {
@@ -462,7 +463,7 @@ pub const SingleModelEditStackElement = struct {
         switch (self._data) {
             .serialized => |data| {
                 const allocator = self.allocator;
-                self._data = try SingleModelEditStackDataUnserialized.deserialize(allocator, data);
+                self._data = try SingleModelEditStackDataUnserialized.deserialize(allocator, data.items);
                 allocator.free(data);
             },
             .unserialized => {},
@@ -554,7 +555,7 @@ test "SingleModelEditStackElement" {
     try std.testing.expectEqualStrings("test", element.label);
     try std.testing.expectEqualStrings("test", element.code);
     try std.testing.expectEqual(null, element.confirmBeforeUndo);
-    try element.append(&[_]TextChange{TextChange.init(0, "a", 0, "b")}, .LF, 2, null);
+    try element.append(&[_]TextChange{TextChange.init(0, .initBorrowed("a"), 0, .initBorrowed("b"))}, .LF, 2, null);
     const str = try element.toString();
     defer str.deinit();
     try std.testing.expectEqualStrings("(replaced@0 \"a\" with \"b\")", str.items);

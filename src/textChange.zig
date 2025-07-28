@@ -3,12 +3,12 @@ const io = std.io;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const fs = std.fs;
-const strings = @import("strings.zig");
-const Pair = @import("utils.zig").Pair;
-const pair = @import("utils.zig").pair;
-const usizeSub = @import("utils.zig").usizeSub;
-const usizeAdd = @import("utils.zig").usizeAdd;
-const String = @import("strings.zig").String;
+const strings = @import("./basics/strings.zig");
+const Pair = @import("./basics/utils.zig").Pair;
+const pair = @import("./basics/utils.zig").pair;
+const usizeSub = @import("./basics/utils.zig").usizeSub;
+const usizeAdd = @import("./basics/utils.zig").usizeAdd;
+const String = @import("./basics/strings.zig").String;
 
 pub const TextChange = struct {
     oldPosition: usize,
@@ -368,7 +368,8 @@ fn _readString(reader: io.AnyReader, allocator: Allocator) !ArrayList(u8) {
 }
 
 test "textChange" {
-    const change = TextChange.init(0, "Hello", 0, "World");
+    var change = TextChange.init(0, .initBorrowed("Hello"), 0, .initBorrowed("World"));
+    defer change.deinit();
 
     const result = try change.toString(std.testing.allocator);
     defer std.testing.allocator.free(result);
@@ -378,7 +379,8 @@ test "textChange" {
 
 test "textChange read/write" {
     const allocator = std.testing.allocator;
-    const change = TextChange.init(0, "Hello", 0, "World");
+    var change = TextChange.init(0, .initBorrowed("Hello"), 0, .initBorrowed("World"));
+    defer change.deinit();
 
     var buf: [1024]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
@@ -390,11 +392,14 @@ test "textChange read/write" {
     var readChanges = ArrayList(TextChange).init(allocator);
     defer readChanges.deinit();
     defer {
-        for (readChanges.items) |item| {
+        for (readChanges.items) |*item| {
             item.deinit();
         }
     }
     try TextChange.read(reader, allocator, &readChanges);
 
-    try std.testing.expectEqualDeep(change, readChanges.items[0]);
+    try std.testing.expectEqual(change.newPosition, readChanges.items[0].newPosition);
+    try std.testing.expectEqualStrings(change.newText.items(), readChanges.items[0].newText.items());
+    try std.testing.expectEqual(change.oldPosition, readChanges.items[0].oldPosition);
+    try std.testing.expectEqualStrings(change.oldText.items(), readChanges.items[0].oldText.items());
 }

@@ -1,9 +1,9 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
-const countEOL = @import("eolCounter.zig").countEOL;
-const StringEOL = @import("eolCounter.zig").StringEOL;
-const strings = @import("strings.zig");
+const countEOL = @import("./basics/eolCounter.zig").countEOL;
+const StringEOL = @import("./basics/eolCounter.zig").StringEOL;
+const strings = @import("./basics/strings.zig");
 const PB = @import("pieceTreeBase.zig");
 const PieceTreeBase = PB.PieceTreeBase;
 const PieceTreeSnapshot = PB.PieceTreeSnapshot;
@@ -15,19 +15,19 @@ const ApplyEditsResult = Model.ApplyEditsResult;
 const InternalModelContentChange = Model.InternalModelContentChange;
 const SearchData = Model.SearchData;
 const FindMatch = Model.FindMatch;
-const EOL = Model.EOL;
-const Position = @import("position.zig").Position;
-const Rg = @import("range.zig");
+const EOL = @import("./basics/eolCounter.zig").EOL;
+const Position = @import("./basics/position.zig").Position;
+const Rg = @import("./basics/range.zig");
 const Range = Rg.Range;
 const StringBuffer = PB.StringBuffer;
-const usizeSub = @import("utils.zig").usizeSub;
-const usizeAdd = @import("utils.zig").usizeAdd;
+const usizeSub = @import("./basics/utils.zig").usizeSub;
+const usizeAdd = @import("./basics/utils.zig").usizeAdd;
 const TextChange = @import("textChange.zig").TextChange;
-const replaceEOL = @import("eolCounter.zig").replaceEOL;
+const replaceEOL = @import("./basics/eolCounter.zig").replaceEOL;
 const safeUtf8Substring = @import("tui/utf8Helper.zig").safeUtf8Substring;
 const ModelContentChange = @import("textModelEvents.zig").ModelContentChange;
 const ValidEditOperation = @import("model.zig").ValidEditOperation;
-const String = @import("strings.zig").String;
+const String = @import("./basics/strings.zig").String;
 
 const ValidatedEditOperation = struct {
     sortIndex: i64,
@@ -175,10 +175,11 @@ pub const PieceTreeTextBuffer = struct {
             const toLineNumber = range.endLineNumber;
             for (fromLineNumber..toLineNumber + 1) |lineNumber| {
                 const lineContent = try self.getLineContent(lineNumber);
+                defer lineContent.deinit();
 
                 const fromOffset = if (lineNumber == fromLineNumber) range.startColumn - 1 else 0;
-                const toOffset = if (lineNumber == toLineNumber) range.endColumn - 1 else lineContent.len;
-                const utf8View = try std.unicode.Utf8View.init(safeUtf8Substring(lineContent, fromOffset, toOffset));
+                const toOffset = if (lineNumber == toLineNumber) range.endColumn - 1 else lineContent.items.len;
+                const utf8View = try std.unicode.Utf8View.init(safeUtf8Substring(lineContent.items, fromOffset, toOffset));
                 var iter = utf8View.iterator();
                 while (iter.nextCodepointSlice()) |_| {
                     result += 1;
@@ -712,7 +713,7 @@ test "insert" {
     }, "", .LF, false, false, false, false);
     defer buffer.deinit();
 
-    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation{
             .identifier = null,
             .range = Range{
@@ -721,15 +722,18 @@ test "insert" {
                 .endLineNumber = 1,
                 .endColumn = 1,
             },
-            .text = "Hello",
+            .text = .initBorrowed("Hello"),
             .forceMoveMarkers = false,
             .isAutoWhitespaceEdit = false,
             ._isTracked = false,
         },
-    }, true, true);
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("HelloHello", try buffer.getLineContent(1));
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("HelloHello", line.items);
 }
 
 test "apply two inserts" {
@@ -739,24 +743,30 @@ test "apply two inserts" {
     }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
-    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation.fromRangeAndText(Range{
             .startLineNumber = 1,
             .startColumn = 2,
             .endLineNumber = 1,
             .endColumn = 2,
-        }, "Hello"),
+        }, .initBorrowed("Hello")),
         ValidAnnotatedEditOperation.fromRangeAndText(Range{
             .startLineNumber = 2,
             .startColumn = 1,
             .endLineNumber = 2,
             .endColumn = 1,
-        }, "nihao"),
-    }, true, true);
+        }, .initBorrowed("nihao")),
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("HHelloello", try buffer.getLineContent(1));
-    try std.testing.expectEqualStrings("nihaoWorld", try buffer.getLineContent(2));
+    const line1 = try buffer.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualStrings("HHelloello", line1.items);
+
+    const line2 = try buffer.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("nihaoWorld", line2.items);
 }
 
 test "delete" {
@@ -766,17 +776,20 @@ test "delete" {
     }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
-    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation.fromRange(Range{
             .startLineNumber = 1,
             .startColumn = 1,
             .endLineNumber = 1,
             .endColumn = 5,
         }),
-    }, true, true);
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("o", try buffer.getLineContent(1));
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("o", line.items);
 }
 
 test "delete cross line" {
@@ -786,17 +799,20 @@ test "delete cross line" {
     }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
-    var result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation.fromRange(Range{
             .startLineNumber = 1,
             .startColumn = 2,
             .endLineNumber = 2,
             .endColumn = 4,
         }),
-    }, true, true);
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Hld", try buffer.getLineContent(1));
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("Hld", line.items);
 }
 
 test "replace" {
@@ -806,17 +822,20 @@ test "replace" {
     }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
-    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation.fromRangeAndText(Range{
             .startLineNumber = 1,
             .startColumn = 1,
             .endLineNumber = 1,
             .endColumn = 6,
-        }, "nihao"),
-    }, true, true);
+        }, .initBorrowed("nihao")),
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("nihao", try buffer.getLineContent(1));
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("nihao", line.items);
 }
 
 test "getCharacterCountInRange" {

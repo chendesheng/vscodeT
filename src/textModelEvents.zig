@@ -1,12 +1,12 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
-const Range = @import("range.zig").Range;
-const Selection = @import("selection.zig").Selection;
+const Range = @import("./basics/range.zig").Range;
+const Selection = @import("./basics/selection.zig").Selection;
 const InjectedTextOptions = @import("model.zig").InjectedTextOptions;
 const ModelDecoration = @import("model.zig").ModelDecoration;
-const EOL = @import("model.zig").EOL;
-const String = @import("strings.zig").String;
+const EOL = @import("./basics/eolCounter.zig").EOL;
+const String = @import("./basics/strings.zig").String;
 
 pub const ModelContentChange = struct {
     range: Range,
