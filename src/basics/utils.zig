@@ -18,8 +18,8 @@ pub fn pair(first: anytype, second: anytype) Pair(@TypeOf(first), @TypeOf(second
     return Pair(@TypeOf(first), @TypeOf(second)){ .first = first, .second = second };
 }
 
-pub fn toIndexedPair(T: type, allocator: Allocator, items: []const T) !ArrayList(Pair(*const T, usize)) {
-    var result = ArrayList(Pair(*const T, usize)).init(allocator);
+pub fn toIndexedPair(T: type, allocator: Allocator, items: []T) !ArrayList(Pair(*T, usize)) {
+    var result = ArrayList(Pair(*T, usize)).init(allocator);
     for (0..items.len) |index| {
         try result.append(pair(&items[index], index));
     }
@@ -36,8 +36,8 @@ pub fn fromIndexedPair(T: type, allocator: Allocator, items: []Pair(*T, usize)) 
 
 test "toIndexedPair" {
     const allocator = std.testing.allocator;
-    const items = [_]i32{ 1, 2, 3 };
-    const result = try toIndexedPair(i32, allocator, &items);
+    var items = [_]i32{ 1, 2, 3 };
+    var result = try toIndexedPair(i32, allocator, &items);
     defer result.deinit();
     try std.testing.expectEqual(3, result.items.len);
     try std.testing.expectEqual(1, result.items[0].first.*);
@@ -50,7 +50,8 @@ test "toIndexedPair" {
 
 test "fromIndexedPair" {
     const allocator = std.testing.allocator;
-    const pairs = try toIndexedPair(i32, allocator, &[_]i32{ 1, 2, 3 });
+    var xs = [_]i32{ 1, 2, 3 };
+    var pairs = try toIndexedPair(i32, allocator, &xs);
     defer pairs.deinit();
 
     const result = try fromIndexedPair(i32, allocator, pairs.items);

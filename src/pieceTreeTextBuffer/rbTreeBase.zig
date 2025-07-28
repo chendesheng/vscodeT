@@ -1,8 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Piece = @import("pieceTreeBase.zig").Piece;
-const usizeSub = @import("./basics/utils.zig").usizeSub;
-const usizeAdd = @import("./basics/utils.zig").usizeAdd;
+const usizeSub = @import("../basics/utils.zig").usizeSub;
+const usizeAdd = @import("../basics/utils.zig").usizeAdd;
 
 pub const TreeNode = struct {
     parent: *TreeNode,

@@ -1,11 +1,11 @@
 {
   "zig.testArgs": [
     "test",
-    "--test-filter",
-    "${filter}",
-    "${path}",
+    "${workspaceFolder}/src/tests.zig",
     "-I/opt/homebrew/include",
     "-L/opt/homebrew/lib",
-    "-lonig"
+    "-lonig",
+    "--test-filter",
+    "${filter}"
   ]
 }

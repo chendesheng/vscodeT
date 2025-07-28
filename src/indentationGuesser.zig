@@ -1,6 +1,6 @@
 const std = @import("std");
-const PieceTreeTextBuffer = @import("pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
-const StringBuffer = @import("pieceTreeBase.zig").StringBuffer;
+const PieceTreeTextBuffer = @import("./pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
+const StringBuffer = @import("./pieceTreeTextBuffer/pieceTreeBase.zig").StringBuffer;
 const usizeSub = @import("./basics/utils.zig").usizeSub;
 
 const SpacesDiffResult = struct {

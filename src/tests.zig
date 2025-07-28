@@ -1,0 +1,17 @@
+comptime {
+    _ = @import("editStack.zig");
+    _ = @import("indentationGuesser.zig");
+    _ = @import("intervalTree.zig");
+    _ = @import("model.zig");
+    _ = @import("notificationService.zig");
+    _ = @import("pieceTreeTextBuffer/pieceTreeBase.zig");
+    _ = @import("pieceTreeTextBuffer/pieceTreeBufferBuilder.zig");
+    _ = @import("pieceTreeTextBuffer/pieceTreeTextBuffer.zig");
+    _ = @import("pieceTreeTextBuffer/rbTreeBase.zig");
+    _ = @import("textChange.zig");
+    _ = @import("textModel.zig");
+    _ = @import("textModelEvents.zig");
+    _ = @import("textModelSearch.zig");
+    _ = @import("undoRedo.zig");
+    _ = @import("undoRedoService.zig");
+}

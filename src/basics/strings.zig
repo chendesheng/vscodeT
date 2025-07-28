@@ -380,7 +380,7 @@ test "String.move" {
     try arr.appendSlice("Hello");
     var str = String.initOwned(arr);
 
-    var str2 = try str.move();
+    var str2 = str.move();
     defer str2.deinit();
 
     // str2 still owns the memory after str is deinitialized
@@ -392,7 +392,7 @@ test "String.move borrowed" {
     var str = String.initBorrowed("Hello");
     defer str.deinit();
 
-    var str2 = try str.move();
+    var str2 = str.move();
     defer str2.deinit();
 
     try std.testing.expectEqualStrings("Hello", str2.items());
