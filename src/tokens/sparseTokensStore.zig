@@ -217,7 +217,7 @@ pub const SparseTokensStore = struct {
 			aIndex++;
 		}
 
-		return new LineTokens(new Uint32Array(result), aTokens.getLineContent(), this._languageIdCodec);
+		return LineTokens.init(new Uint32Array(result), aTokens.getLineContent(), this._languageIdCodec);
 	}
 
 	fn _findFirstPieceWithLine(self: *SparseTokensStore, pieces: []SparseMultilineTokens, lineNumber: usize) usize {
