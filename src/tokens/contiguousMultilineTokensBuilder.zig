@@ -1,4 +1,6 @@
 const std = @import("std");
+const io = std.io;
+const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
 const ContiguousMultilineTokens = @import("./contiguousMultilineTokens.zig").ContiguousMultilineTokens;
@@ -6,64 +8,63 @@ const ContiguousMultilineTokens = @import("./contiguousMultilineTokens.zig").Con
 pub const ContiguousMultilineTokensBuilder = struct {
     _tokens: ArrayList(ContiguousMultilineTokens),
 
-    pub fn deserialize(buff: []const u8) ArrayList(ContiguousMultilineTokens) {
-        var offset: usize = 0;
-        const count = view32.get(offset);
-        offset += 4;
-        var result = ArrayList(ContiguousMultilineTokens).init(std.heap.page_allocator);
-        for (0..count) |i| {
-            offset = ContiguousMultilineTokens.deserialize(buff, offset, result.items);
+    pub fn deserialize(allocator: Allocator, buff: []const u8) !ArrayList(ContiguousMultilineTokens) {
+        const stream = io.fixedBufferStream(buff);
+        const reader = stream.reader();
+        const count = try reader.readInt(u32, .big);
+        var result = ArrayList(ContiguousMultilineTokens).init(allocator);
+        for (0..count) |_| {
+            try ContiguousMultilineTokens.deserialize(allocator, reader, &result);
         }
         return result;
     }
 
-    pub fn init() ContiguousMultilineTokensBuilder {
+    pub fn init(allocator: Allocator) ContiguousMultilineTokensBuilder {
         return ContiguousMultilineTokensBuilder{
-            ._tokens = ArrayList(ContiguousMultilineTokens).init(std.heap.page_allocator),
+            ._tokens = ArrayList(ContiguousMultilineTokens).init(allocator),
         };
     }
 
-    pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: []u32) void {
-        if (self._tokens.items.len > 0) {
-            const last = self._tokens.items[self._tokens.items.len - 1];
+    pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: []u32) !void {
+        if (self._tokens.getLastOrNull()) |last| {
             if (last.getEndLineNumber() + 1 == lineNumber) {
                 // append
-                last.appendLineTokens(lineTokens.items);
+                try last.appendLineTokens(lineTokens.items);
                 return;
             }
         }
-        self._tokens.append(ContiguousMultilineTokens{
-            .startLineNumber = lineNumber,
-            .tokens = ArrayList(u32).init(std.heap.page_allocator),
+        try self._tokens.append(ContiguousMultilineTokens{
+            ._startLineNumber = lineNumber,
+            ._tokens = ArrayList(u32).init(self._tokens.allocator),
         });
     }
 
-    pub fn finalize(self: *ContiguousMultilineTokensBuilder) []ContiguousMultilineTokens {
+    pub fn finalize(self: *ContiguousMultilineTokensBuilder) ![]ContiguousMultilineTokens {
         return self._tokens.items;
     }
 
-    pub fn serialize(self: *ContiguousMultilineTokensBuilder) []u8 {
-        const size = self._serializeSize();
-        var result = std.ArrayList(u8).init(std.heap.page_allocator);
-        self._serialize(result.items);
+    pub fn serialize(self: *ContiguousMultilineTokensBuilder) !ArrayList(u8) {
+        const size = try self._serializeSize();
+        var result = std.ArrayList(u8).init(self._tokens.allocator);
+        try result.resize(size);
+        try self._serialize(result.items, size);
         return result;
     }
 
-    fn _serializeSize(self: *ContiguousMultilineTokensBuilder) usize {
+    fn _serializeSize(self: *ContiguousMultilineTokensBuilder) !usize {
         var result: usize = 0;
         result += 4; // 4 bytes for the count
-        for (0..self._tokens.items.len) |i| {
-            result += self._tokens.items[i].serializeSize();
+        for (self._tokens.items) |item| {
+            result += try item.serializeSize();
         }
         return result;
     }
 
-    fn _serialize(self: *ContiguousMultilineTokensBuilder, destination: []u8) void {
-        var offset: usize = 0;
-        writeUInt32BE(destination, self._tokens.items.len, offset);
-        offset += 4;
-        for (0..self._tokens.items.len) |i| {
-            offset = self._tokens.items[i].serialize(destination, offset);
+    fn _serialize(self: *ContiguousMultilineTokensBuilder, destination: []u8) !void {
+        var w = io.fixedBufferStream(destination).writer();
+        try w.writeInt(u32, self._tokens.items.len, .big);
+        for (self._tokens.items) |item| {
+            try item.serialize(w);
         }
     }
 };

@@ -1,21 +1,23 @@
-pub const RateLimiter = struct {
-    _lastRun: usize,
-    _minimumTimeBetweenRuns: usize,
-    timesPerSecond: u64,
+const std = @import("std");
 
-    pub fn init(timesPerSecond: u64) RateLimiter {
+pub const RateLimiter = struct {
+    _lastRun: i64,
+    _minimumTimeBetweenRuns: f64,
+    timesPerSecond: f64,
+
+    pub fn init(timesPerSecond: i64) RateLimiter {
         return RateLimiter{
             ._lastRun = 0,
-            ._minimumTimeBetweenRuns = 1000 / timesPerSecond,
+            ._minimumTimeBetweenRuns = 1000.0 / @as(f64, @floatFromInt(timesPerSecond)),
             .timesPerSecond = timesPerSecond,
         };
     }
 
-    // pub fn runIfNotLimited(callback: () => void): void {
-    //  const now = Date.now();
-    //  if (now - this._lastRun >= this._minimumTimeBetweenRuns) {
-    //   this._lastRun = now;
-    //   callback();
-    //  }
-    // }
+    pub fn runIfNotLimited(self: RateLimiter, callback: fn () void) void {
+        const now = std.time.timestamp();
+        if (now - self._lastRun >= @as(i64, @intFromFloat(self._minimumTimeBetweenRuns))) {
+            self._lastRun = now;
+            callback();
+        }
+    }
 };

@@ -29,18 +29,20 @@ pub const LineTokens = struct {
 		};
 	}
 
-	pub fn createFromTextAndMetadata(data: struct { text: []const u8, metadata: u32 }[], decoder: ILanguageIdCodec) LineTokens {
+	pub fn createFromTextAndMetadata(data: []struct { text: []const u8, metadata: u32 }, decoder: ILanguageIdCodec) !LineTokens {
 		var offset: usize = 0;
 		var fullText: string = "";
 		var tokens = std.ArrayList(u32).init(std.heap.page_allocator);
-		for (data) |{ text, metadata }| {
-			tokens.append(offset + text.length);
-			tokens.append(metadata);
-			offset += text.length;
-			fullText += text;
+		for (data) |item| {
+			const text = item.text;
+			const metadata = item.metadata;
+			try tokens.append(offset + text.len);
+			try tokens.append(metadata);
+			offset += text.len;
+			fullText = fullText ++ text;
 		}
 		return LineTokens{
-			.tokens = tokens,
+			._tokens = tokens,
 			.lineContent = fullText,
 			.decoder = decoder,
 		};
@@ -90,26 +92,23 @@ pub const LineTokens = struct {
 
 	pub fn init(tokens: []u32, text: []const u8, decoder: ILanguageIdCodec) LineTokens {
 		const tokensLength = tokens.len > 1 ? tokens[tokens.len - 2] : 0;
-		if (tokensLength != text.length) {
-			onUnexpectedError(new Error('Token length and text length do not match!'));
+		if (tokensLength != text.len) {
+			// onUnexpectedError(new Error('Token length and text length do not match!'));
 		}
 		return LineTokens{
-			.tokens = tokens,
-			.tokensCount = (tokens.len >>> 1),
-			.text = text,
+			._tokens = tokens,
+			._tokensCount = (tokens.len >>> 1),
+			._text = text,
 			.languageIdCodec = decoder,
 		};
 	}
 
 	pub fn getTextLength(self: *LineTokens) usize {
-		return self._text.length;
+		return self._text.len;
 	}
 
 	pub fn equals(self: *LineTokens, other: *LineTokens) bool {
-		if (other instanceof LineTokens) {
-			return self.slicedEquals(other, 0, self._tokensCount);
-		}
-		return false;
+		return self.slicedEquals(other, 0, self._tokensCount);
 	}
 
 	pub fn slicedEquals(self: *LineTokens, other: *LineTokens, sliceFromTokenIndex: usize, sliceTokenCount: usize) bool {
@@ -441,7 +440,7 @@ pub const TokenArray = struct {
 	}
 
 	pub fn toLineTokens(self: *TokenArray, lineContent: string, decoder: ILanguageIdCodec) LineTokens {
-		return LineTokens.createFromTextAndMetadata(this.map((r, t) => ({ text: r.substring(lineContent), metadata: t.metadata })), decoder);
+		return createFromTextAndMetadata(this.map((r, t) => ({ text: r.substring(lineContent), metadata: t.metadata })), decoder);
 	}
 
 	pub fn forEach(self: *TokenArray, cb: (range: OffsetRange, tokenInfo: TokenInfo) => void) void {

@@ -1,6 +1,5 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
-
 const Position = @import("../core/position.zig").Position;
 const IRange = @import("../core/range.zig").IRange;
 const ContiguousTokensEditing = @import("./contiguousTokensEditing.zig").ContiguousTokensEditing;
@@ -40,7 +39,7 @@ pub const ContiguousTokensStore = struct {
 		return self._lineTokens.items.len > 0;
 	}
 
-	pub fn getTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineText: []const u8) LineTokens {
+	pub fn getTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineText: []const u8) !LineTokens {
 		var rawLineTokens: ?[]u32 = null;
 		if (lineIndex < self._len) {
 			rawLineTokens = self._lineTokens.items[lineIndex];
@@ -50,10 +49,10 @@ pub const ContiguousTokensStore = struct {
 			return LineTokens.init(rawLineTokens.?, lineText, self._languageIdCodec);
 		}
 
-		const lineTokens = std.ArrayList(u32).init(std.heap.page_allocator);
-		lineTokens.append(lineText.length);
-		lineTokens.append(getDefaultMetadata(self._languageIdCodec.encodeLanguageId(topLevelLanguageId)));
-		return LineTokens.init(lineTokens.items, lineText, self._languageIdCodec);
+		var lineTokens = ArrayList(u32).init(self._lineTokens.allocator);
+		try lineTokens.append(lineText.length);
+		try lineTokens.append(getDefaultMetadata(self._languageIdCodec.encodeLanguageId(topLevelLanguageId)));
+		return LineTokens.init(lineTokens, lineText, self._languageIdCodec);
 	}
 
 	fn _massageTokens(topLevelLanguageId: LanguageId, lineTextLength: usize, _tokens: ?[]u32) []u32 {

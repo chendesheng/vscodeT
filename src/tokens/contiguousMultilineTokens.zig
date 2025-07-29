@@ -1,4 +1,12 @@
- // Represents contiguous tokens over a contiguous range of lines.
+const std = @import("std");
+const ArrayList = std.ArrayList;
+const Allocator = std.mem.Allocator;
+const Range = @import("../basics/range.zig").Range;
+const LineRange = @import("../basics/lineRange.zig").LineRange;
+const countEOL = @import("../basics/eolCounter.zig").countEOL;
+const Position = @import("../basics/position.zig").Position;
+
+// Represents contiguous tokens over a contiguous range of lines.
 pub const ContiguousMultilineTokens = struct {
 	 // The start line number for this block of tokens.
 	_startLineNumber: usize,
@@ -48,18 +56,19 @@ pub const ContiguousMultilineTokens = struct {
 		return this._tokens[lineNumber - this._startLineNumber];
 	}
 
-	pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: []u32) void {
-		self._tokens.append(lineTokens);
+	pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: []u32) !void {
+		try self._tokens.append(lineTokens);
 	}
 
-	pub fn serializeSize(self: *ContiguousMultilineTokens) usize {
+	pub fn serializeSize(self: *ContiguousMultilineTokens) !usize {
 		var result: usize = 0;
 		result += 4; // 4 bytes for the start line number
 		result += 4; // 4 bytes for the line count
 		for (0..self._tokens.items.len) |i| {
 			const lineTokens = self._tokens.items[i];
 			if (lineTokens.len == 0) {
-				throw new Error("Not supported!");
+				// throw new Error("Not supported!");
+				return error.NotSupported;
 			}
 			result += 4; // 4 bytes for the byte count
 			result += lineTokens.byteLength;
@@ -82,9 +91,11 @@ pub const ContiguousMultilineTokens = struct {
 	}
 
 	pub fn applyEdit(self: *ContiguousMultilineTokens, range: Range, text: []const u8) void {
-		const [eolCount, firstLineLength] = countEOL(text);
+		const res = countEOL(text);
+		const eolCount = res.eolCount;
+		const firstLineLength = res.firstLineLength;
 		self._acceptDeleteRange(range);
-		self._acceptInsertText(new Position(range.startLineNumber, range.startColumn), eolCount, firstLineLength);
+		self._acceptInsertText(Position.init(range.startLineNumber, range.startColumn), eolCount, firstLineLength);
 	}
 
 	pub fn _acceptDeleteRange(self: *ContiguousMultilineTokens, range: Range) void {
@@ -99,7 +110,7 @@ pub const ContiguousMultilineTokens = struct {
 		if (lastLineIndex < 0) {
 			// this deletion occurs entirely before this block, so we only need to adjust line numbers
 			const deletedLinesCount = lastLineIndex - firstLineIndex;
-			this._startLineNumber -= deletedLinesCount;
+			self._startLineNumber -= deletedLinesCount;
 			return;
 		}
 
@@ -110,50 +121,50 @@ pub const ContiguousMultilineTokens = struct {
 
 		if (firstLineIndex < 0 and lastLineIndex >= self._tokens.items.len) {
 			// this deletion completely encompasses this block
-			this._startLineNumber = 0;
-			this._tokens = [];
+			self._startLineNumber = 0;
+			self._tokens.resize(0);
 			return;
 		}
 
 		if (firstLineIndex == lastLineIndex) {
 			// a delete on a single line
-			this._tokens[firstLineIndex] = ContiguousTokensEditing.delete(this._tokens[firstLineIndex], range.startColumn - 1, range.endColumn - 1);
+			self._tokens[firstLineIndex] = ContiguousTokensEditing.delete(self._tokens[firstLineIndex], range.startColumn - 1, range.endColumn - 1);
 			return;
 		}
 
 		if (firstLineIndex >= 0) {
 			// The first line survives
-			this._tokens[firstLineIndex] = ContiguousTokensEditing.deleteEnding(this._tokens[firstLineIndex], range.startColumn - 1);
+			self._tokens[firstLineIndex] = ContiguousTokensEditing.deleteEnding(self._tokens[firstLineIndex], range.startColumn - 1);
 
 			if (lastLineIndex < this._tokens.length) {
 				// The last line survives
-				const lastLineTokens = ContiguousTokensEditing.deleteBeginning(this._tokens[lastLineIndex], range.endColumn - 1);
+				const lastLineTokens = ContiguousTokensEditing.deleteBeginning(self._tokens[lastLineIndex], range.endColumn - 1);
 
 				// Take remaining text on last line and append it to remaining text on first line
-				this._tokens[firstLineIndex] = ContiguousTokensEditing.append(this._tokens[firstLineIndex], lastLineTokens);
+				self._tokens[firstLineIndex] = ContiguousTokensEditing.append(self._tokens[firstLineIndex], lastLineTokens);
 
 				// Delete middle lines
-				this._tokens.splice(firstLineIndex + 1, lastLineIndex - firstLineIndex);
+				self._tokens.splice(firstLineIndex + 1, lastLineIndex - firstLineIndex);
 			} else {
 				// The last line does not survive
 
 				// Take remaining text on last line and append it to remaining text on first line
-				this._tokens[firstLineIndex] = ContiguousTokensEditing.append(this._tokens[firstLineIndex], null);
+				self._tokens[firstLineIndex] = ContiguousTokensEditing.append(self._tokens[firstLineIndex], null);
 
 				// Delete lines
-				this._tokens = this._tokens.slice(0, firstLineIndex + 1);
+				self._tokens = self._tokens.slice(0, firstLineIndex + 1);
 			}
 		} else {
 			// The first line does not survive
 
 			const deletedBefore = -firstLineIndex;
-			this._startLineNumber -= deletedBefore;
+			self._startLineNumber -= deletedBefore;
 
 			// Remove beginning from last line
-			this._tokens[lastLineIndex] = ContiguousTokensEditing.deleteBeginning(this._tokens[lastLineIndex], range.endColumn - 1);
+			self._tokens[lastLineIndex] = ContiguousTokensEditing.deleteBeginning(self._tokens[lastLineIndex], range.endColumn - 1);
 
 			// Delete lines
-			this._tokens = this._tokens.slice(lastLineIndex);
+			self._tokens = self._tokens.slice(lastLineIndex);
 		}
 	}
 
@@ -197,6 +208,6 @@ pub const ContiguousMultilineTokens = struct {
 		for (let i = 0; i < insertCount; i++) {
 			lineTokens[i] = null;
 		}
-		this._tokens = arrays.arrayInsert(this._tokens, insertIndex, lineTokens);
+		self._tokens = arrays.arrayInsert(self._tokens, insertIndex, lineTokens);
 	}
 };

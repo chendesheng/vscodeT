@@ -8,6 +8,7 @@ const countEOL = @import("./basics/eolCounter.zig").countEOL;
 const LineRange = @import("./basics/lineRange.zig").LineRange;
 const ModelContentChange = @import("model.zig").ModelContentChange;
 const FixedArray = @import("./basics/FixedArray.zig").FixedArray;
+const LineTokens = @import("./tokens/lineTokens.zig").LineTokens;
 
 const CHEAP_TOKENIZATION_LENGTH_LIMIT = 2048;
 
@@ -100,18 +101,19 @@ pub fn TokenizerWithStateStoreAndTextModel(comptime TState: type) type {
 
         // assumes state is up to date 
         pub fn tokenizeLinesAt(self: *Self, lineNumber: usize, lines: []const []const u8) ?[]LineTokens {
+            const allocator = self._textModel.getAllocator();
             const lineStartState = self.getStartState(lineNumber);
             if (!lineStartState) {
                 return null;
             }
 
-            const languageId = this._textModel.getLanguageId();
-            const result: LineTokens[] = [];
+            const languageId = self._textModel.getLanguageId();
+            var result = ArrayList(LineTokens).init(allocator);
 
-            let state = lineStartState;
-            for (const line of lines) {
-                const r = safeTokenize(this._languageIdCodec, languageId, this.tokenizationSupport, line, true, state);
-                result.push(new LineTokens(r.tokens, line, this._languageIdCodec));
+            var state = lineStartState;
+            for (lines) |line| {
+                const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, line, true, state);
+                try result.append(LineTokens.createFromTextAndMetadata(r.tokens, line, self._languageIdCodec));
                 state = r.endState;
             }
 
@@ -339,3 +341,19 @@ pub fn TokenizationStateStore(comptime TState: type) type {
         }
     };
 }
+
+fn safeTokenize(languageIdCodec: ILanguageIdCodec, languageId: string, tokenizationSupport: ITokenizationSupport, text: string, hasEOL: bool, state: IState) EncodedTokenizationResult {
+	var r: ?EncodedTokenizationResult = null;
+
+	if (tokenizationSupport) {
+		r = tokenizationSupport.tokenizeEncoded(text, hasEOL, state.clone());
+	}
+
+	if (!r) {
+		r = nullTokenizeEncoded(languageIdCodec.encodeLanguageId(languageId), state);
+	}
+
+	LineTokens.convertToEndOffset(r.tokens, text.length);
+	return r;
+}
+
