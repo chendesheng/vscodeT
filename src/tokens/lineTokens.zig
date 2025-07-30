@@ -8,6 +8,9 @@ const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardToken
 const MetadataConsts = @import("../encodedTokenAttributes.zig").MetadataConsts;
 const ITokenPresentation = @import("../encodedTokenAttributes.zig").ITokenPresentation;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
+const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
+const Position = @import("../basics/position.zig").Position;
+const TextModel = @import("../textModel.zig").TextModel;
 
 
 pub const LineTokens = struct {
@@ -405,11 +408,11 @@ pub const SliceLineTokens = struct {
 
 pub fn getStandardTokenTypeAtPosition(model: TextModel, position: Position) ?StandardTokenType {
 	const lineNumber = position.lineNumber - 1;
-	if (!model.tokenization.isCheapToTokenize(lineNumber)) {
+	if (!model.tokenization().isCheapToTokenize(lineNumber)) {
 		return null;
 	}
-	model.tokenization.forceTokenization(lineNumber);
-	const lineTokens = model.tokenization.getLineTokens(lineNumber);
+	model.tokenization().forceTokenization(lineNumber);
+	const lineTokens = model.tokenization().getLineTokens(lineNumber);
 	const tokenIndex = lineTokens.findTokenIndexAtOffset(position.column - 1) - 1;
 	const tokenType = lineTokens.getStandardTokenType(tokenIndex);
 	return tokenType;
@@ -427,7 +430,7 @@ pub const TokenArray = struct {
 	pub fn fromLineTokens(lineTokens: LineTokens) TokenArray {
 		var tokenInfo = ArrayList(TokenInfo).init(lineTokens._tokens.allocator);
 		for (0..lineTokens.getCount()) |i| {
-			tokenInfo.append(TokenInfo{
+			try tokenInfo.append(TokenInfo{
 				.length = lineTokens.getEndOffset(i) - lineTokens.getStartOffset(i),
 				.metadata = lineTokens.getMetadata(i),
 			});
@@ -440,33 +443,33 @@ pub const TokenArray = struct {
 	}
 
 	pub fn toLineTokens(self: *TokenArray, lineContent: string, decoder: ILanguageIdCodec) LineTokens {
-		return createFromTextAndMetadata(this.map((r, t) => ({ text: r.substring(lineContent), metadata: t.metadata })), decoder);
+		return createFromTextAndMetadata(this.map(struct { text: string, metadata: u32 }, (r, t) => ({ text: r.substring(lineContent), metadata: t.metadata })), decoder);
 	}
 
-	pub fn forEach(self: *TokenArray, cb: (range: OffsetRange, tokenInfo: TokenInfo) => void) void {
-		let lengthSum = 0;
-		for (const tokenInfo of this._tokenInfo) {
-			const range = new OffsetRange(lengthSum, lengthSum + tokenInfo.length);
+	pub fn forEach(self: *TokenArray, cb: fn (range: OffsetRange, tokenInfo: TokenInfo) void) void {
+		var lengthSum = 0;
+		for (self._tokenInfo.items) |tokenInfo| {
+			const range = OffsetRange.init(lengthSum, lengthSum + tokenInfo.length);
 			cb(range, tokenInfo);
 			lengthSum += tokenInfo.length;
 		}
 	}
 
-	pub fn map(self: *TokenArray, cb: (range: OffsetRange, tokenInfo: TokenInfo) => T) T[] {
-		const result: T[] = [];
-		let lengthSum = 0;
-		for (const tokenInfo of this._tokenInfo) {
-			const range = new OffsetRange(lengthSum, lengthSum + tokenInfo.length);
-			result.push(cb(range, tokenInfo));
+	pub fn map(self: *TokenArray, comptime T: type, cb: fn (range: OffsetRange, tokenInfo: TokenInfo) T) ArrayList(T) {
+		var result = ArrayList(T).init(self._tokenInfo.allocator);
+		var lengthSum = 0;
+		for (self._tokenInfo.items) |tokenInfo| {
+			const range = OffsetRange.init(lengthSum, lengthSum + tokenInfo.length);
+			try result.append(cb(range, tokenInfo));
 			lengthSum += tokenInfo.length;
 		}
 		return result;
 	}
 
 	pub fn slice(self: *TokenArray, range: OffsetRange) TokenArray {
-		const result: TokenInfo[] = [];
-		let lengthSum = 0;
-		for (const tokenInfo of this._tokenInfo) {
+		var result = ArrayList(TokenInfo).init(self._tokenInfo.allocator);
+		var lengthSum = 0;
+		for (self._tokenInfo.items) |tokenInfo| {
 			const tokenStart = lengthSum;
 			const tokenEndEx = tokenStart + tokenInfo.length;
 			if (tokenEndEx > range.start) {
@@ -474,10 +477,13 @@ pub const TokenArray = struct {
 					break;
 				}
 
-				const deltaBefore = Math.max(0, range.start - tokenStart);
-				const deltaAfter = Math.max(0, tokenEndEx - range.endExclusive);
+				const deltaBefore = @max(0, range.start - tokenStart);
+				const deltaAfter = @max(0, tokenEndEx - range.endExclusive);
 
-				result.push(new TokenInfo(tokenInfo.length - deltaBefore - deltaAfter, tokenInfo.metadata));
+				try result.append(TokenInfo{
+					.length = tokenInfo.length - deltaBefore - deltaAfter,
+					.metadata = tokenInfo.metadata,
+				});
 			}
 
 			lengthSum += tokenInfo.length;
@@ -486,7 +492,9 @@ pub const TokenArray = struct {
 	}
 
 	pub fn append(self: *TokenArray, other: TokenArray) TokenArray {
-		const result: TokenInfo[] = this._tokenInfo.concat(other._tokenInfo);
+		const result = ArrayList(TokenInfo).init(self._tokenInfo.allocator);
+		try result.appendSlice(self._tokenInfo.items);
+		try result.appendSlice(other._tokenInfo.items);
 		return TokenArray.create(result);
 	}
 };

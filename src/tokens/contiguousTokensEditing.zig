@@ -19,7 +19,7 @@ pub const ContiguousTokensEditing = struct {
             return lineTokens;
         }
 
-        const tokens = toUint32Array(lineTokens);
+        const tokens = lineTokens.items;
         const lineTextLength = tokens[tokens.len - 2];
         return ContiguousTokensEditing.delete(lineTokens, fromChIndex, lineTextLength);
     }

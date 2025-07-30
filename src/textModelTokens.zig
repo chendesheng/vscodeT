@@ -131,8 +131,8 @@ pub fn TokenizerWithStateStoreAndTextModel(comptime TState: type) type {
             if (lineNumber < firstInvalidLineNumber) {
                 return true;
             }
-            if (lineNumber === firstInvalidLineNumber
-                && self._textModel.getLineLength(lineNumber) < CHEAP_TOKENIZATION_LENGTH_LIMIT) {
+            if (lineNumber == firstInvalidLineNumber
+                and self._textModel.getLineLength(lineNumber) < CHEAP_TOKENIZATION_LENGTH_LIMIT) {
                 return true;
             }
 
@@ -143,16 +143,16 @@ pub fn TokenizerWithStateStoreAndTextModel(comptime TState: type) type {
         pub fn tokenizeHeuristically(self: *Self, builder: ContiguousMultilineTokensBuilder, startLineNumber: usize, endLineNumber: usize) struct { heuristicTokens: bool } {
             if (endLineNumber <= self.store.getFirstInvalidEndStateLineNumberOrMax()) {
                 // nothing to do
-                return { heuristicTokens: false };
+                return .{ .heuristicTokens = false };
             }
 
             if (startLineNumber <= self.store.getFirstInvalidEndStateLineNumberOrMax()) {
                 // tokenization has reached the viewport start...
-                this.updateTokensUntilLine(builder, endLineNumber);
-                return { heuristicTokens: false };
+                self.updateTokensUntilLine(builder, endLineNumber);
+                return .{ .heuristicTokens = false };
             }
 
-            let state = self.guessStartState(startLineNumber);
+            const state = self.guessStartState(startLineNumber);
             const languageId = self._textModel.getLanguageId();
 
             for (let lineNumber = startLineNumber; lineNumber <= endLineNumber; lineNumber++) {
@@ -162,11 +162,13 @@ pub fn TokenizerWithStateStoreAndTextModel(comptime TState: type) type {
                 state = r.endState;
             }
 
-            return { heuristicTokens: true };
+            return .{ .heuristicTokens = true };
         }
 
         fn guessStartState(self: *Self, lineNumber: usize) IState {
-            let { likelyRelevantLines, initialState } = findLikelyRelevantLines(self._textModel, lineNumber, self);
+            const res = findLikelyRelevantLines(self._textModel, lineNumber, self);
+            const likelyRelevantLines = res.likelyRelevantLines;
+            const initialState = res.initialState;
 
             if (!initialState) {
                 initialState = self.tokenizationSupport.getInitialState();
