@@ -3,6 +3,7 @@ const ArrayList = std.ArrayList;
 const Range = @import("../basics/range.zig").Range;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const TextModel = @import("../textModel.zig").TextModel;
+const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 
 // Represents sparse tokens over a contiguous range of lines.
 pub const SparseMultilineTokens = struct {
@@ -84,19 +85,28 @@ pub const SparseMultilineTokens = struct {
 		const startLineIndex = range.startLineNumber - self._startLineNumber;
 		const endLineIndex = range.endLineNumber - self._startLineNumber;
 
-		const [a, b, bDeltaLine] = self._tokens.split(startLineIndex, range.startColumn - 1, endLineIndex, range.endColumn - 1);
+		const result = self._tokens.split(startLineIndex, range.startColumn - 1, endLineIndex, range.endColumn - 1);
+		const a = result.a;
+		const b = result.b;
+		const bDeltaLine = result.destFirstDeltaLine;
 		return [_]SparseMultilineTokens{
-			.startLineNumber = self._startLineNumber,
-			.tokens = a,
-		}, SparseMultilineTokens{
-			.startLineNumber = self._startLineNumber + bDeltaLine,
-			.tokens = b,
+			SparseMultilineTokens{
+				.startLineNumber = self._startLineNumber,
+				.tokens = a.tokens,
+			},
+			SparseMultilineTokens{ 
+				.startLineNumber = self._startLineNumber + bDeltaLine,
+				.tokens = b,
+			},
 		};
 	}
 
 	pub fn applyEdit(self: *SparseMultilineTokens, range: Range, text: []const u8) void {
-		const [eolCount, firstLineLength, lastLineLength] = countEOL(text);
-		self.acceptEdit(range, eolCount, firstLineLength, lastLineLength, text.len > 0 ? text.codePointAt(0) : 0);
+		const result = countEOL(text);
+		const eolCount = result.eolCount;
+		const firstLineLength = result.firstLineLength;
+		const lastLineLength = result.lastLineLength;
+		self.acceptEdit(range, eolCount, firstLineLength, lastLineLength, if (text.len > 0) text.codePointAt(0) else 0);
 	}
 
 	pub fn acceptEdit(self: *SparseMultilineTokens, range: Range, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: u21) void {
@@ -109,7 +119,7 @@ pub const SparseMultilineTokens = struct {
 	}
 
 	fn _acceptDeleteRange(self: *SparseMultilineTokens, range: Range) void {
-		if (range.startLineNumber === range.endLineNumber && range.startColumn === range.endColumn) {
+		if (range.startLineNumber == range.endLineNumber and range.startColumn == range.endColumn) {
 			// Nothing to delete
 			return;
 		}
@@ -131,7 +141,7 @@ pub const SparseMultilineTokens = struct {
 			return;
 		}
 
-		if (firstLineIndex < 0 && lastLineIndex >= tokenMaxDeltaLine + 1) {
+		if (firstLineIndex < 0 and lastLineIndex >= tokenMaxDeltaLine + 1) {
 			// this deletion completely encompasses this block
 			self._startLineNumber = 0;
 			self._tokens.clear();
@@ -150,7 +160,7 @@ pub const SparseMultilineTokens = struct {
 
 	fn _acceptInsertText(self: *SparseMultilineTokens, position: Position, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: u21) void {
 
-		if (eolCount === 0 && firstLineLength === 0) {
+		if (eolCount == 0 and firstLineLength == 0) {
 			// Nothing to insert
 			return;
 		}
@@ -178,28 +188,34 @@ pub const SparseMultilineTokens = struct {
 	}
 };
 
+pub const SparseMultilineToken = packed struct {
+	deltaLine: u32,
+	startCharacter: u32,
+	endCharacter: u32,
+	metadata: TokenMetadata,
+};
+
 pub const SparseMultilineTokensStorage = struct {
 	 // The encoding of tokens is:
 	 //  4*i    deltaLine (from `startLineNumber`)
 	 //  4*i+1  startCharacter (from the line start)
 	 //  4*i+2  endCharacter (from the line start)
 	 //  4*i+3  metadata
-	_tokens: ArrayList(u32),
-	_tokenCount: usize,
+	_tokens: ArrayList(SparseMultilineToken),
 
 	pub fn init(tokens: ArrayList(u32)) SparseMultilineTokensStorage {
 		return SparseMultilineTokensStorage{
-			._tokens = tokens,
-			._tokenCount = tokens.len / 4,
+			._tokens = @as([*]SparseMultilineToken, @ptrCast(tokens.ptr))[0..@divExact(tokens.len, 4)],
 		};
 	}
 
-	pub fn toString(self: *SparseMultilineTokensStorage, startLineNumber: usize) string {
-		var pieces: []string = ArrayList(string).init(std.heap.page_allocator);
-		for (0..self._tokenCount) |i| {
-			pieces.append(fmt.bufPrint(std.ArrayList(u8).init(std.heap.page_allocator), "({d},{d}-{d})", .{ self._getDeltaLine(i) + startLineNumber, self._getStartCharacter(i), self._getEndCharacter(i) }) catch unreachable);
+	pub fn toString(self: *SparseMultilineTokensStorage, startLineNumber: usize) ![]u8 {
+		const allocator = self._tokens.allocator;
+		var pieces = ArrayList([]u8).init(allocator);
+		for (0..self._tokens.len) |i| {
+			try pieces.append(std.fmt.bufPrint(std.ArrayList(u8).init(allocator), "({d},{d}-{d})", .{ self._getDeltaLine(i) + startLineNumber, self._getStartCharacter(i), self._getEndCharacter(i) }));
 		}
-		return fmt.bufPrint(std.ArrayList(u8).init(std.heap.page_allocator), "[{s}]", .{std.mem.join(",", pieces.items) catch unreachable});
+		return try std.fmt.bufPrint(std.ArrayList(u8).init(allocator), "[{s}]", .{try std.mem.join(allocator, ",", pieces.items)});
 	}
 
 	pub fn getMaxDeltaLine(self: *SparseMultilineTokensStorage) usize {
@@ -283,17 +299,17 @@ pub const SparseMultilineTokensStorage = struct {
 	}
 
 	pub fn removeTokens(self: *SparseMultilineTokensStorage, startDeltaLine: usize, startChar: usize, endDeltaLine: usize, endChar: usize) usize {
-		const tokens = self._tokens;
-		const tokenCount = self._tokenCount;
+		const tokens = self._tokens.items;
+		const tokenCount = self._tokens.len;
 		var newTokenCount: usize = 0;
 		var hasDeletedTokens = false;
 		var firstDeltaLine: usize = 0;
 		for (0..tokenCount) |i| {
-			const srcOffset = 4 * i;
-			const tokenDeltaLine = tokens[srcOffset];
-			const tokenStartCharacter = tokens[srcOffset + 1];
-			const tokenEndCharacter = tokens[srcOffset + 2];
-			const tokenMetadata = tokens[srcOffset + 3];
+			const token = tokens[i];
+			const tokenDeltaLine = token.deltaLine;
+			const tokenStartCharacter = token.startCharacter;
+			const tokenEndCharacter = token.endCharacter;
+			const tokenMetadata = token.metadata;
 
 			if (
 				(tokenDeltaLine > startDeltaLine or (tokenDeltaLine == startDeltaLine and tokenEndCharacter >= startChar))
@@ -306,13 +322,13 @@ pub const SparseMultilineTokensStorage = struct {
 				}
 				if (hasDeletedTokens) {
 					// must move the token to the left
-					const destOffset = 4 * newTokenCount;
-					tokens[destOffset] = tokenDeltaLine - firstDeltaLine;
-					tokens[destOffset + 1] = tokenStartCharacter;
-					tokens[destOffset + 2] = tokenEndCharacter;
-					tokens[destOffset + 3] = tokenMetadata;
+					const token = &tokens[newTokenCount];
+					token.deltaLine = tokenDeltaLine - firstDeltaLine;
+					token.startCharacter = tokenStartCharacter;
+					token.endCharacter = tokenEndCharacter;
+					token.metadata = tokenMetadata;
 				}
-				newTokenCount++;
+				newTokenCount+=1;
 			}
 		}
 
@@ -321,23 +337,22 @@ pub const SparseMultilineTokensStorage = struct {
 		return firstDeltaLine;
 	}
 
-	pub fn split(self: *SparseMultilineTokensStorage, startDeltaLine: usize, startChar: usize, endDeltaLine: usize, endChar: usize) [SparseMultilineTokensStorage, SparseMultilineTokensStorage, usize] {
-		const tokens = self._tokens;
-		const tokenCount = self._tokenCount;
-		var aTokens: []u32 = &[];
-		var bTokens: []u32 = &[];
-		var destTokens: []u32 = aTokens;
+	pub fn split(self: *SparseMultilineTokensStorage, startDeltaLine: usize, startChar: usize, endDeltaLine: usize, endChar: usize) struct { a: SparseMultilineTokensStorage, b: SparseMultilineTokensStorage, destFirstDeltaLine: usize } {
+		const tokens = self._tokens.items;
+		var aTokens = &[_]SparseMultilineToken{};
+		var bTokens = &[_]SparseMultilineToken{};
+		var destTokens = aTokens;
 		var destOffset: usize = 0;
 		var destFirstDeltaLine: usize = 0;
 		for (0..tokenCount) |i| {
-			const srcOffset = 4 * i;
-			const tokenDeltaLine = tokens[srcOffset];
-			const tokenStartCharacter = tokens[srcOffset + 1]; 
-			const tokenEndCharacter = tokens[srcOffset + 2]; 
-			const tokenMetadata = tokens[srcOffset + 3]; 
+			const token = tokens[i];
+			const tokenDeltaLine = token.deltaLine;
+			const tokenStartCharacter = token.startCharacter;
+			const tokenEndCharacter = token.endCharacter;
+			const tokenMetadata = token.metadata;
 
-			if ((tokenDeltaLine > startDeltaLine or (tokenDeltaLine === startDeltaLine and tokenEndCharacter >= startChar))) {
-				if ((tokenDeltaLine < endDeltaLine or (tokenDeltaLine === endDeltaLine and tokenStartCharacter <= endChar))) {
+			if ((tokenDeltaLine > startDeltaLine or (tokenDeltaLine == startDeltaLine and tokenEndCharacter >= startChar))) {
+				if ((tokenDeltaLine < endDeltaLine or (tokenDeltaLine == endDeltaLine and tokenStartCharacter <= endChar))) {
 					// this token is touching the range
 					continue;
 				} else {
@@ -357,7 +372,11 @@ pub const SparseMultilineTokensStorage = struct {
 			destTokens[destOffset++] = tokenMetadata;
 		}
 
-		return [SparseMultilineTokensStorage.init(aTokens), SparseMultilineTokensStorage.init(bTokens), destFirstDeltaLine];
+		return .{
+			.a = SparseMultilineTokensStorage.init(aTokens),
+			.b = SparseMultilineTokensStorage.init(bTokens),
+			.destFirstDeltaLine = destFirstDeltaLine,
+		};
 	}
 
 	pub fn acceptDeleteRange(self: *SparseMultilineTokensStorage, horizontalShiftForFirstLineTokens: usize, startDeltaLine: usize, startCharacter: usize, endDeltaLine: usize, endCharacter: usize) void {
@@ -403,27 +422,25 @@ pub const SparseMultilineTokensStorage = struct {
 		//                  -----------
 		//          xxxxxxxx
 		//
-		const tokens = self._tokens;
-		const tokenCount = self._tokenCount;
+		const tokens = self._tokens.items;
 		const deletedLineCount = (endDeltaLine - startDeltaLine);
 		var newTokenCount: usize = 0;
 		var hasDeletedTokens = false;
-		for (0..tokenCount) |i| {
-			const srcOffset = 4 * i;
-			var tokenDeltaLine = tokens[srcOffset];
-			var tokenStartCharacter = tokens[srcOffset + 1];
-			var tokenEndCharacter = tokens[srcOffset + 2];
-			const tokenMetadata = tokens[srcOffset + 3];
+		for (tokens) |token| {
+			var tokenDeltaLine = token.deltaLine;
+			var tokenStartCharacter = token.startCharacter;
+			var tokenEndCharacter = token.endCharacter;
+			const tokenMetadata = token.metadata;
 
-			if (tokenDeltaLine < startDeltaLine or (tokenDeltaLine === startDeltaLine and tokenEndCharacter <= startCharacter)) {
+			if (tokenDeltaLine < startDeltaLine or (tokenDeltaLine == startDeltaLine and tokenEndCharacter <= startCharacter)) {
 				// 1a. The token is completely before the deletion range
 				// => nothing to do
-				newTokenCount++;
+				newTokenCount+=1;
 				continue;
-			} else if (tokenDeltaLine === startDeltaLine && tokenStartCharacter < startCharacter) {
+			} else if (tokenDeltaLine == startDeltaLine and tokenStartCharacter < startCharacter) {
 				// 1b, 1c, 1d
 				// => the token survives, but it needs to shrink
-				if (tokenDeltaLine === endDeltaLine and tokenEndCharacter > endCharacter) {
+				if (tokenDeltaLine == endDeltaLine and tokenEndCharacter > endCharacter) {
 					// 1d. The token starts before, the deletion range is inside the token
 					// => the token shrinks by the deletion character count
 					tokenEndCharacter -= (endCharacter - startCharacter);
@@ -433,9 +450,9 @@ pub const SparseMultilineTokensStorage = struct {
 					// => the token shrinks its ending to the deletion start
 					tokenEndCharacter = startCharacter;
 				}
-			} else if (tokenDeltaLine === startDeltaLine and tokenStartCharacter === startCharacter) {
+			} else if (tokenDeltaLine == startDeltaLine and tokenStartCharacter == startCharacter) {
 				// 2a, 2b, 2c
-				if (tokenDeltaLine === endDeltaLine and tokenEndCharacter > endCharacter) {
+				if (tokenDeltaLine == endDeltaLine and tokenEndCharacter > endCharacter) {
 					// 2c. The token starts at the same position, and ends after the deletion range
 					// => the token shrinks by the deletion character count
 					tokenEndCharacter -= (endCharacter - startCharacter);
@@ -446,9 +463,9 @@ pub const SparseMultilineTokensStorage = struct {
 					hasDeletedTokens = true;
 					continue;
 				}
-			} else if (tokenDeltaLine < endDeltaLine or (tokenDeltaLine === endDeltaLine and tokenStartCharacter < endCharacter)) {
+			} else if (tokenDeltaLine < endDeltaLine or (tokenDeltaLine == endDeltaLine and tokenStartCharacter < endCharacter)) {
 				// 3a, 3b, 3c
-				if (tokenDeltaLine === endDeltaLine and tokenEndCharacter > endCharacter) {
+				if (tokenDeltaLine == endDeltaLine and tokenEndCharacter > endCharacter) {
 					// 3c. The token starts inside the deletion range, and ends after the deletion range
 					// => the token moves to continue right after the deletion
 					tokenDeltaLine = startDeltaLine;
@@ -463,15 +480,15 @@ pub const SparseMultilineTokensStorage = struct {
 				}
 			} else if (tokenDeltaLine > endDeltaLine) {
 				// 4. (partial) The token starts after the deletion range, on a line below...
-				if (deletedLineCount === 0 && !hasDeletedTokens) {
+				if (deletedLineCount == 0 and !hasDeletedTokens) {
 					// early stop, there is no need to walk all the tokens and do nothing...
 					newTokenCount = tokenCount;
 					break;
 				}
 				tokenDeltaLine -= deletedLineCount;
-			} else if (tokenDeltaLine === endDeltaLine && tokenStartCharacter >= endCharacter) {
+			} else if (tokenDeltaLine == endDeltaLine and tokenStartCharacter >= endCharacter) {
 				// 4. (continued) The token starts after the deletion range, on the last line where a deletion occurs
-				if (horizontalShiftForFirstLineTokens && tokenDeltaLine === 0) {
+				if (horizontalShiftForFirstLineTokens and tokenDeltaLine == 0) {
 					tokenStartCharacter += horizontalShiftForFirstLineTokens;
 					tokenEndCharacter += horizontalShiftForFirstLineTokens;
 				}
@@ -482,15 +499,14 @@ pub const SparseMultilineTokensStorage = struct {
 				throw new Error(`Not possible!`);
 			}
 
-			const destOffset = 4 * newTokenCount;
-			tokens[destOffset] = tokenDeltaLine;
-			tokens[destOffset + 1] = tokenStartCharacter;
-			tokens[destOffset + 2] = tokenEndCharacter;
-			tokens[destOffset + 3] = tokenMetadata;
-			newTokenCount++;
-		}
 
-		self._tokenCount = newTokenCount;
+			const token = &tokens[newTokenCount];
+			token.deltaLine = tokenDeltaLine;
+			token.startCharacter = tokenStartCharacter;
+			token.endCharacter = tokenEndCharacter;
+			token.metadata = tokenMetadata;
+			newTokenCount+=1;
+		}
 	}
 
 	pub fn acceptInsertText(self: *SparseMultilineTokensStorage, deltaLine: usize, character: usize, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: usize) void {
@@ -508,27 +524,24 @@ pub const SparseMultilineTokensStorage = struct {
 		//            |   -----------
 		//
 		const isInsertingPreciselyOneWordCharacter = (
-			eolCount === 0
-			&& firstLineLength === 1
-			&& (
-				(firstCharCode >= CharCode.Digit0 && firstCharCode <= CharCode.Digit9)
-				|| (firstCharCode >= CharCode.A && firstCharCode <= CharCode.Z)
-				|| (firstCharCode >= CharCode.a && firstCharCode <= CharCode.z)
+			eolCount == 0 and
+			firstLineLength == 1 and (
+				(firstCharCode >= '0' and firstCharCode <= '9')
+				or (firstCharCode >= 'A' and firstCharCode <= 'Z')
+				or (firstCharCode >= 'a' and firstCharCode <= 'z')
 			)
 		);
-		const tokens = self._tokens;
-		const tokenCount = self._tokenCount;
-		for (0..tokenCount) |i| {
-			const offset = 4 * i;
-			let tokenDeltaLine = tokens[offset];
-			let tokenStartCharacter = tokens[offset + 1];
-			let tokenEndCharacter = tokens[offset + 2];
+		const tokens = self._tokens.items;
+		for (tokens) |token| {
+			var tokenDeltaLine = token.deltaLine;
+			var tokenStartCharacter = token.startCharacter;
+			var tokenEndCharacter = token.endCharacter;
 
-			if (tokenDeltaLine < deltaLine or (tokenDeltaLine === deltaLine and tokenEndCharacter < character)) {
+			if (tokenDeltaLine < deltaLine or (tokenDeltaLine == deltaLine and tokenEndCharacter < character)) {
 				// 1. The token is completely before the insertion point
 				// => nothing to do
 				continue;
-			} else if (tokenDeltaLine === deltaLine and tokenEndCharacter === character) {
+			} else if (tokenDeltaLine == deltaLine and tokenEndCharacter == character) {
 				// 2. The token ends precisely at the insertion point
 				// => expand the end character only if inserting precisely one character that is a word character
 				if (isInsertingPreciselyOneWordCharacter) {
@@ -536,9 +549,9 @@ pub const SparseMultilineTokensStorage = struct {
 				} else {
 					continue;
 				}
-			} else if (tokenDeltaLine === deltaLine and tokenStartCharacter < character and character < tokenEndCharacter) {
+			} else if (tokenDeltaLine == deltaLine and tokenStartCharacter < character and character < tokenEndCharacter) {
 				// 3. The token contains the insertion point
-				if (eolCount === 0) {
+				if (eolCount == 0) {
 					// => just expand the end character
 					tokenEndCharacter += firstLineLength;
 				} else {
@@ -559,7 +572,7 @@ pub const SparseMultilineTokensStorage = struct {
 				if (tokenDeltaLine == deltaLine) {
 					tokenDeltaLine += eolCount;
 					// this token is on the line where the insertion is taking place
-					if (eolCount === 0) {
+					if (eolCount == 0) {
 						tokenStartCharacter += firstLineLength;
 						tokenEndCharacter += firstLineLength;
 					} else {
@@ -572,14 +585,17 @@ pub const SparseMultilineTokensStorage = struct {
 				}
 			}
 
-			tokens[offset] = tokenDeltaLine;
-			tokens[offset + 1] = tokenStartCharacter;
-			tokens[offset + 2] = tokenEndCharacter;
+			tokens[i] = SparseMultilineToken{
+				.deltaLine = tokenDeltaLine,
+				.startCharacter = tokenStartCharacter,
+				.endCharacter = tokenEndCharacter,
+				.metadata = token.metadata,
+			};
 		}
 	}
 
 	pub fn reportIfInvalid(self: *SparseMultilineTokensStorage, model: TextModel, startLineNumber: usize) void {
-		for (0..self._tokenCount) |i| {
+		for (0..self._tokens.len) |i| {
 			const lineNumber = self._getDeltaLine(i) + startLineNumber;
 
 			if (lineNumber > model.getLineCount()) {
@@ -588,7 +604,7 @@ pub const SparseMultilineTokensStorage = struct {
 				});
 			}
 
-			if (this._getEndCharacter(i) > model.getLineLength(lineNumber)) {
+			if (self._getEndCharacter(i) > model.getLineLength(lineNumber)) {
 				RateLimiter.runIfNotLimited(() => {
 					console.error('Invalid Semantic Tokens Data From Extension: end character > model.getLineLength(lineNumber)');
 				});
@@ -613,10 +629,10 @@ pub const SparseLineTokens = struct {
 	}
 
 	pub fn getEndCharacter(self: *SparseLineTokens, tokenIndex: usize) usize {
-		return this._tokens[4 * tokenIndex + 2];
+		return self._tokens[4 * tokenIndex + 2];
 	}
 
 	pub fn getMetadata(self: *SparseLineTokens, tokenIndex: usize) usize {
-		return this._tokens[4 * tokenIndex + 3];
+		return self._tokens[4 * tokenIndex + 3];
 	}
 };
