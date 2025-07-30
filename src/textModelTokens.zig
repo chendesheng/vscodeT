@@ -9,6 +9,7 @@ const LineRange = @import("./basics/lineRange.zig").LineRange;
 const ModelContentChange = @import("model.zig").ModelContentChange;
 const FixedArray = @import("./basics/FixedArray.zig").FixedArray;
 const LineTokens = @import("./tokens/lineTokens.zig").LineTokens;
+const Position = @import("./basics/position.zig");
 
 const CHEAP_TOKENIZATION_LENGTH_LIMIT = 2048;
 

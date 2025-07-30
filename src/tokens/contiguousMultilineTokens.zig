@@ -18,24 +18,26 @@ pub const ContiguousMultilineTokens = struct {
 	 //  - at offset 2*i + 1 => metadata
 	_tokens: ArrayList(u32),
 
-	pub fn deserialize(buff: []const u8, offset: usize, result: []ContiguousMultilineTokens) usize {
-		const view32 = std.mem.bytesAsValue(u32, buff);
-		const startLineNumber = view32.get(offset); offset += 4;
-		const count = view32.get(offset); offset += 4;
-		var tokens: ArrayList(u32) = ArrayList(u32).init(std.heap.page_allocator);
-		for (0..count) |i| {
-			const byteCount = view32.get(offset); offset += 4;
-			tokens.append(view32.subarray(offset / 4, offset / 4 + byteCount / 4));
-			offset += byteCount;
+	pub fn deserialize(buff: []const u8, offset: usize, result: ArrayList(ContiguousMultilineTokens)) !usize {
+		const stream = io.fixedBufferStream(buff[offset..]);
+		const view32 = stream.reader();
+		const startLineNumber = try view32.readInt(u32, .big);
+		const count = try view32.readInt(u32, .big);
+
+		var tokens = ArrayList(u32).init(result.allocator);
+		defer tokens.deinit();
+		for (0..count) |_| {
+			const byteCount = try view32.readInt(i32, .big);
+			var target = try tokens.addManyAsSlice(@intCast(byteCount));
+			try view32.readAll(target);
 		}
-		result.append(ContiguousMultilineTokens{
+
+		try result.append(ContiguousMultilineTokens{
 			.startLineNumber = startLineNumber,
 			.tokens = tokens,
 		});
 		return offset;
 	}
-
-
 
 	 // (Inclusive) start line number for these tokens.
 	pub fn getStartLineNumber(self: *ContiguousMultilineTokens) usize {
@@ -67,7 +69,6 @@ pub const ContiguousMultilineTokens = struct {
 		for (0..self._tokens.items.len) |i| {
 			const lineTokens = self._tokens.items[i];
 			if (lineTokens.len == 0) {
-				// throw new Error("Not supported!");
 				return error.NotSupported;
 			}
 			result += 4; // 4 bytes for the byte count
@@ -76,16 +77,14 @@ pub const ContiguousMultilineTokens = struct {
 		return result;
 	}
 
-	pub fn serialize(self: *ContiguousMultilineTokens, destination: []u8, offset: usize) usize {
-		writeUInt32BE(destination, this._startLineNumber, offset); offset += 4;
-		writeUInt32BE(destination, this._tokens.length, offset); offset += 4;
-		for (let i = 0; i < this._tokens.length; i++) {
-			const lineTokens = this._tokens[i];
-			if (!(lineTokens instanceof Uint32Array)) {
-				throw new Error(`Not supported!`);
-			}
-			writeUInt32BE(destination, lineTokens.byteLength, offset); offset += 4;
-			destination.set(new Uint8Array(lineTokens.buffer), offset); offset += lineTokens.byteLength;
+	pub fn serialize(self: *ContiguousMultilineTokens, destination: []u8, offset: usize) !usize {
+		var stream = io.fixedBufferStream(destination[offset..]);
+		const writer = stream.writer();
+		try writer.writeInt(u32, self._startLineNumber, .big);
+		try writer.writeInt(u32, self._tokens.length, .big);
+		for (0..self._tokens.items) |lineTokens| {
+			try writer.writeInt(i32, @intCast(lineTokens), .big);
+			try writer.writeAll(lineTokens);
 		}
 		return offset;
 	}
