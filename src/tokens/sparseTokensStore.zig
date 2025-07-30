@@ -92,7 +92,9 @@ pub const SparseTokensStore = struct {
 			}
 
 			// after removal, this piece contains the range
-			const [a, b] = piece.split(range);
+			const res = piece.split(range);
+			const a = res[0];
+			const b = res[1];
 			if (a.isEmpty()) {
 				// this piece is actually after the range
 				insertPosition = insertPosition orelse .{ .index = i };
@@ -127,7 +129,7 @@ pub const SparseTokensStore = struct {
 	}
 
 	pub fn addSparseTokens(self: *SparseTokensStore, lineNumber: usize, aTokens: LineTokens) LineTokens {
-		if (aTokens.getTextLength() === 0) {
+		if (aTokens.getTextLength() == 0) {
 			// Don't do anything for empty lines
 			return aTokens;
 		}
@@ -148,25 +150,25 @@ pub const SparseTokensStore = struct {
 		const aLen = aTokens.getCount();
 		const bLen = bTokens.getCount();
 
-		let aIndex = 0;
-		const result: number[] = [];
-		let resultLen = 0;
-		let lastEndOffset = 0;
+		var aIndex: usize = 0;
+		var result: ArrayList(u32) = ArrayList(u32).init(std.heap.page_allocator);
+		var resultLen: usize = 0;
+		var lastEndOffset: usize = 0;
 
-		const emitToken = (endOffset: number, metadata: number) => {
-			if (endOffset === lastEndOffset) {
+		const emitToken = (endOffset: usize, metadata: u32) => {
+			if (endOffset == lastEndOffset) {
 				return;
 			}
 			lastEndOffset = endOffset;
-			result[resultLen++] = endOffset;
-			result[resultLen++] = metadata;
+			result.append(endOffset);
+			result.append(metadata);
 		};
 
-		for (let bIndex = 0; bIndex < bLen; bIndex++) {
+		for (0..bLen) |bIndex| {
 			// bTokens is not validated yet, but aTokens is. We want to make sure that the LineTokens we return
 			// are valid, so we clamp the ranges to ensure that.
-			const bStartCharacter = Math.min(bTokens.getStartCharacter(bIndex), aTokens.getTextLength());
-			const bEndCharacter = Math.min(bTokens.getEndCharacter(bIndex), aTokens.getTextLength());
+			const bStartCharacter = @min(bTokens.getStartCharacter(bIndex), aTokens.getTextLength());
+			const bEndCharacter = @min(bTokens.getEndCharacter(bIndex), aTokens.getTextLength());
 			const bMetadata = bTokens.getMetadata(bIndex);
 
 			const bMask = (
