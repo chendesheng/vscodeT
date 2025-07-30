@@ -1,3 +1,7 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+
 // Open ended enum at runtime
 pub const LanguageId = enum(u8) { Null = 0, PlainText = 1 };
 
@@ -10,9 +14,7 @@ pub const FontStyle = packed struct(u4) {
 };
 
 // Open ended enum at runtime
-pub const ColorId = enum(u8) { None = 0, DefaultForeground = 1, DefaultBackground = 2 };
-
-pub const ForegroundColorId = enum(u9) { None = 0, DefaultForeground = 1, DefaultBackground = 2 };
+pub const ColorId = enum(u9) { None = 0, DefaultForeground = 1, DefaultBackground = 2 };
 
 // A standard token type.
 pub const StandardTokenType = enum(u2) { Other = 0, Comment = 1, String = 2, RegEx = 3 };
@@ -71,12 +73,108 @@ pub const SemanticMetadata = packed struct(u8) {
     useForeground: bool,
     useBackground: bool,
 };
-pub const MetadataConsts = packed struct {
+pub const TokenMetadata = packed struct(u32) {
     languageId: u8,
     tokenType: StandardTokenType,
     balancedBrackets: bool,
     fontStyle: FontStyle,
     foreground: ColorId,
-    foregroundExtra: u1,
-    background: ColorId,
+    background: u8,
+
+    pub const default = TokenMetadata{
+        .languageId = 0,
+        .tokenType = .Other,
+        .balancedBrackets = false,
+        .fontStyle = .{ .italic = false, .bold = false, .underline = false, .strikethrough = false },
+        .foreground = .DefaultForeground,
+        .background = @intCast(ColorId.DefaultBackground),
+    };
+
+    pub fn getClassNameFromMetadata(self: TokenMetadata, allocator: Allocator) !ArrayList(u8) {
+        const foreground = self.foreground;
+        var className = ArrayList(u8).init(allocator);
+        try className.appendSlice("mtk");
+
+        const foregroundStr = try std.fmt.allocPrint(allocator, "{d}", .{foreground});
+        defer allocator.free(foregroundStr);
+        try className.appendSlice(foregroundStr);
+
+        const fontStyle = self.fontStyle;
+        if (fontStyle.italic) {
+            try className.appendSlice(" mtki");
+        }
+        if (fontStyle.bold) {
+            try className.appendSlice(" mtkb");
+        }
+        if (fontStyle.underline) {
+            try className.appendSlice(" mtku");
+        }
+        if (fontStyle.strikethrough) {
+            try className.appendSlice(" mtks");
+        }
+
+        return className;
+    }
+
+    pub fn getInlineStyleFromMetadata(self: TokenMetadata, allocator: Allocator, colorMap: []const []const u8) !ArrayList(u8) {
+        const foreground = self.foreground;
+        const fontStyle = self.fontStyle;
+
+        var result = ArrayList(u8).init(allocator);
+        result.appendSlice("color: ");
+        result.appendSlice(colorMap[@as(usize, @intCast(foreground))]);
+        result.appendSlice(";");
+        if (fontStyle.italic) {
+            result.appendSlice("font-style: italic;");
+        }
+        if (fontStyle.bold) {
+            result.appendSlice("font-weight: bold;");
+        }
+
+        var textDecoration = ArrayList(u8).init(allocator);
+        defer textDecoration.deinit();
+        if (fontStyle.underline) {
+            textDecoration.appendSlice(" underline");
+        }
+        if (fontStyle.strikethrough) {
+            textDecoration.appendSlice(" line-through");
+        }
+        if (textDecoration.items.len > 0) {
+            result.appendSlice("text-decoration: ");
+            result.appendSlice(textDecoration.items);
+            result.appendSlice(";");
+        }
+        return result;
+    }
+
+    pub fn getPresentationFromMetadata(self: TokenMetadata) TokenPresentation {
+        return .{
+            .foreground = self.foreground,
+            .italic = self.fontStyle.italic,
+            .bold = self.fontStyle.bold,
+            .underline = self.fontStyle.underline,
+            .strikethrough = self.fontStyle.strikethrough,
+        };
+    }
 };
+
+pub const TokenPresentation = struct {
+    foreground: ColorId,
+    italic: bool,
+    bold: bool,
+    underline: bool,
+    strikethrough: bool,
+};
+
+test "TokenMetadata" {
+    const metadata = TokenMetadata{
+        .languageId = 1,
+        .tokenType = .Comment,
+        .balancedBrackets = true,
+        .fontStyle = .{ .italic = true, .bold = true, .underline = true, .strikethrough = true },
+        .foreground = .DefaultForeground,
+        .background = 0,
+    };
+    const presentation = metadata.getPresentationFromMetadata();
+    try std.testing.expectEqual(presentation.foreground, .DefaultForeground);
+}

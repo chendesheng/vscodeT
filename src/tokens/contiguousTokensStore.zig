@@ -1,12 +1,13 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
+const Allocator = std.mem.Allocator;
 const Range = @import("../basics/range.zig").Range;
 const Position = @import("../basics/position.zig").Position;
 const ContiguousTokensEditing = @import("./contiguousTokensEditing.zig").ContiguousTokensEditing;
 const EMPTY_LINE_TOKENS = @import("./contiguousTokensEditing.zig").EMPTY_LINE_TOKENS;
 const toUint32Array = @import("./contiguousTokensEditing.zig").toUint32Array;
 const LineTokens = @import("./lineTokens.zig").LineTokens;
-const ILanguageIdCodec = @import("../languages.zig").ILanguageIdCodec;
+const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const LanguageId = @import("../encodedTokenAttributes.zig").LanguageId;
 const FontStyle = @import("../encodedTokenAttributes.zig").FontStyle;
 const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
@@ -20,9 +21,9 @@ const ContiguousMultilineTokens = @import("./contiguousMultilineTokens.zig").Con
 pub const ContiguousTokensStore = struct {
     _lineTokens: ArrayList(?u32),
     _len: usize,
-    _languageIdCodec: ILanguageIdCodec,
+    _languageIdCodec: LanguageIdCodec,
 
-    pub fn init(languageIdCodec: ILanguageIdCodec) ContiguousTokensStore {
+    pub fn init(languageIdCodec: LanguageIdCodec) ContiguousTokensStore {
         return ContiguousTokensStore{
             ._lineTokens = ArrayList(?u32).init(std.heap.page_allocator),
             ._len = 0,
@@ -55,7 +56,7 @@ pub const ContiguousTokensStore = struct {
         return LineTokens.init(lineTokens, lineText, self._languageIdCodec);
     }
 
-    fn _massageTokens(topLevelLanguageId: LanguageId, lineTextLength: usize, _tokens: ?[]u32) []u32 {
+    fn _massageTokens(allocator: Allocator, topLevelLanguageId: LanguageId, lineTextLength: usize, _tokens: ?[]u32) []u32 {
         const tokens = _tokens orelse null;
 
         if (tokens == null) {
@@ -74,10 +75,10 @@ pub const ContiguousTokensStore = struct {
         }
 
         if (tokens.len == 0) {
-            var tokens = ArrayList(u32).init(self._lineTokens.allocator);
-            try tokens.append(lineTextLength);
-            try tokens.append(getDefaultMetadata(topLevelLanguageId));
-            return tokens.items;
+            var tokens2 = ArrayList(u32).init(allocator);
+            try tokens2.append(lineTextLength);
+            try tokens2.append(getDefaultMetadata(topLevelLanguageId));
+            return tokens2.items;
         }
 
         // Ensure the last token covers the end of the text
@@ -114,14 +115,14 @@ pub const ContiguousTokensStore = struct {
         }
         var lineTokens = ArrayList(?u32).init(self._lineTokens.allocator);
         for (0..insertCount) |_| {
-            lineTokens.append(null);
+            try lineTokens.append(null);
         }
-        self._lineTokens = try self._lineTokens.insertSlice(insertIndex, lineTokens);
+        self._lineTokens = try self._lineTokens.insertSlice(insertIndex, lineTokens.items);
         self._len += insertCount;
     }
 
     pub fn setTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineTextLength: usize, _tokens: ?[]u32, checkEquality: bool) bool {
-        const tokens = ContiguousTokensStore._massageTokens(self._languageIdCodec.encodeLanguageId(topLevelLanguageId), lineTextLength, _tokens);
+        const tokens = ContiguousTokensStore._massageTokens(self._lineTokens.allocator, self._languageIdCodec.encodeLanguageId(topLevelLanguageId), lineTextLength, _tokens);
         self._ensureLine(lineIndex);
         const oldTokens = self._lineTokens[lineIndex];
         self._lineTokens[lineIndex] = tokens;

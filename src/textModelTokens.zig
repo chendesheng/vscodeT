@@ -44,9 +44,9 @@ pub fn TokenizerWithStateStoreAndTextModel(comptime TState: type) type {
         lineCount: usize,
         tokenizationSupport: ITokenizationSupport,
         _textModel: ITextModel,
-        _languageIdCodec: ILanguageIdCodec,
+        _languageIdCodec: LanguageIdCodec,
 
-        pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport, textModel: ITextModel, languageIdCodec: ILanguageIdCodec) Self {
+        pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport, textModel: ITextModel, languageIdCodec: LanguageIdCodec) Self {
             return Self{
                 .lineCount = lineCount,
                 .tokenizationSupport = tokenizationSupport,
@@ -345,7 +345,7 @@ pub fn TokenizationStateStore(comptime TState: type) type {
     };
 }
 
-fn safeTokenize(languageIdCodec: ILanguageIdCodec, languageId: string, tokenizationSupport: ITokenizationSupport, text: string, hasEOL: bool, state: IState) EncodedTokenizationResult {
+fn safeTokenize(languageIdCodec: LanguageIdCodec, languageId: string, tokenizationSupport: ITokenizationSupport, text: string, hasEOL: bool, state: IState) EncodedTokenizationResult {
 	var r: ?EncodedTokenizationResult = null;
 
 	if (tokenizationSupport) {

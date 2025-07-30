@@ -2,6 +2,7 @@ const std = @import("std");
 const ArrayList = std.ArrayList;
 const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
 const LineTokens = @import("lineTokens.zig").LineTokens;
+const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 
 // This class represents a sequence of tokens.
 // Conceptually, each token has a length and a metadata number.
@@ -31,9 +32,9 @@ pub const TokenWithTextArray = struct {
         self._tokenInfo.deinit();
     }
 
-    pub fn toLineTokens(self: *TokenWithTextArray, decoder: ILanguageIdCodec) LineTokens {
+    pub fn toLineTokens(self: *TokenWithTextArray, decoder: LanguageIdCodec) LineTokens {
         return LineTokens.createFromTextAndMetadata(self._tokenInfo.allocator, self.map(struct {
-            fn cb(_r: void, t: TokenWithTextInfo) TokenWithTextInfo {
+            fn cb(_: void, t: TokenWithTextInfo) TokenWithTextInfo {
                 return TokenWithTextInfo{ .text = t.text, .metadata = t.metadata };
             }
         }.cb, decoder));

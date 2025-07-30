@@ -1,9 +1,8 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
-const IRange = @import("../basics/range.zig").IRange;
 const Range = @import("../basics/range.zig").Range;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
-const TextModel = @import("../model.zig").TextModel;
+const TextModel = @import("../textModel.zig").TextModel;
 
 // Represents sparse tokens over a contiguous range of lines.
 pub const SparseMultilineTokens = struct {
@@ -95,12 +94,12 @@ pub const SparseMultilineTokens = struct {
 		};
 	}
 
-	pub fn applyEdit(self: *SparseMultilineTokens, range: IRange, text: string) void {
+	pub fn applyEdit(self: *SparseMultilineTokens, range: Range, text: []const u8) void {
 		const [eolCount, firstLineLength, lastLineLength] = countEOL(text);
-		self.acceptEdit(range, eolCount, firstLineLength, lastLineLength, text.length > 0 ? text.charCodeAt(0) : CharCode.Null);
+		self.acceptEdit(range, eolCount, firstLineLength, lastLineLength, text.len > 0 ? text.codePointAt(0) : 0);
 	}
 
-	pub fn acceptEdit(self: *SparseMultilineTokens, range: IRange, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: u21) void {
+	pub fn acceptEdit(self: *SparseMultilineTokens, range: Range, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: u21) void {
 		self._acceptDeleteRange(range);
 		self._acceptInsertText(Position{
 			.lineNumber = range.startLineNumber,
@@ -109,7 +108,7 @@ pub const SparseMultilineTokens = struct {
 		self._updateEndLineNumber();
 	}
 
-	fn _acceptDeleteRange(self: *SparseMultilineTokens, range: IRange) void {
+	fn _acceptDeleteRange(self: *SparseMultilineTokens, range: Range) void {
 		if (range.startLineNumber === range.endLineNumber && range.startColumn === range.endColumn) {
 			// Nothing to delete
 			return;
@@ -174,7 +173,7 @@ pub const SparseMultilineTokens = struct {
 		self._tokens.acceptInsertText(lineIndex, position.column - 1, eolCount, firstLineLength, lastLineLength, firstCharCode);
 	}
 
-	pub fn reportIfInvalid(self: *SparseMultilineTokens, model: ITextModel) void {
+	pub fn reportIfInvalid(self: *SparseMultilineTokens, model: TextModel) void {
 		self._tokens.reportIfInvalid(model, self._startLineNumber);
 	}
 };
@@ -185,10 +184,10 @@ pub const SparseMultilineTokensStorage = struct {
 	 //  4*i+1  startCharacter (from the line start)
 	 //  4*i+2  endCharacter (from the line start)
 	 //  4*i+3  metadata
-	_tokens: []u32,
+	_tokens: ArrayList(u32),
 	_tokenCount: usize,
 
-	pub fn init(tokens: []u32) SparseMultilineTokensStorage {
+	pub fn init(tokens: ArrayList(u32)) SparseMultilineTokensStorage {
 		return SparseMultilineTokensStorage{
 			._tokens = tokens,
 			._tokenCount = tokens.len / 4,
@@ -232,15 +231,15 @@ pub const SparseMultilineTokensStorage = struct {
 	}
 	
 	fn getDeltaLine(self: *SparseMultilineTokensStorage, tokenIndex: usize) usize {
-		return self._tokens[4 * tokenIndex];
+		return self._tokens.items[4 * tokenIndex];
 	}
 
 	pub fn getStartCharacter(self: *SparseMultilineTokensStorage, tokenIndex: usize) usize {
-		return self._tokens[4 * tokenIndex + 1];
+		return self._tokens.items[4 * tokenIndex + 1];
 	}
 
 	fn getEndCharacter(self: *SparseMultilineTokensStorage, tokenIndex: usize) usize {
-		return self._tokens[4 * tokenIndex + 2];
+		return self._tokens.items[4 * tokenIndex + 2];
 	}
 
 	pub fn isEmpty(self: *SparseMultilineTokensStorage) bool {
@@ -268,12 +267,12 @@ pub const SparseMultilineTokensStorage = struct {
 				while (max < high and self._getDeltaLine(max + 1) == deltaLine) {
 					max += 1;
 				}
-				return SparseLineTokens.init(self._tokens.subarray(4 * min, 4 * max + 4));
+				return SparseLineTokens.init(self._tokens.items[ 4 * min.. 4 * max + 4 ]);
 			}
 		}
 
 		if (self._getDeltaLine(low) == deltaLine) {
-			return SparseLineTokens.init(self._tokens.subarray(4 * low, 4 * low + 4));
+			return SparseLineTokens.init(self._tokens.items[ 4 * low.. 4 * low + 4 ]);
 		}
 
 		return null;
@@ -579,7 +578,7 @@ pub const SparseMultilineTokensStorage = struct {
 		}
 	}
 
-	pub fn reportIfInvalid(self: *SparseMultilineTokensStorage, model: ITextModel, startLineNumber: usize) void {
+	pub fn reportIfInvalid(self: *SparseMultilineTokensStorage, model: TextModel, startLineNumber: usize) void {
 		for (0..self._tokenCount) |i| {
 			const lineNumber = self._getDeltaLine(i) + startLineNumber;
 

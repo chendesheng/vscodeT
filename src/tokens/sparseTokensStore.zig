@@ -1,21 +1,20 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
-const IRange = @import("../basics/range.zig").IRange;
 const Range = @import("../basics/range.zig").Range;
 const LineTokens = @import("lineTokens.zig").LineTokens;
 const SparseMultilineTokens = @import("sparseMultilineTokens.zig").SparseMultilineTokens;
-const ILanguageIdCodec = @import("../languages.zig").ILanguageIdCodec;
+const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const MetadataConsts = @import("../encodedTokenAttributes.zig").MetadataConsts;
-const TextModel = @import("../model.zig").TextModel;
+const TextModel = @import("../textModel.zig").TextModel;
 
 // Represents sparse tokens in a text model.
 pub const SparseTokensStore = struct {
 
 	_pieces: ArrayList(SparseMultilineTokens),
 	_isComplete: bool,
-	_languageIdCodec: ILanguageIdCodec,
+	_languageIdCodec: LanguageIdCodec,
 
-	pub fn init(languageIdCodec: ILanguageIdCodec) SparseTokensStore {
+	pub fn init(languageIdCodec: LanguageIdCodec) SparseTokensStore {
 		return SparseTokensStore{
 			._pieces = ArrayList(SparseMultilineTokens).init(std.heap.page_allocator),
 			._isComplete = false,
@@ -33,7 +32,7 @@ pub const SparseTokensStore = struct {
 	}
 
 	pub fn set(self: *SparseTokensStore, pieces: ?[]SparseMultilineTokens, isComplete: bool, textModel: ?TextModel) void {
-		self._pieces.items = pieces orelse &[];
+		self._pieces.items = pieces orelse &[_]SparseMultilineTokens{};
 		self._isComplete = isComplete;
 
 		if (textModel) {
@@ -56,7 +55,7 @@ pub const SparseTokensStore = struct {
 			range = _range.plusRange(_firstRange).plusRange(_lastRange);
 		}
 
-		var insertPosition: ?{ index: usize } = null;
+		var insertPosition: ?struct { index: usize } = null;
 		for (0..self._pieces.items.len) |i| {
 			const piece = self._pieces.items[i];
 			if (piece.endLineNumber < range.startLineNumber) {
@@ -67,7 +66,7 @@ pub const SparseTokensStore = struct {
 			if (piece.startLineNumber > range.endLineNumber) {
 				// this piece is after the range, so mark the spot before this piece
 				// as a good insertion position and stop looping
-				insertPosition = insertPosition || { index: i };
+				insertPosition = insertPosition orelse .{ .index = i };
 				break;
 			}
 
@@ -88,7 +87,7 @@ pub const SparseTokensStore = struct {
 
 			if (piece.startLineNumber > range.endLineNumber) {
 				// after removal, this piece is after the range
-				insertPosition = insertPosition || { index: i };
+				insertPosition = insertPosition orelse .{ .index = i };
 				continue;
 			}
 
@@ -96,7 +95,7 @@ pub const SparseTokensStore = struct {
 			const [a, b] = piece.split(range);
 			if (a.isEmpty()) {
 				// this piece is actually after the range
-				insertPosition = insertPosition || { index: i };
+				insertPosition = insertPosition orelse .{ .index = i };
 				continue;
 			}
 			if (b.isEmpty()) {
@@ -108,13 +107,13 @@ pub const SparseTokensStore = struct {
 			self._pieces.append(b);
 			i += 1;
 
-			insertPosition = insertPosition || { index: i };
+			insertPosition = insertPosition orelse .{ .index = i };
 		}
 
-		insertPosition = insertPosition orelse { index: self._pieces.items.len };
+		insertPosition = insertPosition orelse .{ .index = self._pieces.items.len };
 
 		if (pieces.len > 0) {
-			self._pieces.insertSlice(insertPosition.index, pieces);
+			self._pieces.insertSlice(insertPosition.?.index, pieces);
 		}
 
 		// console.log(`I HAVE ${this._pieces.length} pieces`);
@@ -242,7 +241,7 @@ pub const SparseTokensStore = struct {
 		return low;
 	}
 
-	pub fn acceptEdit(self: *SparseTokensStore, range: IRange, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: u21) void {
+	pub fn acceptEdit(self: *SparseTokensStore, range: Range, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: u21) void {
 		for (self._pieces.items) |piece| {
 			piece.acceptEdit(range, eolCount, firstLineLength, lastLineLength, firstCharCode);
 		}
