@@ -4,6 +4,8 @@ const Allocator = std.mem.Allocator;
 const findFirstIdxMonotonousOrArrLen = @import("./utils.zig").findFirstIdxMonotonousOrArrLen;
 const findLastIdxMonotonous = @import("./utils.zig").findLastIdxMonotonous;
 const findLastMonotonous = @import("./utils.zig").findLastMonotonous;
+const OffsetRange = @import("./offsetRange.zig").OffsetRange;
+const Range = @import("./range.zig").Range;
 
 // A range of lines (1-based).
 pub const LineRange = struct {
@@ -13,25 +15,16 @@ pub const LineRange = struct {
     // The end line number (exclusive).
     endLineNumberExclusive: usize,
 
-    pub fn ofLength(startLineNumber: usize, length: usize) LineRange {
-        return LineRange{
-            .startLineNumber = startLineNumber,
-            .endLineNumberExclusive = startLineNumber + length,
-        };
+    pub fn ofLength(startLineNumber: usize, _length: usize) LineRange {
+        return LineRange.init(startLineNumber, startLineNumber + _length);
     }
 
     pub fn fromRange(range: Range) LineRange {
-        return LineRange{
-            .startLineNumber = range.startLineNumber,
-            .endLineNumberExclusive = range.endLineNumber,
-        };
+        return LineRange.init(range.startLineNumber, range.endLineNumber);
     }
 
     pub fn fromRangeInclusive(range: Range) LineRange {
-        return LineRange{
-            .startLineNumber = range.startLineNumber,
-            .endLineNumberExclusive = range.endLineNumber + 1,
-        };
+        return LineRange.init(range.startLineNumber, range.endLineNumber + 1);
     }
 
     // public static readonly compareByStart: Comparator<LineRange> = compareBy(l => l.startLineNumber, numberComparator);
@@ -42,30 +35,18 @@ pub const LineRange = struct {
         }
         if (a.startLineNumber < b.startLineNumber and b.endLineNumberExclusive < a.endLineNumberExclusive) {
             return [_]LineRange{
-                LineRange{
-                    .startLineNumber = a.startLineNumber,
-                    .endLineNumberExclusive = b.startLineNumber,
-                },
-                LineRange{
-                    .startLineNumber = b.endLineNumberExclusive,
-                    .endLineNumberExclusive = a.endLineNumberExclusive,
-                },
+                LineRange.init(a.startLineNumber, b.startLineNumber),
+                LineRange.init(b.endLineNumberExclusive, a.endLineNumberExclusive),
             };
         } else if (b.startLineNumber <= a.startLineNumber and a.endLineNumberExclusive <= b.endLineNumberExclusive) {
             return [_]LineRange{};
         } else if (b.endLineNumberExclusive < a.endLineNumberExclusive) {
             return [_]LineRange{
-                LineRange{
-                    .startLineNumber = @max(b.endLineNumberExclusive, a.startLineNumber),
-                    .endLineNumberExclusive = a.endLineNumberExclusive,
-                },
+                LineRange.init(@max(b.endLineNumberExclusive, a.startLineNumber), a.endLineNumberExclusive),
             };
         } else {
             return [_]LineRange{
-                LineRange{
-                    .startLineNumber = a.startLineNumber,
-                    .endLineNumberExclusive = @min(b.startLineNumber, a.endLineNumberExclusive),
-                },
+                LineRange.init(a.startLineNumber, @min(b.startLineNumber, a.endLineNumberExclusive)),
             };
         }
     }
@@ -82,7 +63,7 @@ pub const LineRange = struct {
         return result.ranges;
     }
 
-    pub fn join(lineRanges: []LineRange) LineRange {
+    pub fn joinAll(lineRanges: []LineRange) !LineRange {
         if (lineRanges.len == 0) {
             return error.LineRangesCannotBeEmpty;
         }
@@ -92,26 +73,18 @@ pub const LineRange = struct {
             startLineNumber = @min(startLineNumber, lineRange.startLineNumber);
             endLineNumberExclusive = @max(endLineNumberExclusive, lineRange.endLineNumberExclusive);
         }
-        return LineRange{
-            .startLineNumber = startLineNumber,
-            .endLineNumberExclusive = endLineNumberExclusive,
-        };
+        return LineRange.init(startLineNumber, endLineNumberExclusive);
     }
 
     // @internal
     pub fn deserialize(lineRange: ISerializedLineRange) LineRange {
-        return LineRange{
-            .startLineNumber = lineRange[0],
-            .endLineNumberExclusive = lineRange[1],
-        };
+        return LineRange.init(lineRange[0], lineRange[1]);
     }
 
-    pub fn init(
-        startLineNumber: usize,
-        endLineNumberExclusive: usize,
-    ) LineRange {
+    pub fn init(startLineNumber: usize, endLineNumberExclusive: usize) LineRange {
         if (startLineNumber > endLineNumberExclusive) {
-            return error.StartLineNumberCannotBeAfterEndLineNumberExclusive;
+            // return error.StartLineNumberCannotBeAfterEndLineNumberExclusive;
+            unreachable;
         }
         return LineRange{
             .startLineNumber = startLineNumber,
@@ -135,17 +108,11 @@ pub const LineRange = struct {
 
     // Moves this line range by the given offset of line numbers.
     pub fn delta(self: LineRange, offset: usize) LineRange {
-        return LineRange{
-            .startLineNumber = self.startLineNumber + offset,
-            .endLineNumberExclusive = self.endLineNumberExclusive + offset,
-        };
+        return LineRange.init(self.startLineNumber + offset, self.endLineNumberExclusive + offset);
     }
 
     pub fn deltaLength(self: LineRange, offset: usize) LineRange {
-        return LineRange{
-            .startLineNumber = self.startLineNumber,
-            .endLineNumberExclusive = self.endLineNumberExclusive + offset,
-        };
+        return LineRange.init(self.startLineNumber, self.endLineNumberExclusive + offset);
     }
 
     // The number of lines this line range spans.
@@ -155,14 +122,11 @@ pub const LineRange = struct {
 
     // Creates a line range that combines this and the given line range.
     pub fn join(self: *LineRange, other: LineRange) LineRange {
-        return LineRange{
-            .startLineNumber = @min(self.startLineNumber, other.startLineNumber),
-            .endLineNumberExclusive = @max(self.endLineNumberExclusive, other.endLineNumberExclusive),
-        };
+        return LineRange.init(@min(self.startLineNumber, other.startLineNumber), @max(self.endLineNumberExclusive, other.endLineNumberExclusive));
     }
 
-    pub fn toString(self: *LineRange) []const u8 {
-        return std.fmt.bufPrint(buf, "[{d},{d})", .{ self.startLineNumber, self.endLineNumberExclusive });
+    pub fn toString(self: *LineRange, allocator: Allocator) ![]const u8 {
+        return std.fmt.allocPrint(allocator, "[{d},{d})", .{ self.startLineNumber, self.endLineNumberExclusive });
     }
 
     // The resulting range is empty if the ranges do not intersect, but touch.
@@ -171,12 +135,9 @@ pub const LineRange = struct {
         const startLineNumber = @max(self.startLineNumber, other.startLineNumber);
         const endLineNumberExclusive = @min(self.endLineNumberExclusive, other.endLineNumberExclusive);
         if (startLineNumber <= endLineNumberExclusive) {
-            return LineRange{
-                .startLineNumber = startLineNumber,
-                .endLineNumberExclusive = endLineNumberExclusive,
-            };
+            return LineRange.init(startLineNumber, endLineNumberExclusive);
         }
-        return undefined;
+        return null;
     }
 
     pub fn intersectsStrict(self: *LineRange, other: LineRange) bool {
@@ -195,24 +156,18 @@ pub const LineRange = struct {
         if (self.isEmpty()) {
             return null;
         }
-        return LineRange{
-            .startLineNumber = self.startLineNumber,
-            .endLineNumberExclusive = self.endLineNumberExclusive - 1,
-        };
+        return LineRange.init(self.startLineNumber, self.endLineNumberExclusive - 1);
     }
 
     // @deprecated Using this function is discouraged because it might lead to bugs: The end position is not guaranteed to be a valid position!
     pub fn toExclusiveRange(self: *LineRange) LineRange {
-        return LineRange{
-            .startLineNumber = self.startLineNumber,
-            .endLineNumberExclusive = self.endLineNumberExclusive,
-        };
+        return LineRange.init(self.startLineNumber, self.endLineNumberExclusive);
     }
 
-    pub fn mapToLineArray(self: *LineRange, f: fn (lineNumber: usize) T) []T {
-        var result: []T = &[_]T{};
+    pub fn mapToLineArray(self: *LineRange, comptime T: type, context: anytype, f: fn (lineNumber: usize, context: @TypeOf(context)) T) !ArrayList(T) {
+        var result = ArrayList(T).init(context.allocator);
         for (self.startLineNumber..self.endLineNumberExclusive) |lineNumber| {
-            result.push(f(lineNumber));
+            try result.append(f(lineNumber, context));
         }
         return result;
     }
@@ -231,10 +186,7 @@ pub const LineRange = struct {
     // Converts this 1-based line range to a 0-based offset range (subtracts 1!).
     // @internal
     pub fn toOffsetRange(self: *LineRange) OffsetRange {
-        return OffsetRange{
-            .start = self.startLineNumber - 1,
-            .end = self.endLineNumberExclusive - 1,
-        };
+        return OffsetRange.init(self.startLineNumber - 1, self.endLineNumberExclusive - 1);
     }
 
     pub fn distanceToRange(self: *LineRange, other: LineRange) usize {
@@ -258,14 +210,11 @@ pub const LineRange = struct {
     }
 
     pub fn addMargin(self: *LineRange, marginTop: usize, marginBottom: usize) LineRange {
-        return LineRange{
-            .startLineNumber = self.startLineNumber - marginTop,
-            .endLineNumberExclusive = self.endLineNumberExclusive + marginBottom,
-        };
+        return LineRange.init(self.startLineNumber - marginTop, self.endLineNumberExclusive + marginBottom);
     }
 };
 
-// pub const ISerializedLineRange = [startLineNumber: number, endLineNumberExclusive: number];
+pub const ISerializedLineRange = [2]usize;
 
 pub const LineRangeSet = struct {
     // Sorted by start line number.
@@ -350,27 +299,27 @@ pub const LineRangeSet = struct {
         }
 
         var result = ArrayList(LineRange).init(self._normalizedRanges.allocator);
-        var i1: usize = 0;
-        var i2: usize = 0;
+        var i_1: usize = 0;
+        var i_2: usize = 0;
         var current: ?LineRange = null;
-        while (i1 < self._normalizedRanges.items.len or i2 < other._normalizedRanges.items.len) {
+        while (i_1 < self._normalizedRanges.items.len or i_2 < other._normalizedRanges.items.len) {
             var next: ?LineRange = null;
-            if (i1 < self._normalizedRanges.items.len and i2 < other._normalizedRanges.items.len) {
-                const lineRange1 = self._normalizedRanges.items[i1];
-                const lineRange2 = other._normalizedRanges.items[i2];
+            if (i_1 < self._normalizedRanges.items.len and i_2 < other._normalizedRanges.items.len) {
+                const lineRange1 = self._normalizedRanges.items[i_1];
+                const lineRange2 = other._normalizedRanges.items[i_2];
                 if (lineRange1.startLineNumber < lineRange2.startLineNumber) {
                     next = &lineRange1;
-                    i1 += 1;
+                    i_1 += 1;
                 } else {
                     next = &lineRange2;
-                    i2 += 1;
+                    i_2 += 1;
                 }
-            } else if (i1 < self._normalizedRanges.items.len) {
-                next = &self._normalizedRanges.items[i1];
-                i1 += 1;
+            } else if (i_1 < self._normalizedRanges.items.len) {
+                next = &self._normalizedRanges.items[i_1];
+                i_1 += 1;
             } else {
-                next = &other._normalizedRanges.items[i2];
-                i2 += 1;
+                next = &other._normalizedRanges.items[i_2];
+                i_2 += 1;
             }
 
             if (current == null) {
@@ -378,10 +327,7 @@ pub const LineRangeSet = struct {
             } else {
                 if (current.endLineNumberExclusive >= next.startLineNumber) {
                     // merge
-                    current = LineRange{
-                        .startLineNumber = current.startLineNumber,
-                        .endLineNumberExclusive = @max(current.endLineNumberExclusive, next.endLineNumberExclusive),
-                    };
+                    current = LineRange.init(current.startLineNumber, @max(current.endLineNumberExclusive, next.endLineNumberExclusive));
                 } else {
                     // push
                     try result.append(current);
@@ -422,18 +368,12 @@ pub const LineRangeSet = struct {
         for (joinRangeStartIdx..joinRangeEndIdxExclusive) |i| {
             const r = self._normalizedRanges[i];
             if (r.startLineNumber > startLineNumber) {
-                try result.append(LineRange{
-                    .startLineNumber = startLineNumber,
-                    .endLineNumberExclusive = r.startLineNumber,
-                });
+                try result.append(LineRange.init(startLineNumber, r.startLineNumber));
             }
             startLineNumber = r.endLineNumberExclusive;
         }
         if (startLineNumber < range.endLineNumberExclusive) {
-            try result.append(LineRange{
-                .startLineNumber = startLineNumber,
-                .endLineNumberExclusive = range.endLineNumberExclusive,
-            });
+            try result.append(LineRange.init(startLineNumber, range.endLineNumberExclusive));
         }
 
         return LineRangeSet.init(result);
@@ -444,7 +384,7 @@ pub const LineRangeSet = struct {
         // var buf: [1024]u8 = undefined;
         var result = std.ArrayList(u8).init(allocator);
         for (self._normalizedRanges.items) |r| {
-            try result.append(r.toString());
+            try result.append(try r.toString(allocator));
         }
         return result.items;
     }
@@ -453,21 +393,22 @@ pub const LineRangeSet = struct {
         const allocator = self._normalizedRanges.allocator;
         var result = ArrayList(LineRange).init(allocator);
 
-        var i1: usize = 0;
-        var i2: usize = 0;
-        while (i1 < self._normalizedRanges.items.len and i2 < other._normalizedRanges.items.len) {
-            const r1 = self._normalizedRanges.items[i1];
-            const r2 = other._normalizedRanges.items[i2];
+        var i_1: usize = 0;
+        var i_2: usize = 0;
+        while (i_1 < self._normalizedRanges.items.len and i_2 < other._normalizedRanges.items.len) {
+            const r1 = self._normalizedRanges.items[i_1];
+            const r2 = other._normalizedRanges.items[i_2];
 
-            const i = r1.intersect(r2);
-            if (i and !i.isEmpty) {
-                try result.append(i);
+            if (r1.intersect(r2)) |i| {
+                if (!i.isEmpty()) {
+                    try result.append(i);
+                }
             }
 
             if (r1.endLineNumberExclusive < r2.endLineNumberExclusive) {
-                i1 += 1;
+                i_1 += 1;
             } else {
-                i2 += 1;
+                i_2 += 1;
             }
         }
 
