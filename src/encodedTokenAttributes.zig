@@ -14,7 +14,12 @@ pub const FontStyle = packed struct(u4) {
 };
 
 // Open ended enum at runtime
-pub const ColorId = enum(u9) { None = 0, DefaultForeground = 1, DefaultBackground = 2 };
+pub const ColorId = enum(u9) {
+    None = 0,
+    DefaultForeground = 1,
+    DefaultBackground = 2,
+    Mask = 0b111111111,
+};
 
 // A standard token type.
 pub const StandardTokenType = enum(u2) { Other = 0, Comment = 1, String = 2, RegEx = 3 };
