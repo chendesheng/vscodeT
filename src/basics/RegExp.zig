@@ -240,11 +240,12 @@ pub const Options = packed struct(c_int) {
     multiline: bool = false,
     singleline: bool = false,
     find_longest: bool = false,
-    not_empty: bool = false,
+    find_not_empty: bool = false,
     negate_singleline: bool = false,
     dont_capture_group: bool = false,
     capture_group: bool = false,
     not_bol: bool = false,
+    not_eol: bool = false,
     posix_region: bool = false,
     check_validity_of_string: bool = false,
     ignorecase_is_ascii: bool = false,
@@ -259,7 +260,7 @@ pub const Options = packed struct(c_int) {
     not_begin_position: bool = false,
     callback_each_match: bool = false,
     match_whole_string: bool = false,
-    _rest_bits: u8 = 0,
+    _rest_bits: u7 = 0,
 };
 
 pub const DefaultOption: Options = @bitCast(c.ONIG_OPTION_DEFAULT);
