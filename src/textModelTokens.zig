@@ -2,6 +2,7 @@ const std = @import("std");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Pair = @import("./basics/utils.zig").Pair;
+const pair = @import("./basics/utils.zig").pair;
 const RangePriorityQueue = @import("./basics/rangePriorityQueue.zig").RangePriorityQueue;
 const OffsetRange = @import("./basics/offsetRange.zig").OffsetRange;
 const countEOL = @import("./basics/eolCounter.zig").countEOL;
@@ -27,10 +28,10 @@ pub const TokenizerWithStateStore = struct {
     initialState: IState,
     store: TrackingTokenizationStateStore,
 
-    pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport) Self {
+    pub fn init(allocator: Allocator, lineCount: usize, tokenizationSupport: ITokenizationSupport) !Self {
         return Self{
             .initialState = tokenizationSupport.getInitialState(),
-            .store = TrackingTokenizationStateStore.init(lineCount),
+            .store = try TrackingTokenizationStateStore.init(allocator, lineCount),
         };
     }
 
@@ -38,7 +39,7 @@ pub const TokenizerWithStateStore = struct {
         return self.store.getStartState(lineNumber, self.initialState);
     }
 
-    pub fn getFirstInvalidLine(self: *Self) ?Pair(usize, IState) {
+    pub fn getFirstInvalidLine(self: *Self) !?Pair(usize, IState) {
         return self.store.getFirstInvalidLine(self.initialState);
     }
 };
@@ -53,9 +54,9 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     _textModel: TextModel,
     _languageIdCodec: LanguageIdCodec,
 
-    pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport, textModel: TextModel, languageIdCodec: LanguageIdCodec) Self {
+    pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport, textModel: TextModel, languageIdCodec: LanguageIdCodec) !Self {
         return Self{
-            .super = TokenizerWithStateStore.init(lineCount, tokenizationSupport),
+            .super = try TokenizerWithStateStore.init(textModel.getAllocator(), lineCount, tokenizationSupport),
             .lineCount = lineCount,
             .tokenizationSupport = tokenizationSupport,
             ._textModel = textModel,
@@ -67,7 +68,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         return self.super.getStartState(lineNumber);
     }
 
-    pub fn getFirstInvalidLine(self: *Self) ?Pair(usize, IState) {
+    pub fn getFirstInvalidLine(self: *Self) !?Pair(usize, IState) {
         return self.super.getFirstInvalidLine();
     }
 
@@ -83,16 +84,15 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         const languageId = self._textModel.getLanguageId();
 
         while (true) {
-            const lineToTokenize = self.getFirstInvalidLine() orelse break;
+            const lineToTokenize = try self.getFirstInvalidLine() orelse break;
             if (lineToTokenize.lineNumber > lineNumber) {
                 break;
             }
 
-            const text = self._textModel.getLineContent(lineToTokenize.lineNumber);
-
-            const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text, true, lineToTokenize.startState);
+            const text = try self._textModel.getLineContent(lineToTokenize.lineNumber);
+            const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.startState);
             try builder.add(lineToTokenize.lineNumber, r.tokens);
-            self.store.setEndState(lineToTokenize.lineNumber, r.endState);
+            _ = try self.getStore().setEndState(lineToTokenize.lineNumber, r.endState);
         }
     }
 
@@ -235,13 +235,15 @@ pub const TrackingTokenizationStateStore = struct {
 
     _tokenizationStateStore: TokenizationStateStore,
     _invalidEndStatesLineNumbers: RangePriorityQueue,
+    _lineCount: usize,
 
-    pub fn init(lineCount: usize) !Self {
-        var queue = RangePriorityQueue.init();
+    pub fn init(allocator: Allocator, lineCount: usize) !Self {
+        var queue = RangePriorityQueue.init(allocator);
         try queue.addRange(OffsetRange.init(1, lineCount + 1));
         return Self{
             ._tokenizationStateStore = TokenizationStateStore.init(),
             ._invalidEndStatesLineNumbers = queue,
+            ._lineCount = lineCount,
         };
     }
 
@@ -251,13 +253,9 @@ pub const TrackingTokenizationStateStore = struct {
 
     // @returns if the end state has changed.
     pub fn setEndState(self: *Self, lineNumber: usize, state: IState) !bool {
-        if (state == null) {
-            return false;
-        }
-
         self._invalidEndStatesLineNumbers.delete(lineNumber);
-        const r = self._tokenizationStateStore.setEndState(lineNumber, state);
-        if (r and lineNumber < self.lineCount) {
+        const r = try self._tokenizationStateStore.setEndState(lineNumber, state);
+        if (r and lineNumber < self._lineCount) {
             // because the state changed, we cannot trust the next state anymore and have to invalidate it.
             try self._invalidEndStatesLineNumbers.addRange(OffsetRange.init(lineNumber + 1, lineNumber + 2));
         }
@@ -266,7 +264,7 @@ pub const TrackingTokenizationStateStore = struct {
     }
 
     pub fn acceptChange(self: *Self, range: LineRange, newLineCount: usize) !void {
-        self.lineCount += newLineCount - range.length;
+        self._lineCount = self._lineCount + newLineCount - range.length();
         self._tokenizationStateStore.acceptChange(range, newLineCount);
         self._invalidEndStatesLineNumbers.addRangeAndResize(OffsetRange.init(range.startLineNumber, range.endLineNumberExclusive), newLineCount);
     }
@@ -301,17 +299,16 @@ pub const TrackingTokenizationStateStore = struct {
         return self.getEndState(lineNumber - 1);
     }
 
-    pub fn getFirstInvalidLine(self: *Self, initialState: IState) ?Pair(usize, IState) {
-        const lineNumber = self.getFirstInvalidEndStateLineNumber();
-        if (lineNumber == null) {
+    pub fn getFirstInvalidLine(self: *Self, initialState: IState) !?Pair(usize, IState) {
+        if (self.getFirstInvalidEndStateLineNumber()) |lineNumber| {
+            if (self.getStartState(lineNumber, initialState)) |startState| {
+                return pair(lineNumber, startState);
+            } else {
+                return error.StartStateMustBeDefined;
+            }
+        } else {
             return null;
         }
-        const startState = self.getStartState(lineNumber, initialState);
-        if (startState == null) {
-            return error.StartStateMustBeDefined;
-        }
-
-        return Pair(usize, IState).init(lineNumber, startState);
     }
 };
 
@@ -329,18 +326,18 @@ pub const TokenizationStateStore = struct {
         return self._lineEndStates.get(lineNumber);
     }
 
-    pub fn setEndState(self: *Self, lineNumber: usize, state: IState) bool {
+    pub fn setEndState(self: *Self, lineNumber: usize, state: IState) !bool {
         if (self._lineEndStates.get(lineNumber)) |oldState| {
             if (oldState.equals(state)) {
                 return false;
             }
         }
 
-        self._lineEndStates.set(lineNumber, state);
+        try self._lineEndStates.set(lineNumber, state);
         return true;
     }
 
-    pub fn acceptChange(self: *Self, range: LineRange, newLineCount: usize) void {
+    pub fn acceptChange(self: *Self, range: LineRange, newLineCount: usize) !void {
         var len = range.length();
         if (newLineCount > 0 and len > 0) {
             // Keep the last state, even though it is unrelated.
@@ -349,13 +346,13 @@ pub const TokenizationStateStore = struct {
             newLineCount -= 1;
         }
 
-        self._lineEndStates.replace(range.startLineNumber, len, newLineCount);
+        try self._lineEndStates.replace(range.startLineNumber, len, newLineCount);
     }
 
-    pub fn acceptChanges(self: *Self, changes: []ModelContentChange) void {
+    pub fn acceptChanges(self: *Self, changes: []ModelContentChange) !void {
         for (changes) |c| {
             const result = countEOL(c.text);
-            self.acceptChange(LineRange.init(c.range.startLineNumber, c.range.endLineNumber + 1), result.eolCount + 1);
+            try self.acceptChange(LineRange.init(c.range.startLineNumber, c.range.endLineNumber + 1), result.eolCount + 1);
         }
     }
 };
