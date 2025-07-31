@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const Position = @import("./basics/position.zig").Position;
 const ContiguousMultilineTokens = @import("./tokens/contiguousMultilineTokens.zig").ContiguousMultilineTokens;
 const TextModel = @import("./textModel.zig").TextModel;
+const TokenPacked = @import("./tokens/lineTokens.zig").TokenPacked;
 
 // @internal
 pub const LanguageIdCodec = struct {
@@ -55,13 +56,13 @@ pub const TokenizationResult = struct {
 
 // @internal
 pub const EncodedTokenizationResult = struct {
-    tokens: []u32,
+    tokens: []TokenPacked,
     endState: IState,
 
     // The tokens in binary format. Each token occupies two array indices. For token i:
     //  - at offset 2*i => startIndex
     //  - at offset 2*i + 1 => metadata
-    pub fn init(tokens: []u32, endState: IState) EncodedTokenizationResult {
+    pub fn init(tokens: []TokenPacked, endState: IState) EncodedTokenizationResult {
         return EncodedTokenizationResult{
             .tokens = tokens,
             .endState = endState,

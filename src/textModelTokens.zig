@@ -21,97 +21,109 @@ const nullTokenizeEncoded = @import("./nullTokenize.zig").nullTokenizeEncoded;
 
 const CHEAP_TOKENIZATION_LENGTH_LIMIT = 2048;
 
-pub fn TokenizerWithStateStore(comptime TState: type) type {
-    return struct {
-        const Self = @This();
+pub const TokenizerWithStateStore = struct {
+    const Self = @This();
 
-        initialState: TState,
-        store: TrackingTokenizationStateStore(TState),
+    initialState: IState,
+    store: TrackingTokenizationStateStore,
 
-        pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport) Self {
-            return Self{
-                .initialState = tokenizationSupport.getInitialState(),
-                .store = TrackingTokenizationStateStore(TState).init(lineCount),
-            };
-        }
+    pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport) Self {
+        return Self{
+            .initialState = tokenizationSupport.getInitialState(),
+            .store = TrackingTokenizationStateStore.init(lineCount),
+        };
+    }
 
-        pub fn getStartState(self: *Self, lineNumber: usize) ?TState {
-            return self.store.getStartState(lineNumber, self.initialState);
-        }
+    pub fn getStartState(self: *Self, lineNumber: usize) ?IState {
+        return self.store.getStartState(lineNumber, self.initialState);
+    }
 
-        pub fn getFirstInvalidLine(self: *Self) ?Pair(usize, TState) {
-            return self.store.getFirstInvalidLine(self.initialState);
-        }
-    };
-}
+    pub fn getFirstInvalidLine(self: *Self) ?Pair(usize, IState) {
+        return self.store.getFirstInvalidLine(self.initialState);
+    }
+};
 
-pub fn TokenizerWithStateStoreAndTextModel(comptime TState: type) type {
-    return struct {
-        const Self = @This();
+pub const TokenizerWithStateStoreAndTextModel = struct {
+    const Self = @This();
 
-        lineCount: usize,
-        tokenizationSupport: ITokenizationSupport,
-        _textModel: TextModel,
-        _languageIdCodec: LanguageIdCodec,
+    super: TokenizerWithStateStore,
 
-        pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport, textModel: TextModel, languageIdCodec: LanguageIdCodec) Self {
-            return Self{
-                .lineCount = lineCount,
-                .tokenizationSupport = tokenizationSupport,
-                ._textModel = textModel,
-                ._languageIdCodec = languageIdCodec,
-            };
-        }
+    lineCount: usize,
+    tokenizationSupport: ITokenizationSupport,
+    _textModel: TextModel,
+    _languageIdCodec: LanguageIdCodec,
 
-        pub fn updateTokensUntilLine(self: *Self, builder: ContiguousMultilineTokensBuilder, lineNumber: usize) void {
-            const languageId = self._textModel.getLanguageId();
+    pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport, textModel: TextModel, languageIdCodec: LanguageIdCodec) Self {
+        return Self{
+            .super = TokenizerWithStateStore.init(lineCount, tokenizationSupport),
+            .lineCount = lineCount,
+            .tokenizationSupport = tokenizationSupport,
+            ._textModel = textModel,
+            ._languageIdCodec = languageIdCodec,
+        };
+    }
 
-            while (true) {
-                const lineToTokenize = self.getFirstInvalidLine() orelse break;
-                if (lineToTokenize.lineNumber > lineNumber) {
-                    break;
-                }
+    pub fn getStartState(self: *Self, lineNumber: usize) ?IState {
+        return self.super.getStartState(lineNumber);
+    }
 
-                const text = self._textModel.getLineContent(lineToTokenize.lineNumber);
+    pub fn getFirstInvalidLine(self: *Self) ?Pair(usize, IState) {
+        return self.super.getFirstInvalidLine();
+    }
 
-                const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text, true, lineToTokenize.startState);
-                builder.add(lineToTokenize.lineNumber, r.tokens);
-                self.store.setEndState(lineToTokenize.lineNumber, r.endState);
-            }
-        }
+    pub fn getStore(self: *Self) TrackingTokenizationStateStore {
+        return self.super.store;
+    }
 
-        // assumes state is up to date
-        pub fn getTokenTypeIfInsertingCharacter(self: *Self, position: Position, character: []const u8) StandardTokenType {
-            // TODO@hediet: use tokenizeLineWithEdit
-            const lineStartState = self.getStartState(position.lineNumber);
-            if (lineStartState == null) {
-                return StandardTokenType.Other;
-            }
+    pub fn getInitialState(self: *Self) IState {
+        return self.super.initialState;
+    }
 
-            const languageId = self._textModel.getLanguageId();
-            const lineContent = self._textModel.getLineContent(position.lineNumber);
+    pub fn updateTokensUntilLine(self: *Self, builder: ContiguousMultilineTokensBuilder, lineNumber: usize) !void {
+        const languageId = self._textModel.getLanguageId();
 
-            // Create the text as if `character` was inserted
-            const text = (lineContent[0 .. position.column - 1] ++ character ++ lineContent[position.column - 1 ..]);
-
-            const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text, true, lineStartState);
-            const lineTokens = LineTokens(r.tokens, text, self._languageIdCodec);
-            if (lineTokens.getCount() == 0) {
-                return StandardTokenType.Other;
+        while (true) {
+            const lineToTokenize = self.getFirstInvalidLine() orelse break;
+            if (lineToTokenize.lineNumber > lineNumber) {
+                break;
             }
 
-            const tokenIndex = lineTokens.findTokenIndexAtOffset(position.column - 1);
-            return lineTokens.getStandardTokenType(tokenIndex);
+            const text = self._textModel.getLineContent(lineToTokenize.lineNumber);
+
+            const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text, true, lineToTokenize.startState);
+            try builder.add(lineToTokenize.lineNumber, r.tokens);
+            self.store.setEndState(lineToTokenize.lineNumber, r.endState);
+        }
+    }
+
+    // assumes state is up to date
+    pub fn getTokenTypeIfInsertingCharacter(self: *Self, position: Position, character: []const u8) StandardTokenType {
+        // TODO@hediet: use tokenizeLineWithEdit
+        const lineStartState = self.getStartState(position.lineNumber);
+        if (lineStartState == null) {
+            return StandardTokenType.Other;
         }
 
-        // assumes state is up to date
-        pub fn tokenizeLinesAt(self: *Self, lineNumber: usize, lines: []const []const u8) ?[]LineTokens {
+        const languageId = self._textModel.getLanguageId();
+        const lineContent = self._textModel.getLineContent(position.lineNumber);
+
+        // Create the text as if `character` was inserted
+        const text = (lineContent[0 .. position.column - 1] ++ character ++ lineContent[position.column - 1 ..]);
+
+        const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text, true, lineStartState);
+        const lineTokens = LineTokens.init(r.tokens, text, self._languageIdCodec);
+        if (lineTokens.getCount() == 0) {
+            return StandardTokenType.Other;
+        }
+
+        const tokenIndex = lineTokens.findTokenIndexAtOffset(position.column - 1);
+        return lineTokens.getStandardTokenType(tokenIndex);
+    }
+
+    // assumes state is up to date
+    pub fn tokenizeLinesAt(self: *Self, lineNumber: usize, lines: []const []const u8) !?ArrayList(LineTokens) {
+        if (self.getStartState(lineNumber)) |lineStartState| {
             const allocator = self._textModel.getAllocator();
-            const lineStartState = self.getStartState(lineNumber);
-            if (!lineStartState) {
-                return null;
-            }
-
             const languageId = self._textModel.getLanguageId();
             var result = ArrayList(LineTokens).init(allocator);
 
@@ -123,87 +135,89 @@ pub fn TokenizerWithStateStoreAndTextModel(comptime TState: type) type {
             }
 
             return result;
+        } else {
+            return null;
+        }
+    }
+
+    pub fn hasAccurateTokensForLine(self: *Self, lineNumber: usize) bool {
+        const firstInvalidLineNumber = self.getStore().getFirstInvalidEndStateLineNumberOrMax();
+        return (lineNumber < firstInvalidLineNumber);
+    }
+
+    pub fn isCheapToTokenize(self: *Self, lineNumber: usize) bool {
+        const firstInvalidLineNumber = self.getStore().getFirstInvalidEndStateLineNumberOrMax();
+        if (lineNumber < firstInvalidLineNumber) {
+            return true;
+        }
+        if (lineNumber == firstInvalidLineNumber and self._textModel.getLineLength(lineNumber) < CHEAP_TOKENIZATION_LENGTH_LIMIT) {
+            return true;
         }
 
-        pub fn hasAccurateTokensForLine(self: *Self, lineNumber: usize) bool {
-            const firstInvalidLineNumber = self.store.getFirstInvalidEndStateLineNumberOrMax();
-            return (lineNumber < firstInvalidLineNumber);
+        return false;
+    }
+
+    // The result is not cached.
+    pub fn tokenizeHeuristically(self: *Self, builder: ContiguousMultilineTokensBuilder, startLineNumber: usize, endLineNumber: usize) !struct { heuristicTokens: bool } {
+        if (endLineNumber <= self.getStore().getFirstInvalidEndStateLineNumberOrMax()) {
+            // nothing to do
+            return .{ .heuristicTokens = false };
         }
 
-        pub fn isCheapToTokenize(self: *Self, lineNumber: usize) bool {
-            const firstInvalidLineNumber = self.store.getFirstInvalidEndStateLineNumberOrMax();
-            if (lineNumber < firstInvalidLineNumber) {
-                return true;
-            }
-            if (lineNumber == firstInvalidLineNumber and self._textModel.getLineLength(lineNumber) < CHEAP_TOKENIZATION_LENGTH_LIMIT) {
-                return true;
-            }
-
-            return false;
+        if (startLineNumber <= self.getStore().getFirstInvalidEndStateLineNumberOrMax()) {
+            // tokenization has reached the viewport start...
+            try self.updateTokensUntilLine(builder, endLineNumber);
+            return .{ .heuristicTokens = false };
         }
 
-        // The result is not cached.
-        pub fn tokenizeHeuristically(self: *Self, builder: ContiguousMultilineTokensBuilder, startLineNumber: usize, endLineNumber: usize) struct { heuristicTokens: bool } {
-            if (endLineNumber <= self.store.getFirstInvalidEndStateLineNumberOrMax()) {
-                // nothing to do
-                return .{ .heuristicTokens = false };
-            }
+        const state = self.guessStartState(startLineNumber);
+        const languageId = self._textModel.getLanguageId();
 
-            if (startLineNumber <= self.store.getFirstInvalidEndStateLineNumberOrMax()) {
-                // tokenization has reached the viewport start...
-                self.updateTokensUntilLine(builder, endLineNumber);
-                return .{ .heuristicTokens = false };
-            }
-
-            const state = self.guessStartState(startLineNumber);
-            const languageId = self._textModel.getLanguageId();
-
-            for (startLineNumber..endLineNumber + 1) |lineNumber| {
-                const text = self._textModel.getLineContent(lineNumber);
-                const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text, true, state);
-                builder.add(lineNumber, r.tokens);
-                state = r.endState;
-            }
-
-            return .{ .heuristicTokens = true };
+        for (startLineNumber..endLineNumber + 1) |lineNumber| {
+            const text = try self._textModel.getLineContent(lineNumber);
+            const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
+            try builder.add(lineNumber, r.tokens);
+            state = r.endState;
         }
 
-        fn guessStartState(self: *Self, lineNumber: usize) IState {
-            const res = findLikelyRelevantLines(self._textModel, lineNumber, self);
-            const likelyRelevantLines = res.likelyRelevantLines;
-            const initialState = res.initialState;
+        return .{ .heuristicTokens = true };
+    }
 
-            if (!initialState) {
-                initialState = self.tokenizationSupport.getInitialState();
-            }
+    fn guessStartState(self: *Self, lineNumber: usize) IState {
+        const res = findLikelyRelevantLines(self._textModel, lineNumber, self);
+        const likelyRelevantLines = res.likelyRelevantLines;
+        const initialState = res.initialState;
 
-            const languageId = self._textModel.getLanguageId();
-            var state = initialState;
-            for (likelyRelevantLines) |line| {
-                const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, line, false, state);
-                state = r.endState;
-            }
-            return state;
+        if (!initialState) {
+            initialState = self.tokenizationSupport.getInitialState();
         }
-    };
-}
 
-pub fn findLikelyRelevantLines(model: TextModel, lineNumber: usize, store: *TokenizerWithStateStore) struct { likelyRelevantLines: []const []const u8, initialState: ?IState } {
+        const languageId = self._textModel.getLanguageId();
+        var state = initialState;
+        for (likelyRelevantLines.items) |line| {
+            const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, line.items, false, state);
+            state = r.endState;
+        }
+        return state;
+    }
+};
+
+pub fn findLikelyRelevantLines(model: TextModel, lineNumber: usize, _store: ?TokenizerWithStateStore) struct { likelyRelevantLines: ArrayList(ArrayList(u8)), initialState: ?IState } {
     var nonWhitespaceColumn = model.getLineFirstNonWhitespaceColumn(lineNumber);
-    var likelyRelevantLines = ArrayList([]const u8).init(std.heap.page_allocator);
+    var likelyRelevantLines = ArrayList(ArrayList(u8)).init(model.getAllocator());
     var initialState: ?IState = null;
     var i = lineNumber - 1;
-    while (i >= 1 and nonWhitespaceColumn > 1) : (i -= 1) {
+    while (nonWhitespaceColumn > 1 and i >= 1) : (i -= 1) {
         const newNonWhitespaceIndex = model.getLineFirstNonWhitespaceColumn(i);
         // Ignore lines full of whitespace
         if (newNonWhitespaceIndex == 0) {
             continue;
         }
         if (newNonWhitespaceIndex < nonWhitespaceColumn) {
-            likelyRelevantLines.append(model.getLineContent(i));
+            try likelyRelevantLines.append(try model.getLineContent(i));
             nonWhitespaceColumn = newNonWhitespaceIndex;
-            initialState = if (store == null) null else store.?.getStartState(i);
-            if (initialState) {
+            initialState = if (_store) |store| store.getStartState(i) else null;
+            if (initialState != null) {
                 break;
             }
         }
@@ -216,150 +230,143 @@ pub fn findLikelyRelevantLines(model: TextModel, lineNumber: usize, store: *Toke
 // **Invariant:**
 // If the text model is retokenized from line 1 to {@link getFirstInvalidEndStateLineNumber}() - 1,
 // then the recomputed end state for line l will be equal to {@link getEndState}(l).
-pub fn TrackingTokenizationStateStore(comptime TState: type) type {
-    return struct {
-        const Self = @This();
+pub const TrackingTokenizationStateStore = struct {
+    const Self = @This();
 
-        _tokenizationStateStore: TokenizationStateStore(TState),
-        _invalidEndStatesLineNumbers: RangePriorityQueue,
+    _tokenizationStateStore: TokenizationStateStore,
+    _invalidEndStatesLineNumbers: RangePriorityQueue,
 
-        pub fn init(lineCount: usize) !Self {
-            var queue = RangePriorityQueue.init();
-            try queue.addRange(OffsetRange.init(1, lineCount + 1));
-            return Self{
-                ._tokenizationStateStore = TokenizationStateStore(TState).init(),
-                ._invalidEndStatesLineNumbers = queue,
-            };
-        }
-
-        pub fn getEndState(self: *Self, lineNumber: usize) ?TState {
-            return self._tokenizationStateStore.getEndState(lineNumber);
-        }
-
-        // @returns if the end state has changed.
-        pub fn setEndState(self: *Self, lineNumber: usize, state: TState) !bool {
-            if (state == null) {
-                return false;
-            }
-
-            self._invalidEndStatesLineNumbers.delete(lineNumber);
-            const r = self._tokenizationStateStore.setEndState(lineNumber, state);
-            if (r and lineNumber < self.lineCount) {
-                // because the state changed, we cannot trust the next state anymore and have to invalidate it.
-                try self._invalidEndStatesLineNumbers.addRange(OffsetRange.init(lineNumber + 1, lineNumber + 2));
-            }
-
-            return r;
-        }
-
-        pub fn acceptChange(self: *Self, range: LineRange, newLineCount: usize) !void {
-            self.lineCount += newLineCount - range.length;
-            self._tokenizationStateStore.acceptChange(range, newLineCount);
-            self._invalidEndStatesLineNumbers.addRangeAndResize(OffsetRange.init(range.startLineNumber, range.endLineNumberExclusive), newLineCount);
-        }
-
-        pub fn acceptChanges(self: *Self, changes: []ModelContentChange) !void {
-            for (changes) |c| {
-                const result = countEOL(c.text);
-                try self.acceptChange(LineRange.init(c.range.startLineNumber, c.range.endLineNumber + 1), result.eolCount + 1);
-            }
-        }
-
-        pub fn invalidateEndStateRange(self: *Self, range: LineRange) !void {
-            try self._invalidEndStatesLineNumbers.addRange(OffsetRange.init(range.startLineNumber, range.endLineNumberExclusive));
-        }
-
-        pub fn getFirstInvalidEndStateLineNumber(self: *Self) ?usize {
-            return self._invalidEndStatesLineNumbers.min();
-        }
-
-        pub fn getFirstInvalidEndStateLineNumberOrMax(self: *Self) usize {
-            return self.getFirstInvalidEndStateLineNumber() orelse std.math.maxInt(usize);
-        }
-
-        pub fn allStatesValid(self: *Self) bool {
-            return self._invalidEndStatesLineNumbers.min() == null;
-        }
-
-        pub fn getStartState(self: *Self, lineNumber: usize, initialState: TState) ?TState {
-            if (lineNumber == 1) {
-                return initialState;
-            }
-            return self.getEndState(lineNumber - 1);
-        }
-
-        pub fn getFirstInvalidLine(self: *Self, initialState: TState) ?Pair(usize, TState) {
-            const lineNumber = self.getFirstInvalidEndStateLineNumber();
-            if (lineNumber == null) {
-                return null;
-            }
-            const startState = self.getStartState(lineNumber, initialState);
-            if (startState == null) {
-                return error.StartStateMustBeDefined;
-            }
-
-            return Pair(usize, TState).init(lineNumber, startState);
-        }
-    };
-}
-
-pub fn TokenizationStateStore(comptime TState: type) type {
-    return struct {
-        const Self = @This();
-        _lineEndStates: FixedArray(?TState),
-
-        pub fn init() Self {
-            return Self{
-                ._lineEndStates = FixedArray(?TState).init(std.heap.page_allocator, null),
-            };
-        }
-
-        pub fn getEndState(self: *Self, lineNumber: usize) ?TState {
-            return self._lineEndStates.get(lineNumber);
-        }
-
-        pub fn setEndState(self: *Self, lineNumber: usize, state: TState) bool {
-            const oldState = self._lineEndStates.get(lineNumber);
-            if (oldState and oldState.equals(state)) {
-                return false;
-            }
-
-            self._lineEndStates.set(lineNumber, state);
-            return true;
-        }
-
-        pub fn acceptChange(self: *Self, range: LineRange, newLineCount: usize) void {
-            var len = range.length;
-            if (newLineCount > 0 and len > 0) {
-                // Keep the last state, even though it is unrelated.
-                // But if the new state happens to agree with this last state, then we know we can stop tokenizing.
-                len -= 1;
-                newLineCount -= 1;
-            }
-
-            self._lineEndStates.replace(range.startLineNumber, len, newLineCount);
-        }
-
-        pub fn acceptChanges(self: *Self, changes: []ModelContentChange) void {
-            for (changes) |c| {
-                const result = countEOL(c.text);
-                self.acceptChange(LineRange.init(c.range.startLineNumber, c.range.endLineNumber + 1), result.eolCount + 1);
-            }
-        }
-    };
-}
-
-fn safeTokenize(languageIdCodec: LanguageIdCodec, languageId: []u8, tokenizationSupport: ITokenizationSupport, text: []u8, hasEOL: bool, state: IState) EncodedTokenizationResult {
-    var r: ?EncodedTokenizationResult = null;
-
-    if (tokenizationSupport) {
-        r = tokenizationSupport.tokenizeEncoded(text, hasEOL, state.clone());
+    pub fn init(lineCount: usize) !Self {
+        var queue = RangePriorityQueue.init();
+        try queue.addRange(OffsetRange.init(1, lineCount + 1));
+        return Self{
+            ._tokenizationStateStore = TokenizationStateStore.init(),
+            ._invalidEndStatesLineNumbers = queue,
+        };
     }
 
-    if (!r) {
-        r = nullTokenizeEncoded(languageIdCodec.encodeLanguageId(languageId), state);
+    pub fn getEndState(self: *Self, lineNumber: usize) ?IState {
+        return self._tokenizationStateStore.getEndState(lineNumber);
     }
 
-    LineTokens.convertToEndOffset(r.tokens, text.length);
+    // @returns if the end state has changed.
+    pub fn setEndState(self: *Self, lineNumber: usize, state: IState) !bool {
+        if (state == null) {
+            return false;
+        }
+
+        self._invalidEndStatesLineNumbers.delete(lineNumber);
+        const r = self._tokenizationStateStore.setEndState(lineNumber, state);
+        if (r and lineNumber < self.lineCount) {
+            // because the state changed, we cannot trust the next state anymore and have to invalidate it.
+            try self._invalidEndStatesLineNumbers.addRange(OffsetRange.init(lineNumber + 1, lineNumber + 2));
+        }
+
+        return r;
+    }
+
+    pub fn acceptChange(self: *Self, range: LineRange, newLineCount: usize) !void {
+        self.lineCount += newLineCount - range.length;
+        self._tokenizationStateStore.acceptChange(range, newLineCount);
+        self._invalidEndStatesLineNumbers.addRangeAndResize(OffsetRange.init(range.startLineNumber, range.endLineNumberExclusive), newLineCount);
+    }
+
+    pub fn acceptChanges(self: *Self, changes: []ModelContentChange) !void {
+        for (changes) |c| {
+            const result = countEOL(c.text);
+            try self.acceptChange(LineRange.init(c.range.startLineNumber, c.range.endLineNumber + 1), result.eolCount + 1);
+        }
+    }
+
+    pub fn invalidateEndStateRange(self: *Self, range: LineRange) !void {
+        try self._invalidEndStatesLineNumbers.addRange(OffsetRange.init(range.startLineNumber, range.endLineNumberExclusive));
+    }
+
+    pub fn getFirstInvalidEndStateLineNumber(self: *Self) ?usize {
+        return self._invalidEndStatesLineNumbers.min();
+    }
+
+    pub fn getFirstInvalidEndStateLineNumberOrMax(self: *Self) usize {
+        return self.getFirstInvalidEndStateLineNumber() orelse std.math.maxInt(usize);
+    }
+
+    pub fn allStatesValid(self: *Self) bool {
+        return self._invalidEndStatesLineNumbers.min() == null;
+    }
+
+    pub fn getStartState(self: *Self, lineNumber: usize, initialState: IState) ?IState {
+        if (lineNumber == 1) {
+            return initialState;
+        }
+        return self.getEndState(lineNumber - 1);
+    }
+
+    pub fn getFirstInvalidLine(self: *Self, initialState: IState) ?Pair(usize, IState) {
+        const lineNumber = self.getFirstInvalidEndStateLineNumber();
+        if (lineNumber == null) {
+            return null;
+        }
+        const startState = self.getStartState(lineNumber, initialState);
+        if (startState == null) {
+            return error.StartStateMustBeDefined;
+        }
+
+        return Pair(usize, IState).init(lineNumber, startState);
+    }
+};
+
+pub const TokenizationStateStore = struct {
+    const Self = @This();
+    _lineEndStates: FixedArray(?IState),
+
+    pub fn init() Self {
+        return Self{
+            ._lineEndStates = FixedArray(?IState).init(std.heap.page_allocator, null),
+        };
+    }
+
+    pub fn getEndState(self: *Self, lineNumber: usize) ?IState {
+        return self._lineEndStates.get(lineNumber);
+    }
+
+    pub fn setEndState(self: *Self, lineNumber: usize, state: IState) bool {
+        if (self._lineEndStates.get(lineNumber)) |oldState| {
+            if (oldState.equals(state)) {
+                return false;
+            }
+        }
+
+        self._lineEndStates.set(lineNumber, state);
+        return true;
+    }
+
+    pub fn acceptChange(self: *Self, range: LineRange, newLineCount: usize) void {
+        var len = range.length();
+        if (newLineCount > 0 and len > 0) {
+            // Keep the last state, even though it is unrelated.
+            // But if the new state happens to agree with this last state, then we know we can stop tokenizing.
+            len -= 1;
+            newLineCount -= 1;
+        }
+
+        self._lineEndStates.replace(range.startLineNumber, len, newLineCount);
+    }
+
+    pub fn acceptChanges(self: *Self, changes: []ModelContentChange) void {
+        for (changes) |c| {
+            const result = countEOL(c.text);
+            self.acceptChange(LineRange.init(c.range.startLineNumber, c.range.endLineNumber + 1), result.eolCount + 1);
+        }
+    }
+};
+
+fn safeTokenize(languageIdCodec: LanguageIdCodec, languageId: []u8, _tokenizationSupport: ?ITokenizationSupport, text: []u8, hasEOL: bool, state: IState) EncodedTokenizationResult {
+    const r: EncodedTokenizationResult = if (_tokenizationSupport) |tokenizationSupport| {
+        tokenizationSupport.tokenizeEncoded(text, hasEOL, state.clone());
+    } else {
+        nullTokenizeEncoded(languageIdCodec.encodeLanguageId(languageId), state);
+    };
+
+    LineTokens.convertToEndOffset(r.tokens, text.len);
     return r;
 }

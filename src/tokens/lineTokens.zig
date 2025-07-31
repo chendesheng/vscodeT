@@ -56,8 +56,7 @@ pub const LineTokens = struct {
     }
 
     pub fn convertToEndOffset(tokens: []TokenPacked, lineTextLength: usize) void {
-        const tokenCount = (tokens.len >> 1);
-        const lastTokenIndex = tokenCount - 1;
+        const lastTokenIndex = tokens.len - 1;
         for (0..lastTokenIndex) |tokenIndex| {
             tokens[tokenIndex].offset = tokens[tokenIndex + 1].offset;
         }
