@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = std.io;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const OffsetRange = @import("offsetRange.zig").OffsetRange;
@@ -14,11 +15,15 @@ pub const RangePriorityQueue = struct {
         return RangePriorityQueue{ ._ranges = ArrayList(OffsetRange).init(allocator) };
     }
 
-    pub fn getRanges(self: *RangePriorityQueue) []OffsetRange {
+    pub fn deinit(self: *const RangePriorityQueue) void {
+        self._ranges.deinit();
+    }
+
+    pub fn getRanges(self: *const RangePriorityQueue) []OffsetRange {
         return self._ranges.items;
     }
 
-    pub fn min(self: *RangePriorityQueue) ?usize {
+    pub fn min(self: *const RangePriorityQueue) ?usize {
         if (self._ranges.items.len == 0) return null;
         return self._ranges.items[0].start;
     }
@@ -27,7 +32,7 @@ pub const RangePriorityQueue = struct {
         if (self._ranges.items.len == 0) return null;
         const range = self._ranges.items[0];
         if (range.start + 1 == range.endExclusive) {
-            self._ranges.orderedRemove(0);
+            _ = self._ranges.orderedRemove(0);
         } else {
             self._ranges.items[0] = OffsetRange.init(range.start + 1, range.endExclusive);
         }
@@ -43,7 +48,7 @@ pub const RangePriorityQueue = struct {
             const range = self._ranges.items[idx];
             if (range.start == value) {
                 if (range.endExclusive == value + 1) {
-                    self._ranges.orderedRemove(idx);
+                    _ = self._ranges.orderedRemove(idx);
                 } else {
                     self._ranges.items[idx] = OffsetRange.init(value + 1, range.endExclusive);
                 }
@@ -59,7 +64,7 @@ pub const RangePriorityQueue = struct {
     }
 
     pub fn addRange(self: *RangePriorityQueue, range: OffsetRange) !void {
-        try OffsetRange.addRange(range, self._ranges);
+        try OffsetRange.addRange(range, &self._ranges);
     }
 
     pub fn addRangeAndResize(self: *RangePriorityQueue, range: OffsetRange, newLength: usize) !void {
@@ -73,8 +78,8 @@ pub const RangePriorityQueue = struct {
         }
         const delta = usizeSub(newLength, range.length());
 
-        for (self._ranges.items, idxFirstIsAfter..) |_, i| {
-            self._ranges.items[i] = self._ranges.items[i].delta(delta);
+        for (self._ranges.items[idxFirstIsAfter..]) |*item| {
+            item.* = item.delta(delta);
         }
 
         if (idxFirstMightBeIntersecting == idxFirstIsAfter) {
@@ -88,21 +93,86 @@ pub const RangePriorityQueue = struct {
 
             const newRange = OffsetRange.init(start, usizeAdd(endEx, delta));
             if (!newRange.isEmpty()) {
-                try self._ranges.insert(idxFirstMightBeIntersecting, newRange);
+                try self._ranges.replaceRange(idxFirstMightBeIntersecting, idxFirstIsAfter - idxFirstMightBeIntersecting, &[_]OffsetRange{newRange});
             } else {
                 try self._ranges.replaceRange(idxFirstMightBeIntersecting, idxFirstIsAfter - idxFirstMightBeIntersecting, &[_]OffsetRange{});
             }
         }
     }
 
-    pub fn toString(self: *RangePriorityQueue) !ArrayList(u8) {
-        const allocator = self._ranges.allocator;
-        var result = ArrayList(u8).init(allocator);
-        for (self._ranges.items) |range| {
-            const part = try range.toString(allocator);
-            defer allocator.free(part);
-            try result.append(part);
+    pub fn toString(self: *RangePriorityQueue, writer: io.AnyWriter) !void {
+        for (self._ranges.items, 0..) |range, i| {
+            try range.toString(writer);
+            if (i < self._ranges.items.len - 1) try writer.writeAll(" + ");
         }
-        return result;
     }
 };
+
+test "RangePriorityQueue/addRange" {
+    var queue = RangePriorityQueue.init(std.testing.allocator);
+    defer queue.deinit();
+    try queue.addRange(OffsetRange.init(8, 10));
+    try queue.addRange(OffsetRange.init(10, 12));
+    try std.testing.expectEqualDeep(&[_]OffsetRange{.init(8, 12)}, queue.getRanges());
+}
+
+test "RangePriorityQueue/removeMin" {
+    var queue = RangePriorityQueue.init(std.testing.allocator);
+    defer queue.deinit();
+    try queue.addRange(OffsetRange.init(8, 10));
+    _ = queue.removeMin();
+    try std.testing.expectEqual(9, queue.min());
+    _ = queue.removeMin();
+    try std.testing.expectEqual(null, queue.min());
+}
+
+test "RangePriorityQueue/delete" {
+    var queue = RangePriorityQueue.init(std.testing.allocator);
+    defer queue.deinit();
+    try queue.addRange(OffsetRange.init(8, 10));
+    try queue.delete(9);
+    try std.testing.expectEqualDeep(&[_]OffsetRange{.init(8, 9)}, queue.getRanges());
+    try queue.delete(8);
+    try std.testing.expectEqualDeep(&[_]OffsetRange{}, queue.getRanges());
+
+    try queue.addRange(OffsetRange.init(8, 11));
+    try queue.delete(9);
+    try std.testing.expectEqualDeep(&[_]OffsetRange{ .init(8, 9), .init(10, 11) }, queue.getRanges());
+}
+
+test "RangePriorityQueue/toString" {
+    var queue = RangePriorityQueue.init(std.testing.allocator);
+    defer queue.deinit();
+    try queue.addRange(OffsetRange.init(8, 10));
+    try queue.addRange(OffsetRange.init(11, 12));
+    var str = std.ArrayList(u8).init(std.testing.allocator);
+    defer str.deinit();
+    try queue.toString(str.writer().any());
+    try std.testing.expectEqualStrings("[8, 10) + [11, 12)", str.items);
+}
+
+test "RangePriorityQueue/addRangeAndResize" {
+    const cases = [_]struct {
+        initialRanges: []const OffsetRange,
+        range: OffsetRange,
+        newLength: usize,
+        expectedRanges: []const OffsetRange,
+    }{
+        .{ .initialRanges = &[_]OffsetRange{}, .range = OffsetRange.init(5, 8), .newLength = 4, .expectedRanges = &[_]OffsetRange{.init(5, 9)} },
+        .{ .initialRanges = &[_]OffsetRange{.init(10, 15)}, .range = OffsetRange.init(5, 8), .newLength = 4, .expectedRanges = &[_]OffsetRange{ .init(5, 9), .init(11, 16) } },
+        .{ .initialRanges = &[_]OffsetRange{.init(1, 5)}, .range = OffsetRange.init(10, 12), .newLength = 2, .expectedRanges = &[_]OffsetRange{ .init(1, 5), .init(10, 12) } },
+        .{ .initialRanges = &[_]OffsetRange{.init(5, 8)}, .range = OffsetRange.init(5, 8), .newLength = 3, .expectedRanges = &[_]OffsetRange{.init(5, 8)} },
+        .{ .initialRanges = &[_]OffsetRange{ .init(1, 5), .init(10, 15) }, .range = OffsetRange.init(3, 7), .newLength = 0, .expectedRanges = &[_]OffsetRange{ .init(1, 3), .init(6, 11) } },
+        .{ .initialRanges = &[_]OffsetRange{ .init(1, 5), .init(10, 15) }, .range = OffsetRange.init(1, 100), .newLength = 0, .expectedRanges = &[_]OffsetRange{} },
+    };
+
+    for (cases) |c| {
+        var queue = RangePriorityQueue.init(std.testing.allocator);
+        defer queue.deinit();
+        for (c.initialRanges) |rg| {
+            try queue.addRange(rg);
+        }
+        try queue.addRangeAndResize(c.range, c.newLength);
+        try std.testing.expectEqualDeep(c.expectedRanges, queue.getRanges());
+    }
+}

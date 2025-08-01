@@ -574,16 +574,16 @@ pub const SparseMultilineTokensStorage = struct {
             const lineNumber = self._getDeltaLine(i) + startLineNumber;
 
             if (lineNumber > model.getLineCount()) {
-                _rateLimiter.runIfNotLimited(struct {
-                    fn run() void {
+                _rateLimiter.runIfNotLimited({}, struct {
+                    fn run(_: void) void {
                         std.debug.print("Invalid Semantic Tokens Data From Extension: lineNumber > model.getLineCount()\n", .{});
                     }
                 }.run);
             }
 
             if (self._getEndCharacter(i) > model.getLineLength(lineNumber)) {
-                _rateLimiter.runIfNotLimited(struct {
-                    fn run() void {
+                _rateLimiter.runIfNotLimited({}, struct {
+                    fn run(_: void) void {
                         std.debug.print("Invalid Semantic Tokens Data From Extension: end character > model.getLineLength(lineNumber)\n", .{});
                     }
                 }.run);

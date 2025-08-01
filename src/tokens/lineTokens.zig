@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
@@ -13,26 +14,33 @@ const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
 const Position = @import("../basics/position.zig").Position;
 const TextModel = @import("../textModel.zig").TextModel;
 
-pub const TokenPacked = packed struct(u64) {
+const TokenPackedBigEndian = packed struct(u64) {
     offset: u32,
     metadata: TokenMetadata,
-
-    pub fn init(offset: usize, metadata: TokenMetadata) TokenPacked {
-        return TokenPacked{
-            .offset = @intCast(offset),
-            .metadata = metadata,
-        };
-    }
 };
+
+const TokenPackedLittleEndian = packed struct(u64) {
+    metadata: TokenMetadata,
+    offset: u32,
+};
+
+pub const TokenPacked = if (builtin.target.cpu.arch.endian() == .big) TokenPackedBigEndian else TokenPackedLittleEndian;
 
 pub const LineTokens = struct {
     _tokens: ArrayList(TokenPacked),
     _text: ArrayList(u8),
     languageIdCodec: LanguageIdCodec,
 
+    pub fn initTokenPacked(offset: usize, metadata: TokenMetadata) TokenPacked {
+        return TokenPacked{
+            .offset = @intCast(offset),
+            .metadata = metadata,
+        };
+    }
+
     pub fn createEmpty(allocator: Allocator, lineContent: ArrayList(u8), decoder: LanguageIdCodec) !LineTokens {
         const tokens = ArrayList(TokenPacked).init(allocator);
-        try tokens.append(TokenPacked.init(lineContent.items.len, TokenMetadata.default));
+        try tokens.append(initTokenPacked(lineContent.items.len, TokenMetadata.default));
         return LineTokens.init(tokens, lineContent, decoder);
     }
 
@@ -48,7 +56,7 @@ pub const LineTokens = struct {
         for (data) |item| {
             const text = item.text;
             const metadata = item.metadata;
-            try tokens.append(TokenPacked.init(offset + text.len, metadata));
+            try tokens.append(initTokenPacked(offset + text.len, metadata));
             offset += text.len;
             try fullText.appendSlice(text);
         }
@@ -210,7 +218,7 @@ pub const LineTokens = struct {
                 // original token ends before next insert token
                 try text.appendSlice(self._text.items[originalEndOffset..nextOriginalTokenEndOffset.?]);
                 const metadata = self.getMetadata(nextOriginalTokenIdx);
-                try newTokens.append(TokenPacked.init(text.len, metadata));
+                try newTokens.append(initTokenPacked(text.len, metadata));
                 nextOriginalTokenIdx += 1;
                 originalEndOffset = nextOriginalTokenEndOffset.?;
             } else if (nextInsertToken) |_nextInsertToken| {
@@ -218,12 +226,12 @@ pub const LineTokens = struct {
                     // insert token is in the middle of the next token.
                     try text.appendSlice(self._text.items[originalEndOffset.._nextInsertToken.offset]);
                     const metadata = self.getMetadata(nextOriginalTokenIdx);
-                    try newTokens.append(TokenPacked.init(text.len, metadata));
+                    try newTokens.append(initTokenPacked(text.len, metadata));
                     originalEndOffset = _nextInsertToken.offset;
                 }
 
                 try text.appendSlice(_nextInsertToken.text);
-                try newTokens.append(TokenPacked.init(text.len, _nextInsertToken.tokenMetadata));
+                try newTokens.append(initTokenPacked(text.len, _nextInsertToken.tokenMetadata));
                 nextInsertTokenIdx += 1;
             } else {
                 break;
@@ -486,10 +494,17 @@ pub const TokenArray = struct {
     }
 };
 
-pub const TokenInfo = struct {
+const TokenInfoBigEndian = packed struct(u64) {
     length: u32,
     metadata: TokenMetadata,
 };
+
+const TokenInfoLittleEndian = packed struct(u64) {
+    metadata: TokenMetadata,
+    length: u32,
+};
+
+const TokenInfo = if (builtin.target.cpu.arch.endian() == .big) TokenInfoBigEndian else TokenInfoLittleEndian;
 
 pub const TokenArrayBuilder = struct {
     _tokens: ArrayList(TokenInfo),

@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = std.io;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const usizeAdd = @import("utils.zig").usizeAdd;
@@ -15,19 +16,19 @@ pub const OffsetRange = struct {
 
     pub fn addRange(range: OffsetRange, sortedRanges: *ArrayList(OffsetRange)) !void {
         var i: usize = 0;
-        while (i < sortedRanges.len and sortedRanges[i].endExclusive < range.start) {
+        while (i < sortedRanges.items.len and sortedRanges.items[i].endExclusive < range.start) {
             i += 1;
         }
         var j: usize = i;
-        while (j < sortedRanges.len and sortedRanges[j].start <= range.endExclusive) {
+        while (j < sortedRanges.items.len and sortedRanges.items[j].start <= range.endExclusive) {
             j += 1;
         }
         if (i == j) {
             try sortedRanges.insert(i, range);
         } else {
-            const start = @min(range.start, sortedRanges[i].start);
-            const end = @max(range.endExclusive, sortedRanges[j - 1].endExclusive);
-            try sortedRanges.insert(i, OffsetRange.init(start, end));
+            const start = @min(range.start, sortedRanges.items[i].start);
+            const end = @max(range.endExclusive, sortedRanges.items[j - 1].endExclusive);
+            try sortedRanges.replaceRange(i, j - i, &[_]OffsetRange{.init(start, end)});
         }
     }
 
@@ -50,52 +51,52 @@ pub const OffsetRange = struct {
         return OffsetRange.init(offset, offset);
     }
 
-    pub fn isEmpty(self: OffsetRange) bool {
+    pub fn isEmpty(self: *const OffsetRange) bool {
         return self.start == self.endExclusive;
     }
 
-    pub fn delta(self: OffsetRange, offset: isize) OffsetRange {
+    pub fn delta(self: *const OffsetRange, offset: isize) OffsetRange {
         return OffsetRange.init(usizeAdd(self.start, offset), usizeAdd(self.endExclusive, offset));
     }
 
-    pub fn deltaStart(self: OffsetRange, offset: usize) OffsetRange {
-        return OffsetRange.init(self.start + offset, self.endExclusive);
+    pub fn deltaStart(self: *const OffsetRange, offset: isize) OffsetRange {
+        return OffsetRange.init(usizeAdd(self.start, offset), self.endExclusive);
     }
 
-    pub fn deltaEnd(self: OffsetRange, offset: usize) OffsetRange {
-        return OffsetRange.init(self.start, self.endExclusive + offset);
+    pub fn deltaEnd(self: *const OffsetRange, offset: isize) OffsetRange {
+        return OffsetRange.init(self.start, usizeAdd(self.endExclusive, offset));
     }
 
-    pub fn length(self: OffsetRange) usize {
+    pub fn length(self: *const OffsetRange) usize {
         return self.endExclusive - self.start;
     }
 
-    pub fn toString(self: OffsetRange, allocator: Allocator) ![]const u8 {
-        return try std.fmt.allocPrint(allocator, "[{}, {})", .{ self.start, self.endExclusive });
+    pub fn toString(self: *const OffsetRange, writer: io.AnyWriter) !void {
+        try writer.print("[{d}, {d})", .{ self.start, self.endExclusive });
     }
 
-    pub fn equals(self: OffsetRange, other: OffsetRange) bool {
+    pub fn equals(self: *const OffsetRange, other: OffsetRange) bool {
         return self.start == other.start and self.endExclusive == other.endExclusive;
     }
 
-    pub fn containsRange(self: OffsetRange, other: OffsetRange) bool {
+    pub fn containsRange(self: *const OffsetRange, other: OffsetRange) bool {
         return self.start <= other.start and other.endExclusive <= self.endExclusive;
     }
 
-    pub fn contains(self: OffsetRange, offset: usize) bool {
+    pub fn contains(self: *const OffsetRange, offset: usize) bool {
         return self.start <= offset and offset < self.endExclusive;
     }
 
     // for all numbers n: range1.contains(n) or range2.contains(n) => range1.join(range2).contains(n)
     // The joined range is the smallest range that contains both ranges.
-    pub fn join(self: OffsetRange, other: OffsetRange) OffsetRange {
+    pub fn join(self: *const OffsetRange, other: OffsetRange) OffsetRange {
         return OffsetRange.init(@min(self.start, other.start), @max(self.endExclusive, other.endExclusive));
     }
 
     // for all numbers n: range1.contains(n) and range2.contains(n) <=> range1.intersect(range2).contains(n)
     // The resulting range is empty if the ranges do not intersect, but touch.
     // If the ranges don't even touch, the result is undefined.
-    pub fn intersect(self: OffsetRange, other: OffsetRange) ?OffsetRange {
+    pub fn intersect(self: *const OffsetRange, other: OffsetRange) ?OffsetRange {
         const start = @max(self.start, other.start);
         const end = @min(self.endExclusive, other.endExclusive);
         if (start <= end) {
@@ -104,44 +105,44 @@ pub const OffsetRange = struct {
         return null;
     }
 
-    pub fn intersectionLength(self: OffsetRange, range: OffsetRange) usize {
+    pub fn intersectionLength(self: *const OffsetRange, range: OffsetRange) usize {
         const start = @max(self.start, range.start);
         const end = @min(self.endExclusive, range.endExclusive);
         if (end >= start) return end - start;
         return 0;
     }
 
-    pub fn intersects(self: OffsetRange, other: OffsetRange) bool {
+    pub fn intersects(self: *const OffsetRange, other: OffsetRange) bool {
         const start = @max(self.start, other.start);
         const end = @min(self.endExclusive, other.endExclusive);
         return start < end;
     }
 
-    pub fn intersectsOrTouches(self: OffsetRange, other: OffsetRange) bool {
+    pub fn intersectsOrTouches(self: *const OffsetRange, other: OffsetRange) bool {
         const start = @max(self.start, other.start);
         const end = @min(self.endExclusive, other.endExclusive);
         return start <= end;
     }
 
-    pub fn isBefore(self: OffsetRange, other: OffsetRange) bool {
+    pub fn isBefore(self: *const OffsetRange, other: OffsetRange) bool {
         return self.endExclusive <= other.start;
     }
 
-    pub fn isAfter(self: OffsetRange, other: OffsetRange) bool {
+    pub fn isAfter(self: *const OffsetRange, other: OffsetRange) bool {
         return self.start >= other.endExclusive;
     }
 
-    pub fn slice(comptime T: type, self: OffsetRange, arr: []T) []T {
+    pub fn slice(comptime T: type, self: *const OffsetRange, arr: []T) []T {
         return arr[self.start..self.endExclusive];
     }
 
-    pub fn substring(self: OffsetRange, str: []const u8) []const u8 {
+    pub fn substring(self: *const OffsetRange, str: []const u8) []const u8 {
         return str[self.start..self.endExclusive];
     }
 
     // Returns the given value if it is contained in this instance, otherwise the closest value that is contained.
     // The range must not be empty.
-    pub fn clip(self: OffsetRange, value: usize) !usize {
+    pub fn clip(self: *const OffsetRange, value: usize) !usize {
         if (self.isEmpty()) {
             return error.InvalidRange;
         }
@@ -152,7 +153,7 @@ pub const OffsetRange = struct {
     // The range must not be empty.
     //
     // E.g. `[5, 10).clipCyclic(10) === 5`, `[5, 10).clipCyclic(11) === 6` and `[5, 10).clipCyclic(4) === 9`.
-    pub fn clipCyclic(self: OffsetRange, value: usize) !usize {
+    pub fn clipCyclic(self: *const OffsetRange, value: usize) !usize {
         if (self.isEmpty()) {
             return error.InvalidRange;
         }
@@ -165,7 +166,7 @@ pub const OffsetRange = struct {
         return value;
     }
 
-    pub fn map(comptime T: type, allocator: Allocator, self: OffsetRange, context: anytype, f: fn (offset: usize, ctx: @TypeOf(context)) T) !ArrayList(T) {
+    pub fn map(comptime T: type, allocator: Allocator, self: *const OffsetRange, context: anytype, f: fn (offset: usize, ctx: @TypeOf(context)) T) !ArrayList(T) {
         var result = ArrayList(T).init(allocator);
         for (self.start..self.endExclusive) |i| {
             try result.append(try f(i, context));
@@ -173,7 +174,7 @@ pub const OffsetRange = struct {
         return result;
     }
 
-    pub fn forEach(self: OffsetRange, context: anytype, f: fn (offset: usize, ctx: @TypeOf(context)) void) void {
+    pub fn forEach(self: *const OffsetRange, context: anytype, f: fn (offset: usize, ctx: @TypeOf(context)) void) void {
         for (self.start..self.endExclusive) |i| {
             f(i, context);
         }
@@ -181,7 +182,7 @@ pub const OffsetRange = struct {
 
     // this: [ 5, 10), range: [10, 15) => [5, 15)]
     // Throws if the ranges are not touching.
-    pub fn joinRightTouching(self: OffsetRange, range: OffsetRange) !OffsetRange {
+    pub fn joinRightTouching(self: *const OffsetRange, range: OffsetRange) !OffsetRange {
         if (self.endExclusive != range.start) {
             return error.InvalidRange;
         }
@@ -196,9 +197,10 @@ test "OffsetRange" {
     try std.testing.expectEqual(9, range.endExclusive);
     try std.testing.expectEqual(4, range.length());
     try std.testing.expectEqual(true, range.contains(6));
-    const str = try range.toString(allocator);
-    defer allocator.free(str);
-    try std.testing.expectEqualStrings("[5, 9)", str);
+    var str = std.ArrayList(u8).init(allocator);
+    defer str.deinit();
+    try range.toString(str.writer().any());
+    try std.testing.expectEqualStrings("[5, 9)", str.items);
     try std.testing.expect(range.containsRange(OffsetRange.init(5, 8)));
     try std.testing.expectEqualDeep(OffsetRange.init(5, 10), range.join(OffsetRange.init(6, 10)));
     try std.testing.expectEqualDeep(OffsetRange.init(5, 8), range.intersect(OffsetRange.init(4, 8)));

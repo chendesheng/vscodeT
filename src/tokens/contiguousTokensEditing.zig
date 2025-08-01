@@ -3,49 +3,53 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const LineTokens = @import("lineTokens.zig").LineTokens;
 const usizeSub = @import("../basics/utils.zig").usizeSub;
+const TokenPacked = @import("lineTokens.zig").TokenPacked;
 
-pub const EMPTY_LINE_TOKENS = &[_]u32{};
-
+pub const EMPTY_LINE_TOKENS = &[_]TokenPacked{};
 pub const ContiguousTokensEditing = struct {
-    pub fn deleteBeginning(lineTokens: []u32, toChIndex: usize) ?[]u32 {
-        if (lineTokens == null or lineTokens.len == 0) {
-            return lineTokens;
+    pub fn deleteBeginning(_lineTokens: ?ArrayList(TokenPacked), toChIndex: usize) ?ArrayList(TokenPacked) {
+        if (_lineTokens) |lineTokens| {
+            if (lineTokens.len > 0) {
+                return ContiguousTokensEditing.delete(lineTokens, 0, toChIndex);
+            }
         }
-        return ContiguousTokensEditing.delete(lineTokens, 0, toChIndex);
+
+        return null;
     }
 
-    pub fn deleteEnding(lineTokens: []u32, fromChIndex: usize) ?[]u32 {
-        if (lineTokens == null or lineTokens.len == 0) {
-            return lineTokens;
+    pub fn deleteEnding(_lineTokens: ?ArrayList(TokenPacked), fromChIndex: usize) ?ArrayList(TokenPacked) {
+        if (_lineTokens) |lineTokens| {
+            if (lineTokens.len > 0) {
+                const lineTextLength = lineTokens.items[lineTokens.len - 2];
+                return ContiguousTokensEditing.delete(lineTokens, fromChIndex, lineTextLength);
+            }
         }
-
-        const tokens = lineTokens.items;
-        const lineTextLength = tokens[tokens.len - 2];
-        return ContiguousTokensEditing.delete(lineTokens, fromChIndex, lineTextLength);
+        return null;
     }
 
-    pub fn delete(lineTokens: ArrayList(u32), fromChIndex: usize, toChIndex: usize) ?ArrayList(u32) {
-        if (lineTokens == null or lineTokens.items.len == 0 or fromChIndex == toChIndex) {
-            return lineTokens;
+    pub fn delete(_lineTokens: ?ArrayList(TokenPacked), fromChIndex: usize, toChIndex: usize) ?ArrayList(TokenPacked) {
+        if (_lineTokens == null or _lineTokens.?.items.len == 0 or fromChIndex == toChIndex) {
+            return _lineTokens;
         }
 
-        const tokens = lineTokens.items;
-        const tokensCount = (tokens.len >> 1);
+        const lineTokens = _lineTokens.?;
+        const tokens: []TokenPacked = lineTokens.items;
+        const tokensCount = tokens.len;
 
         // special case: deleting everything
-        if (fromChIndex == 0 and tokens[tokens.len - 2] == toChIndex) {
-            return EMPTY_LINE_TOKENS;
+        if (fromChIndex == 0 and lineTokens.getLast().offset == toChIndex) {
+            return ArrayList(TokenPacked).init(lineTokens.allocator);
         }
 
         const fromTokenIndex = LineTokens.findIndexInTokensArray(tokens, fromChIndex);
-        const fromTokenStartOffset = if (fromTokenIndex > 0) tokens[(fromTokenIndex - 1) << 1] else 0;
-        const fromTokenEndOffset = tokens[fromTokenIndex << 1];
+        const fromTokenStartOffset = if (fromTokenIndex > 0) tokens[(fromTokenIndex - 1)].offset else 0;
+        const fromTokenEndOffset = tokens[fromTokenIndex].offset;
 
         if (toChIndex < fromTokenEndOffset) {
             // the delete range is inside a single token
-            const delta: u32 = @intCast(usizeSub(toChIndex, fromChIndex));
+            const delta: u32 = @intCast(-usizeSub(toChIndex, fromChIndex));
             for (fromTokenIndex..tokensCount) |i| {
-                tokens[i << 1] -= delta;
+                tokens[i].offset += delta;
             }
             return lineTokens;
         }
@@ -53,21 +57,20 @@ pub const ContiguousTokensEditing = struct {
         var dest: usize = undefined;
         var lastEnd: usize = undefined;
         if (fromTokenStartOffset != fromChIndex) {
-            tokens[fromTokenIndex << 1] = fromChIndex;
-            dest = ((fromTokenIndex + 1) << 1);
+            tokens[fromTokenIndex].offset = fromChIndex;
+            dest = fromTokenIndex + 1;
             lastEnd = fromChIndex;
         } else {
-            dest = (fromTokenIndex << 1);
+            dest = fromTokenIndex;
             lastEnd = fromTokenStartOffset;
         }
 
         const delta: u32 = @intCast(usizeSub(toChIndex, fromChIndex));
         for (fromTokenIndex + 1..tokensCount) |tokenIndex| {
-            const tokenEndOffset = tokens[tokenIndex << 1] - delta;
+            const tokenEndOffset = tokens[tokenIndex].offset - delta;
             if (tokenEndOffset > lastEnd) {
-                tokens[dest] = tokenEndOffset;
-                dest += 1;
-                tokens[dest] = tokens[(tokenIndex << 1) + 1];
+                tokens[dest].offset = tokenEndOffset;
+                tokens[dest].metadata = tokens[tokenIndex].metadata;
                 dest += 1;
                 lastEnd = tokenEndOffset;
             }
@@ -78,12 +81,12 @@ pub const ContiguousTokensEditing = struct {
             return lineTokens;
         }
 
-        var tmp = ArrayList(u32).init(lineTokens.allocator);
+        var tmp = try ArrayList(TokenPacked).initCapacity(lineTokens.allocator, dest);
         try tmp.appendSlice(tokens[0..dest]);
         return tmp;
     }
 
-    pub fn append(allocator: Allocator, lineTokens: []u32, _otherTokens: []u32) !ArrayList(u32) {
+    pub fn append(allocator: Allocator, lineTokens: ArrayList(TokenPacked), _otherTokens: ArrayList(TokenPacked)) !?ArrayList(TokenPacked) {
         if (_otherTokens.len == 0) {
             return lineTokens;
         }
@@ -98,37 +101,37 @@ pub const ContiguousTokensEditing = struct {
             return null;
         }
         const myTokens = lineTokens.items;
-        const otherTokens = _otherTokens;
-        const otherTokensCount = (otherTokens.len >> 1);
 
-        var result = ArrayList(u32).init(allocator);
+        var result = try ArrayList(TokenPacked).initCapacity(allocator, myTokens.len + _otherTokens.items.len);
         try result.appendSlice(myTokens);
-        const delta = myTokens[myTokens.len - 2];
-        for (0..otherTokensCount) |i| {
-            try result.append(otherTokens[(i << 1)] + delta);
-            try result.append(otherTokens[(i << 1) + 1]);
+        const delta = myTokens.getLast().offset;
+        for (_otherTokens.items) |token| {
+            try result.append(TokenPacked{
+                .offset = token.offset + delta,
+                .metadata = token.metadata,
+            });
         }
         return result;
     }
 
-    pub fn insert(lineTokens: ?ArrayList(u32), chIndex: usize, textLength: usize) ?ArrayList(u32) {
-        if (lineTokens == null or lineTokens.items.len == 0) {
+    pub fn insert(_lineTokens: ?ArrayList(TokenPacked), chIndex: usize, textLength: usize) ?ArrayList(TokenPacked) {
+        if (_lineTokens == null or _lineTokens.?.items.len == 0) {
             // nothing to do
-            return lineTokens;
+            return _lineTokens;
         }
 
-        const tokens = lineTokens.?.items;
-        const tokensCount = (tokens.len >> 1);
+        const lineTokens = _lineTokens.?;
+        const tokens = lineTokens.items;
 
         var fromTokenIndex = LineTokens.findIndexInTokensArray(tokens, chIndex);
         if (fromTokenIndex > 0) {
-            const fromTokenStartOffset = tokens[(fromTokenIndex - 1) << 1];
+            const fromTokenStartOffset = tokens[fromTokenIndex - 1].offset;
             if (fromTokenStartOffset == chIndex) {
                 fromTokenIndex -= 1;
             }
         }
-        for (fromTokenIndex..tokensCount) |tokenIndex| {
-            tokens[tokenIndex << 1] += textLength;
+        for (tokens[fromTokenIndex..]) |*token| {
+            token.offset += textLength;
         }
         return lineTokens;
     }

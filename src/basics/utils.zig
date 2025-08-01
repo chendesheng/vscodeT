@@ -67,11 +67,25 @@ pub fn clamp(value: anytype, min: @TypeOf(value), max: @TypeOf(value)) @TypeOf(v
     return @max(min, @min(value, max));
 }
 
-pub fn findIndex(T: type, items: []T, context: anytype, predicate: fn (T, @TypeOf(context)) bool) ?usize {
+pub fn findIndex(T: type, items: []const T, context: anytype, predicate: fn (T, @TypeOf(context)) bool) ?usize {
     for (items, 0..) |item, index| {
-        if (predicate(item)) return index;
+        if (predicate(item, context)) return index;
     }
     return null;
+}
+
+test "findIndex" {
+    const items = [_]i32{ 1, 2, 3 };
+    try std.testing.expectEqual(1, findIndex(i32, &items, {}, struct {
+        fn pred(item: i32, _: void) bool {
+            return item == 2;
+        }
+    }.pred));
+    try std.testing.expectEqual(null, findIndex(i32, &items, {}, struct {
+        fn pred(item: i32, _: void) bool {
+            return item == 4;
+        }
+    }.pred));
 }
 
 // Finds the last item where predicate is true using binary search.

@@ -7,6 +7,7 @@ const LineRange = @import("../basics/lineRange.zig").LineRange;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const Position = @import("../basics/position.zig").Position;
 const ContiguousTokensEditing = @import("contiguousTokensEditing.zig").ContiguousTokensEditing;
+const TokenPacked = @import("lineTokens.zig").TokenPacked;
 
 // Represents contiguous tokens over a contiguous range of lines.
 pub const ContiguousMultilineTokens = struct {
@@ -18,9 +19,9 @@ pub const ContiguousMultilineTokens = struct {
     // On a specific line, each token occupies two array indices. For token i:
     //  - at offset 2*i => endOffset
     //  - at offset 2*i + 1 => metadata
-    _tokens: ArrayList([]u32),
+    _tokens: ArrayList(ArrayList(TokenPacked)),
 
-    pub fn init(startLineNumber: usize, tokens: ArrayList([]u32)) ContiguousMultilineTokens {
+    pub fn init(startLineNumber: usize, tokens: ArrayList(ArrayList(TokenPacked))) ContiguousMultilineTokens {
         return .{
             ._startLineNumber = startLineNumber,
             ._tokens = tokens,
@@ -39,7 +40,7 @@ pub const ContiguousMultilineTokens = struct {
         const startLineNumber = try view32.readInt(u32, .big);
         const count = try view32.readInt(u32, .big);
 
-        var tokens = ArrayList([]u32).init(allocator);
+        var tokens = ArrayList(ArrayList(TokenPacked)).init(allocator);
         for (0..count) |_| {
             const byteCount = try view32.readInt(i32, .big);
             const u32Count = @divFloor(byteCount, 4);
@@ -67,49 +68,43 @@ pub const ContiguousMultilineTokens = struct {
     }
 
     // @see {@link _tokens}
-    pub fn getLineTokens(self: *ContiguousMultilineTokens, lineNumber: usize) ?[]u32 {
+    pub fn getLineTokens(self: *ContiguousMultilineTokens, lineNumber: usize) ?[]TokenPacked {
         return self._tokens.items[lineNumber - self._startLineNumber];
     }
 
-    pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: []u32) !void {
+    pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: []TokenPacked) !void {
         try self._tokens.append(lineTokens);
     }
 
-    pub fn serializeSize(self: *ContiguousMultilineTokens) !usize {
+    pub fn serializeSize(self: *ContiguousMultilineTokens) usize {
         var result: usize = 0;
         result += 4; // 4 bytes for the start line number
         result += 4; // 4 bytes for the line count
         for (0..self._tokens.items.len) |i| {
             const lineTokens = self._tokens.items[i];
-            if (lineTokens.len == 0) {
-                return error.NotSupported;
-            }
             result += 4; // 4 bytes for the byte count
-            result += lineTokens.len * 4;
+            result += lineTokens.len * @sizeOf(TokenPacked);
         }
         return result;
     }
 
-    pub fn serialize(self: *ContiguousMultilineTokens, destination: []u8, offset: usize) !usize {
-        var stream = io.fixedBufferStream(destination[offset..]);
-        const writer = stream.writer();
-        try writer.writeInt(u32, self._startLineNumber, .big);
-        try writer.writeInt(u32, self._tokens.items.len, .big);
+    pub fn serialize(self: *ContiguousMultilineTokens, destination: io.AnyWriter) !void {
+        try destination.writeInt(u32, self._startLineNumber, .big);
+        try destination.writeInt(u32, self._tokens.items.len, .big);
         for (self._tokens.items) |lineTokens| {
-            try writer.writeInt(u32, @intCast(lineTokens.len), .big);
+            try destination.writeInt(u32, @intCast(lineTokens.len), .big);
 
             const lineTokensBytes: [*]u8 = @ptrCast(lineTokens.ptr);
-            try writer.writeAll(lineTokensBytes[0 .. lineTokens.len * 4]);
+            try destination.writeAll(lineTokensBytes[0 .. lineTokens.len * @sizeOf(TokenPacked)]);
         }
-        return offset + stream.pos;
     }
 
     pub fn applyEdit(self: *ContiguousMultilineTokens, range: Range, text: []const u8) void {
         const res = countEOL(text);
         const eolCount = res.eolCount;
         const firstLineLength = res.firstLineLength;
-        self._acceptDeleteRange(range);
-        self._acceptInsertText(Position.init(range.startLineNumber, range.startColumn), eolCount, firstLineLength);
+        try self._acceptDeleteRange(range);
+        try self._acceptInsertText(Position.init(range.startLineNumber, range.startColumn), eolCount, firstLineLength);
     }
 
     pub fn _acceptDeleteRange(self: *ContiguousMultilineTokens, range: Range) !void {
@@ -182,7 +177,7 @@ pub const ContiguousMultilineTokens = struct {
         }
     }
 
-    fn _acceptInsertText(self: *ContiguousMultilineTokens, position: Position, eolCount: usize, firstLineLength: usize) void {
+    fn _acceptInsertText(self: *ContiguousMultilineTokens, position: Position, eolCount: usize, firstLineLength: usize) !void {
         if (eolCount == 0 and firstLineLength == 0) {
             // Nothing to insert
             return;
@@ -210,7 +205,7 @@ pub const ContiguousMultilineTokens = struct {
         self._tokens[lineIndex] = ContiguousTokensEditing.deleteEnding(self._tokens[lineIndex], position.column - 1);
         self._tokens[lineIndex] = ContiguousTokensEditing.insert(self._tokens[lineIndex], position.column - 1, firstLineLength);
 
-        self._insertLines(position.lineNumber, eolCount);
+        try self._insertLines(position.lineNumber, eolCount);
     }
 
     fn _insertLines(self: *ContiguousMultilineTokens, insertIndex: usize, insertCount: usize) !void {
@@ -225,3 +220,10 @@ pub const ContiguousMultilineTokens = struct {
         self._tokens = try self._tokens.insertSlice(insertIndex, lineTokens.items);
     }
 };
+
+test "ContiguousMultilineTokens/serialize" {
+    var tokens = ContiguousMultilineTokens.init(0, ArrayList([]TokenPacked).init(std.testing.allocator));
+    defer tokens.deinit();
+    try std.testing.expectEqual(8, tokens.serializeSize());
+    tokens.applyEdit(Range.init(1, 1, 1, 1), "hello");
+}
