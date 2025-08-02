@@ -14,17 +14,10 @@ const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
 const Position = @import("../basics/position.zig").Position;
 const TextModel = @import("../textModel.zig").TextModel;
 
-const TokenPackedBigEndian = packed struct(u64) {
-    offset: u32,
+pub const TokenPacked = packed struct(u64) {
+    endOffset: u32,
     metadata: TokenMetadata,
 };
-
-const TokenPackedLittleEndian = packed struct(u64) {
-    metadata: TokenMetadata,
-    offset: u32,
-};
-
-pub const TokenPacked = if (builtin.target.cpu.arch.endian() == .big) TokenPackedBigEndian else TokenPackedLittleEndian;
 
 pub const LineTokens = struct {
     _tokens: ArrayList(TokenPacked),
@@ -33,7 +26,7 @@ pub const LineTokens = struct {
 
     pub fn initTokenPacked(offset: usize, metadata: TokenMetadata) TokenPacked {
         return TokenPacked{
-            .offset = @intCast(offset),
+            .endOffset = @intCast(offset),
             .metadata = metadata,
         };
     }
@@ -66,9 +59,9 @@ pub const LineTokens = struct {
     pub fn convertToEndOffset(tokens: []TokenPacked, lineTextLength: usize) void {
         const lastTokenIndex = tokens.len - 1;
         for (0..lastTokenIndex) |tokenIndex| {
-            tokens[tokenIndex].offset = tokens[tokenIndex + 1].offset;
+            tokens[tokenIndex].endOffset = tokens[tokenIndex + 1].endOffset;
         }
-        tokens[lastTokenIndex].offset = lineTextLength;
+        tokens[lastTokenIndex].endOffset = lineTextLength;
     }
 
     pub fn findIndexInTokensArray(tokens: []TokenPacked, desiredIndex: usize) usize {
@@ -81,7 +74,7 @@ pub const LineTokens = struct {
 
         while (low < high) {
             const mid = low + @divFloor(high - low, 2);
-            const endOffset = tokens[mid].offset;
+            const endOffset = tokens[mid].endOffset;
 
             if (endOffset == desiredIndex) {
                 return mid + 1;
@@ -95,8 +88,8 @@ pub const LineTokens = struct {
         return low;
     }
 
-    pub fn init(tokens: ArrayList(u32), text: ArrayList(u8), decoder: LanguageIdCodec) LineTokens {
-        const tokensLength = if (tokens.items.len > 1) tokens.items[tokens.items.len - 2] else 0;
+    pub fn init(tokens: ArrayList(TokenPacked), text: ArrayList(u8), decoder: LanguageIdCodec) LineTokens {
+        const tokensLength = if (tokens.items.len > 1) tokens.items[tokens.items.len - 2].endOffset else 0;
         // Token length and text length do not match!
         std.debug.assert(tokensLength == text.items.len);
 
@@ -140,7 +133,7 @@ pub const LineTokens = struct {
 
     pub fn getStartOffset(self: *LineTokens, tokenIndex: usize) usize {
         if (tokenIndex > 0) {
-            return self._tokens.items[tokenIndex - 1].offset;
+            return self._tokens.items[tokenIndex - 1].endOffset;
         }
         return 0;
     }
@@ -175,7 +168,7 @@ pub const LineTokens = struct {
     }
 
     pub fn getEndOffset(self: *LineTokens, tokenIndex: usize) usize {
-        return self._tokens.items[tokenIndex].offset;
+        return self._tokens.items[tokenIndex].endOffset;
     }
 
     // Find the token containing offset `offset`.
@@ -199,7 +192,7 @@ pub const LineTokens = struct {
 
     // @pure
     // @param insertTokens Must be sorted by offset.
-    pub fn withInserted(self: *LineTokens, insertTokens: []const struct { offset: usize, text: []const u8, tokenMetadata: u32 }) !LineTokens {
+    pub fn withInserted(self: *LineTokens, insertTokens: []const struct { offset: u32, text: []const u8, tokenMetadata: TokenMetadata }) !LineTokens {
         if (insertTokens.len == 0) {
             return self;
         }
@@ -211,7 +204,7 @@ pub const LineTokens = struct {
 
         var originalEndOffset = 0;
         while (true) {
-            const nextOriginalTokenEndOffset = if (nextOriginalTokenIdx < self._tokens.items.len) self._tokens.items[nextOriginalTokenIdx].offset else null;
+            const nextOriginalTokenEndOffset = if (nextOriginalTokenIdx < self._tokens.items.len) self._tokens.items[nextOriginalTokenIdx].endOffset else null;
             const nextInsertToken = if (nextInsertTokenIdx < insertTokens.len) insertTokens[nextInsertTokenIdx] else null;
 
             if (nextOriginalTokenEndOffset != null and (nextInsertToken == null or nextOriginalTokenEndOffset.? <= nextInsertToken.offset)) {
@@ -264,24 +257,21 @@ pub const LineTokens = struct {
         return self._text.items[startOffset..endOffset];
     }
 
-    pub fn forEach(self: *LineTokens, context: anytype, callback: fn (ctx: @TypeOf(context), tokenIndex: usize) void) void {
+    pub fn forEach(self: *LineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
         const tokenCount = self.getCount();
         for (0..tokenCount) |tokenIndex| {
-            callback(context, tokenIndex);
+            callback(tokenIndex, context);
         }
     }
 
     pub fn toString(self: *LineTokens) !ArrayList(u8) {
         var result = ArrayList(u8).init(self._text.allocator);
+        var writer = result.writer();
         const tokenCount = self.getCount();
         for (0..tokenCount) |tokenIndex| {
-            try result.appendSlice("[");
-            try result.appendSlice(self.getTokenText(tokenIndex));
-            try result.appendSlice("]{");
             const className = try self.getClassName(tokenIndex);
             defer className.deinit();
-            try result.appendSlice(className.items);
-            try result.appendSlice("}");
+            try writer.print("[{s}]{{{s}}}", .{ self.getTokenText(tokenIndex), className.items });
         }
         return result;
     }
@@ -384,9 +374,9 @@ pub const SliceLineTokens = struct {
         return text;
     }
 
-    pub fn forEach(self: *SliceLineTokens, context: anytype, callback: fn (ctx: @TypeOf(context), tokenIndex: usize) void) void {
+    pub fn forEach(self: *SliceLineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
         for (0..self.getCount()) |tokenIndex| {
-            callback(context, tokenIndex);
+            callback(tokenIndex, context);
         }
     }
 };
@@ -438,21 +428,21 @@ pub const TokenArray = struct {
         }.cb), decoder);
     }
 
-    pub fn forEach(self: *TokenArray, context: anytype, cb: fn (ctx: @TypeOf(context), range: OffsetRange, tokenInfo: TokenPacked) void) void {
+    pub fn forEach(self: *TokenArray, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenPacked, ctx: @TypeOf(context)) void) void {
         var lengthSum = 0;
         for (self._tokenInfo.items) |tokenInfo| {
             const range = OffsetRange.init(lengthSum, lengthSum + tokenInfo.length);
-            cb(context, range, tokenInfo);
+            cb(range, tokenInfo, context);
             lengthSum += tokenInfo.length;
         }
     }
 
-    pub fn map(self: *TokenArray, comptime T: type, context: anytype, cb: fn (ctx: @TypeOf(context), range: OffsetRange, tokenInfo: TokenPacked) T) ArrayList(T) {
+    pub fn map(self: *TokenArray, comptime T: type, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenPacked, ctx: @TypeOf(context)) T) ArrayList(T) {
         var result = ArrayList(T).init(self._tokenInfo.allocator);
         var lengthSum = 0;
         for (self._tokenInfo.items) |tokenInfo| {
             const range = OffsetRange.init(lengthSum, lengthSum + tokenInfo.length);
-            try result.append(cb(context, range, tokenInfo));
+            try result.append(cb(range, tokenInfo, context));
             lengthSum += tokenInfo.length;
         }
         return result;

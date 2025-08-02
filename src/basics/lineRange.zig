@@ -164,7 +164,7 @@ pub const LineRange = struct {
         return LineRange.init(self.startLineNumber, self.endLineNumberExclusive);
     }
 
-    pub fn mapToLineArray(self: *LineRange, comptime T: type, context: anytype, f: fn (lineNumber: usize, context: @TypeOf(context)) T) !ArrayList(T) {
+    pub fn mapToLineArray(self: *LineRange, comptime T: type, context: anytype, f: fn (lineNumber: usize, ctx: @TypeOf(context)) T) !ArrayList(T) {
         var result = ArrayList(T).init(context.allocator);
         for (self.startLineNumber..self.endLineNumberExclusive) |lineNumber| {
             try result.append(f(lineNumber, context));
@@ -256,15 +256,15 @@ pub const LineRangeSet = struct {
 
         if (joinRangeStartIdx == joinRangeEndIdxExclusive) {
             // If there is no element that touches range, then joinRangeStartIdx === joinRangeEndIdxExclusive and that value is the index of the element after range
-            self._normalizedRanges.splice(joinRangeStartIdx, 0, range);
+            self._normalizedRanges.insert(joinRangeStartIdx, range);
         } else if (joinRangeStartIdx == joinRangeEndIdxExclusive - 1) {
             // Else, there is an element that touches range and in this case it is both the first and last element. Thus we can replace it
-            const joinRange = self._normalizedRanges[joinRangeStartIdx];
-            self._normalizedRanges[joinRangeStartIdx] = joinRange.join(range);
+            const joinRange = self._normalizedRanges.items[joinRangeStartIdx];
+            self._normalizedRanges.items[joinRangeStartIdx] = joinRange.join(range);
         } else {
             // First and last element are different - we need to replace the entire range
-            const joinRange = self._normalizedRanges[joinRangeStartIdx].join(self._normalizedRanges[joinRangeEndIdxExclusive - 1]).join(range);
-            self._normalizedRanges.splice(joinRangeStartIdx, joinRangeEndIdxExclusive - joinRangeStartIdx, joinRange);
+            const joinRange = self._normalizedRanges.items[joinRangeStartIdx].join(self._normalizedRanges.items[joinRangeEndIdxExclusive - 1]).join(range);
+            self._normalizedRanges.replaceRange(joinRangeStartIdx, joinRangeEndIdxExclusive - joinRangeStartIdx, &[_]LineRange{joinRange});
         }
     }
 
@@ -366,7 +366,7 @@ pub const LineRangeSet = struct {
         var result = ArrayList(LineRange).init(allocator);
         var startLineNumber = range.startLineNumber;
         for (joinRangeStartIdx..joinRangeEndIdxExclusive) |i| {
-            const r = self._normalizedRanges[i];
+            const r = self._normalizedRanges.items[i];
             if (r.startLineNumber > startLineNumber) {
                 try result.append(LineRange.init(startLineNumber, r.startLineNumber));
             }

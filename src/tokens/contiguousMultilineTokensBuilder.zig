@@ -2,6 +2,7 @@ const std = @import("std");
 const io = std.io;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const TokenPacked = @import("lineTokens.zig").TokenPacked;
 
 const ContiguousMultilineTokens = @import("./contiguousMultilineTokens.zig").ContiguousMultilineTokens;
 
@@ -25,18 +26,15 @@ pub const ContiguousMultilineTokensBuilder = struct {
         };
     }
 
-    pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: []u32) !void {
+    pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: ArrayList(TokenPacked)) !void {
         if (self._tokens.getLastOrNull()) |last| {
             if (last.getEndLineNumber() + 1 == lineNumber) {
                 // append
-                try last.appendLineTokens(lineTokens.items);
+                try last.appendLineTokens(lineTokens);
                 return;
             }
         }
-        try self._tokens.append(ContiguousMultilineTokens{
-            ._startLineNumber = lineNumber,
-            ._tokens = ArrayList(u32).init(self._tokens.allocator),
-        });
+        try self._tokens.append(ContiguousMultilineTokens.init(lineNumber, ArrayList(?ArrayList(TokenPacked)).init(self._tokens.allocator)));
     }
 
     pub fn finalize(self: *ContiguousMultilineTokensBuilder) ![]ContiguousMultilineTokens {

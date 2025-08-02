@@ -49,12 +49,12 @@ pub const TokenWithTextArray = struct {
         }
     }
 
-    pub fn map(self: *TokenWithTextArray, comptime T: type, context: anytype, cb: fn (ctx: @TypeOf(context), range: OffsetRange, tokenInfo: TokenWithTextInfo) T) !ArrayList(T) {
+    pub fn map(self: *TokenWithTextArray, comptime T: type, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenWithTextInfo, ctx: @TypeOf(context)) T) !ArrayList(T) {
         var result = ArrayList(T).init(self._tokenInfo.allocator);
         var lengthSum = 0;
         for (self._tokenInfo.items) |tokenInfo| {
             const range = OffsetRange.init(lengthSum, lengthSum + tokenInfo.text.len);
-            try result.append(cb(context, range, tokenInfo));
+            try result.append(cb(range, tokenInfo, context));
             lengthSum += tokenInfo.text.len;
         }
         return result;

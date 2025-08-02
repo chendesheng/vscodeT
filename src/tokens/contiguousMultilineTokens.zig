@@ -8,6 +8,9 @@ const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const Position = @import("../basics/position.zig").Position;
 const ContiguousTokensEditing = @import("contiguousTokensEditing.zig").ContiguousTokensEditing;
 const TokenPacked = @import("lineTokens.zig").TokenPacked;
+const usizeSub = @import("../basics/utils.zig").usizeSub;
+const usizeAdd = @import("../basics/utils.zig").usizeAdd;
+const LineTokens = @import("lineTokens.zig").LineTokens;
 
 // Represents contiguous tokens over a contiguous range of lines.
 pub const ContiguousMultilineTokens = struct {
@@ -19,38 +22,43 @@ pub const ContiguousMultilineTokens = struct {
     // On a specific line, each token occupies two array indices. For token i:
     //  - at offset 2*i => endOffset
     //  - at offset 2*i + 1 => metadata
-    _tokens: ArrayList(ArrayList(TokenPacked)),
+    _tokens: ArrayList(?ArrayList(TokenPacked)),
 
-    pub fn init(startLineNumber: usize, tokens: ArrayList(ArrayList(TokenPacked))) ContiguousMultilineTokens {
+    pub fn init(startLineNumber: usize, tokens: ArrayList(?ArrayList(TokenPacked))) ContiguousMultilineTokens {
         return .{
             ._startLineNumber = startLineNumber,
             ._tokens = tokens,
         };
     }
 
-    pub fn deinit(self: *ContiguousMultilineTokens) void {
+    pub fn deinit(self: *const ContiguousMultilineTokens) void {
+        for (self._tokens.items) |lineTokens| {
+            if (lineTokens) |tokens| {
+                tokens.deinit();
+            }
+        }
         self._tokens.deinit();
     }
 
-    pub fn deserialize(buff: []const u8, offset: usize, result: ArrayList(ContiguousMultilineTokens)) !usize {
+    // TODO: avoid copy when deserializing
+    pub fn deserialize(buff: io.AnyReader, result: *ArrayList(ContiguousMultilineTokens)) !void {
         const allocator = result.allocator;
-        const stream = io.fixedBufferStream(buff[offset..]);
-        const view32 = stream.reader();
-        const seekable = stream.seekableStream();
-        const startLineNumber = try view32.readInt(u32, .big);
-        const count = try view32.readInt(u32, .big);
+        const startLineNumber = try buff.readInt(u32, .big);
+        const count = try buff.readInt(u32, .big);
 
-        var tokens = ArrayList(ArrayList(TokenPacked)).init(allocator);
+        var multilineTokens = ArrayList(?ArrayList(TokenPacked)).init(allocator);
         for (0..count) |_| {
-            const byteCount = try view32.readInt(i32, .big);
-            const u32Count = @divFloor(byteCount, 4);
-            const target = buff[@divFloor(offset, 4) .. @divFloor(offset, 4) + u32Count];
-            const targetU32: [*]u32 = @ptrCast(target.ptr);
-            try tokens.append(targetU32[0..u32Count]);
-            try seekable.seekBy(byteCount);
+            const byteCount = try buff.readInt(i32, .big);
+            const tokensCount: usize = @intCast(@divFloor(byteCount, @sizeOf(TokenPacked)));
+            var tokens = ArrayList(TokenPacked).init(allocator);
+            for (0..tokensCount) |_| {
+                const offset = try buff.readInt(u32, .big);
+                const metadata = try buff.readInt(u32, .big);
+                try tokens.append(LineTokens.initTokenPacked(@intCast(offset), @bitCast(metadata)));
+            }
+            try multilineTokens.append(tokens);
         }
-        try result.append(ContiguousMultilineTokens.init(startLineNumber, tokens));
-        return offset;
+        try result.append(ContiguousMultilineTokens.init(startLineNumber, multilineTokens));
     }
 
     // (Inclusive) start line number for these tokens.
@@ -68,38 +76,52 @@ pub const ContiguousMultilineTokens = struct {
     }
 
     // @see {@link _tokens}
-    pub fn getLineTokens(self: *ContiguousMultilineTokens, lineNumber: usize) ?[]TokenPacked {
-        return self._tokens.items[lineNumber - self._startLineNumber];
+    pub fn getLineTokens(self: *const ContiguousMultilineTokens, lineNumber: usize) ?[]TokenPacked {
+        if (self._tokens.items[lineNumber - self._startLineNumber]) |lineTokens| {
+            return lineTokens.items;
+        }
+        return null;
     }
 
-    pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: []TokenPacked) !void {
+    pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: ArrayList(TokenPacked)) !void {
         try self._tokens.append(lineTokens);
     }
 
-    pub fn serializeSize(self: *ContiguousMultilineTokens) usize {
+    pub fn serializeSize(self: *ContiguousMultilineTokens) !usize {
         var result: usize = 0;
         result += 4; // 4 bytes for the start line number
         result += 4; // 4 bytes for the line count
         for (0..self._tokens.items.len) |i| {
-            const lineTokens = self._tokens.items[i];
-            result += 4; // 4 bytes for the byte count
-            result += lineTokens.len * @sizeOf(TokenPacked);
+            const _lineTokens: ?ArrayList(TokenPacked) = self._tokens.items[i];
+            if (_lineTokens) |lineTokens| {
+                result += 4; // 4 bytes for the byte count
+                result += lineTokens.items.len * @sizeOf(TokenPacked);
+            } else {
+                return error.NotSupported;
+            }
         }
         return result;
     }
 
     pub fn serialize(self: *ContiguousMultilineTokens, destination: io.AnyWriter) !void {
-        try destination.writeInt(u32, self._startLineNumber, .big);
-        try destination.writeInt(u32, self._tokens.items.len, .big);
-        for (self._tokens.items) |lineTokens| {
-            try destination.writeInt(u32, @intCast(lineTokens.len), .big);
+        try destination.writeInt(u32, @intCast(self._startLineNumber), .big);
+        try destination.writeInt(u32, @intCast(self._tokens.items.len), .big);
+        for (self._tokens.items) |_lineTokens| {
+            if (_lineTokens) |lineTokens| {
+                const items = lineTokens.items;
+                try destination.writeInt(u32, @intCast(items.len * @sizeOf(TokenPacked)), .big);
 
-            const lineTokensBytes: [*]u8 = @ptrCast(lineTokens.ptr);
-            try destination.writeAll(lineTokensBytes[0 .. lineTokens.len * @sizeOf(TokenPacked)]);
+                for (items) |token| {
+                    try destination.writeInt(u32, @intCast(token.endOffset), .big);
+                    try destination.writeInt(u32, @bitCast(token.metadata), .big);
+                }
+            } else {
+                return error.NotSupported;
+            }
         }
     }
 
-    pub fn applyEdit(self: *ContiguousMultilineTokens, range: Range, text: []const u8) void {
+    pub fn applyEdit(self: *ContiguousMultilineTokens, range: Range, text: []const u8) !void {
         const res = countEOL(text);
         const eolCount = res.eolCount;
         const firstLineLength = res.firstLineLength;
@@ -113,55 +135,62 @@ pub const ContiguousMultilineTokens = struct {
             return;
         }
 
-        const firstLineIndex = range.startLineNumber - self._startLineNumber;
-        const lastLineIndex = range.endLineNumber - self._startLineNumber;
+        const firstLineIndexI = usizeSub(range.startLineNumber, self._startLineNumber);
+        const lastLineIndexI = usizeSub(range.endLineNumber, self._startLineNumber);
+        const tokenLengthI = @as(isize, @intCast(self._tokens.items.len));
 
-        if (lastLineIndex < 0) {
+        if (lastLineIndexI < 0) {
             // this deletion occurs entirely before this block, so we only need to adjust line numbers
-            const deletedLinesCount = lastLineIndex - firstLineIndex;
-            self._startLineNumber -= deletedLinesCount;
+            const deletedLinesCount: isize = lastLineIndexI - firstLineIndexI;
+            self._startLineNumber = usizeAdd(self._startLineNumber, -deletedLinesCount);
             return;
         }
 
-        if (firstLineIndex >= self._tokens.items.len) {
+        if (firstLineIndexI >= tokenLengthI) {
             // this deletion occurs entirely after this block, so there is nothing to do
             return;
         }
 
-        if (firstLineIndex < 0 and lastLineIndex >= self._tokens.items.len) {
+        if (firstLineIndexI < 0 and lastLineIndexI >= tokenLengthI) {
             // this deletion completely encompasses this block
             self._startLineNumber = 0;
-            self._tokens.resize(0);
+            try self._tokens.resize(0);
             return;
         }
 
+        const firstLineIndex = range.startLineNumber - self._startLineNumber;
+        const lastLineIndex = range.endLineNumber - self._startLineNumber;
+        const firstLineTokens = &self._tokens.items[firstLineIndex];
+        const lastLineTokens = &self._tokens.items[lastLineIndex];
+
         if (firstLineIndex == lastLineIndex) {
             // a delete on a single line
-            self._tokens[firstLineIndex] = try ContiguousTokensEditing.delete(self._tokens[firstLineIndex], range.startColumn - 1, range.endColumn - 1);
+            try ContiguousTokensEditing.delete(firstLineTokens, range.startColumn - 1, range.endColumn - 1);
             return;
         }
 
         if (firstLineIndex >= 0) {
             // The first line survives
-            self._tokens[firstLineIndex] = try ContiguousTokensEditing.deleteEnding(self._tokens[firstLineIndex], range.startColumn - 1);
+            try ContiguousTokensEditing.deleteEnding(firstLineTokens, range.startColumn - 1);
 
             if (lastLineIndex < self._tokens.items.len) {
                 // The last line survives
-                const lastLineTokens = try ContiguousTokensEditing.deleteBeginning(self._tokens[lastLineIndex], range.endColumn - 1);
+                try ContiguousTokensEditing.deleteBeginning(lastLineTokens, range.endColumn - 1);
 
                 // Take remaining text on last line and append it to remaining text on first line
-                self._tokens[firstLineIndex] = try ContiguousTokensEditing.append(self._tokens[firstLineIndex], lastLineTokens);
+                try ContiguousTokensEditing.append(firstLineTokens, lastLineTokens);
 
                 // Delete middle lines
-                try self._tokens.splice(firstLineIndex + 1, lastLineIndex - firstLineIndex);
+                try self._tokens.replaceRange(firstLineIndex + 1, lastLineIndex - firstLineIndex, &[_]?ArrayList(TokenPacked){});
             } else {
                 // The last line does not survive
 
                 // Take remaining text on last line and append it to remaining text on first line
-                self._tokens[firstLineIndex] = try ContiguousTokensEditing.append(self._tokens[firstLineIndex], null);
+                var nullItem: ?ArrayList(TokenPacked) = null;
+                try ContiguousTokensEditing.append(firstLineTokens, &nullItem);
 
                 // Delete lines
-                self._tokens = self._tokens.slice(0, firstLineIndex + 1);
+                try self._tokens.resize(firstLineIndex + 1);
             }
         } else {
             // The first line does not survive
@@ -170,10 +199,10 @@ pub const ContiguousMultilineTokens = struct {
             self._startLineNumber -= deletedBefore;
 
             // Remove beginning from last line
-            self._tokens[lastLineIndex] = try ContiguousTokensEditing.deleteBeginning(self._tokens[lastLineIndex], range.endColumn - 1);
+            try ContiguousTokensEditing.deleteBeginning(lastLineTokens, range.endColumn - 1);
 
             // Delete lines
-            self._tokens = self._tokens.slice(lastLineIndex);
+            try self._tokens.replaceRange(0, lastLineIndex, &[_]ArrayList(TokenPacked){});
         }
     }
 
@@ -183,27 +212,27 @@ pub const ContiguousMultilineTokens = struct {
             return;
         }
 
-        const lineIndex = position.lineNumber - self._startLineNumber;
-
-        if (lineIndex < 0) {
+        if (position.lineNumber < self._startLineNumber) {
             // this insertion occurs before this block, so we only need to adjust line numbers
             self._startLineNumber += eolCount;
             return;
         }
 
+        const lineIndex = position.lineNumber - self._startLineNumber;
         if (lineIndex >= self._tokens.items.len) {
             // this insertion occurs after this block, so there is nothing to do
             return;
         }
 
+        const lineTokens = &self._tokens.items[lineIndex];
         if (eolCount == 0) {
             // Inserting text on one line
-            self._tokens[lineIndex] = ContiguousTokensEditing.insert(self._tokens[lineIndex], position.column - 1, firstLineLength);
+            ContiguousTokensEditing.insert(lineTokens, position.column - 1, firstLineLength);
             return;
         }
 
-        self._tokens[lineIndex] = ContiguousTokensEditing.deleteEnding(self._tokens[lineIndex], position.column - 1);
-        self._tokens[lineIndex] = ContiguousTokensEditing.insert(self._tokens[lineIndex], position.column - 1, firstLineLength);
+        try ContiguousTokensEditing.deleteEnding(lineTokens, position.column - 1);
+        ContiguousTokensEditing.insert(lineTokens, position.column - 1, firstLineLength);
 
         try self._insertLines(position.lineNumber, eolCount);
     }
@@ -212,18 +241,70 @@ pub const ContiguousMultilineTokens = struct {
         if (insertCount == 0) {
             return;
         }
-        var lineTokens = ArrayList(?u32).init(self._tokens.allocator);
-        defer lineTokens.deinit();
-        for (0..insertCount) |_| {
-            try lineTokens.append(null);
+        for (0..insertCount) |i| {
+            try self._tokens.insert(insertIndex + i, null);
         }
-        self._tokens = try self._tokens.insertSlice(insertIndex, lineTokens.items);
     }
 };
 
-test "ContiguousMultilineTokens/serialize" {
-    var tokens = ContiguousMultilineTokens.init(0, ArrayList([]TokenPacked).init(std.testing.allocator));
+test "ContiguousMultilineTokens/serialize empty" {
+    const allocator = std.testing.allocator;
+    var tokens = ContiguousMultilineTokens.init(0, ArrayList(?ArrayList(TokenPacked)).init(allocator));
     defer tokens.deinit();
-    try std.testing.expectEqual(8, tokens.serializeSize());
-    tokens.applyEdit(Range.init(1, 1, 1, 1), "hello");
+    try std.testing.expectEqual(8, try tokens.serializeSize());
+
+    var destination = ArrayList(u8).init(allocator);
+    defer destination.deinit();
+    try tokens.serialize(destination.writer().any());
+    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, destination.items);
+    var stream = io.fixedBufferStream(destination.items);
+    var result = ArrayList(ContiguousMultilineTokens).init(allocator);
+    defer result.deinit();
+    try ContiguousMultilineTokens.deserialize(stream.reader().any(), &result);
+    try std.testing.expectEqualDeep(tokens, result.items[0]);
+}
+
+test "ContiguousMultilineTokens/serialize nonempty" {
+    const allocator = std.testing.allocator;
+    var multilineTokens = ContiguousMultilineTokens.init(0, ArrayList(?ArrayList(TokenPacked)).init(allocator));
+    defer multilineTokens.deinit();
+
+    var tokens1 = ArrayList(TokenPacked).init(allocator);
+    try tokens1.append(TokenPacked{ .endOffset = 0, .metadata = .default });
+    try multilineTokens.appendLineTokens(tokens1);
+
+    var tokens2 = ArrayList(TokenPacked).init(allocator);
+    try tokens2.append(TokenPacked{ .endOffset = 10, .metadata = .default });
+    try multilineTokens.appendLineTokens(tokens2);
+
+    try std.testing.expectEqual(32, try multilineTokens.serializeSize());
+
+    var destination = ArrayList(u8).init(allocator);
+    defer destination.deinit();
+    try multilineTokens.serialize(destination.writer().any());
+
+    var stream = io.fixedBufferStream(destination.items);
+    var result = ArrayList(ContiguousMultilineTokens).init(allocator);
+    defer result.deinit();
+    defer {
+        for (result.items) |item| {
+            item.deinit();
+        }
+    }
+    try ContiguousMultilineTokens.deserialize(stream.reader().any(), &result);
+    for (multilineTokens._tokens.items, result.items[0]._tokens.items) |token1, token2| {
+        try std.testing.expectEqualDeep(token1, token2);
+    }
+}
+
+test "ContiguousMultilineTokens/applyEdit" {
+    const allocator = std.testing.allocator;
+    var multilineTokens = ContiguousMultilineTokens.init(0, ArrayList(?ArrayList(TokenPacked)).init(allocator));
+    defer multilineTokens.deinit();
+
+    var tokens1 = ArrayList(TokenPacked).init(allocator);
+    try tokens1.append(TokenPacked{ .endOffset = 5, .metadata = .default });
+    try multilineTokens.appendLineTokens(tokens1);
+
+    try multilineTokens.applyEdit(Range.init(1, 1, 1, 1), "hello");
 }

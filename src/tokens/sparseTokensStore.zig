@@ -25,6 +25,9 @@ pub const SparseTokensStore = struct {
     }
 
     pub fn deinit(self: *SparseTokensStore) void {
+        for (self._pieces.items) |piece| {
+            piece.deinit();
+        }
         self._pieces.deinit();
     }
 

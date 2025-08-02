@@ -92,7 +92,7 @@ pub const TokenMetadata = packed struct(u32) {
         .balancedBrackets = false,
         .fontStyle = .{ .italic = false, .bold = false, .underline = false, .strikethrough = false },
         .foreground = .DefaultForeground,
-        .background = @intCast(ColorId.DefaultBackground),
+        .background = @intFromEnum(ColorId.DefaultBackground),
     };
 
     pub fn getClassNameFromMetadata(self: TokenMetadata, allocator: Allocator) !ArrayList(u8) {

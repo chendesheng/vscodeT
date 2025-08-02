@@ -13,7 +13,7 @@ pub const SparseMultilineTokens = struct {
     _endLineNumber: usize,
     _tokens: SparseMultilineTokensStorage,
 
-    pub fn create(startLineNumber: usize, tokens: ArrayList(SparseMultilineToken)) SparseMultilineTokens {
+    pub fn create(startLineNumber: usize, tokens: ArrayList(SparseToken)) SparseMultilineTokens {
         return SparseMultilineTokens.init(startLineNumber, SparseMultilineTokensStorage.init(tokens));
     }
 
@@ -33,6 +33,10 @@ pub const SparseMultilineTokens = struct {
             ._tokens = tokens,
             ._endLineNumber = startLineNumber + tokens.getMaxDeltaLine(),
         };
+    }
+
+    pub fn deinit(self: *SparseMultilineTokens) void {
+        self._tokens.deinit();
     }
 
     pub fn toString(self: *SparseMultilineTokens) !ArrayList(u8) {
@@ -175,7 +179,7 @@ pub const SparseMultilineTokens = struct {
     }
 };
 
-pub const SparseMultilineToken = packed struct {
+pub const SparseToken = packed struct {
     deltaLine: u32,
     startCharacter: u32,
     endCharacter: u32,
@@ -188,13 +192,17 @@ pub const SparseMultilineTokensStorage = struct {
     //  4*i+1  startCharacter (from the line start)
     //  4*i+2  endCharacter (from the line start)
     //  4*i+3  metadata
-    _tokens: ArrayList(SparseMultilineToken),
+    _tokens: ArrayList(SparseToken),
 
-    pub fn init(tokens: ArrayList(SparseMultilineToken)) SparseMultilineTokensStorage {
+    pub fn init(tokens: ArrayList(SparseToken)) SparseMultilineTokensStorage {
         return .{ ._tokens = tokens };
     }
 
-    pub fn toString(self: *SparseMultilineTokensStorage, startLineNumber: usize) !ArrayList(u8) {
+    pub fn deinit(self: *SparseMultilineTokensStorage) void {
+        self._tokens.deinit();
+    }
+
+    pub fn toString(self: *const SparseMultilineTokensStorage, startLineNumber: usize) !ArrayList(u8) {
         const allocator = self._tokens.allocator;
         var pieces = ArrayList([]u8).init(allocator);
         var writer = pieces.writer();
@@ -213,7 +221,7 @@ pub const SparseMultilineTokensStorage = struct {
         return pieces;
     }
 
-    pub fn getMaxDeltaLine(self: *SparseMultilineTokensStorage) usize {
+    pub fn getMaxDeltaLine(self: *const SparseMultilineTokensStorage) usize {
         const tokenCount = self._getTokenCount();
         if (tokenCount == 0) {
             return -1;
@@ -221,7 +229,7 @@ pub const SparseMultilineTokensStorage = struct {
         return self._getDeltaLine(tokenCount - 1);
     }
 
-    pub fn getRange(self: *SparseMultilineTokensStorage) ?Range {
+    pub fn getRange(self: *const SparseMultilineTokensStorage) ?Range {
         const tokenCount = self._getTokenCount();
         if (tokenCount == 0) {
             return null;
@@ -237,27 +245,27 @@ pub const SparseMultilineTokensStorage = struct {
         );
     }
 
-    fn _getTokenCount(self: *SparseMultilineTokensStorage) usize {
+    fn _getTokenCount(self: *const SparseMultilineTokensStorage) usize {
         return self._tokens.len;
     }
 
-    fn _getDeltaLine(self: *SparseMultilineTokensStorage, tokenIndex: usize) usize {
+    fn _getDeltaLine(self: *const SparseMultilineTokensStorage, tokenIndex: usize) usize {
         return self._tokens.items[tokenIndex].deltaLine;
     }
 
-    fn _getStartCharacter(self: *SparseMultilineTokensStorage, tokenIndex: usize) usize {
+    fn _getStartCharacter(self: *const SparseMultilineTokensStorage, tokenIndex: usize) usize {
         return self._tokens.items[tokenIndex].startCharacter;
     }
 
-    fn _getEndCharacter(self: *SparseMultilineTokensStorage, tokenIndex: usize) usize {
+    fn _getEndCharacter(self: *const SparseMultilineTokensStorage, tokenIndex: usize) usize {
         return self._tokens.items[tokenIndex].endCharacter;
     }
 
-    pub fn isEmpty(self: *SparseMultilineTokensStorage) bool {
+    pub fn isEmpty(self: *const SparseMultilineTokensStorage) bool {
         return (self._getTokenCount() == 0);
     }
 
-    pub fn getLineTokens(self: *SparseMultilineTokensStorage, deltaLine: usize) ?SparseLineTokens {
+    pub fn getLineTokens(self: *const SparseMultilineTokensStorage, deltaLine: usize) ?SparseLineTokens {
         var low = 0;
         var high = self._getTokenCount() - 1;
 
@@ -325,8 +333,8 @@ pub const SparseMultilineTokensStorage = struct {
     pub fn split(self: *SparseMultilineTokensStorage, startDeltaLine: usize, startChar: usize, endDeltaLine: usize, endChar: usize) struct { a: SparseMultilineTokensStorage, b: SparseMultilineTokensStorage, destFirstDeltaLine: usize } {
         const tokens = self._tokens.items;
         const allocator = self._tokens.allocator;
-        var aTokens = ArrayList(SparseMultilineToken).init(allocator);
-        var bTokens = ArrayList(SparseMultilineToken).init(allocator);
+        var aTokens = ArrayList(SparseToken).init(allocator);
+        var bTokens = ArrayList(SparseToken).init(allocator);
         var destTokens = &aTokens;
         var destFirstDeltaLine: usize = 0;
         for (tokens) |*token| {
@@ -349,7 +357,7 @@ pub const SparseMultilineTokensStorage = struct {
                 }
             }
 
-            destTokens.append(SparseMultilineToken{
+            destTokens.append(SparseToken{
                 .deltaLine = tokenDeltaLine - destFirstDeltaLine,
                 .startCharacter = tokenStartCharacter,
                 .endCharacter = tokenEndCharacter,
@@ -593,25 +601,29 @@ pub const SparseMultilineTokensStorage = struct {
 };
 
 pub const SparseLineTokens = struct {
-    _tokens: []SparseMultilineToken,
+    _tokens: []SparseToken,
 
-    pub fn init(tokens: []SparseMultilineToken) SparseLineTokens {
+    pub fn init(tokens: []SparseToken) SparseLineTokens {
         return SparseLineTokens{ ._tokens = tokens };
     }
 
-    pub fn getCount(self: *SparseLineTokens) usize {
+    pub fn getDeltaLine(self: *const SparseLineTokens, tokenIndex: usize) usize {
+        return self._tokens[tokenIndex].deltaLine;
+    }
+
+    pub fn getCount(self: *const SparseLineTokens) usize {
         return self._tokens.len;
     }
 
-    pub fn getStartCharacter(self: *SparseLineTokens, tokenIndex: usize) usize {
+    pub fn getStartCharacter(self: *const SparseLineTokens, tokenIndex: usize) usize {
         return self._tokens[tokenIndex].startCharacter;
     }
 
-    pub fn getEndCharacter(self: *SparseLineTokens, tokenIndex: usize) usize {
+    pub fn getEndCharacter(self: *const SparseLineTokens, tokenIndex: usize) usize {
         return self._tokens[tokenIndex].endCharacter;
     }
 
-    pub fn getMetadata(self: *SparseLineTokens, tokenIndex: usize) TokenMetadata {
+    pub fn getMetadata(self: *const SparseLineTokens, tokenIndex: usize) TokenMetadata {
         return self._tokens[tokenIndex].metadata;
     }
 };
