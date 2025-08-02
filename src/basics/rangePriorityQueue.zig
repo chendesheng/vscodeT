@@ -8,108 +8,108 @@ const findIndex = @import("utils.zig").findIndex;
 const usizeAdd = @import("utils.zig").usizeAdd;
 const usizeSub = @import("utils.zig").usizeSub;
 
-pub const RangePriorityQueue = struct {
-    _ranges: ArrayList(OffsetRange),
+const Self = @This();
 
-    pub fn init(allocator: Allocator) RangePriorityQueue {
-        return RangePriorityQueue{ ._ranges = ArrayList(OffsetRange).init(allocator) };
+_ranges: ArrayList(OffsetRange),
+
+pub fn init(allocator: Allocator) Self {
+    return Self{ ._ranges = ArrayList(OffsetRange).init(allocator) };
+}
+
+pub fn deinit(self: *const Self) void {
+    self._ranges.deinit();
+}
+
+pub fn getRanges(self: *const Self) []OffsetRange {
+    return self._ranges.items;
+}
+
+pub fn min(self: *const Self) ?usize {
+    if (self._ranges.items.len == 0) return null;
+    return self._ranges.items[0].start;
+}
+
+pub fn removeMin(self: *Self) ?usize {
+    if (self._ranges.items.len == 0) return null;
+    const range = self._ranges.items[0];
+    if (range.start + 1 == range.endExclusive) {
+        _ = self._ranges.orderedRemove(0);
+    } else {
+        self._ranges.items[0] = OffsetRange.init(range.start + 1, range.endExclusive);
     }
+    return range.start;
+}
 
-    pub fn deinit(self: *const RangePriorityQueue) void {
-        self._ranges.deinit();
-    }
-
-    pub fn getRanges(self: *const RangePriorityQueue) []OffsetRange {
-        return self._ranges.items;
-    }
-
-    pub fn min(self: *const RangePriorityQueue) ?usize {
-        if (self._ranges.items.len == 0) return null;
-        return self._ranges.items[0].start;
-    }
-
-    pub fn removeMin(self: *RangePriorityQueue) ?usize {
-        if (self._ranges.items.len == 0) return null;
-        const range = self._ranges.items[0];
-        if (range.start + 1 == range.endExclusive) {
-            _ = self._ranges.orderedRemove(0);
-        } else {
-            self._ranges.items[0] = OffsetRange.init(range.start + 1, range.endExclusive);
+pub fn delete(self: *Self, value: usize) !void {
+    if (findIndex(OffsetRange, self._ranges.items, value, struct {
+        fn pred(r: OffsetRange, val: usize) bool {
+            return r.contains(val);
         }
-        return range.start;
-    }
-
-    pub fn delete(self: *RangePriorityQueue, value: usize) !void {
-        if (findIndex(OffsetRange, self._ranges.items, value, struct {
-            fn pred(r: OffsetRange, val: usize) bool {
-                return r.contains(val);
-            }
-        }.pred)) |idx| {
-            const range = self._ranges.items[idx];
-            if (range.start == value) {
-                if (range.endExclusive == value + 1) {
-                    _ = self._ranges.orderedRemove(idx);
-                } else {
-                    self._ranges.items[idx] = OffsetRange.init(value + 1, range.endExclusive);
-                }
+    }.pred)) |idx| {
+        const range = self._ranges.items[idx];
+        if (range.start == value) {
+            if (range.endExclusive == value + 1) {
+                _ = self._ranges.orderedRemove(idx);
             } else {
-                if (range.endExclusive == value + 1) {
-                    self._ranges.items[idx] = OffsetRange.init(range.start, value);
-                } else {
-                    self._ranges.items[idx] = OffsetRange.init(range.start, value);
-                    try self._ranges.insert(idx + 1, OffsetRange.init(value + 1, range.endExclusive));
-                }
-            }
-        }
-    }
-
-    pub fn addRange(self: *RangePriorityQueue, range: OffsetRange) !void {
-        try OffsetRange.addRange(range, &self._ranges);
-    }
-
-    pub fn addRangeAndResize(self: *RangePriorityQueue, range: OffsetRange, newLength: usize) !void {
-        var idxFirstMightBeIntersecting: usize = 0;
-        while (!(idxFirstMightBeIntersecting >= self._ranges.items.len or range.start <= self._ranges.items[idxFirstMightBeIntersecting].endExclusive)) {
-            idxFirstMightBeIntersecting += 1;
-        }
-        var idxFirstIsAfter = idxFirstMightBeIntersecting;
-        while (!(idxFirstIsAfter >= self._ranges.items.len or range.endExclusive < self._ranges.items[idxFirstIsAfter].start)) {
-            idxFirstIsAfter += 1;
-        }
-        const delta = usizeSub(newLength, range.length());
-
-        for (self._ranges.items[idxFirstIsAfter..]) |*item| {
-            item.* = item.delta(delta);
-        }
-
-        if (idxFirstMightBeIntersecting == idxFirstIsAfter) {
-            const newRange = OffsetRange.init(range.start, range.start + newLength);
-            if (!newRange.isEmpty()) {
-                try self._ranges.insert(idxFirstMightBeIntersecting, newRange);
+                self._ranges.items[idx] = OffsetRange.init(value + 1, range.endExclusive);
             }
         } else {
-            const start = @min(range.start, self._ranges.items[idxFirstMightBeIntersecting].start);
-            const endEx = @max(range.endExclusive, self._ranges.items[idxFirstIsAfter - 1].endExclusive);
-
-            const newRange = OffsetRange.init(start, usizeAdd(endEx, delta));
-            if (!newRange.isEmpty()) {
-                try self._ranges.replaceRange(idxFirstMightBeIntersecting, idxFirstIsAfter - idxFirstMightBeIntersecting, &[_]OffsetRange{newRange});
+            if (range.endExclusive == value + 1) {
+                self._ranges.items[idx] = OffsetRange.init(range.start, value);
             } else {
-                try self._ranges.replaceRange(idxFirstMightBeIntersecting, idxFirstIsAfter - idxFirstMightBeIntersecting, &[_]OffsetRange{});
+                self._ranges.items[idx] = OffsetRange.init(range.start, value);
+                try self._ranges.insert(idx + 1, OffsetRange.init(value + 1, range.endExclusive));
             }
         }
     }
+}
 
-    pub fn toString(self: *RangePriorityQueue, writer: io.AnyWriter) !void {
-        for (self._ranges.items, 0..) |range, i| {
-            try range.toString(writer);
-            if (i < self._ranges.items.len - 1) try writer.writeAll(" + ");
+pub fn addRange(self: *Self, range: OffsetRange) !void {
+    try OffsetRange.addRange(range, &self._ranges);
+}
+
+pub fn addRangeAndResize(self: *Self, range: OffsetRange, newLength: usize) !void {
+    var idxFirstMightBeIntersecting: usize = 0;
+    while (!(idxFirstMightBeIntersecting >= self._ranges.items.len or range.start <= self._ranges.items[idxFirstMightBeIntersecting].endExclusive)) {
+        idxFirstMightBeIntersecting += 1;
+    }
+    var idxFirstIsAfter = idxFirstMightBeIntersecting;
+    while (!(idxFirstIsAfter >= self._ranges.items.len or range.endExclusive < self._ranges.items[idxFirstIsAfter].start)) {
+        idxFirstIsAfter += 1;
+    }
+    const delta = usizeSub(newLength, range.length());
+
+    for (self._ranges.items[idxFirstIsAfter..]) |*item| {
+        item.* = item.delta(delta);
+    }
+
+    if (idxFirstMightBeIntersecting == idxFirstIsAfter) {
+        const newRange = OffsetRange.init(range.start, range.start + newLength);
+        if (!newRange.isEmpty()) {
+            try self._ranges.insert(idxFirstMightBeIntersecting, newRange);
+        }
+    } else {
+        const start = @min(range.start, self._ranges.items[idxFirstMightBeIntersecting].start);
+        const endEx = @max(range.endExclusive, self._ranges.items[idxFirstIsAfter - 1].endExclusive);
+
+        const newRange = OffsetRange.init(start, usizeAdd(endEx, delta));
+        if (!newRange.isEmpty()) {
+            try self._ranges.replaceRange(idxFirstMightBeIntersecting, idxFirstIsAfter - idxFirstMightBeIntersecting, &[_]OffsetRange{newRange});
+        } else {
+            try self._ranges.replaceRange(idxFirstMightBeIntersecting, idxFirstIsAfter - idxFirstMightBeIntersecting, &[_]OffsetRange{});
         }
     }
-};
+}
+
+pub fn toString(self: *Self, writer: io.AnyWriter) !void {
+    for (self._ranges.items, 0..) |range, i| {
+        try range.toString(writer);
+        if (i < self._ranges.items.len - 1) try writer.writeAll(" + ");
+    }
+}
 
 test "RangePriorityQueue/addRange" {
-    var queue = RangePriorityQueue.init(std.testing.allocator);
+    var queue = init(std.testing.allocator);
     defer queue.deinit();
     try queue.addRange(OffsetRange.init(8, 10));
     try queue.addRange(OffsetRange.init(10, 12));
@@ -117,7 +117,7 @@ test "RangePriorityQueue/addRange" {
 }
 
 test "RangePriorityQueue/removeMin" {
-    var queue = RangePriorityQueue.init(std.testing.allocator);
+    var queue = init(std.testing.allocator);
     defer queue.deinit();
     try queue.addRange(OffsetRange.init(8, 10));
     _ = queue.removeMin();
@@ -127,7 +127,7 @@ test "RangePriorityQueue/removeMin" {
 }
 
 test "RangePriorityQueue/delete" {
-    var queue = RangePriorityQueue.init(std.testing.allocator);
+    var queue = init(std.testing.allocator);
     defer queue.deinit();
     try queue.addRange(OffsetRange.init(8, 10));
     try queue.delete(9);
@@ -141,7 +141,7 @@ test "RangePriorityQueue/delete" {
 }
 
 test "RangePriorityQueue/toString" {
-    var queue = RangePriorityQueue.init(std.testing.allocator);
+    var queue = init(std.testing.allocator);
     defer queue.deinit();
     try queue.addRange(OffsetRange.init(8, 10));
     try queue.addRange(OffsetRange.init(11, 12));
@@ -167,7 +167,7 @@ test "RangePriorityQueue/addRangeAndResize" {
     };
 
     for (cases) |c| {
-        var queue = RangePriorityQueue.init(std.testing.allocator);
+        var queue = init(std.testing.allocator);
         defer queue.deinit();
         for (c.initialRanges) |rg| {
             try queue.addRange(rg);
