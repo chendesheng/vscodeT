@@ -62,16 +62,16 @@ pub const ContiguousMultilineTokens = struct {
     }
 
     // (Inclusive) start line number for these tokens.
-    pub fn getStartLineNumber(self: *ContiguousMultilineTokens) usize {
+    pub fn getStartLineNumber(self: *const ContiguousMultilineTokens) usize {
         return self._startLineNumber;
     }
 
     // (Inclusive) end line number for these tokens.
-    pub fn getEndLineNumber(self: *ContiguousMultilineTokens) usize {
+    pub fn getEndLineNumber(self: *const ContiguousMultilineTokens) usize {
         return self._startLineNumber + self._tokens.items.len - 1;
     }
 
-    pub fn getLineRange(self: *ContiguousMultilineTokens) LineRange {
+    pub fn getLineRange(self: *const ContiguousMultilineTokens) LineRange {
         return LineRange.init(self._startLineNumber, self._startLineNumber + self._tokens.items.len);
     }
 
@@ -87,7 +87,7 @@ pub const ContiguousMultilineTokens = struct {
         try self._tokens.append(lineTokens);
     }
 
-    pub fn serializeSize(self: *ContiguousMultilineTokens) !usize {
+    pub fn serializeSize(self: *const ContiguousMultilineTokens) !usize {
         var result: usize = 0;
         result += 4; // 4 bytes for the start line number
         result += 4; // 4 bytes for the line count
@@ -103,7 +103,7 @@ pub const ContiguousMultilineTokens = struct {
         return result;
     }
 
-    pub fn serialize(self: *ContiguousMultilineTokens, destination: io.AnyWriter) !void {
+    pub fn serialize(self: *const ContiguousMultilineTokens, destination: io.AnyWriter) !void {
         try destination.writeInt(u32, @intCast(self._startLineNumber), .big);
         try destination.writeInt(u32, @intCast(self._tokens.items.len), .big);
         for (self._tokens.items) |_lineTokens| {

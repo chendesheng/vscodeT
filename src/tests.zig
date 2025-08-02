@@ -19,6 +19,7 @@ comptime {
     _ = @import("textModelSearch.zig");
     _ = @import("tokens/common.zig");
     _ = @import("tokens/contiguousMultilineTokens.zig");
+    _ = @import("tokens/contiguousMultilineTokensBuilder.zig");
     _ = @import("undoRedo.zig");
     _ = @import("undoRedoService.zig");
 }

@@ -9,13 +9,11 @@ const ContiguousMultilineTokens = @import("./contiguousMultilineTokens.zig").Con
 pub const ContiguousMultilineTokensBuilder = struct {
     _tokens: ArrayList(ContiguousMultilineTokens),
 
-    pub fn deserialize(allocator: Allocator, buff: []const u8) !ArrayList(ContiguousMultilineTokens) {
-        const stream = io.fixedBufferStream(buff);
-        const reader = stream.reader();
-        const count = try reader.readInt(u32, .big);
+    pub fn deserialize(allocator: Allocator, buff: io.AnyReader) !ArrayList(ContiguousMultilineTokens) {
+        const count = try buff.readInt(u32, .big);
         var result = ArrayList(ContiguousMultilineTokens).init(allocator);
         for (0..count) |_| {
-            try ContiguousMultilineTokens.deserialize(allocator, reader, &result);
+            try ContiguousMultilineTokens.deserialize(allocator, buff, &result);
         }
         return result;
     }
@@ -26,26 +24,36 @@ pub const ContiguousMultilineTokensBuilder = struct {
         };
     }
 
+    pub fn deinit(self: *ContiguousMultilineTokensBuilder) void {
+        for (self._tokens.items) |item| {
+            item.deinit();
+        }
+        self._tokens.deinit();
+    }
+
     pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: ArrayList(TokenPacked)) !void {
-        if (self._tokens.getLastOrNull()) |last| {
+        if (self._tokens.items.len > 0) {
+            var last = &self._tokens.items[self._tokens.items.len - 1];
             if (last.getEndLineNumber() + 1 == lineNumber) {
                 // append
                 try last.appendLineTokens(lineTokens);
                 return;
             }
         }
-        try self._tokens.append(ContiguousMultilineTokens.init(lineNumber, ArrayList(?ArrayList(TokenPacked)).init(self._tokens.allocator)));
+        var multilineTokens = ArrayList(?ArrayList(TokenPacked)).init(self._tokens.allocator);
+        try multilineTokens.append(lineTokens);
+        try self._tokens.append(ContiguousMultilineTokens.init(lineNumber, multilineTokens));
     }
 
-    pub fn finalize(self: *ContiguousMultilineTokensBuilder) ![]ContiguousMultilineTokens {
-        return self._tokens.items;
+    pub fn finalize(self: *ContiguousMultilineTokensBuilder) ArrayList(ContiguousMultilineTokens) {
+        return self._tokens;
     }
 
     pub fn serialize(self: *ContiguousMultilineTokensBuilder) !ArrayList(u8) {
         const size = try self._serializeSize();
-        var result = std.ArrayList(u8).init(self._tokens.allocator);
+        var result = ArrayList(u8).init(self._tokens.allocator);
         try result.resize(size);
-        try self._serialize(result.items, size);
+        try self._serialize(result.items);
         return result;
     }
 
@@ -66,3 +74,12 @@ pub const ContiguousMultilineTokensBuilder = struct {
         }
     }
 };
+
+test "ContiguousMultilineTokensBuilder/add" {
+    const allocator = std.testing.allocator;
+    var builder = ContiguousMultilineTokensBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.add(1, ArrayList(TokenPacked).init(allocator));
+    const result = builder.finalize();
+    try std.testing.expectEqual(1, result.items.len);
+}
