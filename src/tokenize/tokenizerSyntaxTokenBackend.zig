@@ -1,8 +1,5 @@
 const std = @import("std");
-const Emitter = std.event.Emitter;
-const Event = std.event.Event;
-const MutableDisposable = std.lifecycle.MutableDisposable;
-const DisposableMap = std.lifecycle.DisposableMap;
+const Emitter = @import("../basics/event.zig").Emitter;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const Position = @import("../basics/position.zig").Position;
 const LineRange = @import("../basics/lineRange.zig").LineRange;
@@ -23,6 +20,7 @@ const AttachedViewHandler = @import("./abstractSyntaxTokenBackend.zig").Attached
 const AttachedViews = @import("./abstractSyntaxTokenBackend.zig").AttachedViews;
 const BackgroundTokenizationState = @import("./abstractSyntaxTokenBackend.zig").BackgroundTokenizationState;
 const TokenizationRegistry = @import("./tokenizationRegistry.zig").TokenizationRegistry;
+const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 
 // For TextMate
 pub const TokenizerSyntaxTokenBackend = struct {
@@ -37,7 +35,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
 	_debugBackgroundTokens: ?ContiguousTokensStore = null,
 	_debugBackgroundStates: ?TrackingTokenizationStateStore(IState) = null,
 
-	_debugBackgroundTokenizer: MutableDisposable(IBackgroundTokenizer),
+	_debugBackgroundTokenizer: IBackgroundTokenizer,
 
 	_attachedViewStates: DisposableMap(AttachedView, AttachedViewHandler),
 
@@ -142,7 +140,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
 					}
 					const newState = BackgroundTokenizationState.Completed;
 					self._backgroundTokenizationState = newState;
-					self._onDidChangeBackgroundTokenizationState.fire();
+					self._onDidChangeBackgroundTokenizationState.fire(.{});
 				},
 				setEndState: (lineNumber, state) => {
 					if (!self._tokenizer) { return; }
@@ -164,7 +162,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
 			}
 
 			if (tokenizationSupport != null and tokenizationSupport.backgroundTokenizerShouldOnlyVerifyTokens and tokenizationSupport.createBackgroundTokenizer) {
-				self._debugBackgroundTokens = ContiguousTokensStore.init(self._languageIdCodec);
+				self._debugBackgroundTokens = ContiguousTokensStore.init(self._textModel.getAllocator(), self._languageIdCodec);
 				self._debugBackgroundStates = TrackingTokenizationStateStore(IState).init(self._textModel.getLineCount());
 				self._debugBackgroundTokenizer.clear();
 				self._debugBackgroundTokenizer.value = tokenizationSupport.createBackgroundTokenizer(self._textModel, {

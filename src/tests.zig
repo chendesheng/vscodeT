@@ -1,4 +1,6 @@
 comptime {
+    _ = @import("basics/event.zig");
+    _ = @import("basics/promise.zig");
     _ = @import("basics/FixedArray.zig");
     _ = @import("basics/offsetRange.zig");
     _ = @import("basics/rangePriorityQueue.zig");

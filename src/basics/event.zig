@@ -6,22 +6,22 @@ pub fn Emitter(comptime T: type) type {
         const Self = @This();
 
         const ListenerWithContext = struct {
-            func: *const fn (e: T, ctx: *anyopaque) void,
+            func: *const fn (e: T, ctx: *anyopaque) anyerror!void,
             context: *anyopaque,
 
-            pub fn call(self: *const ListenerWithContext, e: T) void {
-                self.func(e, self.context);
+            pub fn call(self: *const ListenerWithContext, e: T) anyerror!void {
+                try self.func(e, self.context);
             }
         };
 
         const Listener = union(enum) {
             with_context: ListenerWithContext,
-            without_context: *const fn (e: T, ctx: void) void,
+            without_context: *const fn (e: T, ctx: void) anyerror!void,
 
-            pub fn call(self: *const Listener, e: T) void {
+            pub fn call(self: *const Listener, e: T) anyerror!void {
                 switch (self.*) {
-                    .with_context => |listener| listener.call(e),
-                    .without_context => |listener| listener(e, {}),
+                    .with_context => |listener| try listener.call(e),
+                    .without_context => |listener| try listener(e, {}),
                 }
             }
         };
@@ -38,9 +38,9 @@ pub fn Emitter(comptime T: type) type {
             self._listeners.deinit();
         }
 
-        pub fn fire(self: *Self, evt: T) void {
+        pub fn fire(self: *Self, evt: T) anyerror!void {
             for (self._listeners.items) |listener| {
-                listener.call(evt);
+                try listener.call(evt);
             }
         }
 
@@ -48,18 +48,18 @@ pub fn Emitter(comptime T: type) type {
             return self._listeners.items.len > 0;
         }
 
-        pub fn event(self: *Self, ctx: anytype, callback: fn (e: T, ctx: @TypeOf(ctx)) void) !void {
+        pub fn event(self: *Self, ctx: anytype, callback: fn (e: T, ctx: @TypeOf(ctx)) anyerror!void) !void {
             const listener = switch (@typeInfo(@TypeOf(ctx))) {
                 .void => Listener{ .without_context = callback },
                 else => Listener{
                     .with_context = ListenerWithContext{
                         .func = struct {
-                            fn wrapped(e: T, ctx_opaque: *anyopaque) void {
+                            fn wrapped(e: T, ctx_opaque: *anyopaque) anyerror!void {
                                 const typed_ctx: @TypeOf(ctx) = @ptrCast(@alignCast(ctx_opaque));
-                                callback(e, typed_ctx);
+                                try callback(e, typed_ctx);
                             }
                         }.wrapped,
-                        .context = ctx,
+                        .context = @constCast(@ptrCast(@alignCast(ctx))),
                     },
                 },
             };
@@ -74,7 +74,7 @@ test "hasListeners" {
     defer emitter.deinit();
 
     try emitter.event({}, struct {
-        fn cb(e: i32, ctx: void) void {
+        fn cb(e: i32, ctx: void) !void {
             _ = e;
             _ = ctx;
         }
@@ -89,12 +89,12 @@ test "fire" {
 
     var count: i32 = 0;
     try emitter.event(&count, struct {
-        fn cb(e: i32, ctx: *i32) void {
+        fn cb(e: i32, ctx: *i32) !void {
             ctx.* = e;
         }
     }.cb);
 
-    emitter.fire(1);
+    try emitter.fire(1);
     try std.testing.expectEqual(1, count);
 }
 
@@ -104,17 +104,17 @@ test "two listeners" {
 
     var count: i32 = 0;
     try emitter.event(&count, struct {
-        fn cb(_: i32, ctx: *i32) void {
+        fn cb(_: i32, ctx: *i32) !void {
             ctx.* += 1;
         }
     }.cb);
 
     try emitter.event(&count, struct {
-        fn cb(_: i32, ctx: *i32) void {
+        fn cb(_: i32, ctx: *i32) !void {
             ctx.* += 2;
         }
     }.cb);
 
-    emitter.fire(1);
+    try emitter.fire(1);
     try std.testing.expectEqual(3, count);
 }
