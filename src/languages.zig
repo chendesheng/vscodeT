@@ -42,6 +42,12 @@ pub const Token = struct {
 };
 
 // @internal
+pub const TokenizationSupportChangedEvent = struct {
+    changedLanguages: []const u8,
+    changedColorMap: bool,
+};
+
+// @internal
 pub const TokenizationResult = struct {
     tokens: ArrayList(Token),
     endState: IState,

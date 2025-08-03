@@ -1,4 +1,5 @@
 const std = @import("std");
+const StringHashMap = std.StringHashMap;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
@@ -8,6 +9,15 @@ pub fn usizeSub(a: usize, b: usize) isize {
 
 pub fn usizeAdd(a: usize, b: isize) usize {
     return @intCast(@as(isize, @intCast(a)) + b);
+}
+
+pub fn getKeys(comptime T: type, map: StringHashMap(T)) ArrayList([]const u8) {
+    var keys = ArrayList([]const u8).init(map.allocator);
+    var iter = map.keyIterator();
+    while (iter.next()) |key| {
+        try keys.append(key.*);
+    }
+    return keys;
 }
 
 pub fn Pair(comptime T1: type, comptime T2: type) type {
@@ -130,3 +140,13 @@ pub fn findFirstIdxMonotonousOrArrLen(comptime T: type, array: []T, context: any
     }
     return i;
 }
+
+// Word inside a model.
+pub const WordAtPosition = struct {
+    // The word.
+    word: []const u8,
+    // The column where the word starts.
+    startColumn: usize,
+    // The column where the word ends.
+    endColumn: usize,
+};

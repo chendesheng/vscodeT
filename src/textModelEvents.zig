@@ -8,6 +8,19 @@ const ModelDecoration = @import("model.zig").ModelDecoration;
 const EOL = @import("./basics/eolCounter.zig").EOL;
 const String = @import("./basics/strings.zig").String;
 
+// An event describing that the current language associated with a model has changed.
+pub const ModelLanguageChangedEvent = struct {
+    // Previous language
+    oldLanguage: []const u8,
+    // New language
+    newLanguage: []const u8,
+    // Source of the call that caused the event.
+    source: []const u8,
+};
+
+// An event describing that the language configuration associated with a model has changed.
+pub const ModelLanguageConfigurationChangedEvent = struct {};
+
 pub const ModelContentChange = struct {
     range: Range,
     rangeOffset: usize,
