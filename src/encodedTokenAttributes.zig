@@ -98,24 +98,23 @@ pub const TokenMetadata = packed struct(u32) {
     pub fn getClassNameFromMetadata(self: TokenMetadata, allocator: Allocator) !ArrayList(u8) {
         const foreground = self.foreground;
         var className = ArrayList(u8).init(allocator);
-        try className.appendSlice("mtk");
+        var classNameWriter = className.writer();
+        try classNameWriter.writeAll("mtk");
 
-        const foregroundStr = try std.fmt.allocPrint(allocator, "{d}", .{foreground});
-        defer allocator.free(foregroundStr);
-        try className.appendSlice(foregroundStr);
+        try classNameWriter.print("{d}", .{foreground});
 
         const fontStyle = self.fontStyle;
         if (fontStyle.italic) {
-            try className.appendSlice(" mtki");
+            try classNameWriter.writeAll(" mtki");
         }
         if (fontStyle.bold) {
-            try className.appendSlice(" mtkb");
+            try classNameWriter.writeAll(" mtkb");
         }
         if (fontStyle.underline) {
-            try className.appendSlice(" mtku");
+            try classNameWriter.writeAll(" mtku");
         }
         if (fontStyle.strikethrough) {
-            try className.appendSlice(" mtks");
+            try classNameWriter.writeAll(" mtks");
         }
 
         return className;

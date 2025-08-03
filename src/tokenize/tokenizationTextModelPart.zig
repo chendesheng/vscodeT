@@ -19,6 +19,7 @@ const WordAtPosition = @import("../basics/utils.zig").WordAtPosition;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const BackgroundTokenizationState = @import("./abstractSyntaxTokenBackend.zig").BackgroundTokenizationState;
+const getWordAtText = @import("../basics/utils.zig").getWordAtText;
 
 // const derived = @import("../common/observable.zig").derived;
 // const IObservable = @import("../common/observable.zig").IObservable;
@@ -31,14 +32,14 @@ pub const TokenizationTextModelPart = struct {
     _onDidChangeLanguageConfiguration: Emitter(ModelLanguageConfigurationChangedEvent),
     _onDidChangeTokens: Emitter(ModelTokensChangedEvent),
     // public readonly tokens: IObservable<AbstractSyntaxTokenBackend>;
-    tokens: AbstractSyntaxTokenBackend,
+    tokens: TokenizerSyntaxTokenBackend,
     _useTreeSitter: bool,
     _languageId: []const u8,
     _textModel: TextModel,
     _attachedViews: AttachedViews,
     // _bracketPairsTextModelPart: BracketPairsTextModelPart,
     // _languageService: ILanguageService,
-    // _languageConfigurationService: ILanguageConfigurationService,
+    _languageConfigurationService: ILanguageConfigurationService,
     // _instantiationService: IInstantiationService,
     // _treeSitterLibraryService: ITreeSitterLibraryService,
 
@@ -91,8 +92,22 @@ pub const TokenizationTextModelPart = struct {
             ._onDidChangeLanguage = Emitter(ModelLanguageChangedEvent).init(),
             ._onDidChangeLanguageConfiguration = Emitter(ModelLanguageConfigurationChangedEvent).init(),
             ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(),
-            .tokens = tokens,
+            .tokens = TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel, struct {
+                fn get() []const u8 {
+                    return languageId;
+                }
+            }.get, attachedViews),
         };
+    }
+
+    // @internal, should not be exposed by the text model!
+    // pub fn onDidChangeBackgroundTokenizationState(self: *TokenizationTextModelPart, f: fn (void) void) void {
+    //     self._onDidChangeBackgroundTokenizationState.event({}, f);
+    // }
+
+    // //** @internal, should not be exposed by the text model! */
+    pub fn onDidChangeTokens(self: *TokenizationTextModelPart, f: fn (ModelTokensChangedEvent, void) void) void {
+        self._onDidChangeTokens.event({}, f);
     }
 
     fn _hasListeners(self: *TokenizationTextModelPart) bool {
@@ -230,8 +245,8 @@ pub const TokenizationTextModelPart = struct {
 
     // #region Utility Methods
 
-    pub fn getWordAtPosition(self: *TokenizationTextModelPart, position: Position) ?WordAtPosition {
-        const position = self._textModel.validatePosition(position);
+    pub fn getWordAtPosition(self: *TokenizationTextModelPart, _position: Position) ?WordAtPosition {
+        const position = self._textModel.validatePosition(_position);
         const lineContent = self._textModel.getLineContent(position.lineNumber);
         const lineTokens = self.getLineTokens(position.lineNumber);
         const tokenIndex = lineTokens.findTokenIndexAtOffset(position.column - 1);
@@ -252,9 +267,9 @@ pub const TokenizationTextModelPart = struct {
         // (2). Else, if we were at a language boundary, check the left biased word
         if (tokenIndex > 0 and rbStartOffset == position.column - 1) {
             // edge case, where `position` sits between two tokens belonging to two different languages
-            const res = TokenizationTextModelPart._findLanguageBoundaries(lineTokens, tokenIndex - 1);
-            const lbStartOffset = res[0];
-            const lbEndOffset = res[1];
+            const b = TokenizationTextModelPart._findLanguageBoundaries(lineTokens, tokenIndex - 1);
+            const lbStartOffset = b[0];
+            const lbEndOffset = b[1];
             const leftBiasedWord = getWordAtText(position.column, self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex - 1)).getWordDefinition(), lineContent.substring(lbStartOffset, lbEndOffset), lbStartOffset);
             // Make sure the result touches the original passed in position
             if (leftBiasedWord and

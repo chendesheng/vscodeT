@@ -60,17 +60,19 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
 		self.todo_resetTokenization();
 
-		attachedViews.onDidChangeVisibleRanges(({ view, state }) => {
-			if (state) {
-				let existing = self._attachedViewStates.get(view);
-				if (!existing) {
-					existing = AttachedViewHandler(() => self.refreshRanges(existing!.lineRanges));
-					self._attachedViewStates.set(view, existing);
+		attachedViews._onDidChangeVisibleRanges.event({}, struct {
+			fn cb({ view, state }, _:void) void {
+				if (state) {
+					let existing = self._attachedViewStates.get(view);
+					if (!existing) {
+						existing = AttachedViewHandler(() => self.refreshRanges(existing!.lineRanges));
+						self._attachedViewStates.set(view, existing);
+					}
+					existing.handleStateChange(state);
+				} else {
+					self._attachedViewStates.deleteAndDispose(view);
 				}
-				existing.handleStateChange(state);
-			} else {
-				self._attachedViewStates.deleteAndDispose(view);
-			}
+			}.cb,
 		});
 		return TokenizerSyntaxTokenBackend{
 			._languageIdCodec = languageIdCodec,

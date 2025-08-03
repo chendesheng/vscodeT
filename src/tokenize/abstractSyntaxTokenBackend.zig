@@ -10,6 +10,7 @@ const LineRange = @import("../basics/lineRange.zig").LineRange;
 const Set = @import("../basics/set.zig").Set;
 const Pair = @import("../basics/utils.zig").Pair;
 const pair = @import("../basics/utils.zig").pair;
+const ModelTokensChangedEvent = @import("../textModelEvents.zig").ModelTokensChangedEvent;
 
 pub const BackgroundTokenizationState = enum(u8) {
     InProgress = 1,
@@ -132,15 +133,9 @@ pub const AbstractSyntaxTokenBackend = struct {
     _textModel: TextModel,
 
     _onDidChangeBackgroundTokenizationState: Emitter(void),
-    // @internal, should not be exposed by the text model!
-    onDidChangeBackgroundTokenizationState: fn () void,
-    onDidChangeTokens: fn () void,
+    _onDidChangeTokens: Emitter(ModelTokensChangedEvent),
 
-    // protected readonly _onDidChangeTokens = this._register(new Emitter<IModelTokensChangedEvent>());
-    // //** @internal, should not be exposed by the text model! */
-    // public readonly onDidChangeTokens: Event<IModelTokensChangedEvent> = this._onDidChangeTokens.event;
-
-    // todo_resetTokenization: fn (fireTokenChangeEvent: ?bool) void,
+    todo_resetTokenization: fn (fireTokenChangeEvent: ?bool) void,
     handleDidChangeAttached: fn () void,
     handleDidChangeContent: fn (e: ModelContentChangedEvent) void,
     forceTokenization: fn (lineNumber: usize) void,
@@ -168,5 +163,15 @@ pub const AbstractSyntaxTokenBackend = struct {
         if (self.isCheapToTokenize(lineNumber)) {
             self.forceTokenization(lineNumber);
         }
+    }
+
+    // @internal, should not be exposed by the text model!
+    pub fn onDidChangeBackgroundTokenizationState(self: *AbstractSyntaxTokenBackend, f: fn (void) void) void {
+        self._onDidChangeBackgroundTokenizationState.event({}, f);
+    }
+
+    // //** @internal, should not be exposed by the text model! */
+    pub fn onDidChangeTokens(self: *AbstractSyntaxTokenBackend, f: fn (ModelTokensChangedEvent, void) void) void {
+        self._onDidChangeTokens.event({}, f);
     }
 };
