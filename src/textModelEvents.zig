@@ -66,16 +66,18 @@ pub const ModelDecorationsChangedEvent = struct {
     affectsLineNumber: bool,
 };
 
+pub const ModelTokensChangedRange = struct {
+    // The start of the range (inclusive)
+    fromLineNumber: usize,
+    // The end of the range (inclusive)
+    toLineNumber: usize,
+};
+
 // An event describing that some ranges of lines have been tokenized (their tokens have changed).
 // @internal
 pub const ModelTokensChangedEvent = struct {
     semanticTokensApplied: bool,
-    ranges: []struct {
-        // The start of the range (inclusive)
-        fromLineNumber: usize,
-        // The end of the range (inclusive)
-        toLineNumber: usize,
-    },
+    ranges: []ModelTokensChangedRange,
 };
 
 pub const ModelOptionsChangedEvent = struct {

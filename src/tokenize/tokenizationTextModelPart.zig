@@ -20,6 +20,10 @@ const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const BackgroundTokenizationState = @import("./abstractSyntaxTokenBackend.zig").BackgroundTokenizationState;
 const getWordAtText = @import("../basics/utils.zig").getWordAtText;
+const ILanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
+const ResolvedLanguageConfiguration = @import("../languages/languageConfigurationRegistry.zig").ResolvedLanguageConfiguration;
+const ModelTokensChangedRange = @import("../textModelEvents.zig").ModelTokensChangedRange;
+const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
 
 // const derived = @import("../common/observable.zig").derived;
 // const IObservable = @import("../common/observable.zig").IObservable;
@@ -232,7 +236,7 @@ pub const TokenizationTextModelPart = struct {
 
         self._emitModelTokensChangedEvent(.{
             .semanticTokensApplied = true,
-            .ranges = &[_]struct {
+            .ranges = &[_]ModelTokensChangedRange{
                 .{
                     .fromLineNumber = changedRange.startLineNumber,
                     .toLineNumber = changedRange.endLineNumber,

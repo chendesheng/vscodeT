@@ -17,6 +17,7 @@ const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const TextModel = @import("../textModel.zig").TextModel;
 const ContiguousMultilineTokens = @import("./contiguousMultilineTokens.zig").ContiguousMultilineTokens;
 const TokenPacked = @import("./lineTokens.zig").TokenPacked;
+const ModelTokensChangedRange = @import("../textModelEvents.zig").ModelTokensChangedRange;
 
 // Represents contiguous tokens in a text model.
 pub const ContiguousTokensStore = struct {
@@ -212,12 +213,12 @@ pub const ContiguousTokensStore = struct {
 
     //#endregion
 
-    pub fn setMultilineTokens(self: *ContiguousTokensStore, tokens: []ContiguousMultilineTokens, textModel: TextModel) struct { changes: []struct { fromLineNumber: usize, toLineNumber: usize } } {
+    pub fn setMultilineTokens(self: *ContiguousTokensStore, tokens: []ContiguousMultilineTokens, textModel: TextModel) struct { changes: []ModelTokensChangedRange } {
         if (tokens.len == 0) {
             return .{ .changes = &.{} };
         }
 
-        var ranges: ArrayList(struct { fromLineNumber: usize, toLineNumber: usize }) = ArrayList(struct { fromLineNumber: usize, toLineNumber: usize }).init(std.heap.page_allocator);
+        var ranges: ArrayList(ModelTokensChangedRange) = ArrayList(ModelTokensChangedRange).init(std.heap.page_allocator);
 
         for (tokens) |element| {
             var minChangedLineNumber = 0;

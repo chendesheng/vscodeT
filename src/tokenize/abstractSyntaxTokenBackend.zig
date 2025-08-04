@@ -111,6 +111,14 @@ pub const AttachedViewHandler = struct {
     _lineRanges: []LineRange,
     refreshTokens: fn () void,
 
+    pub fn init(refreshTokens: fn () void) AttachedViewHandler {
+        return AttachedViewHandler{
+            ._computedLineRanges = &[_]LineRange{},
+            ._lineRanges = &[_]LineRange{},
+            .refreshTokens = refreshTokens,
+        };
+    }
+
     pub fn update(self: *AttachedViewHandler) void {
         if (lineRangeSliceEquals(self._computedLineRanges, self._lineRanges)) {
             return;

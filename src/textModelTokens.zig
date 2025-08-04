@@ -19,6 +19,8 @@ const IState = @import("languages.zig").IState;
 const EncodedTokenizationResult = @import("languages.zig").EncodedTokenizationResult;
 const StandardTokenType = @import("encodedTokenAttributes.zig").StandardTokenType;
 const nullTokenizeEncoded = @import("./nullTokenize.zig").nullTokenizeEncoded;
+const StopWatch = @import("./basics/stopWatch.zig").StopWatch;
+const IBackgroundTokenizationStore = @import("./languages.zig").IBackgroundTokenizationStore;
 
 const CHEAP_TOKENIZATION_LENGTH_LIMIT = 2048;
 
@@ -367,3 +369,118 @@ fn safeTokenize(languageIdCodec: LanguageIdCodec, languageId: []u8, _tokenizatio
     LineTokens.convertToEndOffset(r.tokens, text.len);
     return r;
 }
+
+pub const DefaultBackgroundTokenizer = struct {
+    _isDisposed: bool = false,
+    _isScheduled: bool = false,
+
+    tokenizerWithStateStore: TokenizerWithStateStoreAndTextModel,
+    backgroundTokenStore: IBackgroundTokenizationStore,
+
+    const Self = @This();
+
+    pub fn init(tokenizerWithStateStore: TokenizerWithStateStoreAndTextModel, backgroundTokenStore: IBackgroundTokenizationStore) Self {
+        return Self{
+            .tokenizerWithStateStore = tokenizerWithStateStore,
+            .backgroundTokenStore = backgroundTokenStore,
+        };
+    }
+
+    pub fn dispose(self: *Self) void {
+        self._isDisposed = true;
+    }
+
+    pub fn handleChanges(self: *Self) void {
+        self._beginBackgroundTokenization();
+    }
+
+    fn _beginBackgroundTokenization(self: *Self) void {
+        if (self._isScheduled or !self.tokenizerWithStateStore._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
+            return;
+        }
+
+        self._isScheduled = true;
+        // runWhenGlobalIdle((deadline) => {
+        //    self._isScheduled = false;
+
+        //    self._backgroundTokenizeWithDeadline(deadline);
+        // });
+    }
+
+    // Tokenize until the deadline occurs, but try to yield every 1-2ms.
+    fn _backgroundTokenizeWithDeadline(self: *Self, deadline: IdleDeadline) void {
+        // Read the time remaining from the `deadline` immediately because it is unclear
+        // if the `deadline` object will be valid after execution leaves this function.
+        const endTime = Date.now() + deadline.timeRemaining();
+
+        if (self._isDisposed or !self.tokenizerWithStateStore._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
+            // disposed in the meantime or detached or finished
+            return;
+        }
+
+        self._backgroundTokenizeForAtLeast1ms();
+
+        if (Date.now() < endTime) {
+            // There is still time before reaching the deadline, so yield to the browser and then
+            // continue execution
+            setTimeout0(execute);
+        } else {
+            // The deadline has been reached, so schedule a new idle callback if necessary
+            self._beginBackgroundTokenization();
+        }
+    }
+
+    // Tokenize for at least 1ms.
+    fn _backgroundTokenizeForAtLeast1ms(self: *Self) void {
+        const lineCount = self.tokenizerWithStateStore._textModel.getLineCount();
+        const builder = ContiguousMultilineTokensBuilder.init();
+        const sw = StopWatch.init(false);
+
+        while (true) {
+            if (sw.elapsed() > 1) {
+                // the comparison is intentionally > 1 and not >= 1 to ensure that
+                // a full millisecond has elapsed, given how microseconds are rounded
+                // to milliseconds
+                break;
+            }
+
+            const tokenizedLineNumber = self._tokenizeOneInvalidLine(builder);
+
+            if (tokenizedLineNumber >= lineCount) {
+                break;
+            }
+        }
+
+        self.backgroundTokenStore.setTokens(builder.finalize());
+        self.checkFinished();
+    }
+
+    fn _hasLinesToTokenize(self: *Self) bool {
+        if (!self.tokenizerWithStateStore) {
+            return false;
+        }
+        return !self.tokenizerWithStateStore.store.allStatesValid();
+    }
+
+    fn _tokenizeOneInvalidLine(self: *Self, builder: ContiguousMultilineTokensBuilder) usize {
+        const firstInvalidLine = self.tokenizerWithStateStore.?.getFirstInvalidLine();
+        if (!firstInvalidLine) {
+            return self.tokenizerWithStateStore._textModel.getLineCount() + 1;
+        }
+        self.tokenizerWithStateStore.updateTokensUntilLine(builder, firstInvalidLine.lineNumber);
+        return firstInvalidLine.lineNumber;
+    }
+
+    pub fn checkFinished(self: *Self) void {
+        if (self._isDisposed) {
+            return;
+        }
+        if (self.tokenizerWithStateStore.store.allStatesValid()) {
+            self.backgroundTokenStore.backgroundTokenizationFinished();
+        }
+    }
+
+    pub fn requestTokens(self: *Self, startLineNumber: usize, endLineNumberExclusive: usize) void {
+        self.tokenizerWithStateStore.store.invalidateEndStateRange(LineRange.init(startLineNumber, endLineNumberExclusive));
+    }
+};
