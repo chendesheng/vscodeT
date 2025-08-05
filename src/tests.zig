@@ -1,4 +1,5 @@
 comptime {
+    _ = @import("basics/cache.zig");
     _ = @import("basics/event.zig");
     _ = @import("basics/promise.zig");
     _ = @import("basics/FixedArray.zig");

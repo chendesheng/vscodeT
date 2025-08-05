@@ -1,6 +1,11 @@
 const std = @import("std");
 const RegExp = @import("../basics/RegExp.zig").RegExp;
 const LanguageConfiguration = @import("./languageConfiguration.zig").LanguageConfiguration;
+const CharacterPairSupport = @import("./supports/characterPair.zig");
+const IndentRulesSupport = @import("./supports/indentRules.zig").IndentRulesSupport;
+const IndentationRule = @import("./languageConfiguration.zig").IndentationRule;
+const FoldingRules = @import("./languageConfiguration.zig").FoldingRules;
+const LanguageBracketsConfiguration = @import("./supports/languageBracketsConfiguration.zig").LanguageBracketsConfiguration;
 
 // Interface used to support insertion of mode specific comments.
 pub const ICommentsConfiguration = struct {
@@ -43,7 +48,7 @@ pub const ResolvedLanguageConfiguration = struct {
     languageId: []const u8,
     underlyingConfig: LanguageConfiguration,
 
-    pub fn init() ResolvedLanguageConfiguration {
+    pub fn init(languageId: []const u8, underlyingConfig: LanguageConfiguration) ResolvedLanguageConfiguration {
         //this._onEnterSupport =
         //    underlyingConfig.brackets or
         //    underlyingConfig.indentationRules or
@@ -55,7 +60,7 @@ pub const ResolvedLanguageConfiguration = struct {
             ._brackets = null,
             ._electricCharacter = null,
             ._onEnterSupport = null,
-            .comments = ResolvedLanguageConfiguration._handleComments(this.underlyingConfig),
+            .comments = ResolvedLanguageConfiguration._handleComments(underlyingConfig),
             .characterPair = CharacterPairSupport.init(underlyingConfig),
             .wordDefinition = underlyingConfig.wordPattern orelse DEFAULT_WORD_REGEXP,
             .indentationRules = underlyingConfig.indentationRules,
