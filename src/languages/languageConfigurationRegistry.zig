@@ -6,6 +6,12 @@ const IndentRulesSupport = @import("./supports/indentRules.zig").IndentRulesSupp
 const IndentationRule = @import("./languageConfiguration.zig").IndentationRule;
 const FoldingRules = @import("./languageConfiguration.zig").FoldingRules;
 const LanguageBracketsConfiguration = @import("./supports/languageBracketsConfiguration.zig").LanguageBracketsConfiguration;
+const ensureValidWordDefinition = @import("../basics/wordHelper.zig").ensureValidWordDefinition;
+const DEFAULT_WORD_REGEXP = @import("../basics/wordHelper.zig").DEFAULT_WORD_REGEXP;
+const EditorAutoIndentStrategy = @import("../editorOptions.zig").EditorAutoIndentStrategy;
+const EnterAction = @import("./languageConfiguration.zig").EnterAction;
+const AutoClosingPairs = @import("./languageConfiguration.zig").AutoClosingPairs;
+const IAutoClosingPair = @import("./languageConfiguration.zig").IAutoClosingPair;
 
 // Interface used to support insertion of mode specific comments.
 pub const ICommentsConfiguration = struct {
@@ -74,25 +80,32 @@ pub const ResolvedLanguageConfiguration = struct {
         return ensureValidWordDefinition(self.wordDefinition);
     }
 
-    pub fn getBrackets(self: *ResolvedLanguageConfiguration) ?RichEditBrackets {
-        if (!self._brackets and self.underlyingConfig.brackets) {
-            self._brackets = RichEditBrackets.init(self.languageId, self.underlyingConfig.brackets);
-        }
-        return self._brackets;
-    }
+    // TODO: Implement this
+    // pub fn getBrackets(self: *ResolvedLanguageConfiguration) ?RichEditBrackets {
+    //     if (!self._brackets and self.underlyingConfig.brackets) {
+    //         self._brackets = RichEditBrackets.init(self.languageId, self.underlyingConfig.brackets);
+    //     }
+    //     return self._brackets;
+    // }
 
-    pub fn getElectricCharacter(self: *ResolvedLanguageConfiguration) ?BracketElectricCharacterSupport {
-        if (!self._electricCharacter) {
-            self._electricCharacter = BracketElectricCharacterSupport.init(self.brackets);
-        }
-        return self._electricCharacter;
-    }
+    // pub fn getElectricCharacter(self: *ResolvedLanguageConfiguration) ?BracketElectricCharacterSupport {
+    //     if (!self._electricCharacter) {
+    //         self._electricCharacter = BracketElectricCharacterSupport.init(self.brackets);
+    //     }
+    //     return self._electricCharacter;
+    // }
 
     pub fn onEnter(autoIndent: EditorAutoIndentStrategy, previousLineText: []const u8, beforeEnterText: []const u8, afterEnterText: []const u8) ?EnterAction {
-        if (!self._onEnterSupport) {
-            return null;
-        }
-        return self._onEnterSupport.onEnter(autoIndent, previousLineText, beforeEnterText, afterEnterText);
+        _ = autoIndent;
+        _ = previousLineText;
+        _ = beforeEnterText;
+        _ = afterEnterText;
+        return null;
+        // TODO: Implement this
+        // if (!self._onEnterSupport) {
+        //     return null;
+        // }
+        // return self._onEnterSupport.onEnter(autoIndent, previousLineText, beforeEnterText, afterEnterText);
     }
 
     pub fn getAutoClosingPairs(self: *ResolvedLanguageConfiguration) AutoClosingPairs {

@@ -115,9 +115,9 @@ pub const AttachedView = struct {
 pub const AttachedViewHandler = struct {
     _computedLineRanges: []LineRange,
     _lineRanges: []LineRange,
-    refreshTokens: fn () void,
+    refreshTokens: fn (AttachedViewHandler) void,
 
-    pub fn init(refreshTokens: fn () void) AttachedViewHandler {
+    pub fn init(refreshTokens: fn (AttachedViewHandler) void) AttachedViewHandler {
         return AttachedViewHandler{
             ._computedLineRanges = &[_]LineRange{},
             ._lineRanges = &[_]LineRange{},
@@ -130,7 +130,7 @@ pub const AttachedViewHandler = struct {
             return;
         }
         self._computedLineRanges = self._lineRanges;
-        self.refreshTokens();
+        self.refreshTokens(self);
     }
 
     pub fn handleStateChange(self: *AttachedViewHandler, state: AttachedViewState) void {

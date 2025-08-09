@@ -90,8 +90,8 @@ pub const TokenizerSyntaxTokenBackend = struct {
                     var existing = this._attachedViewStates.get(view);
                     if (existing == null) {
                         existing = AttachedViewHandler.init(struct {
-                            fn f() void {
-                                this.refreshRanges(existing.lineRanges);
+                            fn f(handler: AttachedViewHandler) void {
+                                this.refreshRanges(handler._lineRanges);
                             }
                         }.f);
                         this._attachedViewStates.set(view, existing);
