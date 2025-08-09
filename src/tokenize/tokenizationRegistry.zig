@@ -26,6 +26,10 @@ pub const TokenizationRegistry = struct {
         self._onDidChange.fire(.{ .changedLanguages = languageIds, .changedColorMap = false });
     }
 
+    pub fn onDidChange(self: *TokenizationRegistry, ctx: anytype, callback: fn (e: TokenizationSupportChangedEvent, ctx: @TypeOf(ctx)) void) void {
+        self._onDidChange.event(ctx, callback);
+    }
+
     pub fn register(self: *TokenizationRegistry, languageId: []const u8, support: ITokenizationSupport) !void {
         try self._tokenizationSupports.put(languageId, support);
         self.handleChange(&[_]u8{languageId});

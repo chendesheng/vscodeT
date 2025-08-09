@@ -1,4 +1,5 @@
 const std = @import("std");
+const AutoHashMap = std.AutoHashMap;
 const Emitter = @import("../basics/event.zig").Emitter;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const Position = @import("../basics/position.zig").Position;
@@ -25,6 +26,11 @@ const Pair = @import("../basics/utils.zig").Pair;
 const AttachedView = @import("./abstractSyntaxTokenBackend.zig").AttachedView;
 const AttachedViewState = @import("./abstractSyntaxTokenBackend.zig").AttachedViewState;
 const DefaultBackgroundTokenizer = @import("../textModelTokens.zig").DefaultBackgroundTokenizer;
+const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
+const AttachedViewAndState = @import("./abstractSyntaxTokenBackend.zig").AttachedViewAndState;
+const ModelTokensChangedRange = @import("../textModelEvents.zig").ModelTokensChangedRange;
+const ModelContentChangedEvent = @import("../textModelEvents.zig").ModelContentChangedEvent;
+const TokenizationSupportChangedEvent = @import("../languages.zig").TokenizationSupportChangedEvent;
 
 // For TextMate
 pub const TokenizerSyntaxTokenBackend = struct {
@@ -33,18 +39,20 @@ pub const TokenizerSyntaxTokenBackend = struct {
     _onDidChangeBackgroundTokenizationState: Emitter(void),
 
     _defaultBackgroundTokenizer: ?DefaultBackgroundTokenizer = null,
-    _backgroundTokenizer: MutableDisposable(IBackgroundTokenizer),
+    _backgroundTokenizer: IBackgroundTokenizer,
 
     _tokens: ContiguousTokensStore,
     _debugBackgroundTokens: ?ContiguousTokensStore = null,
     _debugBackgroundStates: ?TrackingTokenizationStateStore(IState) = null,
 
-    _debugBackgroundTokenizer: IBackgroundTokenizer,
+    _debugBackgroundTokenizer: ?IBackgroundTokenizer,
 
-    _attachedViewStates: DisposableMap(AttachedView, AttachedViewHandler),
+    _attachedViewStates: AutoHashMap(AttachedView, AttachedViewHandler),
 
     _languageIdCodec: LanguageIdCodec,
     _textModel: TextModel,
+
+    getLanguageId: fn () []const u8,
 
     pub fn init(
         languageIdCodec: LanguageIdCodec,
@@ -52,49 +60,49 @@ pub const TokenizerSyntaxTokenBackend = struct {
         getLanguageId: fn () []const u8,
         attachedViews: AttachedViews,
     ) TokenizerSyntaxTokenBackend {
-        TokenizationRegistry.onDidChange(
-            struct {
-                fn cb(e: LanguageConfigurationServiceChangeEvent) void {
-                    const languageId = self.getLanguageId();
-                    if (!std.mem.indexOf(u8, e.changedLanguages, languageId)) {
-                        return;
-                    }
-                    todo_resetTokenization();
-                }
-            }.cb,
-        );
-
-        self.todo_resetTokenization();
-
-        attachedViews._onDidChangeVisibleRanges.event({}, struct {
-            fn cb(p: Pair(AttachedView, ?AttachedViewState), _: void) void {
-                const view = p.first;
-                const state = p.second;
-                if (state) {
-                    var existing = self._attachedViewStates.get(view);
-                    if (!existing) {
-                        existing = AttachedViewHandler.init(struct {
-                            fn f() void {
-                                self.refreshRanges(existing!.lineRanges);
-                            }
-                        }.f);
-                        self._attachedViewStates.set(view, existing);
-                    }
-                    existing.handleStateChange(state);
-                } else {
-                    self._attachedViewStates.deleteAndDispose(view);
-                }
-            }
-            .cb,
-        });
-        return TokenizerSyntaxTokenBackend{
+        var self: TokenizerSyntaxTokenBackend = .{
             ._languageIdCodec = languageIdCodec,
             ._textModel = textModel,
             ._tokens = ContiguousTokensStore.init(textModel.getAllocator(), languageIdCodec),
             ._onDidChangeBackgroundTokenizationState = Emitter(void).init(),
-            ._backgroundTokenizer = MutableDisposable(IBackgroundTokenizer).init(),
+            ._backgroundTokenizer = null,
             ._backgroundTokenizationState = BackgroundTokenizationState.InProgress,
+            .getLanguageId = getLanguageId,
         };
+
+        TokenizationRegistry.onDidChange(&self, struct {
+            fn cb(e: TokenizationSupportChangedEvent, this: *TokenizerSyntaxTokenBackend) void {
+                const languageId = this.getLanguageId();
+                if (!std.mem.indexOf(u8, e.changedLanguages, languageId)) {
+                    return;
+                }
+                this.todo_resetTokenization();
+            }
+        }.cb);
+
+        self.todo_resetTokenization();
+
+        attachedViews.onDidChangeVisibleRanges(&self, struct {
+            fn cb(p: AttachedViewAndState, this: *TokenizerSyntaxTokenBackend) void {
+                const view = p.first;
+                const state = p.second;
+                if (state) {
+                    var existing = this._attachedViewStates.get(view);
+                    if (existing == null) {
+                        existing = AttachedViewHandler.init(struct {
+                            fn f() void {
+                                this.refreshRanges(existing.lineRanges);
+                            }
+                        }.f);
+                        this._attachedViewStates.set(view, existing);
+                    }
+                    existing.handleStateChange(state);
+                } else {
+                    this._attachedViewStates.deleteAndDispose(view);
+                }
+            }
+        }.cb);
+        return self;
     }
 
     pub fn todo_resetTokenization(self: *TokenizerSyntaxTokenBackend, fireTokenChangeEvent: bool) void {
@@ -161,8 +169,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
                             }
                         }
                     }
-                    .f,
-                },
+                }.f,
             };
 
             if (tokenizationSupport != null and tokenizationSupport.createBackgroundTokenizer and !tokenizationSupport.backgroundTokenizerShouldOnlyVerifyTokens) {
@@ -208,7 +215,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
         self._defaultBackgroundTokenizer.?.handleChanges();
     }
 
-    pub fn handleDidChangeContent(self: *TokenizerSyntaxTokenBackend, e: IModelContentChangedEvent) void {
+    pub fn handleDidChangeContent(self: *TokenizerSyntaxTokenBackend, e: ModelContentChangedEvent) void {
         if (e.isFlush) {
             // Don't fire the event, as the view might not have got the text change event yet
             self.todo_resetTokenization(false);

@@ -17,9 +17,11 @@ pub const BackgroundTokenizationState = enum(u8) {
     Completed = 2,
 };
 
+pub const AttachedViewAndState = Pair(AttachedView, ?AttachedViewState);
+
 // @internal
 pub const AttachedViews = struct {
-    _onDidChangeVisibleRanges: Emitter(Pair(AttachedView, ?AttachedViewState)),
+    _onDidChangeVisibleRanges: Emitter(AttachedViewAndState),
     _views: Set(AttachedView),
     _viewsChanged: Emitter(void),
     visibleLineRanges: []const LineRange,
@@ -36,6 +38,10 @@ pub const AttachedViews = struct {
     //       return ranges;
     //    });
     // }
+
+    pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) void) void {
+        self._onDidChangeVisibleRanges.event(ctx, callback);
+    }
 
     pub fn attachView(self: *AttachedViews) AttachedView {
         const view = AttachedView{
