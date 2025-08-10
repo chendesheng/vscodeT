@@ -4,10 +4,8 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
-const FontStyle = @import("../encodedTokenAttributes.zig").FontStyle;
 const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
-const MetadataConsts = @import("../encodedTokenAttributes.zig").MetadataConsts;
 const TokenPresentation = @import("../encodedTokenAttributes.zig").TokenPresentation;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;

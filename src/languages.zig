@@ -1,21 +1,55 @@
 const std = @import("std");
+const io = std.io;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Position = @import("./basics/position.zig").Position;
 const ContiguousMultilineTokens = @import("./tokens/contiguousMultilineTokens.zig").ContiguousMultilineTokens;
 const TextModel = @import("./textModel.zig").TextModel;
 const TokenPacked = @import("./tokens/lineTokens.zig").TokenPacked;
+const LanguageId = @import("./encodedTokenAttributes.zig").LanguageId;
+
+pub const NULL_LANGUAGE_ID = "nullLanguage";
 
 // @internal
 pub const LanguageIdCodec = struct {
-    pub fn encodeLanguageId(languageId: []const u8) u8 {
-        _ = languageId;
-        return 0;
+    _languageIdToLanguage: ArrayList([]const u8),
+    _languageToLanguageId: std.AutoHashMap([]const u8, u8),
+
+    pub fn init(allocator: Allocator) LanguageIdCodec {
+        var codec = LanguageIdCodec{
+            ._languageIdToLanguage = ArrayList([]const u8).init(allocator),
+            ._languageToLanguageId = std.AutoHashMap([]const u8, u8).init(allocator),
+        };
+        try codec._languageIdToLanguage.append(NULL_LANGUAGE_ID);
+        try codec._languageToLanguageId.put(NULL_LANGUAGE_ID, 0);
+        return codec;
     }
 
-    pub fn decodeLanguageId(languageId: u8) []const u8 {
-        _ = languageId;
-        return "unknown";
+    fn _register(self: *LanguageIdCodec, language: []const u8, languageId: u8) !void {
+        try self._languageIdToLanguage.append(language);
+        try self._languageToLanguageId.put(language, languageId);
+    }
+
+    pub fn register(self: *LanguageIdCodec, language: []const u8) !void {
+        if (self._languageToLanguageId.get(language)) |_| {
+            return;
+        }
+        const languageId = self._languageIdToLanguage.items.len;
+        try self._register(language, languageId);
+    }
+
+    pub fn encodeLanguageId(self: *LanguageIdCodec, language: []const u8) !u8 {
+        if (self._languageToLanguageId.get(language)) |languageId| {
+            return languageId;
+        }
+        return LanguageId.Null;
+    }
+
+    pub fn decodeLanguageId(self: *LanguageIdCodec, languageId: u8) []const u8 {
+        if (languageId < self._languageIdToLanguage.items.len) {
+            return self._languageIdToLanguage.items[languageId];
+        }
+        return NULL_LANGUAGE_ID;
     }
 };
 
@@ -36,8 +70,8 @@ pub const Token = struct {
         };
     }
 
-    pub fn toString(self: *Token, allocator: Allocator) ![]u8 {
-        return try std.fmt.allocPrint(allocator, "({d}, {s})", .{ self.offset, self.type_ });
+    pub fn toString(self: *Token, writer: io.AnyWriter) !void {
+        try writer.print("({d}, {s})", .{ self.offset, self.type_ });
     }
 };
 

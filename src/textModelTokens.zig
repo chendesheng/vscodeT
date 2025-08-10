@@ -21,6 +21,8 @@ const StandardTokenType = @import("encodedTokenAttributes.zig").StandardTokenTyp
 const nullTokenizeEncoded = @import("./nullTokenize.zig").nullTokenizeEncoded;
 const StopWatch = @import("./basics/stopWatch.zig").StopWatch;
 const IBackgroundTokenizationStore = @import("./languages.zig").IBackgroundTokenizationStore;
+const IdleDeadline = @import("./basics/utils.zig").IdleDeadline;
+const runWhenGlobalIdle = @import("./basics/utils.zig").runWhenGlobalIdle;
 
 const CHEAP_TOKENIZATION_LENGTH_LIMIT = 2048;
 
@@ -400,18 +402,20 @@ pub const DefaultBackgroundTokenizer = struct {
         }
 
         self._isScheduled = true;
-        // runWhenGlobalIdle((deadline) => {
-        //    self._isScheduled = false;
-
-        //    self._backgroundTokenizeWithDeadline(deadline);
-        // });
+        runWhenGlobalIdle(self, struct {
+            fn callback(deadline: IdleDeadline, this: *Self) void {
+                this._isScheduled = false;
+                this._backgroundTokenizeWithDeadline(deadline);
+            }
+        }.callback);
     }
 
     // Tokenize until the deadline occurs, but try to yield every 1-2ms.
     fn _backgroundTokenizeWithDeadline(self: *Self, deadline: IdleDeadline) void {
         // Read the time remaining from the `deadline` immediately because it is unclear
         // if the `deadline` object will be valid after execution leaves this function.
-        const endTime = Date.now() + deadline.timeRemaining();
+        const now = std.time.timestamp();
+        const endTime = now + deadline.timeRemaining();
 
         if (self._isDisposed or !self.tokenizerWithStateStore._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
             // disposed in the meantime or detached or finished
@@ -420,10 +424,11 @@ pub const DefaultBackgroundTokenizer = struct {
 
         self._backgroundTokenizeForAtLeast1ms();
 
-        if (Date.now() < endTime) {
+        if (now < endTime) {
             // There is still time before reaching the deadline, so yield to the browser and then
             // continue execution
-            setTimeout0(execute);
+            // setTimeout0(execute);
+            // self.execute();
         } else {
             // The deadline has been reached, so schedule a new idle callback if necessary
             self._beginBackgroundTokenization();

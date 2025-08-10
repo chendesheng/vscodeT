@@ -150,3 +150,15 @@ pub const WordAtPosition = struct {
     // The column where the word ends.
     endColumn: usize,
 };
+
+pub const IdleDeadline = struct {
+    didTimeout: bool,
+    pub fn timeRemaining(self: *IdleDeadline) i64 {
+        _ = self;
+        return 0;
+    }
+};
+
+pub fn runWhenGlobalIdle(ctx: anytype, callback: fn (deadline: IdleDeadline, @TypeOf(ctx)) void) void {
+    callback(.{ .didTimeout = true }, ctx);
+}

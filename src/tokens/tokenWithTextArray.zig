@@ -3,6 +3,7 @@ const ArrayList = std.ArrayList;
 const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
 const LineTokens = @import("lineTokens.zig").LineTokens;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
+const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 
 // This class represents a sequence of tokens.
 // Conceptually, each token has a length and a metadata number.
@@ -92,8 +93,6 @@ pub const TokenWithTextArray = struct {
         return TokenWithTextArray.init(result);
     }
 };
-
-pub const TokenMetadata = u32;
 
 pub const TokenWithTextInfo = struct {
     text: []u8,
