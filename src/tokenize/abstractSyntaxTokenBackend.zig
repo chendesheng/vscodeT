@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const TextModel = @import("../textModel.zig").TextModel;
 const LineTokens = @import("../tokens/lineTokens.zig").LineTokens;
@@ -25,6 +26,21 @@ pub const AttachedViews = struct {
     _views: Set(AttachedView),
     _viewsChanged: Emitter(void),
     visibleLineRanges: []const LineRange,
+
+    pub fn init(allocator: Allocator) AttachedViews {
+        return AttachedViews{
+            ._onDidChangeVisibleRanges = Emitter(AttachedViewAndState).init(allocator),
+            ._views = Set(AttachedView).init(allocator),
+            ._viewsChanged = Emitter(void).init(allocator),
+            .visibleLineRanges = &[_]LineRange{},
+        };
+    }
+
+    pub fn deinit(self: *AttachedViews) void {
+        self._onDidChangeVisibleRanges.deinit();
+        self._views.deinit();
+        self._viewsChanged.deinit();
+    }
 
     // constructor() {
     //    this.visibleLineRanges = derivedOpts({

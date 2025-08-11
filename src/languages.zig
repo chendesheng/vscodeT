@@ -25,6 +25,11 @@ pub const LanguageIdCodec = struct {
         return codec;
     }
 
+    pub fn deinit(self: *LanguageIdCodec) void {
+        self._languageIdToLanguage.deinit();
+        self._languageToLanguageId.deinit();
+    }
+
     fn _register(self: *LanguageIdCodec, language: []const u8, languageId: u8) !void {
         try self._languageIdToLanguage.append(language);
         try self._languageToLanguageId.put(language, languageId);

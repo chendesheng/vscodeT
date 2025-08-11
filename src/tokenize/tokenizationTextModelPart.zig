@@ -24,6 +24,7 @@ const ILanguageConfigurationService = @import("../languages/languageConfiguratio
 const ResolvedLanguageConfiguration = @import("../languages/languageConfigurationRegistry.zig").ResolvedLanguageConfiguration;
 const ModelTokensChangedRange = @import("../textModelEvents.zig").ModelTokensChangedRange;
 const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
+const LanguageService = @import("../languages/languageService.zig").LanguageService;
 
 // const derived = @import("../common/observable.zig").derived;
 // const IObservable = @import("../common/observable.zig").IObservable;
@@ -39,19 +40,19 @@ pub const TokenizationTextModelPart = struct {
     tokens: TokenizerSyntaxTokenBackend,
     _useTreeSitter: bool,
     _languageId: []const u8,
-    _textModel: TextModel,
+    _textModel: *TextModel,
     _attachedViews: AttachedViews,
     // _bracketPairsTextModelPart: BracketPairsTextModelPart,
-    // _languageService: ILanguageService,
+    _languageService: *LanguageService,
     _languageConfigurationService: ILanguageConfigurationService,
     // _instantiationService: IInstantiationService,
     // _treeSitterLibraryService: ITreeSitterLibraryService,
 
     pub fn init(
-        textModel: TextModel,
+        textModel: *TextModel,
         languageId: []const u8,
         attachedViews: AttachedViews,
-        languageIdCodec: LanguageIdCodec,
+        languageService: *LanguageService,
     ) TokenizationTextModelPart {
         //tokens = derived(this, reader => {
         //   let tokens: AbstractSyntaxTokenBackend;
@@ -87,6 +88,8 @@ pub const TokenizationTextModelPart = struct {
         //    hadTokens = true;
         // });
 
+        const languageIdCodec = languageService.languageIdCodec;
+
         return TokenizationTextModelPart{
             ._useTreeSitter = false,
             ._textModel = textModel,
@@ -102,6 +105,14 @@ pub const TokenizationTextModelPart = struct {
                 }
             }.get, attachedViews),
         };
+    }
+
+    pub fn deinit(self: *TokenizationTextModelPart) void {
+        self._semanticTokens.deinit();
+        self._onDidChangeLanguage.deinit();
+        self._onDidChangeLanguageConfiguration.deinit();
+        self._onDidChangeTokens.deinit();
+        self.tokens.deinit();
     }
 
     // @internal, should not be exposed by the text model!

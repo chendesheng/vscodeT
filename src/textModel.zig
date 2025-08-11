@@ -71,6 +71,11 @@ const Rg = @import("./basics/range.zig");
 const SearchParams = @import("textModelSearch.zig").SearchParams;
 const TextModelSearch = @import("textModelSearch.zig").TextModelSearch;
 const String = @import("./basics/strings.zig").String;
+const TokenizationTextModelPart = @import("./tokenize/tokenizationTextModelPart.zig").TokenizationTextModelPart;
+const WordAtPosition = @import("./basics/utils.zig").WordAtPosition;
+const ModelTokensChangedEvent = @import("./textModelEvents.zig").ModelTokensChangedEvent;
+const AttachedViews = @import("./tokenize/abstractSyntaxTokenBackend.zig").AttachedViews;
+const LanguageService = @import("./languages/languageService.zig").LanguageService;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -172,6 +177,10 @@ pub const TextModel = struct {
     // _decorationProvider: ColorizedBracketPairsDecorationProvider,
     //#endregion
 
+    _languageService: *LanguageService,
+    _tokenizationTextModelPart: TokenizationTextModelPart,
+    _attachedViews: AttachedViews,
+
     _undoRedoService: *UndoRedoService,
     //#region Events
     _onWillDispose: Emitter(void),
@@ -182,6 +191,14 @@ pub const TextModel = struct {
     _onDidChangeLineHeight: Emitter(ModelLineHeightChangedEvent),
     _eventEmitter: DidChangeContentEmitter,
     //#endregion
+
+    pub fn tokenization(self: *TextModel) TokenizationTextModelPart {
+        return self._tokenizationTextModelPart;
+    }
+
+    pub fn onDidChangeTokens(self: *TextModel, callback: fn (ModelTokensChangedEvent) void) !void {
+        try self._tokenizationTextModelPart.onDidChangeTokens(callback);
+    }
 
     pub fn resolveOptions(textBuffer: *PieceTreeTextBuffer, options: TextModelCreationOptions) TextModelResolvedOptions {
         if (options.detectIndentation) {
@@ -238,7 +255,7 @@ pub const TextModel = struct {
         }.cb);
     }
 
-    pub fn init(allocator: Allocator, source: io.AnyReader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !*TextModel {
+    pub fn init(allocator: Allocator, source: io.AnyReader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
         const bufferLineCount = buffer.getLineCount();
@@ -257,6 +274,9 @@ pub const TextModel = struct {
             tooLargeForTokenization = false;
             tooLargeForHeapOperation = false;
         }
+
+        languageService.requestRichLanguageFeatures(languageId);
+        const attachedViews = AttachedViews.init(allocator);
 
         const model = try allocator.create(TextModel);
         model.* = TextModel{
@@ -307,6 +327,8 @@ pub const TextModel = struct {
             ._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator),
             ._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator),
             ._eventEmitter = DidChangeContentEmitter.init(allocator),
+            ._tokenizationTextModelPart = TokenizationTextModelPart.init(model, languageId, attachedViews, languageService),
+            ._attachedViews = attachedViews,
         };
         return model;
     }
@@ -328,6 +350,12 @@ pub const TextModel = struct {
         self._onDidChangeInjectedText.deinit();
         self._onDidChangeLineHeight.deinit();
         self._eventEmitter.deinit();
+        self._tokenizationTextModelPart.deinit();
+        self._attachedViews.deinit();
+    }
+
+    pub fn _hasListeners(self: *const TextModel) bool {
+        return (self._onWillDispose.hasListeners() or self._onDidChangeDecorations.hasListeners() or self._tokenizationTextModelPart._hasListeners() or self._onDidChangeOptions.hasListeners() or self._onDidChangeAttached.hasListeners() or self._onDidChangeInjectedText.hasListeners() or self._onDidChangeLineHeight.hasListeners() or self._eventEmitter.hasListeners());
     }
 
     pub fn equalsTextBuffer(self: *const TextModel, other: *const PieceTreeTextBuffer) bool {
@@ -1089,7 +1117,7 @@ pub const TextModel = struct {
             // Do not confuse listeners by emitting any event after disposing
             return;
         }
-        // self._tokenizationTextModelPart.handleDidChangeContent(change);
+        self._tokenizationTextModelPart.handleDidChangeContent(change);
         // self._bracketPairs.handleDidChangeContent(change);
         self._eventEmitter.fire(InternalModelContentChangeEvent.init(rawChange, change));
     }
@@ -1742,6 +1770,33 @@ pub const TextModel = struct {
         return result.toOwnedSlice();
     }
 
+    //#endregion
+
+    //#region Tokenization
+    pub fn getLanguageId(self: *TextModel) []const u8 {
+        return self._tokenizationTextModelPart.getLanguageId();
+    }
+
+    pub fn setLanguage(self: *TextModel, languageId: []const u8) void {
+        self._setLanguage(languageId);
+    }
+
+    fn _setLanguage(self: *TextModel, languageId: []const u8) void {
+        self._tokenizationTextModelPart.setLanguageId(languageId, "TextModel.setLanguage");
+        self._languageService.requestRichLanguageFeatures(languageId);
+    }
+
+    pub fn getLanguageIdAtPosition(self: *TextModel, lineNumber: usize, column: usize) []const u8 {
+        return self._tokenizationTextModelPart.getLanguageIdAtPosition(lineNumber, column);
+    }
+
+    pub fn getWordAtPosition(self: *TextModel, position: Position) ?WordAtPosition {
+        return self._tokenizationTextModelPart.getWordAtPosition(position);
+    }
+
+    pub fn getWordUntilPosition(self: *TextModel, position: Position) ?WordAtPosition {
+        return self._tokenizationTextModelPart.getWordUntilPosition(position);
+    }
     //#endregion
 };
 

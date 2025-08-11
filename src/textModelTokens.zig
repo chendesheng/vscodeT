@@ -190,6 +190,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     fn guessStartState(self: *Self, lineNumber: usize) IState {
         const res = findLikelyRelevantLines(self._textModel, lineNumber, self);
         const likelyRelevantLines = res.likelyRelevantLines;
+        defer likelyRelevantLines.deinit();
         const initialState = res.initialState;
 
         if (!initialState) {
@@ -199,6 +200,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         const languageId = self._textModel.getLanguageId();
         var state = initialState;
         for (likelyRelevantLines.items) |line| {
+            defer line.deinit();
             const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, line.items, false, state);
             state = r.endState;
         }
@@ -228,7 +230,7 @@ pub fn findLikelyRelevantLines(model: TextModel, lineNumber: usize, _store: ?Tok
     }
 
     likelyRelevantLines.reverse();
-    return .{ .likelyRelevantLines = likelyRelevantLines.items, .initialState = initialState };
+    return .{ .likelyRelevantLines = likelyRelevantLines, .initialState = initialState };
 }
 
 // **Invariant:**
@@ -376,12 +378,12 @@ pub const DefaultBackgroundTokenizer = struct {
     _isDisposed: bool = false,
     _isScheduled: bool = false,
 
-    tokenizerWithStateStore: TokenizerWithStateStoreAndTextModel,
+    tokenizerWithStateStore: ?TokenizerWithStateStoreAndTextModel,
     backgroundTokenStore: IBackgroundTokenizationStore,
 
     const Self = @This();
 
-    pub fn init(tokenizerWithStateStore: TokenizerWithStateStoreAndTextModel, backgroundTokenStore: IBackgroundTokenizationStore) Self {
+    pub fn init(tokenizerWithStateStore: ?TokenizerWithStateStoreAndTextModel, backgroundTokenStore: IBackgroundTokenizationStore) Self {
         return Self{
             .tokenizerWithStateStore = tokenizerWithStateStore,
             .backgroundTokenStore = backgroundTokenStore,
@@ -397,7 +399,7 @@ pub const DefaultBackgroundTokenizer = struct {
     }
 
     fn _beginBackgroundTokenization(self: *Self) void {
-        if (self._isScheduled or !self.tokenizerWithStateStore._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
+        if (self._isScheduled or !self.tokenizerWithStateStore.?._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
             return;
         }
 
@@ -417,7 +419,7 @@ pub const DefaultBackgroundTokenizer = struct {
         const now = std.time.timestamp();
         const endTime = now + deadline.timeRemaining();
 
-        if (self._isDisposed or !self.tokenizerWithStateStore._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
+        if (self._isDisposed or !self.tokenizerWithStateStore.?._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
             // disposed in the meantime or detached or finished
             return;
         }
@@ -437,7 +439,7 @@ pub const DefaultBackgroundTokenizer = struct {
 
     // Tokenize for at least 1ms.
     fn _backgroundTokenizeForAtLeast1ms(self: *Self) void {
-        const lineCount = self.tokenizerWithStateStore._textModel.getLineCount();
+        const lineCount = self.tokenizerWithStateStore.?._textModel.getLineCount();
         const builder = ContiguousMultilineTokensBuilder.init();
         const sw = StopWatch.init(false);
 
@@ -461,18 +463,18 @@ pub const DefaultBackgroundTokenizer = struct {
     }
 
     fn _hasLinesToTokenize(self: *Self) bool {
-        if (!self.tokenizerWithStateStore) {
-            return false;
+        if (self.tokenizerWithStateStore) |tokenizerWithStateStore| {
+            return !tokenizerWithStateStore.getStore().allStatesValid();
         }
-        return !self.tokenizerWithStateStore.store.allStatesValid();
+        return false;
     }
 
     fn _tokenizeOneInvalidLine(self: *Self, builder: ContiguousMultilineTokensBuilder) usize {
         const firstInvalidLine = self.tokenizerWithStateStore.?.getFirstInvalidLine();
         if (!firstInvalidLine) {
-            return self.tokenizerWithStateStore._textModel.getLineCount() + 1;
+            return self.tokenizerWithStateStore.?._textModel.getLineCount() + 1; // TODO: this is wrong
         }
-        self.tokenizerWithStateStore.updateTokensUntilLine(builder, firstInvalidLine.lineNumber);
+        self.tokenizerWithStateStore.?.updateTokensUntilLine(builder, firstInvalidLine.lineNumber);
         return firstInvalidLine.lineNumber;
     }
 
@@ -480,12 +482,12 @@ pub const DefaultBackgroundTokenizer = struct {
         if (self._isDisposed) {
             return;
         }
-        if (self.tokenizerWithStateStore.store.allStatesValid()) {
+        if (self.tokenizerWithStateStore.?.getStore().allStatesValid()) {
             self.backgroundTokenStore.backgroundTokenizationFinished();
         }
     }
 
     pub fn requestTokens(self: *Self, startLineNumber: usize, endLineNumberExclusive: usize) void {
-        self.tokenizerWithStateStore.store.invalidateEndStateRange(LineRange.init(startLineNumber, endLineNumberExclusive));
+        self.tokenizerWithStateStore.?.getStore().invalidateEndStateRange(LineRange.init(startLineNumber, endLineNumberExclusive));
     }
 };
