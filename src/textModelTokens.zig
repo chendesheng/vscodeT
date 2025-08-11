@@ -441,7 +441,7 @@ pub const DefaultBackgroundTokenizer = struct {
     fn _backgroundTokenizeForAtLeast1ms(self: *Self) void {
         const lineCount = self.tokenizerWithStateStore.?._textModel.getLineCount();
         const builder = ContiguousMultilineTokensBuilder.init();
-        const sw = StopWatch.init(false);
+        const sw = StopWatch.init();
 
         while (true) {
             if (sw.elapsed() > 1) {

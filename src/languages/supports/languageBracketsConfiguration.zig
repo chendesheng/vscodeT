@@ -1,4 +1,6 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
 const StringHashMap = std.StringHashMap;
 const Set = @import("../../basics/set.zig").Set;
 const CachedFunction = @import("../../basics/cache.zig").CachedFunction;
@@ -8,6 +10,7 @@ const CharacterPair = @import("../languageConfiguration.zig").CharacterPair;
 const RegExpOptions = @import("../../basics/RegExp.zig").Options;
 const Pair = @import("../../basics/utils.zig").Pair;
 const pair = @import("../../basics/utils.zig").pair;
+const createBracketOrRegExp = @import("richEditBrackets.zig").createBracketOrRegExp;
 
 // Captures all bracket related configurations for a single language.
 // Immutable.
@@ -15,41 +18,63 @@ const pair = @import("../../basics/utils.zig").pair;
 pub const LanguageBracketsConfiguration = struct {
     const Self = @This();
 
+    var ID: u32 = 0;
+
+    id: u32,
     _openingBrackets: StringHashMap(OpeningBracketKind),
     _closingBrackets: StringHashMap(ClosingBracketKind),
     languageId: []const u8,
     config: LanguageConfiguration,
 
-    pub fn init(languageId: []const u8, config: LanguageConfiguration) Self {
-        const bracketPairs = if (config.brackets) |brackets| filterValidBrackets(brackets) else &[_]CharacterPair{};
+    pub fn init(allocator: Allocator, languageId: []const u8, config: LanguageConfiguration) !Self {
+        const bracketPairs: ArrayList(CharacterPair) = if (config.brackets) |brackets|
+            try filterValidBrackets(allocator, brackets)
+        else
+            ArrayList(CharacterPair).init(allocator);
+        defer bracketPairs.deinit();
 
-        const openingBracketInfos = CachedFunction([]const u8, OpeningBracketKindInfo).init(
+        ID += 1;
+        var self = Self{
+            .id = ID,
+            .languageId = languageId,
+            .config = config,
+            ._openingBrackets = StringHashMap(OpeningBracketKind).init(allocator),
+            ._closingBrackets = StringHashMap(ClosingBracketKind).init(allocator),
+        };
+        const openingBracketInfos = CachedFunction([]const u8, OpeningBracketKindInfo, Self).init(
+            allocator,
+            self,
             struct {
-                fn f(bracket: []const u8) OpeningBracketKindInfo {
+                fn f(bracket: []const u8, this: Self) OpeningBracketKindInfo {
                     const closing = Set(ClosingBracketKind).init();
                     return OpeningBracketKindInfo{
-                        .info = OpeningBracketKind.init(self, bracket, closing),
+                        .info = OpeningBracketKind.init(this, bracket, closing),
                         .closing = closing,
                     };
                 }
             }.f,
+            null,
         );
+        defer openingBracketInfos.deinit();
 
-        const closingBracketInfos = CachedFunction([]const u8, ClosingBracketKindInfo).init(
+        const closingBracketInfos = CachedFunction([]const u8, ClosingBracketKindInfo, Self).init(
+            allocator,
+            self,
             struct {
-                fn f(bracket: []const u8) ClosingBracketKindInfo {
+                fn f(bracket: []const u8, this: Self) ClosingBracketKindInfo {
                     const opening = Set(OpeningBracketKind).init();
                     const openingColorized = Set(OpeningBracketKind).init();
                     return ClosingBracketKindInfo{
-                        .info = ClosingBracketKind.init(self, bracket, opening, openingColorized),
+                        .info = ClosingBracketKind.init(this, bracket, opening, openingColorized),
                         .opening = opening,
                         .openingColorized = openingColorized,
                     };
                 }
             }.f,
         );
+        defer closingBracketInfos.deinit();
 
-        for (bracketPairs) |p| {
+        for (bracketPairs.items) |p| {
             const opening = try openingBracketInfos.get(p[0]);
             const closing = try closingBracketInfos.get(p[1]);
 
@@ -60,13 +85,14 @@ pub const LanguageBracketsConfiguration = struct {
         // Treat colorized brackets as brackets, and mark them as colorized.
         const colorizedBracketPairs =
             if (config.colorizedBracketPairs) |colorizedBracketPairs|
-                filterValidBrackets(colorizedBracketPairs)
+                try filterValidBrackets(allocator, colorizedBracketPairs)
             else
                 // If not configured: Take all brackets except `<` ... `>`
                 // Many languages set < ... > as bracket pair, even though they also use it as comparison operator.
                 // This leads to problems when colorizing this bracket, so we exclude it if not explicitly configured otherwise.
                 // https://github.com/microsoft/vscode/issues/132476
-                null; // bracketPairs.filter((p) => !(p[0] == '<' and p[1] == '>'));
+                try filterOutAngleBrackets(allocator, bracketPairs.items);
+        defer colorizedBracketPairs.deinit();
         for (colorizedBracketPairs) |p| {
             const opening = try openingBracketInfos.get(p[0]);
             const closing = try closingBracketInfos.get(p[1]);
@@ -76,12 +102,16 @@ pub const LanguageBracketsConfiguration = struct {
             try closing.opening.add(opening.info);
         }
 
-        return .{
-            .languageId = languageId,
-            .config = config,
-            // ._openingBrackets = new Map([...openingBracketInfos.cachedValues()].map(([k, v]) => [k, v.info])),
-            // ._closingBrackets = new Map([...closingBracketInfos.cachedValues()].map(([k, v]) => [k, v.info])),
-        };
+        var openingBracketInfosValueIter = openingBracketInfos.cachedValues().valueIterator();
+        while (openingBracketInfosValueIter.next()) |v| {
+            try self._openingBrackets.put(v.info.bracketText, v.info);
+        }
+        var closingBracketInfosValueIter = closingBracketInfos.cachedValues().valueIterator();
+        while (closingBracketInfosValueIter.next()) |v| {
+            try self._closingBrackets.put(v.info.bracketText, v.info);
+        }
+
+        return self;
     }
 
     // No two brackets have the same bracket text.
@@ -111,24 +141,35 @@ pub const LanguageBracketsConfiguration = struct {
             null;
     }
 
-    pub fn getBracketRegExp(self: *const Self, options: ?RegExpOptions) RegExp {
-        const brackets = std.ArrayList(Pair(OpeningBracketKind, ClosingBracketKind)).init(self._openingBrackets.allocator);
+    pub fn getBracketRegExp(self: *const Self, options: ?RegExpOptions) !RegExp {
+        const allocator = self._openingBrackets.allocator;
+        const brackets = std.ArrayList(Pair(OpeningBracketKind, ClosingBracketKind)).init(allocator);
         for (self._openingBrackets.keys()) |key| {
             brackets.append(pair(self._openingBrackets.get(key).?, self._closingBrackets.get(key).?));
         }
-        return createBracketOrRegExp(brackets.items(), options);
+        return try createBracketOrRegExp(allocator, brackets.items(), options);
     }
 };
 
-fn filterValidBrackets(bracketPairs: []const CharacterPair) []const CharacterPair {
-    var result = std.ArrayList(CharacterPair).init(bracketPairs.allocator);
+fn filterValidBrackets(allocator: Allocator, bracketPairs: []const CharacterPair) !ArrayList(CharacterPair) {
+    var result = ArrayList(CharacterPair).init(allocator);
     for (bracketPairs) |p| {
         if (p[0].len > 0 and p[1].len > 0) {
             try result.append(p[0]);
             try result.append(p[1]);
         }
     }
-    return result.toOwnedSlice();
+    return result;
+}
+
+fn filterOutAngleBrackets(allocator: Allocator, bracketPairs: []const CharacterPair) !ArrayList(CharacterPair) {
+    var result = ArrayList(CharacterPair).init(allocator);
+    for (bracketPairs) |p| {
+        if (p[0].len > 0 and p[1].len > 0 and p[0][0] != '<' and p[1][0] != '>') {
+            try result.append(p);
+        }
+    }
+    return result;
 }
 
 pub const BracketKind = union {
@@ -201,14 +242,14 @@ pub const ClosingBracketKind = struct {
     // Checks if this bracket closes the given other bracket.
     // If the bracket infos come from different configurations, this method will return false.
     pub fn closes(self: *const ClosingBracketKind, other: OpeningBracketKind) bool {
-        if (other.config != self.config) {
+        if (other.config.id != self.config.id) {
             return false;
         }
         return self.openingBrackets.has(other);
     }
 
     pub fn closesColorized(self: *const ClosingBracketKind, other: OpeningBracketKind) bool {
-        if (other.config != self.config) {
+        if (other.config.id != self.config.id) {
             return false;
         }
         return self.openingColorizedBrackets.has(other);
