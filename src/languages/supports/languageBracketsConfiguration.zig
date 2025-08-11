@@ -5,10 +5,12 @@ const CachedFunction = @import("../../basics/cache.zig").CachedFunction;
 const RegExp = @import("../../basics/RegExp.zig").RegExp;
 const LanguageConfiguration = @import("../languageConfiguration.zig").LanguageConfiguration;
 const CharacterPair = @import("../languageConfiguration.zig").CharacterPair;
-const createBracketOrRegExp = @import("./richEditBrackets.zig").createBracketOrRegExp;
+const RegExpOptions = @import("../../basics/RegExp.zig").Options;
+const Pair = @import("../../basics/utils.zig").Pair;
+const pair = @import("../../basics/utils.zig").pair;
 
- // Captures all bracket related configurations for a single language.
- // Immutable.
+// Captures all bracket related configurations for a single language.
+// Immutable.
 
 pub const LanguageBracketsConfiguration = struct {
     const Self = @This();
@@ -47,16 +49,16 @@ pub const LanguageBracketsConfiguration = struct {
             }.f,
         );
 
-        for (bracketPairs) |pair| {
-            const opening = try openingBracketInfos.get(pair[0]);
-            const closing = try closingBracketInfos.get(pair[1]);
+        for (bracketPairs) |p| {
+            const opening = try openingBracketInfos.get(p[0]);
+            const closing = try closingBracketInfos.get(p[1]);
 
             try opening.closing.add(closing.info);
             try closing.opening.add(opening.info);
         }
 
         // Treat colorized brackets as brackets, and mark them as colorized.
-        const colorizedBracketPairs = 
+        const colorizedBracketPairs =
             if (config.colorizedBracketPairs) |colorizedBracketPairs|
                 filterValidBrackets(colorizedBracketPairs)
             else
@@ -65,9 +67,9 @@ pub const LanguageBracketsConfiguration = struct {
                 // This leads to problems when colorizing this bracket, so we exclude it if not explicitly configured otherwise.
                 // https://github.com/microsoft/vscode/issues/132476
                 null; // bracketPairs.filter((p) => !(p[0] == '<' and p[1] == '>'));
-        for (colorizedBracketPairs) |pair| {
-            const opening = try openingBracketInfos.get(pair[0]);
-            const closing = try closingBracketInfos.get(pair[1]);
+        for (colorizedBracketPairs) |p| {
+            const opening = try openingBracketInfos.get(p[0]);
+            const closing = try closingBracketInfos.get(p[1]);
 
             try opening.closing.add(closing.info);
             try closing.openingColorized.add(opening.info);
@@ -118,16 +120,22 @@ pub const LanguageBracketsConfiguration = struct {
     }
 };
 
-
 fn filterValidBrackets(bracketPairs: []const CharacterPair) []const CharacterPair {
-    return bracketPairs.filter((p) => p[0].len > 0 and p[1].len > 0);
+    var result = std.ArrayList(CharacterPair).init(bracketPairs.allocator);
+    for (bracketPairs) |p| {
+        if (p[0].len > 0 and p[1].len > 0) {
+            try result.append(p[0]);
+            try result.append(p[1]);
+        }
+    }
+    return result.toOwnedSlice();
 }
 
 pub const BracketKind = union {
     openingBracketKind: OpeningBracketKind,
     closingBracketKind: ClosingBracketKind,
 
-    pub fn languageId(self: *const Self) []const u8 {
+    pub fn languageId(self: *const BracketKind) []const u8 {
         return switch (self) {
             .openingBracketKind => self.openingBracketKind.languageId(),
             .closingBracketKind => self.closingBracketKind.languageId(),
@@ -141,19 +149,19 @@ pub const OpeningBracketKind = struct {
     bracketText: []const u8,
     openedBrackets: Set(ClosingBracketKind),
 
-	pub fn init(
-		config: LanguageBracketsConfiguration,
-		bracketText: string,
-		openedBrackets: Set(ClosingBracketKind),
-	) OpeningBracketKind {
-		return OpeningBracketKind{
-			.config = config,
-			.bracketText = bracketText,
-			.openedBrackets = openedBrackets,
-		};
-	}
+    pub fn init(
+        config: LanguageBracketsConfiguration,
+        bracketText: []const u8,
+        openedBrackets: Set(ClosingBracketKind),
+    ) OpeningBracketKind {
+        return OpeningBracketKind{
+            .config = config,
+            .bracketText = bracketText,
+            .openedBrackets = openedBrackets,
+        };
+    }
 
-    pub fn languageId(self: *const Self) []const u8 {
+    pub fn languageId(self: *const OpeningBracketKind) []const u8 {
         return self.config.languageId;
     }
 };
@@ -190,27 +198,27 @@ pub const ClosingBracketKind = struct {
         };
     }
 
-	 // Checks if this bracket closes the given other bracket.
-	 // If the bracket infos come from different configurations, this method will return false.
-	pub fn closes(self: *const Self, other: OpeningBracketKind) bool {
-		if (other.config != self.config) {
-			return false;
-		}
-		return self.openingBrackets.has(other);
-	}
+    // Checks if this bracket closes the given other bracket.
+    // If the bracket infos come from different configurations, this method will return false.
+    pub fn closes(self: *const ClosingBracketKind, other: OpeningBracketKind) bool {
+        if (other.config != self.config) {
+            return false;
+        }
+        return self.openingBrackets.has(other);
+    }
 
-	pub fn closesColorized(self: *const Self, other: OpeningBracketKind) bool {
-		if (other.config != self.config) {
-			return false;
-		}
-		return self.openingColorizedBrackets.has(other);
-	}
+    pub fn closesColorized(self: *const ClosingBracketKind, other: OpeningBracketKind) bool {
+        if (other.config != self.config) {
+            return false;
+        }
+        return self.openingColorizedBrackets.has(other);
+    }
 
-	pub fn getOpeningBrackets(self: *const Self) []const OpeningBracketKind {
-		return self.openingBrackets.items();
-	}
+    pub fn getOpeningBrackets(self: *const ClosingBracketKind) []const OpeningBracketKind {
+        return self.openingBrackets.items();
+    }
 
-    pub fn languageId(self: *const Self) []const u8 {
+    pub fn languageId(self: *const ClosingBracketKind) []const u8 {
         return self.config.languageId;
     }
 };

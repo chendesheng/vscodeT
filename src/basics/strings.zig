@@ -428,7 +428,7 @@ pub fn createRegExp(allocator: Allocator, searchString: []const u8, isRegex: boo
     }
 
     if (isRegex and !wholeWord) {
-        return RegExp.init(searchString, options);
+        return try RegExp.init(searchString, options);
     }
 
     var escapedSearchString = if (isRegex) try initArrayList(allocator, searchString) else try escapeRegExp(allocator, searchString);
