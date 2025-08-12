@@ -69,11 +69,11 @@ pub fn tick() !void {
 }
 
 pub fn Promise(comptime T: type) type {
-    // const info = @typeInfo(T);
-    // switch (info) {
-    //     .Pointer => {},
-    //     else => @compileError("T must be a pointer type"),
-    // }
+    const info = @typeInfo(T);
+    switch (info) {
+        .pointer => {},
+        else => @compileError("T must be a pointer type"),
+    }
 
     return struct {
         const Self = @This();
@@ -99,6 +99,9 @@ pub fn Promise(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            self._lock.lock();
+            defer self._lock.unlock();
+
             self._events.deinit();
             remove(@ptrCast(self));
             self._allocator.destroy(self);
@@ -118,54 +121,85 @@ pub fn Promise(comptime T: type) type {
             return self._state != .pending;
         }
 
-        pub fn then(self: *Self, onFulfilled: fn (value: T) anyerror!void) !void {
-            try self._events.event(&onFulfilled, struct {
-                fn cb(this: *Self, f: @TypeOf(&onFulfilled)) anyerror!void {
-                    this._lock.lock();
-                    defer this._lock.unlock();
+        fn callOnFulfilled(self: *Self, ctx: anytype, comptime onFulfilled: fn (value: T, ctx: @TypeOf(ctx)) anyerror!void) !void {
+            self._lock.lock();
 
-                    switch (this._state) {
-                        .fulfilled => try f(this._state.fulfilled),
-                        else => {},
-                    }
+            switch (self._state) {
+                .fulfilled => {
+                    const value = self._state.fulfilled;
+                    self._lock.unlock();
+                    try onFulfilled(value, ctx);
+                },
+                else => {
+                    self._lock.unlock();
+                },
+            }
+        }
+
+        fn callOnRejected(self: *Self, ctx: anytype, comptime onRejected: fn (reason: anyerror, ctx: @TypeOf(ctx)) anyerror!void) !void {
+            self._lock.lock();
+
+            switch (self._state) {
+                .rejected => {
+                    const reason = self._state.rejected;
+                    self._lock.unlock();
+                    try onRejected(reason, ctx);
+                },
+                else => {
+                    self._lock.unlock();
+                },
+            }
+        }
+
+        fn callOnFinally(self: *Self, ctx: anytype, comptime onFinally: fn (promise: *Self, ctx: @TypeOf(ctx)) anyerror!void) !void {
+            self._lock.lock();
+
+            switch (self._state) {
+                .fulfilled, .rejected => {
+                    self._lock.unlock();
+                    try onFinally(self, ctx);
+                },
+                else => {
+                    self._lock.unlock();
+                },
+            }
+        }
+
+        pub fn then(self: *Self, ctx: anytype, comptime onFulfilled: fn (value: T, ctx: @TypeOf(ctx)) anyerror!void) !void {
+            if (self.isResolved()) {
+                try self.callOnFulfilled(ctx, onFulfilled);
+                return;
+            }
+
+            try self._events.event(ctx, struct {
+                fn cb(this: *Self, ctx_: @TypeOf(ctx)) anyerror!void {
+                    try this.callOnFulfilled(ctx_, onFulfilled);
                 }
             }.cb);
         }
 
-        pub fn catch_(self: *Self, onRejected: fn (reason: anyerror) anyerror!void) !void {
-            try self._events.event(onRejected, struct {
-                fn cb(this: Self, f: @TypeOf(&onRejected)) anyerror!void {
-                    this._lock.lock();
+        pub fn catch_(self: *Self, ctx: anytype, comptime onRejected: fn (reason: anyerror, ctx: @TypeOf(ctx)) anyerror!void) !void {
+            if (self.isResolved()) {
+                try self.callOnRejected(ctx, onRejected);
+                return;
+            }
 
-                    switch (this._state) {
-                        .rejected => {
-                            this._lock.unlock();
-
-                            try f(this._state.rejected);
-                        },
-                        _ => {
-                            this._lock.unlock();
-                        },
-                    }
+            try self._events.event(ctx, struct {
+                fn cb(this: *Self, ctx_: @TypeOf(ctx)) anyerror!void {
+                    try this.callOnRejected(ctx_, onRejected);
                 }
             }.cb);
         }
 
-        pub fn finally(self: *Self, onFinally: fn () anyerror!void) !void {
-            try self._events.event(onFinally, struct {
-                fn cb(this: Self, f: @TypeOf(&onFinally)) anyerror!void {
-                    this._lock.lock();
+        pub fn finally(self: *Self, ctx: anytype, comptime onFinally: fn (promise: *Self, ctx: @TypeOf(ctx)) anyerror!void) !void {
+            if (self.isResolved()) {
+                try self.callOnFinally(ctx, onFinally);
+                return;
+            }
 
-                    switch (this._state) {
-                        .fulfilled, .rejected => {
-                            this._lock.unlock();
-
-                            try f();
-                        },
-                        _ => {
-                            this._lock.unlock();
-                        },
-                    }
+            try self._events.event(ctx, struct {
+                fn cb(this: *Self, ctx_: @TypeOf(ctx)) anyerror!void {
+                    try this.callOnFinally(ctx_, onFinally);
                 }
             }.cb);
         }
@@ -201,7 +235,7 @@ pub fn promise(comptime T: type, callback: fn (resolver: PromiseResolver(T)) any
     return try Promise(T).init(std.testing.allocator, callback);
 }
 
-test "Promise/sleep" {
+test "Promise/resolve" {
     const allocator = std.testing.allocator;
     try init(allocator);
     defer deinit();
@@ -217,18 +251,94 @@ test "Promise/sleep" {
             }.run, .{resolver});
         }
     }.callback);
-    defer sleeper.deinit();
 
-    try sleeper.then(struct {
-        fn onFulfilled(value: *const []const u8) !void {
+    var fulfilled: bool = false;
+    _ = try sleeper.then(&fulfilled, struct {
+        fn onFulfilled(value: *const []const u8, fulfilled_: *bool) !void {
             try std.testing.expectEqualStrings("I'm awake", value.*);
+            fulfilled_.* = true;
         }
     }.onFulfilled);
+
+    var rejected: bool = false;
+    _ = try sleeper.catch_(&rejected, struct {
+        fn onRejected(_: anyerror, rejected_: *bool) !void {
+            rejected_.* = true;
+        }
+    }.onRejected);
+
+    var finally_called: bool = false;
+    _ = try sleeper.finally(&finally_called, struct {
+        fn onFinally(p: *Promise(*const []const u8), finally_called_: *bool) !void {
+            finally_called_.* = true;
+            p.deinit();
+        }
+    }.onFinally);
+
+    try std.testing.expect(!fulfilled);
+    try std.testing.expect(!rejected);
+    try std.testing.expect(!finally_called);
 
     // "event loop"
     for (0..3) |_| {
         std.Thread.sleep(10 * std.time.ns_per_ms);
         try tick();
     }
-    try std.testing.expect(sleeper.isResolved());
+    try std.testing.expect(fulfilled);
+    try std.testing.expect(!rejected);
+    try std.testing.expect(finally_called);
+}
+
+test "Promise/catch" {
+    const allocator = std.testing.allocator;
+    try init(allocator);
+    defer deinit();
+
+    const sleeper = try promise(*const []const u8, struct {
+        fn callback(resolver: PromiseResolver(*const []const u8)) !void {
+            _ = try std.Thread.spawn(.{}, struct {
+                fn run(res: @TypeOf(resolver)) void {
+                    std.Thread.sleep(10 * std.time.ns_per_ms);
+                    var r = res;
+                    r.reject(error.TestError);
+                }
+            }.run, .{resolver});
+        }
+    }.callback);
+
+    var fulfilled: bool = false;
+    try sleeper.then(&fulfilled, struct {
+        fn onFulfilled(_: *const []const u8, fulfilled_: *bool) !void {
+            fulfilled_.* = true;
+        }
+    }.onFulfilled);
+
+    var rejected: bool = false;
+    try sleeper.catch_(&rejected, struct {
+        fn onRejected(reason: anyerror, rejected_: *bool) !void {
+            try std.testing.expectEqual(error.TestError, reason);
+            rejected_.* = true;
+        }
+    }.onRejected);
+
+    var finally_called: bool = false;
+    try sleeper.finally(&finally_called, struct {
+        fn onFinally(p: *Promise(*const []const u8), finally_called_: *bool) !void {
+            finally_called_.* = true;
+            p.deinit();
+        }
+    }.onFinally);
+
+    try std.testing.expect(!fulfilled);
+    try std.testing.expect(!rejected);
+    try std.testing.expect(!finally_called);
+
+    // "event loop"
+    for (0..3) |_| {
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+        try tick();
+    }
+    try std.testing.expect(!fulfilled);
+    try std.testing.expect(rejected);
+    try std.testing.expect(finally_called);
 }
