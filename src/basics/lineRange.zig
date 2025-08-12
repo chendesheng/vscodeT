@@ -63,6 +63,23 @@ pub const LineRange = struct {
         return result.ranges;
     }
 
+    pub const JoinBuilder = struct {
+        result: LineRangeSet,
+        pub fn add(self: *JoinBuilder, lineRanges: []LineRange) LineRangeSet {
+            return self.result.getUnion(LineRangeSet.init(lineRanges));
+        }
+
+        pub fn ranges(self: *JoinBuilder) []LineRange {
+            return self.result.ranges();
+        }
+    };
+
+    pub fn joinBuilder() fn (LineRangeSet, []LineRange) JoinBuilder {
+        return JoinBuilder{
+            .result = LineRangeSet.init(),
+        };
+    }
+
     pub fn joinAll(lineRanges: []LineRange) !LineRange {
         if (lineRanges.len == 0) {
             return error.LineRangesCannotBeEmpty;

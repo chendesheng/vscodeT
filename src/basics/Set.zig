@@ -68,6 +68,10 @@ pub fn Set(comptime T: type) type {
         pub fn count(self: *const Self) usize {
             return self.list.items.len;
         }
+
+        pub fn values(self: *const Self) []T {
+            return self.list.items;
+        }
     };
 }
 
@@ -181,4 +185,15 @@ test "SetWithKey" {
 
     try set.add(TestStruct{ .a = 1, .b = 2 });
     try std.testing.expectEqual(2, set.count());
+}
+
+test "Set values" {
+    var set = Set(u8).init(std.testing.allocator);
+    defer set.deinit();
+
+    try set.add(1);
+    try set.add(2);
+    try set.add(3);
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, set.values());
 }

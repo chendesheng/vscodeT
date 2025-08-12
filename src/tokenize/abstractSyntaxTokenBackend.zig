@@ -24,39 +24,33 @@ pub const AttachedViewAndState = Pair(AttachedView, ?AttachedViewState);
 pub const AttachedViews = struct {
     _onDidChangeVisibleRanges: Emitter(AttachedViewAndState),
     _views: Set(AttachedView),
-    _viewsChanged: Emitter(void),
-    visibleLineRanges: []const LineRange,
+    // use LineRangeSet?
+    visibleLineRanges: ArrayList(LineRange),
 
     pub fn init(allocator: Allocator) AttachedViews {
         return AttachedViews{
             ._onDidChangeVisibleRanges = Emitter(AttachedViewAndState).init(allocator),
             ._views = Set(AttachedView).init(allocator),
-            ._viewsChanged = Emitter(void).init(allocator),
-            .visibleLineRanges = &[_]LineRange{},
+            .visibleLineRanges = ArrayList(LineRange).init(allocator),
         };
     }
 
     pub fn deinit(self: *AttachedViews) void {
         self._onDidChangeVisibleRanges.deinit();
         self._views.deinit();
-        self._viewsChanged.deinit();
     }
 
-    // constructor() {
-    //    this.visibleLineRanges = derivedOpts({
-    //       owner: this,
-    //       equalsFn: itemsEquals(itemEquals())
-    //    }, reader => {
-    //       this._viewsChanged.read(reader);
-    //       const ranges = LineRange.joinMany(
-    //          [...this._views].map(view => view.state.read(reader)?.visibleLineRanges ?? [])
-    //       );
-    //       return ranges;
-    //    });
-    // }
+    fn triggerViewChanged(self: *AttachedViews) void {
+        var builder = LineRange.joinBuilder();
+        for (self._views.values()) |view| {
+            builder.add(view._state.?.visibleLineRanges orelse &[_]LineRange{});
+        }
+        self.visibleLineRanges.items = builder.ranges();
+    }
 
     pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) void) void {
         self._onDidChangeVisibleRanges.event(ctx, callback);
+        self.triggerViewChanged();
     }
 
     pub fn attachView(self: *AttachedViews) AttachedView {
@@ -68,14 +62,13 @@ pub const AttachedViews = struct {
             }.handle,
         };
         self._views.add(view);
-        self._viewsChanged.trigger(null);
+        self.triggerViewChanged();
         return view;
     }
 
     pub fn detachView(self: *AttachedViews, view: AttachedView) void {
         self._views.delete(view);
         self._onDidChangeVisibleRanges.fire(pair(view, null));
-        self._viewsChanged.trigger(null);
     }
 };
 
