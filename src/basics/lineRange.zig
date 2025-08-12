@@ -1,4 +1,5 @@
 const std = @import("std");
+const BoundedArray = std.BoundedArray;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const findFirstIdxMonotonousOrArrLen = @import("./utils.zig").findFirstIdxMonotonousOrArrLen;
@@ -15,8 +16,8 @@ pub const LineRange = struct {
     // The end line number (exclusive).
     endLineNumberExclusive: usize,
 
-    pub fn ofLength(startLineNumber: usize, _length: usize) LineRange {
-        return LineRange.init(startLineNumber, startLineNumber + _length);
+    pub fn ofLength(startLineNumber: usize, length_: usize) LineRange {
+        return LineRange.init(startLineNumber, startLineNumber + length_);
     }
 
     pub fn fromRange(range: Range) LineRange {
@@ -29,26 +30,23 @@ pub const LineRange = struct {
 
     // public static readonly compareByStart: Comparator<LineRange> = compareBy(l => l.startLineNumber, numberComparator);
 
-    pub fn subtract(a: LineRange, b: ?LineRange) []LineRange {
-        if (b == null) {
-            return [_]LineRange{a};
-        }
-        if (a.startLineNumber < b.startLineNumber and b.endLineNumberExclusive < a.endLineNumberExclusive) {
-            return [_]LineRange{
-                LineRange.init(a.startLineNumber, b.startLineNumber),
-                LineRange.init(b.endLineNumberExclusive, a.endLineNumberExclusive),
-            };
-        } else if (b.startLineNumber <= a.startLineNumber and a.endLineNumberExclusive <= b.endLineNumberExclusive) {
-            return [_]LineRange{};
-        } else if (b.endLineNumberExclusive < a.endLineNumberExclusive) {
-            return [_]LineRange{
-                LineRange.init(@max(b.endLineNumberExclusive, a.startLineNumber), a.endLineNumberExclusive),
-            };
+    pub fn subtract(a: LineRange, b_: ?LineRange) BoundedArray(LineRange, 2) {
+        var result = BoundedArray(LineRange, 2).init(0) catch unreachable;
+        if (b_) |b| {
+            if (a.startLineNumber < b.startLineNumber and b.endLineNumberExclusive < a.endLineNumberExclusive) {
+                result.appendAssumeCapacity(.init(a.startLineNumber, b.startLineNumber));
+                result.appendAssumeCapacity(.init(b.endLineNumberExclusive, a.endLineNumberExclusive));
+            } else if (b.startLineNumber <= a.startLineNumber and a.endLineNumberExclusive <= b.endLineNumberExclusive) {
+                //
+            } else if (b.endLineNumberExclusive < a.endLineNumberExclusive) {
+                result.appendAssumeCapacity(.init(@max(b.endLineNumberExclusive, a.startLineNumber), a.endLineNumberExclusive));
+            } else {
+                result.appendAssumeCapacity(.init(a.startLineNumber, @min(b.startLineNumber, a.endLineNumberExclusive)));
+            }
         } else {
-            return [_]LineRange{
-                LineRange.init(a.startLineNumber, @min(b.startLineNumber, a.endLineNumberExclusive)),
-            };
+            result.appendAssumeCapacity(a);
         }
+        return result;
     }
 
     // @param lineRanges An array of arrays of of sorted line ranges.
@@ -196,7 +194,7 @@ pub const LineRange = struct {
     }
 
     // @internal
-    pub fn serialize(self: *LineRange) [2]usize {
+    pub fn serialize(self: *LineRange) ISerializedLineRange {
         return [2]usize{ self.startLineNumber, self.endLineNumberExclusive };
     }
 
@@ -230,6 +228,29 @@ pub const LineRange = struct {
         return LineRange.init(self.startLineNumber - marginTop, self.endLineNumberExclusive + marginBottom);
     }
 };
+
+test "LineRange/inits" {
+    var rg = LineRange.ofLength(1, 10);
+    try std.testing.expectEqual(1, rg.startLineNumber);
+    try std.testing.expectEqual(11, rg.endLineNumberExclusive);
+
+    rg = LineRange.fromRange(Range.init(1, 10, 10, 10));
+    try std.testing.expectEqual(1, rg.startLineNumber);
+    try std.testing.expectEqual(10, rg.endLineNumberExclusive);
+
+    rg = LineRange.fromRangeInclusive(Range.init(1, 10, 10, 10));
+    try std.testing.expectEqual(1, rg.startLineNumber);
+    try std.testing.expectEqual(11, rg.endLineNumberExclusive);
+}
+
+test "LineRange/subtract" {
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{ .init(1, 3), .init(5, 10) }, LineRange.subtract(.init(1, 10), .init(3, 5)).slice());
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{}, LineRange.subtract(.init(5, 10), .init(3, 40)).slice());
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{.init(5, 10)}, LineRange.subtract(.init(5, 10), null).slice());
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{.init(8, 10)}, LineRange.subtract(.init(5, 10), .init(3, 8)).slice());
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{.init(5, 10)}, LineRange.subtract(.init(5, 10), .init(20, 30)).slice());
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{.init(20, 30)}, LineRange.subtract(.init(20, 30), .init(8, 10)).slice());
+}
 
 pub const ISerializedLineRange = [2]usize;
 
