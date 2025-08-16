@@ -131,22 +131,22 @@ pub const LineRange = struct {
     }
 
     // The number of lines this line range spans.
-    pub fn length(self: *LineRange) usize {
+    pub fn length(self: *const LineRange) usize {
         return self.endLineNumberExclusive - self.startLineNumber;
     }
 
     // Creates a line range that combines this and the given line range.
-    pub fn join(self: *LineRange, other: LineRange) LineRange {
+    pub fn join(self: *const LineRange, other: LineRange) LineRange {
         return LineRange.init(@min(self.startLineNumber, other.startLineNumber), @max(self.endLineNumberExclusive, other.endLineNumberExclusive));
     }
 
-    pub fn toString(self: *LineRange, allocator: Allocator) ![]const u8 {
+    pub fn toString(self: *const LineRange, allocator: Allocator) ![]const u8 {
         return std.fmt.allocPrint(allocator, "[{d},{d})", .{ self.startLineNumber, self.endLineNumberExclusive });
     }
 
     // The resulting range is empty if the ranges do not intersect, but touch.
     // If the ranges don't even touch, the result is undefined.
-    pub fn intersect(self: *LineRange, other: LineRange) ?LineRange {
+    pub fn intersect(self: *const LineRange, other: LineRange) ?LineRange {
         const startLineNumber = @max(self.startLineNumber, other.startLineNumber);
         const endLineNumberExclusive = @min(self.endLineNumberExclusive, other.endLineNumberExclusive);
         if (startLineNumber <= endLineNumberExclusive) {
@@ -155,19 +155,19 @@ pub const LineRange = struct {
         return null;
     }
 
-    pub fn intersectsStrict(self: *LineRange, other: LineRange) bool {
+    pub fn intersectsStrict(self: *const LineRange, other: LineRange) bool {
         return self.startLineNumber < other.endLineNumberExclusive and other.startLineNumber < self.endLineNumberExclusive;
     }
 
-    pub fn intersectsOrTouches(self: *LineRange, other: LineRange) bool {
+    pub fn intersectsOrTouches(self: *const LineRange, other: LineRange) bool {
         return self.startLineNumber <= other.endLineNumberExclusive and other.startLineNumber <= self.endLineNumberExclusive;
     }
 
-    pub fn equals(self: *LineRange, other: LineRange) bool {
+    pub fn equals(self: *const LineRange, other: LineRange) bool {
         return self.startLineNumber == other.startLineNumber and self.endLineNumberExclusive == other.endLineNumberExclusive;
     }
 
-    pub fn toInclusiveRange(self: *LineRange) ?LineRange {
+    pub fn toInclusiveRange(self: *const LineRange) ?LineRange {
         if (self.isEmpty()) {
             return null;
         }
@@ -175,11 +175,11 @@ pub const LineRange = struct {
     }
 
     // @deprecated Using this function is discouraged because it might lead to bugs: The end position is not guaranteed to be a valid position!
-    pub fn toExclusiveRange(self: *LineRange) LineRange {
+    pub fn toExclusiveRange(self: *const LineRange) LineRange {
         return LineRange.init(self.startLineNumber, self.endLineNumberExclusive);
     }
 
-    pub fn mapToLineArray(self: *LineRange, comptime T: type, context: anytype, f: fn (lineNumber: usize, ctx: @TypeOf(context)) T) !ArrayList(T) {
+    pub fn mapToLineArray(self: *const LineRange, comptime T: type, context: anytype, f: fn (lineNumber: usize, ctx: @TypeOf(context)) T) !ArrayList(T) {
         var result = ArrayList(T).init(context.allocator);
         for (self.startLineNumber..self.endLineNumberExclusive) |lineNumber| {
             try result.append(f(lineNumber, context));
@@ -187,24 +187,24 @@ pub const LineRange = struct {
         return result;
     }
 
-    pub fn forEach(self: *LineRange, f: fn (lineNumber: usize) void) void {
+    pub fn forEach(self: *const LineRange, f: fn (lineNumber: usize) void) void {
         for (self.startLineNumber..self.endLineNumberExclusive) |lineNumber| {
             f(lineNumber);
         }
     }
 
     // @internal
-    pub fn serialize(self: *LineRange) ISerializedLineRange {
+    pub fn serialize(self: *const LineRange) ISerializedLineRange {
         return [2]usize{ self.startLineNumber, self.endLineNumberExclusive };
     }
 
     // Converts this 1-based line range to a 0-based offset range (subtracts 1!).
     // @internal
-    pub fn toOffsetRange(self: *LineRange) OffsetRange {
+    pub fn toOffsetRange(self: *const LineRange) OffsetRange {
         return OffsetRange.init(self.startLineNumber - 1, self.endLineNumberExclusive - 1);
     }
 
-    pub fn distanceToRange(self: *LineRange, other: LineRange) usize {
+    pub fn distanceToRange(self: *const LineRange, other: LineRange) usize {
         if (self.endLineNumberExclusive <= other.startLineNumber) {
             return other.startLineNumber - self.endLineNumberExclusive;
         }
@@ -214,7 +214,7 @@ pub const LineRange = struct {
         return 0;
     }
 
-    pub fn distanceToLine(self: *LineRange, lineNumber: usize) usize {
+    pub fn distanceToLine(self: *const LineRange, lineNumber: usize) usize {
         if (self.contains(lineNumber)) {
             return 0;
         }
@@ -224,7 +224,7 @@ pub const LineRange = struct {
         return lineNumber - self.endLineNumberExclusive;
     }
 
-    pub fn addMargin(self: *LineRange, marginTop: usize, marginBottom: usize) LineRange {
+    pub fn addMargin(self: *const LineRange, marginTop: usize, marginBottom: usize) LineRange {
         return LineRange.init(self.startLineNumber - marginTop, self.endLineNumberExclusive + marginBottom);
     }
 };
@@ -267,11 +267,21 @@ pub const LineRangeSet = struct {
         };
     }
 
-    pub fn ranges(self: *LineRangeSet) []LineRange {
-        return self._normalizedRanges;
+    pub fn empty(allocator: Allocator) LineRangeSet {
+        return LineRangeSet{
+            ._normalizedRanges = ArrayList(LineRange).init(allocator),
+        };
     }
 
-    pub fn addRange(self: *LineRangeSet, range: LineRange) void {
+    pub fn deinit(self: *LineRangeSet) void {
+        self._normalizedRanges.deinit();
+    }
+
+    pub fn ranges(self: *const LineRangeSet) []const LineRange {
+        return self._normalizedRanges.items;
+    }
+
+    pub fn addRange(self: *LineRangeSet, range: LineRange) !void {
         if (range.length() == 0) {
             return;
         }
@@ -284,17 +294,17 @@ pub const LineRangeSet = struct {
             fn pred(r: LineRange, rg: LineRange) bool {
                 return r.endLineNumberExclusive >= rg.startLineNumber;
             }
-        }.pred);
+        }.pred, 0, self._normalizedRanges.items.len);
         // idx of element after { last element that touches range or that is before range }
-        const joinRangeEndIdxExclusive = findLastIdxMonotonous(LineRange, self._normalizedRanges.items, range, struct {
+        const joinRangeEndIdxExclusive = if (findLastIdxMonotonous(LineRange, self._normalizedRanges.items, range, struct {
             fn pred(r: LineRange, rg: LineRange) bool {
                 return r.startLineNumber <= rg.endLineNumberExclusive;
             }
-        }.pred) + 1;
+        }.pred, 0, self._normalizedRanges.items.len)) |i| i + 1 else 0;
 
         if (joinRangeStartIdx == joinRangeEndIdxExclusive) {
             // If there is no element that touches range, then joinRangeStartIdx === joinRangeEndIdxExclusive and that value is the index of the element after range
-            self._normalizedRanges.insert(joinRangeStartIdx, range);
+            try self._normalizedRanges.insert(joinRangeStartIdx, range);
         } else if (joinRangeStartIdx == joinRangeEndIdxExclusive - 1) {
             // Else, there is an element that touches range and in this case it is both the first and last element. Thus we can replace it
             const joinRange = self._normalizedRanges.items[joinRangeStartIdx];
@@ -302,7 +312,7 @@ pub const LineRangeSet = struct {
         } else {
             // First and last element are different - we need to replace the entire range
             const joinRange = self._normalizedRanges.items[joinRangeStartIdx].join(self._normalizedRanges.items[joinRangeEndIdxExclusive - 1]).join(range);
-            self._normalizedRanges.replaceRange(joinRangeStartIdx, joinRangeEndIdxExclusive - joinRangeStartIdx, &[_]LineRange{joinRange});
+            try self._normalizedRanges.replaceRange(joinRangeStartIdx, joinRangeEndIdxExclusive - joinRangeStartIdx, &[_]LineRange{joinRange});
         }
     }
 
@@ -311,7 +321,7 @@ pub const LineRangeSet = struct {
             fn pred(r: LineRange, n: usize) bool {
                 return r.startLineNumber <= n;
             }
-        }.pred)) |rangeThatStartsBeforeEnd| {
+        }.pred, 0, self._normalizedRanges.items.len)) |rangeThatStartsBeforeEnd| {
             return rangeThatStartsBeforeEnd.endLineNumberExclusive > lineNumber;
         }
         return false;
@@ -322,7 +332,7 @@ pub const LineRangeSet = struct {
             fn pred(r: LineRange, rg: LineRange) bool {
                 return r.startLineNumber < rg.endLineNumberExclusive;
             }
-        }.pred)) |rangeThatStartsBeforeEnd| {
+        }.pred, 0, self._normalizedRanges.items.len)) |rangeThatStartsBeforeEnd| {
             return rangeThatStartsBeforeEnd.endLineNumberExclusive > range.startLineNumber;
         }
         return false;
@@ -387,13 +397,13 @@ pub const LineRangeSet = struct {
             fn pred(r: LineRange, rg: LineRange) bool {
                 return r.endLineNumberExclusive >= rg.startLineNumber;
             }
-        }.pred);
+        }.pred, 0, self._normalizedRanges.items.len);
         // idx of element after { last element that touches range or that is before range }
-        const joinRangeEndIdxExclusive = findLastIdxMonotonous(LineRange, self._normalizedRanges.items, range, struct {
+        const joinRangeEndIdxExclusive = if (findLastIdxMonotonous(LineRange, self._normalizedRanges.items, range, struct {
             fn pred(r: LineRange, rg: LineRange) bool {
                 return r.startLineNumber <= rg.endLineNumberExclusive;
             }
-        }.pred) + 1;
+        }.pred, 0, self._normalizedRanges.items.len)) |i| i + 1 else 0;
 
         if (joinRangeStartIdx == joinRangeEndIdxExclusive) {
             var rgs = ArrayList(LineRange).init(allocator);
@@ -462,3 +472,12 @@ pub const LineRangeSet = struct {
         return LineRangeSet.init(result);
     }
 };
+
+test "LineRangeSet/addRange" {
+    var set = LineRangeSet.empty(std.testing.allocator);
+    defer set.deinit();
+    try set.addRange(.init(1, 10));
+    try set.addRange(.init(100, 200));
+    try set.addRange(.init(50, 70));
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{ .init(1, 10), .init(50, 70), .init(100, 200) }, set.ranges());
+}
