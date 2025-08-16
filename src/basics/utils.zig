@@ -101,16 +101,43 @@ test "findIndex" {
 // Finds the last item where predicate is true using binary search.
 // `predicate` must be monotonous, i.e. `arr.map(predicate)` must be like `[true, ..., true, false, ..., false]`!
 //
-// @returns `undefined` if no item matches, otherwise the last item that matches the predicate.
+// @returns `null` if no item matches, otherwise the last item that matches the predicate.
 pub fn findLastMonotonous(comptime T: type, array: []const T, context: anytype, predicate: fn (T, @TypeOf(context)) bool) ?T {
-    const idx = findLastIdxMonotonous(T, array, context, predicate, 0, array.len);
-    return if (idx == -1) null else array[idx];
+    if (findLastIdxMonotonous(T, array, context, predicate, 0, array.len)) |i| {
+        return array[i];
+    }
+    return null;
+}
+
+test "findLastMonotonous" {
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    const lessThanOrEqual = struct {
+        fn gen(comptime n: usize) fn (i32, _: void) bool {
+            return struct {
+                fn pred(item: i32, _: void) bool {
+                    return item <= n;
+                }
+            }.pred;
+        }
+    }.gen;
+    try std.testing.expectEqual(null, findLastMonotonous(i32, &items, {}, lessThanOrEqual(0)));
+    try std.testing.expectEqual(1, findLastMonotonous(i32, &items, {}, lessThanOrEqual(1)));
+    try std.testing.expectEqual(2, findLastMonotonous(i32, &items, {}, lessThanOrEqual(2)));
+    try std.testing.expectEqual(3, findLastMonotonous(i32, &items, {}, lessThanOrEqual(3)));
+    try std.testing.expectEqual(4, findLastMonotonous(i32, &items, {}, lessThanOrEqual(4)));
+    try std.testing.expectEqual(5, findLastMonotonous(i32, &items, {}, lessThanOrEqual(5)));
+    try std.testing.expectEqual(6, findLastMonotonous(i32, &items, {}, lessThanOrEqual(6)));
+    try std.testing.expectEqual(7, findLastMonotonous(i32, &items, {}, lessThanOrEqual(7)));
+    try std.testing.expectEqual(8, findLastMonotonous(i32, &items, {}, lessThanOrEqual(8)));
+    try std.testing.expectEqual(9, findLastMonotonous(i32, &items, {}, lessThanOrEqual(9)));
+    try std.testing.expectEqual(10, findLastMonotonous(i32, &items, {}, lessThanOrEqual(10)));
+    try std.testing.expectEqual(10, findLastMonotonous(i32, &items, {}, lessThanOrEqual(11)));
 }
 
 // Finds the last item where predicate is true using binary search.
 // `predicate` must be monotonous, i.e. `arr.map(predicate)` must be like `[true, ..., true, false, ..., false]`!
 // @returns `startIdx - 1` if predicate is false for all items, otherwise the index of the last item that matches the predicate.
-pub fn findLastIdxMonotonous(comptime T: type, array: []const T, context: anytype, predicate: fn (T, @TypeOf(context)) bool, startIdx: usize, endIdxEx: usize) usize {
+pub fn findLastIdxMonotonous(comptime T: type, array: []const T, context: anytype, predicate: fn (T, @TypeOf(context)) bool, startIdx: usize, endIdxEx: usize) ?usize {
     var i = startIdx;
     var j = endIdxEx;
     while (i < j) {
@@ -121,13 +148,39 @@ pub fn findLastIdxMonotonous(comptime T: type, array: []const T, context: anytyp
             j = k;
         }
     }
-    return i - 1;
+    if (i >= 1) return i - 1;
+    return null;
+}
+
+test "findLastIdxMonotonous" {
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    const lessThanOrEqual = struct {
+        fn gen(comptime n: usize) fn (i32, _: void) bool {
+            return struct {
+                fn pred(item: i32, _: void) bool {
+                    return item <= n;
+                }
+            }.pred;
+        }
+    }.gen;
+    try std.testing.expectEqual(null, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(0), 0, items.len));
+    try std.testing.expectEqual(0, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(1), 0, items.len));
+    try std.testing.expectEqual(1, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(2), 0, items.len));
+    try std.testing.expectEqual(2, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(3), 0, items.len));
+    try std.testing.expectEqual(3, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(4), 0, items.len));
+    try std.testing.expectEqual(4, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(5), 0, items.len));
+    try std.testing.expectEqual(5, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(6), 2, items.len));
+    try std.testing.expectEqual(6, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(7), 0, items.len));
+    try std.testing.expectEqual(7, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(8), 0, items.len));
+    try std.testing.expectEqual(8, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(9), 0, items.len));
+    try std.testing.expectEqual(9, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(10), 0, items.len));
+    try std.testing.expectEqual(9, findLastIdxMonotonous(i32, &items, {}, lessThanOrEqual(11), 0, items.len));
 }
 
 // Finds the first item where predicate is true using binary search.
 // `predicate` must be monotonous, i.e. `arr.map(predicate)` must be like `[false, ..., false, true, ..., true]`!
 // @returns `endIdxEx` if predicate is false for all items, otherwise the index of the first item that matches the predicate.
-pub fn findFirstIdxMonotonousOrArrLen(comptime T: type, array: []T, context: anytype, predicate: fn (T, @TypeOf(context)) bool, startIdx: usize, endIdxEx: usize) usize {
+pub fn findFirstIdxMonotonousOrArrLen(comptime T: type, array: []const T, context: anytype, predicate: fn (T, @TypeOf(context)) bool, startIdx: usize, endIdxEx: usize) usize {
     var i = startIdx;
     var j = endIdxEx;
     while (i < j) {
@@ -139,6 +192,32 @@ pub fn findFirstIdxMonotonousOrArrLen(comptime T: type, array: []T, context: any
         }
     }
     return i;
+}
+
+test "findFirstIdxMonotonousOrArrLen" {
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    const greaterThanOrEqual = struct {
+        fn gen(comptime n: usize) fn (i32, _: void) bool {
+            return struct {
+                fn pred(item: i32, _: void) bool {
+                    return item >= n;
+                }
+            }.pred;
+        }
+    }.gen;
+    try std.testing.expectEqual(0, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(0), 0, items.len));
+    try std.testing.expectEqual(0, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(1), 0, items.len));
+    try std.testing.expectEqual(1, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(2), 0, items.len));
+    try std.testing.expectEqual(2, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(3), 0, items.len));
+    try std.testing.expectEqual(3, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(4), 0, items.len));
+    try std.testing.expectEqual(4, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(5), 0, items.len));
+    try std.testing.expectEqual(5, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(6), 2, items.len));
+    try std.testing.expectEqual(6, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(7), 0, items.len));
+    try std.testing.expectEqual(7, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(8), 0, items.len));
+    try std.testing.expectEqual(8, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(9), 0, items.len));
+    try std.testing.expectEqual(9, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(10), 0, items.len));
+    try std.testing.expectEqual(10, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(11), 0, items.len));
+    try std.testing.expectEqual(10, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(12), 0, items.len));
 }
 
 // Word inside a model.
