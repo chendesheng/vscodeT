@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = std.io;
 const BoundedArray = std.BoundedArray;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
@@ -63,18 +64,22 @@ pub const LineRange = struct {
 
     pub const JoinBuilder = struct {
         result: LineRangeSet,
-        pub fn add(self: *JoinBuilder, lineRanges: []LineRange) LineRangeSet {
-            return self.result.getUnion(LineRangeSet.init(lineRanges));
+        allocator: Allocator,
+        pub fn add(self: *JoinBuilder, lineRanges: []LineRange) !void {
+            for (lineRanges) |lineRange| {
+                try self.result.addRange(lineRange);
+            }
         }
 
-        pub fn ranges(self: *JoinBuilder) []LineRange {
-            return self.result.ranges();
+        pub fn ranges(self: *JoinBuilder) LineRangeSet {
+            return self.result;
         }
     };
 
-    pub fn joinBuilder() fn (LineRangeSet, []LineRange) JoinBuilder {
+    pub fn joinBuilder(allocator: Allocator) JoinBuilder {
         return JoinBuilder{
-            .result = LineRangeSet.init(),
+            .result = LineRangeSet.empty(allocator),
+            .allocator = allocator,
         };
     }
 
@@ -140,8 +145,8 @@ pub const LineRange = struct {
         return LineRange.init(@min(self.startLineNumber, other.startLineNumber), @max(self.endLineNumberExclusive, other.endLineNumberExclusive));
     }
 
-    pub fn toString(self: *const LineRange, allocator: Allocator) ![]const u8 {
-        return std.fmt.allocPrint(allocator, "[{d},{d})", .{ self.startLineNumber, self.endLineNumberExclusive });
+    pub fn toString(self: *const LineRange, writer: io.AnyWriter) !void {
+        try writer.print("[{d},{d})", .{ self.startLineNumber, self.endLineNumberExclusive });
     }
 
     // The resulting range is empty if the ranges do not intersect, but touch.
@@ -321,7 +326,7 @@ pub const LineRangeSet = struct {
             fn pred(r: LineRange, n: usize) bool {
                 return r.startLineNumber <= n;
             }
-        }.pred, 0, self._normalizedRanges.items.len)) |rangeThatStartsBeforeEnd| {
+        }.pred)) |rangeThatStartsBeforeEnd| {
             return rangeThatStartsBeforeEnd.endLineNumberExclusive > lineNumber;
         }
         return false;
@@ -332,13 +337,13 @@ pub const LineRangeSet = struct {
             fn pred(r: LineRange, rg: LineRange) bool {
                 return r.startLineNumber < rg.endLineNumberExclusive;
             }
-        }.pred, 0, self._normalizedRanges.items.len)) |rangeThatStartsBeforeEnd| {
+        }.pred)) |rangeThatStartsBeforeEnd| {
             return rangeThatStartsBeforeEnd.endLineNumberExclusive > range.startLineNumber;
         }
         return false;
     }
 
-    pub fn getUnion(self: *LineRangeSet, other: LineRangeSet) !LineRangeSet {
+    pub fn getUnion(self: *const LineRangeSet, other: LineRangeSet) !LineRangeSet {
         if (self._normalizedRanges.items.len == 0) {
             return other;
         }
@@ -351,46 +356,46 @@ pub const LineRangeSet = struct {
         var i_2: usize = 0;
         var current: ?LineRange = null;
         while (i_1 < self._normalizedRanges.items.len or i_2 < other._normalizedRanges.items.len) {
-            var next: ?LineRange = null;
+            var next: LineRange = undefined;
             if (i_1 < self._normalizedRanges.items.len and i_2 < other._normalizedRanges.items.len) {
                 const lineRange1 = self._normalizedRanges.items[i_1];
                 const lineRange2 = other._normalizedRanges.items[i_2];
                 if (lineRange1.startLineNumber < lineRange2.startLineNumber) {
-                    next = &lineRange1;
+                    next = lineRange1;
                     i_1 += 1;
                 } else {
-                    next = &lineRange2;
+                    next = lineRange2;
                     i_2 += 1;
                 }
             } else if (i_1 < self._normalizedRanges.items.len) {
-                next = &self._normalizedRanges.items[i_1];
+                next = self._normalizedRanges.items[i_1];
                 i_1 += 1;
             } else {
-                next = &other._normalizedRanges.items[i_2];
+                next = other._normalizedRanges.items[i_2];
                 i_2 += 1;
             }
 
-            if (current == null) {
-                current = next;
-            } else {
-                if (current.endLineNumberExclusive >= next.startLineNumber) {
+            if (current) |current_| {
+                if (current_.endLineNumberExclusive >= next.startLineNumber) {
                     // merge
-                    current = LineRange.init(current.startLineNumber, @max(current.endLineNumberExclusive, next.endLineNumberExclusive));
+                    current = LineRange.init(current_.startLineNumber, @max(current_.endLineNumberExclusive, next.endLineNumberExclusive));
                 } else {
                     // push
-                    try result.append(current);
+                    try result.append(current_);
                     current = next;
                 }
+            } else {
+                current = next;
             }
         }
-        if (current != null) {
-            try result.append(current);
+        if (current) |current_| {
+            try result.append(current_);
         }
         return LineRangeSet.init(result);
     }
 
     // Subtracts all ranges in this set from `range` and returns the result.
-    pub fn subtractFrom(self: *LineRangeSet, range: LineRange) !LineRangeSet {
+    pub fn subtractFrom(self: *const LineRangeSet, range: LineRange) !LineRangeSet {
         const allocator = self._normalizedRanges.allocator;
         // idx of first element that touches range or that is after range
         const joinRangeStartIdx = findFirstIdxMonotonousOrArrLen(LineRange, self._normalizedRanges.items, range, struct {
@@ -427,17 +432,16 @@ pub const LineRangeSet = struct {
         return LineRangeSet.init(result);
     }
 
-    pub fn toString(self: *LineRangeSet) []const u8 {
-        const allocator = self._normalizedRanges.allocator;
-        // var buf: [1024]u8 = undefined;
-        var result = std.ArrayList(u8).init(allocator);
-        for (self._normalizedRanges.items) |r| {
-            try result.append(try r.toString(allocator));
+    pub fn toString(self: *const LineRangeSet, writer: io.AnyWriter) !void {
+        for (self._normalizedRanges.items, 0..) |r, i| {
+            try r.toString(writer);
+            if (i < self._normalizedRanges.items.len - 1) {
+                try writer.print(", ", .{});
+            }
         }
-        return result.items;
     }
 
-    pub fn getIntersection(self: *LineRangeSet, other: LineRangeSet) !LineRangeSet {
+    pub fn getIntersection(self: *const LineRangeSet, other: LineRangeSet) !LineRangeSet {
         const allocator = self._normalizedRanges.allocator;
         var result = ArrayList(LineRange).init(allocator);
 
@@ -463,7 +467,7 @@ pub const LineRangeSet = struct {
         return LineRangeSet.init(result);
     }
 
-    pub fn getWithDelta(self: *LineRangeSet, value: usize) !LineRangeSet {
+    pub fn getWithDelta(self: *const LineRangeSet, value: usize) !LineRangeSet {
         const allocator = self._normalizedRanges.allocator;
         var result = ArrayList(LineRange).init(allocator);
         for (self._normalizedRanges.items) |r| {
@@ -477,7 +481,100 @@ test "LineRangeSet/addRange" {
     var set = LineRangeSet.empty(std.testing.allocator);
     defer set.deinit();
     try set.addRange(.init(1, 10));
+    try set.addRange(.init(9, 11));
+    try set.addRange(.init(11, 12));
     try set.addRange(.init(100, 200));
     try set.addRange(.init(50, 70));
-    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{ .init(1, 10), .init(50, 70), .init(100, 200) }, set.ranges());
+    try set.addRange(.init(30, 60));
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{ .init(1, 12), .init(30, 70), .init(100, 200) }, set.ranges());
+}
+
+test "LineRangeSet/contains" {
+    var set = LineRangeSet.empty(std.testing.allocator);
+    defer set.deinit();
+    try set.addRange(.init(1, 10));
+    try set.addRange(.init(100, 110));
+    for (1..10) |i| {
+        try std.testing.expect(set.contains(i));
+    }
+    try std.testing.expect(!set.contains(10));
+    for (100..110) |i| {
+        try std.testing.expect(set.contains(i));
+    }
+    try std.testing.expect(!set.contains(110));
+}
+
+test "LineRangeSet/intersects" {
+    var set = LineRangeSet.empty(std.testing.allocator);
+    defer set.deinit();
+    try set.addRange(.init(1, 10));
+    try set.addRange(.init(100, 200));
+    try std.testing.expect(set.intersects(.init(8, 10)));
+    try std.testing.expect(!set.intersects(.init(10, 12)));
+    try std.testing.expect(!set.intersects(.init(10, 100)));
+}
+
+test "LineRangeSet/getUnion" {
+    var set = LineRangeSet.empty(std.testing.allocator);
+    defer set.deinit();
+    try set.addRange(.init(1, 10));
+    try set.addRange(.init(100, 200));
+
+    var set2 = LineRangeSet.empty(std.testing.allocator);
+    defer set2.deinit();
+    try set2.addRange(.init(10, 100));
+
+    var unioned = try set.getUnion(set2);
+    defer unioned.deinit();
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{.init(1, 200)}, unioned.ranges());
+}
+
+test "LineRangeSet/subtractFrom" {
+    var set = LineRangeSet.empty(std.testing.allocator);
+    defer set.deinit();
+    try set.addRange(.init(1, 10));
+    try set.addRange(.init(100, 200));
+
+    var subtracted = try set.subtractFrom(.init(1, 300));
+    defer subtracted.deinit();
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{ .init(10, 100), .init(200, 300) }, subtracted.ranges());
+}
+
+test "LineRangeSet/toString" {
+    var set = LineRangeSet.empty(std.testing.allocator);
+    defer set.deinit();
+    try set.addRange(.init(1, 10));
+    try set.addRange(.init(100, 200));
+
+    var buf: [1024]u8 = undefined;
+    var stream = io.fixedBufferStream(&buf);
+    try set.toString(stream.writer().any());
+    try std.testing.expectEqualStrings("[1,10), [100,200)", stream.getWritten());
+}
+
+test "LineRangeSet/getIntersection" {
+    var set = LineRangeSet.empty(std.testing.allocator);
+    defer set.deinit();
+    try set.addRange(.init(1, 10));
+    try set.addRange(.init(100, 200));
+
+    var set2 = LineRangeSet.empty(std.testing.allocator);
+    defer set2.deinit();
+    try set2.addRange(.init(5, 15));
+
+    try set2.addRange(.init(80, 120));
+    var intersection = try set.getIntersection(set2);
+    defer intersection.deinit();
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{ .init(5, 10), .init(100, 120) }, intersection.ranges());
+}
+
+test "LineRangeSet/getWithDelta" {
+    var set = LineRangeSet.empty(std.testing.allocator);
+    defer set.deinit();
+    try set.addRange(.init(1, 10));
+    try set.addRange(.init(100, 200));
+
+    var withDelta = try set.getWithDelta(10);
+    defer withDelta.deinit();
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{ .init(11, 20), .init(110, 210) }, withDelta.ranges());
 }
