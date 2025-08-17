@@ -8,6 +8,7 @@ const Emitter = @import("../basics/event.zig").Emitter;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const ModelContentChangedEvent = @import("../textModelEvents.zig").ModelContentChangedEvent;
 const LineRange = @import("../basics/lineRange.zig").LineRange;
+const LineRangeSet = @import("../basics/lineRange.zig").LineRangeSet;
 const Set = @import("../basics/set.zig").Set;
 const Pair = @import("../basics/utils.zig").Pair;
 const pair = @import("../basics/utils.zig").pair;
@@ -24,7 +25,6 @@ pub const AttachedViewAndState = Pair(AttachedView, ?AttachedViewState);
 pub const AttachedViews = struct {
     _onDidChangeVisibleRanges: Emitter(AttachedViewAndState),
     _views: Set(AttachedView),
-    // use LineRangeSet?
     visibleLineRanges: ArrayList(LineRange),
 
     pub fn init(allocator: Allocator) AttachedViews {
@@ -40,20 +40,28 @@ pub const AttachedViews = struct {
         self._views.deinit();
     }
 
-    fn triggerViewChanged(self: *AttachedViews) void {
-        var builder = LineRange.joinBuilder();
+    fn triggerViewChanged(self: *AttachedViews) !void {
+        var set = LineRangeSet.empty(self.visibleLineRanges.allocator);
+        defer set.deinit();
+
         for (self._views.values()) |view| {
-            builder.add(view._state.?.visibleLineRanges orelse &[_]LineRange{});
+            if (view._state) |state| {
+                for (state.visibleLineRanges) |lineRange| {
+                    try set.addRange(lineRange);
+                }
+            }
         }
-        self.visibleLineRanges.items = builder.ranges();
+
+        self.visibleLineRanges.clearRetainingCapacity();
+        try self.visibleLineRanges.appendSlice(set.ranges());
     }
 
-    pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) void) void {
+    pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) void) !void {
         self._onDidChangeVisibleRanges.event(ctx, callback);
-        self.triggerViewChanged();
+        try self.triggerViewChanged();
     }
 
-    pub fn attachView(self: *AttachedViews) AttachedView {
+    pub fn attachView(self: *AttachedViews) !AttachedView {
         const view = AttachedView{
             .handleStateChange = struct {
                 fn handle(view: AttachedView, state: AttachedViewState) void {
@@ -61,14 +69,15 @@ pub const AttachedViews = struct {
                 }
             }.handle,
         };
-        self._views.add(view);
-        self.triggerViewChanged();
+        try self._views.add(view);
+        try self.triggerViewChanged();
         return view;
     }
 
-    pub fn detachView(self: *AttachedViews, view: AttachedView) void {
+    pub fn detachView(self: *AttachedViews, view: AttachedView) !void {
         self._views.delete(view);
-        self._onDidChangeVisibleRanges.fire(pair(view, null));
+        try self._onDidChangeVisibleRanges.fire(pair(view, null));
+        try self.triggerViewChanged();
     }
 };
 
