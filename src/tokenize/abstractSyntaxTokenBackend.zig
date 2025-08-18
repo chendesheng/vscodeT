@@ -37,6 +37,9 @@ pub const AttachedViews = struct {
 
     pub fn deinit(self: *AttachedViews) void {
         self._onDidChangeVisibleRanges.deinit();
+        for (self._views.values()) |view| {
+            view.deinit();
+        }
         self._views.deinit();
     }
 
@@ -62,13 +65,11 @@ pub const AttachedViews = struct {
     }
 
     pub fn attachView(self: *AttachedViews) !AttachedView {
-        const view = AttachedView{
-            .handleStateChange = struct {
-                fn handle(view: AttachedView, state: AttachedViewState) void {
-                    self._onDidChangeVisibleRanges.fire(pair(view, state));
-                }
-            }.handle,
-        };
+        const view = AttachedView.init(struct {
+            fn handle(view: AttachedView, state: AttachedViewState) void {
+                self._onDidChangeVisibleRanges.fire(pair(view, state));
+            }
+        }.handle);
         try self._views.add(view);
         try self.triggerViewChanged();
         return view;
@@ -95,14 +96,22 @@ fn lineRangeSliceEquals(a: []const LineRange, b: []const LineRange) bool {
 
 // @internal
 pub const AttachedViewState = struct {
-    visibleLineRanges: []const LineRange,
+    visibleLineRanges: ArrayList(LineRange),
     stabilized: bool,
+
+    pub fn init(visibleLineRanges: ArrayList(LineRange), stabilized: bool) AttachedViewState {
+        return AttachedViewState{ .visibleLineRanges = visibleLineRanges, .stabilized = stabilized };
+    }
+
+    pub fn deinit(self: *AttachedViewState) void {
+        self.visibleLineRanges.deinit();
+    }
 
     pub fn equals(self: AttachedViewState, other: AttachedViewState) bool {
         if (self == other) {
             return true;
         }
-        if (!lineRangeSliceEquals(self.visibleLineRanges, other.visibleLineRanges)) {
+        if (!lineRangeSliceEquals(self.visibleLineRanges.items, other.visibleLineRanges.items)) {
             return false;
         }
         if (self.stabilized != other.stabilized) {
@@ -116,15 +125,31 @@ pub const AttachedView = struct {
     _state: ?AttachedViewState,
     handleStateChange: fn (self: AttachedView, state: AttachedViewState) void,
 
-    pub fn setVisibleLines(self: *AttachedView, visibleLines: []const struct { startLineNumber: usize, endLineNumber: usize }, stabilized: bool) !void {
-        const allocator = std.testing.allocator; // FIXME: use a real allocator
-        const visibleLineRanges = ArrayList(LineRange).init(allocator);
-        defer visibleLineRanges.deinit();
+    pub fn init(handleStateChange: fn (self: AttachedView, state: AttachedViewState) void) AttachedView {
+        return AttachedView{
+            ._state = null,
+            .handleStateChange = handleStateChange,
+        };
+    }
+
+    pub fn deinit(self: *AttachedView) void {
+        if (self._state) |state| {
+            state.deinit();
+        }
+    }
+
+    pub fn setVisibleLines(self: *AttachedView, allocator: Allocator, visibleLines: []const struct { startLineNumber: usize, endLineNumber: usize }, stabilized: bool) !void {
+        var visibleLineRanges = ArrayList(LineRange).init(allocator);
         for (visibleLines) |line| {
             try visibleLineRanges.append(LineRange.init(line.startLineNumber, line.endLineNumber + 1));
         }
 
-        const state = AttachedViewState{ .visibleLineRanges = visibleLineRanges.items, .stabilized = stabilized };
+        if (self._state) |state| {
+            state.deinit();
+            self._state = null;
+        }
+
+        const state = AttachedViewState.init(visibleLineRanges, stabilized);
         self._state = state;
         self.handleStateChange(self.*, state);
     }
@@ -152,7 +177,7 @@ pub const AttachedViewHandler = struct {
     }
 
     pub fn handleStateChange(self: *AttachedViewHandler, state: AttachedViewState) void {
-        self._lineRanges = state.visibleLineRanges;
+        self._lineRanges = state.visibleLineRanges.items;
         if (state.stabilized) {
             self.update();
         }
