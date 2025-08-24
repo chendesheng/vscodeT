@@ -149,17 +149,17 @@ pub const TokenizationTextModelPart = struct {
             }
         }
 
-        self.tokens.get().handleDidChangeContent(e);
+        self.tokens.handleDidChangeContent(e);
     }
 
     pub fn handleDidChangeAttached(self: *TokenizationTextModelPart) void {
-        self.tokens.get().handleDidChangeAttached();
+        self.tokens.handleDidChangeAttached();
     }
 
     // Includes grammar and semantic tokens.
     pub fn getLineTokens(self: *TokenizationTextModelPart, lineNumber: usize) LineTokens {
         self.validateLineNumber(lineNumber);
-        const syntacticTokens = self.tokens.get().getLineTokens(lineNumber);
+        const syntacticTokens = self.tokens.getLineTokens(lineNumber);
         return self._semanticTokens.addSparseTokens(lineNumber, syntacticTokens);
     }
 
@@ -179,43 +179,43 @@ pub const TokenizationTextModelPart = struct {
     }
 
     pub fn getHasTokens(self: *TokenizationTextModelPart) bool {
-        return self.tokens.get().getHasTokens();
+        return self.tokens.getHasTokens();
     }
 
     pub fn resetTokenization(self: *TokenizationTextModelPart) void {
-        self.tokens.get().todo_resetTokenization();
+        self.tokens.todo_resetTokenization();
     }
 
     pub fn getBackgroundTokenizationState(self: *TokenizationTextModelPart) BackgroundTokenizationState {
-        return self.tokens.get().getBackgroundTokenizationState();
+        return self.tokens.getBackgroundTokenizationState();
     }
 
     pub fn forceTokenization(self: *TokenizationTextModelPart, lineNumber: usize) void {
         self.validateLineNumber(lineNumber);
-        self.tokens.get().forceTokenization(lineNumber);
+        self.tokens.forceTokenization(lineNumber);
     }
 
     pub fn hasAccurateTokensForLine(self: *TokenizationTextModelPart, lineNumber: usize) bool {
         self.validateLineNumber(lineNumber);
-        return self.tokens.get().hasAccurateTokensForLine(lineNumber);
+        return self.tokens.hasAccurateTokensForLine(lineNumber);
     }
 
     pub fn isCheapToTokenize(self: *TokenizationTextModelPart, lineNumber: usize) bool {
         self.validateLineNumber(lineNumber);
-        return self.tokens.get().isCheapToTokenize(lineNumber);
+        return self.tokens.isCheapToTokenize(lineNumber);
     }
 
     pub fn tokenizeIfCheap(self: *TokenizationTextModelPart, lineNumber: usize) void {
         self.validateLineNumber(lineNumber);
-        self.tokens.get().tokenizeIfCheap(lineNumber);
+        self.tokens.tokenizeIfCheap(lineNumber);
     }
 
     pub fn getTokenTypeIfInsertingCharacter(self: *TokenizationTextModelPart, lineNumber: usize, column: usize, character: []const u8) StandardTokenType {
-        return self.tokens.get().getTokenTypeIfInsertingCharacter(lineNumber, column, character);
+        return self.tokens.getTokenTypeIfInsertingCharacter(lineNumber, column, character);
     }
 
     pub fn tokenizeLinesAt(self: *TokenizationTextModelPart, lineNumber: usize, lines: []const []const u8) ?[]LineTokens {
-        return self.tokens.get().tokenizeLinesAt(lineNumber, lines);
+        return self.tokens.tokenizeLinesAt(lineNumber, lines);
     }
 
     // #endregion

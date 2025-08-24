@@ -6,6 +6,7 @@ const ITokenizationSupport = @import("../languages.zig").ITokenizationSupport;
 const TokenizationSupportChangedEvent = @import("../languages.zig").TokenizationSupportChangedEvent;
 const Color = @import("../basics/color.zig").Color;
 const getKeys = @import("../basics/utils.zig").getKeys;
+const LazyTokenizationSupport = @import("../languages.zig").LazyTokenizationSupport;
 
 pub const TokenizationRegistry = struct {
     _tokenizationSupports: StringHashMap(ITokenizationSupport),
@@ -118,7 +119,7 @@ pub const TokenizationRegistry = struct {
 pub const TokenizationSupportFactoryData = struct {
     _registry: *TokenizationRegistry,
     _languageId: []const u8,
-    _factory: ITokenizationSupport,
+    _factory: LazyTokenizationSupport,
 
     _isDisposed: bool = false,
     _resolvePromise: ?std.Promise(void) = null,
@@ -155,10 +156,11 @@ pub const TokenizationSupportFactoryData = struct {
     }
 
     fn _create(self: *TokenizationSupportFactoryData) !void {
-        const value = try self._factory.tokenizationSupport;
         self._isResolved = true;
-        if (value != null and !self._isDisposed) {
-            try self._registry.register(self._languageId, value);
+        if (self._factory.getTokenizationSupport()) |tokenizationSupport| {
+            if (!self._isDisposed) {
+                try self._registry.register(self._languageId, tokenizationSupport);
+            }
         }
     }
 };

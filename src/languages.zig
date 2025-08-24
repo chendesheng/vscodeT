@@ -173,3 +173,31 @@ pub const IState = struct {
     clone: fn () IState,
     equals: fn (other: IState) bool,
 };
+
+// @internal
+pub const LazyTokenizationSupport = struct {
+    _tokenizationSupport: ?ITokenizationSupport,
+
+    createSupport: fn () ?ITokenizationSupport,
+
+    pub fn init(createSupport: fn () ?ITokenizationSupport) LazyTokenizationSupport {
+        return LazyTokenizationSupport{
+            ._tokenizationSupport = null,
+            .createSupport = createSupport,
+        };
+    }
+
+    // pub fn dispose(self: *LazyTokenizationSupport) void {
+    //     if (self._tokenizationSupport) |tokenizationSupport| {
+    //         tokenizationSupport.dispose();
+    //     }
+    // }
+
+    pub fn getTokenizationSupport(self: *LazyTokenizationSupport) ?ITokenizationSupport {
+        if (self._tokenizationSupport) |tokenizationSupport| {
+            return tokenizationSupport;
+        }
+        self._tokenizationSupport = self.createSupport();
+        return self._tokenizationSupport;
+    }
+};

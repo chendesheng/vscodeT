@@ -192,11 +192,10 @@ pub const AbstractSyntaxTokenBackend = struct {
     _onDidChangeBackgroundTokenizationState: Emitter(void),
     _onDidChangeTokens: Emitter(ModelTokensChangedEvent),
 
-    todo_resetTokenization: fn (fireTokenChangeEvent: ?bool) void,
-    handleDidChangeAttached: fn () void,
-    handleDidChangeContent: fn (e: ModelContentChangedEvent) void,
+    // handleDidChangeAttached: fn () void,
+    // handleDidChangeContent: fn (e: ModelContentChangedEvent) void,
     forceTokenization: fn (lineNumber: usize) void,
-    hasAccurateTokensForLine: fn (lineNumber: usize) bool,
+    // hasAccurateTokensForLine: fn (lineNumber: usize) bool,
     isCheapToTokenize: fn (lineNumber: usize) bool,
 
     getLineTokens: fn (lineNumber: usize) LineTokens,
@@ -213,6 +212,8 @@ pub const AbstractSyntaxTokenBackend = struct {
             ._backgroundTokenizationState = backgroundTokenizationState,
             ._languageIdCodec = languageIdCodec,
             ._textModel = textModel,
+            ._onDidChangeBackgroundTokenizationState = Emitter(void).init(),
+            ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(),
         };
     }
 
