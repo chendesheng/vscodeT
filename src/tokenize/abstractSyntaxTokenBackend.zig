@@ -37,9 +37,9 @@ pub const AttachedViews = struct {
 
     pub fn deinit(self: *AttachedViews) void {
         self._onDidChangeVisibleRanges.deinit();
-        for (self._views.values()) |view| {
-            view.deinit();
-        }
+        // for (self._views.values()) |*view| {
+        //     view.deinit();
+        // }
         self._views.deinit();
     }
 
@@ -59,14 +59,14 @@ pub const AttachedViews = struct {
         try self.visibleLineRanges.appendSlice(set.ranges());
     }
 
-    pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) void) !void {
+    pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: *const fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) void) !void {
         self._onDidChangeVisibleRanges.event(ctx, callback);
         try self.triggerViewChanged();
     }
 
     pub fn attachView(self: *AttachedViews) !AttachedView {
         const view = AttachedView.init(struct {
-            fn handle(view: AttachedView, state: AttachedViewState) void {
+            fn handle(view: *AttachedView, state: AttachedViewState) void {
                 self._onDidChangeVisibleRanges.fire(pair(view, state));
             }
         }.handle);
@@ -123,9 +123,9 @@ pub const AttachedViewState = struct {
 
 pub const AttachedView = struct {
     _state: ?AttachedViewState,
-    handleStateChange: fn (self: AttachedView, state: AttachedViewState) void,
+    handleStateChange: *const fn (self: *AttachedView, state: AttachedViewState) void,
 
-    pub fn init(handleStateChange: fn (self: AttachedView, state: AttachedViewState) void) AttachedView {
+    pub fn init(handleStateChange: *const fn (self: *AttachedView, state: AttachedViewState) void) AttachedView {
         return AttachedView{
             ._state = null,
             .handleStateChange = handleStateChange,
@@ -158,9 +158,9 @@ pub const AttachedView = struct {
 pub const AttachedViewHandler = struct {
     _computedLineRanges: []LineRange,
     _lineRanges: []LineRange,
-    refreshTokens: fn (AttachedViewHandler) void,
+    refreshTokens: *const fn (AttachedViewHandler) void,
 
-    pub fn init(refreshTokens: fn (AttachedViewHandler) void) AttachedViewHandler {
+    pub fn init(refreshTokens: *const fn (AttachedViewHandler) void) AttachedViewHandler {
         return AttachedViewHandler{
             ._computedLineRanges = &[_]LineRange{},
             ._lineRanges = &[_]LineRange{},
@@ -187,34 +187,45 @@ pub const AttachedViewHandler = struct {
 pub const AbstractSyntaxTokenBackend = struct {
     _backgroundTokenizationState: BackgroundTokenizationState,
     _languageIdCodec: LanguageIdCodec,
-    _textModel: TextModel,
+    _textModel: *anyopaque,
 
     _onDidChangeBackgroundTokenizationState: Emitter(void),
     _onDidChangeTokens: Emitter(ModelTokensChangedEvent),
 
     // handleDidChangeAttached: fn () void,
     // handleDidChangeContent: fn (e: ModelContentChangedEvent) void,
-    forceTokenization: fn (lineNumber: usize) void,
+    forceTokenization: *const fn (lineNumber: usize) void,
     // hasAccurateTokensForLine: fn (lineNumber: usize) bool,
-    isCheapToTokenize: fn (lineNumber: usize) bool,
+    isCheapToTokenize: *const fn (lineNumber: usize) bool,
 
-    getLineTokens: fn (lineNumber: usize) LineTokens,
-    getTokenTypeIfInsertingCharacter: fn (lineNumber: usize, column: usize, character: []const u8) StandardTokenType,
-    tokenizeLinesAt: fn (lineNumber: usize, lines: []const []const u8) ?[]LineTokens,
-    hasTokens: fn () bool,
+    getLineTokens: *const fn (lineNumber: usize) LineTokens,
+    getTokenTypeIfInsertingCharacter: *const fn (lineNumber: usize, column: usize, character: []const u8) StandardTokenType,
+    tokenizeLinesAt: *const fn (lineNumber: usize, lines: []const []const u8) ?[]LineTokens,
+    hasTokens: *const fn () bool,
 
     pub fn init(
         backgroundTokenizationState: BackgroundTokenizationState,
         languageIdCodec: LanguageIdCodec,
-        textModel: TextModel,
+        textModel_: *TextModel,
     ) AbstractSyntaxTokenBackend {
+        const allocator = textModel_.getAllocator();
         return AbstractSyntaxTokenBackend{
             ._backgroundTokenizationState = backgroundTokenizationState,
             ._languageIdCodec = languageIdCodec,
-            ._textModel = textModel,
-            ._onDidChangeBackgroundTokenizationState = Emitter(void).init(),
-            ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(),
+            ._textModel = textModel_,
+            ._onDidChangeBackgroundTokenizationState = Emitter(void).init(allocator),
+            ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
+            .forceTokenization = undefined,
+            .isCheapToTokenize = undefined,
+            .getLineTokens = undefined,
+            .getTokenTypeIfInsertingCharacter = undefined,
+            .tokenizeLinesAt = undefined,
+            .hasTokens = undefined,
         };
+    }
+
+    pub fn textModel(self: *AbstractSyntaxTokenBackend) *TextModel {
+        return @alignCast(@ptrCast(self._textModel));
     }
 
     pub fn tokenizeIfCheap(self: *AbstractSyntaxTokenBackend, lineNumber: usize) void {
@@ -224,12 +235,12 @@ pub const AbstractSyntaxTokenBackend = struct {
     }
 
     // @internal, should not be exposed by the text model!
-    pub fn onDidChangeBackgroundTokenizationState(self: *AbstractSyntaxTokenBackend, f: fn (void) void) void {
+    pub fn onDidChangeBackgroundTokenizationState(self: *AbstractSyntaxTokenBackend, f: *const fn (void) void) void {
         self._onDidChangeBackgroundTokenizationState.event({}, f);
     }
 
     // //** @internal, should not be exposed by the text model! */
-    pub fn onDidChangeTokens(self: *AbstractSyntaxTokenBackend, f: fn (ModelTokensChangedEvent, void) void) void {
+    pub fn onDidChangeTokens(self: *AbstractSyntaxTokenBackend, f: *const fn (ModelTokensChangedEvent, void) void) void {
         self._onDidChangeTokens.event({}, f);
     }
 };

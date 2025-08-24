@@ -25,6 +25,7 @@ comptime {
     _ = @import("tokens/common.zig");
     _ = @import("tokens/contiguousMultilineTokens.zig");
     _ = @import("tokens/contiguousMultilineTokensBuilder.zig");
+    _ = @import("tokens/sparseTokensStore.zig");
     _ = @import("undoRedo.zig");
     _ = @import("undoRedoService.zig");
 }

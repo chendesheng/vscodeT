@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Emitter = @import("../basics/event.zig").Emitter;
 const Uri = std.Uri;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
@@ -54,58 +55,85 @@ pub const LanguageService = struct {
     onDidChange: Emitter(void),
 
     // Register a language.
-    registerLanguage: fn (def: ILanguageExtensionPoint) void,
+    registerLanguage: *const fn (def: ILanguageExtensionPoint) void,
 
     // Check if `languageId` is registered.
-    isRegisteredLanguageId: fn (languageId: []const u8) bool,
+    isRegisteredLanguageId: *const fn (languageId: []const u8) bool,
 
     // Get a list of all registered languages.
-    getRegisteredLanguageIds: fn () []const []const u8,
+    getRegisteredLanguageIds: *const fn () []const []const u8,
 
     // Get a list of all registered languages with a name.
     // If a language is explicitly registered without a name, it will not be part of the result.
     // The result is sorted using by name case insensitive.
-    getSortedRegisteredLanguageNames: fn () []LanguageNameIdPair,
+    getSortedRegisteredLanguageNames: *const fn () []LanguageNameIdPair,
 
     // Get the preferred language name for a language.
-    getLanguageName: fn (languageId: []const u8) ?[]const u8,
+    getLanguageName: *const fn (languageId: []const u8) ?[]const u8,
 
     // Get the mimetype for a language.
-    getMimeType: fn (languageId: []const u8) ?[]const u8,
+    getMimeType: *const fn (languageId: []const u8) ?[]const u8,
 
     // Get the default icon for the language.
-    getIcon: fn (languageId: []const u8) ?LanguageIcon,
+    getIcon: *const fn (languageId: []const u8) ?LanguageIcon,
 
     // Get all file extensions for a language.
-    getExtensions: fn (languageId: []const u8) []const []const u8,
+    getExtensions: *const fn (languageId: []const u8) []const []const u8,
 
     // Get all file names for a language.
-    getFilenames: fn (languageId: []const u8) []const []const u8,
+    getFilenames: *const fn (languageId: []const u8) []const []const u8,
 
     // Get all language configuration files for a language.
-    getConfigurationFiles: fn (languageId: []const u8) []const Uri,
+    getConfigurationFiles: *const fn (languageId: []const u8) []const Uri,
 
     // Look up a language by its name case insensitive.
-    getLanguageIdByLanguageName: fn (languageName: []const u8) ?[]const u8,
+    getLanguageIdByLanguageName: *const fn (languageName: []const u8) ?[]const u8,
 
     // Look up a language by its mime type.
-    getLanguageIdByMimeType: fn (mimeType: ?[]const u8) ?[]const u8,
+    getLanguageIdByMimeType: *const fn (mimeType: ?[]const u8) ?[]const u8,
 
     // Guess the language id for a resource.
-    guessLanguageIdByFilepathOrFirstLine: fn (resource: Uri, firstLine: ?[]const u8) ?[]const u8,
+    guessLanguageIdByFilepathOrFirstLine: *const fn (resource: Uri, firstLine: ?[]const u8) ?[]const u8,
 
     // Will fall back to 'plaintext' if `languageId` is unknown.
-    createById: fn (languageId: ?[]const u8) LanguageSelection,
+    createById: *const fn (languageId: ?[]const u8) LanguageSelection,
 
     // Will fall back to 'plaintext' if `mimeType` is unknown.
-    createByMimeType: fn (mimeType: ?[]const u8) LanguageSelection,
+    createByMimeType: *const fn (mimeType: ?[]const u8) LanguageSelection,
 
     // Will fall back to 'plaintext' if the `languageId` cannot be determined.
-    createByFilepathOrFirstLine: fn (resource: ?Uri, firstLine: ?[]const u8) LanguageSelection,
+    createByFilepathOrFirstLine: *const fn (resource: ?Uri, firstLine: ?[]const u8) LanguageSelection,
 
     // Request basic language features for a language.
-    requestBasicLanguageFeatures: fn (languageId: []const u8) void,
+    requestBasicLanguageFeatures: *const fn (languageId: []const u8) void,
 
     // Request rich language features for a language.
-    requestRichLanguageFeatures: fn (languageId: []const u8) void,
+    requestRichLanguageFeatures: *const fn (languageId: []const u8) void,
+
+    pub fn init(allocator: Allocator, languageIdCodec: LanguageIdCodec) LanguageService {
+        return LanguageService{
+            .languageIdCodec = languageIdCodec,
+            .onDidRequestBasicLanguageFeatures = Emitter([]const u8).init(allocator),
+            .onDidRequestRichLanguageFeatures = Emitter([]const u8).init(allocator),
+            .onDidChange = Emitter(void).init(allocator),
+            .registerLanguage = undefined,
+            .isRegisteredLanguageId = undefined,
+            .getRegisteredLanguageIds = undefined,
+            .getSortedRegisteredLanguageNames = undefined,
+            .getLanguageName = undefined,
+            .getMimeType = undefined,
+            .getIcon = undefined,
+            .getExtensions = undefined,
+            .getFilenames = undefined,
+            .getConfigurationFiles = undefined,
+            .getLanguageIdByLanguageName = undefined,
+            .getLanguageIdByMimeType = undefined,
+            .guessLanguageIdByFilepathOrFirstLine = undefined,
+            .createById = undefined,
+            .createByMimeType = undefined,
+            .createByFilepathOrFirstLine = undefined,
+            .requestBasicLanguageFeatures = undefined,
+            .requestRichLanguageFeatures = undefined,
+        };
+    }
 };

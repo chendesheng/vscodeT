@@ -76,6 +76,7 @@ const WordAtPosition = @import("./basics/utils.zig").WordAtPosition;
 const ModelTokensChangedEvent = @import("./textModelEvents.zig").ModelTokensChangedEvent;
 const AttachedViews = @import("./tokenize/abstractSyntaxTokenBackend.zig").AttachedViews;
 const LanguageService = @import("./languages/languageService.zig").LanguageService;
+const LanguageIdCodec = @import("./languages.zig").LanguageIdCodec;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -192,7 +193,7 @@ pub const TextModel = struct {
     _eventEmitter: DidChangeContentEmitter,
     //#endregion
 
-    pub fn tokenization(self: *TextModel) TokenizationTextModelPart {
+    pub fn tokenization(self: *const TextModel) TokenizationTextModelPart {
         return self._tokenizationTextModelPart;
     }
 
@@ -329,6 +330,7 @@ pub const TextModel = struct {
             ._eventEmitter = DidChangeContentEmitter.init(allocator),
             ._tokenizationTextModelPart = TokenizationTextModelPart.init(model, languageId, attachedViews, languageService),
             ._attachedViews = attachedViews,
+            ._languageService = languageService,
         };
         return model;
     }
@@ -574,7 +576,8 @@ pub const TextModel = struct {
 
     pub fn getLineLength(self: *const TextModel, lineNumber: usize) usize {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
-            return error.IllegalValueForLineNumber;
+            unreachable;
+            // return error.IllegalValueForLineNumber;
         }
 
         return self._buffer.getLineLength(lineNumber);
@@ -1410,7 +1413,7 @@ pub const TextModel = struct {
                 for (affectedLines.items) |lineNumber| {
                     try lineChangeEvents.append(ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), try self._getInjectedTextInLine(lineNumber)));
                 }
-                self._onDidChangeInjectedText.fire(ModelInjectedTextChangedEvent.init(lineChangeEvents.items));
+                try self._onDidChangeInjectedText.fire(ModelInjectedTextChangedEvent.init(lineChangeEvents.items));
             }
         }
         if (affectedLineHeights) |items| {
@@ -1423,7 +1426,7 @@ pub const TextModel = struct {
                 while (affectedLines.next()) |specialLineHeightChange| {
                     try lineHeightChangeEvent.append(ModelLineHeightChanged.init(specialLineHeightChange.ownerId, specialLineHeightChange.decorationId, specialLineHeightChange.lineNumber, specialLineHeightChange.lineHeight));
                 }
-                self._onDidChangeLineHeight.fire(ModelLineHeightChangedEvent.init(lineHeightChangeEvent.items));
+                try self._onDidChangeLineHeight.fire(ModelLineHeightChangedEvent.init(lineHeightChangeEvent.items));
             }
         }
     }
@@ -1804,20 +1807,31 @@ fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: 
     var source = io.fixedBufferStream(text);
     const reader = source.reader().any();
 
-    return try TextModel.init(allocator, reader, TextModelCreationOptions{
-        .tabSize = 4,
-        .indentSize = .{ .number = 4 },
-        .insertSpaces = true,
-        .detectIndentation = true,
-        .trimAutoWhitespace = true,
-        .defaultEOL = .LF,
-        .isForSimpleWidget = false,
-        .largeFileOptimizations = false,
-        .bracketPairColorizationOptions = .{
-            .enabled = false,
-            .independentColorPoolPerBracketType = false,
+    const codec = try LanguageIdCodec.init(allocator);
+    var languageService = LanguageService.init(allocator, codec);
+
+    return try TextModel.init(
+        allocator,
+        reader,
+        "",
+        .{
+            .tabSize = 4,
+            .indentSize = .{ .number = 4 },
+            .insertSpaces = true,
+            .detectIndentation = true,
+            .trimAutoWhitespace = true,
+            .defaultEOL = .LF,
+            .isForSimpleWidget = false,
+            .largeFileOptimizations = false,
+            .bracketPairColorizationOptions = .{
+                .enabled = false,
+                .independentColorPoolPerBracketType = false,
+            },
         },
-    }, null, undoRedoService);
+        null,
+        undoRedoService,
+        &languageService,
+    );
 }
 
 test "TextModel.init" {

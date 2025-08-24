@@ -9,6 +9,11 @@ const TextModel = @import("../textModel.zig").TextModel;
 const Allocator = std.mem.Allocator;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const SemanticMetadata = @import("../encodedTokenAttributes.zig").SemanticMetadata;
+const SparseMultilineTokensStorage = @import("sparseMultilineTokens.zig").SparseMultilineTokensStorage;
+const SparseToken = @import("sparseMultilineTokens.zig").SparseToken;
+const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
+const FontStyle = @import("../encodedTokenAttributes.zig").FontStyle;
+const TokenPacked = @import("lineTokens.zig").TokenPacked;
 
 // Represents sparse tokens in a text model.
 pub const SparseTokensStore = struct {
@@ -25,7 +30,7 @@ pub const SparseTokensStore = struct {
     }
 
     pub fn deinit(self: *SparseTokensStore) void {
-        for (self._pieces.items) |piece| {
+        for (self._pieces.items) |*piece| {
             piece.deinit();
         }
         self._pieces.deinit();
@@ -40,7 +45,7 @@ pub const SparseTokensStore = struct {
         return self._pieces.items.len == 0;
     }
 
-    pub fn set(self: *SparseTokensStore, pieces: ?ArrayList(SparseMultilineTokens), isComplete_: bool, textModel: ?TextModel) void {
+    pub fn set(self: *SparseTokensStore, pieces: ?ArrayList(SparseMultilineTokens), isComplete_: bool, textModel: ?*const TextModel) !void {
         self._pieces.deinit();
         self._pieces = pieces orelse ArrayList(SparseMultilineTokens).init(self._pieces.allocator);
         self._isComplete = isComplete_;
@@ -137,7 +142,7 @@ pub const SparseTokensStore = struct {
         return self._isComplete;
     }
 
-    pub fn addSparseTokens(self: *SparseTokensStore, lineNumber: usize, aTokens: LineTokens) LineTokens {
+    pub fn addSparseTokens(self: *SparseTokensStore, lineNumber: usize, aTokens: LineTokens) !LineTokens {
         if (aTokens.getTextLength() == 0) {
             // Don't do anything for empty lines
             return aTokens;
@@ -156,57 +161,56 @@ pub const SparseTokensStore = struct {
             const bLen = bTokens.getCount();
 
             var aIndex: usize = 0;
-            var result = ArrayList(u32).init(pieces.allocator);
+            var result = ArrayList(TokenPacked).init(pieces.allocator);
             var lastEndOffset: usize = 0;
 
             const emitToken = struct {
-                fn emit(_result: *ArrayList(u32), _lastEndOffset: *usize, _endOffset: usize, _metadata: u32) void {
+                fn emit(_result: *ArrayList(TokenPacked), _lastEndOffset: *usize, _endOffset: u32, _metadata: u32) !void {
                     if (_endOffset == _lastEndOffset.*) {
                         return;
                     }
                     _lastEndOffset.* = _endOffset;
-                    _result.append(_endOffset);
-                    _result.append(_metadata);
+                    try _result.append(TokenPacked.init(_endOffset, @bitCast(_metadata)));
                 }
             }.emit;
 
             for (0..bLen) |bIndex| {
                 // bTokens is not validated yet, but aTokens is. We want to make sure that the LineTokens we return
                 // are valid, so we clamp the ranges to ensure that.
-                const bStartCharacter = @min(bTokens.getStartCharacter(bIndex), aTokens.getTextLength());
-                const bEndCharacter = @min(bTokens.getEndCharacter(bIndex), aTokens.getTextLength());
+                const bStartCharacter: u32 = @min(bTokens.getStartCharacter(bIndex), @as(u32, @intCast(aTokens.getTextLength())));
+                const bEndCharacter: u32 = @min(bTokens.getEndCharacter(bIndex), @as(u32, @intCast(aTokens.getTextLength())));
                 const bMetadata = bTokens.getMetadata(bIndex);
 
                 var bMask: TokenMetadata = TokenMetadata.default;
-                const semanticMask: SemanticMetadata = @intCast(bMetadata.languageId);
+                const semanticMask: SemanticMetadata = @bitCast(bMetadata.languageId);
                 bMask.fontStyle.italic = semanticMask.useItalic;
                 bMask.fontStyle.bold = semanticMask.useBold;
                 bMask.fontStyle.underline = semanticMask.useUnderline;
                 bMask.fontStyle.strikethrough = semanticMask.useStrikethrough;
-                bMask.foreground = if (semanticMask.useForeground) .Mask else .None;
-                bMask.background = @intCast(if (semanticMask.useBackground) .Mask else .None);
+                bMask.foreground = if (semanticMask.useForeground) ColorId.Mask else ColorId.None;
+                bMask.background = @intCast(if (semanticMask.useBackground) ColorId.Mask else ColorId.None);
 
-                const aMask: u32 = (~@as(u32, @intCast(bMask))) >> 0;
+                const aMask: u32 = (~@as(u32, @bitCast(bMask))) >> 0;
 
                 // push any token from `a` that is before `b`
                 while (aIndex < aLen and aTokens.getEndOffset(aIndex) <= bStartCharacter) {
-                    emitToken(&result, &lastEndOffset, aTokens.getEndOffset(aIndex), @as(u32, @intCast(aTokens.getMetadata(aIndex))));
+                    try emitToken(&result, &lastEndOffset, aTokens.getEndOffset(aIndex), @as(u32, @bitCast(aTokens.getMetadata(aIndex))));
                     aIndex += 1;
                 }
 
                 // push the token from `a` if it intersects the token from `b`
                 if (aIndex < aLen and aTokens.getStartOffset(aIndex) < bStartCharacter) {
-                    emitToken(&result, &lastEndOffset, bStartCharacter, @as(u32, @intCast(aTokens.getMetadata(aIndex))));
+                    try emitToken(&result, &lastEndOffset, bStartCharacter, @as(u32, @bitCast(aTokens.getMetadata(aIndex))));
                 }
 
                 // skip any tokens from `a` that are contained inside `b`
                 while (aIndex < aLen and aTokens.getEndOffset(aIndex) < bEndCharacter) {
-                    emitToken(&result, &lastEndOffset, aTokens.getEndOffset(aIndex), (@as(u32, @intCast(aTokens.getMetadata(aIndex))) & aMask) | (@as(u32, @intCast(bMetadata)) & @as(u32, @intCast(bMask))));
+                    try emitToken(&result, &lastEndOffset, aTokens.getEndOffset(aIndex), (@as(u32, @bitCast(aTokens.getMetadata(aIndex))) & aMask) | (@as(u32, @bitCast(bMetadata)) & @as(u32, @bitCast(bMask))));
                     aIndex += 1;
                 }
 
                 if (aIndex < aLen) {
-                    emitToken(&result, &lastEndOffset, bEndCharacter, (@as(u32, @intCast(aTokens.getMetadata(aIndex))) & aMask) | (@as(u32, @intCast(bMetadata)) & @as(u32, @intCast(bMask))));
+                    try emitToken(&result, &lastEndOffset, bEndCharacter, (@as(u32, @bitCast(aTokens.getMetadata(aIndex))) & aMask) | (@as(u32, @bitCast(bMetadata)) & @as(u32, @bitCast(bMask))));
                     if (aTokens.getEndOffset(aIndex) == bEndCharacter) {
                         // `a` ends exactly at the same spot as `b`!
                         aIndex += 1;
@@ -215,13 +219,13 @@ pub const SparseTokensStore = struct {
                     const aMergeIndex: usize = @min(@max(0, aIndex - 1), aLen - 1);
 
                     // push the token from `b`
-                    emitToken(&result, &lastEndOffset, bEndCharacter, (@as(u32, @intCast(aTokens.getMetadata(aMergeIndex))) & aMask) | (@as(u32, @intCast(bMetadata)) & @as(u32, @intCast(bMask))));
+                    try emitToken(&result, &lastEndOffset, bEndCharacter, (@as(u32, @bitCast(aTokens.getMetadata(aMergeIndex))) & aMask) | (@as(u32, @bitCast(bMetadata)) & @as(u32, @bitCast(bMask))));
                 }
             }
 
             // push the remaining tokens from `a`
             while (aIndex < aLen) {
-                emitToken(&result, &lastEndOffset, aTokens.getEndOffset(aIndex), @as(u32, @intCast(aTokens.getMetadata(aIndex))));
+                try emitToken(&result, &lastEndOffset, aTokens.getEndOffset(aIndex), @as(u32, @bitCast(aTokens.getMetadata(aIndex))));
                 aIndex += 1;
             }
 
@@ -233,10 +237,10 @@ pub const SparseTokensStore = struct {
 
     fn _findFirstPieceWithLine(pieces: []const SparseMultilineTokens, lineNumber: usize) usize {
         var low: usize = 0;
-        var high: usize = pieces.items.len - 1;
+        var high: usize = pieces.len - 1;
 
         while (low < high) {
-            const mid = low + @divFloor(high - low, 2);
+            var mid = low + @divFloor(high - low, 2);
 
             if (pieces[mid].getEndLineNumber() < lineNumber) {
                 low = mid + 1;
@@ -259,3 +263,65 @@ pub const SparseTokensStore = struct {
         }
     }
 };
+
+fn createTMMetadata(foreground: u9, fontStyle: FontStyle, languageId: u8) TokenMetadata {
+    var metadata = TokenMetadata.default;
+    metadata.languageId = languageId;
+    metadata.foreground = foreground;
+    metadata.fontStyle = fontStyle;
+    return metadata;
+}
+
+test "issue #95949: Identifiers are colored in bold when targetting keywords" {
+    const allocator = std.testing.allocator;
+    const codec = try LanguageIdCodec.init(allocator);
+    var store = SparseTokensStore.init(allocator, codec);
+    defer store.deinit();
+
+    var sparseTokens = ArrayList(SparseToken).init(allocator);
+    defer sparseTokens.deinit();
+    var metadata = TokenMetadata.default;
+    metadata.languageId = @bitCast(SemanticMetadata.UseForeground);
+    metadata.foreground = ColorId.DefaultForeground;
+    try sparseTokens.append(SparseToken.init(0, 6, 11, metadata));
+
+    var storage = SparseMultilineTokensStorage.init(sparseTokens);
+    defer storage.deinit();
+
+    var multilineTokens = SparseMultilineTokens.init(1, storage);
+    defer multilineTokens.deinit();
+
+    var multilineTokensList = ArrayList(SparseMultilineTokens).init(allocator);
+    defer multilineTokensList.deinit();
+    try multilineTokensList.append(multilineTokens);
+
+    try store.set(multilineTokensList, true, null);
+
+    var arrTokens = ArrayList(TokenPacked).init(allocator);
+    defer arrTokens.deinit();
+    try arrTokens.appendSlice(&[_]TokenPacked{
+        .init(5, createTMMetadata(5, FontStyle.Bold, 53)),
+        .init(14, createTMMetadata(1, FontStyle.None, 53)),
+        .init(17, createTMMetadata(6, FontStyle.None, 53)),
+        .init(18, createTMMetadata(1, FontStyle.None, 53)),
+    });
+    var arrText = ArrayList(u8).init(allocator);
+    defer arrText.deinit();
+    try arrText.appendSlice("const hello = 123;");
+    const lineTokens = try store.addSparseTokens(1, LineTokens.init(arrTokens, arrText, codec));
+
+    var actual = ArrayList(TokenPacked).init(allocator);
+    defer actual.deinit();
+    for (0..lineTokens.getCount()) |i| {
+        try actual.append(TokenPacked.init(lineTokens.getEndOffset(i), lineTokens.getMetadata(i)));
+    }
+
+    try std.testing.expectEqualSlices(TokenPacked, &[_]TokenPacked{
+        .init(5, createTMMetadata(5, FontStyle.Bold, 53)),
+        .init(6, createTMMetadata(1, FontStyle.None, 53)),
+        .init(11, createTMMetadata(1, FontStyle.None, 53)),
+        .init(14, createTMMetadata(1, FontStyle.None, 53)),
+        .init(17, createTMMetadata(6, FontStyle.None, 53)),
+        .init(18, createTMMetadata(1, FontStyle.None, 53)),
+    }, actual.items);
+}

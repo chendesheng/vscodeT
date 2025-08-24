@@ -42,36 +42,37 @@ pub const TokenizerSyntaxTokenBackend = struct {
     _tokenizer: ?TokenizerWithStateStoreAndTextModel = null,
     _tokens: ContiguousTokensStore,
     _debugBackgroundTokens: ?ContiguousTokensStore = null,
-    _debugBackgroundStates: ?TrackingTokenizationStateStore(IState) = null,
+    _debugBackgroundStates: ?TrackingTokenizationStateStore = null,
     _debugBackgroundTokenizer: ?IBackgroundTokenizer = null,
     _defaultBackgroundTokenizer: ?DefaultBackgroundTokenizer = null,
     _backgroundTokenizer: ?IBackgroundTokenizer = null,
     _attachedViewStates: AutoHashMap(AttachedView, AttachedViewHandler),
-    getLanguageId: fn () []const u8,
+    _languageId: []const u8,
 
     pub fn init(
         languageIdCodec: LanguageIdCodec,
-        textModel: TextModel,
-        getLanguageId: fn () []const u8,
+        textModel_: *TextModel,
+        languageId: []const u8,
         attachedViews: AttachedViews,
     ) TokenizerSyntaxTokenBackend {
+        const allocator = textModel_.getAllocator();
         var self: TokenizerSyntaxTokenBackend = .{
-            .super = AbstractSyntaxTokenBackend.init(BackgroundTokenizationState.InProgress, languageIdCodec, textModel),
-            ._tokens = ContiguousTokensStore.init(textModel.getAllocator(), languageIdCodec),
-            .getLanguageId = getLanguageId,
+            .super = AbstractSyntaxTokenBackend.init(BackgroundTokenizationState.InProgress, languageIdCodec, textModel_),
+            ._tokens = ContiguousTokensStore.init(allocator, languageIdCodec),
+            ._languageId = languageId,
+            ._attachedViewStates = AutoHashMap(AttachedView, AttachedViewHandler).init(allocator),
         };
 
-        TokenizationRegistry.onDidChange(&self, struct {
-            fn cb(e: TokenizationSupportChangedEvent, this: *TokenizerSyntaxTokenBackend) void {
-                const languageId = this.getLanguageId();
-                if (!std.mem.indexOf(u8, e.changedLanguages, languageId)) {
+        TokenizationRegistry.instance.onDidChange(&self, struct {
+            fn cb(e: TokenizationSupportChangedEvent, this: *TokenizerSyntaxTokenBackend) !void {
+                if (!std.mem.indexOf(u8, e.changedLanguages, this._languageId)) {
                     return;
                 }
-                this.todo_resetTokenization();
+                this.todo_resetTokenization(false);
             }
         }.cb);
 
-        self.todo_resetTokenization();
+        self.todo_resetTokenization(false);
 
         attachedViews.onDidChangeVisibleRanges(&self, struct {
             fn cb(p: AttachedViewAndState, this: *TokenizerSyntaxTokenBackend) void {
@@ -99,8 +100,8 @@ pub const TokenizerSyntaxTokenBackend = struct {
     pub fn todo_resetTokenization(self: *TokenizerSyntaxTokenBackend, fireTokenChangeEvent: bool) void {
         self._tokens.flush();
         self._debugBackgroundTokens.?.flush();
-        if (self._debugBackgroundStates) {
-            self._debugBackgroundStates = TrackingTokenizationStateStore(IState).init(self._textModel.getLineCount());
+        if (self._debugBackgroundStates != null) {
+            self._debugBackgroundStates = TrackingTokenizationStateStore.init(self.textModel().getAllocator(), self.textModel().getLineCount());
         }
         if (fireTokenChangeEvent) {
             self.super._onDidChangeTokens.fire(.{
@@ -108,7 +109,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
                 .ranges = &[_]ModelTokensChangedRange{
                     .{
                         .fromLineNumber = 1,
-                        .toLineNumber = self._textModel.getLineCount(),
+                        .toLineNumber = self.textModel().getLineCount(),
                     },
                 },
             });
@@ -116,15 +117,15 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
         var tokenizationSupport: ?ITokenizationSupport = null;
         var initialState: ?IState = null;
-        if (!self._textModel.isTooLargeForTokenization()) {
-            tokenizationSupport = TokenizationRegistry.get(self.getLanguageId());
+        if (!self.textModel().isTooLargeForTokenization()) {
+            tokenizationSupport = TokenizationRegistry.instance.get(self._languageId);
             if (tokenizationSupport) {
                 initialState = tokenizationSupport.getInitialState();
             }
         }
 
         if (tokenizationSupport != null and initialState != null) {
-            self._tokenizer = TokenizerWithStateStoreAndTextModel.init(self._textModel.getLineCount(), tokenizationSupport.?, self._textModel, self._languageIdCodec);
+            self._tokenizer = TokenizerWithStateStoreAndTextModel.init(self.textModel().getLineCount(), tokenizationSupport.?, self.textModel(), self._languageIdCodec);
         } else {
             self._tokenizer = null;
         }
@@ -166,22 +167,22 @@ pub const TokenizerSyntaxTokenBackend = struct {
             };
 
             if (tokenizationSupport != null and tokenizationSupport.createBackgroundTokenizer and !tokenizationSupport.backgroundTokenizerShouldOnlyVerifyTokens) {
-                self._backgroundTokenizer = tokenizationSupport.createBackgroundTokenizer(self._textModel, b);
+                self._backgroundTokenizer = tokenizationSupport.createBackgroundTokenizer(self.super.textModel(), b);
             }
-            if (self._backgroundTokenizer == null and !self._textModel.isTooLargeForTokenization()) {
+            if (self._backgroundTokenizer == null and !self.textModel().isTooLargeForTokenization()) {
                 self._defaultBackgroundTokenizer = DefaultBackgroundTokenizer.init(self._tokenizer, b);
                 self._backgroundTokenizer = self._defaultBackgroundTokenizer;
                 self._defaultBackgroundTokenizer.?.handleChanges();
             }
 
             if (tokenizationSupport != null and tokenizationSupport.?.backgroundTokenizerShouldOnlyVerifyTokens and tokenizationSupport.?.createBackgroundTokenizer) {
-                self._debugBackgroundTokens = ContiguousTokensStore.init(self._textModel.getAllocator(), self._languageIdCodec);
-                self._debugBackgroundStates = TrackingTokenizationStateStore(IState).init(self._textModel.getLineCount());
+                self._debugBackgroundTokens = ContiguousTokensStore.init(self.textModel().getAllocator(), self._languageIdCodec);
+                self._debugBackgroundStates = TrackingTokenizationStateStore(IState).init(self.textModel().getLineCount());
                 self._debugBackgroundTokenizer.?.clear();
-                self._debugBackgroundTokenizer = tokenizationSupport.?.createBackgroundTokenizer(self._textModel, .{
+                self._debugBackgroundTokenizer = tokenizationSupport.?.createBackgroundTokenizer(self.textModel(), .{
                     .setTokens = struct {
                         fn f(tokens: []ContiguousMultilineTokens) void {
-                            self._debugBackgroundTokens.?.setMultilineTokens(tokens, self._textModel);
+                            self._debugBackgroundTokens.?.setMultilineTokens(tokens, self.textModel());
                         }
                     }.f,
                     .backgroundTokenizationFinished = struct {
@@ -232,7 +233,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     }
 
     pub fn setTokens(self: *TokenizerSyntaxTokenBackend, tokens: []ContiguousMultilineTokens) struct { changes: []const ModelTokensChangedRange } {
-        const res = self._tokens.setMultilineTokens(tokens, self._textModel);
+        const res = self._tokens.setMultilineTokens(tokens, self.textModel());
         const changes = res.changes;
 
         if (changes.len > 0) {
@@ -246,7 +247,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     }
 
     pub fn refreshAllVisibleLineTokens(self: *TokenizerSyntaxTokenBackend) !void {
-        var set = LineRangeSet.empty(self._textModel.getAllocator());
+        var set = LineRangeSet.empty(self.textModel().getAllocator());
         defer set.deinit();
 
         var iter = self._attachedViewStates.valueIterator();
@@ -267,8 +268,8 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
     pub fn refreshRange(self: *TokenizerSyntaxTokenBackend, startLineNumber: usize, endLineNumber: usize) void {
         if (self._tokenizer) |tokenizer| {
-            const startLineNumber1 = clamp(startLineNumber, 1, self._textModel.getLineCount());
-            const endLineNumber1 = clamp(endLineNumber, 1, self._textModel.getLineCount());
+            const startLineNumber1 = clamp(startLineNumber, 1, self.textModel().getLineCount());
+            const endLineNumber1 = clamp(endLineNumber, 1, self.textModel().getLineCount());
 
             const builder = ContiguousMultilineTokensBuilder.init();
             const res = tokenizer.tokenizeHeuristically(builder, startLineNumber1, endLineNumber1);
@@ -314,13 +315,13 @@ pub const TokenizerSyntaxTokenBackend = struct {
     }
 
     pub fn getLineTokens(self: *TokenizerSyntaxTokenBackend, lineNumber: usize) !LineTokens {
-        const lineText = self._textModel.getLineContent(lineNumber);
-        const result = try self._tokens.getTokens(self._textModel.getLanguageId(), lineNumber - 1, lineText);
+        const lineText = self.textModel().getLineContent(lineNumber);
+        const result = try self._tokens.getTokens(self.textModel().getLanguageId(), lineNumber - 1, lineText);
         if (self._debugBackgroundTokens) |debugBackgroundTokens| {
             if (self._debugBackgroundStates) |debugBackgroundStates| {
                 if (self._tokenizer) |tokenizer| {
                     if (debugBackgroundStates.getFirstInvalidEndStateLineNumberOrMax() > lineNumber and tokenizer.getStore().getFirstInvalidEndStateLineNumberOrMax() > lineNumber) {
-                        const backgroundResult = try debugBackgroundTokens.getTokens(self._textModel.getLanguageId(), lineNumber - 1, lineText);
+                        const backgroundResult = try debugBackgroundTokens.getTokens(self.textModel().getLanguageId(), lineNumber - 1, lineText);
                         if (!result.equals(&backgroundResult)) {
                             if (self._debugBackgroundTokenizer) |debugBackgroundTokenizer| {
                                 if (debugBackgroundTokenizer.reportMismatchingTokens) |reportMismatchingTokens| {
@@ -337,7 +338,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
     pub fn getTokenTypeIfInsertingCharacter(self: *TokenizerSyntaxTokenBackend, lineNumber: usize, column: usize, character: []const u8) StandardTokenType {
         if (self._tokenizer) |tokenizer| {
-            const position = self._textModel.validatePosition(Position.init(lineNumber, column));
+            const position = self.super.textModel().validatePosition(Position.init(lineNumber, column));
             self.forceTokenization(position.lineNumber);
             return tokenizer.getTokenTypeIfInsertingCharacter(position, character);
         } else {
@@ -356,5 +357,9 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
     pub fn getHasTokens(self: *TokenizerSyntaxTokenBackend) bool {
         return self._tokens.hasTokens();
+    }
+
+    pub fn textModel(self: *TokenizerSyntaxTokenBackend) *TextModel {
+        return self.super.textModel();
     }
 };

@@ -22,10 +22,10 @@ pub const ICommentsConfiguration = struct {
 };
 
 pub const ILanguageConfigurationService = struct {
-    onDidChange: fn (LanguageConfigurationServiceChangeEvent) void,
+    onDidChange: *const fn (LanguageConfigurationServiceChangeEvent) void,
     // @param priority Use a higher number for higher priority
-    register: fn (languageId: []const u8, configuration: LanguageConfiguration, priority: ?usize) void,
-    getLanguageConfiguration: fn (languageId: []const u8) ResolvedLanguageConfiguration,
+    register: *const fn (languageId: []const u8, configuration: LanguageConfiguration, priority: ?usize) void,
+    getLanguageConfiguration: *const fn (languageId: []const u8) ResolvedLanguageConfiguration,
 };
 
 pub const LanguageConfigurationServiceChangeEvent = struct {

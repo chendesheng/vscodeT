@@ -13,12 +13,12 @@ pub const NULL_LANGUAGE_ID = "nullLanguage";
 // @internal
 pub const LanguageIdCodec = struct {
     _languageIdToLanguage: ArrayList([]const u8),
-    _languageToLanguageId: std.AutoHashMap([]const u8, u8),
+    _languageToLanguageId: std.StringHashMap(u8),
 
-    pub fn init(allocator: Allocator) LanguageIdCodec {
+    pub fn init(allocator: Allocator) !LanguageIdCodec {
         var codec = LanguageIdCodec{
             ._languageIdToLanguage = ArrayList([]const u8).init(allocator),
-            ._languageToLanguageId = std.AutoHashMap([]const u8, u8).init(allocator),
+            ._languageToLanguageId = std.StringHashMap(u8).init(allocator),
         };
         try codec._languageIdToLanguage.append(NULL_LANGUAGE_ID);
         try codec._languageToLanguageId.put(NULL_LANGUAGE_ID, 0);
@@ -135,14 +135,14 @@ pub const ITokenizationSupport = struct {
     // Used for debugging.
     backgroundTokenizerShouldOnlyVerifyTokens: ?bool,
 
-    getInitialState: fn () IState,
+    getInitialState: *const fn () IState,
 
-    tokenize: fn (line: []u8, hasEOL: bool, state: IState) TokenizationResult,
+    tokenize: *const fn (line: []u8, hasEOL: bool, state: IState) TokenizationResult,
 
-    tokenizeEncoded: fn (line: []u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
+    tokenizeEncoded: *const fn (line: []u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
 
     // Can be/return undefined if default background tokenization should be used.
-    createBackgroundTokenizer: ?fn (textModel: TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
+    createBackgroundTokenizer: ?*const fn (textModel: TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
 };
 
 // @internal
@@ -150,37 +150,37 @@ pub const IBackgroundTokenizer = struct {
     // Instructs the background tokenizer to set the tokens for the given range again.
     // This might be necessary if the renderer overwrote those tokens with heuristically computed ones for some viewport,
     // when the change does not even propagate to that viewport.
-    requestTokens: fn (startLineNumber: usize, endLineNumberExclusive: usize) void,
+    requestTokens: *const fn (startLineNumber: usize, endLineNumberExclusive: usize) void,
 
-    reportMismatchingTokens: ?fn (lineNumber: usize) void,
+    reportMismatchingTokens: ?*const fn (lineNumber: usize) void,
 };
 
 // @internal
 pub const IBackgroundTokenizationStore = struct {
-    setTokens: fn (tokens: []ContiguousMultilineTokens) void,
+    setTokens: *const fn (tokens: []ContiguousMultilineTokens) void,
 
-    setEndState: fn (lineNumber: usize, state: IState) void,
+    setEndState: *const fn (lineNumber: usize, state: IState) void,
 
     // Should be called to indicate that the background tokenization has finished for now.
     // (This triggers bracket pair colorization to re-parse the bracket pairs with token information)
-    backgroundTokenizationFinished: fn () void,
+    backgroundTokenizationFinished: *const fn () void,
 };
 
 // The state of the tokenizer between two lines.
 // It is useful to store flags such as in multiline comment, etc.
 // The model will clone the previous line's state and pass it in to tokenize the next line.
 pub const IState = struct {
-    clone: fn () IState,
-    equals: fn (other: IState) bool,
+    clone: *const fn () IState,
+    equals: *const fn (other: IState) bool,
 };
 
 // @internal
 pub const LazyTokenizationSupport = struct {
     _tokenizationSupport: ?ITokenizationSupport,
 
-    createSupport: fn () ?ITokenizationSupport,
+    createSupport: *const fn () ?ITokenizationSupport,
 
-    pub fn init(createSupport: fn () ?ITokenizationSupport) LazyTokenizationSupport {
+    pub fn init(createSupport: *const fn () ?ITokenizationSupport) LazyTokenizationSupport {
         return LazyTokenizationSupport{
             ._tokenizationSupport = null,
             .createSupport = createSupport,

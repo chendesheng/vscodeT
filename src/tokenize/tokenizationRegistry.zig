@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
 const Emitter = @import("../basics/event.zig").Emitter;
 const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
@@ -9,16 +10,18 @@ const getKeys = @import("../basics/utils.zig").getKeys;
 const LazyTokenizationSupport = @import("../languages.zig").LazyTokenizationSupport;
 
 pub const TokenizationRegistry = struct {
+    pub var instance: TokenizationRegistry = TokenizationRegistry.init(std.heap.page_allocator);
+
     _tokenizationSupports: StringHashMap(ITokenizationSupport),
     _factories: StringHashMap(TokenizationSupportFactoryData),
     _onDidChange: Emitter(TokenizationSupportChangedEvent),
     _colorMap: ?[]Color,
 
-    pub fn init() TokenizationRegistry {
+    pub fn init(allocator: Allocator) TokenizationRegistry {
         return TokenizationRegistry{
-            ._tokenizationSupports = StringHashMap(ITokenizationSupport).init(std.heap.page_allocator),
-            ._factories = StringHashMap(TokenizationSupportFactoryData).init(std.heap.page_allocator),
-            ._onDidChange = Emitter(TokenizationSupportChangedEvent).init(),
+            ._tokenizationSupports = StringHashMap(ITokenizationSupport).init(allocator),
+            ._factories = StringHashMap(TokenizationSupportFactoryData).init(allocator),
+            ._onDidChange = Emitter(TokenizationSupportChangedEvent).init(allocator),
             ._colorMap = null,
         };
     }
@@ -27,8 +30,8 @@ pub const TokenizationRegistry = struct {
         self._onDidChange.fire(.{ .changedLanguages = languageIds, .changedColorMap = false });
     }
 
-    pub fn onDidChange(self: *TokenizationRegistry, ctx: anytype, callback: fn (e: TokenizationSupportChangedEvent, ctx: @TypeOf(ctx)) void) void {
-        self._onDidChange.event(ctx, callback);
+    pub fn onDidChange(self: *TokenizationRegistry, ctx: anytype, callback: fn (e: TokenizationSupportChangedEvent, ctx: @TypeOf(ctx)) anyerror!void) !void {
+        try self._onDidChange.event(ctx, callback);
     }
 
     pub fn register(self: *TokenizationRegistry, languageId: []const u8, support: ITokenizationSupport) !void {

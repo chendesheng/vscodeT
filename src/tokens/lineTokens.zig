@@ -15,6 +15,12 @@ const TextModel = @import("../textModel.zig").TextModel;
 pub const TokenPacked = packed struct(u64) {
     endOffset: u32,
     metadata: TokenMetadata,
+    pub fn init(endOffset: u32, metadata: TokenMetadata) TokenPacked {
+        return TokenPacked{
+            .endOffset = endOffset,
+            .metadata = metadata,
+        };
+    }
 };
 
 pub const LineTokens = struct {
@@ -98,7 +104,7 @@ pub const LineTokens = struct {
         };
     }
 
-    pub fn getTextLength(self: *LineTokens) usize {
+    pub fn getTextLength(self: *const LineTokens) usize {
         return self._text.items.len;
     }
 
@@ -121,58 +127,58 @@ pub const LineTokens = struct {
         return true;
     }
 
-    pub fn getLineContent(self: *LineTokens) []const u8 {
-        return self._text.items;
+    pub fn getLineContent(self: *const LineTokens) ArrayList(u8) {
+        return self._text;
     }
 
-    pub fn getCount(self: *LineTokens) usize {
+    pub fn getCount(self: *const LineTokens) usize {
         return self._tokens.items.len;
     }
 
-    pub fn getStartOffset(self: *LineTokens, tokenIndex: usize) usize {
+    pub fn getStartOffset(self: *const LineTokens, tokenIndex: usize) u32 {
         if (tokenIndex > 0) {
             return self._tokens.items[tokenIndex - 1].endOffset;
         }
         return 0;
     }
 
-    pub fn getMetadata(self: *LineTokens, tokenIndex: usize) TokenMetadata {
+    pub fn getMetadata(self: *const LineTokens, tokenIndex: usize) TokenMetadata {
         return self._tokens.items[tokenIndex].metadata;
     }
 
-    pub fn getLanguageId(self: *LineTokens, tokenIndex: usize) []const u8 {
+    pub fn getLanguageId(self: *const LineTokens, tokenIndex: usize) []const u8 {
         const languageId = self.getMetadata(tokenIndex).languageId;
         return self.languageIdCodec.decodeLanguageId(languageId);
     }
 
-    pub fn getStandardTokenType(self: *LineTokens, tokenIndex: usize) StandardTokenType {
+    pub fn getStandardTokenType(self: *const LineTokens, tokenIndex: usize) StandardTokenType {
         return self.getMetadata(tokenIndex).tokenType;
     }
 
-    pub fn getForeground(self: *LineTokens, tokenIndex: usize) ColorId {
+    pub fn getForeground(self: *const LineTokens, tokenIndex: usize) ColorId {
         return self.getMetadata(tokenIndex).foreground;
     }
 
-    pub fn getClassName(self: *LineTokens, tokenIndex: usize) !ArrayList(u8) {
+    pub fn getClassName(self: *const LineTokens, tokenIndex: usize) !ArrayList(u8) {
         return try self.getMetadata(tokenIndex).getClassNameFromMetadata(self._text.allocator);
     }
 
-    pub fn getInlineStyle(self: *LineTokens, tokenIndex: usize, colorMap: []const []const u8) !ArrayList(u8) {
+    pub fn getInlineStyle(self: *const LineTokens, tokenIndex: usize, colorMap: []const []const u8) !ArrayList(u8) {
         return try self.getMetadata(tokenIndex).getInlineStyleFromMetadata(self._text.allocator, colorMap);
     }
 
-    pub fn getPresentation(self: *LineTokens, tokenIndex: usize) TokenPresentation {
+    pub fn getPresentation(self: *const LineTokens, tokenIndex: usize) TokenPresentation {
         return self.getMetadata(tokenIndex).getPresentationFromMetadata();
     }
 
-    pub fn getEndOffset(self: *LineTokens, tokenIndex: usize) usize {
+    pub fn getEndOffset(self: *const LineTokens, tokenIndex: usize) u32 {
         return self._tokens.items[tokenIndex].endOffset;
     }
 
     // Find the token containing offset `offset`.
     // @param offset The search offset
     // @return The index of the token containing the offset.
-    pub fn findTokenIndexAtOffset(self: *LineTokens, offset: usize) usize {
+    pub fn findTokenIndexAtOffset(self: *const LineTokens, offset: usize) usize {
         return LineTokens.findIndexInTokensArray(self._tokens.items, offset);
     }
 
@@ -180,11 +186,11 @@ pub const LineTokens = struct {
         return self;
     }
 
-    pub fn sliceAndInflate(self: *LineTokens, startOffset: usize, endOffset: usize, deltaOffset: usize) SliceLineTokens {
+    pub fn sliceAndInflate(self: *const LineTokens, startOffset: usize, endOffset: usize, deltaOffset: usize) SliceLineTokens {
         return SliceLineTokens.init(self, startOffset, endOffset, deltaOffset);
     }
 
-    pub fn sliceZeroCopy(self: *LineTokens, range: OffsetRange) SliceLineTokens {
+    pub fn sliceZeroCopy(self: *const LineTokens, range: OffsetRange) SliceLineTokens {
         return self.sliceAndInflate(range.start, range.endExclusive, 0);
     }
 
@@ -249,7 +255,7 @@ pub const LineTokens = struct {
         return builder.build();
     }
 
-    pub fn getTokenText(self: *LineTokens, tokenIndex: usize) []const u8 {
+    pub fn getTokenText(self: *const LineTokens, tokenIndex: usize) []const u8 {
         const startOffset = self.getStartOffset(tokenIndex);
         const endOffset = self.getEndOffset(tokenIndex);
         return self._text.items[startOffset..endOffset];

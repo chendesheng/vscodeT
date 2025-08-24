@@ -53,7 +53,7 @@ pub const EditStackElement = union(enum) {
         }
     }
 
-    pub fn canAppend(self: *const EditStackElement, model: *TextModel) bool {
+    pub fn canAppend(self: *const EditStackElement, model: *const TextModel) bool {
         switch (self.*) {
             .singleModel => |*singleModel| {
                 return singleModel.canAppend(model);
@@ -64,7 +64,7 @@ pub const EditStackElement = union(enum) {
         }
     }
 
-    pub fn append(self: *EditStackElement, model: *TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *EditStackElement, model: *const TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
         switch (self.*) {
             .singleModel => |*singleModel| {
                 try singleModel.append(textChanges, afterEOL, afterVersionId, afterCursorState);
@@ -651,7 +651,7 @@ pub const MultiModelEditStackElement = struct {
         return false;
     }
 
-    pub fn append(self: *MultiModelEditStackElement, model: *TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *MultiModelEditStackElement, model: *const TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
         if (self._editStackElementsMap.getPtr(model.uri())) |editStackElement| {
             try editStackElement.append(textChanges, afterEOL, afterVersionId, afterCursorState);
         }
@@ -715,7 +715,7 @@ pub const MultiModelEditStackElement = struct {
 };
 
 pub const EditStack = struct {
-    _model: *TextModel,
+    _model: *anyopaque,
     _undoRedoService: *UndoRedoService,
 
     pub fn init(model: *TextModel, undoRedoService: *UndoRedoService) EditStack {
@@ -725,30 +725,34 @@ pub const EditStack = struct {
         };
     }
 
+    pub fn textModel(self: *EditStack) *TextModel {
+        return @ptrCast(self._model);
+    }
+
     pub fn pushStackElement(self: *EditStack) void {
-        if (self._undoRedoService.getLastElement(self._model.uri())) |lastElement| {
+        if (self._undoRedoService.getLastElement(self.textModel().uri())) |lastElement| {
             lastElement.close();
         }
     }
 
     pub fn popStackElement(self: *EditStack) EditStackElement {
-        if (self._undoRedoService.getLastElement(self._model.uri())) |lastElement| {
+        if (self._undoRedoService.getLastElement(self.textModel().uri())) |lastElement| {
             lastElement.open();
         }
     }
 
     pub fn clear(self: *EditStack) void {
-        self._undoRedoService.removeElements(self._model.uri());
+        self._undoRedoService.removeElements(self.textModel().uri());
     }
 
     fn _getOrCreateEditStackElement(self: *EditStack, beforeCursorState: ?[]Selection, group: ?UndoRedoGroup) !*EditStackElement {
-        if (try self._undoRedoService.getLastElement(self._model.uri())) |lastElement| {
-            if (lastElement.canAppend(self._model)) {
+        if (try self._undoRedoService.getLastElement(self.textModel().uri())) |lastElement| {
+            if (lastElement.canAppend(self.textModel())) {
                 return lastElement;
             }
         }
-        const allocator = self._model.getAllocator();
-        const newElement = SingleModelEditStackElement.init(allocator, "Typing", "undoredo.textBufferEdit", self._model, beforeCursorState);
+        const allocator = self.textModel().getAllocator();
+        const newElement = SingleModelEditStackElement.init(allocator, "Typing", "undoredo.textBufferEdit", self.textModel(), beforeCursorState);
         const newEditStackElement = try allocator.create(EditStackElement);
         newEditStackElement.* = EditStackElement{ .singleModel = newElement };
         try self._undoRedoService.pushElement(newEditStackElement, group, null);
@@ -757,26 +761,26 @@ pub const EditStack = struct {
 
     pub fn pushEOL(self: *EditStack, eol: EOL) void {
         const editStackElement = self._getOrCreateEditStackElement(null, null);
-        self._model.setEOL(eol);
-        editStackElement.append(self._model, &[_]TextChange{}, eol, self._model.getVersionId(), null);
+        self.textModel().setEOL(eol);
+        editStackElement.append(self.textModel(), &[_]TextChange{}, eol, self.textModel().getVersionId(), null);
     }
 
     pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []ValidAnnotatedEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
         var editStackElement = try self._getOrCreateEditStackElement(beforeCursorState, group);
-        const inverseEditOperations = (try self._model.applyValidatedEdits(editOperations, true)).?;
+        const inverseEditOperations = (try self.textModel().applyValidatedEdits(editOperations, true)).?;
         defer inverseEditOperations.deinit();
         const afterCursorState = EditStack._computeCursorState(cursorStateComputer, inverseEditOperations.items);
 
-        var textChangesWithIndex = ArrayList(Pair(*TextChange, usize)).init(self._model.getAllocator());
+        var textChangesWithIndex = ArrayList(Pair(*TextChange, usize)).init(self.textModel().getAllocator());
         for (inverseEditOperations.items, 0..) |*op, i| {
             try textChangesWithIndex.append(pair(&op.textChange, i));
         }
         defer textChangesWithIndex.deinit();
         std.sort.heap(Pair(*TextChange, usize), textChangesWithIndex.items, {}, lessThanTextChangeWithIndex);
-        const textChanges = try fromIndexedPair(TextChange, self._model.getAllocator(), textChangesWithIndex.items);
+        const textChanges = try fromIndexedPair(TextChange, self.textModel().getAllocator(), textChangesWithIndex.items);
         defer textChanges.deinit();
 
-        try editStackElement.append(self._model, textChanges.items, self._model.getEOL(), self._model.getAlternativeVersionId(), afterCursorState);
+        try editStackElement.append(self.textModel(), textChanges.items, self.textModel().getEOL(), self.textModel().getAlternativeVersionId(), afterCursorState);
         return afterCursorState;
     }
 

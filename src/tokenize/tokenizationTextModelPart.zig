@@ -40,19 +40,20 @@ pub const TokenizationTextModelPart = struct {
     tokens: TokenizerSyntaxTokenBackend,
     _useTreeSitter: bool,
     _languageId: []const u8,
-    _textModel: *TextModel,
+    _textModel: *anyopaque,
     _attachedViews: AttachedViews,
     // _bracketPairsTextModelPart: BracketPairsTextModelPart,
     _languageService: *LanguageService,
-    _languageConfigurationService: ILanguageConfigurationService,
+    _languageConfigurationService: *ILanguageConfigurationService,
     // _instantiationService: IInstantiationService,
     // _treeSitterLibraryService: ITreeSitterLibraryService,
 
     pub fn init(
-        textModel: *TextModel,
+        textModel_: *TextModel,
         languageId: []const u8,
         attachedViews: AttachedViews,
         languageService: *LanguageService,
+        languageConfigurationService: *ILanguageConfigurationService,
     ) TokenizationTextModelPart {
         //tokens = derived(this, reader => {
         //   let tokens: AbstractSyntaxTokenBackend;
@@ -89,21 +90,20 @@ pub const TokenizationTextModelPart = struct {
         // });
 
         const languageIdCodec = languageService.languageIdCodec;
+        const allocator = textModel_.getAllocator();
 
         return TokenizationTextModelPart{
             ._useTreeSitter = false,
-            ._textModel = textModel,
+            ._textModel = textModel_,
             ._languageId = languageId,
             ._attachedViews = attachedViews,
-            ._semanticTokens = SparseTokensStore.init(textModel.getAllocator(), languageIdCodec),
-            ._onDidChangeLanguage = Emitter(ModelLanguageChangedEvent).init(),
-            ._onDidChangeLanguageConfiguration = Emitter(ModelLanguageConfigurationChangedEvent).init(),
-            ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(),
-            .tokens = TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel, struct {
-                fn get() []const u8 {
-                    return languageId;
-                }
-            }.get, attachedViews),
+            ._semanticTokens = SparseTokensStore.init(allocator, languageIdCodec),
+            ._onDidChangeLanguage = Emitter(ModelLanguageChangedEvent).init(allocator),
+            ._onDidChangeLanguageConfiguration = Emitter(ModelLanguageConfigurationChangedEvent).init(allocator),
+            ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
+            ._languageService = languageService,
+            ._languageConfigurationService = languageConfigurationService,
+            .tokens = TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel_, languageId, attachedViews),
         };
     }
 
@@ -115,14 +115,18 @@ pub const TokenizationTextModelPart = struct {
         self.tokens.deinit();
     }
 
+    pub fn textModel(self: *TokenizationTextModelPart) *TextModel {
+        return @ptrCast(self._textModel);
+    }
+
     // @internal, should not be exposed by the text model!
     // pub fn onDidChangeBackgroundTokenizationState(self: *TokenizationTextModelPart, f: fn (void) void) void {
     //     self._onDidChangeBackgroundTokenizationState.event({}, f);
     // }
 
     // //** @internal, should not be exposed by the text model! */
-    pub fn onDidChangeTokens(self: *TokenizationTextModelPart, f: fn (ModelTokensChangedEvent, void) void) void {
-        self._onDidChangeTokens.event({}, f);
+    pub fn onDidChangeTokens(self: *TokenizationTextModelPart, f: fn (ModelTokensChangedEvent, void) anyerror!void) !void {
+        try self._onDidChangeTokens.event({}, f);
     }
 
     fn _hasListeners(self: *TokenizationTextModelPart) bool {

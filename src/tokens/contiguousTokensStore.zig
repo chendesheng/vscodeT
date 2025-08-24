@@ -29,7 +29,7 @@ pub const ContiguousTokensStore = struct {
         return ContiguousTokensStore{
             ._lineTokens = ArrayList(?ArrayList(TokenPacked)).init(allocator),
             ._len = 0,
-            .languageIdCodec = languageIdCodec,
+            ._languageIdCodec = languageIdCodec,
         };
     }
 

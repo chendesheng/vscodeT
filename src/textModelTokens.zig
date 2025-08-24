@@ -55,15 +55,15 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
 
     lineCount: usize,
     tokenizationSupport: ITokenizationSupport,
-    _textModel: TextModel,
+    _textModel: *anyopaque,
     _languageIdCodec: LanguageIdCodec,
 
-    pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport, textModel: TextModel, languageIdCodec: LanguageIdCodec) !Self {
+    pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport, textModel_: *TextModel, languageIdCodec: LanguageIdCodec) !Self {
         return Self{
-            .super = try TokenizerWithStateStore.init(textModel.getAllocator(), lineCount, tokenizationSupport),
+            .super = try TokenizerWithStateStore.init(textModel_.getAllocator(), lineCount, tokenizationSupport),
             .lineCount = lineCount,
             .tokenizationSupport = tokenizationSupport,
-            ._textModel = textModel,
+            ._textModel = textModel_,
             ._languageIdCodec = languageIdCodec,
         };
     }
@@ -84,8 +84,12 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         return self.super.initialState;
     }
 
+    fn textModel(self: *Self) *TextModel {
+        return @ptrCast(self._textModel);
+    }
+
     pub fn updateTokensUntilLine(self: *Self, builder: ContiguousMultilineTokensBuilder, lineNumber: usize) !void {
-        const languageId = self._textModel.getLanguageId();
+        const languageId = self.textModel().getLanguageId();
 
         while (true) {
             const lineToTokenize = try self.getFirstInvalidLine() orelse break;
@@ -93,7 +97,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
                 break;
             }
 
-            const text = try self._textModel.getLineContent(lineToTokenize.lineNumber);
+            const text = try self.textModel().getLineContent(lineToTokenize.lineNumber);
             const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.startState);
             try builder.add(lineToTokenize.lineNumber, r.tokens);
             _ = try self.getStore().setEndState(lineToTokenize.lineNumber, r.endState);
@@ -108,8 +112,8 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             return StandardTokenType.Other;
         }
 
-        const languageId = self._textModel.getLanguageId();
-        const lineContent = self._textModel.getLineContent(position.lineNumber);
+        const languageId = self.textModel().getLanguageId();
+        const lineContent = self.textModel().getLineContent(position.lineNumber);
 
         // Create the text as if `character` was inserted
         const text = (lineContent[0 .. position.column - 1] ++ character ++ lineContent[position.column - 1 ..]);
@@ -127,8 +131,8 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     // assumes state is up to date
     pub fn tokenizeLinesAt(self: *Self, lineNumber: usize, lines: []const []const u8) !?ArrayList(LineTokens) {
         if (self.getStartState(lineNumber)) |lineStartState| {
-            const allocator = self._textModel.getAllocator();
-            const languageId = self._textModel.getLanguageId();
+            const allocator = self.textModel().getAllocator();
+            const languageId = self.textModel().getLanguageId();
             var result = ArrayList(LineTokens).init(allocator);
 
             var state = lineStartState;
@@ -154,7 +158,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         if (lineNumber < firstInvalidLineNumber) {
             return true;
         }
-        if (lineNumber == firstInvalidLineNumber and self._textModel.getLineLength(lineNumber) < CHEAP_TOKENIZATION_LENGTH_LIMIT) {
+        if (lineNumber == firstInvalidLineNumber and self.textModel().getLineLength(lineNumber) < CHEAP_TOKENIZATION_LENGTH_LIMIT) {
             return true;
         }
 
@@ -175,10 +179,10 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         }
 
         const state = self.guessStartState(startLineNumber);
-        const languageId = self._textModel.getLanguageId();
+        const languageId = self.textModel().getLanguageId();
 
         for (startLineNumber..endLineNumber + 1) |lineNumber| {
-            const text = try self._textModel.getLineContent(lineNumber);
+            const text = try self.textModel().getLineContent(lineNumber);
             const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
             try builder.add(lineNumber, r.tokens);
             state = r.endState;
@@ -188,7 +192,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     }
 
     fn guessStartState(self: *Self, lineNumber: usize) IState {
-        const res = findLikelyRelevantLines(self._textModel, lineNumber, self);
+        const res = findLikelyRelevantLines(self.textModel(), lineNumber, self);
         const likelyRelevantLines = res.likelyRelevantLines;
         defer likelyRelevantLines.deinit();
         const initialState = res.initialState;
@@ -197,7 +201,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             initialState = self.tokenizationSupport.getInitialState();
         }
 
-        const languageId = self._textModel.getLanguageId();
+        const languageId = self.textModel().getLanguageId();
         var state = initialState;
         for (likelyRelevantLines.items) |line| {
             defer line.deinit();
@@ -399,7 +403,7 @@ pub const DefaultBackgroundTokenizer = struct {
     }
 
     fn _beginBackgroundTokenization(self: *Self) void {
-        if (self._isScheduled or !self.tokenizerWithStateStore.?._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
+        if (self._isScheduled or !self.tokenizerWithStateStore.?.textModel().isAttachedToEditor() or !self._hasLinesToTokenize()) {
             return;
         }
 
@@ -419,7 +423,7 @@ pub const DefaultBackgroundTokenizer = struct {
         const now = std.time.timestamp();
         const endTime = now + deadline.timeRemaining();
 
-        if (self._isDisposed or !self.tokenizerWithStateStore.?._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
+        if (self._isDisposed or !self.tokenizerWithStateStore.?.textModel().isAttachedToEditor() or !self._hasLinesToTokenize()) {
             // disposed in the meantime or detached or finished
             return;
         }
@@ -439,7 +443,7 @@ pub const DefaultBackgroundTokenizer = struct {
 
     // Tokenize for at least 1ms.
     fn _backgroundTokenizeForAtLeast1ms(self: *Self) void {
-        const lineCount = self.tokenizerWithStateStore.?._textModel.getLineCount();
+        const lineCount = self.tokenizerWithStateStore.?.textModel().getLineCount();
         const builder = ContiguousMultilineTokensBuilder.init();
         const sw = StopWatch.init();
 
@@ -472,7 +476,7 @@ pub const DefaultBackgroundTokenizer = struct {
     fn _tokenizeOneInvalidLine(self: *Self, builder: ContiguousMultilineTokensBuilder) usize {
         const firstInvalidLine = self.tokenizerWithStateStore.?.getFirstInvalidLine();
         if (!firstInvalidLine) {
-            return self.tokenizerWithStateStore.?._textModel.getLineCount() + 1; // TODO: this is wrong
+            return self.tokenizerWithStateStore.?.textModel().getLineCount() + 1; // TODO: this is wrong
         }
         self.tokenizerWithStateStore.?.updateTokensUntilLine(builder, firstInvalidLine.lineNumber);
         return firstInvalidLine.lineNumber;

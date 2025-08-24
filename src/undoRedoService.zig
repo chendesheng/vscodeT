@@ -448,7 +448,7 @@ const ResourceEditStack = struct {
         }
     }
 
-    pub fn setElementsValidFlag(self: *ResourceEditStack, isValid: bool, filter: fn (element: EditStackElement) bool) void {
+    pub fn setElementsValidFlag(self: *ResourceEditStack, isValid: bool, filter: *const fn (element: EditStackElement) bool) void {
         for (self._past.items) |element| {
             if (filter(element.actual())) {
                 self._setElementValidFlag(element, isValid);

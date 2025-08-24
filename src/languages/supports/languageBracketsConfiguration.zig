@@ -186,20 +186,24 @@ pub const BracketKind = union {
 
 pub const OpeningBracketKind = struct {
     isOpeningBracket: bool = true,
-    config: LanguageBracketsConfiguration,
+    config: *const LanguageBracketsConfiguration,
     bracketText: []const u8,
-    openedBrackets: Set(ClosingBracketKind),
+    _openedBrackets: *const anyopaque,
 
     pub fn init(
-        config: LanguageBracketsConfiguration,
+        config: *const LanguageBracketsConfiguration,
         bracketText: []const u8,
-        openedBrackets: Set(ClosingBracketKind),
+        openedBrackets_: *const Set(ClosingBracketKind),
     ) OpeningBracketKind {
         return OpeningBracketKind{
             .config = config,
             .bracketText = bracketText,
-            .openedBrackets = openedBrackets,
+            ._openedBrackets = openedBrackets_,
         };
+    }
+
+    pub fn openedBrackets(self: *const OpeningBracketKind) *const Set(ClosingBracketKind) {
+        return @ptrCast(self._openedBrackets);
     }
 
     pub fn languageId(self: *const OpeningBracketKind) []const u8 {
@@ -220,16 +224,16 @@ const ClosingBracketKindInfo = struct {
 
 pub const ClosingBracketKind = struct {
     isOpeningBracket: bool = false,
-    config: LanguageBracketsConfiguration,
+    config: *const LanguageBracketsConfiguration,
     bracketText: []const u8,
-    openingBrackets: Set(OpeningBracketKind),
-    openingColorizedBrackets: Set(OpeningBracketKind),
+    openingBrackets: *const Set(OpeningBracketKind),
+    openingColorizedBrackets: *const Set(OpeningBracketKind),
 
     pub fn init(
-        config: LanguageBracketsConfiguration,
+        config: *const LanguageBracketsConfiguration,
         bracketText: []const u8,
-        openingBrackets: Set(OpeningBracketKind),
-        openingColorizedBrackets: Set(OpeningBracketKind),
+        openingBrackets: *const Set(OpeningBracketKind),
+        openingColorizedBrackets: *const Set(OpeningBracketKind),
     ) ClosingBracketKind {
         return ClosingBracketKind{
             .config = config,
@@ -241,14 +245,14 @@ pub const ClosingBracketKind = struct {
 
     // Checks if this bracket closes the given other bracket.
     // If the bracket infos come from different configurations, this method will return false.
-    pub fn closes(self: *const ClosingBracketKind, other: OpeningBracketKind) bool {
+    pub fn closes(self: *const ClosingBracketKind, other: *const OpeningBracketKind) bool {
         if (other.config.id != self.config.id) {
             return false;
         }
         return self.openingBrackets.has(other);
     }
 
-    pub fn closesColorized(self: *const ClosingBracketKind, other: OpeningBracketKind) bool {
+    pub fn closesColorized(self: *const ClosingBracketKind, other: *const OpeningBracketKind) bool {
         if (other.config.id != self.config.id) {
             return false;
         }
@@ -256,7 +260,7 @@ pub const ClosingBracketKind = struct {
     }
 
     pub fn getOpeningBrackets(self: *const ClosingBracketKind) []const OpeningBracketKind {
-        return self.openingBrackets.items();
+        return self.openingBrackets.values();
     }
 
     pub fn languageId(self: *const ClosingBracketKind) []const u8 {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = std.io;
 const ArrayList = std.ArrayList;
 const Range = @import("../basics/range.zig").Range;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
@@ -18,12 +19,12 @@ pub const SparseMultilineTokens = struct {
     }
 
     // (Inclusive) start line number for these tokens.
-    pub fn getStartLineNumber(self: *SparseMultilineTokens) usize {
+    pub fn getStartLineNumber(self: *const SparseMultilineTokens) usize {
         return self._startLineNumber;
     }
 
     // (Inclusive) end line number for these tokens.
-    pub fn getEndLineNumber(self: *SparseMultilineTokens) usize {
+    pub fn getEndLineNumber(self: *const SparseMultilineTokens) usize {
         return self._endLineNumber;
     }
 
@@ -31,7 +32,7 @@ pub const SparseMultilineTokens = struct {
         return .{
             ._startLineNumber = startLineNumber,
             ._tokens = tokens,
-            ._endLineNumber = startLineNumber + tokens.getMaxDeltaLine(),
+            ._endLineNumber = tokens.addStartLineNumber(startLineNumber),
         };
     }
 
@@ -44,7 +45,7 @@ pub const SparseMultilineTokens = struct {
     }
 
     fn _updateEndLineNumber(self: *SparseMultilineTokens) void {
-        self._endLineNumber = self._startLineNumber + self._tokens.getMaxDeltaLine();
+        self._endLineNumber = self._tokens.addStartLineNumber(self._startLineNumber);
     }
 
     pub fn isEmpty(self: *SparseMultilineTokens) bool {
@@ -126,7 +127,7 @@ pub const SparseMultilineTokens = struct {
             return;
         }
 
-        const tokenMaxDeltaLine = self._tokens.getMaxDeltaLine();
+        const tokenMaxDeltaLine = self._tokens.addStartLineNumber(0);
 
         if (firstLineIndex >= tokenMaxDeltaLine + 1) {
             // this deletion occurs entirely after this block, so there is nothing to do
@@ -164,7 +165,7 @@ pub const SparseMultilineTokens = struct {
             return;
         }
 
-        const tokenMaxDeltaLine = self._tokens.getMaxDeltaLine();
+        const tokenMaxDeltaLine = self._tokens.addStartLineNumber(0);
 
         if (lineIndex >= tokenMaxDeltaLine + 1) {
             // this insertion occurs after this block, so there is nothing to do
@@ -174,7 +175,7 @@ pub const SparseMultilineTokens = struct {
         self._tokens.acceptInsertText(lineIndex, position.column - 1, eolCount, firstLineLength, lastLineLength, firstCharCode);
     }
 
-    pub fn reportIfInvalid(self: *SparseMultilineTokens, model: TextModel) void {
+    pub fn reportIfInvalid(self: *const SparseMultilineTokens, model: *const TextModel) void {
         self._tokens.reportIfInvalid(model, self._startLineNumber);
     }
 };
@@ -184,6 +185,15 @@ pub const SparseToken = packed struct {
     startCharacter: u32,
     endCharacter: u32,
     metadata: TokenMetadata,
+
+    pub fn init(deltaLine: u32, startCharacter: u32, endCharacter: u32, metadata: TokenMetadata) SparseToken {
+        return .{
+            .deltaLine = deltaLine,
+            .startCharacter = startCharacter,
+            .endCharacter = endCharacter,
+            .metadata = metadata,
+        };
+    }
 };
 
 pub const SparseMultilineTokensStorage = struct {
@@ -202,10 +212,7 @@ pub const SparseMultilineTokensStorage = struct {
         self._tokens.deinit();
     }
 
-    pub fn toString(self: *const SparseMultilineTokensStorage, startLineNumber: usize) !ArrayList(u8) {
-        const allocator = self._tokens.allocator;
-        var pieces = ArrayList([]u8).init(allocator);
-        var writer = pieces.writer();
+    pub fn toString(self: *const SparseMultilineTokensStorage, writer: io.AnyWriter, startLineNumber: usize) !void {
         try writer.writeAll("[");
         for (0..self._tokens.len) |i| {
             try writer.print("({d},{d}-{d})", .{
@@ -218,13 +225,19 @@ pub const SparseMultilineTokensStorage = struct {
             }
         }
         try writer.writeAll("]");
-        return pieces;
     }
 
-    pub fn getMaxDeltaLine(self: *const SparseMultilineTokensStorage) usize {
+    pub fn addStartLineNumber(self: *const SparseMultilineTokensStorage, startLineNumber: usize) usize {
+        if (self.getMaxDeltaLine()) |maxDeltaLine| {
+            return startLineNumber + maxDeltaLine + 1;
+        }
+        return startLineNumber;
+    }
+
+    pub fn getMaxDeltaLine(self: *const SparseMultilineTokensStorage) ?usize {
         const tokenCount = self._getTokenCount();
         if (tokenCount == 0) {
-            return -1;
+            return null;
         }
         return self._getDeltaLine(tokenCount - 1);
     }
@@ -246,7 +259,7 @@ pub const SparseMultilineTokensStorage = struct {
     }
 
     fn _getTokenCount(self: *const SparseMultilineTokensStorage) usize {
-        return self._tokens.len;
+        return self._tokens.items.len;
     }
 
     fn _getDeltaLine(self: *const SparseMultilineTokensStorage, tokenIndex: usize) usize {
@@ -262,11 +275,11 @@ pub const SparseMultilineTokensStorage = struct {
     }
 
     pub fn isEmpty(self: *const SparseMultilineTokensStorage) bool {
-        return (self._getTokenCount() == 0);
+        return self._getTokenCount() == 0;
     }
 
     pub fn getLineTokens(self: *const SparseMultilineTokensStorage, deltaLine: usize) ?SparseLineTokens {
-        var low = 0;
+        var low: usize = 0;
         var high = self._getTokenCount() - 1;
 
         while (low < high) {
@@ -575,10 +588,10 @@ pub const SparseMultilineTokensStorage = struct {
         }
     }
 
-    const _rateLimiter = RateLimiter.init(10.0 / 60.0);
+    var _rateLimiter = RateLimiter.init(10.0 / 60.0);
 
-    pub fn reportIfInvalid(self: *SparseMultilineTokensStorage, model: TextModel, startLineNumber: usize) void {
-        for (0..self._tokens.len) |i| {
+    pub fn reportIfInvalid(self: *const SparseMultilineTokensStorage, model: *const TextModel, startLineNumber: usize) void {
+        for (0..self._tokens.items.len) |i| {
             const lineNumber = self._getDeltaLine(i) + startLineNumber;
 
             if (lineNumber > model.getLineCount()) {
@@ -600,6 +613,18 @@ pub const SparseMultilineTokensStorage = struct {
     }
 };
 
+// test "SparseMultilineTokensStorage/init" {
+//     var tokens = ArrayList(SparseToken).init(std.testing.allocator);
+//     defer tokens.deinit();
+
+//     var storage = SparseMultilineTokensStorage.init(tokens);
+//     defer storage.deinit();
+
+//     try storage.acceptInsertText(0, 10, 0, 10, 10, 0);
+
+//     try storage.toString(std.io.getStdOut().writer(), 0);
+// }
+
 pub const SparseLineTokens = struct {
     _tokens: []SparseToken,
 
@@ -615,11 +640,11 @@ pub const SparseLineTokens = struct {
         return self._tokens.len;
     }
 
-    pub fn getStartCharacter(self: *const SparseLineTokens, tokenIndex: usize) usize {
+    pub fn getStartCharacter(self: *const SparseLineTokens, tokenIndex: usize) u32 {
         return self._tokens[tokenIndex].startCharacter;
     }
 
-    pub fn getEndCharacter(self: *const SparseLineTokens, tokenIndex: usize) usize {
+    pub fn getEndCharacter(self: *const SparseLineTokens, tokenIndex: usize) u32 {
         return self._tokens[tokenIndex].endCharacter;
     }
 

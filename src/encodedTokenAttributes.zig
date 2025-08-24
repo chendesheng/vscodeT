@@ -11,14 +11,70 @@ pub const FontStyle = packed struct(u4) {
     bold: bool,
     underline: bool,
     strikethrough: bool,
+
+    pub const None = FontStyle{
+        .italic = false,
+        .bold = false,
+        .underline = false,
+        .strikethrough = false,
+    };
+
+    pub const Italic = FontStyle{
+        .italic = true,
+        .bold = false,
+        .underline = false,
+        .strikethrough = false,
+    };
+
+    pub const Bold = FontStyle{
+        .italic = false,
+        .bold = true,
+        .underline = false,
+        .strikethrough = false,
+    };
+
+    pub const Underline = FontStyle{
+        .italic = false,
+        .bold = false,
+        .underline = true,
+        .strikethrough = false,
+    };
+
+    pub const Strikethrough = FontStyle{
+        .italic = false,
+        .bold = false,
+        .underline = false,
+        .strikethrough = true,
+    };
+
+    pub const ItalicBold = FontStyle{
+        .italic = true,
+        .bold = true,
+        .underline = false,
+        .strikethrough = false,
+    };
+
+    pub const ItalicUnderline = FontStyle{
+        .italic = true,
+        .bold = false,
+        .underline = true,
+        .strikethrough = false,
+    };
+
+    pub const ItalicStrikethrough = FontStyle{
+        .italic = true,
+        .bold = false,
+        .underline = false,
+        .strikethrough = true,
+    };
 };
 
 // Open ended enum at runtime
-pub const ColorId = enum(u9) {
-    None = 0,
-    DefaultForeground = 1,
-    DefaultBackground = 2,
-    Mask = 0b111111111,
+pub const ColorId = struct {
+    pub const None: u9 = 0;
+    pub const DefaultForeground: u9 = 1;
+    pub const DefaultBackground: u9 = 2;
+    pub const Mask: u9 = 0b111111111;
 };
 
 // A standard token type.
@@ -77,13 +133,74 @@ pub const SemanticMetadata = packed struct(u8) {
     useStrikethrough: bool,
     useForeground: bool,
     useBackground: bool,
+    _padding: u2,
+
+    pub const UseForeground = SemanticMetadata{
+        .useItalic = false,
+        .useBold = false,
+        .useUnderline = false,
+        .useStrikethrough = false,
+        .useForeground = true,
+        .useBackground = false,
+        ._padding = 0,
+    };
+
+    pub const UseBackground = SemanticMetadata{
+        .useItalic = false,
+        .useBold = false,
+        .useUnderline = false,
+        .useStrikethrough = false,
+        .useForeground = false,
+        .useBackground = true,
+        ._padding = 0,
+    };
+
+    pub const UseItalic = SemanticMetadata{
+        .useItalic = true,
+        .useBold = false,
+        .useUnderline = false,
+        .useStrikethrough = false,
+        .useForeground = false,
+        .useBackground = false,
+        ._padding = 0,
+    };
+
+    pub const UseBold = SemanticMetadata{
+        .useItalic = false,
+        .useBold = true,
+        .useUnderline = false,
+        .useStrikethrough = false,
+        .useForeground = false,
+        .useBackground = false,
+        ._padding = 0,
+    };
+
+    pub const UseUnderline = SemanticMetadata{
+        .useItalic = false,
+        .useBold = false,
+        .useUnderline = true,
+        .useStrikethrough = false,
+        .useForeground = false,
+        .useBackground = false,
+    };
+
+    pub const UseStrikethrough = SemanticMetadata{
+        .useItalic = false,
+        .useBold = false,
+        .useUnderline = false,
+        .useStrikethrough = true,
+        .useForeground = false,
+        .useBackground = false,
+        ._padding = 0,
+    };
 };
+
 pub const TokenMetadata = packed struct(u32) {
     languageId: u8,
     tokenType: StandardTokenType,
     balancedBrackets: bool,
     fontStyle: FontStyle,
-    foreground: ColorId,
+    foreground: u9,
     background: u8,
 
     pub const default = TokenMetadata{
@@ -91,8 +208,8 @@ pub const TokenMetadata = packed struct(u32) {
         .tokenType = .Other,
         .balancedBrackets = false,
         .fontStyle = .{ .italic = false, .bold = false, .underline = false, .strikethrough = false },
-        .foreground = .DefaultForeground,
-        .background = @intFromEnum(ColorId.DefaultBackground),
+        .foreground = ColorId.DefaultForeground,
+        .background = @intCast(ColorId.DefaultBackground),
     };
 
     pub fn getClassNameFromMetadata(self: TokenMetadata, allocator: Allocator) !ArrayList(u8) {
