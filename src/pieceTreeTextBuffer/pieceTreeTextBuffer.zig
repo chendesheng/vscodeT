@@ -1,29 +1,33 @@
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
-const countEOL = @import("eolCounter.zig").countEOL;
-const StringEOL = @import("eolCounter.zig").StringEOL;
-const strings = @import("strings.zig");
+const countEOL = @import("../basics/eolCounter.zig").countEOL;
+const StringEOL = @import("../basics/eolCounter.zig").StringEOL;
+const strings = @import("../basics/strings.zig");
 const PB = @import("pieceTreeBase.zig");
 const PieceTreeBase = PB.PieceTreeBase;
 const PieceTreeSnapshot = PB.PieceTreeSnapshot;
-const Model = @import("model.zig");
+const Model = @import("../model.zig");
 const SingleEditOperationIdentifier = Model.SingleEditOperationIdentifier;
 const EndOfLinePreference = Model.EndOfLinePreference;
 const ValidAnnotatedEditOperation = Model.ValidAnnotatedEditOperation;
 const ApplyEditsResult = Model.ApplyEditsResult;
 const InternalModelContentChange = Model.InternalModelContentChange;
-const ReverseSingleEditOperation = Model.ReverseSingleEditOperation;
-const EOL = Model.EOL;
-const Position = @import("position.zig").Position;
-const Rg = @import("range.zig");
+const SearchData = Model.SearchData;
+const FindMatch = Model.FindMatch;
+const EOL = @import("../basics/eolCounter.zig").EOL;
+const Position = @import("../basics/position.zig").Position;
+const Rg = @import("../basics/range.zig");
 const Range = Rg.Range;
 const StringBuffer = PB.StringBuffer;
-const usizeSub = PB.usizeSub;
-const usizeAdd = PB.usizeAdd;
-const TextChange = @import("textChange.zig").TextChange;
-const replaceEOL = @import("eolCounter.zig").replaceEOL;
-const safeUtf8Substring = @import("tui/utf8Helper.zig").safeUtf8Substring;
+const usizeSub = @import("../basics/utils.zig").usizeSub;
+const usizeAdd = @import("../basics/utils.zig").usizeAdd;
+const TextChange = @import("../textChange.zig").TextChange;
+const replaceEOL = @import("../basics/eolCounter.zig").replaceEOL;
+const safeUtf8Substring = @import("../tui/utf8Helper.zig").safeUtf8Substring;
+const ModelContentChange = @import("../textModelEvents.zig").ModelContentChange;
+const ValidEditOperation = @import("../model.zig").ValidEditOperation;
+const String = @import("../basics/strings.zig").String;
 
 const ValidatedEditOperation = struct {
     sortIndex: i64,
@@ -31,17 +35,21 @@ const ValidatedEditOperation = struct {
     range: Range,
     rangeOffset: usize,
     rangeLength: usize,
-    text: []const u8,
+    text: String,
     eolCount: usize,
     firstLineLength: usize,
     lastLineLength: usize,
     forceMoveMarkers: bool,
     isAutoWhitespaceEdit: bool,
+
+    pub fn deinit(self: *const ValidatedEditOperation) void {
+        self.text.deinit();
+    }
 };
 
 const TrimAutoWhitespaceCandidate = struct {
     lineNumber: usize,
-    oldContent: []const u8,
+    oldContent: ArrayList(u8),
 };
 
 pub const PieceTreeTextBuffer = struct {
@@ -117,7 +125,7 @@ pub const PieceTreeTextBuffer = struct {
         const end = start + length;
         const startPosition = self.getPositionAt(start);
         const endPosition = self.getPositionAt(end);
-        return Range{ .start = startPosition, .end = endPosition };
+        return Range.init(startPosition.lineNumber, startPosition.column, endPosition.lineNumber, endPosition.column);
     }
 
     pub fn getValueInRange(self: *const PieceTreeTextBuffer, range: Range, eol: EndOfLinePreference) !ArrayList(u8) {
@@ -167,10 +175,11 @@ pub const PieceTreeTextBuffer = struct {
             const toLineNumber = range.endLineNumber;
             for (fromLineNumber..toLineNumber + 1) |lineNumber| {
                 const lineContent = try self.getLineContent(lineNumber);
+                defer lineContent.deinit();
 
                 const fromOffset = if (lineNumber == fromLineNumber) range.startColumn - 1 else 0;
-                const toOffset = if (lineNumber == toLineNumber) range.endColumn - 1 else lineContent.len;
-                const utf8View = try std.unicode.Utf8View.init(safeUtf8Substring(lineContent, fromOffset, toOffset));
+                const toOffset = if (lineNumber == toLineNumber) range.endColumn - 1 else lineContent.items.len;
+                const utf8View = try std.unicode.Utf8View.init(safeUtf8Substring(lineContent.items, fromOffset, toOffset));
                 var iter = utf8View.iterator();
                 while (iter.nextCodepointSlice()) |_| {
                     result += 1;
@@ -197,17 +206,24 @@ pub const PieceTreeTextBuffer = struct {
         return self._pieceTree.getLineCount();
     }
 
-    pub fn getLinesContent(self: *const PieceTreeTextBuffer) ![]const []const u8 {
+    pub fn getLinesContent(self: *const PieceTreeTextBuffer) !ArrayList(ArrayList(u8)) {
         return self._pieceTree.getLinesContent();
     }
 
-    pub fn getLineContent(self: *PieceTreeTextBuffer, lineNumber: usize) ![]const u8 {
+    pub fn getLineContent(self: *PieceTreeTextBuffer, lineNumber: usize) !ArrayList(u8) {
         return try self._pieceTree.getLineContent(lineNumber);
     }
 
-    // FIXME: utf8
-    pub fn getLineCharCode(self: *const PieceTreeTextBuffer, lineNumber: usize, index: usize) u8 {
-        return self._pieceTree.getLineCharCode(lineNumber, index);
+    pub fn getLineCharCode(self: *const PieceTreeTextBuffer, lineNumber: usize, offset: usize) u8 {
+        return self._pieceTree.getLineCharCode(lineNumber, offset);
+    }
+
+    pub fn getLineCodepoint(self: *const PieceTreeTextBuffer, lineNumber: usize, offset: usize) u21 {
+        return self._pieceTree.getLineCodepoint(lineNumber, offset);
+    }
+
+    pub fn getLineCodepointRange(self: *const PieceTreeTextBuffer, lineNumber: usize, offset: usize) [2]usize {
+        return self._pieceTree.getLineCodepointRange(lineNumber, offset);
     }
 
     pub fn getCharCode(self: *const PieceTreeTextBuffer, offset: usize) u8 {
@@ -247,13 +263,13 @@ pub const PieceTreeTextBuffer = struct {
         };
     }
 
-    pub fn setEOL(self: *PieceTreeTextBuffer, eol: EOL) void {
-        self._pieceTree.setEOL(eol);
+    pub fn setEOL(self: *PieceTreeTextBuffer, eol: EOL) !void {
+        try self._pieceTree.setEOL(eol);
     }
 
     // TODO: ?? add a "SharedString" (with reference counting) to avoid copying strings
     // TODO: maybe we could add fast path for single operation? could avoid sorting and other stuff
-    pub fn applyEdits(self: *PieceTreeTextBuffer, rawOperations: []const ValidAnnotatedEditOperation, recordTrimAutoWhitespace: bool, computeUndoEdits: bool) !ApplyEditsResult {
+    pub fn applyEdits(self: *PieceTreeTextBuffer, rawOperations: []ValidAnnotatedEditOperation, recordTrimAutoWhitespace: bool, computeUndoEdits: bool) !ApplyEditsResult {
         const allocator = self._pieceTree.allocator;
         var mightContainRTL = self._mightContainRTL;
         var mightContainUnusualLineTerminators = self._mightContainUnusualLineTerminators;
@@ -267,29 +283,29 @@ pub const PieceTreeTextBuffer = struct {
                 canReduceOperations = false;
             }
             const validatedRange = op.range;
-            if (op.text) |text| {
+            if (op.text) |*text| {
                 var textMightContainNonBasicASCII = true;
                 if (!mightContainNonBasicASCII) {
-                    textMightContainNonBasicASCII = !strings.isBasicASCII(text);
+                    textMightContainNonBasicASCII = !text.isBasicASCII_();
                     mightContainNonBasicASCII = textMightContainNonBasicASCII;
                 }
                 if (!mightContainRTL and textMightContainNonBasicASCII) {
                     // check if the new inserted text contains RTL
-                    mightContainRTL = strings.containsRTL(text);
+                    mightContainRTL = text.containsRTL_();
                 }
                 if (!mightContainUnusualLineTerminators and textMightContainNonBasicASCII) {
                     // check if the new inserted text contains unusual line terminators
-                    mightContainUnusualLineTerminators = strings.containsUnusualLineTerminators(text);
+                    mightContainUnusualLineTerminators = text.containsUnusualLineTerminators_();
                 }
             }
 
-            var validText: []const u8 = "";
+            var validText: String = String.Empty;
             var eolCount: usize = 0;
             var firstLineLength: usize = 0;
             var lastLineLength: usize = 0;
-            if (op.text) |text| {
+            if (op.text) |*text| {
                 var strEOL: StringEOL = .Unknown;
-                const eolResult = countEOL(text);
+                const eolResult = countEOL(text.items());
                 eolCount = eolResult.eolCount;
                 firstLineLength = eolResult.firstLineLength;
                 lastLineLength = eolResult.lastLineLength;
@@ -298,13 +314,12 @@ pub const PieceTreeTextBuffer = struct {
                 const bufferEOL = self.getEOL();
                 const expectedStrEOL = if (bufferEOL == .CRLF) StringEOL.CRLF else StringEOL.LF;
                 if (strEOL != .Unknown or strEOL == expectedStrEOL) {
-                    validText = try allocator.dupe(u8, text);
+                    validText = text.move();
                 } else {
                     var temp = ArrayList(u8).init(allocator);
-                    defer temp.deinit();
-                    try temp.appendSlice(text);
+                    try temp.appendSlice(text.items());
                     try replaceEOL(&temp, bufferEOL);
-                    validText = try temp.toOwnedSlice();
+                    validText = String.initOwned(temp);
                 }
             }
 
@@ -360,10 +375,10 @@ pub const PieceTreeTextBuffer = struct {
                 if (op.isAutoWhitespaceEdit and op.range.isEmpty()) {
                     // Record already the future line numbers that might be auto whitespace removal candidates on next edit
                     for (reverseRange.startLineNumber..reverseRange.endLineNumber + 1) |lineNumber| {
-                        var currentLineContent: []const u8 = "";
+                        var currentLineContent = ArrayList(u8).init(allocator);
                         if (lineNumber == reverseRange.startLineNumber) {
                             currentLineContent = try self.getLineContent(op.range.startLineNumber);
-                            if (strings.firstNonWhitespaceIndex(currentLineContent) != null) {
+                            if (strings.firstNonWhitespaceIndex(currentLineContent.items) != null) {
                                 continue;
                             }
                         }
@@ -377,34 +392,33 @@ pub const PieceTreeTextBuffer = struct {
             }
         }
 
-        var reverseEdits: ?ArrayList(ReverseSingleEditOperation) = null;
+        var reverseEdits: ?ArrayList(ValidEditOperation) = null;
         if (computeUndoEdits) {
             var reverseRangeDeltaOffset: isize = 0;
-            var reverseOperations = ArrayList(ReverseSingleEditOperation).init(allocator);
-            for (operations.items, 0..) |op, i| {
+            var reverseOperations = ArrayList(ValidEditOperation).init(allocator);
+            for (operations.items, 0..) |*op, i| {
                 const reverseRange = reverseRanges.items[i];
                 const bufferText = try self.getValueInRange(op.range, .TextDefined);
-                defer bufferText.deinit();
                 const reverseRangeOffset = usizeAdd(op.rangeOffset, reverseRangeDeltaOffset);
-                reverseRangeDeltaOffset = reverseRangeDeltaOffset + usizeSub(op.text.len, bufferText.items.len);
+                reverseRangeDeltaOffset = reverseRangeDeltaOffset + usizeSub(op.text.len(), bufferText.items.len);
 
-                try reverseOperations.append(ReverseSingleEditOperation{
+                try reverseOperations.append(ValidEditOperation{
                     .sortIndex = op.sortIndex,
                     .identifier = op.identifier,
                     .range = reverseRange,
-                    .text = try allocator.dupe(u8, bufferText.items),
+                    .text = String.initBorrowed(bufferText.items),
                     .textChange = TextChange{
                         .oldPosition = op.rangeOffset,
-                        .oldText = try allocator.dupe(u8, bufferText.items),
+                        .oldText = String.initOwned(bufferText),
                         .newPosition = reverseRangeOffset,
-                        .newText = try allocator.dupe(u8, op.text),
+                        .newText = op.text.move(),
                     },
                 });
             }
 
             // Can only sort reverse operations when the order is not significant
             if (!hasTouchingRanges) {
-                std.sort.heap(ReverseSingleEditOperation, reverseOperations.items, {}, _sortReverseOpsAscending);
+                std.sort.heap(ValidEditOperation, reverseOperations.items, {}, _sortReverseOpsAscending);
             }
 
             reverseEdits = reverseOperations;
@@ -431,10 +445,10 @@ pub const PieceTreeTextBuffer = struct {
 
                 const prevContent = candidate.oldContent;
                 const lineContent = try self.getLineContent(lineNumber);
-                defer allocator.free(lineContent);
-                defer allocator.free(prevContent);
+                defer lineContent.deinit();
+                defer prevContent.deinit();
 
-                if (lineContent.len == 0 or std.mem.eql(u8, lineContent, prevContent) or strings.firstNonWhitespaceIndex(lineContent) != null) {
+                if (lineContent.items.len == 0 or std.mem.eql(u8, lineContent.items, prevContent.items) or strings.firstNonWhitespaceIndex(lineContent.items) != null) {
                     continue;
                 }
 
@@ -459,8 +473,8 @@ pub const PieceTreeTextBuffer = struct {
             return;
         }
 
-        for (operations.items) |op| {
-            operations.allocator.free(op.text);
+        for (operations.items) |*op| {
+            op.text.deinit();
         }
 
         // At one point, due to how events are emitted and how each operation is handled,
@@ -505,8 +519,8 @@ pub const PieceTreeTextBuffer = struct {
             try result.append(oldText.items);
 
             // (2) -- Push new text
-            if (operation.text.len > 0) {
-                try result.append(operation.text);
+            if (!operation.text.isEmpty()) {
+                try result.append(operation.text.items());
             }
 
             // (3) -- Update last end line number and column
@@ -514,8 +528,12 @@ pub const PieceTreeTextBuffer = struct {
             lastEndColumn = range.endColumn;
         }
 
-        const text = try std.mem.join(allocator, "", result.items);
-        const eolResult = countEOL(text);
+        const text = String.initOwned(ArrayList(u8){
+            .allocator = allocator,
+            .capacity = result.items.len,
+            .items = try std.mem.join(allocator, "", result.items),
+        });
+        const eolResult = countEOL(text.items());
         return ValidatedEditOperation{
             .sortIndex = 0,
             .identifier = operations[0].identifier,
@@ -538,23 +556,21 @@ pub const PieceTreeTextBuffer = struct {
         var contentChanges = ArrayList(InternalModelContentChange).init(allocator);
 
         // operations are from bottom to top
-        for (sortedOperations) |op| {
+        for (sortedOperations) |*op| {
             const startLineNumber = op.range.startLineNumber;
             const startColumn = op.range.startColumn;
             const endLineNumber = op.range.endLineNumber;
             const endColumn = op.range.endColumn;
 
-            if (startLineNumber == endLineNumber and startColumn == endColumn and op.text.len == 0) {
-                // FIXME: is this correct?
-                allocator.free(op.text);
+            if (startLineNumber == endLineNumber and startColumn == endColumn and op.text.isEmpty()) {
                 // no-op
                 continue;
             }
 
-            if (op.text.len > 0) {
+            if (!op.text.isEmpty()) {
                 // replacement
                 try self._pieceTree.delete(op.rangeOffset, op.rangeLength);
-                try self._pieceTree.insert(op.rangeOffset, op.text, true);
+                try self._pieceTree.insert(op.rangeOffset, op.text.items(), true);
             } else {
                 // deletion
                 try self._pieceTree.delete(op.rangeOffset, op.rangeLength);
@@ -567,15 +583,25 @@ pub const PieceTreeTextBuffer = struct {
                 .endColumn = endColumn,
             };
             try contentChanges.append(InternalModelContentChange{
-                .range = contentChangeRange,
-                .rangeLength = op.rangeLength,
-                .text = op.text,
-                .rangeOffset = op.rangeOffset,
+                .modelContentChange = ModelContentChange{
+                    .range = contentChangeRange,
+                    .rangeOffset = op.rangeOffset,
+                    .rangeLength = op.rangeLength,
+                    .text = op.text.move(),
+                },
                 .forceMoveMarkers = op.forceMoveMarkers,
             });
         }
 
         return contentChanges;
+    }
+
+    pub fn findMatchesLineByLine(self: *PieceTreeTextBuffer, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
+        return self._pieceTree.findMatchesLineByLine(searchRange, searchData, captureMatches, limitResultCount);
+    }
+
+    pub fn getAllocator(self: *const PieceTreeTextBuffer) Allocator {
+        return self._pieceTree.allocator;
     }
 };
 
@@ -605,7 +631,7 @@ fn _getInverseEditRanges(allocator: Allocator, operators: []ValidatedEditOperati
 
         var resultRange: Range = undefined;
 
-        if (!strings.isNullOrEmpty(op.text)) {
+        if (!op.text.isEmpty()) {
             // the operation inserts something
             const lineCount = op.eolCount + 1;
             if (lineCount == 1) {
@@ -658,10 +684,10 @@ fn _sortOpDescending(context: void, a: ValidatedEditOperation, b: ValidatedEditO
     return _sortOpsAscending(context, b, a);
 }
 
-fn _sortReverseOpsAscending(context: void, a: ReverseSingleEditOperation, b: ReverseSingleEditOperation) bool {
+fn _sortReverseOpsAscending(context: void, a: ValidEditOperation, b: ValidEditOperation) bool {
     _ = context;
 
-    return a.sortIndex < b.sortIndex;
+    return a.sortIndex.? < b.sortIndex.?;
 }
 
 fn _sortTrimAutoWhitespaceCandidatesDescending(context: void, a: TrimAutoWhitespaceCandidate, b: TrimAutoWhitespaceCandidate) bool {
@@ -687,7 +713,7 @@ test "insert" {
     }, "", .LF, false, false, false, false);
     defer buffer.deinit();
 
-    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation{
             .identifier = null,
             .range = Range{
@@ -696,15 +722,18 @@ test "insert" {
                 .endLineNumber = 1,
                 .endColumn = 1,
             },
-            .text = "Hello",
+            .text = .initBorrowed("Hello"),
             .forceMoveMarkers = false,
             .isAutoWhitespaceEdit = false,
             ._isTracked = false,
         },
-    }, true, true);
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("HelloHello", try buffer.getLineContent(1));
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("HelloHello", line.items);
 }
 
 test "apply two inserts" {
@@ -714,24 +743,30 @@ test "apply two inserts" {
     }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
-    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation.fromRangeAndText(Range{
             .startLineNumber = 1,
             .startColumn = 2,
             .endLineNumber = 1,
             .endColumn = 2,
-        }, "Hello"),
+        }, .initBorrowed("Hello")),
         ValidAnnotatedEditOperation.fromRangeAndText(Range{
             .startLineNumber = 2,
             .startColumn = 1,
             .endLineNumber = 2,
             .endColumn = 1,
-        }, "nihao"),
-    }, true, true);
+        }, .initBorrowed("nihao")),
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("HHelloello", try buffer.getLineContent(1));
-    try std.testing.expectEqualStrings("nihaoWorld", try buffer.getLineContent(2));
+    const line1 = try buffer.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualStrings("HHelloello", line1.items);
+
+    const line2 = try buffer.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("nihaoWorld", line2.items);
 }
 
 test "delete" {
@@ -741,17 +776,20 @@ test "delete" {
     }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
-    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation.fromRange(Range{
             .startLineNumber = 1,
             .startColumn = 1,
             .endLineNumber = 1,
             .endColumn = 5,
         }),
-    }, true, true);
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("o", try buffer.getLineContent(1));
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("o", line.items);
 }
 
 test "delete cross line" {
@@ -761,17 +799,20 @@ test "delete cross line" {
     }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
-    var result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation.fromRange(Range{
             .startLineNumber = 1,
             .startColumn = 2,
             .endLineNumber = 2,
             .endColumn = 4,
         }),
-    }, true, true);
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Hld", try buffer.getLineContent(1));
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("Hld", line.items);
 }
 
 test "replace" {
@@ -781,17 +822,20 @@ test "replace" {
     }, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
-    const result = try buffer.applyEdits(&[_]ValidAnnotatedEditOperation{
+    var edits = [_]ValidAnnotatedEditOperation{
         ValidAnnotatedEditOperation.fromRangeAndText(Range{
             .startLineNumber = 1,
             .startColumn = 1,
             .endLineNumber = 1,
             .endColumn = 6,
-        }, "nihao"),
-    }, true, true);
+        }, .initBorrowed("nihao")),
+    };
+    var result = try buffer.applyEdits(&edits, true, true);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("nihao", try buffer.getLineContent(1));
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("nihao", line.items);
 }
 
 test "getCharacterCountInRange" {

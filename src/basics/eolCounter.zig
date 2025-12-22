@@ -1,6 +1,10 @@
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
-const EOL = @import("model.zig").EOL;
+
+pub const EOL = enum(u8) {
+    CRLF,
+    LF,
+};
 
 const Unknown = 0;
 const Invalid = 3;

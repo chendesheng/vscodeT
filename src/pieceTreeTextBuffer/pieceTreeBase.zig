@@ -2,17 +2,27 @@ const std = @import("std");
 const io = std.io;
 const fs = std.fs;
 const rbt = @import("rbTreeBase.zig");
-const Position = @import("position.zig").Position;
-const Range = @import("range.zig").Range;
+const Position = @import("../basics/position.zig").Position;
+const Range = @import("../basics/range.zig").Range;
 const SENTINEL = rbt.SENTINEL;
 const TreeNode = rbt.TreeNode;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
-const safeUtf8Prefix = @import("tui/utf8Helper.zig").safeUtf8Prefix;
-const EOL = @import("model.zig").EOL;
-const replaceEOL = @import("eolCounter.zig").replaceEOL;
-const eolToString = @import("eolCounter.zig").eolToString;
-const strings = @import("strings.zig");
+const safeUtf8Prefix = @import("../tui/utf8Helper.zig").safeUtf8Prefix;
+const safeUtf8Range = @import("../tui/utf8Helper.zig").safeUtf8Range;
+const EOL = @import("../basics/eolCounter.zig").EOL;
+const replaceEOL = @import("../basics/eolCounter.zig").replaceEOL;
+const eolToString = @import("../basics/eolCounter.zig").eolToString;
+const strings = @import("../basics/strings.zig");
+const usizeSub = @import("../basics/utils.zig").usizeSub;
+const usizeAdd = @import("../basics/utils.zig").usizeAdd;
+const FindMatch = @import("../model.zig").FindMatch;
+const SearchData = @import("../model.zig").SearchData;
+const Searcher = @import("../textModelSearch.zig").Searcher;
+const createFindMatch = @import("../textModelSearch.zig").createFindMatch;
+const isValidMatch = @import("../textModelSearch.zig").isValidMatch;
+const RegExp = @import("../basics/RegExp.zig").RegExp;
+const re = @import("../basics/RegExp.zig");
 
 const AverageBufferSize = 65535;
 
@@ -108,9 +118,9 @@ const NodePosition = struct {
 };
 
 const BufferCursor = struct {
-    // Line number in current buffer
+    // Line number in current buffer, 0-based
     line: usize,
-    // Column number in current buffer
+    // Column number in current buffer, 0-based
     column: usize,
 };
 
@@ -153,6 +163,16 @@ pub const StringBuffer = struct {
 
     fn charCodeAt(self: *const StringBuffer, i: usize) u8 {
         return self.buffer.items[i];
+    }
+
+    fn codepointAt(self: *const StringBuffer, i: usize) u21 {
+        const range = safeUtf8Range(self.buffer.items, i, i + 1);
+        return std.unicode.utf8Decode(self.buffer.items[range[0]..range[1]]) catch unreachable;
+    }
+
+    fn codepointRelativeRange(self: *const StringBuffer, i: usize) [2]isize {
+        const range = safeUtf8Range(self.buffer.items, i, i + 1);
+        return [2]isize{ usizeSub(range[0], i), usizeSub(range[1], i) };
     }
 
     fn substring(self: *const StringBuffer, start: usize, end: usize) []const u8 {
@@ -334,6 +354,12 @@ const LastVisitedLine = struct {
         self.lineNumber = 0;
         try self.value.resize(0);
     }
+
+    fn copyValue(self: *LastVisitedLine) !ArrayList(u8) {
+        var ret = ArrayList(u8).init(self.value.allocator);
+        try ret.appendSlice(self.value.items);
+        return ret;
+    }
 };
 
 pub const PieceTreeBase = struct {
@@ -477,11 +503,11 @@ pub const PieceTreeBase = struct {
         }
     }
 
-    pub fn setEOL(self: *PieceTreeBase, eol: EOL) void {
+    pub fn setEOL(self: *PieceTreeBase, eol: EOL) !void {
         self.log("setEOL({s})\n", .{if (eol == .CRLF) ".CRLF" else ".LF"});
 
         self._EOL = eol;
-        self.normalizeEOL(self._EOL);
+        try self.normalizeEOL(self._EOL);
     }
 
     pub fn createSnapshot(self: *PieceTreeBase, BOM: []u8) !PieceTreeSnapshot {
@@ -599,8 +625,8 @@ pub const PieceTreeBase = struct {
             return ArrayList(u8).init(self.allocator);
         }
 
-        const startPosition = self.nodeAt2(range.startLineNumber, range.startColumn);
-        const endPosition = self.nodeAt2(range.endLineNumber, range.endColumn);
+        const startPosition = self.nodeAtPosition(range.startLineNumber, range.startColumn).?;
+        const endPosition = self.nodeAtPosition(range.endLineNumber, range.endColumn).?;
 
         var value = try self.getValueInRange2(startPosition, endPosition);
         if (eol_) |eol| {
@@ -751,57 +777,104 @@ pub const PieceTreeBase = struct {
         return self._lineCnt;
     }
 
-    pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) ![]const u8 {
+    pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) !ArrayList(u8) {
         self.log("getLineContent({d})\n", .{lineNumber});
 
         if (self._lastVisitedLine.lineNumber == lineNumber) {
-            return self._lastVisitedLine.value.items;
+            return try self._lastVisitedLine.copyValue();
         }
 
-        const oldValue = self._lastVisitedLine.value;
-        defer oldValue.deinit();
-
+        try self._lastVisitedLine.reset();
         self._lastVisitedLine.lineNumber = lineNumber;
 
+        var ret: ArrayList(u8) = undefined;
         if (lineNumber == self._lineCnt) {
-            self._lastVisitedLine.value = try self.getLineRawContent(lineNumber, 0);
+            ret = try self.getLineRawContent(lineNumber, 0);
         } else if (self._EOLNormalized) {
-            self._lastVisitedLine.value = try self.getLineRawContent(lineNumber, self._EOLLength);
+            ret = try self.getLineRawContent(lineNumber, self._EOLLength);
         } else {
-            var ret = try self.getLineRawContent(lineNumber, 0);
+            ret = try self.getLineRawContent(lineNumber, 0);
             for (0..getEOLLength(ret.items)) |_| {
                 _ = ret.pop();
             }
-            self._lastVisitedLine.value = ret;
         }
 
-        return self._lastVisitedLine.value.items;
+        try self._lastVisitedLine.value.appendSlice(ret.items);
+        return ret;
     }
 
-    fn _getCharCode(self: *PieceTreeBase, nodePos: NodePosition) u8 {
+    const BufferIndexOffset = struct {
+        bufferIndex: usize,
+        offset: usize,
+
+        fn init(bufferIndex: usize, offset: usize) BufferIndexOffset {
+            return BufferIndexOffset{
+                .bufferIndex = bufferIndex,
+                .offset = offset,
+            };
+        }
+    };
+
+    fn _nodePositionToBufferOffset(self: *const PieceTreeBase, nodePos: NodePosition) ?BufferIndexOffset {
         if (nodePos.remainder == nodePos.node.piece.?.length) {
             // the char we want to fetch is at the head of next node.
             const matchingNode = nodePos.node.next();
-            if (!matchingNode) {
-                return 0;
+            if (matchingNode == SENTINEL) {
+                return null;
             }
 
-            const buffer = self._buffers.items[matchingNode.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(matchingNode.piece.?.bufferIndex, matchingNode.piece.?.start);
-            return buffer.charCodeAt(startOffset);
+            const piece = matchingNode.piece.?;
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
+            return .init(piece.bufferIndex, startOffset);
         } else {
-            const buffer = self._buffers.items[nodePos.node.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(nodePos.node.piece.?.bufferIndex, nodePos.node.piece.?.start);
+            const piece = nodePos.node.piece.?;
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
             const targetOffset = startOffset + nodePos.remainder;
-
-            return buffer.charCodeAt(targetOffset);
+            return .init(piece.bufferIndex, targetOffset);
         }
     }
 
-    // FIXME: utf8
+    fn _getCharCode(self: *const PieceTreeBase, nodePos: NodePosition) u8 {
+        if (self._nodePositionToBufferOffset(nodePos)) |res| {
+            const buffer = self._buffers.items[res.bufferIndex];
+            return buffer.charCodeAt(res.offset);
+        } else {
+            return 0;
+        }
+    }
+
+    fn _getCodepoint(self: *const PieceTreeBase, nodePos: NodePosition) u21 {
+        if (self._nodePositionToBufferOffset(nodePos)) |res| {
+            const buffer = self._buffers.items[res.bufferIndex];
+            return buffer.codepointAt(res.offset);
+        } else {
+            return 0;
+        }
+    }
+
+    fn _getCodepointRelativeRange(self: *const PieceTreeBase, nodePos: NodePosition) [2]isize {
+        if (self._nodePositionToBufferOffset(nodePos)) |res| {
+            const buffer = self._buffers.items[res.bufferIndex];
+            return buffer.codepointRelativeRange(res.offset);
+        } else {
+            return [2]isize{ 0, 0 };
+        }
+    }
+
     pub fn getLineCharCode(self: *const PieceTreeBase, lineNumber: usize, index: usize) u8 {
-        const nodePos = self.nodeAt2(lineNumber, index + 1);
+        const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
         return self._getCharCode(nodePos);
+    }
+
+    pub fn getLineCodepoint(self: *const PieceTreeBase, lineNumber: usize, index: usize) u21 {
+        const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
+        return self._getCodepoint(nodePos);
+    }
+
+    pub fn getLineCodepointRange(self: *const PieceTreeBase, lineNumber: usize, index: usize) [2]usize {
+        const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
+        const range = self._getCodepointRelativeRange(nodePos);
+        return [2]usize{ usizeAdd(index, range[0]), usizeAdd(index, range[1]) };
     }
 
     pub fn getLineLength(self: *const PieceTreeBase, lineNumber: usize) usize {
@@ -831,16 +904,191 @@ pub const PieceTreeBase = struct {
                 return "";
             }
 
-            const buffer = self._buffers.items[matchingNode.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(matchingNode.piece.?.bufferIndex, matchingNode.piece.?.start);
-            return buffer.substring(startOffset, startOffset + matchingNode.piece.?.length);
+            const piece = matchingNode.piece.?;
+            const buffer = self._buffers.items[piece.bufferIndex];
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
+            return buffer.substring(startOffset, startOffset + piece.length);
         } else {
-            const buffer = self._buffers.items[nodePos.node.piece.?.bufferIndex];
-            const startOffset = self.offsetInBuffer(nodePos.node.piece.?.bufferIndex, nodePos.node.piece.?.start);
+            const piece = nodePos.node.piece.?;
+            const buffer = self._buffers.items[piece.bufferIndex];
+            const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
             const targetOffset = startOffset + nodePos.remainder;
-            const targetEnd = startOffset + nodePos.node.piece.?.length;
+            const targetEnd = startOffset + piece.length;
             return buffer.substring(targetOffset, targetEnd);
         }
+    }
+
+    pub fn findMatchesInNode(
+        self: *const PieceTreeBase,
+        node: *TreeNode,
+        startLineNumber: usize,
+        startColumn: usize,
+        startCursor: BufferCursor,
+        endCursor: BufferCursor,
+        searchData: SearchData,
+        captureMatches: bool,
+        limitResultCount: usize,
+        result: *ArrayList(FindMatch),
+    ) !void {
+        const piece = node.piece.?;
+        const buffer = self._buffers.items[piece.bufferIndex];
+        const startOffsetInBuffer = self.offsetInBuffer(piece.bufferIndex, piece.start);
+        const start = self.offsetInBuffer(piece.bufferIndex, startCursor);
+        const end = self.offsetInBuffer(piece.bufferIndex, endCursor);
+
+        // Reset regex to search from the beginning
+        var offsetInBufferBase: usize = 0;
+
+        var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, undefined, 0);
+        if (searcher.wordSeparators != null) {
+            offsetInBufferBase = start;
+            searcher.reset(buffer.substring(start, end), 0);
+        } else {
+            offsetInBufferBase = 0;
+            searcher.reset(buffer.buffer.items, start);
+        }
+
+        while (searcher.next()) |m| {
+            const index = m.index();
+            if (offsetInBufferBase + index >= end) {
+                break;
+            }
+            const mLength = m.length();
+            const cursor = self.positionInBuffer(node, offsetInBufferBase + index - startOffsetInBuffer);
+            const lineFeedCnt = self.getLineFeedCnt(piece.bufferIndex, startCursor, cursor);
+            const retStartColumn = if (cursor.line == startCursor.line) cursor.column + startColumn - startCursor.column else cursor.column + 1;
+            const retEndColumn = retStartColumn + mLength;
+            const range = Range.init(startLineNumber + lineFeedCnt, retStartColumn, startLineNumber + lineFeedCnt, retEndColumn);
+            try result.append(try createFindMatch(self.allocator, range, m, captureMatches));
+
+            if (offsetInBufferBase + index + mLength >= end) {
+                break;
+            }
+            if (result.items.len >= limitResultCount) {
+                break;
+            }
+        }
+    }
+
+    pub fn findMatchesLineByLine(self: *PieceTreeBase, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
+        var result = ArrayList(FindMatch).init(self.allocator);
+
+        const startPosition_ = self.nodeAtPosition(searchRange.startLineNumber, searchRange.startColumn);
+        if (startPosition_ == null) {
+            return result;
+        }
+        const endPosition_ = self.nodeAtPosition(searchRange.endLineNumber, searchRange.endColumn);
+        if (endPosition_ == null) {
+            return result;
+        }
+        var startPosition = startPosition_.?;
+        const endPosition = endPosition_.?;
+        var start = self.positionInBuffer(startPosition.node, startPosition.remainder);
+        const end = self.positionInBuffer(endPosition.node, endPosition.remainder);
+
+        if (startPosition.node == endPosition.node) {
+            try self.findMatchesInNode(startPosition.node, searchRange.startLineNumber, searchRange.startColumn, start, end, searchData, captureMatches, limitResultCount, &result);
+            return result;
+        }
+
+        var startLineNumber = searchRange.startLineNumber;
+
+        var currentNode = startPosition.node;
+        while (currentNode != endPosition.node) {
+            const piece = currentNode.piece.?;
+            const lineBreakCnt = self.getLineFeedCnt(piece.bufferIndex, start, piece.end);
+
+            if (lineBreakCnt >= 1) {
+                // last line break position
+                const lineStarts = self._buffers.items[piece.bufferIndex].lineStarts;
+                const startOffsetInBuffer = self.offsetInBuffer(piece.bufferIndex, piece.start);
+                const nextLineStartOffset = lineStarts.items[start.line + lineBreakCnt];
+                const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn else 1;
+                try self.findMatchesInNode(currentNode, startLineNumber, startColumn, start, self.positionInBuffer(currentNode, nextLineStartOffset - startOffsetInBuffer), searchData, captureMatches, limitResultCount, &result);
+
+                if (result.items.len >= limitResultCount) {
+                    return result;
+                }
+
+                startLineNumber += lineBreakCnt;
+            }
+
+            const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn - 1 else 0;
+            // search for the remaining content
+            if (startLineNumber == searchRange.endLineNumber) {
+                const lineContent = try self.getLineContent(startLineNumber);
+                defer lineContent.deinit();
+                const text = lineContent.items[startColumn .. searchRange.endColumn - 1];
+                try _findMatchesInLine(searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
+                return result;
+            }
+
+            const lineContent = try self.getLineContent(startLineNumber);
+            defer lineContent.deinit();
+            const text = lineContent.items[startColumn..];
+            try _findMatchesInLine(searchData, text, startLineNumber, startColumn, &result, captureMatches, limitResultCount);
+
+            if (result.items.len >= limitResultCount) {
+                return result;
+            }
+
+            startLineNumber += 1;
+            startPosition = self.nodeAtPosition(startLineNumber, 1).?;
+            currentNode = startPosition.node;
+            start = self.positionInBuffer(startPosition.node, startPosition.remainder);
+        }
+
+        if (startLineNumber == searchRange.endLineNumber) {
+            const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn - 1 else 0;
+            const lineContent = try self.getLineContent(startLineNumber);
+            defer lineContent.deinit();
+            const text = lineContent.items[startColumn .. searchRange.endColumn - 1];
+            try _findMatchesInLine(searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
+            return result;
+        }
+
+        const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn else 1;
+        try self.findMatchesInNode(endPosition.node, startLineNumber, startColumn, start, end, searchData, captureMatches, limitResultCount, &result);
+        return result;
+    }
+
+    fn _findMatchesInLine(searchData: SearchData, text: []const u8, lineNumber: usize, deltaOffset: usize, result: *ArrayList(FindMatch), captureMatches: bool, limitResultCount: usize) !void {
+        if (!captureMatches) {
+            if (searchData.simpleSearch) |searchString| {
+                const searchStringLen = searchString.len;
+                const textLength = text.len;
+
+                var lastMatchIndex: usize = 0;
+                while (true) {
+                    if (std.mem.indexOf(u8, text[lastMatchIndex..], searchString)) |index| {
+                        lastMatchIndex = index + searchStringLen;
+                    } else {
+                        break;
+                    }
+
+                    if (searchData.wordSeparators == null or isValidMatch(searchData.wordSeparators.?, text, textLength, lastMatchIndex, searchStringLen)) {
+                        try result.append(FindMatch.init(Range.init(lineNumber, lastMatchIndex - searchStringLen + 1 + deltaOffset, lineNumber, lastMatchIndex + 1 + deltaOffset), null));
+                        if (result.items.len >= limitResultCount) {
+                            return;
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
+        const allocator = result.allocator;
+        var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, text, 0);
+
+        while (searcher.next()) |m| {
+            const index = m.index();
+            const mLength = m.length();
+            try result.append(try createFindMatch(allocator, Range.init(lineNumber, index + 1 + deltaOffset, lineNumber, index + 1 + mLength + deltaOffset), m, captureMatches));
+            if (result.items.len >= limitResultCount) {
+                return;
+            }
+        }
+        return;
     }
 
     // #region Piece Table
@@ -861,7 +1109,7 @@ pub const PieceTreeBase = struct {
             const nodeStartOffset = n.nodeStartOffset;
             const piece = node.piece.?;
             const bufferIndex = piece.bufferIndex;
-            const insertPosInBuffer = self.positionInBuffer(node, remainder, null).?;
+            const insertPosInBuffer = self.positionInBuffer(node, remainder);
             if (piece.bufferIndex == 0 and
                 piece.end.line == self._lastChangeBufferPos.line and
                 piece.end.column == self._lastChangeBufferPos.column and
@@ -914,7 +1162,7 @@ pub const PieceTreeBase = struct {
                 if (self.shouldCheckCRLF() and strStartWithLF(value)) {
                     const tailOfLeft = self.nodeCharCodeAt(node, remainder - 1);
                     if (tailOfLeft == '\r') {
-                        const previousPos = self.positionInBuffer(node, remainder - 1, null).?;
+                        const previousPos = self.positionInBuffer(node, remainder - 1);
                         self.deleteNodeTail(node, previousPos);
 
                         prependCR = true;
@@ -992,8 +1240,8 @@ pub const PieceTreeBase = struct {
         const endNode = endPosition.node;
 
         if (startNode == endNode) {
-            const startSplitPosInBuffer = self.positionInBuffer(startNode, startPosition.remainder, null).?;
-            const endSplitPosInBuffer = self.positionInBuffer(startNode, endPosition.remainder, null).?;
+            const startSplitPosInBuffer = self.positionInBuffer(startNode, startPosition.remainder);
+            const endSplitPosInBuffer = self.positionInBuffer(startNode, endPosition.remainder);
 
             if (startPosition.nodeStartOffset == offset) {
                 if (cnt == startNode.piece.?.length) { // delete node
@@ -1026,7 +1274,7 @@ pub const PieceTreeBase = struct {
         var nodesToDel = ArrayList(*TreeNode).init(self.allocator);
         defer nodesToDel.deinit();
 
-        const startSplitPosInBuffer = self.positionInBuffer(startNode, startPosition.remainder, null).?;
+        const startSplitPosInBuffer = self.positionInBuffer(startNode, startPosition.remainder);
         self.deleteNodeTail(startNode, startSplitPosInBuffer);
         self._searchCache.validate(offset);
         if (startNode.piece.?.length == 0) {
@@ -1034,7 +1282,7 @@ pub const PieceTreeBase = struct {
         }
 
         // update last touched node
-        const endSplitPosInBuffer = self.positionInBuffer(endNode, endPosition.remainder, null).?;
+        const endSplitPosInBuffer = self.positionInBuffer(endNode, endPosition.remainder);
         self.deleteNodeHead(endNode, endSplitPosInBuffer);
         if (endNode.piece.?.length == 0) {
             try nodesToDel.append(endNode);
@@ -1123,8 +1371,7 @@ pub const PieceTreeBase = struct {
         try self.validateCRLFWithPrevNode(newNode);
     }
 
-    fn positionInBuffer(self: *const PieceTreeBase, node: *const TreeNode, remainder: usize, ret: ?BufferCursor) ?BufferCursor {
-        var res = ret;
+    fn positionInBuffer(self: *const PieceTreeBase, node: *const TreeNode, remainder: usize) BufferCursor {
         const piece = node.piece.?;
         const bufferIndex = piece.bufferIndex;
         const lineStarts = self._buffers.items[bufferIndex].lineStarts.items;
@@ -1158,12 +1405,6 @@ pub const PieceTreeBase = struct {
             } else {
                 break;
             }
-        }
-
-        if (res != null) {
-            res.?.line = mid;
-            res.?.column = offset - midStart;
-            return null;
         }
 
         return .{
@@ -1410,7 +1651,7 @@ pub const PieceTreeBase = struct {
 
     fn getIndexOf(self: *const PieceTreeBase, node: *const TreeNode, accumulatedValue: usize) struct { index: usize, remainder: usize } {
         const piece = node.piece.?;
-        const pos = self.positionInBuffer(node, accumulatedValue, null).?;
+        const pos = self.positionInBuffer(node, accumulatedValue);
         const lineCnt = pos.line - piece.start.line;
 
         if (self.offsetInBuffer(piece.bufferIndex, piece.end) - self.offsetInBuffer(piece.bufferIndex, piece.start) == accumulatedValue) {
@@ -1543,14 +1784,15 @@ pub const PieceTreeBase = struct {
         const endIndex = self._buffers.items[0].lineStarts.items.len - 1;
         const endColumn = self._buffers.items[0].length() - self._buffers.items[0].lineStarts.items[endIndex];
         const newEnd: BufferCursor = .{ .line = endIndex, .column = endColumn };
-        const newLength = node.piece.?.length + val.len;
-        const oldLineFeedCnt = node.piece.?.lineFeedCnt;
-        const newLineFeedCnt = self.getLineFeedCnt(0, node.piece.?.start, newEnd);
+        const piece = node.piece.?;
+        const newLength = piece.length + val.len;
+        const oldLineFeedCnt = piece.lineFeedCnt;
+        const newLineFeedCnt = self.getLineFeedCnt(0, piece.start, newEnd);
         const lf_delta = usizeSub(newLineFeedCnt, oldLineFeedCnt);
 
         node.piece = .{
-            .bufferIndex = node.piece.?.bufferIndex,
-            .start = node.piece.?.start,
+            .bufferIndex = piece.bufferIndex,
+            .start = piece.start,
             .end = newEnd,
             .lineFeedCnt = newLineFeedCnt,
             .length = newLength,
@@ -1595,7 +1837,7 @@ pub const PieceTreeBase = struct {
         return undefined;
     }
 
-    fn nodeAt2(self: *const PieceTreeBase, lineNumber: usize, column: usize) NodePosition {
+    fn nodeAtPosition(self: *const PieceTreeBase, lineNumber: usize, column: usize) ?NodePosition {
         var x = self.root;
         var nodeStartOffset: usize = 0;
         var col = column;
@@ -1660,7 +1902,7 @@ pub const PieceTreeBase = struct {
             x = x.next();
         }
 
-        unreachable;
+        return null;
     }
 
     fn nodeCharCodeAt(self: *const PieceTreeBase, node: *const TreeNode, offset: usize) u8 {
@@ -1934,14 +2176,6 @@ fn sliceLineFeeds(str: []const u8) []const u8 {
     return str[0 .. str.len - lineFeedLength];
 }
 
-pub fn usizeSub(a: usize, b: usize) isize {
-    return @as(isize, @intCast(a)) - @as(isize, @intCast(b));
-}
-
-pub fn usizeAdd(a: usize, b: isize) usize {
-    return @intCast(@as(isize, @intCast(a)) + b);
-}
-
 test "replace EOL" {
     const allocator = std.testing.allocator;
     var target = ArrayList(u8).init(allocator);
@@ -1988,13 +2222,17 @@ test "create from string" {
     try std.testing.expectEqual(tree.getLineCount(), 4);
 
     const line1 = try tree.getLineContent(1);
-    try std.testing.expectEqualSlices(u8, "First", line1);
+    defer line1.deinit();
+    try std.testing.expectEqualSlices(u8, "First", line1.items);
     const line2 = try tree.getLineContent(2);
-    try std.testing.expectEqualSlices(u8, "Second", line2);
+    defer line2.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2.items);
     const line3 = try tree.getLineContent(3);
-    try std.testing.expectEqualSlices(u8, "Third", line3);
+    defer line3.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3.items);
     const line4 = try tree.getLineContent(4);
-    try std.testing.expectEqualSlices(u8, "", line4);
+    defer line4.deinit();
+    try std.testing.expectEqualSlices(u8, "", line4.items);
 }
 
 test "normalize EOL" {
@@ -2036,6 +2274,96 @@ test "getLinesContent" {
     try std.testing.expectEqualSlices(u8, "", lines.items[3].items);
 }
 
+test "findMatchesInNode" {
+    try re.initialize(null);
+    defer re.uninitialize();
+
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\r\nThird\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+    var result = ArrayList(FindMatch).init(allocator);
+    defer result.deinit();
+    var regex = try RegExp.init("Sec", .{});
+    defer regex.deinit();
+    const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = null };
+    try tree.findMatchesInNode(tree.root, 1, 1, BufferCursor{ .line = 0, .column = 0 }, BufferCursor{ .line = 2, .column = 0 }, searchData, true, 10, &result);
+    defer {
+        for (result.items) |item| {
+            item.free(allocator);
+        }
+    }
+    try std.testing.expectEqual(1, result.items.len);
+    try std.testing.expectEqualDeep(FindMatch.init(Range.init(2, 1, 2, 4), &[_][]const u8{"Sec"}), result.items[0]);
+}
+
+test "findMatchesLineByLine" {
+    try re.initialize(null);
+    defer re.uninitialize();
+
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "First\nSecond\r\nThird\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+    var regex = try RegExp.init("i", .{});
+    defer regex.deinit();
+    const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = null };
+    const result = try tree.findMatchesLineByLine(Range.init(1, 1, 3, 4), searchData, true, 10);
+    defer {
+        for (result.items) |item| {
+            item.free(allocator);
+        }
+        result.deinit();
+    }
+    try std.testing.expectEqual(2, result.items.len);
+    try std.testing.expectEqualDeep(FindMatch.init(Range.init(1, 2, 1, 3), &[_][]const u8{"i"}), result.items[0]);
+    try std.testing.expectEqualDeep(FindMatch.init(Range.init(3, 3, 3, 4), &[_][]const u8{"i"}), result.items[1]);
+}
+
+test "_findMatchesInLine simple search" {
+    try re.initialize(null);
+    defer re.uninitialize();
+    const allocator = std.testing.allocator;
+
+    var regex = try RegExp.init("wor", .{});
+    defer regex.deinit();
+    const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = "wor" };
+    var result = ArrayList(FindMatch).init(allocator);
+    defer result.deinit();
+    try PieceTreeBase._findMatchesInLine(searchData, "hello world", 1, 0, &result, false, 100);
+    defer {
+        for (result.items) |item| {
+            item.free(allocator);
+        }
+    }
+    try std.testing.expectEqual(1, result.items.len);
+    try std.testing.expectEqualDeep(FindMatch.init(Range.init(1, 7, 1, 10), null), result.items[0]);
+}
+
+test "_findMatchesInLine regex search" {
+    try re.initialize(null);
+    defer re.uninitialize();
+    const allocator = std.testing.allocator;
+
+    var regex = try RegExp.init("wor", .{});
+    defer regex.deinit();
+    const searchData = SearchData{ .wordSeparators = null, .regex = regex, .simpleSearch = null };
+    var result = ArrayList(FindMatch).init(allocator);
+    defer result.deinit();
+    try PieceTreeBase._findMatchesInLine(searchData, "hello world", 1, 0, &result, false, 100);
+    defer {
+        for (result.items) |item| {
+            item.free(allocator);
+        }
+    }
+    try std.testing.expectEqual(1, result.items.len);
+    try std.testing.expectEqualDeep(FindMatch.init(Range.init(1, 7, 1, 10), null), result.items[0]);
+}
+
 test "insert" {
     const Case = struct {
         source: []const u8,
@@ -2062,7 +2390,8 @@ test "insert" {
         try tree.insert(c.offset, c.text, false);
         for (c.expectedLines, 1..) |expectedLine, lineNumber| {
             const line = try tree.getLineContent(lineNumber);
-            try std.testing.expectEqualSlices(u8, expectedLine, line);
+            defer line.deinit();
+            try std.testing.expectEqualSlices(u8, expectedLine, line.items);
         }
     }
 }
@@ -2076,24 +2405,48 @@ test "multiple inserts" {
     defer tree.deinit();
 
     try tree.insert(0, "a", false);
-    try std.testing.expectEqualSlices(u8, "aFirst", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1 = try tree.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualSlices(u8, "aFirst", line1.items);
+    const line2 = try tree.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2.items);
+    const line3 = try tree.getLineContent(3);
+    defer line3.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3.items);
 
     try tree.insert(1, "a", false);
-    try std.testing.expectEqualSlices(u8, "aaFirst", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1_2 = try tree.getLineContent(1);
+    defer line1_2.deinit();
+    try std.testing.expectEqualSlices(u8, "aaFirst", line1_2.items);
+    const line2_2 = try tree.getLineContent(2);
+    defer line2_2.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2_2.items);
+    const line3_2 = try tree.getLineContent(3);
+    defer line3_2.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3_2.items);
 
     try tree.insert(1, "b", false);
-    try std.testing.expectEqualSlices(u8, "abaFirst", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1_3 = try tree.getLineContent(1);
+    defer line1_3.deinit();
+    try std.testing.expectEqualSlices(u8, "abaFirst", line1_3.items);
+    const line2_3 = try tree.getLineContent(2);
+    defer line2_3.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2_3.items);
+    const line3_3 = try tree.getLineContent(3);
+    defer line3_3.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3_3.items);
 
     try tree.insert(16, "World", false);
-    try std.testing.expectEqualSlices(u8, "abaFirst", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "Second", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "WorldThird", try tree.getLineContent(3));
+    const line1_4 = try tree.getLineContent(1);
+    defer line1_4.deinit();
+    try std.testing.expectEqualSlices(u8, "abaFirst", line1_4.items);
+    const line2_4 = try tree.getLineContent(2);
+    defer line2_4.deinit();
+    try std.testing.expectEqualSlices(u8, "Second", line2_4.items);
+    const line3_4 = try tree.getLineContent(3);
+    defer line3_4.deinit();
+    try std.testing.expectEqualSlices(u8, "WorldThird", line3_4.items);
 }
 
 test "delete" {
@@ -2120,7 +2473,8 @@ test "delete" {
         try tree.delete(c.offset, c.count);
         for (c.expectedLines, 1..) |expectedLine, lineNumber| {
             const line = try tree.getLineContent(lineNumber);
-            try std.testing.expectEqualSlices(u8, expectedLine, line);
+            defer line.deinit();
+            try std.testing.expectEqualSlices(u8, expectedLine, line.items);
         }
     }
 }
@@ -2134,17 +2488,31 @@ test "insert then delete" {
     defer tree.deinit();
 
     try tree.insert(6, "a", false);
-    try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "aSecond", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1 = try tree.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualSlices(u8, "First", line1.items);
+    const line2 = try tree.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualSlices(u8, "aSecond", line2.items);
+    const line3 = try tree.getLineContent(3);
+    defer line3.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3.items);
 
     try tree.insert(7, "a", false);
-    try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
-    try std.testing.expectEqualSlices(u8, "aaSecond", try tree.getLineContent(2));
-    try std.testing.expectEqualSlices(u8, "Third", try tree.getLineContent(3));
+    const line1_2 = try tree.getLineContent(1);
+    defer line1_2.deinit();
+    try std.testing.expectEqualSlices(u8, "First", line1_2.items);
+    const line2_2 = try tree.getLineContent(2);
+    defer line2_2.deinit();
+    try std.testing.expectEqualSlices(u8, "aaSecond", line2_2.items);
+    const line3_2 = try tree.getLineContent(3);
+    defer line3_2.deinit();
+    try std.testing.expectEqualSlices(u8, "Third", line3_2.items);
 
     try tree.delete(7, 1);
-    try std.testing.expectEqualSlices(u8, "aSecond", try tree.getLineContent(2));
+    const line2_3 = try tree.getLineContent(2);
+    defer line2_3.deinit();
+    try std.testing.expectEqualSlices(u8, "aSecond", line2_3.items);
 }
 
 test "insert enter then delete" {
@@ -2155,17 +2523,27 @@ test "insert enter then delete" {
     var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
     // tree._logger = std.io.getStdErr().writer();
     defer tree.deinit();
-
-    try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
+    const line1 = try tree.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualStrings("First", line1.items);
     try tree.insert(5, "\n", false);
-    try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
-    try std.testing.expectEqualStrings("", try tree.getLineContent(2));
+
+    const line1_2 = try tree.getLineContent(1);
+    defer line1_2.deinit();
+    try std.testing.expectEqualStrings("First", line1_2.items);
+    const line2 = try tree.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("", line2.items);
 
     try tree.delete(5, 1);
-    try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
+    const line1_3 = try tree.getLineContent(1);
+    defer line1_3.deinit();
+    try std.testing.expectEqualStrings("First", line1_3.items);
 
     try tree.insert(5, "\n", false);
-    try std.testing.expectEqualStrings("First", try tree.getLineContent(1));
+    const line1_4 = try tree.getLineContent(1);
+    defer line1_4.deinit();
+    try std.testing.expectEqualStrings("First", line1_4.items);
 }
 
 test "insert return" {
@@ -2282,7 +2660,9 @@ test "no eol" {
     defer tree.deinit();
 
     try std.testing.expectEqual(1, tree.getLineCount());
-    try std.testing.expectEqualSlices(u8, "First", try tree.getLineContent(1));
+    const line = try tree.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualSlices(u8, "First", line.items);
 }
 
 test "createLineStarts" {

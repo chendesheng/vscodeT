@@ -25,6 +25,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    exe.linkSystemLibrary("onig");
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
@@ -63,8 +67,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const test_step = b.step("test", "Run all tests");
 
     const files = [_][]const u8{
-        "src/pieceTreeBase.zig",
-        "src/rbTreeBase.zig",
+        "src/tests.zig",
     };
 
     for (files) |file| {

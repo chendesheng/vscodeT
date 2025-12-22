@@ -8,10 +8,10 @@ const Size = tui.Size;
 const Point = tui.Point;
 const ArrayList = std.array_list.Managed;
 const logger = @import("logger.zig");
-const PieceTreeBufferBuilder = @import("../pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
-const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
+const PieceTreeBufferBuilder = @import("../pieceTreeTextBuffer/pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
+const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOperation;
-const Range = @import("../range.zig").Range;
+const Range = @import("../basics/range.zig").Range;
 const Utf8StreamIterator = @import("utf8Helper.zig").Utf8StreamIterator;
 const ansi = @import("ansi.zig");
 
@@ -97,7 +97,9 @@ const View = struct {
         const width = self.size.width - lineNumberGutterWidth;
 
         for (from..to + 1) |i| {
-            const line = try tree.getLineContent(i);
+            const lineContent = try tree.getLineContent(i);
+            defer lineContent.deinit();
+            const line = lineContent.items;
 
             try self.drawLineNumberGutter(lineNumberGutterWidth, i);
 
@@ -173,12 +175,13 @@ const View = struct {
 
     fn insertAtCursor(self: *View, tree: *PieceTreeTextBuffer, text: []const u8) !void {
         const offset = tree.getOffsetAt(self.cursorPosition.row, self.cursorPosition.col);
-        _ = try tree.applyEdits(&[_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRangeAndText(Range{
+        var edits = [_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRangeAndText(Range{
             .startLineNumber = self.cursorPosition.row,
             .startColumn = self.cursorPosition.col,
             .endLineNumber = self.cursorPosition.row,
             .endColumn = self.cursorPosition.col,
-        }, text)}, false, false);
+        }, .initBorrowed(text))};
+        _ = try tree.applyEdits(&edits, false, false);
         try self.updateCursorPosition(tree, offset + text.len);
     }
 
@@ -189,12 +192,13 @@ const View = struct {
             return;
         }
         try self.updateCursorPosition(tree, offset - 1);
-        _ = try tree.applyEdits(&[_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRange(Range{
+        var edits = [_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRange(Range{
             .startLineNumber = self.cursorPosition.row,
             .startColumn = self.cursorPosition.col,
             .endLineNumber = startPos.row,
             .endColumn = startPos.col,
-        })}, false, false);
+        })};
+        _ = try tree.applyEdits(&edits, false, false);
     }
 
     fn resize(self: *View, newSize: Size, tree: *const PieceTreeTextBuffer) !void {
