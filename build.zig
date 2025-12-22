@@ -18,9 +18,11 @@ pub fn build(b: *std.Build) void {
     // We will also create a module for our other entry point, 'main.zig'.
     const exe = b.addExecutable(.{
         .name = "zig",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     // This declares intent for the executable to be installed into the
@@ -54,10 +56,10 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    setupTests(b);
+    setupTests(b, target, optimize);
 }
 
-fn setupTests(b: *std.Build) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     const test_step = b.step("test", "Run all tests");
 
     const files = [_][]const u8{
@@ -66,7 +68,11 @@ fn setupTests(b: *std.Build) void {
     };
 
     for (files) |file| {
-        const t = b.addTest(.{ .root_source_file = b.path(file) });
+        const t = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(file),
+            .target = target,
+            .optimize = optimize,
+        }) });
         const run_t = b.addRunArtifact(t);
         test_step.dependOn(&run_t.step);
     }

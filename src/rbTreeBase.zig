@@ -32,7 +32,7 @@ pub const TreeNode = struct {
 
         var h: usize = 0;
         var current: ?*const TreeNode = self;
-        while (current != null) {
+        while (current != SENTINEL) {
             if (current.?.color == .black) {
                 h += 1;
             }

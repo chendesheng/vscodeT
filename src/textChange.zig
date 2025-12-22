@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const fs = std.fs;
 const strings = @import("strings.zig");
 
@@ -56,7 +56,7 @@ pub const TextChange = struct {
         + _wriateStringSize(self.oldText) + _wriateStringSize(self.newText);
     }
 
-    pub fn write(self: *const TextChange, writer: fs.File.Writer) !void {
+    pub fn write(self: *const TextChange, writer: std.Io.Writer) !void {
         try writer.writeInt(u32, @intCast(self.oldPosition), .big);
         try writer.writeInt(u32, @intCast(self.newPosition), .big);
         try _writeString(writer, self.oldText);

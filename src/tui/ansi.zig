@@ -1,7 +1,7 @@
 const std = @import("std");
 const io = std.io;
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 
 // esc_sequence = "\x1b", intermediates, final
 // intermediates = {0x20..0x2F}

@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 
 pub fn firstNonWhitespaceIndex(str: []const u8) ?usize {
     for (str, 0..) |c, i| {

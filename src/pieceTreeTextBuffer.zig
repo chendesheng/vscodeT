@@ -1,5 +1,5 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const countEOL = @import("eolCounter.zig").countEOL;
 const StringEOL = @import("eolCounter.zig").StringEOL;
@@ -252,7 +252,7 @@ pub const PieceTreeTextBuffer = struct {
     }
 
     // TODO: ?? add a "SharedString" (with reference counting) to avoid copying strings
-    // TODO: maybe we could a fast path for single operation? could avoid sorting and other stuff
+    // TODO: maybe we could add fast path for single operation? could avoid sorting and other stuff
     pub fn applyEdits(self: *PieceTreeTextBuffer, rawOperations: []const ValidAnnotatedEditOperation, recordTrimAutoWhitespace: bool, computeUndoEdits: bool) !ApplyEditsResult {
         const allocator = self._pieceTree.allocator;
         var mightContainRTL = self._mightContainRTL;
@@ -300,7 +300,7 @@ pub const PieceTreeTextBuffer = struct {
                 if (strEOL != .Unknown or strEOL == expectedStrEOL) {
                     validText = try allocator.dupe(u8, text);
                 } else {
-                    var temp = std.ArrayList(u8).init(allocator);
+                    var temp = ArrayList(u8).init(allocator);
                     defer temp.deinit();
                     try temp.appendSlice(text);
                     try replaceEOL(&temp, bufferEOL);
@@ -581,7 +581,7 @@ pub const PieceTreeTextBuffer = struct {
 
 // Assumes `operations` are validated and sorted ascending
 fn _getInverseEditRanges(allocator: Allocator, operators: []ValidatedEditOperation) !ArrayList(Range) {
-    var result = std.ArrayList(Range).init(allocator);
+    var result = ArrayList(Range).init(allocator);
 
     var prevOpEndLineNumber: usize = 0;
     var prevOpEndColumn: usize = 0;

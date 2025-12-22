@@ -10,9 +10,9 @@ pub fn format(comptime fmt: []const u8, args: anytype) void {
     }
 }
 
-pub fn writer() ?fs.File.Writer {
+pub fn writer() ?std.Io.Writer {
     if (loggerFile) |file| {
-        return file.writer();
+        return file.writer().interface;
     }
     return null;
 }

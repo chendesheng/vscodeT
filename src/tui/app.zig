@@ -1,11 +1,12 @@
 const std = @import("std");
 const io = std.io;
 const fs = std.fs;
+const File = fs.File;
 const posix = std.posix;
 const tui = @import("tui.zig");
 const Size = tui.Size;
 const Point = tui.Point;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const logger = @import("logger.zig");
 const PieceTreeBufferBuilder = @import("../pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
 const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
@@ -28,9 +29,8 @@ fn readFile(allocator: std.mem.Allocator, path: []const u8) !PieceTreeTextBuffer
     defer file.close();
 
     var builder = PieceTreeBufferBuilder.init(allocator);
-    const reader = file.reader();
     while (true) {
-        const len = try reader.readAll(&readerBuffer);
+        const len = try file.readAll(&readerBuffer);
         if (len == 0) {
             break;
         }
@@ -65,7 +65,7 @@ fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
 }
 
 const View = struct {
-    writer: io.AnyWriter,
+    writer: File,
     size: Size,
     scrollPosition: Point,
     cursorPosition: Point,
@@ -217,21 +217,20 @@ pub fn main() !void {
     try logger.init("debug.log");
     defer logger.deinit();
 
-    const stdout = std.io.getStdOut();
-    const out = stdout.writer();
+    const stdout = std.fs.File.stdout();
 
     const orig_termios = try tui.enableRawMode();
     tui.rememberOrigTermios(orig_termios);
     defer tui.disableRawMode(orig_termios) catch unreachable;
 
-    try tui.enableBracketedPaste(out);
-    defer tui.disableBracketedPaste(out) catch {};
+    try tui.enableBracketedPaste(stdout);
+    defer tui.disableBracketedPaste(stdout) catch {};
 
-    try tui.enterAltScreen(out);
-    defer tui.exitAltScreen(out) catch {};
+    try tui.enterAltScreen(stdout);
+    defer tui.exitAltScreen(stdout) catch {};
 
-    try tui.disableLineWrap(out);
-    defer tui.enableLineWrap(out) catch {};
+    try tui.disableLineWrap(stdout);
+    defer tui.enableLineWrap(stdout) catch {};
 
     try tui.installSigWinch();
 
@@ -247,7 +246,7 @@ pub fn main() !void {
     const size = try tui.getTerminalSize();
 
     var view = View{
-        .writer = out.any(),
+        .writer = stdout,
         .size = size,
         .scrollPosition = .{ .col = 1, .row = 1 },
         .cursorPosition = .{ .col = 1, .row = 1 },

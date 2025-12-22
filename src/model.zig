@@ -1,7 +1,7 @@
 const std = @import("std");
 const Range = @import("range.zig").Range;
 const TextChange = @import("textChange.zig").TextChange;
-const ArrayList = @import("std").ArrayList;
+const ArrayList = std.array_list.Managed;
 
 pub const EOL = enum {
     CRLF,

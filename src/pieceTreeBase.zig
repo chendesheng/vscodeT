@@ -7,7 +7,7 @@ const Range = @import("range.zig").Range;
 const SENTINEL = rbt.SENTINEL;
 const TreeNode = rbt.TreeNode;
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const safeUtf8Prefix = @import("tui/utf8Helper.zig").safeUtf8Prefix;
 const EOL = @import("model.zig").EOL;
 const replaceEOL = @import("eolCounter.zig").replaceEOL;
@@ -167,12 +167,13 @@ pub const StringBuffer = struct {
         try self.buffer.appendSlice(value);
     }
 
-    pub fn logInit(self: *const StringBuffer, logger: fs.File.Writer) !void {
+    pub fn logInit(self: *const StringBuffer, logger: *std.Io.Writer) !void {
         // json stringify string
-        var content = std.ArrayList(u8).init(self.buffer.allocator);
-        defer content.deinit();
-        try std.json.stringify(self.buffer.items, .{}, content.writer());
-        try logger.print("StringBuffer.init(allocator, {s})", .{content.items});
+        var out = io.Writer.Allocating.init(self.buffer.allocator);
+        try std.json.Stringify.value(self.buffer.items, .{}, &out.writer);
+        var arr = out.toArrayList();
+        defer arr.deinit(self.buffer.allocator);
+        try logger.print("StringBuffer.init(allocator, {s})", .{arr.items});
     }
 };
 
@@ -348,9 +349,9 @@ pub const PieceTreeBase = struct {
     _searchCache: PieceTreeSearchCache,
     _lastVisitedLine: LastVisitedLine,
 
-    _logger: ?fs.File.Writer,
+    _logger: ?*std.Io.Writer,
 
-    pub fn init(allocator: Allocator, logger: ?fs.File.Writer, chunks: []const StringBuffer, eol: EOL, eolNormalized: bool) !PieceTreeBase {
+    pub fn init(allocator: Allocator, logger: ?*std.Io.Writer, chunks: []const StringBuffer, eol: EOL, eolNormalized: bool) !PieceTreeBase {
         var tree = PieceTreeBase{
             .allocator = allocator,
             .root = SENTINEL,

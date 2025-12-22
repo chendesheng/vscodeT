@@ -1,9 +1,10 @@
 // https://viewsourcecode.org/snaptoken/kilo/index.html
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const posix = std.posix;
 const termios = posix.system.termios;
 const Allocator = std.mem.Allocator;
+const File = std.fs.File;
 
 pub fn enableRawMode() !termios {
     const orig_termios = try posix.tcgetattr(posix.STDIN_FILENO);
@@ -30,19 +31,19 @@ pub fn enableRawMode() !termios {
     return orig_termios;
 }
 
-pub fn enableLineWrap(out: anytype) !void {
+pub fn enableLineWrap(out: File) !void {
     try writeAll(out, "\x1b[?7h");
 }
 
-pub fn disableLineWrap(out: anytype) !void {
+pub fn disableLineWrap(out: File) !void {
     try writeAll(out, "\x1b[?7l");
 }
 
-pub fn enableBracketedPaste(out: anytype) !void {
+pub fn enableBracketedPaste(out: File) !void {
     try writeAll(out, "\x1b[?2004h");
 }
 
-pub fn disableBracketedPaste(out: anytype) !void {
+pub fn disableBracketedPaste(out: File) !void {
     try writeAll(out, "\x1b[?2004l");
 }
 
@@ -50,15 +51,15 @@ pub fn disableRawMode(orig_termios: termios) !void {
     try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.FLUSH, orig_termios);
 }
 
-pub fn writeAll(writer: anytype, text: []const u8) !void {
+pub fn writeAll(writer: std.fs.File, text: []const u8) !void {
     try writer.writeAll(text);
 }
 
-pub fn enterAltScreen(out: anytype) !void {
+pub fn enterAltScreen(out: File) !void {
     try writeAll(out, "\x1b[?1049h");
 }
 
-pub fn exitAltScreen(out: anytype) !void {
+pub fn exitAltScreen(out: File) !void {
     try writeAll(out, "\x1b[?1049l");
 }
 
@@ -89,20 +90,20 @@ pub fn getTerminalSize() !Size {
     };
 }
 
-pub fn clearScreen(out: anytype) !void {
+pub fn clearScreen(out: File) !void {
     try writeAll(out, "\x1b[2J"); // clear screen
 }
 
-pub fn clearToEndOfScreen(out: anytype) !void {
+pub fn clearToEndOfScreen(out: File) !void {
     try writeAll(out, "\x1b[J");
 }
 
 pub fn getCursorPosition() !Point {
-    const stdout = std.io.getStdOut();
-    const stdin = std.io.getStdIn();
+    const stdout = File.stdout();
+    const stdin = File.stdin();
 
     // Step 1: Ask for cursor position
-    try stdout.writer().writeAll("\x1b[6n");
+    try stdout.writeAll("\x1b[6n");
 
     // Step 2: Read the response
     var buf: [32]u8 = undefined;
@@ -129,23 +130,23 @@ pub fn getCursorPosition() !Point {
     return .{ .row = row, .col = col };
 }
 
-pub fn moveCursor(out: anytype, point: Point) !void {
+pub fn moveCursor(out: File, point: Point) !void {
     var buf: [32]u8 = undefined;
     const text = try std.fmt.bufPrint(buf[0..], "\x1b[{d};{d}H", .{ point.row, point.col });
     try writeAll(out, text);
 }
 
-pub fn moveCursorBy(out: anytype, row: isize, col: isize) !void {
+pub fn moveCursorBy(out: File, row: isize, col: isize) !void {
     var buf: [32]u8 = undefined;
     const text = try std.fmt.bufPrint(buf[0..], "\x1b[{d};{d}H", .{ row, col });
     try writeAll(out, text);
 }
 
-pub fn hideCursor(out: anytype) !void {
+pub fn hideCursor(out: File) !void {
     try writeAll(out, "\x1b[?25l");
 }
 
-pub fn showCursor(out: anytype) !void {
+pub fn showCursor(out: File) !void {
     try writeAll(out, "\x1b[?25h");
 }
 
@@ -161,11 +162,10 @@ pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
         _ = std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, t) catch {};
     }
 
-    const stdout = std.io.getStdOut();
-    const out = stdout.writer();
+    const stdout = File.stdout();
 
-    exitAltScreen(out) catch {};
-    enableLineWrap(out) catch {};
+    exitAltScreen(stdout) catch {};
+    enableLineWrap(stdout) catch {};
 
     std.debug.defaultPanic(msg, first_trace_addr);
 
@@ -174,7 +174,7 @@ pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
 
 var resized = std.atomic.Value(bool).init(false);
 
-fn handleSigWinch(_: i32) callconv(.C) void {
+fn handleSigWinch(_: i32) callconv(.c) void {
     resized.store(true, .seq_cst);
 }
 
@@ -189,7 +189,7 @@ pub fn resizedSize() !?Size {
 pub fn installSigWinch() !void {
     var sa: posix.Sigaction = .{
         .handler = .{ .handler = handleSigWinch },
-        .mask = posix.empty_sigset,
+        .mask = posix.sigemptyset(),
         .flags = 0,
     };
     posix.sigaction(posix.SIG.WINCH, &sa, null);
