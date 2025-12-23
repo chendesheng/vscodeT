@@ -227,7 +227,9 @@ test "PieceTreeBufferBuilder" {
     var buffer = try factory.create(.LF);
     defer buffer.deinit();
 
-    try std.testing.expectEqualStrings("HelloWorld", (try buffer.getLineContent(1)).items);
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("HelloWorld", line.items);
 }
 
 test "PieceTreeBufferBuilder unicode" {
@@ -244,5 +246,7 @@ test "PieceTreeBufferBuilder unicode" {
     var buffer = try factory.create(.LF);
     defer buffer.deinit();
 
-    try std.testing.expectEqualStrings("你好世界", (try buffer.getLineContent(1)).items);
+    const line = try buffer.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("你好世界", line.items);
 }

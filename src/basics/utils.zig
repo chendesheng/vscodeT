@@ -73,3 +73,9 @@ pub fn findIndex(T: type, items: []T, context: anytype, predicate: fn (T, @TypeO
     }
     return null;
 }
+
+pub fn readInt(reader: *std.Io.Reader, comptime T: type, endian: std.builtin.Endian) !T {
+    var buf: [1]T = undefined;
+    try reader.readSliceEndian(T, buf[0..], endian);
+    return buf[0];
+}

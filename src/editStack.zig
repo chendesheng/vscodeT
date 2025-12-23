@@ -238,12 +238,12 @@ pub const SingleModelEditStackDataUnserialized = struct {
     }
 
     pub fn _readSelections(b: *std.Io.Reader, dest: *ArrayList(Selection)) !void {
-        const count = try b.readInt(u32, .big);
+        const count = try utils.readInt(b, u32, .big);
         for (0..count) |_| {
-            const selectionStartLineNumber = try b.readInt(u32, .big);
-            const selectionStartColumn = try b.readInt(u32, .big);
-            const positionLineNumber = try b.readInt(u32, .big);
-            const positionColumn = try b.readInt(u32, .big);
+            const selectionStartLineNumber = try utils.readInt(b, u32, .big);
+            const selectionStartColumn = try utils.readInt(b, u32, .big);
+            const positionLineNumber = try utils.readInt(b, u32, .big);
+            const positionColumn = try utils.readInt(b, u32, .big);
             try dest.append(Selection{
                 .startLineNumber = 0,
                 .startColumn = 0,
@@ -291,15 +291,15 @@ pub const SingleModelEditStackDataUnserialized = struct {
     pub fn deserialize(allocator: Allocator, source: []const u8) !SingleModelEditStackDataUnserialized {
         var reader = std.Io.Reader.fixed(source);
 
-        const beforeVersionId = try reader.readInt(u32, .big);
-        const afterVersionId = try reader.readInt(u32, .big);
-        const beforeEOL: EOL = @enumFromInt(try reader.readInt(u8, .big));
-        const afterEOL: EOL = @enumFromInt(try reader.readInt(u8, .big));
+        const beforeVersionId = try utils.readInt(&reader, u32, .big);
+        const afterVersionId = try utils.readInt(&reader, u32, .big);
+        const beforeEOL: EOL = @enumFromInt(try utils.readInt(&reader, u8, .big));
+        const afterEOL: EOL = @enumFromInt(try utils.readInt(&reader, u8, .big));
         var beforeCursorState = ArrayList(Selection).init(allocator);
         try _readSelections(&reader, &beforeCursorState);
         var afterCursorState = ArrayList(Selection).init(allocator);
         try _readSelections(&reader, &afterCursorState);
-        const changeCount = try reader.readInt(u32, .big);
+        const changeCount = try utils.readInt(&reader, u32, .big);
         var changes = ArrayList(TextChange).init(allocator);
         for (0..changeCount) |_| {
             try TextChange.read(&reader, allocator, &changes);

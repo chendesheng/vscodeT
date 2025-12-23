@@ -9,6 +9,7 @@ const pair = @import("./basics/utils.zig").pair;
 const usizeSub = @import("./basics/utils.zig").usizeSub;
 const usizeAdd = @import("./basics/utils.zig").usizeAdd;
 const String = @import("./basics/strings.zig").String;
+const utils = @import("./basics/utils.zig");
 
 pub const TextChange = struct {
     oldPosition: usize,
@@ -85,8 +86,8 @@ pub const TextChange = struct {
     }
 
     pub fn read(reader: *std.Io.Reader, allocator: Allocator, dest: *ArrayList(TextChange)) !void {
-        const oldPosition = try reader.readInt(u32, .big);
-        const newPosition = try reader.readInt(u32, .big);
+        const oldPosition = try utils.readInt(reader, u32, .big);
+        const newPosition = try utils.readInt(reader, u32, .big);
         const oldText = String.initOwned(try _readString(reader, allocator));
         const newText = String.initOwned(try _readString(reader, allocator));
         try dest.append(TextChange.init(oldPosition, oldText, newPosition, newText));
@@ -359,12 +360,9 @@ fn _writeString(writer: *std.Io.Writer, str: []const u8) !void {
 }
 
 fn _readString(reader: *std.Io.Reader, allocator: Allocator) !ArrayList(u8) {
-    const len: usize = @intCast(try reader.readInt(u32, .big));
-    var str = try ArrayList(u8).initCapacity(allocator, len);
-    try str.resize(len);
-    const readLen = try reader.readAll(str.items);
-    std.debug.assert(readLen == len);
-    return str;
+    const len: usize = @intCast(try utils.readInt(reader, u32, .big));
+    const items = try reader.readAlloc(allocator, len);
+    return ArrayList(u8).fromOwnedSlice(allocator, items);
 }
 
 test "textChange" {

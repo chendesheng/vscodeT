@@ -76,6 +76,11 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             .target = target,
             .optimize = optimize,
         }) });
+
+        t.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+        t.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        t.linkSystemLibrary("onig");
+
         const run_t = b.addRunArtifact(t);
         test_step.dependOn(&run_t.step);
     }
