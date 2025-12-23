@@ -14,6 +14,7 @@ const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOp
 const Range = @import("../basics/range.zig").Range;
 const Utf8StreamIterator = @import("../basics/utf8Helper.zig").Utf8StreamIterator;
 const ansi = @import("ansi.zig");
+const utils = @import("../basics/utils.zig");
 
 const MoveAction = enum {
     Up,
@@ -40,10 +41,6 @@ fn readFile(allocator: std.mem.Allocator, path: []const u8) !PieceTreeTextBuffer
     const factory = try builder.finish(false);
     defer factory.deinit();
     return try factory.create(.LF);
-}
-
-fn clamp(value: usize, min: usize, max: usize) usize {
-    return @max(min, @min(value, max));
 }
 
 fn getFirstArg() !ArrayList(u8) {
@@ -127,7 +124,7 @@ const View = struct {
         const out = self.writer;
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
         const row = self.cursorPosition.row - self.scrollPosition.row + 1;
-        const col = lineNumberGutterWidth + clamp(self.cursorPosition.col, 1, tree.getLineLength(self.cursorPosition.row) + 1);
+        const col = lineNumberGutterWidth + utils.clamp(self.cursorPosition.col, 1, tree.getLineLength(self.cursorPosition.row) + 1);
         try tui.moveCursor(out, .{ .row = row, .col = col });
     }
 
@@ -137,11 +134,11 @@ const View = struct {
         switch (action) {
             .Up => {
                 newRow -= 1;
-                newRow = clamp(newRow, 1, tree.getLineCount());
+                newRow = utils.clamp(newRow, 1, tree.getLineCount());
             },
             .Down => {
                 newRow += 1;
-                newRow = clamp(newRow, 1, tree.getLineCount());
+                newRow = utils.clamp(newRow, 1, tree.getLineCount());
             },
             .Left => {
                 newCol -= 1;
@@ -152,7 +149,7 @@ const View = struct {
         }
 
         self.cursorPosition.row = newRow;
-        self.cursorPosition.col = clamp(newCol, 1, tree.getLineLength(newRow) + 1);
+        self.cursorPosition.col = utils.clamp(newCol, 1, tree.getLineLength(newRow) + 1);
 
         if (newRow < self.scrollPosition.row) {
             self.scrollPosition.row = newRow;
