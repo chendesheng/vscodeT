@@ -1,7 +1,17 @@
 comptime {
+    _ = @import("basics/ArrayQueue.zig");
     _ = @import("basics/FixedArray.zig");
+    _ = @import("basics/FixedArray.zig");
+    _ = @import("basics/RegExp.zig");
+    _ = @import("basics/Set.zig");
+    _ = @import("basics/characterClassifier.zig");
+    _ = @import("basics/eolCounter.zig");
     _ = @import("basics/offsetRange.zig");
+    _ = @import("basics/range.zig");
     _ = @import("basics/rangePriorityQueue.zig");
+    _ = @import("basics/strings.zig");
+    _ = @import("basics/utf8Helper.zig");
+    _ = @import("basics/wordCharacterClassifier.zig");
     _ = @import("editStack.zig");
     _ = @import("indentationGuesser.zig");
     _ = @import("intervalTree.zig");

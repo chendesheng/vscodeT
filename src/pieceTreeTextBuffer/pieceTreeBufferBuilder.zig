@@ -9,7 +9,7 @@ const createLineStartsFast = @import("pieceTreeBase.zig").createLineStartsFast;
 const EOL = @import("../basics/eolCounter.zig").EOL;
 const PieceTreeTextBuffer = @import("pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const replaceEOL = @import("../basics/eolCounter.zig").replaceEOL;
-const safeUtf8Prefix = @import("../tui/utf8Helper.zig").safeUtf8Prefix;
+const safeUtf8Prefix = @import("../basics/utf8Helper.zig").safeUtf8Prefix;
 
 pub const PieceTreeTextBufferFactory = struct {
     _allocator: Allocator,

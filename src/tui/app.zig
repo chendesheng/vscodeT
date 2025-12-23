@@ -12,7 +12,7 @@ const PieceTreeBufferBuilder = @import("../pieceTreeTextBuffer/pieceTreeBufferBu
 const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOperation;
 const Range = @import("../basics/range.zig").Range;
-const Utf8StreamIterator = @import("utf8Helper.zig").Utf8StreamIterator;
+const Utf8StreamIterator = @import("../basics/utf8Helper.zig").Utf8StreamIterator;
 const ansi = @import("ansi.zig");
 
 const MoveAction = enum {

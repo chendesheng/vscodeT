@@ -51,7 +51,7 @@ pub fn disableRawMode(orig_termios: termios) !void {
     try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.FLUSH, orig_termios);
 }
 
-pub fn writeAll(writer: std.fs.File, text: []const u8) !void {
+pub fn writeAll(writer: File, text: []const u8) !void {
     try writer.writeAll(text);
 }
 
