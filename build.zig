@@ -25,9 +25,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-    exe.linkSystemLibrary("onig");
+    linkOnig(exe);
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
@@ -77,11 +75,15 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             .optimize = optimize,
         }) });
 
-        t.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-        t.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-        t.linkSystemLibrary("onig");
+        linkOnig(t);
 
         const run_t = b.addRunArtifact(t);
         test_step.dependOn(&run_t.step);
     }
+}
+
+fn linkOnig(t: *std.Build.Step.Compile) void {
+    t.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    t.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    t.linkSystemLibrary("onig");
 }
