@@ -75,9 +75,9 @@ pub fn Utf8StreamIterator(comptime bufSize: usize) type {
         bytes: [bufSize]u8,
         bytesLen: usize,
         i: usize,
-        reader: std.io.AnyReader,
+        reader: *std.Io.Reader,
 
-        pub fn init(reader: std.io.AnyReader) Self {
+        pub fn init(reader: *std.Io.Reader) Self {
             return Self{
                 .bytes = undefined,
                 .bytesLen = 0,
@@ -115,9 +115,9 @@ pub fn Utf8StreamIterator(comptime bufSize: usize) type {
         fn read(self: *Self) !void {
             self.resetRemainingBytes();
 
-            const n = try self.reader.readAll(self.bytes[self.bytesLen..]);
-            if (n == 0) return;
+            const n = try self.reader.readSliceShort(self.bytes[self.bytesLen..]);
             self.bytesLen += n;
+            if (n != self.bytes.len) return;
         }
 
         // move remaining bytes to start of buffer
@@ -181,8 +181,8 @@ test "safeUtf8Substring" {
 
 test "Utf8StreamIterator" {
     const bytes = "flatMap() 方法对数组中的每个元素应用给定的回调函数，然后将结果展开一级，返回一个新数组。它等价于在调用 map() 方法后再调用深度为 1 的 flat() 方法（arr.map(...args).flat()），但比分别调用这两个方法稍微更高效一些。";
-    var fbs = std.io.fixedBufferStream(bytes);
-    var iter = Utf8StreamIterator(16).init(fbs.reader().any());
+    var fbs = std.Io.Reader.fixed(bytes);
+    var iter = Utf8StreamIterator(16).init(&fbs);
 
     var utf8Iter = std.unicode.Utf8Iterator{
         .bytes = bytes,

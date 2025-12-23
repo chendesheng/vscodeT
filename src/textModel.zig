@@ -238,7 +238,7 @@ pub const TextModel = struct {
         }.cb);
     }
 
-    pub fn init(allocator: Allocator, source: io.AnyReader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !*TextModel {
+    pub fn init(allocator: Allocator, source: *std.Io.Reader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
         const bufferLineCount = buffer.getLineCount();
@@ -1746,10 +1746,8 @@ pub const TextModel = struct {
 };
 
 fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: *UndoRedoService) !*TextModel {
-    var source = io.fixedBufferStream(text);
-    const reader = source.reader().any();
-
-    return try TextModel.init(allocator, reader, TextModelCreationOptions{
+    var source = std.Io.Reader.fixed(text);
+    return try TextModel.init(allocator, &source, TextModelCreationOptions{
         .tabSize = 4,
         .indentSize = .{ .number = 4 },
         .insertSpaces = true,
@@ -2111,21 +2109,23 @@ pub const DecorationsTrees = struct {
         try self._injectedTextDecorationsTree.acceptReplace(offset, length, textLength, forceMoveMarkers);
     }
 };
-pub fn createTextBuffer(allocator: Allocator, source: io.AnyReader, defaultEOL: EOL) !PieceTreeTextBuffer {
+pub fn createTextBuffer(allocator: Allocator, source: *std.Io.Reader, defaultEOL: EOL) !PieceTreeTextBuffer {
     const factory = try createTextBufferFactory(allocator, source);
     defer factory.deinit();
     return try factory.create(defaultEOL);
 }
 
 var readerBuffer: [65535]u8 = undefined;
-fn createTextBufferFactory(allocator: Allocator, reader: io.AnyReader) !PieceTreeTextBufferFactory {
+fn createTextBufferFactory(allocator: Allocator, reader: *std.Io.Reader) !PieceTreeTextBufferFactory {
     var builder = PieceTreeBufferBuilder.init(allocator);
     while (true) {
-        const len = try reader.readAll(&readerBuffer);
-        if (len == 0) {
+        const len = try reader.readSliceShort(&readerBuffer);
+        if (len > 0) {
+            try builder.acceptChunk(readerBuffer[0..len]);
+        }
+        if (len != readerBuffer.len) {
             break;
         }
-        try builder.acceptChunk(readerBuffer[0..len]);
     }
     return try builder.finish(false);
 }

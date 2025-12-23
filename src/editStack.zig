@@ -525,13 +525,12 @@ pub const SingleModelEditStackElement = struct {
 test "SingleModelEditStackElement" {
     const allocator = std.testing.allocator;
     const text = "Hello, world!";
-    var source = io.fixedBufferStream(text);
-    const reader = source.reader().any();
+    var source = std.Io.Reader.fixed(text);
 
     var undoRedoService = UndoRedoService.init(allocator);
     defer undoRedoService.deinit();
 
-    var textModel = try TextModel.init(allocator, reader, TextModelCreationOptions{
+    var textModel = try TextModel.init(allocator, &source, TextModelCreationOptions{
         .tabSize = 4,
         .indentSize = .{ .number = 4 },
         .insertSpaces = true,

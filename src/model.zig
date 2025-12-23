@@ -430,7 +430,7 @@ pub fn uriEql(a: Uri, b: Uri) bool {
 }
 
 pub const UriContext = struct {
-    fn hashComponent(writer: *io.AnyWriter, component: ?Uri.Component) void {
+    fn hashComponent(writer: *std.Io.Writer, component: ?Uri.Component) void {
         if (component) |comp| {
             switch (comp) {
                 .raw => |raw| {
@@ -446,8 +446,7 @@ pub const UriContext = struct {
     pub fn hash(self: @This(), s: Uri) u64 {
         _ = self;
         var buf: [64]u8 = .{0} ** 64;
-        var stream = std.io.fixedBufferStream(&buf);
-        var writer = stream.writer().any();
+        var writer = std.io.Writer.fixed(&buf);
         hashComponent(&writer, s.user);
         hashComponent(&writer, s.password);
         hashComponent(&writer, s.host);

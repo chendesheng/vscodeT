@@ -211,7 +211,7 @@ const View = struct {
 
 fn initUtf8StreamIterator(fd: posix.fd_t) Utf8StreamIterator(16) {
     const file = std.fs.File{ .handle = fd };
-    return Utf8StreamIterator(16).init(file.reader().any());
+    return Utf8StreamIterator(16).init(&file.reader().interface);
 }
 
 pub fn main() !void {
