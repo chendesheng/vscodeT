@@ -71,6 +71,7 @@ const Rg = @import("./basics/range.zig");
 const SearchParams = @import("textModelSearch.zig").SearchParams;
 const TextModelSearch = @import("textModelSearch.zig").TextModelSearch;
 const String = @import("./basics/strings.zig").String;
+const _normalizeIndentation = @import("./basics/indentation.zig").normalizeIndentation;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -378,7 +379,7 @@ pub const TextModel = struct {
     }
 
     pub fn normalizeIndentation(self: *TextModel, str: []const u8) []const u8 {
-        return normalizeIndentation(str, self._options.indentSize, self._options.insertSpaces);
+        return _normalizeIndentation(str, self._options.indentSize, self._options.insertSpaces);
     }
 
     pub fn isAttachedToEditor(self: *const TextModel) bool {
