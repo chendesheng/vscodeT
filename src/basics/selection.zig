@@ -76,7 +76,7 @@ pub const Selection = struct {
     }
 
     // Create a new selection with a different `positionLineNumber` and `positionColumn`.
-    pub fn setEndPosition(self: *Selection, endLineNumber: usize, endColumn: usize) void {
+    pub fn setEndPosition(self: *const Selection, endLineNumber: usize, endColumn: usize) Selection {
         if (self.getDirection() == .LTR) {
             return Selection.init(self.startLineNumber, self.startColumn, endLineNumber, endColumn);
         } else {
@@ -101,7 +101,7 @@ pub const Selection = struct {
     }
 
     // Create a new selection with a different `selectionStartLineNumber` and `selectionStartColumn`.
-    pub fn setSelectionStart(self: *Selection, startLineNumber: usize, startColumn: usize) void {
+    pub fn setSelectionStart(self: *const Selection, startLineNumber: usize, startColumn: usize) Selection {
         if (self.getDirection() == .LTR) {
             return Selection.init(startLineNumber, startColumn, self.endLineNumber, self.endColumn);
         } else {
