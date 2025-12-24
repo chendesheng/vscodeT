@@ -15,6 +15,8 @@ const Range = @import("../basics/range.zig").Range;
 const Utf8StreamIterator = @import("../basics/utf8Helper.zig").Utf8StreamIterator;
 const ansi = @import("ansi.zig");
 const utils = @import("../basics/utils.zig");
+const Screen = tui.Screen;
+const SGRAttribute = tui.SGRAttribute;
 
 const MoveAction = enum {
     Up,
@@ -62,29 +64,26 @@ fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
 }
 
 const View = struct {
-    writer: File,
+    screen: Screen,
     size: Size,
     scrollPosition: Point,
     cursorPosition: Point,
 
     fn drawLineNumberGutter(self: *const View, lineNumberGutterWidth: usize, lineNumber: usize) !void {
-        const out = self.writer;
-
         const lineNumberWidth = std.fmt.count("{d}", .{lineNumber});
         for (lineNumberWidth..lineNumberGutterWidth - 1) |_| {
-            try tui.writeAll(out, " ");
+            try self.screen.writeAll(" ");
         }
 
         var buf: [64]u8 = undefined;
-        try tui.writeAll(out, try std.fmt.bufPrint(&buf, "{d} ", .{lineNumber}));
+        try self.screen.writeAll(try std.fmt.bufPrint(&buf, "{d} ", .{lineNumber}));
     }
 
     fn drawVisibleLines(self: *const View, tree: *PieceTreeTextBuffer) !void {
-        const out = self.writer;
-        try tui.moveCursor(out, .{ .col = 1, .row = 1 });
+        try self.screen.moveCursor(.{ .col = 1, .row = 1 });
         defer self.drawCursor(tree) catch {};
-        try tui.hideCursor(out);
-        defer tui.showCursor(out) catch {};
+        try self.screen.hideCursor();
+        defer self.screen.showCursor() catch {};
 
         const lineCount = tree.getLineCount();
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
@@ -100,32 +99,29 @@ const View = struct {
 
             try self.drawLineNumberGutter(lineNumberGutterWidth, i);
 
-            try tui.writeAll(out, line);
+            try self.screen.writeAll(line);
 
             if (i < to) {
-                try tui.writeAll(out, "⏎");
+                try self.screen.writeAll("⏎");
             }
 
             if (line.len <= width) {
-                for (line.len..width) |_| {
-                    try tui.writeAll(out, " ");
-                }
+                try self.screen.eraseToLineEnd();
             }
 
             if (i < to) {
-                try tui.writeAll(out, "\r\n");
+                try self.screen.moveCursorNextLine();
             }
         }
 
-        try tui.clearToEndOfScreen(out);
+        try self.screen.eraseToEnd();
     }
 
     fn drawCursor(self: *const View, tree: *const PieceTreeTextBuffer) !void {
-        const out = self.writer;
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
         const row = self.cursorPosition.row - self.scrollPosition.row + 1;
         const col = lineNumberGutterWidth + utils.clamp(self.cursorPosition.col, 1, tree.getLineLength(self.cursorPosition.row) + 1);
-        try tui.moveCursor(out, .{ .row = row, .col = col });
+        try self.screen.moveCursor(.{ .row = row, .col = col });
     }
 
     fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeTextBuffer) !void {
@@ -219,6 +215,7 @@ pub fn main() !void {
     defer logger.deinit();
 
     const stdout = std.fs.File.stdout();
+    const stdin = std.fs.File.stdin();
 
     const orig_termios = try tui.enableRawMode();
     tui.rememberOrigTermios(orig_termios);
@@ -244,11 +241,9 @@ pub fn main() !void {
     var tree = try readFile(allocator, pathArg.items);
     defer tree.deinit();
 
-    const size = try tui.getTerminalSize();
-
     var view = View{
-        .writer = stdout,
-        .size = size,
+        .screen = Screen.init(stdin, stdout),
+        .size = try tui.getTerminalSize(),
         .scrollPosition = .{ .col = 1, .row = 1 },
         .cursorPosition = .{ .col = 1, .row = 1 },
     };
@@ -262,7 +257,7 @@ pub fn main() !void {
 
     while (true) {
         inputBuffer.clearRetainingCapacity();
-        const input = try tui.readFd(posix.STDIN_FILENO, &inputBuffer);
+        const input = try tui.readFd(&inputBuffer);
         const tokens = try ansi.tokenize(allocator, input);
         defer tokens.deinit();
 
@@ -313,6 +308,8 @@ pub fn main() !void {
         } else {
             scrollChanged = !oldView.scrollPosition.equals(view.scrollPosition);
         }
+
+        try view.screen.setCursorShape(tui.CursorShape.Bar);
 
         if (scrollChanged) {
             try view.drawVisibleLines(&tree);

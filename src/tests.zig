@@ -6,6 +6,7 @@ comptime {
     _ = @import("basics/Set.zig");
     _ = @import("basics/characterClassifier.zig");
     _ = @import("basics/eolCounter.zig");
+    _ = @import("basics/event.zig");
     _ = @import("basics/offsetRange.zig");
     _ = @import("basics/range.zig");
     _ = @import("basics/rangePriorityQueue.zig");
@@ -25,6 +26,7 @@ comptime {
     _ = @import("textModel.zig");
     _ = @import("textModelEvents.zig");
     _ = @import("textModelSearch.zig");
+    _ = @import("tui/ansi.zig");
     _ = @import("undoRedo.zig");
     _ = @import("undoRedoService.zig");
 }

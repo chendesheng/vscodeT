@@ -90,65 +90,138 @@ pub fn getTerminalSize() !Size {
     };
 }
 
-pub fn clearScreen(out: File) !void {
-    try writeAll(out, "\x1b[2J"); // clear screen
-}
+pub const SGRAttribute = enum(u8) {
+    Reset = 0,
+    Bold = 1,
+    Dim = 2,
+    Italic = 3,
+    Underline = 4,
+    Blink = 5,
+    Reverse = 7,
+    Hidden = 8,
+    Strikethrough = 9,
 
-pub fn clearToEndOfScreen(out: File) !void {
-    try writeAll(out, "\x1b[J");
-}
+    DoubleUnderline = 21,
+    NormalIntensity = 22,
+    NeitherItalicNorBlackletter = 23,
+    NotUnderlined = 24,
+    NotBlink = 25,
+    ProportionalSpacing = 26,
+    NotReversed = 27,
+    NotHidden = 28,
+    NotStrikethrough = 29,
+    DefaultForeground = 39,
+    DefaultBackground = 49,
 
-pub fn getCursorPosition() !Point {
-    const stdout = File.stdout();
-    const stdin = File.stdin();
+    ForegroundBlack = 30,
+    ForegroundRed = 31,
+    ForegroundGreen = 32,
+    ForegroundYellow = 33,
+    ForegroundBlue = 34,
+    ForegroundMagenta = 35,
+    ForegroundCyan = 36,
+    ForegroundWhite = 37,
+    ForegroundGray = 90,
+    ForegroundBrightRed = 91,
+    ForegroundBrightGreen = 92,
+    ForegroundBrightYellow = 93,
+    ForegroundBrightBlue = 94,
+    ForegroundBrightMagenta = 95,
+    ForegroundBrightCyan = 96,
+    ForegroundBrightWhite = 97,
 
-    // Step 1: Ask for cursor position
-    try stdout.writeAll("\x1b[6n");
+    BackgroundBlack = 40,
+    BackgroundRed = 41,
+    BackgroundGreen = 42,
+    BackgroundYellow = 43,
+    BackgroundBlue = 44,
+    BackgroundMagenta = 45,
+    BackgroundCyan = 46,
+    BackgroundWhite = 47,
+    BackgroundGray = 100,
+    BackgroundBrightRed = 101,
+    BackgroundBrightGreen = 102,
+    BackgroundBrightYellow = 103,
+    BackgroundBrightBlue = 104,
+    BackgroundBrightMagenta = 105,
+    BackgroundBrightCyan = 106,
+    BackgroundBrightWhite = 107,
+};
 
-    // Step 2: Read the response
-    var buf: [32]u8 = undefined;
-    const n = try stdin.reader().readUntilDelimiterOrEof(&buf, 'R');
+pub const CursorShape = enum(u8) {
+    BlinkingBlock = 1,
+    Block = 2,
+    BlinkingUnderline = 3,
+    Underline = 4,
+    BlinkingBar = 5,
+    Bar = 6,
+};
 
-    if (n == null) return error.CursorResponseTimeout;
+pub const Screen = struct {
+    stdin: File,
+    stdout: File,
 
-    // Example response: ESC [ 12 ; 40 R
-    const response = n.?;
-
-    // Strip prefix: "\x1b["
-    if (response.len < 2 or response[0] != 0x1B or response[1] != '[') {
-        return error.InvalidCursorResponse;
+    pub fn init(stdin: File, stdout: File) Screen {
+        return Screen{ .stdin = stdin, .stdout = stdout };
     }
 
-    // Step 3: Parse "{ROW};{COL}"
-    var parts = std.mem.splitSequence(u8, response[2..], ";");
-    const row_str = parts.next() orelse return error.MissingRow;
-    const col_str = parts.next() orelse return error.MissingCol;
+    pub fn eraseToEnd(self: *const Screen) !void {
+        try self.stdout.writeAll("\x1b[J");
+    }
 
-    const row = try std.fmt.parseUnsigned(usize, row_str, 10);
-    const col = try std.fmt.parseUnsigned(usize, col_str, 10);
+    pub fn eraseToLineEnd(self: *const Screen) !void {
+        try self.stdout.writeAll("\x1b[K");
+    }
 
-    return .{ .row = row, .col = col };
-}
+    pub fn moveCursor(self: *const Screen, point: Point) !void {
+        try self.writeFmt("\x1b[{d};{d}H", .{ point.row, point.col });
+    }
 
-pub fn moveCursor(out: File, point: Point) !void {
-    var buf: [32]u8 = undefined;
-    const text = try std.fmt.bufPrint(buf[0..], "\x1b[{d};{d}H", .{ point.row, point.col });
-    try writeAll(out, text);
-}
+    pub fn moveCursorNextLine(self: *const Screen) !void {
+        try self.writeAll("\x1b[E");
+    }
 
-pub fn moveCursorBy(out: File, row: isize, col: isize) !void {
-    var buf: [32]u8 = undefined;
-    const text = try std.fmt.bufPrint(buf[0..], "\x1b[{d};{d}H", .{ row, col });
-    try writeAll(out, text);
-}
+    fn writeFmt(self: *const Screen, comptime fmt: []const u8, args: anytype) !void {
+        var buf: [32]u8 = undefined;
+        const text = try std.fmt.bufPrint(&buf, fmt, args);
+        try self.stdout.writeAll(text);
+    }
 
-pub fn hideCursor(out: File) !void {
-    try writeAll(out, "\x1b[?25l");
-}
+    pub fn hideCursor(self: *const Screen) !void {
+        try self.stdout.writeAll("\x1b[?25l");
+    }
 
-pub fn showCursor(out: File) !void {
-    try writeAll(out, "\x1b[?25h");
-}
+    pub fn showCursor(self: *const Screen) !void {
+        try self.stdout.writeAll("\x1b[?25h");
+    }
+
+    pub fn getSize(_: *const Screen) !Size {
+        return try getTerminalSize();
+    }
+
+    pub fn writeAll(self: *const Screen, text: []const u8) !void {
+        try self.stdout.writeAll(text);
+    }
+
+    pub fn writeSGRAttribute(self: *const Screen, attributes: []const SGRAttribute) !void {
+        try self.writeFmt("\x1b[", .{});
+        for (attributes) |attribute| {
+            try self.writeFmt("{d}", .{@intFromEnum(attribute)});
+            if (attribute != attributes[attributes.len - 1]) {
+                try self.writeAll(";");
+            }
+        }
+        try self.writeFmt("m", .{});
+    }
+
+    pub fn resetSGRAttributes(self: *const Screen) !void {
+        try self.writeAll("\x1b[0m");
+    }
+
+    pub fn setCursorShape(self: *const Screen, shape: CursorShape) !void {
+        try self.writeFmt("\x1b[{d} q", .{@intFromEnum(shape)});
+    }
+};
 
 var g_orig_termios: ?std.posix.termios = null;
 pub fn rememberOrigTermios(t: std.posix.termios) void {
@@ -195,10 +268,10 @@ pub fn installSigWinch() !void {
     posix.sigaction(posix.SIG.WINCH, &sa, null);
 }
 
-pub fn readFd(fd: posix.fd_t, buffer: *ArrayList(u8)) ![]const u8 {
+pub fn readFd(buffer: *ArrayList(u8)) ![]const u8 {
     var tmp: [32]u8 = undefined;
     while (true) {
-        const n = try posix.read(fd, &tmp);
+        const n = try posix.read(posix.STDIN_FILENO, &tmp);
         if (n > 0) {
             try buffer.appendSlice(tmp[0..n]);
         } else {
