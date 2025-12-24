@@ -13,7 +13,6 @@ const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer/pieceTreeTextBuffer.
 const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOperation;
 const Range = @import("../basics/range.zig").Range;
 const Utf8StreamIterator = @import("../basics/utf8Helper.zig").Utf8StreamIterator;
-const ansi = @import("ansi.zig");
 const utils = @import("../basics/utils.zig");
 const Screen = tui.Screen;
 const SGRAttribute = tui.SGRAttribute;
@@ -75,8 +74,7 @@ const View = struct {
             try self.screen.writeAll(" ");
         }
 
-        var buf: [64]u8 = undefined;
-        try self.screen.writeAll(try std.fmt.bufPrint(&buf, "{d} ", .{lineNumber}));
+        try self.screen.writeFmt("{d} ", .{lineNumber});
     }
 
     fn drawVisibleLines(self: *const View, tree: *PieceTreeTextBuffer) !void {
@@ -205,11 +203,6 @@ const View = struct {
     }
 };
 
-fn initUtf8StreamIterator(fd: posix.fd_t) Utf8StreamIterator(16) {
-    const file = std.fs.File{ .handle = fd };
-    return Utf8StreamIterator(16).init(&file.reader().interface);
-}
-
 pub fn main() !void {
     try logger.init("debug.log");
     defer logger.deinit();
@@ -252,13 +245,8 @@ pub fn main() !void {
     var contentChanged = false;
     var scrollChanged = false;
 
-    var inputBuffer = try ArrayList(u8).initCapacity(allocator, 1024);
-    defer inputBuffer.deinit();
-
     while (true) {
-        inputBuffer.clearRetainingCapacity();
-        const input = try tui.readFd(&inputBuffer);
-        const tokens = try ansi.tokenize(allocator, input);
+        const tokens = try view.screen.poll(allocator);
         defer tokens.deinit();
 
         var oldView = view;

@@ -1,5 +1,6 @@
 // https://viewsourcecode.org/snaptoken/kilo/index.html
 const std = @import("std");
+const ansi = @import("ansi.zig");
 const ArrayList = std.array_list.Managed;
 const posix = std.posix;
 const termios = posix.system.termios;
@@ -181,7 +182,7 @@ pub const Screen = struct {
         try self.writeAll("\x1b[E");
     }
 
-    fn writeFmt(self: *const Screen, comptime fmt: []const u8, args: anytype) !void {
+    pub fn writeFmt(self: *const Screen, comptime fmt: []const u8, args: anytype) !void {
         var buf: [32]u8 = undefined;
         const text = try std.fmt.bufPrint(&buf, fmt, args);
         try self.stdout.writeAll(text);
@@ -221,6 +222,47 @@ pub const Screen = struct {
     pub fn setCursorShape(self: *const Screen, shape: CursorShape) !void {
         try self.writeFmt("\x1b[{d} q", .{@intFromEnum(shape)});
     }
+
+    pub fn poll(_: *const Screen, allocator: Allocator) !ArrayList(ansi.AnsiToken) {
+        var inputBufferList = try ArrayList(u8).initCapacity(allocator, 20);
+        defer inputBufferList.deinit();
+
+        const input = try readFd(&inputBufferList);
+        return try ansi.tokenize(allocator, input);
+    }
+};
+
+pub const KeyModifier = packed struct {
+    shift: bool,
+    alt: bool,
+    ctrl: bool,
+    meta: bool,
+};
+
+pub const Keycode = enum(u8) {
+    Up = 1,
+    Down = 2,
+    Left = 3,
+    Right = 4,
+    Home = 5,
+    End = 6,
+    PageUp = 7,
+    PageDown = 8,
+};
+
+pub const KeyPress = struct {
+    keycode: u8,
+    modifier: KeyModifier = .{},
+
+    pub fn init(keycode: u8, modifier: KeyModifier) KeyPress {
+        return KeyPress{ .keycode = keycode, .modifier = modifier };
+    }
+};
+
+pub const Event = union(enum) {
+    key: KeyPress,
+    paste: []const u8,
+    resize: Size,
 };
 
 var g_orig_termios: ?std.posix.termios = null;
