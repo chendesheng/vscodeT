@@ -36,7 +36,9 @@ fn getFirstArg() !ArrayList(u8) {
     return firstArg;
 }
 
-fn createTextModel(allocator: Allocator, file: File, undoRedoService: *UndoRedoService) !*TextModel {
+fn loadFile(allocator: Allocator, path: []const u8, undoRedoService: *UndoRedoService) !*TextModel {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
     var buf: [1024]u8 = undefined;
     var reader = file.readerStreaming(&buf);
     return try TextModel.init(allocator, &reader.interface, TextModelCreationOptions{
@@ -84,11 +86,9 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    const file = try std.fs.cwd().openFile(pathArg.items, .{});
-    defer file.close();
     var undoRedoService = UndoRedoService.init(allocator);
     defer undoRedoService.deinit();
-    var textModel = try createTextModel(allocator, file, &undoRedoService);
+    var textModel = try loadFile(allocator, pathArg.items, &undoRedoService);
     defer textModel.deinit();
 
     var screen = try Screen.init(stdin, stdout, allocator);
