@@ -63,9 +63,9 @@ fn isFinalCharForEscSequence(chr: u8) bool {
 const AnsiTokenizerState = enum {
     normal,
     esc,
-    escParameter,
-    escParameterIntermediate,
-    escIntermediate,
+    csiParameter,
+    csiParameterIntermediate,
+    csiIntermediate,
     bracketedPaste,
 };
 
@@ -88,10 +88,10 @@ pub fn tokenize(allocator: Allocator, input: []const u8) !ArrayList(AnsiToken) {
             },
             .esc => {
                 if (chr == '[') {
-                    state = .escParameter;
+                    state = .csiParameter;
                     lastpos = pos + 1;
                 } else if (isIntermediateChar(chr)) {
-                    state = .escIntermediate;
+                    state = .csiIntermediate;
                     lastpos = pos;
                 } else if (isFinalCharForEscSequence(chr)) {
                     currentData.csi.parameters = "";
@@ -104,10 +104,10 @@ pub fn tokenize(allocator: Allocator, input: []const u8) !ArrayList(AnsiToken) {
                     state = .normal;
                 }
             },
-            .escParameter => {
+            .csiParameter => {
                 if (isIntermediateChar(chr)) {
                     currentData.csi.parameters = input[lastpos..pos];
-                    state = .escParameterIntermediate;
+                    state = .csiParameterIntermediate;
                     lastpos = pos;
                 } else if (isFinalChar(chr)) {
                     currentData.csi.parameters = input[lastpos..pos];
@@ -122,7 +122,7 @@ pub fn tokenize(allocator: Allocator, input: []const u8) !ArrayList(AnsiToken) {
                     lastpos = pos + 1;
                 }
             },
-            .escParameterIntermediate => {
+            .csiParameterIntermediate => {
                 if (isFinalChar(chr)) {
                     currentData.csi.intermediate = input[lastpos..pos];
                     currentData.csi.final = chr;
@@ -130,7 +130,7 @@ pub fn tokenize(allocator: Allocator, input: []const u8) !ArrayList(AnsiToken) {
                     state = .normal;
                 }
             },
-            .escIntermediate => {
+            .csiIntermediate => {
                 if (isFinalCharForEscSequence(chr)) {
                     currentData.csi.parameters = "";
                     currentData.csi.intermediate = input[lastpos..pos];

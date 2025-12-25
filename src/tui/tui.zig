@@ -247,16 +247,25 @@ pub const Screen = struct {
         for (tokens.items) |token| {
             switch (token) {
                 .string => {
-                    if (token.string[0] == 0x7f) {
-                        try events.append(.{ .key = .init(.backspace, .{}) });
-                    } else if (token.string[0] == 27) {
-                        try events.append(.{ .key = .init(.escape, .{}) });
-                    } else if (token.string[0] == '\r') {
-                        try events.append(.{ .key = .init(.enter, .{}) });
-                    } else if (token.string[0] == '\t') {
-                        try events.append(.{ .key = .init(.tab, .{}) });
+                    if (token.string.len == 1) {
+                        const c = token.string[0];
+                        if (0 < c and c < 27) {
+                            try events.append(.{ .key = .init(.{ .character = 'a' + c - 1 }, .{ .ctrl = true }) });
+                        } else if (c == 32) {
+                            try events.append(.{ .key = .init(.{ .character = ' ' }, .{}) });
+                        } else if (c == 0x7f) {
+                            try events.append(.{ .key = .init(.backspace, .{}) });
+                        } else if (c == 27) {
+                            try events.append(.{ .key = .init(.escape, .{}) });
+                        } else if (c == '\r') {
+                            try events.append(.{ .key = .init(.enter, .{}) });
+                        } else if (c == '\t') {
+                            try events.append(.{ .key = .init(.tab, .{}) });
+                        } else {
+                            try events.append(.{ .key = .init(.{ .character = c }, .{}) });
+                        }
                     } else {
-                        try events.append(.{ .key = .init(.{ .character = token.string[0] }, .{}) });
+                        return error.Todo;
                     }
                 },
                 .csi => {
@@ -309,6 +318,10 @@ pub const KeyPress = struct {
 
     pub fn init(keycode: Keycode, modifier: KeyModifier) KeyPress {
         return KeyPress{ .keycode = keycode, .modifier = modifier };
+    }
+
+    pub fn noModifiers(self: *const KeyPress) bool {
+        return self.modifier == KeyModifier{};
     }
 };
 

@@ -22,8 +22,16 @@ const MoveAction = enum {
     Down,
     Left,
     Right,
-    LineFirst,
-    LineLast,
+    LineStart,
+    LineEnd,
+    BufferStart,
+    BufferEnd,
+    PageTop,
+    PageMiddle,
+    PageBottom,
+    // scroll
+    HalfPageUp,
+    HalfPageDown,
 };
 
 var readerBuffer: [65535]u8 = undefined;
@@ -67,9 +75,10 @@ fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
 const View = struct {
     log: *std.Io.Writer,
     size: Size,
-    scrollPosition: Point,
-    cursorPosition: Point,
-    mode: Mode,
+    scrollPosition: Point = .{ .col = 1, .row = 1 },
+    cursorPosition: Point = .{ .col = 1, .row = 1 },
+    cursorColumn: usize = 1,
+    mode: Mode = .Normal,
 
     const Mode = enum(u8) {
         Normal,
@@ -138,35 +147,79 @@ const View = struct {
     fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeTextBuffer) !void {
         var newCol = self.cursorPosition.col;
         var newRow = self.cursorPosition.row;
+        var newCursorColumn = self.cursorColumn;
         switch (action) {
             .Up => {
-                newRow -= 1;
-                newRow = utils.clamp(newRow, 1, tree.getLineCount());
-                newCol = utils.clamp(newCol, 1, tree.getLineLength(newRow));
+                newRow = utils.clamp(newRow - 1, 1, tree.getLineCount());
+                newCol = utils.clamp(newCursorColumn, 1, tree.getLineLength(newRow));
             },
             .Down => {
-                newRow += 1;
-                newRow = utils.clamp(newRow, 1, tree.getLineCount());
-                newCol = utils.clamp(newCol, 1, tree.getLineLength(newRow));
+                newRow = utils.clamp(newRow + 1, 1, tree.getLineCount());
+                newCol = utils.clamp(newCursorColumn, 1, tree.getLineLength(newRow));
             },
             .Left => {
-                newCol -= 1;
-                newCol = utils.clamp(newCol, 1, tree.getLineLength(newRow));
+                newCol = utils.clamp(newCol - 1, 1, tree.getLineLength(newRow));
+                newCursorColumn = newCol;
             },
             .Right => {
-                newCol += 1;
-                newCol = utils.clamp(newCol, 1, tree.getLineLength(newRow));
+                newCol = utils.clamp(newCol + 1, 1, tree.getLineLength(newRow));
+                newCursorColumn = newCol;
             },
-            .LineFirst => {
+            .LineStart => {
                 newCol = 1;
+                newCursorColumn = newCol;
             },
-            .LineLast => {
+            .LineEnd => {
                 newCol = tree.getLineLength(newRow);
+                newCursorColumn = newCol;
+            },
+            .BufferStart => {
+                newRow = 1;
+                newCol = 1;
+                newCursorColumn = newCol;
+            },
+            .BufferEnd => {
+                newRow = tree.getLineCount();
+                newCol = tree.getLineLength(newRow);
+                newCursorColumn = newCol;
+            },
+            .HalfPageUp => {
+                // FIXME: this is not correct, should scroll
+                const h = self.size.height / 2;
+                newRow = if (newRow > h) newRow - h else 1;
+                newCol = utils.clamp(newCursorColumn, 1, tree.getLineLength(newRow));
+            },
+            .HalfPageDown => {
+                // FIXME: this is not correct, should scroll
+                newRow = utils.clamp(newRow + self.size.height / 2, 1, tree.getLineCount());
+                newCol = utils.clamp(newCursorColumn, 1, tree.getLineLength(newRow));
+            },
+            .PageTop => {
+                newRow = self.scrollPosition.row;
+                newRow = utils.clamp(newRow, 1, tree.getLineCount());
+                // FIXME: first non-space column
+                newCol = 1;
+                newCursorColumn = newCol;
+            },
+            .PageBottom => {
+                newRow = self.scrollPosition.row + self.size.height - 1;
+                newRow = utils.clamp(newRow, 1, tree.getLineCount());
+                // FIXME: first non-space column
+                newCol = 1;
+                newCursorColumn = newCol;
+            },
+            .PageMiddle => {
+                newRow = self.scrollPosition.row + self.size.height / 2;
+                newRow = utils.clamp(newRow, 1, tree.getLineCount());
+                // FIXME: first non-space column
+                newCol = 1;
+                newCursorColumn = newCol;
             },
         }
 
         self.cursorPosition.row = newRow;
         self.cursorPosition.col = newCol;
+        self.cursorColumn = newCursorColumn;
 
         if (newRow < self.scrollPosition.row) {
             self.scrollPosition.row = newRow;
@@ -231,27 +284,44 @@ const View = struct {
 
     fn handleKeyPress(self: *View, key: *const tui.KeyPress, tree: *PieceTreeTextBuffer) !void {
         if (self.mode == .Normal) {
-            switch (key.keycode) {
-                .up => try self.moveCursor(.Up, tree),
-                .down => try self.moveCursor(.Down, tree),
-                .left => try self.moveCursor(.Left, tree),
-                .right => try self.moveCursor(.Right, tree),
-                .backspace => try self.moveCursor(.Left, tree),
-                .enter => try self.moveCursor(.Down, tree),
-                .character => |c| {
-                    switch (c) {
-                        'i' => try self.setMode(.Insert),
-                        'h' => try self.moveCursor(.Left, tree),
-                        'j' => try self.moveCursor(.Down, tree),
-                        'k' => try self.moveCursor(.Up, tree),
-                        'l' => try self.moveCursor(.Right, tree),
-                        '0' => try self.moveCursor(.LineFirst, tree),
-                        '$' => try self.moveCursor(.LineLast, tree),
-                        'q' => return error.Quit,
-                        else => return,
-                    }
-                },
-                else => return,
+            if (key.noModifiers()) {
+                switch (key.keycode) {
+                    .up => try self.moveCursor(.Up, tree),
+                    .down => try self.moveCursor(.Down, tree),
+                    .left => try self.moveCursor(.Left, tree),
+                    .right => try self.moveCursor(.Right, tree),
+                    .backspace => try self.moveCursor(.Left, tree),
+                    .enter => try self.moveCursor(.Down, tree),
+                    .character => |c| {
+                        switch (c) {
+                            'i' => try self.setMode(.Insert),
+                            'h' => try self.moveCursor(.Left, tree),
+                            'j' => try self.moveCursor(.Down, tree),
+                            'k' => try self.moveCursor(.Up, tree),
+                            'l' => try self.moveCursor(.Right, tree),
+                            '0' => try self.moveCursor(.LineStart, tree),
+                            '$' => try self.moveCursor(.LineEnd, tree),
+                            'G' => try self.moveCursor(.BufferEnd, tree),
+                            'H' => try self.moveCursor(.PageTop, tree),
+                            'M' => try self.moveCursor(.PageMiddle, tree),
+                            'L' => try self.moveCursor(.PageBottom, tree),
+                            'q' => return error.Quit,
+                            else => return,
+                        }
+                    },
+                    else => return,
+                }
+            } else if (key.modifier.ctrl) {
+                switch (key.keycode) {
+                    .character => |c| {
+                        switch (c) {
+                            'u' => try self.moveCursor(.HalfPageUp, tree),
+                            'd' => try self.moveCursor(.HalfPageDown, tree),
+                            else => return,
+                        }
+                    },
+                    else => return,
+                }
             }
         } else if (self.mode == .Insert) {
             switch (key.keycode) {
@@ -303,9 +373,6 @@ pub fn main() !void {
     var view = View{
         .log = logWriter,
         .size = try tui.getTerminalSize(),
-        .scrollPosition = .{ .col = 1, .row = 1 },
-        .cursorPosition = .{ .col = 1, .row = 1 },
-        .mode = .Normal,
     };
     try view.drawVisibleLines(&screen, &tree);
 
