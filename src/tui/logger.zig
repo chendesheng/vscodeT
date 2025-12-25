@@ -6,20 +6,10 @@ var loggerFile: ?fs.File = null;
 
 pub fn format(comptime fmt: []const u8, args: anytype) void {
     if (loggerFile) |file| {
-        std.fmt.format(file.writer(), fmt, args) catch {};
-    }
-}
-
-pub fn writer() ?std.Io.Writer {
-    if (loggerFile) |file| {
-        return file.writer().interface;
-    }
-    return null;
-}
-
-pub fn write(text: []const u8) void {
-    if (loggerFile) |file| {
-        _ = file.write(text) catch {};
+        var buf: [1024]u8 = undefined;
+        var w = file.writer(&buf);
+        w.interface.print(fmt, args) catch {};
+        w.interface.flush() catch {};
     }
 }
 

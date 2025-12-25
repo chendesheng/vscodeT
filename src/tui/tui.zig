@@ -161,9 +161,14 @@ pub const CursorShape = enum(u8) {
 pub const Screen = struct {
     stdin: File,
     stdout: File,
+    inputBufferList: ArrayList(u8),
 
-    pub fn init(stdin: File, stdout: File) Screen {
-        return Screen{ .stdin = stdin, .stdout = stdout };
+    pub fn init(stdin: File, stdout: File, allocator: Allocator) !Screen {
+        return Screen{ .stdin = stdin, .stdout = stdout, .inputBufferList = try ArrayList(u8).initCapacity(allocator, 20) };
+    }
+
+    pub fn deinit(self: *const Screen) void {
+        self.inputBufferList.deinit();
     }
 
     pub fn eraseToEnd(self: *const Screen) !void {
@@ -223,38 +228,41 @@ pub const Screen = struct {
         try self.writeFmt("\x1b[{d} q", .{@intFromEnum(shape)});
     }
 
-    pub fn poll(_: *const Screen, allocator: Allocator) !ArrayList(ansi.AnsiToken) {
-        var inputBufferList = try ArrayList(u8).initCapacity(allocator, 20);
-        defer inputBufferList.deinit();
-
-        const input = try readFd(&inputBufferList);
-        return try ansi.tokenize(allocator, input);
+    pub fn poll(self: *Screen) !ArrayList(ansi.AnsiToken) {
+        self.inputBufferList.clearRetainingCapacity();
+        const input = try readFd(&self.inputBufferList);
+        return try ansi.tokenize(self.inputBufferList.allocator, input);
     }
 };
 
 pub const KeyModifier = packed struct {
-    shift: bool,
-    alt: bool,
-    ctrl: bool,
-    meta: bool,
+    shift: bool = false,
+    alt: bool = false,
+    ctrl: bool = false,
+    meta: bool = false,
 };
 
-pub const Keycode = enum(u8) {
-    Up = 1,
-    Down = 2,
-    Left = 3,
-    Right = 4,
-    Home = 5,
-    End = 6,
-    PageUp = 7,
-    PageDown = 8,
+pub const Keycode = union(enum) {
+    up: void,
+    down: void,
+    left: void,
+    right: void,
+    home: void,
+    end: void,
+    backspace: void,
+    enter: void,
+    tab: void,
+    escape: void,
+    pageUp: void,
+    pageDown: void,
+    character: u8,
 };
 
 pub const KeyPress = struct {
-    keycode: u8,
+    keycode: Keycode,
     modifier: KeyModifier = .{},
 
-    pub fn init(keycode: u8, modifier: KeyModifier) KeyPress {
+    pub fn init(keycode: Keycode, modifier: KeyModifier) KeyPress {
         return KeyPress{ .keycode = keycode, .modifier = modifier };
     }
 };
@@ -310,7 +318,7 @@ pub fn installSigWinch() !void {
     posix.sigaction(posix.SIG.WINCH, &sa, null);
 }
 
-pub fn readFd(buffer: *ArrayList(u8)) ![]const u8 {
+fn readFd(buffer: *ArrayList(u8)) ![]const u8 {
     var tmp: [32]u8 = undefined;
     while (true) {
         const n = try posix.read(posix.STDIN_FILENO, &tmp);

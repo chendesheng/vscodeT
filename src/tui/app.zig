@@ -63,10 +63,17 @@ fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
 }
 
 const View = struct {
+    log: *std.Io.Writer,
     screen: Screen,
     size: Size,
     scrollPosition: Point,
     cursorPosition: Point,
+    mode: Mode,
+
+    const Mode = enum(u8) {
+        Normal,
+        Insert,
+    };
 
     fn drawLineNumberGutter(self: *const View, lineNumberGutterWidth: usize, lineNumber: usize) !void {
         const lineNumberWidth = std.fmt.count("{d}", .{lineNumber});
@@ -201,11 +208,51 @@ const View = struct {
             self.scrollPosition.row = lineCount + 1 - self.size.height;
         }
     }
+
+    fn setMode(self: *View, mode: Mode) !void {
+        self.mode = mode;
+        if (mode == .Normal) {
+            try self.screen.setCursorShape(.Block);
+        } else if (mode == .Insert) {
+            try self.screen.setCursorShape(.Bar);
+        }
+    }
+
+    fn handleKeyPress(self: *View, key: tui.KeyPress, tree: *PieceTreeTextBuffer) !void {
+        if (self.mode == .Normal) {
+            switch (key.keycode) {
+                .up => try self.moveCursor(.Up, tree),
+                .down => try self.moveCursor(.Down, tree),
+                .left => try self.moveCursor(.Left, tree),
+                .right => try self.moveCursor(.Right, tree),
+                .character => |c| {
+                    switch (c) {
+                        'i' => try self.setMode(.Insert),
+                        'q' => std.process.exit(0),
+                        else => return,
+                    }
+                },
+                else => return,
+            }
+        } else if (self.mode == .Insert) {
+            switch (key.keycode) {
+                .backspace => try self.deleteLeftOfCursor(tree),
+                .enter => try self.insertAtCursor(tree, "\n"),
+                .tab => try self.insertAtCursor(tree, "\t"),
+                .escape => try self.setMode(.Normal),
+                .character => |c| try self.insertAtCursor(tree, &[1]u8{c}),
+                else => return,
+            }
+        }
+    }
 };
 
 pub fn main() !void {
-    try logger.init("debug.log");
-    defer logger.deinit();
+    var loggerFile = try logger.openLoggerFile("debug.log");
+    var buf: [1024]u8 = undefined;
+    var loggerWriter = loggerFile.writer(&buf);
+    var logWriter = &loggerWriter.interface;
+    defer loggerFile.close();
 
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();
@@ -234,11 +281,15 @@ pub fn main() !void {
     var tree = try readFile(allocator, pathArg.items);
     defer tree.deinit();
 
+    var screen = try Screen.init(stdin, stdout, allocator);
+    defer screen.deinit();
     var view = View{
-        .screen = Screen.init(stdin, stdout),
+        .log = logWriter,
+        .screen = screen,
         .size = try tui.getTerminalSize(),
         .scrollPosition = .{ .col = 1, .row = 1 },
         .cursorPosition = .{ .col = 1, .row = 1 },
+        .mode = .Normal,
     };
     try view.drawVisibleLines(&tree);
 
@@ -246,45 +297,51 @@ pub fn main() !void {
     var scrollChanged = false;
 
     while (true) {
-        const tokens = try view.screen.poll(allocator);
+        const tokens = try view.screen.poll();
         defer tokens.deinit();
 
         var oldView = view;
         var isPasting = false;
 
         for (tokens.items) |token| {
+            logWriter.print("{any}\n", .{token}) catch {};
+            logWriter.flush() catch {};
+
             switch (token) {
                 .string => {
-                    if (token.string[0] == 'q') {
-                        return;
-                    } else if (token.string[0] == 0x7f) {
-                        try view.deleteLeftOfCursor(&tree);
+                    if (token.string[0] == 0x7f) {
+                        try view.handleKeyPress(.init(.backspace, .{}), &tree);
+                        contentChanged = true;
+                    } else if (token.string[0] == 27) {
+                        try view.handleKeyPress(.init(.escape, .{}), &tree);
                         contentChanged = true;
                     } else if (token.string[0] == '\r') {
-                        try view.insertAtCursor(&tree, "\n");
+                        try view.handleKeyPress(.init(.enter, .{}), &tree);
                         contentChanged = true;
                     } else if (isPasting) {
                         try view.insertAtCursor(&tree, token.string);
                         contentChanged = true;
                     } else {
-                        try view.insertAtCursor(&tree, token.string);
+                        try view.handleKeyPress(.init(.{ .character = token.string[0] }, .{}), &tree);
                         contentChanged = true;
                     }
                 },
                 .csi => {
-                    switch (token.csi.final) {
-                        'A' => try view.moveCursor(.Up, &tree),
-                        'B' => try view.moveCursor(.Down, &tree),
-                        'C' => try view.moveCursor(.Right, &tree),
-                        'D' => try view.moveCursor(.Left, &tree),
-                        '~' => {
-                            if (token.isBracketedPasteStart()) {
-                                isPasting = true;
-                            } else if (token.isBracketedPasteEnd()) {
-                                isPasting = false;
-                            }
-                        },
-                        else => unreachable,
+                    if (token.csi.final == '~') {
+                        if (token.isBracketedPasteStart()) {
+                            isPasting = true;
+                        } else if (token.isBracketedPasteEnd()) {
+                            isPasting = false;
+                        }
+                    } else {
+                        const key: tui.KeyPress = switch (token.csi.final) {
+                            'A' => .init(.up, .{}),
+                            'B' => .init(.down, .{}),
+                            'C' => .init(.right, .{}),
+                            'D' => .init(.left, .{}),
+                            else => unreachable,
+                        };
+                        try view.handleKeyPress(key, &tree);
                     }
                 },
             }
@@ -296,8 +353,6 @@ pub fn main() !void {
         } else {
             scrollChanged = !oldView.scrollPosition.equals(view.scrollPosition);
         }
-
-        try view.screen.setCursorShape(tui.CursorShape.Bar);
 
         if (scrollChanged) {
             try view.drawVisibleLines(&tree);
