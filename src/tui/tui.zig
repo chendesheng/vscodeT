@@ -64,15 +64,6 @@ pub fn exitAltScreen(out: File) !void {
     try writeAll(out, "\x1b[?1049l");
 }
 
-pub const Point = struct {
-    col: usize,
-    row: usize,
-
-    pub fn equals(self: *const Point, other: Point) bool {
-        return self.row == other.row and self.col == other.col;
-    }
-};
-
 pub const Size = struct {
     width: usize,
     height: usize,
@@ -180,8 +171,8 @@ pub const Screen = struct {
         try self.stdout.writeAll("\x1b[K");
     }
 
-    pub fn moveCursor(self: *const Screen, point: Point) !void {
-        try self.writeFmt("\x1b[{d};{d}H", .{ point.row, point.col });
+    pub fn moveCursor(self: *const Screen, row: usize, col: usize) !void {
+        try self.writeFmt("\x1b[{d};{d}H", .{ row, col });
     }
 
     pub fn moveCursorNextLine(self: *const Screen) !void {

@@ -243,15 +243,17 @@ pub const PieceTreeTextBuffer = struct {
         return self._pieceTree.getLineLength(lineNumber) + 1;
     }
 
-    pub fn getLineFirstNonWhitespaceColumn(self: *const PieceTreeTextBuffer, lineNumber: usize) usize {
-        const lineContent = self.getLineContent(lineNumber);
-        const result = strings.firstNonWhitespaceIndex(lineContent);
+    pub fn getLineFirstNonWhitespaceColumn(self: *PieceTreeTextBuffer, lineNumber: usize) !usize {
+        const lineContent = try self.getLineContent(lineNumber);
+        defer lineContent.deinit();
+        const result = strings.firstNonWhitespaceIndex(lineContent.items);
         return if (result) |i| i + 1 else 0;
     }
 
-    pub fn getLineLastNonWhitespaceColumn(self: *const PieceTreeTextBuffer, lineNumber: usize) usize {
-        const lineContent = self.getLineContent(lineNumber);
-        const result = strings.lastNonWhitespaceIndex(lineContent);
+    pub fn getLineLastNonWhitespaceColumn(self: *PieceTreeTextBuffer, lineNumber: usize) !usize {
+        const lineContent = try self.getLineContent(lineNumber);
+        defer lineContent.deinit();
+        const result = strings.lastNonWhitespaceIndex(lineContent.items);
         return if (result) |i| i + 2 else 0;
     }
 

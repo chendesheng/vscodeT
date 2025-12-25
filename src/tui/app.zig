@@ -1,11 +1,16 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const UndoRedoGroup = @import("../undoRedo.zig").UndoRedoGroup;
+const IdentifiedSingleEditOperation = @import("../model.zig").IdentifiedSingleEditOperation;
+const UndoRedoService = @import("../undoRedoService.zig").UndoRedoService;
+const TextModel = @import("../textModel.zig").TextModel;
+const TextModelCreationOptions = @import("../model.zig").TextModelCreationOptions;
 const io = std.io;
 const fs = std.fs;
 const File = fs.File;
 const posix = std.posix;
 const tui = @import("tui.zig");
 const Size = tui.Size;
-const Point = tui.Point;
 const ArrayList = std.array_list.Managed;
 const logger = @import("logger.zig");
 const PieceTreeBufferBuilder = @import("../pieceTreeTextBuffer/pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
@@ -16,12 +21,14 @@ const Utf8StreamIterator = @import("../basics/utf8Helper.zig").Utf8StreamIterato
 const utils = @import("../basics/utils.zig");
 const Screen = tui.Screen;
 const SGRAttribute = tui.SGRAttribute;
+const Position = @import("../basics/position.zig").Position;
 
 const MoveAction = enum {
     Up,
     Down,
     Left,
     Right,
+    LineFirstNonSpace,
     LineStart,
     LineEnd,
     BufferStart,
@@ -66,19 +73,39 @@ fn getFirstArg() !ArrayList(u8) {
     return firstArg;
 }
 
-fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
-    const lineCount = tree.getLineCount();
+fn getLineNumberGutterWidth(lineCount: usize) usize {
     const maxLineNumberWidth = std.fmt.count("{d}", .{lineCount});
     return maxLineNumberWidth + 2;
+}
+
+fn createTextModel(allocator: Allocator, file: File, undoRedoService: *UndoRedoService) !*TextModel {
+    var buf: [1024]u8 = undefined;
+    var reader = file.readerStreaming(&buf);
+    return try TextModel.init(allocator, &reader.interface, TextModelCreationOptions{
+        .tabSize = 4,
+        .indentSize = .{ .number = 4 },
+        .insertSpaces = true,
+        .detectIndentation = false,
+        .trimAutoWhitespace = true,
+        .defaultEOL = .LF,
+        .isForSimpleWidget = false,
+        .largeFileOptimizations = false,
+        .bracketPairColorizationOptions = .{
+            .enabled = false,
+            .independentColorPoolPerBracketType = false,
+        },
+    }, null, undoRedoService);
 }
 
 const View = struct {
     log: *std.Io.Writer,
     size: Size,
-    scrollPosition: Point = .{ .col = 1, .row = 1 },
-    cursorPosition: Point = .{ .col = 1, .row = 1 },
+    scrollPosition: Position = .init(1, 1),
+    cursorPosition: Position = .init(1, 1),
     cursorColumn: usize = 1,
+    textModel: *TextModel,
     mode: Mode = .Normal,
+    undoRedoGroup: UndoRedoGroup,
 
     const Mode = enum(u8) {
         Normal,
@@ -94,21 +121,21 @@ const View = struct {
         try screen.writeFmt("{d} ", .{lineNumber});
     }
 
-    fn drawVisibleLines(self: *const View, screen: *Screen, tree: *PieceTreeTextBuffer) !void {
-        try screen.moveCursor(.{ .col = 1, .row = 1 });
-        defer self.drawCursor(screen, tree) catch {};
+    fn drawVisibleLines(self: *const View, screen: *Screen) !void {
+        try screen.moveCursor(1, 1);
+        defer self.drawCursor(screen) catch {};
         try screen.hideCursor();
         defer screen.showCursor() catch {};
 
-        const lineCount = tree.getLineCount();
-        const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
-        const from = self.scrollPosition.row;
-        const to: usize = @min(self.scrollPosition.row + self.size.height - 1, lineCount);
+        const lineCount = self.textModel.getLineCount();
+        const lineNumberGutterWidth = getLineNumberGutterWidth(lineCount);
+        const from = self.scrollPosition.lineNumber;
+        const to: usize = @min(self.scrollPosition.lineNumber + self.size.height - 1, lineCount);
 
         const width = self.size.width - lineNumberGutterWidth;
 
         for (from..to + 1) |i| {
-            const lineContent = try tree.getLineContent(i);
+            const lineContent = try self.textModel.getLineContent(i);
             defer lineContent.deinit();
             const line = lineContent.items;
 
@@ -132,11 +159,11 @@ const View = struct {
         try screen.eraseToEnd();
     }
 
-    fn drawCursor(self: *const View, screen: *Screen, tree: *const PieceTreeTextBuffer) !void {
-        const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
-        const row = self.cursorPosition.row - self.scrollPosition.row + 1;
-        const col = lineNumberGutterWidth + utils.clamp(self.cursorPosition.col, 1, tree.getLineLength(self.cursorPosition.row) + 1);
-        try screen.moveCursor(.{ .row = row, .col = col });
+    fn drawCursor(self: *const View, screen: *Screen) !void {
+        const lineNumberGutterWidth = getLineNumberGutterWidth(self.textModel.getLineCount());
+        const lineNumber = self.cursorPosition.lineNumber - self.scrollPosition.lineNumber + 1;
+        const col = lineNumberGutterWidth + utils.clamp(self.cursorPosition.column, 1, self.textModel.getLineLength(self.cursorPosition.lineNumber) + 1);
+        try screen.moveCursor(lineNumber, col);
         if (self.mode == .Normal) {
             try screen.setCursorShape(.Block);
         } else if (self.mode == .Insert) {
@@ -144,25 +171,25 @@ const View = struct {
         }
     }
 
-    fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeTextBuffer) !void {
-        var newCol = self.cursorPosition.col;
-        var newRow = self.cursorPosition.row;
+    fn moveCursor(self: *View, action: MoveAction) !void {
+        var newCol = self.cursorPosition.column;
+        var newLineNumber = self.cursorPosition.lineNumber;
         var newCursorColumn = self.cursorColumn;
         switch (action) {
             .Up => {
-                newRow = utils.clamp(newRow - 1, 1, tree.getLineCount());
-                newCol = utils.clamp(newCursorColumn, 1, tree.getLineLength(newRow));
+                newLineNumber = utils.clamp(newLineNumber - 1, 1, self.textModel.getLineCount());
+                newCol = utils.clamp(newCursorColumn, 1, self.textModel.getLineLength(newLineNumber));
             },
             .Down => {
-                newRow = utils.clamp(newRow + 1, 1, tree.getLineCount());
-                newCol = utils.clamp(newCursorColumn, 1, tree.getLineLength(newRow));
+                newLineNumber = utils.clamp(newLineNumber + 1, 1, self.textModel.getLineCount());
+                newCol = utils.clamp(newCursorColumn, 1, self.textModel.getLineLength(newLineNumber));
             },
             .Left => {
-                newCol = utils.clamp(newCol - 1, 1, tree.getLineLength(newRow));
+                newCol = utils.clamp(newCol - 1, 1, self.textModel.getLineLength(newLineNumber));
                 newCursorColumn = newCol;
             },
             .Right => {
-                newCol = utils.clamp(newCol + 1, 1, tree.getLineLength(newRow));
+                newCol = utils.clamp(newCol + 1, 1, self.textModel.getLineLength(newLineNumber));
                 newCursorColumn = newCol;
             },
             .LineStart => {
@@ -170,141 +197,167 @@ const View = struct {
                 newCursorColumn = newCol;
             },
             .LineEnd => {
-                newCol = tree.getLineLength(newRow);
+                newCol = self.textModel.getLineLength(newLineNumber);
+                newCursorColumn = newCol;
+            },
+            .LineFirstNonSpace => {
+                newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
                 newCursorColumn = newCol;
             },
             .BufferStart => {
-                newRow = 1;
+                newLineNumber = 1;
                 newCol = 1;
                 newCursorColumn = newCol;
             },
             .BufferEnd => {
-                newRow = tree.getLineCount();
-                newCol = tree.getLineLength(newRow);
+                newLineNumber = self.textModel.getLineCount();
+                newCol = self.textModel.getLineLength(newLineNumber);
                 newCursorColumn = newCol;
             },
             .HalfPageUp => {
                 // FIXME: this is not correct, should scroll
                 const h = self.size.height / 2;
-                newRow = if (newRow > h) newRow - h else 1;
-                newCol = utils.clamp(newCursorColumn, 1, tree.getLineLength(newRow));
+                newLineNumber = if (newLineNumber > h) newLineNumber - h else 1;
+                newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
+                newCursorColumn = newCol;
             },
             .HalfPageDown => {
                 // FIXME: this is not correct, should scroll
-                newRow = utils.clamp(newRow + self.size.height / 2, 1, tree.getLineCount());
-                newCol = utils.clamp(newCursorColumn, 1, tree.getLineLength(newRow));
+                newLineNumber = utils.clamp(newLineNumber + self.size.height / 2, 1, self.textModel.getLineCount());
+                newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
+                newCursorColumn = newCol;
             },
             .PageTop => {
-                newRow = self.scrollPosition.row;
-                newRow = utils.clamp(newRow, 1, tree.getLineCount());
-                // FIXME: first non-space column
-                newCol = 1;
+                newLineNumber = self.scrollPosition.lineNumber;
+                newLineNumber = utils.clamp(newLineNumber, 1, self.textModel.getLineCount());
+                newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
                 newCursorColumn = newCol;
             },
             .PageBottom => {
-                newRow = self.scrollPosition.row + self.size.height - 1;
-                newRow = utils.clamp(newRow, 1, tree.getLineCount());
-                // FIXME: first non-space column
-                newCol = 1;
+                newLineNumber = self.scrollPosition.lineNumber + self.size.height - 1;
+                newLineNumber = utils.clamp(newLineNumber, 1, self.textModel.getLineCount());
+                newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
                 newCursorColumn = newCol;
             },
             .PageMiddle => {
-                newRow = self.scrollPosition.row + self.size.height / 2;
-                newRow = utils.clamp(newRow, 1, tree.getLineCount());
-                // FIXME: first non-space column
-                newCol = 1;
+                newLineNumber = self.scrollPosition.lineNumber + self.size.height / 2;
+                newLineNumber = utils.clamp(newLineNumber, 1, self.textModel.getLineCount());
+                newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
                 newCursorColumn = newCol;
             },
         }
 
-        self.cursorPosition.row = newRow;
-        self.cursorPosition.col = newCol;
+        self.cursorPosition.lineNumber = newLineNumber;
+        self.cursorPosition.column = newCol;
         self.cursorColumn = newCursorColumn;
 
-        if (newRow < self.scrollPosition.row) {
-            self.scrollPosition.row = newRow;
-        } else if (newRow >= self.scrollPosition.row + self.size.height) {
-            self.scrollPosition.row = newRow - self.size.height + 1;
+        if (newLineNumber < self.scrollPosition.lineNumber) {
+            self.scrollPosition.lineNumber = newLineNumber;
+        } else if (newLineNumber >= self.scrollPosition.lineNumber + self.size.height) {
+            self.scrollPosition.lineNumber = newLineNumber - self.size.height + 1;
         }
     }
 
-    fn updateCursorPosition(self: *View, tree: *const PieceTreeTextBuffer, offset: usize) !void {
-        const pos = tree.getPositionAt(offset);
+    fn updateCursorPosition(self: *View, offset: usize) !void {
+        const pos = self.textModel.getPositionAt(offset);
 
-        if (pos.lineNumber < self.scrollPosition.row) {
-            self.scrollPosition.row = pos.lineNumber;
-        } else if (pos.lineNumber >= self.scrollPosition.row + self.size.height) {
-            self.scrollPosition.row = pos.lineNumber - self.size.height + 1;
+        if (pos.lineNumber < self.scrollPosition.lineNumber) {
+            self.scrollPosition.lineNumber = pos.lineNumber;
+        } else if (pos.lineNumber >= self.scrollPosition.lineNumber + self.size.height) {
+            self.scrollPosition.lineNumber = pos.lineNumber - self.size.height + 1;
         }
-        self.cursorPosition.row = pos.lineNumber;
-        self.cursorPosition.col = pos.column;
+        self.cursorPosition.lineNumber = pos.lineNumber;
+        self.cursorPosition.column = pos.column;
     }
 
-    fn insertAtCursor(self: *View, tree: *PieceTreeTextBuffer, text: []const u8) !void {
-        const offset = tree.getOffsetAt(self.cursorPosition.row, self.cursorPosition.col);
-        var edits = [_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRangeAndText(Range{
-            .startLineNumber = self.cursorPosition.row,
-            .startColumn = self.cursorPosition.col,
-            .endLineNumber = self.cursorPosition.row,
-            .endColumn = self.cursorPosition.col,
-        }, .initBorrowed(text))};
-        _ = try tree.applyEdits(&edits, false, false);
-        try self.updateCursorPosition(tree, offset + text.len);
+    fn insertAt(self: *View, text: []const u8, position: Position) !void {
+        var edits = [_]IdentifiedSingleEditOperation{.init(Range.init(position.lineNumber, position.column, position.lineNumber, position.column), .initBorrowed(text))};
+        _ = try self.textModel.pushEditOperations(null, &edits, null, self.undoRedoGroup);
     }
 
-    fn deleteLeftOfCursor(self: *View, tree: *PieceTreeTextBuffer) !void {
+    fn insertAtCursor(self: *View, text: []const u8) !void {
+        const offset = self.textModel.getOffsetAt(self.cursorPosition);
+        try self.insertAt(text, self.cursorPosition);
+        try self.updateCursorPosition(offset + text.len);
+    }
+
+    fn deleteLeftOfCursor(self: *View) !void {
         const startPos = self.cursorPosition;
-        const offset = tree.getOffsetAt(startPos.row, startPos.col);
+        const offset = self.textModel.getOffsetAt(startPos);
         if (offset == 0) {
             return;
         }
-        try self.updateCursorPosition(tree, offset - 1);
-        var edits = [_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRange(Range{
-            .startLineNumber = self.cursorPosition.row,
-            .startColumn = self.cursorPosition.col,
-            .endLineNumber = startPos.row,
-            .endColumn = startPos.col,
-        })};
-        _ = try tree.applyEdits(&edits, false, false);
+        try self.updateCursorPosition(offset - 1);
+        var edits = [_]IdentifiedSingleEditOperation{.init(Range.init(
+            self.cursorPosition.lineNumber,
+            self.cursorPosition.column,
+            startPos.lineNumber,
+            startPos.column,
+        ), null)};
+        _ = try self.textModel.pushEditOperations(null, &edits, null, self.undoRedoGroup);
     }
 
-    fn resize(self: *View, newSize: Size, tree: *const PieceTreeTextBuffer) !void {
+    fn resize(self: *View, newSize: Size) !void {
         self.size = newSize;
 
-        const lineCount = tree.getLineCount();
+        const lineCount = self.textModel.getLineCount();
 
-        if (self.scrollPosition.row + self.size.height > lineCount and lineCount + 1 > self.size.height) {
-            self.scrollPosition.row = lineCount + 1 - self.size.height;
+        if (self.scrollPosition.lineNumber + self.size.height > lineCount and lineCount + 1 > self.size.height) {
+            self.scrollPosition.lineNumber = lineCount + 1 - self.size.height;
         }
     }
 
-    fn setMode(self: *View, mode: Mode) !void {
-        self.mode = mode;
+    fn beginInsert(self: *View) !void {
+        self.mode = .Insert;
     }
 
-    fn handleKeyPress(self: *View, key: *const tui.KeyPress, tree: *PieceTreeTextBuffer) !void {
+    fn beginInsertAppend(self: *View) !void {
+        self.cursorPosition.column += 1;
+        self.mode = .Insert;
+    }
+
+    fn beginInsertNewLine(self: *View) !void {
+        try self.insertAt("\n", .{ .lineNumber = self.cursorPosition.lineNumber + 1, .column = 1 });
+        self.cursorPosition.lineNumber += 1;
+        self.cursorPosition.column = 1;
+        self.mode = .Insert;
+    }
+
+    fn endInsert(self: *View) !void {
+        std.debug.assert(self.mode == .Insert);
+
+        self.mode = .Normal;
+        self.cursorColumn = self.cursorPosition.column;
+        self.undoRedoGroup = UndoRedoGroup.init();
+        self.moveCursor(.Left) catch unreachable;
+    }
+
+    fn handleKeyPress(self: *View, key: *const tui.KeyPress) !void {
         if (self.mode == .Normal) {
             if (key.noModifiers()) {
                 switch (key.keycode) {
-                    .up => try self.moveCursor(.Up, tree),
-                    .down => try self.moveCursor(.Down, tree),
-                    .left => try self.moveCursor(.Left, tree),
-                    .right => try self.moveCursor(.Right, tree),
-                    .backspace => try self.moveCursor(.Left, tree),
-                    .enter => try self.moveCursor(.Down, tree),
+                    .up => try self.moveCursor(.Up),
+                    .down => try self.moveCursor(.Down),
+                    .left => try self.moveCursor(.Left),
+                    .right => try self.moveCursor(.Right),
+                    .backspace => try self.moveCursor(.Left),
+                    .enter => try self.moveCursor(.Down),
                     .character => |c| {
                         switch (c) {
-                            'i' => try self.setMode(.Insert),
-                            'h' => try self.moveCursor(.Left, tree),
-                            'j' => try self.moveCursor(.Down, tree),
-                            'k' => try self.moveCursor(.Up, tree),
-                            'l' => try self.moveCursor(.Right, tree),
-                            '0' => try self.moveCursor(.LineStart, tree),
-                            '$' => try self.moveCursor(.LineEnd, tree),
-                            'G' => try self.moveCursor(.BufferEnd, tree),
-                            'H' => try self.moveCursor(.PageTop, tree),
-                            'M' => try self.moveCursor(.PageMiddle, tree),
-                            'L' => try self.moveCursor(.PageBottom, tree),
+                            'i' => try self.beginInsert(),
+                            'a' => try self.beginInsertAppend(),
+                            'o' => try self.beginInsertNewLine(),
+                            'h' => try self.moveCursor(.Left),
+                            'j' => try self.moveCursor(.Down),
+                            'k' => try self.moveCursor(.Up),
+                            'l' => try self.moveCursor(.Right),
+                            '0' => try self.moveCursor(.LineStart),
+                            '$' => try self.moveCursor(.LineEnd),
+                            'G' => try self.moveCursor(.BufferEnd),
+                            'H' => try self.moveCursor(.PageTop),
+                            'M' => try self.moveCursor(.PageMiddle),
+                            'L' => try self.moveCursor(.PageBottom),
+                            'u' => try self.textModel.undo(),
                             'q' => return error.Quit,
                             else => return,
                         }
@@ -315,8 +368,9 @@ const View = struct {
                 switch (key.keycode) {
                     .character => |c| {
                         switch (c) {
-                            'u' => try self.moveCursor(.HalfPageUp, tree),
-                            'd' => try self.moveCursor(.HalfPageDown, tree),
+                            'u' => try self.moveCursor(.HalfPageUp),
+                            'd' => try self.moveCursor(.HalfPageDown),
+                            'r' => try self.textModel.redo(),
                             else => return,
                         }
                     },
@@ -325,11 +379,11 @@ const View = struct {
             }
         } else if (self.mode == .Insert) {
             switch (key.keycode) {
-                .backspace => try self.deleteLeftOfCursor(tree),
-                .enter => try self.insertAtCursor(tree, "\n"),
-                .tab => try self.insertAtCursor(tree, "\t"),
-                .escape => try self.setMode(.Normal),
-                .character => |c| try self.insertAtCursor(tree, &[1]u8{c}),
+                .backspace => try self.deleteLeftOfCursor(),
+                .enter => try self.insertAtCursor("\n"),
+                .tab => try self.insertAtCursor("\t"),
+                .escape => try self.endInsert(),
+                .character => |c| try self.insertAtCursor(&[1]u8{c}),
                 else => return,
             }
         }
@@ -365,16 +419,22 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var tree = try readFile(allocator, pathArg.items);
-    defer tree.deinit();
+    const file = try std.fs.cwd().openFile(pathArg.items, .{});
+    defer file.close();
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTextModel(allocator, file, &undoRedoService);
+    defer textModel.deinit();
 
     var screen = try Screen.init(stdin, stdout, allocator);
     defer screen.deinit();
     var view = View{
         .log = logWriter,
         .size = try tui.getTerminalSize(),
+        .textModel = textModel,
+        .undoRedoGroup = UndoRedoGroup.init(),
     };
-    try view.drawVisibleLines(&screen, &tree);
+    try view.drawVisibleLines(&screen);
 
     while (true) {
         const events = try screen.pollEvents();
@@ -386,16 +446,16 @@ pub fn main() !void {
 
             switch (event) {
                 .key => |*key| {
-                    try view.handleKeyPress(key, &tree);
+                    try view.handleKeyPress(key);
                 },
                 .resize => |newSize| {
-                    try view.resize(newSize, &tree);
+                    try view.resize(newSize);
                 },
             }
         }
 
         if (events.items.len > 0) {
-            try view.drawVisibleLines(&screen, &tree);
+            try view.drawVisibleLines(&screen);
         }
     }
 }

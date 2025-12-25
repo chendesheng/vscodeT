@@ -547,7 +547,7 @@ pub const TextModel = struct {
 
     pub fn getLineLength(self: *const TextModel, lineNumber: usize) usize {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
-            return error.IllegalValueForLineNumber;
+            unreachable;
         }
 
         return self._buffer.getLineLength(lineNumber);
@@ -578,18 +578,18 @@ pub const TextModel = struct {
         return self._buffer.getLineLength(lineNumber) + 1; // add 1 for the line break
     }
 
-    pub fn getLineFirstNonWhitespaceColumn(self: *const TextModel, lineNumber: usize) usize {
+    pub fn getLineFirstNonWhitespaceColumn(self: *TextModel, lineNumber: usize) !usize {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
-            unreachable;
+            return error.IllegalValueForLineNumber;
         }
-        return self._buffer.getLineFirstNonWhitespaceColumn(lineNumber);
+        return try self._buffer.getLineFirstNonWhitespaceColumn(lineNumber);
     }
 
-    pub fn getLineLastNonWhitespaceColumn(self: *const TextModel, lineNumber: usize) usize {
+    pub fn getLineLastNonWhitespaceColumn(self: *TextModel, lineNumber: usize) !usize {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
-            unreachable;
+            return error.IllegalValueForLineNumber;
         }
-        return self._buffer.getLineLastNonWhitespaceColumn(lineNumber);
+        return try self._buffer.getLineLastNonWhitespaceColumn(lineNumber);
     }
 
     // Validates `range` is within buffer bounds, but allows it to sit in between surrogate pairs, etc.
@@ -1874,6 +1874,43 @@ test "TextModel.pushEditOperations" {
     const line2 = try textModel.getLineContent(1);
     defer line2.deinit();
     try std.testing.expectEqualStrings("yo, world!", line2.items);
+}
+
+test "TextModel.UndoRedoGroup" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "Hello, world!", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    const group = UndoRedoGroup.init();
+    var opts = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 1, 1, 6), String.initBorrowed("yo")),
+    };
+    _ = try textModel.pushEditOperations(null, &opts, null, group);
+
+    const line = try textModel.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("yo, world!", line.items);
+
+    var opts2 = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 5, 1, 11), String.initBorrowed("yo!")),
+    };
+    _ = try textModel.pushEditOperations(null, &opts2, null, group);
+    const line2 = try textModel.getLineContent(1);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("yo, yo!", line2.items);
+
+    try textModel.undo();
+    const line3 = try textModel.getLineContent(1);
+    defer line3.deinit();
+    try std.testing.expectEqualStrings("Hello, world!", line3.items);
+
+    try textModel.redo();
+    const line4 = try textModel.getLineContent(1);
+    defer line4.deinit();
+    try std.testing.expectEqualStrings("yo, yo!", line4.items);
 }
 
 pub fn indentOfLine(line: []const u8) usize {
