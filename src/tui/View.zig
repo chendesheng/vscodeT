@@ -44,7 +44,7 @@ const MoveAction = enum {
 const Self = @This();
 
 log: *std.Io.Writer,
-size: Size,
+size: Size = .{ .width = 0, .height = 0 },
 scrollPosition: Position = .init(1, 1),
 cursorPosition: Position = .init(1, 1),
 cursorColumn: usize = 1,
@@ -52,39 +52,51 @@ textModel: *TextModel,
 mode: Mode = .Normal,
 undoRedoGroup: UndoRedoGroup,
 
+pub fn init(textModel: *TextModel, log: *std.Io.Writer) Self {
+    return Self{
+        .log = log,
+        .textModel = textModel,
+        .undoRedoGroup = UndoRedoGroup.init(),
+    };
+}
+
 const Mode = enum(u8) {
     Normal,
     Insert,
 };
 
-fn drawLineNumberGutter(screen: *Screen, lineNumberGutterWidth: usize, lineNumber: usize) !void {
+fn drawLineNumberGutter(self: *const Self, screen: *Screen, lineNumberGutterWidth: usize, lineNumber: usize) !void {
+    if (lineNumber == self.cursorPosition.lineNumber) {
+        try screen.writeSGRAttributes(&[_]SGRAttribute{ .ForegroundWhite, .BackgroundGray });
+    } else {
+        try screen.writeSGRAttribute(.ForegroundGray);
+    }
+
     const lineNumberWidth = std.fmt.count("{d}", .{lineNumber});
     for (lineNumberWidth..lineNumberGutterWidth - 1) |_| {
         try screen.writeAll(" ");
     }
 
     try screen.writeFmt("{d} ", .{lineNumber});
+    try screen.resetSGRAttributes();
 }
 
-pub fn drawVisibleLines(self: *const Self, screen: *Screen) !void {
-    try screen.moveCursor(1, 1);
-    defer self.drawCursor(screen) catch {};
-    try screen.hideCursor();
-    defer screen.showCursor() catch {};
-
+fn drawVisibleLines(self: *const Self, screen: *Screen) !void {
     const lineCount = self.textModel.getLineCount();
     const lineNumberGutterWidth = getLineNumberGutterWidth(lineCount);
     const from = self.scrollPosition.lineNumber;
     const to: usize = @min(self.scrollPosition.lineNumber + self.size.height - 1, lineCount);
-
-    const width = self.size.width - lineNumberGutterWidth;
 
     for (from..to + 1) |i| {
         const lineContent = try self.textModel.getLineContent(i);
         defer lineContent.deinit();
         const line = lineContent.items;
 
-        try drawLineNumberGutter(screen, lineNumberGutterWidth, i);
+        try self.drawLineNumberGutter(screen, lineNumberGutterWidth, i);
+
+        if (i == self.cursorPosition.lineNumber) {
+            try screen.writeSGRAttribute(.BackgroundGray);
+        }
 
         try screen.writeAll(line);
 
@@ -92,8 +104,10 @@ pub fn drawVisibleLines(self: *const Self, screen: *Screen) !void {
             try screen.writeAll("⏎");
         }
 
-        if (line.len <= width) {
-            try screen.eraseToLineEnd();
+        try screen.eraseToLineEnd();
+
+        if (i == self.cursorPosition.lineNumber) {
+            try screen.resetSGRAttributes();
         }
 
         if (i < to) {
@@ -106,9 +120,9 @@ pub fn drawVisibleLines(self: *const Self, screen: *Screen) !void {
 
 fn drawCursor(self: *const Self, screen: *Screen) !void {
     const lineNumberGutterWidth = getLineNumberGutterWidth(self.textModel.getLineCount());
-    const lineNumber = self.cursorPosition.lineNumber - self.scrollPosition.lineNumber + 1;
-    const col = lineNumberGutterWidth + utils.clamp(self.cursorPosition.column, 1, self.textModel.getLineLength(self.cursorPosition.lineNumber) + 1);
-    try screen.moveCursor(lineNumber, col);
+    const row = utils.clamp(self.cursorPosition.lineNumber - self.scrollPosition.lineNumber + 1, 1, self.size.height);
+    const column = lineNumberGutterWidth + utils.clamp(self.cursorPosition.column, 1, self.textModel.getLineLength(self.cursorPosition.lineNumber) + 1);
+    try screen.moveCursor(row, column);
     if (self.mode == .Normal) {
         try screen.setCursorShape(.Block);
     } else if (self.mode == .Insert) {
@@ -116,90 +130,107 @@ fn drawCursor(self: *const Self, screen: *Screen) !void {
     }
 }
 
+fn drawStatusLine(self: *const Self, screen: *Screen) !void {
+    try screen.moveCursor(self.size.height + 1, 1);
+    if (self.mode == .Normal) {
+        try screen.writeSGRAttributes(&[_]SGRAttribute{ .BackgroundBlue, .ForegroundBlack });
+        try screen.writeAll(" NORMAL ");
+        try screen.resetSGRAttributes();
+    } else if (self.mode == .Insert) {
+        try screen.writeSGRAttributes(&[_]SGRAttribute{ .BackgroundGreen, .ForegroundBlack });
+        try screen.writeAll(" INSERT ");
+        try screen.resetSGRAttributes();
+    }
+    try screen.writeSGRAttributes(&[_]SGRAttribute{ .BackgroundBlack, .ForegroundWhite });
+    try screen.writeFmt(" Ln {d}, Col {d} ", .{ self.cursorPosition.lineNumber, self.cursorPosition.column });
+    try screen.eraseToEnd();
+    try screen.resetSGRAttributes();
+}
+
+pub fn draw(self: *const Self, screen: *Screen) !void {
+    try screen.moveCursor(1, 1);
+    defer self.drawCursor(screen) catch {};
+    try screen.hideCursor();
+    defer screen.showCursor() catch {};
+
+    try self.drawVisibleLines(screen);
+    try self.drawStatusLine(screen);
+}
+
 fn moveCursor(self: *Self, action: MoveAction) !void {
-    var newCol = self.cursorPosition.column;
-    var newLineNumber = self.cursorPosition.lineNumber;
-    var newCursorColumn = self.cursorColumn;
+    const column = self.cursorPosition.column;
+    const lineNumber = self.cursorPosition.lineNumber;
+    const cursorColumn = self.cursorColumn;
     switch (action) {
         .Up => {
-            newLineNumber = utils.clamp(newLineNumber - 1, 1, self.textModel.getLineCount());
-            newCol = utils.clamp(newCursorColumn, 1, self.textModel.getLineLength(newLineNumber));
+            self.cursorPosition.lineNumber = @max(1, lineNumber - 1);
+            self.cursorPosition.column = utils.clamp(cursorColumn, 1, self.textModel.getLineLength(self.cursorPosition.lineNumber));
         },
         .Down => {
-            newLineNumber = utils.clamp(newLineNumber + 1, 1, self.textModel.getLineCount());
-            newCol = utils.clamp(newCursorColumn, 1, self.textModel.getLineLength(newLineNumber));
+            self.cursorPosition.lineNumber = utils.clamp(lineNumber + 1, 1, self.textModel.getLineCount());
+            self.cursorPosition.column = utils.clamp(cursorColumn, 1, self.textModel.getLineLength(self.cursorPosition.lineNumber));
         },
         .Left => {
-            newCol = utils.clamp(newCol - 1, 1, self.textModel.getLineLength(newLineNumber));
-            newCursorColumn = newCol;
+            self.cursorPosition.column = @max(1, column - 1);
         },
         .Right => {
-            newCol = utils.clamp(newCol + 1, 1, self.textModel.getLineLength(newLineNumber));
-            newCursorColumn = newCol;
+            self.cursorPosition.column = utils.clamp(column + 1, 1, self.textModel.getLineLength(self.cursorPosition.lineNumber));
         },
         .LineStart => {
-            newCol = 1;
-            newCursorColumn = newCol;
+            self.cursorPosition.column = 1;
+            self.cursorColumn = 1;
         },
         .LineEnd => {
-            newCol = self.textModel.getLineLength(newLineNumber);
-            newCursorColumn = newCol;
+            self.cursorPosition.column = self.textModel.getLineLength(lineNumber);
+            self.cursorColumn = self.cursorPosition.column;
         },
         .LineFirstNonSpace => {
-            newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
-            newCursorColumn = newCol;
+            self.cursorPosition.column = try self.textModel.getLineFirstNonWhitespaceColumn(lineNumber);
+            self.cursorColumn = self.cursorPosition.column;
         },
         .BufferStart => {
-            newLineNumber = 1;
-            newCol = 1;
-            newCursorColumn = newCol;
+            self.cursorPosition.lineNumber = 1;
+            self.cursorPosition.column = @max(1, try self.textModel.getLineFirstNonWhitespaceColumn(1));
         },
         .BufferEnd => {
-            newLineNumber = self.textModel.getLineCount();
-            newCol = self.textModel.getLineLength(newLineNumber);
-            newCursorColumn = newCol;
+            self.cursorPosition.lineNumber = self.textModel.getLineCount();
+            self.cursorPosition.column = @max(1, try self.textModel.getLineFirstNonWhitespaceColumn(self.cursorPosition.lineNumber));
+            self.cursorColumn = self.cursorPosition.column;
         },
         .HalfPageUp => {
             // FIXME: this is not correct, should scroll
             const h = self.size.height / 2;
-            newLineNumber = if (newLineNumber > h) newLineNumber - h else 1;
-            newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
-            newCursorColumn = newCol;
+            self.cursorPosition.lineNumber = if (self.cursorPosition.lineNumber > h) self.cursorPosition.lineNumber - h else 1;
+            self.cursorPosition.column = @max(1, try self.textModel.getLineFirstNonWhitespaceColumn(self.cursorPosition.lineNumber));
+            self.cursorColumn = self.cursorPosition.column;
         },
         .HalfPageDown => {
             // FIXME: this is not correct, should scroll
-            newLineNumber = utils.clamp(newLineNumber + self.size.height / 2, 1, self.textModel.getLineCount());
-            newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
-            newCursorColumn = newCol;
+            self.cursorPosition.lineNumber = self.cursorPosition.lineNumber + self.size.height / 2;
+            self.cursorPosition.column = @max(1, try self.textModel.getLineFirstNonWhitespaceColumn(self.cursorPosition.lineNumber));
+            self.cursorColumn = self.cursorPosition.column;
         },
         .PageTop => {
-            newLineNumber = self.scrollPosition.lineNumber;
-            newLineNumber = utils.clamp(newLineNumber, 1, self.textModel.getLineCount());
-            newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
-            newCursorColumn = newCol;
+            self.cursorPosition.lineNumber = self.scrollPosition.lineNumber;
+            self.cursorPosition.column = @max(1, try self.textModel.getLineFirstNonWhitespaceColumn(self.cursorPosition.lineNumber));
+            self.cursorColumn = self.cursorPosition.column;
         },
         .PageBottom => {
-            newLineNumber = self.scrollPosition.lineNumber + self.size.height - 1;
-            newLineNumber = utils.clamp(newLineNumber, 1, self.textModel.getLineCount());
-            newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
-            newCursorColumn = newCol;
+            self.cursorPosition.lineNumber = self.scrollPosition.lineNumber + self.size.height - 1;
+            self.cursorPosition.column = @max(1, try self.textModel.getLineFirstNonWhitespaceColumn(self.cursorPosition.lineNumber));
+            self.cursorColumn = self.cursorPosition.column;
         },
         .PageMiddle => {
-            newLineNumber = self.scrollPosition.lineNumber + self.size.height / 2;
-            newLineNumber = utils.clamp(newLineNumber, 1, self.textModel.getLineCount());
-            newCol = try self.textModel.getLineFirstNonWhitespaceColumn(newLineNumber);
-            newCursorColumn = newCol;
+            self.cursorPosition.lineNumber = self.scrollPosition.lineNumber + self.size.height / 2;
+            self.cursorPosition.column = @max(1, try self.textModel.getLineFirstNonWhitespaceColumn(self.cursorPosition.lineNumber));
+            self.cursorColumn = self.cursorPosition.column;
         },
     }
 
-    self.cursorPosition.lineNumber = newLineNumber;
-    self.cursorPosition.column = newCol;
-    self.cursorColumn = newCursorColumn;
-
-    if (newLineNumber < self.scrollPosition.lineNumber) {
-        self.scrollPosition.lineNumber = newLineNumber;
-    } else if (newLineNumber >= self.scrollPosition.lineNumber + self.size.height) {
-        self.scrollPosition.lineNumber = newLineNumber - self.size.height + 1;
+    if (self.cursorPosition.lineNumber < self.scrollPosition.lineNumber) {
+        self.scrollPosition.lineNumber = self.cursorPosition.lineNumber;
+    } else if (self.cursorPosition.lineNumber >= self.scrollPosition.lineNumber + self.size.height) {
+        self.scrollPosition.lineNumber = self.cursorPosition.lineNumber - self.size.height + 1;
     }
 }
 
@@ -243,7 +274,10 @@ fn deleteLeftOfCursor(self: *Self) !void {
 }
 
 pub fn resize(self: *Self, newSize: Size) !void {
-    self.size = newSize;
+    const width = newSize.width;
+    const height = newSize.height;
+    // last line is the status line
+    self.size = .{ .width = width, .height = height - 1 };
 
     const lineCount = self.textModel.getLineCount();
 

@@ -93,13 +93,9 @@ pub fn main() !void {
 
     var screen = try Screen.init(stdin, stdout, allocator);
     defer screen.deinit();
-    var view = View{
-        .log = logWriter,
-        .size = try tui.getTerminalSize(),
-        .textModel = textModel,
-        .undoRedoGroup = UndoRedoGroup.init(),
-    };
-    try view.drawVisibleLines(&screen);
+    var view = View.init(textModel, logWriter);
+    view.resize(try screen.getSize()) catch {};
+    try view.draw(&screen);
 
     while (true) {
         const events = try screen.pollEvents();
@@ -120,7 +116,7 @@ pub fn main() !void {
         }
 
         if (events.items.len > 0) {
-            try view.drawVisibleLines(&screen);
+            try view.draw(&screen);
         }
     }
 }

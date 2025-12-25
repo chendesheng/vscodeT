@@ -73,7 +73,7 @@ pub const Size = struct {
     }
 };
 
-pub fn getTerminalSize() !Size {
+fn getTerminalSize() !Size {
     var size: posix.winsize = undefined;
     _ = posix.system.ioctl(posix.STDOUT_FILENO, posix.T.IOCGWINSZ, @intFromPtr(&size));
     return .{
@@ -201,7 +201,11 @@ pub const Screen = struct {
         try self.stdout.writeAll(text);
     }
 
-    pub fn writeSGRAttribute(self: *const Screen, attributes: []const SGRAttribute) !void {
+    pub fn writeSGRAttribute(self: *const Screen, attribute: SGRAttribute) !void {
+        try self.writeSGRAttributes(&[_]SGRAttribute{attribute});
+    }
+
+    pub fn writeSGRAttributes(self: *const Screen, attributes: []const SGRAttribute) !void {
         try self.writeFmt("\x1b[", .{});
         for (attributes) |attribute| {
             try self.writeFmt("{d}", .{@intFromEnum(attribute)});
