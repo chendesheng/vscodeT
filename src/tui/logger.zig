@@ -8,6 +8,7 @@ pub fn format(comptime fmt: []const u8, args: anytype) void {
     if (loggerFile) |file| {
         var buf: [1024]u8 = undefined;
         var w = file.writer(&buf);
+        w.interface.print("[{d}] ", .{std.time.milliTimestamp()}) catch {};
         w.interface.print(fmt, args) catch {};
         w.interface.flush() catch {};
     }

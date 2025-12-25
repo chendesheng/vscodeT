@@ -22,6 +22,8 @@ const MoveAction = enum {
     Down,
     Left,
     Right,
+    LineFirst,
+    LineLast,
 };
 
 var readerBuffer: [65535]u8 = undefined;
@@ -64,7 +66,6 @@ fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
 
 const View = struct {
     log: *std.Io.Writer,
-    screen: Screen,
     size: Size,
     scrollPosition: Point,
     cursorPosition: Point,
@@ -75,20 +76,20 @@ const View = struct {
         Insert,
     };
 
-    fn drawLineNumberGutter(self: *const View, lineNumberGutterWidth: usize, lineNumber: usize) !void {
+    fn drawLineNumberGutter(screen: *Screen, lineNumberGutterWidth: usize, lineNumber: usize) !void {
         const lineNumberWidth = std.fmt.count("{d}", .{lineNumber});
         for (lineNumberWidth..lineNumberGutterWidth - 1) |_| {
-            try self.screen.writeAll(" ");
+            try screen.writeAll(" ");
         }
 
-        try self.screen.writeFmt("{d} ", .{lineNumber});
+        try screen.writeFmt("{d} ", .{lineNumber});
     }
 
-    fn drawVisibleLines(self: *const View, tree: *PieceTreeTextBuffer) !void {
-        try self.screen.moveCursor(.{ .col = 1, .row = 1 });
-        defer self.drawCursor(tree) catch {};
-        try self.screen.hideCursor();
-        defer self.screen.showCursor() catch {};
+    fn drawVisibleLines(self: *const View, screen: *Screen, tree: *PieceTreeTextBuffer) !void {
+        try screen.moveCursor(.{ .col = 1, .row = 1 });
+        defer self.drawCursor(screen, tree) catch {};
+        try screen.hideCursor();
+        defer screen.showCursor() catch {};
 
         const lineCount = tree.getLineCount();
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
@@ -102,31 +103,36 @@ const View = struct {
             defer lineContent.deinit();
             const line = lineContent.items;
 
-            try self.drawLineNumberGutter(lineNumberGutterWidth, i);
+            try drawLineNumberGutter(screen, lineNumberGutterWidth, i);
 
-            try self.screen.writeAll(line);
+            try screen.writeAll(line);
 
             if (i < to) {
-                try self.screen.writeAll("⏎");
+                try screen.writeAll("⏎");
             }
 
             if (line.len <= width) {
-                try self.screen.eraseToLineEnd();
+                try screen.eraseToLineEnd();
             }
 
             if (i < to) {
-                try self.screen.moveCursorNextLine();
+                try screen.moveCursorNextLine();
             }
         }
 
-        try self.screen.eraseToEnd();
+        try screen.eraseToEnd();
     }
 
-    fn drawCursor(self: *const View, tree: *const PieceTreeTextBuffer) !void {
+    fn drawCursor(self: *const View, screen: *Screen, tree: *const PieceTreeTextBuffer) !void {
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
         const row = self.cursorPosition.row - self.scrollPosition.row + 1;
         const col = lineNumberGutterWidth + utils.clamp(self.cursorPosition.col, 1, tree.getLineLength(self.cursorPosition.row) + 1);
-        try self.screen.moveCursor(.{ .row = row, .col = col });
+        try screen.moveCursor(.{ .row = row, .col = col });
+        if (self.mode == .Normal) {
+            try screen.setCursorShape(.Block);
+        } else if (self.mode == .Insert) {
+            try screen.setCursorShape(.Bar);
+        }
     }
 
     fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeTextBuffer) !void {
@@ -136,21 +142,31 @@ const View = struct {
             .Up => {
                 newRow -= 1;
                 newRow = utils.clamp(newRow, 1, tree.getLineCount());
+                newCol = utils.clamp(newCol, 1, tree.getLineLength(newRow));
             },
             .Down => {
                 newRow += 1;
                 newRow = utils.clamp(newRow, 1, tree.getLineCount());
+                newCol = utils.clamp(newCol, 1, tree.getLineLength(newRow));
             },
             .Left => {
                 newCol -= 1;
+                newCol = utils.clamp(newCol, 1, tree.getLineLength(newRow));
             },
             .Right => {
                 newCol += 1;
+                newCol = utils.clamp(newCol, 1, tree.getLineLength(newRow));
+            },
+            .LineFirst => {
+                newCol = 1;
+            },
+            .LineLast => {
+                newCol = tree.getLineLength(newRow);
             },
         }
 
         self.cursorPosition.row = newRow;
-        self.cursorPosition.col = utils.clamp(newCol, 1, tree.getLineLength(newRow) + 1);
+        self.cursorPosition.col = newCol;
 
         if (newRow < self.scrollPosition.row) {
             self.scrollPosition.row = newRow;
@@ -211,24 +227,27 @@ const View = struct {
 
     fn setMode(self: *View, mode: Mode) !void {
         self.mode = mode;
-        if (mode == .Normal) {
-            try self.screen.setCursorShape(.Block);
-        } else if (mode == .Insert) {
-            try self.screen.setCursorShape(.Bar);
-        }
     }
 
-    fn handleKeyPress(self: *View, key: tui.KeyPress, tree: *PieceTreeTextBuffer) !void {
+    fn handleKeyPress(self: *View, key: *const tui.KeyPress, tree: *PieceTreeTextBuffer) !void {
         if (self.mode == .Normal) {
             switch (key.keycode) {
                 .up => try self.moveCursor(.Up, tree),
                 .down => try self.moveCursor(.Down, tree),
                 .left => try self.moveCursor(.Left, tree),
                 .right => try self.moveCursor(.Right, tree),
+                .backspace => try self.moveCursor(.Left, tree),
+                .enter => try self.moveCursor(.Down, tree),
                 .character => |c| {
                     switch (c) {
                         'i' => try self.setMode(.Insert),
-                        'q' => std.process.exit(0),
+                        'h' => try self.moveCursor(.Left, tree),
+                        'j' => try self.moveCursor(.Down, tree),
+                        'k' => try self.moveCursor(.Up, tree),
+                        'l' => try self.moveCursor(.Right, tree),
+                        '0' => try self.moveCursor(.LineFirst, tree),
+                        '$' => try self.moveCursor(.LineLast, tree),
+                        'q' => return error.Quit,
                         else => return,
                     }
                 },
@@ -270,8 +289,6 @@ pub fn main() !void {
     try tui.disableLineWrap(stdout);
     defer tui.enableLineWrap(stdout) catch {};
 
-    try tui.installSigWinch();
-
     const pathArg = try getFirstArg();
     defer pathArg.deinit();
 
@@ -285,86 +302,33 @@ pub fn main() !void {
     defer screen.deinit();
     var view = View{
         .log = logWriter,
-        .screen = screen,
         .size = try tui.getTerminalSize(),
         .scrollPosition = .{ .col = 1, .row = 1 },
         .cursorPosition = .{ .col = 1, .row = 1 },
         .mode = .Normal,
     };
-    try view.drawVisibleLines(&tree);
-
-    var contentChanged = false;
-    var scrollChanged = false;
+    try view.drawVisibleLines(&screen, &tree);
 
     while (true) {
-        const tokens = try view.screen.poll();
-        defer tokens.deinit();
+        const events = try screen.pollEvents();
+        defer events.deinit();
 
-        var oldView = view;
-        var isPasting = false;
-
-        for (tokens.items) |token| {
-            logWriter.print("{any}\n", .{token}) catch {};
+        for (events.items) |event| {
+            logWriter.print("{any}\n", .{event}) catch {};
             logWriter.flush() catch {};
 
-            switch (token) {
-                .string => {
-                    if (token.string[0] == 0x7f) {
-                        try view.handleKeyPress(.init(.backspace, .{}), &tree);
-                        contentChanged = true;
-                    } else if (token.string[0] == 27) {
-                        try view.handleKeyPress(.init(.escape, .{}), &tree);
-                        contentChanged = true;
-                    } else if (token.string[0] == '\r') {
-                        try view.handleKeyPress(.init(.enter, .{}), &tree);
-                        contentChanged = true;
-                    } else if (isPasting) {
-                        try view.insertAtCursor(&tree, token.string);
-                        contentChanged = true;
-                    } else {
-                        try view.handleKeyPress(.init(.{ .character = token.string[0] }, .{}), &tree);
-                        contentChanged = true;
-                    }
+            switch (event) {
+                .key => |*key| {
+                    try view.handleKeyPress(key, &tree);
                 },
-                .csi => {
-                    if (token.csi.final == '~') {
-                        if (token.isBracketedPasteStart()) {
-                            isPasting = true;
-                        } else if (token.isBracketedPasteEnd()) {
-                            isPasting = false;
-                        }
-                    } else {
-                        const key: tui.KeyPress = switch (token.csi.final) {
-                            'A' => .init(.up, .{}),
-                            'B' => .init(.down, .{}),
-                            'C' => .init(.right, .{}),
-                            'D' => .init(.left, .{}),
-                            else => unreachable,
-                        };
-                        try view.handleKeyPress(key, &tree);
-                    }
+                .resize => |newSize| {
+                    try view.resize(newSize, &tree);
                 },
             }
         }
 
-        if (try tui.resizedSize()) |newSize| {
-            scrollChanged = true;
-            try view.resize(newSize, &tree);
-        } else {
-            scrollChanged = !oldView.scrollPosition.equals(view.scrollPosition);
-        }
-
-        if (scrollChanged) {
-            try view.drawVisibleLines(&tree);
-        }
-
-        if (!oldView.cursorPosition.equals(view.cursorPosition)) {
-            try view.drawCursor(&tree);
-        }
-
-        if (contentChanged) {
-            try view.drawVisibleLines(&tree);
-            contentChanged = false;
+        if (events.items.len > 0) {
+            try view.drawVisibleLines(&screen, &tree);
         }
     }
 }

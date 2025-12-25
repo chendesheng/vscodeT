@@ -164,6 +164,7 @@ pub const Screen = struct {
     inputBufferList: ArrayList(u8),
 
     pub fn init(stdin: File, stdout: File, allocator: Allocator) !Screen {
+        try installSigWinch();
         return Screen{ .stdin = stdin, .stdout = stdout, .inputBufferList = try ArrayList(u8).initCapacity(allocator, 20) };
     }
 
@@ -233,6 +234,50 @@ pub const Screen = struct {
         const input = try readFd(&self.inputBufferList);
         return try ansi.tokenize(self.inputBufferList.allocator, input);
     }
+
+    pub fn pollEvents(self: *Screen) !ArrayList(Event) {
+        // TODO: avoid allocating
+        const tokens = try self.poll();
+        defer tokens.deinit();
+
+        var events = ArrayList(Event).init(self.inputBufferList.allocator);
+        if (try resizedSize()) |newSize| {
+            try events.append(.{ .resize = newSize });
+        }
+        for (tokens.items) |token| {
+            switch (token) {
+                .string => {
+                    if (token.string[0] == 0x7f) {
+                        try events.append(.{ .key = .init(.backspace, .{}) });
+                    } else if (token.string[0] == 27) {
+                        try events.append(.{ .key = .init(.escape, .{}) });
+                    } else if (token.string[0] == '\r') {
+                        try events.append(.{ .key = .init(.enter, .{}) });
+                    } else if (token.string[0] == '\t') {
+                        try events.append(.{ .key = .init(.tab, .{}) });
+                    } else {
+                        try events.append(.{ .key = .init(.{ .character = token.string[0] }, .{}) });
+                    }
+                },
+                .csi => {
+                    if (token.csi.final == '~') {
+                        // TODO: handle pasting
+                    } else {
+                        const key: KeyPress = switch (token.csi.final) {
+                            'A' => .init(.up, .{}),
+                            'B' => .init(.down, .{}),
+                            'C' => .init(.right, .{}),
+                            'D' => .init(.left, .{}),
+                            else => unreachable,
+                        };
+                        try events.append(.{ .key = key });
+                    }
+                },
+            }
+        }
+
+        return events;
+    }
 };
 
 pub const KeyModifier = packed struct {
@@ -269,7 +314,7 @@ pub const KeyPress = struct {
 
 pub const Event = union(enum) {
     key: KeyPress,
-    paste: []const u8,
+    // paste: []const u8,
     resize: Size,
 };
 
@@ -301,7 +346,7 @@ fn handleSigWinch(_: i32) callconv(.c) void {
     resized.store(true, .seq_cst);
 }
 
-pub fn resizedSize() !?Size {
+fn resizedSize() !?Size {
     if (resized.swap(false, .seq_cst)) {
         return try getTerminalSize();
     } else {
@@ -309,7 +354,7 @@ pub fn resizedSize() !?Size {
     }
 }
 
-pub fn installSigWinch() !void {
+fn installSigWinch() !void {
     var sa: posix.Sigaction = .{
         .handler = .{ .handler = handleSigWinch },
         .mask = posix.sigemptyset(),
