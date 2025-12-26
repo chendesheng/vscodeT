@@ -1401,13 +1401,13 @@ pub const TextModel = struct {
         }
     }
 
-    pub fn changeDecorations(self: *TextModel, comptime T: type, callback: fn (changeAccessor: ModelDecorationsChangeAccessor) T, ownerId: usize) ?T {
+    pub fn changeDecorations(self: *TextModel, comptime T: type, callback: *fn (changeAccessor: ModelDecorationsChangeAccessor) T, ownerId: usize) ?T {
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
         return self._changeDecorations(T, ownerId, callback);
     }
 
-    fn _changeDecorations(comptime T: type, self: *TextModel, ownerId: usize, callback: fn (changeAccessor: ModelDecorationsChangeAccessor) anyerror!T) !?T {
+    fn _changeDecorations(comptime T: type, self: *TextModel, ownerId: usize, callback: *fn (changeAccessor: ModelDecorationsChangeAccessor) anyerror!T) !?T {
         const changeAccessor = ModelDecorationsChangeAccessor.init(self, ownerId);
         var result: ?T = null;
         result = try callback(changeAccessor);
@@ -2389,24 +2389,24 @@ pub const ModelDecorationsChangeAccessor = struct {
     // @param range Range that this decoration covers.
     // @param options Options associated with this decoration.
     // @return An unique identifier associated with this decoration.
-    fn addDecoration(self: *ModelDecorationsChangeAccessor, range: Range, options: ModelDecorationOptions) !u64 {
+    pub fn addDecoration(self: *ModelDecorationsChangeAccessor, range: Range, options: ModelDecorationOptions) !u64 {
         return try self.model._deltaDecorationsImpl(self.ownerId, &[_]u64{}, &[_]ModelDeltaDecoration{.{ .range = range, .options = options }});
     }
     // Change the range that an existing decoration covers.
     // @param id The unique identifier associated with the decoration.
     // @param newRange The new range that this decoration covers.
-    fn changeDecoration(self: *ModelDecorationsChangeAccessor, id: []const u8, newRange: Range) void {
+    pub fn changeDecoration(self: *ModelDecorationsChangeAccessor, id: []const u8, newRange: Range) void {
         self.model._changeDecorationImpl(self.ownerId, id, newRange);
     }
     // Change the options associated with an existing decoration.
     // @param id The unique identifier associated with the decoration.
     // @param newOptions The new options associated with this decoration.
-    fn changeDecorationOptions(self: *ModelDecorationsChangeAccessor, id: []const u8, newOptions: ModelDecorationOptions) void {
+    pub fn changeDecorationOptions(self: *ModelDecorationsChangeAccessor, id: []const u8, newOptions: ModelDecorationOptions) void {
         self.model._changeDecorationOptionsImpl(self.ownerId, id, newOptions);
     }
     // Remove an existing decoration.
     // @param id The unique identifier associated with the decoration.
-    fn removeDecoration(self: *ModelDecorationsChangeAccessor, id: []const u8) void {
+    pub fn removeDecoration(self: *ModelDecorationsChangeAccessor, id: []const u8) void {
         self.model._deltaDecorationsImpl(self.ownerId, &[_][]const u8{id}, &[_]ModelDeltaDecoration{}) catch unreachable;
     }
     // Perform a minimum amount of operations, in order to transform the decorations
@@ -2416,7 +2416,7 @@ pub const ModelDecorationsChangeAccessor = struct {
     // @param oldDecorations Array containing previous decorations identifiers.
     // @param newDecorations Array describing what decorations should result after the call.
     // @return An array containing the new decorations identifiers.
-    fn deltaDecorations(self: *ModelDecorationsChangeAccessor, oldDecorations: []const []const u8, newDecorations: []const ModelDeltaDecoration) ![]const []const u8 {
+    pub fn deltaDecorations(self: *ModelDecorationsChangeAccessor, oldDecorations: []const []const u8, newDecorations: []const ModelDeltaDecoration) ![]const []const u8 {
         if (oldDecorations.len == 0 and newDecorations.len == 0) {
             return &[_][]const u8{};
         }
