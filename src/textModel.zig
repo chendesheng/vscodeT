@@ -925,7 +925,7 @@ pub const TextModel = struct {
         return result;
     }
 
-    pub fn pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations: []IdentifiedSingleEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
+    pub fn pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations: []IdentifiedSingleEditOperation, cursorStateComputer: ?*CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
 
@@ -937,7 +937,7 @@ pub const TextModel = struct {
         return try self._pushEditOperations(beforeCursorState, ops, cursorStateComputer, group);
     }
 
-    fn _pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations_: ArrayList(ValidAnnotatedEditOperation), cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
+    fn _pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations_: ArrayList(ValidAnnotatedEditOperation), cursorStateComputer: ?*CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
         var editOperations = editOperations_;
         if (self._options.trimAutoWhitespace and self._trimAutoWhitespaceLines != null) {
             // Go through each saved line number and insert a trim whitespace edit
@@ -1989,11 +1989,11 @@ pub const DecorationsTrees = struct {
     }
 
     fn _intervalSearch(self: *DecorationsTrees, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
-        const r0 = self._decorationsTree0.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        const r0 = try self._decorationsTree0.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         defer r0.deinit();
-        const r1 = self._decorationsTree1.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        const r1 = try self._decorationsTree1.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         defer r1.deinit();
-        const r2 = self._injectedTextDecorationsTree.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        const r2 = try self._injectedTextDecorationsTree.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         defer r2.deinit();
 
         var result = ArrayList(*IntervalNode).init(self.allocator);
@@ -2012,7 +2012,7 @@ pub const DecorationsTrees = struct {
 
     pub fn getAllInjectedText(self: *DecorationsTrees, host: *TextModel, filterOwnerId: usize) !ArrayList(ModelDecoration) {
         const versionId = host.getVersionId();
-        const searchResult = self._injectedTextDecorationsTree.search(filterOwnerId, false, versionId, false);
+        const searchResult = try self._injectedTextDecorationsTree.search(filterOwnerId, false, versionId, false);
         defer searchResult.deinit();
         const result = try _ensureNodesHaveRanges(host, searchResult);
         var write_index = 0;

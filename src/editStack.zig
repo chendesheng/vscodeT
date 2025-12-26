@@ -758,7 +758,7 @@ pub const EditStack = struct {
         editStackElement.append(self._model, &[_]TextChange{}, eol, self._model.getVersionId(), null);
     }
 
-    pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []ValidAnnotatedEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
+    pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []ValidAnnotatedEditOperation, cursorStateComputer: ?*CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
         var editStackElement = try self._getOrCreateEditStackElement(beforeCursorState, group);
         const inverseEditOperations = (try self._model.applyValidatedEdits(editOperations, true)).?;
         defer inverseEditOperations.deinit();
@@ -777,7 +777,7 @@ pub const EditStack = struct {
         return afterCursorState;
     }
 
-    fn _computeCursorState(cursorStateComputer: ?CursorStateComputer, inverseEditOperations: []ValidEditOperation) ?[]Selection {
+    fn _computeCursorState(cursorStateComputer: ?*CursorStateComputer, inverseEditOperations: []ValidEditOperation) ?[]Selection {
         if (cursorStateComputer) |computer| {
             return computer(inverseEditOperations);
         }
