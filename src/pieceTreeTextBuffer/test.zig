@@ -524,7 +524,6 @@ test "random insert/delete \\r bug 5" {
     const str8 = str7[0..0] ++ str7[0 + 7 ..];
     try pieceTable.insert(1, "\r\n\r\r", false);
     const str9 = str8[0..1] ++ "\r\n\r\r" ++ str8[1..];
-    // FIXME: this insert case test fail
     try pieceTable.insert(15, "\n\r\r\r", false);
     const str10 = str9[0..15] ++ "\n\r\r\r" ++ str9[15..];
     try assertRawContent(str10, pieceTable);

@@ -502,6 +502,7 @@ pub const PieceTreeBase = struct {
     pub fn log(self: *const PieceTreeBase, comptime format: []const u8, args: anytype) void {
         if (self._logger) |logger| {
             logger.print(format, args) catch {};
+            logger.flush() catch {};
         }
     }
 
@@ -1537,7 +1538,7 @@ pub const PieceTreeBase = struct {
         const endColumn = endOffset - self._buffers.items[0].lineStarts.items[endIndex];
         const endPos: BufferCursor = .{ .line = endIndex, .column = endColumn };
         const newPiece: Piece = .{
-            .bufferIndex = 0, // TODO
+            .bufferIndex = 0, // TODO@peng
             .start = start,
             .end = endPos,
             .lineFeedCnt = self.getLineFeedCnt(0, start, endPos),
@@ -1993,14 +1994,17 @@ pub const PieceTreeBase = struct {
         const prevPieceEnd = prevPiece.end;
         const lineStarts = self._buffers.items[prevPiece.bufferIndex].lineStarts.items;
 
+        const newEnd: BufferCursor = if (prevPieceEnd.column == 0)
+            // it means, last line ends with \r, not \r\n
+            .{ .line = prevPieceEnd.line - 1, .column = lineStarts[prevPieceEnd.line] - lineStarts[prevPieceEnd.line - 1] - 1 }
+        else
+            // \r\n
+            .{ .line = prevPieceEnd.line, .column = prevPieceEnd.column - 1 };
+
         prev.piece = .{
             .bufferIndex = prevPiece.bufferIndex,
             .start = prevPiece.start,
-            .end = if (prevPieceEnd.column == 0)
-                // it means, last line ends with \r, not \r\n
-                .{ .line = prevPieceEnd.line - 1, .column = lineStarts[prevPieceEnd.line] - lineStarts[prevPieceEnd.line - 1] }
-            else
-                .{ .line = prevPieceEnd.line, .column = prevPieceEnd.column - 1 },
+            .end = newEnd,
             .lineFeedCnt = prevPiece.lineFeedCnt - 1,
             .length = prevPiece.length - 1,
         };
@@ -2021,9 +2025,10 @@ pub const PieceTreeBase = struct {
         self.updateTreeMetadata(next, -1, -1);
 
         // create new piece which contains \r\n
-        const newPiece = try self.createNewPiece("\r\n");
+        const newPieces = try self.createNewPieces("\r\n");
+        defer newPieces.deinit();
 
-        _ = try self.rbInsertRight(prev, newPiece);
+        _ = try self.rbInsertRight(prev, newPieces.items[0]);
 
         // delete empty nodes
         if (prev.piece.?.length == 0) {
