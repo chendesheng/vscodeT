@@ -16,11 +16,11 @@ const eolToString = @import("../basics/eolCounter.zig").eolToString;
 const strings = @import("../basics/strings.zig");
 const usizeSub = @import("../basics/utils.zig").usizeSub;
 const usizeAdd = @import("../basics/utils.zig").usizeAdd;
-const FindMatch = @import("../model.zig").FindMatch;
-const SearchData = @import("../model.zig").SearchData;
-const Searcher = @import("../textModelSearch.zig").Searcher;
-const createFindMatch = @import("../textModelSearch.zig").createFindMatch;
-const isValidMatch = @import("../textModelSearch.zig").isValidMatch;
+const FindMatch = @import("../textModel/model.zig").FindMatch;
+const SearchData = @import("../textModel/model.zig").SearchData;
+const Searcher = @import("../textModel/textModelSearch.zig").Searcher;
+const createFindMatch = @import("../textModel/textModelSearch.zig").createFindMatch;
+const isValidMatch = @import("../textModel/textModelSearch.zig").isValidMatch;
 const RegExp = @import("../basics/RegExp.zig").RegExp;
 const re = @import("../basics/RegExp.zig");
 

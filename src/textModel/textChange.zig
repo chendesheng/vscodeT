@@ -3,13 +3,13 @@ const io = std.io;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 const fs = std.fs;
-const strings = @import("./basics/strings.zig");
-const Pair = @import("./basics/utils.zig").Pair;
-const pair = @import("./basics/utils.zig").pair;
-const usizeSub = @import("./basics/utils.zig").usizeSub;
-const usizeAdd = @import("./basics/utils.zig").usizeAdd;
-const String = @import("./basics/strings.zig").String;
-const utils = @import("./basics/utils.zig");
+const strings = @import("../basics/strings.zig");
+const Pair = @import("../basics/utils.zig").Pair;
+const pair = @import("../basics/utils.zig").pair;
+const usizeSub = @import("../basics/utils.zig").usizeSub;
+const usizeAdd = @import("../basics/utils.zig").usizeAdd;
+const String = @import("../basics/strings.zig").String;
+const utils = @import("../basics/utils.zig");
 
 pub const TextChange = struct {
     oldPosition: usize,

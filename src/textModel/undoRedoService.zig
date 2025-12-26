@@ -12,11 +12,11 @@ const UriComparisonKeyComputer = @import("undoRedo.zig").UriComparisonKeyCompute
 const Disposable = @import("undoRedo.zig").Disposable;
 const uriToString = @import("model.zig").uriToString;
 const UndoRedoSourceOrUri = @import("undoRedo.zig").UndoRedoSourceOrUri;
-const Pair = @import("./basics/utils.zig").Pair;
-const pair = @import("./basics/utils.zig").pair;
+const Pair = @import("../basics/utils.zig").Pair;
+const pair = @import("../basics/utils.zig").pair;
 const SingleModelEditStackElement = @import("editStack.zig").SingleModelEditStackElement;
-const Selection = @import("./basics/selection.zig").Selection;
-const String = @import("./basics/strings.zig").String;
+const Selection = @import("../basics/selection.zig").Selection;
+const String = @import("../basics/strings.zig").String;
 const NotificationService = @import("notificationService.zig").NotificationService;
 
 const DEBUG = true;
