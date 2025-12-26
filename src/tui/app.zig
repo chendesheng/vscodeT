@@ -94,7 +94,7 @@ pub fn main() !void {
     var screen = try Screen.init(stdin, stdout, allocator);
     defer screen.deinit();
     var view = View.init(textModel, logWriter);
-    view.resize(try screen.getSize()) catch {};
+    try view.resize(try screen.getSize());
     try view.draw(&screen);
 
     while (true) {

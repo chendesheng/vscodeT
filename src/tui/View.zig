@@ -133,16 +133,16 @@ fn drawCursor(self: *const Self, screen: *Screen) !void {
 fn drawStatusLine(self: *const Self, screen: *Screen) !void {
     try screen.moveCursor(self.size.height + 1, 1);
     if (self.mode == .Normal) {
-        try screen.writeSGRAttributes(&[_]SGRAttribute{ .BackgroundBlue, .ForegroundBlack });
+        try screen.writeSGRAttributes(&[_]SGRAttribute{ .BackgroundBlue, .ForegroundBlack, .Bold });
         try screen.writeAll(" NORMAL ");
         try screen.resetSGRAttributes();
     } else if (self.mode == .Insert) {
-        try screen.writeSGRAttributes(&[_]SGRAttribute{ .BackgroundGreen, .ForegroundBlack });
+        try screen.writeSGRAttributes(&[_]SGRAttribute{ .BackgroundGreen, .ForegroundBlack, .Bold });
         try screen.writeAll(" INSERT ");
         try screen.resetSGRAttributes();
     }
     try screen.writeSGRAttributes(&[_]SGRAttribute{ .BackgroundBlack, .ForegroundWhite });
-    try screen.writeFmt(" Ln {d}, Col {d} ", .{ self.cursorPosition.lineNumber, self.cursorPosition.column });
+    try screen.writeFmt(" {d}:{d} ", .{ self.cursorPosition.lineNumber, self.cursorPosition.column });
     try screen.eraseToEnd();
     try screen.resetSGRAttributes();
 }
