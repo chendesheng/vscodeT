@@ -152,7 +152,7 @@ const NodeColor = enum {
 };
 
 var sentinelValue: TreeNode = .{
-    .parent = undefined,
+    .parent = &sentinelValue,
     .left = &sentinelValue,
     .right = &sentinelValue,
     .color = .black,

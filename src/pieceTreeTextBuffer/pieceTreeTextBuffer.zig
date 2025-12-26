@@ -605,6 +605,10 @@ pub const PieceTreeTextBuffer = struct {
     pub fn getAllocator(self: *const PieceTreeTextBuffer) Allocator {
         return self._pieceTree.allocator;
     }
+
+    pub fn getPieceTree(self: *PieceTreeTextBuffer) *PieceTreeBase {
+        return &self._pieceTree;
+    }
 };
 
 // Assumes `operations` are validated and sorted ascending

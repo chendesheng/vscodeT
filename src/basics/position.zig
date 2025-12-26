@@ -37,4 +37,8 @@ pub const Position = struct {
         }
         return self.column <= other.column;
     }
+
+    pub fn equals(self: *const Position, other: Position) bool {
+        return self.lineNumber == other.lineNumber and self.column == other.column;
+    }
 };

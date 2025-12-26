@@ -46,6 +46,7 @@ pub const PieceTreeTextBufferFactory = struct {
             // Normalize Pieces
             for (chunks.items) |*chunk| {
                 try replaceEOL(&chunk.buffer, eol);
+                chunk.lineStarts.deinit();
                 chunk.lineStarts = try createLineStartsFast(self._allocator, chunk.buffer.items);
             }
         }
@@ -142,7 +143,8 @@ pub const PieceTreeBufferBuilder = struct {
     }
 
     fn _acceptChunk2(self: *PieceTreeBufferBuilder, chunk: []const u8) !void {
-        var buffer = ArrayList(u8).init(self.chunks.allocator);
+        const allocator = self.chunks.allocator;
+        var buffer = ArrayList(u8).init(allocator);
         if (self._getPreviousChar()) |previousChar| {
             try buffer.appendSlice(previousChar);
         }
@@ -152,7 +154,7 @@ pub const PieceTreeBufferBuilder = struct {
             .buffer = buffer,
             .lineStarts = undefined,
         };
-        const lineStarts = try createLineStarts(self.chunks.allocator, buffer.items);
+        const lineStarts = try createLineStarts(allocator, buffer.items);
         stringBuffer.lineStarts = lineStarts.lineStarts;
 
         try self.chunks.append(stringBuffer);

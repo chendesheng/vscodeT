@@ -441,6 +441,8 @@ pub const PieceTreeBase = struct {
                 };
                 try self._buffers.append(chunk);
                 lastNode = try self.rbInsertRight(lastNode, piece);
+            } else {
+                chunk.deinit();
             }
         }
 
@@ -1214,6 +1216,7 @@ pub const PieceTreeBase = struct {
         } else {
             // insert new node
             const pieces = try self.createNewPieces(value);
+            defer pieces.deinit();
             var node = try self.rbInsertLeft(null, pieces.items[0]);
 
             for (1..pieces.items.len) |k| {
@@ -1545,7 +1548,7 @@ pub const PieceTreeBase = struct {
         return newPiece;
     }
 
-    fn getLinesRawContent(self: *PieceTreeBase) !ArrayList(u8) {
+    pub fn getLinesRawContent(self: *PieceTreeBase) !ArrayList(u8) {
         return try self.getContentOfSubTree(self.root);
     }
 

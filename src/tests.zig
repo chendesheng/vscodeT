@@ -17,6 +17,7 @@ comptime {
     _ = @import("pieceTreeTextBuffer/pieceTreeBufferBuilder.zig");
     _ = @import("pieceTreeTextBuffer/pieceTreeTextBuffer.zig");
     _ = @import("pieceTreeTextBuffer/rbTreeBase.zig");
+    _ = @import("pieceTreeTextBuffer/test.zig");
     _ = @import("textModel/editStack.zig");
     _ = @import("textModel/indentationGuesser.zig");
     _ = @import("textModel/intervalTree.zig");
