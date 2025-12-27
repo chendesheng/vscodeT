@@ -483,3 +483,98 @@ test "containsLF" {
     try std.testing.expect(containsLF("Hello\nWorld"));
     try std.testing.expect(!containsLF("HelloWorld"));
 }
+
+pub fn countLines(str: []const u8) usize {
+    var count: usize = 1;
+    var i: usize = 0;
+    while (i < str.len) {
+        if (str[i] == '\r') {
+            if (i + 1 < str.len and str[i + 1] == '\n') {
+                i += 1;
+            }
+            count += 1;
+        } else if (str[i] == '\n') {
+            count += 1;
+        }
+        i += 1;
+    }
+    return count;
+}
+
+pub fn splitLines(allocator: Allocator, str: []const u8) !ArrayList([]const u8) {
+    var lines = ArrayList([]const u8).init(allocator);
+    var i: usize = 0;
+    var lineStart: usize = 0;
+    while (i < str.len) {
+        if (str[i] == '\r') {
+            try lines.append(str[lineStart..i]);
+            if (i + 1 < str.len and str[i + 1] == '\n') {
+                i += 1;
+            }
+            lineStart = i + 1;
+        } else if (str[i] == '\n') {
+            try lines.append(str[lineStart..i]);
+            lineStart = i + 1;
+        }
+
+        i += 1;
+    }
+    if (lineStart <= i) {
+        try lines.append(str[lineStart..i]);
+    }
+    return lines;
+}
+
+test "splitLines" {
+    const allocator = std.testing.allocator;
+    const input = "\n\r\n\r\r\n\r";
+    const lines = try splitLines(allocator, input);
+    defer lines.deinit();
+    try std.testing.expectEqual(6, lines.items.len);
+    for (lines.items) |line| {
+        try std.testing.expectEqualStrings("", line);
+    }
+}
+
+test "splitLines empty" {
+    const allocator = std.testing.allocator;
+    const input = "";
+    const lines = try splitLines(allocator, input);
+    defer lines.deinit();
+    try std.testing.expectEqual(1, lines.items.len);
+    try std.testing.expectEqualStrings("", lines.items[0]);
+}
+
+test "splitLines 1" {
+    const allocator = std.testing.allocator;
+    const input = "Hello";
+    const lines = try splitLines(allocator, input);
+    defer lines.deinit();
+    try std.testing.expectEqual(1, lines.items.len);
+    try std.testing.expectEqualStrings("Hello", lines.items[0]);
+}
+
+test "splitLines 2" {
+    const allocator = std.testing.allocator;
+    const input = "Hello\nWorld";
+    const lines = try splitLines(allocator, input);
+    defer lines.deinit();
+    try std.testing.expectEqual(2, lines.items.len);
+    try std.testing.expectEqualStrings("Hello", lines.items[0]);
+    try std.testing.expectEqualStrings("World", lines.items[1]);
+}
+
+test "splitLines 2 empty" {
+    const allocator = std.testing.allocator;
+    const input = "\n";
+    const lines = try splitLines(allocator, input);
+    defer lines.deinit();
+    try std.testing.expectEqual(2, lines.items.len);
+    try std.testing.expectEqualStrings("", lines.items[0]);
+    try std.testing.expectEqualStrings("", lines.items[1]);
+}
+
+test "countLines" {
+    const input = "\n\r\n\r\r\n\r";
+    try std.testing.expectEqual(6, countLines(input));
+}

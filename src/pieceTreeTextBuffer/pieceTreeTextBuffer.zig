@@ -59,7 +59,7 @@ pub const PieceTreeTextBuffer = struct {
     _mightContainNonBasicASCII: bool,
     _BOM: []const u8,
 
-    pub fn init(allocator: std.mem.Allocator, chunks: []const StringBuffer, BOM: []const u8, eol: EOL, containsRTL: bool, containsUnusualLineTerminators: bool, isBasicASCII: bool, eolNormalized: bool) !PieceTreeTextBuffer {
+    pub fn init(allocator: std.mem.Allocator, chunks: []StringBuffer, BOM: []const u8, eol: EOL, containsRTL: bool, containsUnusualLineTerminators: bool, isBasicASCII: bool, eolNormalized: bool) !PieceTreeTextBuffer {
         return PieceTreeTextBuffer{
             ._BOM = BOM,
             ._mightContainNonBasicASCII = !isBasicASCII,
@@ -704,9 +704,10 @@ fn _sortTrimAutoWhitespaceCandidatesDescending(context: void, a: TrimAutoWhitesp
 
 test "init" {
     const allocator = std.testing.allocator;
-    const buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+    var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
-    }, "", .LF, false, false, false, false);
+    };
+    const buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, false, false);
     defer buffer.deinit();
 
     try std.testing.expectEqual(3, buffer.getLineCount());
@@ -714,9 +715,10 @@ test "init" {
 
 test "insert" {
     const allocator = std.testing.allocator;
-    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+    var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
-    }, "", .LF, false, false, false, false);
+    };
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, false, false);
     defer buffer.deinit();
 
     var edits = [_]ValidAnnotatedEditOperation{
@@ -744,9 +746,10 @@ test "insert" {
 
 test "apply two inserts" {
     const allocator = std.testing.allocator;
-    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+    var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
-    }, "", .LF, false, false, true, false);
+    };
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
     var edits = [_]ValidAnnotatedEditOperation{
@@ -777,9 +780,10 @@ test "apply two inserts" {
 
 test "delete" {
     const allocator = std.testing.allocator;
-    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+    var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
-    }, "", .LF, false, false, true, false);
+    };
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
     var edits = [_]ValidAnnotatedEditOperation{
@@ -800,9 +804,10 @@ test "delete" {
 
 test "delete cross line" {
     const allocator = std.testing.allocator;
-    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+    var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
-    }, "", .LF, false, false, true, false);
+    };
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
     var edits = [_]ValidAnnotatedEditOperation{
@@ -823,9 +828,10 @@ test "delete cross line" {
 
 test "replace" {
     const allocator = std.testing.allocator;
-    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+    var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "Hello\nWorld\r\n"),
-    }, "", .LF, false, false, true, false);
+    };
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, true, false);
     defer buffer.deinit();
 
     var edits = [_]ValidAnnotatedEditOperation{
@@ -846,9 +852,10 @@ test "replace" {
 
 test "getCharacterCountInRange" {
     const allocator = std.testing.allocator;
-    var buffer = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+    var buffers = [_]StringBuffer{
         try StringBuffer.init(allocator, "你好Hello\nWorld\r\n"),
-    }, "", .LF, false, false, false, false);
+    };
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, false, false);
     defer buffer.deinit();
 
     try std.testing.expectEqual(5, try buffer.getCharacterCountInRange(Range{

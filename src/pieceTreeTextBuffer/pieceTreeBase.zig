@@ -136,6 +136,16 @@ pub const StringBuffer = struct {
     buffer: ArrayList(u8),
     lineStarts: ArrayList(usize),
 
+    pub fn initEmpty(allocator: Allocator) !StringBuffer {
+        const buffer = ArrayList(u8).init(allocator);
+        var lineStarts = ArrayList(usize).init(allocator);
+        try lineStarts.append(0);
+        return .{
+            .buffer = buffer,
+            .lineStarts = lineStarts,
+        };
+    }
+
     pub fn init(allocator: Allocator, str: []const u8) !StringBuffer {
         var buffer = ArrayList(u8).init(allocator);
         try buffer.appendSlice(str);
@@ -157,7 +167,7 @@ pub const StringBuffer = struct {
         self.lineStarts.deinit();
     }
 
-    pub fn length(self: *const StringBuffer) usize {
+    pub fn bufferLength(self: *const StringBuffer) usize {
         return self.buffer.items.len;
     }
 
@@ -377,36 +387,64 @@ pub const PieceTreeBase = struct {
 
     _logger: ?*std.Io.Writer,
 
-    pub fn init(allocator: Allocator, logger: ?*std.Io.Writer, chunks: []const StringBuffer, eol: EOL, eolNormalized: bool) !PieceTreeBase {
-        var tree = PieceTreeBase{
+    pub fn init(allocator: Allocator, logger: ?*std.Io.Writer, chunks: []StringBuffer, eol: EOL, eolNormalized: bool) !PieceTreeBase {
+        var self = PieceTreeBase{
             .allocator = allocator,
-            .root = SENTINEL,
-            ._buffers = ArrayList(StringBuffer).init(allocator),
-            ._lineCnt = 1,
-            ._length = 0,
-            ._EOL = eol,
-            ._EOLNormalized = eolNormalized,
-            ._EOLLength = if (eol == .CRLF) 2 else 1,
-            ._lastChangeBufferPos = .{ .line = 0, .column = 0 },
-            ._searchCache = PieceTreeSearchCache.init(allocator, 1),
-            ._lastVisitedLine = LastVisitedLine.init(allocator),
             ._logger = logger,
+            ._EOL = undefined,
+            ._EOLLength = undefined,
+            ._EOLNormalized = undefined,
+            ._buffers = undefined,
+            ._lastChangeBufferPos = undefined,
+            ._lastVisitedLine = undefined,
+            ._length = undefined,
+            ._lineCnt = undefined,
+            ._searchCache = undefined,
+            .root = undefined,
         };
 
-        if (tree._logger) |w| {
-            tree.log("init(allocator, &[_]StringBuffer{{", .{});
-            for (chunks) |chunk| {
-                try chunk.logInit(w);
-                try w.print(",\n", .{});
+        try self.create(chunks, eol, eolNormalized);
+        return self;
+    }
+
+    pub fn create(self: *PieceTreeBase, chunks: []StringBuffer, eol: EOL, eolNormalized: bool) !void {
+        const allocator = self.allocator;
+        var buffers = ArrayList(StringBuffer).init(allocator);
+        try buffers.append(try StringBuffer.initEmpty(allocator));
+        self._buffers = buffers;
+        self._lastChangeBufferPos = .{ .line = 0, .column = 0 };
+        self.root = SENTINEL;
+        self._lineCnt = 1;
+        self._length = 0;
+        self._EOL = eol;
+        self._EOLLength = eol.length();
+        self._EOLNormalized = eolNormalized;
+
+        var lastNode: ?*TreeNode = null;
+        for (chunks, 1..) |*chunk, i| {
+            if (chunk.bufferLength() > 0) {
+                if (chunk.lineStarts.items.len == 0) {
+                    chunk.lineStarts.deinit();
+                    chunk.lineStarts = try createLineStartsFast(self.allocator, chunk.buffer.items);
+                }
+
+                const piece = Piece{
+                    .bufferIndex = i,
+                    .start = .{ .line = 0, .column = 0 },
+                    .end = .{ .line = chunk.lineStarts.items.len - 1, .column = chunk.bufferLength() - chunk.lineStarts.items[chunk.lineStarts.items.len - 1] },
+                    .lineFeedCnt = chunk.lineStarts.items.len - 1,
+                    .length = chunk.bufferLength(),
+                };
+                try self._buffers.append(chunk.*);
+                lastNode = try self.rbInsertRight(lastNode, piece);
+            } else {
+                chunk.deinit();
             }
-            tree.log("}}, {s}, {s})\n", .{
-                if (eol == .CRLF) ".CRLF" else ".LF",
-                if (eolNormalized) "true" else "false",
-            });
         }
 
-        try tree.resetBuffers(chunks);
-        return tree;
+        self._searchCache = PieceTreeSearchCache.init(allocator, 1);
+        self._lastVisitedLine = LastVisitedLine.init(allocator);
+        self.computeBufferMetadata();
     }
 
     pub fn deinit(self: *const PieceTreeBase) void {
@@ -419,37 +457,11 @@ pub const PieceTreeBase = struct {
         self._lastVisitedLine.deinit();
     }
 
-    fn resetBuffers(self: *PieceTreeBase, chunks: []const StringBuffer) !void {
-        if (self._buffers.items.len > 0) {
-            for (self._buffers.items) |buffer| {
-                buffer.deinit();
-            }
-            try self._buffers.resize(0);
-        }
-
-        try self._buffers.append(try StringBuffer.init(self.allocator, ""));
-
-        var lastNode: ?*TreeNode = null;
-        for (1.., chunks) |i, chunk| {
-            if (chunk.length() > 0) {
-                const piece = Piece{
-                    .bufferIndex = i,
-                    .start = .{ .line = 0, .column = 0 },
-                    .end = .{ .line = chunk.lineStarts.items.len - 1, .column = chunk.length() - chunk.lineStarts.items[chunk.lineStarts.items.len - 1] },
-                    .lineFeedCnt = chunk.lineStarts.items.len - 1,
-                    .length = chunk.length(),
-                };
-                try self._buffers.append(chunk);
-                lastNode = try self.rbInsertRight(lastNode, piece);
-            } else {
-                chunk.deinit();
-            }
-        }
-
-        self.computeBufferMetadata();
-    }
-
     fn normalizeEOL(self: *PieceTreeBase, eol: EOL) !void {
+        const averageBufferSize = AverageBufferSize;
+        const min = averageBufferSize - @divFloor(averageBufferSize, 3);
+        const max = min * 2;
+
         var tempChunk = ArrayList(u8).init(self.allocator);
         defer tempChunk.deinit();
 
@@ -458,20 +470,16 @@ pub const PieceTreeBase = struct {
 
         var iter = self.root.iterator();
         while (iter.next()) |node| {
-            const averageBufferSize = AverageBufferSize;
-            const min = averageBufferSize - @divFloor(averageBufferSize, 3);
-            const max = min * 2;
-
             const str = self.getNodeContent(node);
-
             if (tempChunk.items.len <= min or tempChunk.items.len + str.len < max) {
                 try tempChunk.appendSlice(str);
-            } else {
-                // flush anyways
-                try replaceEOL(&tempChunk, self._EOL);
-                try chunks.append(try StringBuffer.init(self.allocator, tempChunk.items));
-                try tempChunk.replaceRange(0, tempChunk.items.len, str);
+                continue;
             }
+            // flush anyways
+            try replaceEOL(&tempChunk, self._EOL);
+            try chunks.append(try StringBuffer.init(self.allocator, tempChunk.items));
+            tempChunk.clearRetainingCapacity();
+            try tempChunk.appendSlice(str);
         }
 
         if (tempChunk.items.len > 0) {
@@ -479,15 +487,8 @@ pub const PieceTreeBase = struct {
             try chunks.append(try StringBuffer.init(self.allocator, tempChunk.items));
         }
 
-        rbt.freeTree(self.allocator, self.root);
-        self.root = SENTINEL;
-        self._lineCnt = 1;
-        self._EOL = eol;
-        self._EOLNormalized = true;
-        self._EOLLength = if (eol == .CRLF) 2 else 1;
-        try self._searchCache.reset();
-        try self._lastVisitedLine.reset();
-        try self.resetBuffers(chunks.items);
+        self.deinit();
+        try self.create(chunks.items, eol, true);
     }
 
     fn rbDelete(self: *PieceTreeBase, node: *TreeNode) void {
@@ -1506,7 +1507,7 @@ pub const PieceTreeBase = struct {
     }
 
     fn createNewPiece(self: *PieceTreeBase, text: []const u8) !Piece {
-        var startOffset = self._buffers.items[0].length();
+        var startOffset = self._buffers.items[0].bufferLength();
         const lineStarts = try createLineStartsFast(self.allocator, text);
         defer lineStarts.deinit();
 
@@ -1533,7 +1534,7 @@ pub const PieceTreeBase = struct {
             try self._buffers.items[0].append(text);
         }
 
-        const endOffset = self._buffers.items[0].length();
+        const endOffset = self._buffers.items[0].bufferLength();
         const endIndex = self._buffers.items[0].lineStarts.items.len - 1;
         const endColumn = endOffset - self._buffers.items[0].lineStarts.items[endIndex];
         const endPos: BufferCursor = .{ .line = endIndex, .column = endColumn };
@@ -1553,7 +1554,7 @@ pub const PieceTreeBase = struct {
         return try self.getContentOfSubTree(self.root);
     }
 
-    fn getLineRawContent(self: *PieceTreeBase, lineNumber: usize, endOffset: usize) !ArrayList(u8) {
+    pub fn getLineRawContent(self: *PieceTreeBase, lineNumber: usize, endOffset: usize) !ArrayList(u8) {
         var x = self.root;
 
         var ret = ArrayList(u8).init(self.allocator);
@@ -1771,7 +1772,7 @@ pub const PieceTreeBase = struct {
         }
 
         const hitCRLF = self.shouldCheckCRLF() and strStartWithLF(val) and self.endWithCR(node);
-        const startOffset = self._buffers.items[0].length();
+        const startOffset = self._buffers.items[0].bufferLength();
         try self._buffers.items[0].append(val);
         const lineStarts = try createLineStartsFast(self.allocator, val);
         defer lineStarts.deinit();
@@ -1786,7 +1787,7 @@ pub const PieceTreeBase = struct {
 
         try self._buffers.items[0].lineStarts.appendSlice(lineStarts.items[1..]);
         const endIndex = self._buffers.items[0].lineStarts.items.len - 1;
-        const endColumn = self._buffers.items[0].length() - self._buffers.items[0].lineStarts.items[endIndex];
+        const endColumn = self._buffers.items[0].bufferLength() - self._buffers.items[0].lineStarts.items[endIndex];
         const newEnd: BufferCursor = .{ .line = endIndex, .column = endColumn };
         const piece = node.piece.?;
         const newLength = piece.length + val.len;
@@ -2625,7 +2626,7 @@ test "getNearestChunk" {
     var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
     defer tree.deinit();
 
-    const chunk = tree.getNearestChunk(buffers[0].length());
+    const chunk = tree.getNearestChunk(buffers[0].bufferLength());
     try std.testing.expectEqualSlices(u8, "Fourth\n", chunk);
 }
 

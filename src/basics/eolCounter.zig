@@ -4,6 +4,13 @@ const ArrayList = std.array_list.Managed;
 pub const EOL = enum(u8) {
     CRLF,
     LF,
+
+    pub fn length(self: EOL) usize {
+        return switch (self) {
+            .CRLF => 2,
+            .LF => 1,
+        };
+    }
 };
 
 const Unknown = 0;

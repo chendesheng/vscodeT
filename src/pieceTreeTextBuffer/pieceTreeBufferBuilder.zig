@@ -203,10 +203,11 @@ pub const PieceTreeBufferBuilder = struct {
 
         if (self._getPreviousChar()) |previousChar| {
             // recreate last chunk
-            var lastChunk = self.chunks.items[self.chunks.items.len - 1];
+            var lastChunk = &self.chunks.items[self.chunks.items.len - 1];
             try lastChunk.buffer.appendSlice(previousChar);
 
             const newLineStarts = try createLineStartsFast(self.chunks.allocator, lastChunk.buffer.items);
+
             lastChunk.lineStarts.deinit();
             lastChunk.lineStarts = newLineStarts;
             if (previousChar[0] == '\r') {

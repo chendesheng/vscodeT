@@ -219,9 +219,10 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
 
 test "guessIndentation" {
     const allocator = std.testing.allocator;
-    var source = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+    var buffers = [_]StringBuffer{
         try .init(allocator, "fn main() {\n    std.debug.print(\"Hello, world!\\n\", .{});\n}"),
-    }, "", .LF, false, false, false, false);
+    };
+    var source = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, false, false);
     defer source.deinit();
 
     const defaultTabSize = 2;
