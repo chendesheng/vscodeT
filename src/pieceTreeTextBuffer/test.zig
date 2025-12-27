@@ -1305,6 +1305,209 @@ const CentralizedLineStartsWithCRLFTests = struct {
         try testLinesContent(allocator, str3, pieceTable);
         try assertTreeInvariants(pieceTable);
     }
+
+    test "random bug 2" {
+        const allocator = std.testing.allocator;
+        const str = "\n\r\n\r";
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.insert(2, "\n\r\r\r", false);
+        const str1 = str[0..2] ++ "\n\r\r\r" ++ str[2..];
+        try pieceTable.delete(4, 1);
+        const str2 = str1[0..4] ++ str1[4 + 1 ..];
+
+        try std.testing.expectEqual(countLines(str2), pieceTable.getLineCount());
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random bug 3" {
+        const allocator = std.testing.allocator;
+        const str = "\n\n\n\r";
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.delete(2, 2);
+        const str1 = str[0..2] ++ str[2 + 2 ..];
+        try pieceTable.delete(0, 2);
+        const str2 = str1[0..0] ++ str1[0 + 2 ..];
+        try pieceTable.insert(0, "\r\r\r\r", false);
+        const str3 = str2[0..0] ++ "\r\r\r\r" ++ str2[0..];
+        try pieceTable.insert(2, "\r\n\r\r", false);
+        const str4 = str3[0..2] ++ "\r\n\r\r" ++ str3[2..];
+        try pieceTable.insert(3, "\r\r\r\n", false);
+        const str5 = str4[0..3] ++ "\r\r\r\n" ++ str4[3..];
+        try std.testing.expectEqual(countLines(str5), pieceTable.getLineCount());
+        try assertTreeInvariants(pieceTable);
+    }
+    test "random bug 4" {
+        const allocator = std.testing.allocator;
+        const str = "\n\n\n\n";
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.delete(3, 1);
+        const str1 = str[0..3] ++ str[3 + 1 ..];
+        try pieceTable.insert(1, "\r\r\r\r", false);
+        const str2 = str1[0..1] ++ "\r\r\r\r" ++ str1[1..];
+        try pieceTable.insert(6, "\r\n\n\r", false);
+        const str3 = str2[0..6] ++ "\r\n\n\r" ++ str2[6..];
+        try pieceTable.delete(5, 3);
+        const str4 = str3[0..5] ++ str3[5 + 3 ..];
+
+        try testLinesContent(allocator, str4, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random bug 5" {
+        const allocator = std.testing.allocator;
+        const str = "\n\n\n\n";
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        try pieceTable.delete(3, 1);
+        const str1 = str[0..3] ++ str[3 + 1 ..];
+        try pieceTable.insert(0, "\n\r\r\n", false);
+        const str2 = str1[0..0] ++ "\n\r\r\n" ++ str1[0..];
+        try pieceTable.insert(4, "\n\r\r\n", false);
+        const str3 = str2[0..4] ++ "\n\r\r\n" ++ str2[4..];
+        try pieceTable.delete(4, 3);
+        const str4 = str3[0..4] ++ str3[4 + 3 ..];
+        try pieceTable.insert(5, "\r\r\n\r", false);
+        const str5 = str4[0..5] ++ "\r\r\n\r" ++ str4[5..];
+        try pieceTable.insert(12, "\n\n\n\r", false);
+        const str6 = str5[0..12] ++ "\n\n\n\r" ++ str5[12..];
+        try pieceTable.insert(5, "\r\r\r\n", false);
+        const str7 = str6[0..5] ++ "\r\r\r\n" ++ str6[5..];
+        try pieceTable.insert(20, "\n\n\r\n", false);
+        const str8 = str7[0..20] ++ "\n\n\r\n" ++ str7[20..];
+        try testLinesContent(allocator, str8, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random bug 6" {
+        const allocator = std.testing.allocator;
+        const str = "\n\r\r\n";
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.insert(4, "\r\n\n\r", false);
+        const str1 = str[0..4] ++ "\r\n\n\r" ++ str[4..];
+        try pieceTable.insert(3, "\r\n\n\n", false);
+        const str2 = str1[0..3] ++ "\r\n\n\n" ++ str1[3..];
+        try pieceTable.delete(4, 8);
+        const str3 = str2[0..4] ++ str2[4 + 8 ..];
+        try pieceTable.insert(4, "\r\n\n\r", false);
+        const str4 = str3[0..4] ++ "\r\n\n\r" ++ str3[4..];
+        try pieceTable.insert(0, "\r\n\n\r", false);
+        const str5 = str4[0..0] ++ "\r\n\n\r" ++ str4[0..];
+        try pieceTable.delete(4, 0);
+        const str6 = str5[0..4] ++ str5[4 + 0 ..];
+        try pieceTable.delete(8, 4);
+        const str7 = str6[0..8] ++ str6[8 + 4 ..];
+        try testLinesContent(allocator, str7, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random bug 7" {
+        const allocator = std.testing.allocator;
+        const str = "\r\n\n\r";
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.delete(1, 0);
+        const str1 = str[0..1] ++ str[1 + 0 ..];
+        try pieceTable.insert(3, "\n\n\n\r", false);
+        const str2 = str1[0..3] ++ "\n\n\n\r" ++ str1[3..];
+        try pieceTable.insert(7, "\n\n\r\n", false);
+        const str3 = str2[0..7] ++ "\n\n\r\n" ++ str2[7..];
+
+        try testLinesContent(allocator, str3, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random bug 8" {
+        const allocator = std.testing.allocator;
+        const str = "\r\r\n\n";
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.insert(4, "\r\n\n\r", false);
+        const str1 = str[0..4] ++ "\r\n\n\r" ++ str[4..];
+        try pieceTable.insert(7, "\n\r\r\r", false);
+        const str2 = str1[0..7] ++ "\n\r\r\r" ++ str1[7..];
+        try pieceTable.insert(11, "\n\n\r\n", false);
+        const str3 = str2[0..11] ++ "\n\n\r\n" ++ str2[11..];
+        try testLinesContent(allocator, str3, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random bug 9" {
+        const allocator = std.testing.allocator;
+        const str = "qneW";
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.insert(0, "YhIl", false);
+        const str1 = str[0..0] ++ "YhIl" ++ str[0..];
+        try pieceTable.insert(0, "qdsm", false);
+        const str2 = str1[0..0] ++ "qdsm" ++ str1[0..];
+        try pieceTable.delete(7, 0);
+        const str3 = str2[0..7] ++ str2[7 + 0 ..];
+        try pieceTable.insert(12, "iiPv", false);
+        const str4 = str3[0..12] ++ "iiPv" ++ str3[12..];
+        try pieceTable.insert(9, "V\rSA", false);
+        const str5 = str4[0..9] ++ "V\rSA" ++ str4[9..];
+        try testLinesContent(allocator, str5, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random bug 10" {
+        const allocator = std.testing.allocator;
+        const str = "\n\n\n\n";
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.insert(3, "\n\r\n\r", false);
+        const str1 = str[0..3] ++ "\n\r\n\r" ++ str[3..];
+        try pieceTable.insert(2, "\n\r\n\n", false);
+        const str2 = str1[0..2] ++ "\n\r\n\n" ++ str1[2..];
+        try pieceTable.insert(0, "\n\n\r\r", false);
+        const str3 = str2[0..0] ++ "\n\n\r\r" ++ str2[0..];
+        try pieceTable.insert(3, "\r\r\r\r", false);
+        const str4 = str3[0..3] ++ "\r\r\r\r" ++ str3[3..];
+        try pieceTable.insert(3, "\n\n\r\r", false);
+        const str5 = str4[0..3] ++ "\n\n\r\r" ++ str4[3..];
+        try testLinesContent(allocator, str5, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random chunk bug 1" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"\n\r\r\n\n\n\r\n\r"}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        const str = "\n\r\r\n\n\n\r\n\r";
+        try pieceTable.delete(0, 2);
+        const str1 = str[0..0] ++ str[0 + 2 ..];
+        try pieceTable.insert(1, "\r\r\n\n", false);
+        const str2 = str1[0..1] ++ "\r\r\n\n" ++ str1[1..];
+        try pieceTable.insert(7, "\r\r\r\r", false);
+        const str3 = str2[0..7] ++ "\r\r\r\r" ++ str2[7..];
+
+        try assertRawContent(str3, pieceTable);
+        try testLineStarts(allocator, str3, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
 };
 
 test "insert and deletes" {
