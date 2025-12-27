@@ -14,19 +14,20 @@ const countLines = @import("../basics/strings.zig").countLines;
 const splitLines = @import("../basics/strings.zig").splitLines;
 
 const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
-var rand = std.Random.Pcg.init(0).random();
+var pcg = std.Random.Pcg.init(0);
+var rand = pcg.random();
 fn randomChar() u8 {
     return alphabet[rand.int(usize) % alphabet.len];
 }
 
-fn randomInt(bound: u64) u64 {
-    return rand.intRangeLessThan(u64, 0, bound);
+fn randomInt(bound: usize) usize {
+    return @intFromFloat(@floor(rand.float(f64) * @as(f64, @floatFromInt(bound))));
 }
 
-fn randomStr(allocator: Allocator, len: usize) ArrayList(u8) {
-    var res = ArrayList(u8).initCapacity(allocator, len);
-    for (0..len) |_| {
-        try res.append(randomChar());
+fn randomStr(allocator: Allocator, len: usize) ![]u8 {
+    var res = try allocator.alloc(u8, len);
+    for (0..len) |i| {
+        res[i] = randomChar();
     }
     return res;
 }
@@ -71,31 +72,39 @@ fn testLinesContent(allocator: Allocator, str: []const u8, pieceTable: *PieceTre
     }
 }
 
-fn testLineStarts(allocator: Allocator, str: []const u8, pieceTable: *PieceTreeBase) !void {
-    try re.initialize(null);
-    defer re.uninitialize();
-
+fn getLineStarts(allocator: Allocator, str: []const u8) !ArrayList(usize) {
     var lineStarts = ArrayList(usize).init(allocator);
-    defer lineStarts.deinit();
+    var i: usize = 0;
     try lineStarts.append(0);
-
-    const _regex = try RegExp.init("\r\n|\r|\n", .{});
-
-    var iter = _regex.searchIterator(str, 0);
-    while (iter.next()) |m| {
-        defer m.deinit();
-
-        try lineStarts.append(m.index() + m.groupN(0).len);
+    while (i < str.len) {
+        if (str[i] == '\r') {
+            i += 1;
+            if (i < str.len and str[i] == '\n') {
+                i += 1;
+            }
+            try lineStarts.append(i);
+        } else if (str[i] == '\n') {
+            i += 1;
+            try lineStarts.append(i);
+        } else {
+            i += 1;
+        }
     }
+    return lineStarts;
+}
+
+fn testLineStarts(allocator: Allocator, str: []const u8, pieceTable: *PieceTreeBase) !void {
+    var lineStarts = try getLineStarts(allocator, str);
+    defer lineStarts.deinit();
 
     for (lineStarts.items, 0..) |lineStart, i| {
         try std.testing.expectEqualDeep(pieceTable.getPositionAt(lineStart), Position.init(i + 1, 1));
-        try std.testing.expectEqual(pieceTable.getOffsetAt(i + 1, 1), lineStart);
+        try std.testing.expectEqual(lineStart, pieceTable.getOffsetAt(i + 1, 1));
     }
 
     for (1..lineStarts.items.len) |i| {
         const pos = pieceTable.getPositionAt(lineStarts.items[i] - 1);
-        try std.testing.expectEqual(pieceTable.getOffsetAt(pos.lineNumber, pos.column), lineStarts.items[i] - 1);
+        try std.testing.expectEqual(lineStarts.items[i] - 1, pieceTable.getOffsetAt(pos.lineNumber, pos.column));
     }
 }
 
@@ -1508,6 +1517,354 @@ const CentralizedLineStartsWithCRLFTests = struct {
         try testLineStarts(allocator, str3, pieceTable);
         try assertTreeInvariants(pieceTable);
     }
+    test "random chunk bug 2" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"\n\r\n\n\n\r\n\r\n\r\r\n\n\n\r\r\n\r\n"}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        const str = "\n\r\n\n\n\r\n\r\n\r\r\n\n\n\r\r\n\r\n";
+        try pieceTable.insert(16, "\r\n\r\r", false);
+        const str1 = str[0..16] ++ "\r\n\r\r" ++ str[16..];
+        try pieceTable.insert(13, "\n\n\r\r", false);
+        const str2 = str1[0..13] ++ "\n\n\r\r" ++ str1[13..];
+        try pieceTable.insert(19, "\n\n\r\n", false);
+        const str3 = str2[0..19] ++ "\n\n\r\n" ++ str2[19..];
+        try pieceTable.delete(5, 0);
+        const str4 = str3[0..5] ++ str3[5 + 0 ..];
+        try pieceTable.delete(11, 2);
+        const str5 = str4[0..11] ++ str4[11 + 2 ..];
+
+        try assertRawContent(str5, pieceTable);
+        try testLineStarts(allocator, str5, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random chunk bug 3" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"\r\n\n\n\n\n\n\r\n"}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        const str = "\r\n\n\n\n\n\n\r\n";
+        try pieceTable.insert(4, "\n\n\r\n\r\r\n\n\r", false);
+        const str1 = str[0..4] ++ "\n\n\r\n\r\r\n\n\r" ++ str[4..];
+        try pieceTable.delete(4, 4);
+        const str2 = str1[0..4] ++ str1[4 + 4 ..];
+        try pieceTable.insert(11, "\r\n\r\n\n\r\r\n\n", false);
+        const str3 = str2[0..11] ++ "\r\n\r\n\n\r\r\n\n" ++ str2[11..];
+        try pieceTable.delete(1, 2);
+        const str4 = str3[0..1] ++ str3[1 + 2 ..];
+
+        try assertRawContent(str4, pieceTable);
+        try testLineStarts(allocator, str4, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random chunk bug 4" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"\n\r\n\r"}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        const str = "\n\r\n\r";
+        try pieceTable.insert(4, "\n\n\r\n", false);
+        const str1 = str[0..4] ++ "\n\n\r\n" ++ str[4..];
+        try pieceTable.insert(3, "\r\n\n\n", false);
+        const str2 = str1[0..3] ++ "\r\n\n\n" ++ str1[3..];
+
+        try assertRawContent(str2, pieceTable);
+        try testLineStarts(allocator, str2, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+};
+
+const RandomIsUnsupervisedTests = struct {
+    test "splitting large change buffer" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{""}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        const str = "";
+
+        try pieceTable.insert(0, "WUZ\nXVZY\n", false);
+        const str1 = str[0..0] ++ "WUZ\nXVZY\n" ++ str[0..];
+        try pieceTable.insert(8, "\r\r\nZXUWVW", false);
+        const str2 = str1[0..8] ++ "\r\r\nZXUWVW" ++ str1[8..];
+        try pieceTable.delete(10, 7);
+        const str3 = str2[0..10] ++ str2[10 + 7 ..];
+        try pieceTable.delete(10, 1);
+        const str4 = str3[0..10] ++ str3[10 + 1 ..];
+        try pieceTable.insert(4, "VX\r\r\nWZVZ", false);
+        const str5 = str4[0..4] ++ "VX\r\r\nWZVZ" ++ str4[4..];
+        try pieceTable.delete(11, 3);
+        const str6 = str5[0..11] ++ str5[11 + 3 ..];
+        try pieceTable.delete(12, 4);
+        const str7 = str6[0..12] ++ str6[12 + 4 ..];
+        try pieceTable.delete(8, 0);
+        const str8 = str7[0..8] ++ str7[8 + 0 ..];
+        try pieceTable.delete(10, 2);
+        const str9 = str8[0..10] ++ str8[10 + 2 ..];
+        try pieceTable.insert(0, "VZXXZYZX\r", false);
+        const str10 = str9[0..0] ++ "VZXXZYZX\r" ++ str9[0..];
+
+        try assertRawContent(str10, pieceTable);
+        try testLineStarts(allocator, str10, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random insert delete" {
+        const allocator = std.testing.allocator;
+        var str: []const u8 = &[_]u8{};
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{str}, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        // let output = '';
+        var toDestory: [1000][]const u8 = undefined;
+        for (0..1000) |i| {
+            if (rand.float(f64) < 0.6) {
+                // insert
+                const text = try randomStr(allocator, 100);
+                defer allocator.free(text);
+                const pos = randomInt(str.len + 1);
+                try pieceTable.insert(pos, text, false);
+                str = try std.mem.join(allocator, "", &[_][]const u8{ str[0..pos], text, str[pos..] });
+                toDestory[i] = str;
+                // output += `pieceTable.insert(${pos}, '${text.replace(/\n/g, '\\n').replace(/\r/g, '\\r')}');\n`;
+                // output += `str = str.substring(0, ${pos}) + '${text.replace(/\n/g, '\\n').replace(/\r/g, '\\r')}' + str.substring(${pos});\n`;
+            } else {
+                // delete
+                const pos = randomInt(str.len);
+                const length = @min(str.len - pos, randomInt(10));
+                try pieceTable.delete(pos, length);
+                str = try std.mem.join(allocator, "", &[_][]const u8{ str[0..pos], str[pos + length ..] });
+                toDestory[i] = str;
+                // output += `pieceTable.delete(${pos}, ${length});\n`;
+                // output += `str = str.substring(0, ${pos}) + str.substring(${pos} + ${length});\n`
+
+            }
+        }
+
+        defer for (toDestory) |s| allocator.free(s);
+        // console.log(output);
+
+        try assertRawContent(str, pieceTable);
+
+        try testLineStarts(allocator, str, pieceTable);
+        try testLinesContent(allocator, str, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random chunks" {
+        const allocator = std.testing.allocator;
+        var chunks = ArrayList([]u8).init(allocator);
+        defer {
+            for (chunks.items) |s| {
+                allocator.free(s);
+            }
+            chunks.deinit();
+        }
+        for (0..5) |_| {
+            try chunks.append(try randomStr(allocator, 1000));
+        }
+
+        var pieceTree = try createTextBuffer(allocator, chunks.items, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        var toDestroy = ArrayList([]u8).init(allocator);
+        defer {
+            for (toDestroy.items) |s| {
+                allocator.free(s);
+            }
+            toDestroy.deinit();
+        }
+
+        var str = try std.mem.join(allocator, "", chunks.items);
+        try toDestroy.append(str);
+
+        for (0..1000) |_| {
+            if (rand.float(f64) < 0.6) {
+                // insert
+                const text = try randomStr(allocator, 100);
+                defer allocator.free(text);
+                const pos = randomInt(str.len + 1);
+                try pieceTable.insert(pos, text, false);
+                str = try std.mem.join(allocator, "", &[_][]const u8{ str[0..pos], text, str[pos..] });
+                try toDestroy.append(str);
+            } else {
+                // delete
+                const pos = randomInt(str.len);
+                const length = @min(str.len - pos, randomInt(10));
+                try pieceTable.delete(pos, length);
+                str = try std.mem.join(allocator, "", &[_][]const u8{ str[0..pos], str[pos + length ..] });
+                try toDestroy.append(str);
+            }
+        }
+
+        try assertRawContent(str, pieceTable);
+        try testLineStarts(allocator, str, pieceTable);
+        try testLinesContent(allocator, str, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "random chunks 2" {
+        const allocator = std.testing.allocator;
+        var chunks = ArrayList([]u8).init(allocator);
+        defer {
+            for (chunks.items) |s| {
+                allocator.free(s);
+            }
+            chunks.deinit();
+        }
+        try chunks.append(try randomStr(allocator, 1000));
+
+        var pieceTree = try createTextBuffer(allocator, chunks.items, false);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        var toDestroy = ArrayList([]u8).init(allocator);
+        defer {
+            for (toDestroy.items) |s| {
+                allocator.free(s);
+            }
+            toDestroy.deinit();
+        }
+        var str = try std.mem.join(allocator, "", chunks.items);
+        try toDestroy.append(str);
+
+        for (0..50) |_| {
+            if (rand.float(f64) < 0.6) {
+                // insert
+                const text = try randomStr(allocator, 30);
+                defer allocator.free(text);
+                const pos = randomInt(str.len + 1);
+                try pieceTable.insert(pos, text, false);
+                str = try std.mem.join(allocator, "", &[_][]const u8{ str[0..pos], text, str[pos..] });
+                try toDestroy.append(str);
+            } else {
+                // delete
+                const pos = randomInt(str.len);
+                const length = @min(str.len - pos, randomInt(10));
+                try pieceTable.delete(pos, length);
+                str = try std.mem.join(allocator, "", &[_][]const u8{ str[0..pos], str[pos + length ..] });
+                try toDestroy.append(str);
+            }
+            try testLinesContent(allocator, str, pieceTable);
+        }
+
+        try assertRawContent(str, pieceTable);
+        try testLineStarts(allocator, str, pieceTable);
+        try testLinesContent(allocator, str, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+};
+
+const BufferApiTests = struct {
+    test "equal" {
+        const allocator = std.testing.allocator;
+        var a = try createTextBuffer(allocator, &[_][]const u8{"abc"}, false);
+        defer a.deinit();
+        var b = try createTextBuffer(allocator, &[_][]const u8{ "ab", "c" }, false);
+        defer b.deinit();
+        var c = try createTextBuffer(allocator, &[_][]const u8{"abd"}, false);
+        defer c.deinit();
+        var d = try createTextBuffer(allocator, &[_][]const u8{"abcd"}, false);
+        defer d.deinit();
+
+        const pieceTreeA = a.getPieceTree();
+        const pieceTreeB = b.getPieceTree();
+        const pieceTreeC = c.getPieceTree();
+        const pieceTreeD = d.getPieceTree();
+        try std.testing.expect(try pieceTreeA.equal(pieceTreeB));
+        try std.testing.expect(!try pieceTreeA.equal(pieceTreeC));
+        try std.testing.expect(!try pieceTreeA.equal(pieceTreeD));
+    }
+
+    test "equal with more chunks" {
+        const allocator = std.testing.allocator;
+        var a = try createTextBuffer(allocator, &[_][]const u8{ "ab", "cd", "e" }, true);
+        defer a.deinit();
+        var b = try createTextBuffer(allocator, &[_][]const u8{ "ab", "c", "de" }, true);
+        defer b.deinit();
+        const pieceTreeA = a.getPieceTree();
+        const pieceTreeB = b.getPieceTree();
+        try std.testing.expect(try pieceTreeA.equal(pieceTreeB));
+    }
+
+    test "equal 2, empty buffer" {
+        const allocator = std.testing.allocator;
+        var a = try createTextBuffer(allocator, &[_][]const u8{""}, true);
+        defer a.deinit();
+        var b = try createTextBuffer(allocator, &[_][]const u8{""}, true);
+        defer b.deinit();
+
+        const pieceTreeA = a.getPieceTree();
+        const pieceTreeB = b.getPieceTree();
+        try std.testing.expect(try pieceTreeA.equal(pieceTreeB));
+    }
+
+    test "equal 3, empty buffer" {
+        const allocator = std.testing.allocator;
+        var a = try createTextBuffer(allocator, &[_][]const u8{"a"}, true);
+        defer a.deinit();
+        var b = try createTextBuffer(allocator, &[_][]const u8{""}, true);
+        defer b.deinit();
+
+        const pieceTreeA = a.getPieceTree();
+        const pieceTreeB = b.getPieceTree();
+        try std.testing.expect(!try pieceTreeA.equal(pieceTreeB));
+    }
+
+    test "getLineCharCode - issue #45735" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"LINE1\nline2"}, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try std.testing.expectEqual('L', pieceTable.getLineCharCode(1, 0));
+        try std.testing.expectEqual('I', pieceTable.getLineCharCode(1, 1));
+        try std.testing.expectEqual('N', pieceTable.getLineCharCode(1, 2));
+        try std.testing.expectEqual('E', pieceTable.getLineCharCode(1, 3));
+        try std.testing.expectEqual('1', pieceTable.getLineCharCode(1, 4));
+        try std.testing.expectEqual('\n', pieceTable.getLineCharCode(1, 5));
+        try std.testing.expectEqual('l', pieceTable.getLineCharCode(2, 0));
+        try std.testing.expectEqual('i', pieceTable.getLineCharCode(2, 1));
+        try std.testing.expectEqual('n', pieceTable.getLineCharCode(2, 2));
+        try std.testing.expectEqual('e', pieceTable.getLineCharCode(2, 3));
+        try std.testing.expectEqual('2', pieceTable.getLineCharCode(2, 4));
+    }
+
+    test "getLineCharCode - issue #47733" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{ "", "LINE1\n", "line2" }, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        try std.testing.expectEqual('L', pieceTable.getLineCharCode(1, 0));
+        try std.testing.expectEqual('I', pieceTable.getLineCharCode(1, 1));
+        try std.testing.expectEqual('N', pieceTable.getLineCharCode(1, 2));
+        try std.testing.expectEqual('E', pieceTable.getLineCharCode(1, 3));
+        try std.testing.expectEqual('1', pieceTable.getLineCharCode(1, 4));
+        try std.testing.expectEqual('\n', pieceTable.getLineCharCode(1, 5));
+        try std.testing.expectEqual('l', pieceTable.getLineCharCode(2, 0));
+        try std.testing.expectEqual('i', pieceTable.getLineCharCode(2, 1));
+        try std.testing.expectEqual('n', pieceTable.getLineCharCode(2, 2));
+        try std.testing.expectEqual('e', pieceTable.getLineCharCode(2, 3));
+        try std.testing.expectEqual('2', pieceTable.getLineCharCode(2, 4));
+    }
+
+    test "getNearestChunk" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"012345678"}, true);
+        defer pieceTree.deinit();
+        var pt = pieceTree.getPieceTree();
+
+        try pt.insert(3, "ABC", false);
+        try assertLineContent("012ABC345678", pt, 1);
+        try std.testing.expectEqualStrings("ABC", pt.getNearestChunk(3));
+        try std.testing.expectEqualStrings("345678", pt.getNearestChunk(6));
+
+        try pt.delete(9, 1);
+        try assertLineContent("012ABC34578", pt, 1);
+        try std.testing.expectEqualStrings("345", pt.getNearestChunk(6));
+        try std.testing.expectEqualStrings("78", pt.getNearestChunk(9));
+    }
 };
 
 test "insert and deletes" {
@@ -1517,4 +1874,6 @@ test "insert and deletes" {
     _ = GetTextInRangeTests;
     _ = CRLFTests;
     _ = CentralizedLineStartsWithCRLFTests;
+    _ = RandomIsUnsupervisedTests;
+    _ = BufferApiTests;
 }

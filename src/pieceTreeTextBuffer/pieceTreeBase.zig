@@ -518,6 +518,7 @@ pub const PieceTreeBase = struct {
         return try PieceTreeSnapshot.init(self, BOM);
     }
 
+    // FIXME: avoid allocation
     pub fn equal(self: *const PieceTreeBase, other: *const PieceTreeBase) !bool {
         if (self.getLength() != other.getLength()) {
             return false;
