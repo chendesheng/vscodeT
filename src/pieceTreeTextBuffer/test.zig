@@ -12,6 +12,8 @@ const SENTINEL = @import("rbTreeBase.zig").SENTINEL;
 const TreeNode = @import("rbTreeBase.zig").TreeNode;
 const countLines = @import("../basics/strings.zig").countLines;
 const splitLines = @import("../basics/strings.zig").splitLines;
+const SearchData = @import("../textModel/model.zig").SearchData;
+const WordCharacterClassifier = @import("../basics/wordCharacterClassifier.zig").WordCharacterClassifier;
 
 const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
 var pcg = std.Random.Pcg.init(0);
@@ -1867,6 +1869,208 @@ const BufferApiTests = struct {
     }
 };
 
+const SearchOffsetCacheTests = struct {
+    test "render white space exception" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"class Name{\n\t\n\t\t\tget() {\n\n\t\t\t}\n\t\t}"}, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        const str = "class Name{\n\t\n\t\t\tget() {\n\n\t\t\t}\n\t\t}";
+
+        try pieceTable.insert(12, "s", false);
+        const str1 = str[0..12] ++ "s" ++ str[12..];
+
+        try pieceTable.insert(13, "e", false);
+        const str2 = str1[0..13] ++ "e" ++ str1[13..];
+
+        try pieceTable.insert(14, "t", false);
+        const str3 = str2[0..14] ++ "t" ++ str2[14..];
+
+        try pieceTable.insert(15, "()", false);
+        const str4 = str3[0..15] ++ "()" ++ str3[15..];
+
+        try pieceTable.delete(16, 1);
+        const str5 = str4[0..16] ++ str4[16 + 1 ..];
+
+        try pieceTable.insert(17, "()", false);
+        const str6 = str5[0..17] ++ "()" ++ str5[17..];
+
+        try pieceTable.delete(18, 1);
+        const str7 = str6[0..18] ++ str6[18 + 1 ..];
+
+        try pieceTable.insert(18, "}", false);
+        const str8 = str7[0..18] ++ "}" ++ str7[18..];
+
+        try pieceTable.insert(12, "\n", false);
+        const str9 = str8[0..12] ++ "\n" ++ str8[12..];
+
+        try pieceTable.delete(12, 1);
+        const str10 = str9[0..12] ++ str9[12 + 1 ..];
+
+        try pieceTable.delete(18, 1);
+        const str11 = str10[0..18] ++ str10[18 + 1 ..];
+
+        try pieceTable.insert(18, "}", false);
+        const str12 = str11[0..18] ++ "}" ++ str11[18..];
+
+        try pieceTable.delete(17, 2);
+        const str13 = str12[0..17] ++ str12[17 + 2 ..];
+
+        try pieceTable.delete(16, 1);
+        const str14 = str13[0..16] ++ str13[16 + 1 ..];
+
+        try pieceTable.insert(16, ")", false);
+        const str15 = str14[0..16] ++ ")" ++ str14[16..];
+
+        try pieceTable.delete(15, 2);
+        const str16 = str15[0..15] ++ str15[15 + 2 ..];
+
+        try assertRawContent(str16, pieceTable);
+    }
+
+    test "Line breaks replacement is not necessary when EOL is normalized" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"abc"}, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        const str = "abc";
+
+        try pieceTable.insert(3, "def\nabc", false);
+        const str1 = str ++ "def\nabc";
+
+        try testLineStarts(allocator, str1, pieceTable);
+        try testLinesContent(allocator, str1, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "Line breaks replacement is not necessary when EOL is normalized 2" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"abc\n"}, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        const str = "abc\n";
+
+        try pieceTable.insert(4, "def\nabc", false);
+        const str1 = str ++ "def\nabc";
+
+        try testLineStarts(allocator, str1, pieceTable);
+        try testLinesContent(allocator, str1, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "Line breaks replacement is not necessary when EOL is normalized 3" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"abc\n"}, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        const str = "abc\n";
+
+        try pieceTable.insert(2, "def\nabc", false);
+        const str1 = str[0..2] ++ "def\nabc" ++ str[2..];
+
+        try testLineStarts(allocator, str1, pieceTable);
+        try testLinesContent(allocator, str1, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+
+    test "Line breaks replacement is not necessary when EOL is normalized 4" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"abc\n"}, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        const str = "abc\n";
+
+        try pieceTable.insert(3, "def\nabc", false);
+        const str1 = str[0..3] ++ "def\nabc" ++ str[3..];
+
+        try testLineStarts(allocator, str1, pieceTable);
+        try testLinesContent(allocator, str1, pieceTable);
+        try assertTreeInvariants(pieceTable);
+    }
+};
+
+const ChunkBasedSearchTests = struct {
+    test "#45892. For some cases, the buffer is empty but we still try to search" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{""}, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+        try pieceTable.delete(0, 1);
+        var regex = try RegExp.init("abc", .{});
+        defer regex.deinit();
+        var wordSeparators = try WordCharacterClassifier.init(allocator, ",./");
+        defer wordSeparators.deinit();
+        const ret = try pieceTree.findMatchesLineByLine(Range.init(1, 1, 1, 1), .init(regex, &wordSeparators, "abc"), true, 1000);
+        try std.testing.expectEqual(0, ret.items.len);
+    }
+
+    test "#45770. FindInNode should not cross node boundary." {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"balabalababalabalababalabalaba\n" ++
+            "balabalababalabalababalabalaba\n" ++
+            "\n" ++
+            "* [ ] task1\n" ++
+            "* [x] task2 balabalaba\n" ++
+            "* [ ] task 3"}, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.delete(0, 62);
+        try pieceTable.delete(16, 1);
+
+        try pieceTable.insert(16, " ", false);
+        var regex = try RegExp.init("\\[", .{ .ignore_case = true, .multiline = true });
+        defer regex.deinit();
+        var wordSeparators = try WordCharacterClassifier.init(allocator, ",./");
+        defer wordSeparators.deinit();
+        const ret = try pieceTable.findMatchesLineByLine(.init(1, 1, 4, 13), .init(regex, &wordSeparators, "["), true, 1000);
+        defer {
+            for (ret.items) |item| {
+                item.free(allocator);
+            }
+            ret.deinit();
+        }
+        try std.testing.expectEqual(3, ret.items.len);
+
+        try std.testing.expectEqualDeep(Range.init(2, 3, 2, 4), ret.items[0].range);
+        try std.testing.expectEqualDeep(Range.init(3, 3, 3, 4), ret.items[1].range);
+        try std.testing.expectEqualDeep(Range.init(4, 3, 4, 4), ret.items[2].range);
+    }
+
+    test "search searching from the middle" {
+        const allocator = std.testing.allocator;
+        var pieceTree = try createTextBuffer(allocator, &[_][]const u8{"def\ndbcabc"}, true);
+        defer pieceTree.deinit();
+        var pieceTable = pieceTree.getPieceTree();
+
+        try pieceTable.delete(4, 1);
+        var regex = try RegExp.init("a", .{ .ignore_case = true });
+        defer regex.deinit();
+        var ret = try pieceTable.findMatchesLineByLine(.init(2, 3, 2, 6), .init(regex, null, "a"), true, 1000);
+        defer {
+            for (ret.items) |item| {
+                item.free(allocator);
+            }
+            ret.deinit();
+        }
+        try std.testing.expectEqual(1, ret.items.len);
+        try std.testing.expectEqualDeep(Range.init(2, 3, 2, 4), ret.items[0].range);
+
+        try pieceTable.delete(4, 1);
+        var regex2 = try RegExp.init("a", .{ .ignore_case = true });
+        defer regex2.deinit();
+        var ret2 = try pieceTable.findMatchesLineByLine(.init(2, 2, 2, 5), .init(regex2, null, "a"), true, 1000);
+        defer {
+            for (ret2.items) |item| {
+                item.free(allocator);
+            }
+            ret2.deinit();
+        }
+        try std.testing.expectEqual(1, ret2.items.len);
+        try std.testing.expectEqualDeep(Range.init(2, 2, 2, 3), ret2.items[0].range);
+    }
+};
+
 test "insert and deletes" {
     _ = InsertAndDeleteTests;
     _ = PrefixSumForLineFeedTests;
@@ -1876,4 +2080,6 @@ test "insert and deletes" {
     _ = CentralizedLineStartsWithCRLFTests;
     _ = RandomIsUnsupervisedTests;
     _ = BufferApiTests;
+    _ = SearchOffsetCacheTests;
+    _ = ChunkBasedSearchTests;
 }
