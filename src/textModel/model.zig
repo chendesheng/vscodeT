@@ -152,7 +152,7 @@ pub const ApplyEditsResult = struct {
 
 pub const IndentSize = union(enum) {
     number: u8,
-    tabSize: u1,
+    tabSize: void,
 };
 
 pub const TextModelCreationOptions = struct {

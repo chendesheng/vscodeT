@@ -180,9 +180,10 @@ pub const StringBuffer = struct {
         return std.unicode.utf8Decode(self.buffer.items[range[0]..range[1]]) catch unreachable;
     }
 
-    fn codepointRelativeRange(self: *const StringBuffer, i: usize) [2]isize {
-        const range = safeUtf8Range(self.buffer.items, i, i + 1);
-        return [2]isize{ usizeSub(range[0], i), usizeSub(range[1], i) };
+    // returns 0-based indices, end side is exclusive
+    fn codepointRelativeRange(self: *const StringBuffer, offset: usize) [2]isize {
+        const range = safeUtf8Range(self.buffer.items, offset, offset + 1);
+        return [2]isize{ usizeSub(range[0], offset), usizeSub(range[1], offset) };
     }
 
     fn substring(self: *const StringBuffer, start: usize, end: usize) []const u8 {
@@ -857,12 +858,13 @@ pub const PieceTreeBase = struct {
         }
     }
 
+    // returns 0-based indices, end side is exclusive
     fn _getCodepointRelativeRange(self: *const PieceTreeBase, nodePos: NodePosition) [2]isize {
         if (self._nodePositionToBufferOffset(nodePos)) |res| {
             const buffer = self._buffers.items[res.bufferIndex];
             return buffer.codepointRelativeRange(res.offset);
         } else {
-            return [2]isize{ 0, 0 };
+            return [2]isize{ 0, 1 };
         }
     }
 
@@ -876,6 +878,7 @@ pub const PieceTreeBase = struct {
         return self._getCodepoint(nodePos);
     }
 
+    // returns 0-based indices, end side is exclusive
     pub fn getLineCodepointRange(self: *const PieceTreeBase, lineNumber: usize, index: usize) [2]usize {
         const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
         const range = self._getCodepointRelativeRange(nodePos);

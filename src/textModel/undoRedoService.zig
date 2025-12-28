@@ -675,6 +675,14 @@ pub const UndoRedoService = struct {
         };
     }
 
+    pub fn create(allocator: Allocator) !*UndoRedoService {
+        var self = try allocator.create(UndoRedoService);
+        self._editStacks = std.StringHashMap(ResourceEditStack).init(allocator);
+        self._uriComparisonKeyComputers = ArrayList(KeyComputerPair).init(allocator);
+        self._notificationService = NotificationService{};
+        return self;
+    }
+
     pub fn deinit(self: *UndoRedoService) void {
         var valueIter = self._editStacks.valueIterator();
         while (valueIter.next()) |value| {

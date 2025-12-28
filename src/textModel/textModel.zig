@@ -72,6 +72,7 @@ const SearchParams = @import("textModelSearch.zig").SearchParams;
 const TextModelSearch = @import("textModelSearch.zig").TextModelSearch;
 const String = @import("../basics/strings.zig").String;
 const _normalizeIndentation = @import("../basics/indentation.zig").normalizeIndentation;
+const EDITOR_MODEL_DEFAULTS = @import("textModelDefaults.zig");
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -139,6 +140,18 @@ pub const TextModel = struct {
     const LARGE_FILE_LINE_COUNT_THRESHOLD = 300 * 1000; // 300K lines
     const LARGE_FILE_HEAP_OPERATION_THRESHOLD = 256 * 1024 * 1024; // 256M characters, usually ~> 512MB memory usage
 
+    pub const DEFAULT_CREATION_OPTIONS: TextModelCreationOptions = .{
+        .isForSimpleWidget = false,
+        .tabSize = EDITOR_MODEL_DEFAULTS.tabSize,
+        .indentSize = EDITOR_MODEL_DEFAULTS.indentSize,
+        .insertSpaces = EDITOR_MODEL_DEFAULTS.insertSpaces,
+        .detectIndentation = false,
+        .defaultEOL = .LF,
+        .trimAutoWhitespace = EDITOR_MODEL_DEFAULTS.trimAutoWhitespace,
+        .largeFileOptimizations = EDITOR_MODEL_DEFAULTS.largeFileOptimizations,
+        .bracketPairColorizationOptions = EDITOR_MODEL_DEFAULTS.bracketPairColorizationOptions,
+    };
+
     id: []const u8,
     isForSimpleWidget: bool,
     _associatedResource: Uri,
@@ -192,7 +205,7 @@ pub const TextModel = struct {
             };
             return TextModelResolvedOptions.init(
                 guessedIndentation.tabSize,
-                .{ .tabSize = 1 }, // TODO@Alex: guess indentSize independent of tabSize
+                .tabSize, // TODO@Alex: guess indentSize independent of tabSize
                 guessedIndentation.insertSpaces,
                 options.defaultEOL,
                 options.trimAutoWhitespace,
@@ -337,6 +350,10 @@ pub const TextModel = struct {
 
     pub fn getTextBuffer(self: *const TextModel) PieceTreeTextBuffer {
         return self._buffer;
+    }
+
+    pub fn getOptions(self: *const TextModel) *const TextModelResolvedOptions {
+        return &self._options;
     }
 
     pub fn updateOptions(self: *TextModel, _newOpts: TextModelUpdateOptions) void {
@@ -697,8 +714,8 @@ pub const TextModel = struct {
         }
 
         if (validationType == StringOffsetValidationType.Strict) {
-            // If the position would end up in the middle of a high-low surrogate pair,
-            // we move it to before the pair
+            // If the position would end up in the middle of a utf8 codepoint,
+            // we move it to the start of the codepoint
             // !!At this point, column > 1
             const range = self._buffer.getLineCodepointRange(lineNumber, column - 1);
             return Position.init(lineNumber, range[0] + 1);
@@ -728,11 +745,17 @@ pub const TextModel = struct {
         const endLineNumber = range.endLineNumber;
         const endColumn = range.endColumn;
 
-        if (!self._isValidPosition(startLineNumber, startColumn, validationType)) {
+        if (!self._isValidPosition(startLineNumber, startColumn, .Relaxed)) {
             return false;
         }
-        if (!self._isValidPosition(endLineNumber, endColumn, validationType)) {
+        if (!self._isValidPosition(endLineNumber, endColumn, .Relaxed)) {
             return false;
+        }
+
+        if (validationType == StringOffsetValidationType.Strict) {
+            const startValid = self._buffer.getLineCodepointRange(startLineNumber, startColumn - 1)[0] == startColumn - 1;
+            const endValid = self._buffer.getLineCodepointRange(endLineNumber, endColumn - 1)[0] == endColumn - 1;
+            return startValid and endValid;
         }
 
         return true;
@@ -757,7 +780,7 @@ pub const TextModel = struct {
         if (validationType == StringOffsetValidationType.Strict) {
             const startCodepointRange = self._buffer.getLineCodepointRange(startLineNumber, startColumn - 1);
             const endCodepointRange = self._buffer.getLineCodepointRange(endLineNumber, endColumn - 1);
-            return Range.init(startLineNumber, startCodepointRange[0] + 1, endLineNumber, endCodepointRange[1] + 1);
+            return Range.init(startLineNumber, startCodepointRange[0] + 1, endLineNumber, endCodepointRange[0] + 1);
         }
 
         return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
@@ -1819,16 +1842,21 @@ test "TextModel.validatePosition" {
 
 test "TextModel.validateRange" {
     const allocator = std.testing.allocator;
-    const text = "你好, world!";
+    const text = "你好, world!"; // 你好 utf8 (6 bytes): 0xE4 0xBD 0xA0 0xE5 0xA5 0xBD
     var undoRedoService = UndoRedoService.init(allocator);
     defer undoRedoService.deinit();
     var textModel = try createTestTextModel(allocator, text, &undoRedoService);
     defer allocator.destroy(textModel);
     defer textModel.deinit();
 
+    // plus 1 is for line end, it always has a newline at the end
     try std.testing.expectEqualDeep(Range.init(1, 1, 1, text.len + 1), textModel.validateRange(Range.init(1, 1, 1, 100)));
-    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 4), textModel.validateRange(Range.init(1, 1, 1, 2)));
-    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 7), textModel.validateRange(Range.init(1, 2, 1, 5)));
+    // expand left
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 7), textModel.validateRange(Range.init(1, 2, 1, 7)));
+    // expand right
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 4), textModel.validateRange(Range.init(1, 1, 1, 5)));
+    // expand both
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 4), textModel.validateRange(Range.init(1, 2, 1, 5)));
 }
 
 test "TextModel.applyEdits" {

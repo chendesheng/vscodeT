@@ -7,6 +7,7 @@ pub fn safeUtf8Substring(str: []const u8, start: usize, end: usize) []const u8 {
 }
 
 // expand range to include the whole utf8 codepoint
+// end index is exclusive
 pub fn safeUtf8Range(str: []const u8, start: usize, end: usize) [2]usize {
     if (start == end) {
         return [2]usize{ start, end };

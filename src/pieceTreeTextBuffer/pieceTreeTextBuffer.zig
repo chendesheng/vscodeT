@@ -153,12 +153,10 @@ pub const PieceTreeTextBuffer = struct {
         // if the requested EOL doesn't match the text EOL
         var eolOffsetCompensation: isize = 0;
         const desiredEOL = self._getEndOfLine(eol);
-        const desiredEOLLength: usize = if (desiredEOL == .CRLF) 2 else 1;
         const actualEOL = self.getEOL();
-        const actualEOLLength: usize = if (actualEOL == .CRLF) 2 else 1;
 
-        if (desiredEOLLength != actualEOLLength) {
-            const delta = usizeSub(actualEOLLength, desiredEOLLength);
+        if (desiredEOL.length() != actualEOL.length()) {
+            const delta = usizeSub(desiredEOL.length(), actualEOL.length());
             const eolCount = range.endLineNumber - range.startLineNumber;
             eolOffsetCompensation = delta * @as(isize, @intCast(eolCount));
         }
@@ -222,6 +220,7 @@ pub const PieceTreeTextBuffer = struct {
         return self._pieceTree.getLineCodepoint(lineNumber, offset);
     }
 
+    // returns 0-based indices, end side is exclusive
     pub fn getLineCodepointRange(self: *const PieceTreeTextBuffer, lineNumber: usize, offset: usize) [2]usize {
         return self._pieceTree.getLineCodepointRange(lineNumber, offset);
     }
