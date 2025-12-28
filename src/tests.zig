@@ -27,6 +27,7 @@ comptime {
     _ = @import("textModel/textModel.zig");
     _ = @import("textModel/textModelEvents.zig");
     _ = @import("textModel/textModelSearch.zig");
+    _ = @import("textModel/textModelTests.zig");
     _ = @import("textModel/undoRedo.zig");
     _ = @import("textModel/undoRedoService.zig");
     _ = @import("tui/ansi.zig");

@@ -206,8 +206,8 @@ pub const PieceTreeTextBuffer = struct {
         return self._pieceTree.getLineCount();
     }
 
-    pub fn getLinesContent(self: *const PieceTreeTextBuffer) !ArrayList(ArrayList(u8)) {
-        return self._pieceTree.getLinesContent();
+    pub fn getLinesContent(self: *PieceTreeTextBuffer) !ArrayList(ArrayList(u8)) {
+        return try self._pieceTree.getLinesContent();
     }
 
     pub fn getLineContent(self: *PieceTreeTextBuffer, lineNumber: usize) !ArrayList(u8) {
