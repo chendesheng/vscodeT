@@ -25,6 +25,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const tree_sitter = b.dependency("tree_sitter", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("tree-sitter", tree_sitter.module("tree_sitter"));
+
+    // tree sitter grammars
+    const tree_sitter_zig = b.dependency("tree_sitter_zig", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    // exe.linkLibrary(tree_sitter_zig.artifact("tree-sitter-zig"));
+    exe.root_module.addImport("tree-sitter-zig", tree_sitter_zig.module("tree-sitter-zig"));
+
     linkOnig(exe);
 
     // This declares intent for the executable to be installed into the

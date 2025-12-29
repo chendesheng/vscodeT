@@ -142,8 +142,8 @@ fn drawStatusLine(self: *const Self, screen: *Screen) !void {
         try screen.resetSGRAttributes();
     }
     try screen.writeSGRAttributes(&[_]SGRAttribute{ .BackgroundBlack, .ForegroundWhite });
-    try screen.writeFmt(" {d}:{d} ", .{ self.cursorPosition.lineNumber, self.cursorPosition.column });
-    try screen.eraseToEnd();
+    try screen.writeFmt("{d}:{d} ", .{ self.cursorPosition.lineNumber, self.cursorPosition.column });
+    try screen.eraseToLineEnd();
     try screen.resetSGRAttributes();
 }
 
@@ -227,6 +227,10 @@ fn moveCursor(self: *Self, action: MoveAction) !void {
         },
     }
 
+    self.scrollToCursor();
+}
+
+fn scrollToCursor(self: *Self) void {
     if (self.cursorPosition.lineNumber < self.scrollPosition.lineNumber) {
         self.scrollPosition.lineNumber = self.cursorPosition.lineNumber;
     } else if (self.cursorPosition.lineNumber >= self.scrollPosition.lineNumber + self.size.height) {

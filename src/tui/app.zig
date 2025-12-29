@@ -23,6 +23,8 @@ const Screen = tui.Screen;
 const SGRAttribute = tui.SGRAttribute;
 const Position = @import("../basics/position.zig").Position;
 const View = @import("View.zig");
+const ts = @import("tree-sitter");
+const ts_languages = @import("../treeSitter/languages.zig");
 
 fn getFirstArg() !ArrayList(u8) {
     const allocator = std.heap.page_allocator;
@@ -57,7 +59,41 @@ fn loadFile(allocator: Allocator, path: []const u8, undoRedoService: *UndoRedoSe
     }, null, undoRedoService);
 }
 
+pub fn testTreeSitterZig() !void {
+    // Create a parser for the zig language
+    const language: *const ts.Language = ts_languages.createLanguage(.zig);
+    defer language.destroy();
+
+    const parser = ts.Parser.create();
+    defer parser.destroy();
+    try parser.setLanguage(language);
+
+    // Parse some source code and get the root node
+    const tree = parser.parseString("pub fn main() !void {}", null).?;
+    defer tree.destroy();
+
+    const node = tree.rootNode();
+    std.debug.assert(std.mem.eql(u8, node.kind(), "source_file"));
+    std.debug.assert(node.endPoint().cmp(.{ .row = 0, .column = 22 }) == .eq);
+
+    // Create a query and execute it
+    var error_offset: u32 = 0;
+    const query = try ts.Query.create(language, "name: (identifier) @name", &error_offset);
+    defer query.destroy();
+
+    const cursor = ts.QueryCursor.create();
+    defer cursor.destroy();
+    cursor.exec(query, node);
+
+    // Get the captured node of the first match
+    const match = cursor.nextMatch().?;
+    const capture = match.captures[0].node;
+    std.debug.assert(std.mem.eql(u8, capture.kind(), "identifier"));
+}
+
 pub fn main() !void {
+    try testTreeSitterZig();
+
     var loggerFile = try logger.openLoggerFile("debug.log");
     var buf: [1024]u8 = undefined;
     var loggerWriter = loggerFile.writer(&buf);

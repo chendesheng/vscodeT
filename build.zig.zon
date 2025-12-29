@@ -37,6 +37,14 @@
     // internet connectivity.
     .dependencies = .{
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
+        .tree_sitter = .{
+            .url = "git+https://github.com/tree-sitter/zig-tree-sitter#5373b8395bcf6cf17e6a02be1a9996bedb34abf6",
+            .hash = "tree_sitter-0.25.0-8heIf7iZAQDu5oiKLKffYhdvWpEuxc5OhsySDlkFLxFT",
+        },
+        .tree_sitter_zig = .{
+            .url = "git+https://github.com/tree-sitter-grammars/tree-sitter-zig#6479aa13f32f701c383083d8b28360ebd682fb7d",
+            .hash = "tree_sitter_zig-1.1.2-AAAAAJ57XACsD_XBHC4i6G6rnCsZ1dZj7CLRTC09toEB",
+        },
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding
         //    // `hash`, otherwise you are communicating that you expect to find the old hash at

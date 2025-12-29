@@ -255,6 +255,7 @@ pub const TextModel = struct {
     pub fn init(allocator: Allocator, source: *std.Io.Reader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
+
         const bufferLineCount = buffer.getLineCount();
         const bufferTextLength = buffer.getValueLengthInRange(Range.init(1, 1, bufferLineCount, buffer.getLineLength(bufferLineCount) + 1), .TextDefined);
 
@@ -287,8 +288,8 @@ pub const TextModel = struct {
                 .fragment = null,
             },
             ._attachedEditorCount = 0,
-            ._buffer = buffer,
             ._options = resolveOptions(&buffer, creationOptions),
+            ._buffer = buffer,
             ._isTooLargeForSyncing = bufferTextLength > MODEL_SYNC_LIMIT,
             ._isTooLargeForTokenization = tooLargeForTokenization,
             ._isTooLargeForHeapOperation = tooLargeForHeapOperation,

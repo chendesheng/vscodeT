@@ -1,4 +1,5 @@
 const std = @import("std");
+const ArrayList = std.array_list.Managed;
 const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const StringBuffer = @import("../pieceTreeTextBuffer/pieceTreeBase.zig").StringBuffer;
 const usizeSub = @import("../basics/utils.zig").usizeSub;
@@ -15,9 +16,8 @@ const SpacesDiffResult = struct {
 };
 
 // Compute the diff in spaces between two line's indentation.
-fn spacesDiff(a: []const u8, aLength: usize, b: []const u8, bLength: usize, result: *SpacesDiffResult) void {
-    result.spacesDiff = 0;
-    result.looksLikeAlignment = false;
+fn spacesDiff(a: []const u8, aLength: usize, b: []const u8, bLength: usize) SpacesDiffResult {
+    var result = SpacesDiffResult.init();
 
     // This can go both ways (e.g.):
     //  - a: "\t"
@@ -58,10 +58,10 @@ fn spacesDiff(a: []const u8, aLength: usize, b: []const u8, bLength: usize, resu
     }
 
     if (aSpacesCnt > 0 and aTabsCount > 0) {
-        return;
+        return result;
     }
     if (bSpacesCnt > 0 and bTabsCount > 0) {
-        return;
+        return result;
     }
 
     const tabsDiff: usize = @intCast(@abs(usizeSub(aTabsCount, bTabsCount)));
@@ -72,7 +72,7 @@ fn spacesDiff(a: []const u8, aLength: usize, b: []const u8, bLength: usize, resu
         // sometime folks like to align their code, but this should not be used as a hint
         result.spacesDiff = spacesDiff_;
 
-        if (spacesDiff_ > 0 and 0 <= bSpacesCnt - 1 and bSpacesCnt - 1 < a.len and bSpacesCnt < b.len) {
+        if (spacesDiff_ > 0 and 1 <= bSpacesCnt and bSpacesCnt - 1 < a.len and bSpacesCnt < b.len) {
             if (b[bSpacesCnt] != ' ' and a[bSpacesCnt - 1] == ' ') {
                 if (a[a.len - 1] == ',') {
                     // This looks like an alignment desire: e.g.
@@ -82,18 +82,26 @@ fn spacesDiff(a: []const u8, aLength: usize, b: []const u8, bLength: usize, resu
                 }
             }
         }
-        return;
+        return result;
     }
     if (spacesDiff_ % tabsDiff == 0) {
         result.spacesDiff = spacesDiff_ / tabsDiff;
-        return;
+        return result;
     }
+
+    return result;
 }
 
 pub const GuessedIndentation = struct {
     tabSize: usize,
     insertSpaces: bool,
 };
+
+fn moveOwnership(from: *ArrayList(u8), to: *ArrayList(u8)) void {
+    to.deinit();
+    to.* = from.*;
+    from.* = ArrayList(u8).init(from.allocator);
+}
 
 pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, defaultInsertSpaces: bool) !GuessedIndentation {
     // Look at most at the first 10k lines
@@ -102,18 +110,18 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
     var linesIndentedWithTabsCount: usize = 0; // number of lines that contain at least one tab in indentation
     var linesIndentedWithSpacesCount: usize = 0; // number of lines that contain only spaces in indentation
 
-    var previousLineText: []const u8 = ""; // content of latest line that contained non-whitespace chars
+    var previousLineText = ArrayList(u8).init(source.getAllocator()); // content of latest line that contained non-whitespace chars
+    defer previousLineText.deinit();
     var previousLineIndentation: usize = 0; // index at which latest line contained the first non-whitespace char
 
     const ALLOWED_TAB_SIZE_GUESSES = [_]usize{ 2, 4, 6, 8, 3, 5, 7 }; // prefer even guesses for `tabSize`, limit to [2, 8].
     const MAX_ALLOWED_TAB_SIZE_GUESS = 8; // max(ALLOWED_TAB_SIZE_GUESSES) = 8
 
     var spacesDiffCount = [_]usize{ 0, 0, 0, 0, 0, 0, 0, 0, 0 }; // `tabSize` scores
-    var tmp = SpacesDiffResult.init();
 
-    for (1..linesCount) |lineNumber| {
+    for (1..linesCount + 1) |lineNumber| {
         const currentLineLength = source.getLineLength(lineNumber);
-        const currentLineText = try source.getLineContent(lineNumber);
+        var currentLineText = try source.getLineContent(lineNumber);
         defer currentLineText.deinit();
 
         // TODO: chunked string support
@@ -151,7 +159,7 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
             linesIndentedWithSpacesCount += 1;
         }
 
-        spacesDiff(previousLineText, previousLineIndentation, currentLineText.items, currentLineIndentation, &tmp);
+        const tmp = spacesDiff(previousLineText.items, previousLineIndentation, currentLineText.items, currentLineIndentation);
 
         if (tmp.looksLikeAlignment) {
             // if defaultInsertSpaces === true && the spaces count == tabSize, we may want to count it as valid indentation
@@ -174,7 +182,7 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
             spacesDiffCount[currentSpacesDiff] += 1;
         }
 
-        previousLineText = currentLineText.items;
+        moveOwnership(&currentLineText, &previousLineText);
         previousLineIndentation = currentLineIndentation;
     }
 
@@ -204,12 +212,12 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
         if (tabSize == 4 and spacesDiffCount[4] > 0 and spacesDiffCount[2] > 0 and spacesDiffCount[2] >= spacesDiffCount[4] / 2) {
             tabSize = 2;
         }
-    }
 
-    // std.debug.print("--------------------------\n", .{});
-    // std.debug.print("linesIndentedWithTabsCount: {d}, linesIndentedWithSpacesCount: {d}\n", .{ linesIndentedWithTabsCount, linesIndentedWithSpacesCount });
-    // std.debug.print("spacesDiffCount: {d}\n", .{ spacesDiffCount });
-    // std.debug.print("tabSize: {d}, tabSizeScore: {d}\n", .{ tabSize, tabSizeScore });
+        // std.debug.print("--------------------------\n", .{});
+        // std.debug.print("linesIndentedWithTabsCount: {d}, linesIndentedWithSpacesCount: {d}\n", .{ linesIndentedWithTabsCount, linesIndentedWithSpacesCount });
+        // std.debug.print("spacesDiffCount: {any}\n", .{spacesDiffCount});
+        // std.debug.print("tabSize: {d}, tabSizeScore: {d}\n", .{ tabSize, tabSizeScore });
+    }
 
     return GuessedIndentation{
         .insertSpaces = insertSpaces,
