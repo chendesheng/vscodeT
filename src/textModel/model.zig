@@ -12,6 +12,7 @@ const WordCharacterClassifier = @import("../basics/wordCharacterClassifier.zig")
 const ModelContentChange = @import("textModelEvents.zig").ModelContentChange;
 const String = @import("../basics/strings.zig").String;
 const EOL = @import("../basics/eolCounter.zig").EOL;
+const ModelOptionsChangedEvent = @import("textModelEvents.zig").ModelOptionsChangedEvent;
 
 pub const EndOfLinePreference = enum {
     TextDefined,
@@ -151,7 +152,7 @@ pub const ApplyEditsResult = struct {
 };
 
 pub const IndentSize = union(enum) {
-    number: u8,
+    number: usize,
     tabSize: void,
 };
 
@@ -177,11 +178,11 @@ pub const BracketPairColorizationOptions = struct {
 };
 
 pub const TextModelUpdateOptions = struct {
-    tabSize: ?usize,
-    indentSize: ?IndentSize,
-    insertSpaces: ?bool,
-    trimAutoWhitespace: ?bool,
-    bracketColorizationOptions: ?BracketPairColorizationOptions,
+    tabSize: ?u8 = null,
+    indentSize: ?IndentSize = null,
+    insertSpaces: ?bool = null,
+    trimAutoWhitespace: ?bool = null,
+    bracketColorizationOptions: ?BracketPairColorizationOptions = null,
 };
 
 pub const TextModelResolvedOptions = struct {
@@ -195,7 +196,7 @@ pub const TextModelResolvedOptions = struct {
     bracketPairColorizationOptions: BracketPairColorizationOptions,
 
     pub fn originalIndentSize(self: *const TextModelResolvedOptions) IndentSize {
-        return if (self._indentSizeIsTabSize) .{ .tabSize = 1 } else .{ .number = self.indentSize };
+        return if (self._indentSizeIsTabSize) .tabSize else IndentSize{ .number = self.indentSize };
     }
 
     // @internal
@@ -243,17 +244,8 @@ pub const TextModelResolvedOptions = struct {
             .indentSize = self.indentSize != newOpts.indentSize,
             .insertSpaces = self.insertSpaces != newOpts.insertSpaces,
             .trimAutoWhitespace = self.trimAutoWhitespace != newOpts.trimAutoWhitespace,
-            .bracketPairColorizationOptions = self.bracketPairColorizationOptions,
         };
     }
-};
-
-const ModelOptionsChangedEvent = struct {
-    tabSize: bool,
-    indentSize: bool,
-    insertSpaces: bool,
-    trimAutoWhitespace: bool,
-    bracketPairColorizationOptions: bool,
 };
 
 pub const FindMatch = struct {

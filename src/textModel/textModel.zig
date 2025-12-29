@@ -358,22 +358,13 @@ pub const TextModel = struct {
     }
 
     pub fn updateOptions(self: *TextModel, _newOpts: TextModelUpdateOptions) void {
-        const newOpts = self._options;
-        if (_newOpts.tabSize) |tabSize| {
-            newOpts.tabSize = tabSize;
-        }
-        if (_newOpts.indentSize) |indentSize| {
-            newOpts.indentSize = indentSize;
-        }
-        if (_newOpts.insertSpaces) |insertSpaces| {
-            newOpts.insertSpaces = insertSpaces;
-        }
-        if (_newOpts.trimAutoWhitespace) |trimAutoWhitespace| {
-            newOpts.trimAutoWhitespace = trimAutoWhitespace;
-        }
-        if (_newOpts.bracketColorizationOptions) |bracketColorizationOptions| {
-            newOpts.bracketPairColorizationOptions = bracketColorizationOptions;
-        }
+        const tabSize = _newOpts.tabSize orelse self._options.tabSize;
+        const indentSize = _newOpts.indentSize orelse self._options.originalIndentSize();
+        const insertSpaces = _newOpts.insertSpaces orelse self._options.insertSpaces;
+        const trimAutoWhitespace = _newOpts.trimAutoWhitespace orelse self._options.trimAutoWhitespace;
+        const bracketColorizationOptions = _newOpts.bracketColorizationOptions orelse self._options.bracketPairColorizationOptions;
+
+        const newOpts = TextModelResolvedOptions.init(tabSize, indentSize, insertSpaces, self._options.defaultEOL, trimAutoWhitespace, bracketColorizationOptions);
 
         if (self._options.equals(newOpts)) {
             return;
@@ -396,8 +387,8 @@ pub const TextModel = struct {
         });
     }
 
-    pub fn normalizeIndentation(self: *TextModel, str: []const u8) []const u8 {
-        return _normalizeIndentation(str, self._options.indentSize, self._options.insertSpaces);
+    pub fn normalizeIndentation(self: *TextModel, str: []const u8) Allocator.Error!String {
+        return try _normalizeIndentation(self.getAllocator(), str, self._options.indentSize, self._options.insertSpaces);
     }
 
     pub fn isAttachedToEditor(self: *const TextModel) bool {
@@ -787,9 +778,10 @@ pub const TextModel = struct {
         return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
     }
 
-    pub fn modifyPosition(self: *TextModel, rawPosition: Position, offset: usize) Position {
-        const candidate = self.getOffsetAt(rawPosition) + offset;
-        return self.getPositionAt(candidate);
+    // FIXME: is negative offset needed?
+    pub fn modifyPosition(self: *TextModel, rawPosition: Position, offset: isize) Position {
+        const candidate = (if (rawPosition.lineNumber < 1 and rawPosition.column < 1) -1 else @as(isize, @intCast(self.getOffsetAt(rawPosition)))) + offset;
+        return self.getPositionAt(@intCast(@max(0, candidate)));
     }
 
     pub fn getFullModelRange(self: *TextModel) Range {

@@ -755,55 +755,194 @@ const EditModelTextModelTests = struct {
     // m.dispose();
     // });
 
-    test "validateRange around high-low surrogate pairs 1" {
+    test "validateRange around unicode 1" {
         const allocator = std.testing.allocator;
         const m = try createTextModel(allocator, "a📚b", null);
         defer disposeTextModel(m);
 
-        try std.testing.expectEqual(Range.init(1, 1, 1, 1), m.validateRange(Range.init(0, 0, 0, 1)));
-        try std.testing.expectEqual(Range.init(1, 1, 1, 1), m.validateRange(Range.init(0, 0, 0, 7)));
+        // column should starts at 1
+        // 0 here is for test when column less than 1
+        const poses = [_]usize{ 1, 1, 2, 2, 2, 2, 6, 7, 7 };
+        for (0..poses.len) |i| {
+            for (i + 1..poses.len) |j| {
+                try std.testing.expectEqual(Range.init(1, poses[i], 1, poses[j]), m.validateRange(Range.init(1, i, 1, j)));
+            }
+        }
+    }
 
-        try std.testing.expectEqual(Range.init(1, 1, 1, 1), m.validateRange(Range.init(1, 1, 1, 1)));
-        try std.testing.expectEqual(Range.init(1, 1, 1, 2), m.validateRange(Range.init(1, 1, 1, 2)));
-        try std.testing.expectEqual(Range.init(1, 1, 1, 2), m.validateRange(Range.init(1, 1, 1, 3)));
-        try std.testing.expectEqual(Range.init(1, 1, 1, 2), m.validateRange(Range.init(1, 1, 1, 4)));
-        try std.testing.expectEqual(Range.init(1, 1, 1, 2), m.validateRange(Range.init(1, 1, 1, 5)));
-        try std.testing.expectEqual(Range.init(1, 1, 1, 6), m.validateRange(Range.init(1, 1, 1, 6)));
-        try std.testing.expectEqual(Range.init(1, 1, 1, 7), m.validateRange(Range.init(1, 1, 1, 7)));
-        try std.testing.expectEqual(Range.init(1, 1, 1, 7), m.validateRange(Range.init(1, 1, 1, 8)));
+    test "validateRange around unicode 2" {
+        const allocator = std.testing.allocator;
+        const m = try createTextModel(allocator, "a📚📚b", null);
+        defer disposeTextModel(m);
 
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 2, 1, 2)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 2, 1, 3)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 2, 1, 4)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 2, 1, 5)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 6), m.validateRange(Range.init(1, 2, 1, 6)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 7), m.validateRange(Range.init(1, 2, 1, 7)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 7), m.validateRange(Range.init(1, 2, 1, 8)));
+        // column should starts at 1
+        // 0 here is for test when column less than 1
+        const poses = [_]usize{ 1, 1, 2, 2, 2, 2, 6, 6, 6, 6, 10, 11, 11 };
+        for (0..poses.len) |i| {
+            for (i + 1..poses.len) |j| {
+                try std.testing.expectEqual(Range.init(1, poses[i], 1, poses[j]), m.validateRange(Range.init(1, i, 1, j)));
+            }
+        }
+    }
 
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 3, 1, 3)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 3, 1, 4)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 3, 1, 5)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 6), m.validateRange(Range.init(1, 3, 1, 6)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 7), m.validateRange(Range.init(1, 3, 1, 7)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 7), m.validateRange(Range.init(1, 3, 1, 8)));
+    test "modifyPosition" {
+        const allocator = std.testing.allocator;
+        const m = try createTextModel(allocator, "line one\nline two", null);
+        defer disposeTextModel(m);
+        try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(1, 1), 0));
+        try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(0, 0), 0));
+        try std.testing.expectEqual(Position.init(2, 9), m.modifyPosition(Position.init(30, 1), 0));
 
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 4, 1, 4)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 4, 1, 5)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 6), m.validateRange(Range.init(1, 4, 1, 6)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 7), m.validateRange(Range.init(1, 4, 1, 7)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 7), m.validateRange(Range.init(1, 4, 1, 8)));
+        try std.testing.expectEqual(Position.init(2, 9), m.modifyPosition(Position.init(1, 1), 17));
+        try std.testing.expectEqual(Position.init(1, 2), m.modifyPosition(Position.init(1, 1), 1));
+        try std.testing.expectEqual(Position.init(1, 4), m.modifyPosition(Position.init(1, 1), 3));
+        try std.testing.expectEqual(Position.init(2, 3), m.modifyPosition(Position.init(1, 2), 10));
+        try std.testing.expectEqual(Position.init(2, 9), m.modifyPosition(Position.init(1, 5), 13));
+        try std.testing.expectEqual(Position.init(2, 9), m.modifyPosition(Position.init(1, 2), 16));
 
-        try std.testing.expectEqual(Range.init(1, 2, 1, 2), m.validateRange(Range.init(1, 5, 1, 5)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 6), m.validateRange(Range.init(1, 5, 1, 6)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 7), m.validateRange(Range.init(1, 5, 1, 7)));
-        try std.testing.expectEqual(Range.init(1, 2, 1, 7), m.validateRange(Range.init(1, 5, 1, 8)));
+        try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(2, 9), -17));
+        try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(1, 2), -1));
+        try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(1, 4), -3));
+        try std.testing.expectEqual(Position.init(1, 2), m.modifyPosition(Position.init(2, 3), -10));
+        try std.testing.expectEqual(Position.init(1, 5), m.modifyPosition(Position.init(2, 9), -13));
+        try std.testing.expectEqual(Position.init(1, 2), m.modifyPosition(Position.init(2, 9), -16));
 
-        try std.testing.expectEqual(Range.init(1, 6, 1, 6), m.validateRange(Range.init(1, 6, 1, 6)));
-        try std.testing.expectEqual(Range.init(1, 6, 1, 7), m.validateRange(Range.init(1, 6, 1, 7)));
-        try std.testing.expectEqual(Range.init(1, 6, 1, 7), m.validateRange(Range.init(1, 6, 1, 8)));
+        try std.testing.expectEqual(Position.init(2, 9), m.modifyPosition(Position.init(1, 2), 17));
+        try std.testing.expectEqual(Position.init(2, 9), m.modifyPosition(Position.init(1, 2), 100));
 
-        try std.testing.expectEqual(Range.init(1, 7, 1, 7), m.validateRange(Range.init(1, 7, 1, 7)));
-        try std.testing.expectEqual(Range.init(1, 7, 1, 7), m.validateRange(Range.init(1, 7, 1, 8)));
+        try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(1, 2), -2));
+        try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(1, 2), -100));
+        try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(2, 2), -100));
+        try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(2, 9), -18));
+    }
+
+    fn testNormalizeIndentation(expected: []const u8, model: *TextModel, input: []const u8) !void {
+        var str = try model.normalizeIndentation(input);
+        defer str.deinit();
+        try std.testing.expectEqualStrings(expected, str.items());
+    }
+
+    test "normalizeIndentation 1" {
+        const allocator = std.testing.allocator;
+        const model = try createTextModel(allocator, "", .{ .insertSpaces = false });
+        defer disposeTextModel(model);
+
+        try testNormalizeIndentation("\t", model, "\t");
+        try testNormalizeIndentation("\t", model, "    ");
+        try testNormalizeIndentation("   ", model, "   ");
+        try testNormalizeIndentation("  ", model, "  ");
+        try testNormalizeIndentation(" ", model, " ");
+        try testNormalizeIndentation("", model, "");
+        try testNormalizeIndentation("\t\t", model, " \t    ");
+        try testNormalizeIndentation("\t   ", model, " \t   ");
+        try testNormalizeIndentation("\t  ", model, " \t  ");
+        try testNormalizeIndentation("\t ", model, " \t ");
+        try testNormalizeIndentation("\t", model, " \t");
+        try testNormalizeIndentation("\ta", model, "\ta");
+        try testNormalizeIndentation("\ta", model, "    a");
+        try testNormalizeIndentation("   a", model, "   a");
+        try testNormalizeIndentation("  a", model, "  a");
+        try testNormalizeIndentation(" a", model, " a");
+        try testNormalizeIndentation("a", model, "a");
+        try testNormalizeIndentation("\t\ta", model, " \t    a");
+        try testNormalizeIndentation("\t   a", model, " \t   a");
+        try testNormalizeIndentation("\t  a", model, " \t  a");
+        try testNormalizeIndentation("\t a", model, " \t a");
+        try testNormalizeIndentation("\ta", model, " \ta");
+    }
+
+    test "normalizeIndentation 2" {
+        const allocator = std.testing.allocator;
+        const model = try createTextModel(allocator, "", null);
+        defer disposeTextModel(model);
+
+        try testNormalizeIndentation("    a", model, "\ta");
+        try testNormalizeIndentation("    a", model, "    a");
+        try testNormalizeIndentation("   a", model, "   a");
+        try testNormalizeIndentation("  a", model, "  a");
+        try testNormalizeIndentation(" a", model, " a");
+        try testNormalizeIndentation("a", model, "a");
+        try testNormalizeIndentation("        a", model, " \t    a");
+        try testNormalizeIndentation("       a", model, " \t   a");
+        try testNormalizeIndentation("      a", model, " \t  a");
+        try testNormalizeIndentation("     a", model, " \t a");
+        try testNormalizeIndentation("    a", model, " \ta");
+    }
+
+    test "getLineFirstNonWhitespaceColumn" {
+        const allocator = std.testing.allocator;
+        const model = try createTextModel(allocator,
+            // note: the last line is empty (not \n)
+            "asd\n" ++
+                " asd\n" ++
+                "\tasd\n" ++
+                "  asd\n" ++
+                "\t\tasd\n" ++
+                " \n" ++
+                "  \n" ++
+                "\t\n" ++
+                "\t\t\n" ++
+                "  \tasd\n" ++
+                "\n", null);
+        defer disposeTextModel(model);
+
+        try std.testing.expectEqual(1, model.getLineFirstNonWhitespaceColumn(1));
+        try std.testing.expectEqual(2, model.getLineFirstNonWhitespaceColumn(2));
+        try std.testing.expectEqual(2, model.getLineFirstNonWhitespaceColumn(3));
+        try std.testing.expectEqual(3, model.getLineFirstNonWhitespaceColumn(4));
+        try std.testing.expectEqual(3, model.getLineFirstNonWhitespaceColumn(5));
+        try std.testing.expectEqual(0, model.getLineFirstNonWhitespaceColumn(6));
+        try std.testing.expectEqual(0, model.getLineFirstNonWhitespaceColumn(7));
+        try std.testing.expectEqual(0, model.getLineFirstNonWhitespaceColumn(8));
+        try std.testing.expectEqual(0, model.getLineFirstNonWhitespaceColumn(9));
+        try std.testing.expectEqual(4, model.getLineFirstNonWhitespaceColumn(10));
+        try std.testing.expectEqual(0, model.getLineFirstNonWhitespaceColumn(11));
+        try std.testing.expectEqual(0, model.getLineFirstNonWhitespaceColumn(12));
+    }
+
+    test "getLineLastNonWhitespaceColumn" {
+        const allocator = std.testing.allocator;
+        const model = try createTextModel(allocator, "asd\n" ++
+            "asd \n" ++
+            "asd\t\n" ++
+            "asd  \n" ++
+            "asd\t\t\n" ++
+            " \n" ++
+            "  \n" ++
+            "\t\n" ++
+            "\t\t\n" ++
+            "asd  \t\n" ++
+            "\n", null);
+        defer disposeTextModel(model);
+
+        try std.testing.expectEqual(4, model.getLineLastNonWhitespaceColumn(1));
+        try std.testing.expectEqual(4, model.getLineLastNonWhitespaceColumn(2));
+        try std.testing.expectEqual(4, model.getLineLastNonWhitespaceColumn(3));
+        try std.testing.expectEqual(4, model.getLineLastNonWhitespaceColumn(4));
+        try std.testing.expectEqual(4, model.getLineLastNonWhitespaceColumn(5));
+        try std.testing.expectEqual(0, model.getLineLastNonWhitespaceColumn(6));
+        try std.testing.expectEqual(0, model.getLineLastNonWhitespaceColumn(7));
+        try std.testing.expectEqual(0, model.getLineLastNonWhitespaceColumn(8));
+        try std.testing.expectEqual(0, model.getLineLastNonWhitespaceColumn(9));
+        try std.testing.expectEqual(4, model.getLineLastNonWhitespaceColumn(10));
+        try std.testing.expectEqual(0, model.getLineLastNonWhitespaceColumn(11));
+        try std.testing.expectEqual(0, model.getLineLastNonWhitespaceColumn(12));
+    }
+
+    test "issue #168836: updating tabSize should also update indentSize when indentSize is set to 'tabSize'" {
+        const allocator = std.testing.allocator;
+        var m = try createTextModel(allocator, "some text", .{
+            .tabSize = 2,
+            .indentSize = .tabSize,
+        });
+        defer disposeTextModel(m);
+        try std.testing.expectEqual(2, m.getOptions().tabSize);
+        try std.testing.expectEqual(2, m.getOptions().indentSize);
+        try std.testing.expectEqual(.tabSize, m.getOptions().originalIndentSize());
+        m.updateOptions(.{ .tabSize = 4 });
+        try std.testing.expectEqual(4, m.getOptions().tabSize);
+        try std.testing.expectEqual(4, m.getOptions().indentSize);
+        try std.testing.expectEqual(.tabSize, m.getOptions().originalIndentSize());
     }
 };
 

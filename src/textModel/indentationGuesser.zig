@@ -97,7 +97,7 @@ pub const GuessedIndentation = struct {
     insertSpaces: bool,
 };
 
-fn moveOwnership(from: *ArrayList(u8), to: *ArrayList(u8)) void {
+fn moveOwned(from: *ArrayList(u8), to: *ArrayList(u8)) void {
     to.deinit();
     to.* = from.*;
     from.* = ArrayList(u8).init(from.allocator);
@@ -182,7 +182,7 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
             spacesDiffCount[currentSpacesDiff] += 1;
         }
 
-        moveOwnership(&currentLineText, &previousLineText);
+        moveOwned(&currentLineText, &previousLineText);
         previousLineIndentation = currentLineIndentation;
     }
 

@@ -1,6 +1,10 @@
+const std = @import("std");
 const strings = @import("strings.zig");
+const ArrayList = std.array_list.Managed;
+const Allocator = @import("std").mem.Allocator;
+const String = strings.String;
 
-fn _normalizeIndentationFromWhitespace(str: []const u8, indentSize: usize, insertSpaces: bool) []const u8 {
+fn _normalizeIndentationFromWhitespace(allocator: Allocator, str: []const u8, indentSize: usize, insertSpaces: bool) !ArrayList(u8) {
     var spacesCnt: usize = 0;
     for (0..str.len) |i| {
         if (str[i] == '\t') {
@@ -10,28 +14,27 @@ fn _normalizeIndentationFromWhitespace(str: []const u8, indentSize: usize, inser
         }
     }
 
-    var result = "";
+    var result = try ArrayList(u8).initCapacity(allocator, str.len);
     if (!insertSpaces) {
         const tabsCnt = spacesCnt / indentSize;
         spacesCnt = spacesCnt % indentSize;
         for (0..tabsCnt) |_| {
-            result += '\t';
+            try result.append('\t');
         }
     }
 
     for (0..spacesCnt) |_| {
-        result += ' ';
+        try result.append(' ');
     }
 
     return result;
 }
 
-pub fn normalizeIndentation(str: []const u8, indentSize: usize, insertSpaces: bool) []const u8 {
-    const firstNonWhitespaceIndex = strings.firstNonWhitespaceIndex(str);
-    if (firstNonWhitespaceIndex) |index| {
-        return _normalizeIndentationFromWhitespace(str[0..index], indentSize, insertSpaces) ++ str[index..];
-    }
-    return str;
+pub fn normalizeIndentation(allocator: Allocator, str: []const u8, indentSize: usize, insertSpaces: bool) Allocator.Error!String {
+    const firstNonWhitespaceIndex = strings.firstNonWhitespaceIndex(str) orelse str.len;
+    var res = try _normalizeIndentationFromWhitespace(allocator, str[0..firstNonWhitespaceIndex], indentSize, insertSpaces);
+    try res.appendSlice(str[firstNonWhitespaceIndex..]);
+    return String.initOwned(res);
 }
 
 fn nextIndentTabStop(visibleColumn: usize, tabSize: usize) usize {
