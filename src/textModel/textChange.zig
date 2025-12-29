@@ -49,29 +49,20 @@ pub const TextChange = struct {
 
     pub fn toString(self: *const TextChange, allocator: Allocator) ![]const u8 {
         if (self.oldText.isEmpty()) {
-            const s = try self.newText.slice(allocator);
-            defer s.deinit();
-            const escaped = try strings.escapeNewLine(s.items, allocator);
+            const escaped = try self.newText.display(allocator);
             defer allocator.free(escaped);
             return try std.fmt.allocPrint(allocator, "(inserted@{d} \"{s}\")", .{ self.oldPosition, escaped });
         }
 
         if (self.newText.isEmpty()) {
-            const s = try self.oldText.slice(allocator);
-            defer s.deinit();
-            const escaped = try strings.escapeNewLine(s.items, allocator);
+            const escaped = try self.oldText.display(allocator);
             defer allocator.free(escaped);
             return try std.fmt.allocPrint(allocator, "(deleted@{d} \"{s}\")", .{ self.oldPosition, escaped });
         }
 
-        const s1 = try self.oldText.slice(allocator);
-        defer s1.deinit();
-        const escapedOldText = try strings.escapeNewLine(s1.items, allocator);
+        const escapedOldText = try self.oldText.display(allocator);
         defer allocator.free(escapedOldText);
-
-        const s2 = try self.newText.slice(allocator);
-        defer s2.deinit();
-        const escapedNewText = try strings.escapeNewLine(s2.items, allocator);
+        const escapedNewText = try self.newText.display(allocator);
         defer allocator.free(escapedNewText);
 
         return try std.fmt.allocPrint(allocator, "(replaced@{d} \"{s}\" with \"{s}\")", .{
@@ -92,9 +83,8 @@ pub const TextChange = struct {
     pub fn write(self: *const TextChange, writer: *std.Io.Writer) !void {
         try writer.writeInt(u32, @intCast(self.oldPosition), .big);
         try writer.writeInt(u32, @intCast(self.newPosition), .big);
-        // FIXME: don't use page_allocator here
-        try _writeString(writer, (try self.oldText.slice(std.heap.page_allocator)).items);
-        try _writeString(writer, (try self.newText.slice(std.heap.page_allocator)).items);
+        try _writeString(writer, self.oldText);
+        try _writeString(writer, self.newText);
     }
 
     pub fn read(reader: *std.Io.Reader, allocator: Allocator, dest: *ArrayList(TextChange)) !void {
@@ -364,10 +354,15 @@ fn _wriateStringSize(len: usize) usize {
     return 4 + len;
 }
 
-fn _writeString(writer: *std.Io.Writer, str: []const u8) !void {
-    const len: u32 = @intCast(str.len);
+fn _writeString(writer: *std.Io.Writer, str: String) !void {
+    const len: u32 = @intCast(str.len());
     try writer.writeInt(u32, len, .big);
-    try writer.writeAll(str);
+    // TODO: read one byte at a time is slow
+    var reader = str.reader();
+    while (true) {
+        const ch = reader.takeByte() catch break;
+        try writer.writeByte(ch);
+    }
 }
 
 fn _readString(reader: *std.Io.Reader, allocator: Allocator) !ArrayList(u8) {

@@ -318,9 +318,7 @@ pub const PieceTreeTextBuffer = struct {
                 if (strEOL != .Unknown or strEOL == expectedStrEOL) {
                     validText = text.move();
                 } else {
-                    var temp = try text.slice(allocator);
-                    try replaceEOL(&temp, bufferEOL);
-                    validText = String.initOwned(temp);
+                    validText = try text.replaceEOL(allocator, bufferEOL);
                 }
             }
 
@@ -568,7 +566,7 @@ pub const PieceTreeTextBuffer = struct {
                 // replacement
                 try self._pieceTree.delete(op.rangeOffset, op.rangeLength);
 
-                var txt = try op.text.slice(allocator);
+                var txt = try op.text.toSlice(allocator);
                 defer txt.deinit();
                 try self._pieceTree.insert(op.rangeOffset, txt.items, true);
             } else {

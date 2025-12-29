@@ -8,6 +8,8 @@ const RegExp = re.RegExp;
 const RegExpOptions = re.Options;
 const escapeRegExp = re.escapeRegExp;
 const HashMap = std.HashMap;
+const EOL = @import("eolCounter.zig").EOL;
+const _replaceEOL = @import("eolCounter.zig").replaceEOL;
 
 pub fn firstNonWhitespaceIndex(str: []const u8) ?usize {
     for (str, 0..) |c, i| {
@@ -472,10 +474,24 @@ pub const String = union(enum) {
         }
     }
 
-    pub fn slice(self: *const String, allocator: Allocator) !ArrayList(u8) {
+    pub fn display(self: *const String, allocator: Allocator) ![]const u8 {
+        var result = ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try self.fillItems(&result);
+        return try escapeNewLine(result.items, allocator);
+    }
+
+    pub fn toSlice(self: *const String, allocator: Allocator) !ArrayList(u8) {
         var result = ArrayList(u8).init(allocator);
         try self.fillItems(&result);
         return result;
+    }
+
+    pub fn replaceEOL(self: *const String, allocator: Allocator, eol: EOL) !String {
+        var result = ArrayList(u8).init(allocator);
+        try self.fillItems(&result);
+        try _replaceEOL(&result, eol);
+        return String.initOwned(result);
     }
 
     // transfer ownership to the caller
