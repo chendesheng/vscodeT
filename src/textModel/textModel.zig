@@ -73,6 +73,7 @@ const TextModelSearch = @import("textModelSearch.zig").TextModelSearch;
 const String = @import("../basics/strings.zig").String;
 const _normalizeIndentation = @import("../basics/indentation.zig").normalizeIndentation;
 const EDITOR_MODEL_DEFAULTS = @import("textModelDefaults.zig");
+const ModelRawFlush = @import("textModelEvents.zig").ModelRawFlush;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -500,7 +501,7 @@ pub const TextModel = struct {
         self._initialUndoRedoSnapshot = snapshot;
     }
 
-    pub fn getValue(self: *TextModel, eol: ?EndOfLinePreference, preserveBOM: bool) !ArrayList(u8) {
+    pub fn getValue(self: *TextModel, eol: ?EndOfLinePreference, preserveBOM: bool) !String {
         if (self.isTooLargeForHeapOperation()) {
             return error.OperationWouldExceedHeapMemoryLimits;
         }
@@ -512,7 +513,7 @@ pub const TextModel = struct {
             try fullModelValue.insertSlice(0, self._buffer.getBOM());
         }
 
-        return fullModelValue;
+        return String.initOwned(fullModelValue);
     }
 
     pub fn createSnapshot(self: *TextModel, preserveBOM: bool) !TextModelSnapshot {
@@ -1111,6 +1112,13 @@ pub const TextModel = struct {
         self._eventEmitter.fire(InternalModelContentChangeEvent.init(rawChange, change));
     }
 
+    // TODO: Edit Source
+    pub fn setValue(self: *TextModel, value: []const u8) !void {
+        var reader = std.Io.Reader.fixed(value);
+        var textBuffer = try createTextBuffer(self.getAllocator(), &reader, self._options.defaultEOL);
+        try self._setValueFromTextBuffer(&textBuffer);
+    }
+
     fn _createContentChanged2(self: *TextModel, range: Range, rangeOffset: usize, rangeLength: usize, rangeEndPosition: Position, text: String, isUndoing: bool, isRedoing: bool, isFlush: bool, isEolChange: bool) !ModelContentChangedEvent {
         _ = rangeEndPosition;
         var changes = ArrayList(ModelContentChange).init(self.getAllocator());
@@ -1129,6 +1137,35 @@ pub const TextModel = struct {
             .isRedoing = isRedoing,
             .isFlush = isFlush,
         };
+    }
+
+    fn _setValueFromTextBuffer(self: *TextModel, textBuffer: *PieceTreeTextBuffer) !void {
+        const oldFullModelRange = self.getFullModelRange();
+        const oldModelValueLength = self.getValueLengthInRange(oldFullModelRange, null);
+        const endLineNumber = self.getLineCount();
+        const endColumn = self.getLineMaxColumn(endLineNumber);
+
+        self._buffer.deinit();
+        self._buffer = textBuffer.*;
+        self._increaseVersionId();
+
+        // Destroy all my decorations
+        self._decorations.deinit();
+        self._decorations = std.AutoHashMap(u64, *IntervalNode).init(self.getAllocator());
+        self._decorationsTree.deinit();
+        self._decorationsTree = DecorationsTrees.init(self.getAllocator());
+
+        // Destroy my edit history and settings
+        try self._commandManager.clear();
+        self._trimAutoWhitespaceLines = null;
+
+        var changes = ArrayList(ModelRawChange).init(self.getAllocator());
+        defer changes.deinit();
+        try changes.append(.{ .flush = ModelRawFlush.init() });
+
+        const changed2 = try self._createContentChanged2(Range.init(1, 1, endLineNumber, endColumn), 0, oldModelValueLength, Position.init(endLineNumber, endColumn), try self.getValue(null, false), false, false, true, false);
+        defer changed2.deinit();
+        self._emitContentChangedEvent(ModelRawContentChangedEvent.init(changes, self._versionId, false, false), changed2);
     }
 
     pub fn setEOL(self: *TextModel, eol: EOL) !void {
@@ -1155,7 +1192,7 @@ pub const TextModel = struct {
             0,
             oldModelValueLength,
             Position.init(endLineNumber, endColumn),
-            String.initOwned(try self.getValue(null, false)),
+            try self.getValue(null, false),
             false,
             false,
             false,
@@ -1978,6 +2015,12 @@ pub const DecorationsTrees = struct {
             ._decorationsTree1 = IntervalTree.init(allocator),
             ._injectedTextDecorationsTree = IntervalTree.init(allocator),
         };
+    }
+
+    pub fn deinit(self: *DecorationsTrees) void {
+        self._decorationsTree0.deinit();
+        self._decorationsTree1.deinit();
+        self._injectedTextDecorationsTree.deinit();
     }
 
     fn ensureAllNodesHaveRanges(self: *DecorationsTrees, host: *TextModel) !void {

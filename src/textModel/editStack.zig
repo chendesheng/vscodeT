@@ -734,8 +734,8 @@ pub const EditStack = struct {
         }
     }
 
-    pub fn clear(self: *EditStack) void {
-        self._undoRedoService.removeElements(self._model.uri());
+    pub fn clear(self: *EditStack) !void {
+        try self._undoRedoService.removeElements(self._model.uri());
     }
 
     fn _getOrCreateEditStackElement(self: *EditStack, beforeCursorState: ?[]Selection, group: ?UndoRedoGroup) !*EditStackElement {

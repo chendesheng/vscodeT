@@ -295,6 +295,13 @@ pub const ModelRawContentChangedEvent = struct {
         };
     }
 
+    pub fn deinit(self: *const ModelRawContentChangedEvent) void {
+        for (self.changes.items) |change| {
+            change.deinit();
+        }
+        self.changes.deinit();
+    }
+
     pub fn containsEvent(self: *const ModelRawContentChangedEvent, changedType: RawContentChangedType) bool {
         for (self.changes.items) |change| {
             if (change.changeType() == changedType) {

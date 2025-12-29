@@ -946,7 +946,42 @@ const EditModelTextModelTests = struct {
     }
 };
 
+const TextModelMightContainRTLTests = struct {
+    test "nope" {
+        const allocator = std.testing.allocator;
+        const model = try createTextModel(allocator, "hello world!", null);
+        defer disposeTextModel(model);
+        try std.testing.expectEqual(false, model.mightContainRTL());
+    }
+
+    test "yes" {
+        const allocator = std.testing.allocator;
+        const model = try createTextModel(allocator, "Hello,\nזוהי עובדה מבוססת שדעתו", null);
+        defer disposeTextModel(model);
+        try std.testing.expectEqual(true, model.mightContainRTL());
+    }
+
+    test "setValue resets 1" {
+        const allocator = std.testing.allocator;
+        const model = try createTextModel(allocator, "hello world!", null);
+        defer disposeTextModel(model);
+        try std.testing.expectEqual(false, model.mightContainRTL());
+        try model.setValue("Hello,\nזוהי עובדה מבוססת שדעתו");
+        try std.testing.expectEqual(true, model.mightContainRTL());
+    }
+
+    test "setValue resets 2" {
+        const allocator = std.testing.allocator;
+        const model = try createTextModel(allocator, "Hello,\nهناك حقيقة مثبتة منذ زمن طويل", null);
+        defer disposeTextModel(model);
+        try std.testing.expectEqual(true, model.mightContainRTL());
+        try model.setValue("hello world!");
+        try std.testing.expectEqual(false, model.mightContainRTL());
+    }
+};
+
 test "TextModel" {
     _ = TextModelDataFromStringTests;
     _ = EditModelTextModelTests;
+    _ = TextModelMightContainRTLTests;
 }
