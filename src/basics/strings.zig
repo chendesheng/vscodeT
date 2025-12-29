@@ -7,6 +7,7 @@ const re = @import("RegExp.zig");
 const RegExp = re.RegExp;
 const RegExpOptions = re.Options;
 const escapeRegExp = re.escapeRegExp;
+const HashMap = std.HashMap;
 
 pub fn firstNonWhitespaceIndex(str: []const u8) ?usize {
     for (str, 0..) |c, i| {
@@ -50,6 +51,17 @@ test "lastNonWhitespaceIndex" {
     try std.testing.expectEqual(4, lastNonWhitespaceIndex("Hello"));
     try std.testing.expectEqual(4, lastNonWhitespaceIndex("Hello "));
     try std.testing.expectEqual(5, lastNonWhitespaceIndex(" Hello"));
+}
+
+pub fn isBasicASCIIReader(r: *std.Io.Reader) bool {
+    while (true) {
+        const c = r.takeByte() catch break;
+        if (c == '\t' or c == '\n' or c == '\r' or (0x20 <= c and c <= 0x7e)) {
+            continue;
+        }
+        return false;
+    }
+    return true;
 }
 
 pub fn isBasicASCII(str: []const u8) bool {
@@ -200,9 +212,11 @@ test "concat" {
 
 pub const String = union(enum) {
     owned: ArrayList(u8),
-    borrowed: []const u8,
+    borrowed1: []const u8,
+    borrowed: ArrayList([]const u8),
+    empty: void,
 
-    pub const Empty = String{ .borrowed = "" };
+    pub const Empty: String = .empty;
 
     pub fn allocPrint(allocator: Allocator, comptime format: []const u8, args: anytype) !String {
         const str = try fmt.allocPrint(allocator, format, args);
@@ -211,103 +225,378 @@ pub const String = union(enum) {
     }
 
     pub fn initOwned(arr: ArrayList(u8)) String {
+        if (arr.items.len == 0) {
+            return .empty;
+        }
+
         return .{ .owned = arr };
     }
 
     pub fn initBorrowed(str: []const u8) String {
-        return .{ .borrowed = str };
+        if (str.len == 0) {
+            return .empty;
+        }
+        return .{ .borrowed1 = str };
     }
 
     pub fn deinit(self: *String) void {
         switch (self.*) {
+            .empty => {},
             .owned => |*list| {
                 list.deinit();
                 self.* = Empty;
             },
-            .borrowed => {},
+            .borrowed1 => {},
+            .borrowed => |arr| {
+                arr.deinit();
+            },
         }
     }
 
     pub fn ensureOwned(self: *String, allocator: Allocator) !void {
         switch (self.*) {
+            .empty => {},
             .owned => {
                 return;
             },
+            .borrowed1 => |s| {
+                var arr = ArrayList(u8).init(allocator);
+                try arr.appendSlice(s);
+                self.* = .{ .owned = arr };
+            },
             .borrowed => |str| {
                 var arr = ArrayList(u8).init(allocator);
-                try arr.appendSlice(str);
+                for (str.items) |s| {
+                    try arr.appendSlice(s);
+                }
                 self.* = .{ .owned = arr };
             },
         }
     }
 
-    pub fn items(self: *const String) []const u8 {
+    // fn items(self: *const String) []const u8 {
+    //     switch (self.*) {
+    //         .empty => return "",
+    //         .owned => |list| {
+    //             return list.items;
+    //         },
+    //         .borrowed => |str| {
+    //             return str;
+    //         },
+    //     }
+    // }
+
+    pub fn u8At(self: *const String, index: usize) u8 {
         switch (self.*) {
+            .empty => unreachable,
             .owned => |list| {
-                return list.items;
+                return list.items[index];
             },
-            .borrowed => |str| {
-                return str;
+            .borrowed1 => |s| return s[index],
+            .borrowed => |list| {
+                var i = index;
+                for (list.items) |s| {
+                    if (i < s.len) {
+                        return s[i];
+                    }
+                    i -= s.len;
+                }
+                unreachable;
+            },
+        }
+    }
+
+    pub fn last(self: *const String) u8 {
+        switch (self.*) {
+            .empty => unreachable,
+            .owned => |list| return list.items[list.items.len - 1],
+            .borrowed1 => |s| return s[s.len - 1],
+            .borrowed => |list| {
+                const lst = list.items[list.items.len - 1];
+                return lst[lst.len - 1];
             },
         }
     }
 
     fn isOwned(self: *const String) bool {
         return switch (self.*) {
+            .empty => false,
             .owned => true,
+            .borrowed1 => false,
             .borrowed => false,
         };
     }
 
     pub fn isEmpty(self: *const String) bool {
         return switch (self.*) {
-            .owned => |list| list.items.len == 0,
-            .borrowed => |str| str.len == 0,
+            .empty => true,
+            .owned => |s| s.items.len == 0,
+            .borrowed1 => |s| s.len == 0,
+            .borrowed => |list| {
+                for (list.items) |s| {
+                    if (s.len > 0) {
+                        return false;
+                    }
+                }
+                return true;
+            },
         };
     }
 
+    fn eqlStrVsList(owned: []const u8, borrowed: ArrayList([]const u8)) bool {
+        var rest: []const u8 = owned;
+        for (borrowed.items) |s| {
+            if (s.len <= rest.len) {
+                if (std.mem.eql(u8, rest[0..s.len], s)) {
+                    rest = rest[s.len..];
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn eqlListVsList(a: ArrayList([]const u8), b: ArrayList([]const u8)) bool {
+        var indexA: usize = 0;
+        var offsetA: usize = 0;
+
+        var indexB: usize = 0;
+        var offsetB: usize = 0;
+
+        while (indexA < a.items.len and indexB < b.items.len) {
+            const a_s = a.items[indexA][offsetA..];
+            const b_s = b.items[indexB][offsetB..];
+
+            if (a_s.len == b_s.len) {
+                if (std.mem.eql(u8, a_s, b_s)) {
+                    indexA += 1;
+                    offsetA = 0;
+
+                    indexB += 1;
+                    offsetB = 0;
+                } else {
+                    return false;
+                }
+            } else if (a_s.len < b_s.len) {
+                if (std.mem.eql(u8, a_s, b_s[0..a_s.len])) {
+                    indexA += 1;
+                    offsetA = 0;
+                    offsetB += a_s.len;
+                } else {
+                    return false;
+                }
+            } else {
+                if (std.mem.eql(u8, a_s[0..b_s.len], b_s)) {
+                    indexB += 1;
+                    offsetB = 0;
+                    offsetA += b_s.len;
+                } else {
+                    return false;
+                }
+            }
+        }
+
+        return indexA == indexB and offsetA == offsetB;
+    }
+
     pub fn eql(self: *const String, other: String) bool {
-        return std.mem.eql(u8, self.items(), other.items());
+        switch (self.*) {
+            .empty => return other.isEmpty(),
+            .owned => |s| {
+                switch (other) {
+                    .empty => return self.isEmpty(),
+                    .owned => |otherList| return std.mem.eql(u8, s.items, otherList.items),
+                    .borrowed1 => |otherS| return std.mem.eql(u8, s.items, otherS),
+                    .borrowed => |otherStr| return eqlStrVsList(s.items, otherStr),
+                }
+            },
+            .borrowed1 => |s| {
+                switch (other) {
+                    .empty => return self.isEmpty(),
+                    .owned => |otherS| return std.mem.eql(u8, otherS.items, s),
+                    .borrowed1 => |otherS| return std.mem.eql(u8, s, otherS),
+                    .borrowed => |list| return eqlStrVsList(s, list),
+                }
+            },
+            .borrowed => |list| {
+                switch (other) {
+                    .empty => return self.isEmpty(),
+                    .owned => |otherS| return eqlStrVsList(otherS.items, list),
+                    .borrowed1 => |otherS| return eqlStrVsList(otherS, list),
+                    .borrowed => |otherList| return eqlListVsList(list, otherList),
+                }
+            },
+        }
     }
 
     pub fn len(self: *const String) usize {
-        return self.items().len;
+        switch (self.*) {
+            .empty => return 0,
+            .owned => |list| return list.items.len,
+            .borrowed1 => |s| return s.len,
+            .borrowed => |str| {
+                var l: usize = 0;
+                for (str.items) |s| {
+                    l += s.len;
+                }
+                return l;
+            },
+        }
     }
 
-    pub fn substring(self: *const String, start: usize, end: usize) String {
-        return String.initBorrowed(self.items()[start..end]);
+    pub fn substring(self: *const String, start: usize, end: usize) !String {
+        switch (self.*) {
+            .empty => unreachable,
+            .owned => |list| {
+                return String.initBorrowed(list.items[start..end]);
+            },
+            .borrowed1 => |s| {
+                return String.initBorrowed(s[start..end]);
+            },
+            .borrowed => |str| {
+                var result = ArrayList([]const u8).init(str.allocator);
+                var i = start;
+                for (str.items) |s| {
+                    if (s.len <= i) {
+                        i -= s.len;
+                        try result.append(s);
+                    } else {
+                        try result.append(s[0..i]);
+                    }
+                }
+                return .{ .borrowed = result };
+            },
+        }
+    }
+
+    pub fn slice(self: *const String, allocator: Allocator) !ArrayList(u8) {
+        var result = ArrayList(u8).init(allocator);
+        try self.fillItems(&result);
+        return result;
     }
 
     // transfer ownership to the caller
     pub fn move(self: *String) String {
         switch (self.*) {
+            .empty => return .empty,
             .owned => |list| {
                 self.* = .initBorrowed(list.items);
                 return String.initOwned(list);
             },
-            .borrowed => |str| {
-                return String.initBorrowed(str);
+            .borrowed1 => {
+                return self.*;
+            },
+            .borrowed => {
+                return self.*;
             },
         }
     }
 
     pub fn isBasicASCII_(self: *const String) bool {
-        return isBasicASCII(self.items());
+        var r = self.reader();
+        return isBasicASCIIReader(&r);
     }
 
     pub fn containsRTL_(self: *const String) bool {
-        return containsRTL(self.items());
+        // TODO
+        _ = self;
+        return false;
     }
 
     pub fn containsUnusualLineTerminators_(self: *const String) bool {
-        return containsUnusualLineTerminators(self.items());
+        // TODO
+        _ = self;
+        return false;
+    }
+
+    pub fn hash(self: *const String) u64 {
+        switch (self.*) {
+            .empty => return 0,
+            .owned => |list| return std.hash.Wyhash.hash(0, list.items),
+            .borrowed1 => |s| return std.hash.Wyhash.hash(0, s),
+            .borrowed => |str| {
+                var h: u64 = 0;
+                for (str.items) |s| {
+                    h = std.hash.Wyhash.hash(h, s);
+                }
+                return h;
+            },
+        }
+    }
+
+    pub fn fillItems(self: *const String, items: *ArrayList(u8)) !void {
+        switch (self.*) {
+            .empty => return,
+            .owned => |list| {
+                try items.appendSlice(list.items);
+            },
+            .borrowed1 => |s| {
+                try items.appendSlice(s);
+            },
+            .borrowed => |list| {
+                for (list.items) |s| {
+                    try items.appendSlice(s);
+                }
+            },
+        }
+    }
+
+    pub fn concat(self: *const String, allocator: Allocator, other: String) !String {
+        var result = ArrayList(u8).init(allocator);
+        try self.fillItems(&result);
+        try other.fillItems(&result);
+        return String.initOwned(result);
+    }
+
+    pub fn reader(self: *const String) std.Io.Reader {
+        switch (self.*) {
+            .empty => return std.Io.Reader.fixed(""),
+            .owned => |list| {
+                return std.Io.Reader.fixed(list.items);
+            },
+            .borrowed1 => |s| {
+                return std.Io.Reader.fixed(s);
+            },
+            .borrowed => |list| {
+                // FIXME: leaking
+                var result = ArrayList(u8).init(list.allocator);
+                for (list.items) |s| {
+                    result.appendSlice(s) catch unreachable;
+                }
+                return std.Io.Reader.fixed(result.items);
+            },
+        }
     }
 };
+
+pub fn StringHashMap(comptime V: type) type {
+    return HashMap(String, V, StringContext, std.hash_map.default_max_load_percentage);
+}
+
+pub const StringContext = struct {
+    pub fn hash(self: @This(), s: String) u64 {
+        _ = self;
+        return s.hash();
+    }
+    pub fn eql(self: @This(), a: String, b: String) bool {
+        _ = self;
+        return a.eql(b);
+    }
+};
+
+test "String.empty" {
+    const str = String.Empty;
+    try std.testing.expectEqual(true, str.isEmpty());
+    try std.testing.expectEqual(0, str.len());
+}
 
 test "String.initBorrowed" {
     var str = String.initBorrowed("Hello");
     defer str.deinit();
-    try std.testing.expectEqualStrings("Hello", str.items());
+    try std.testing.expect(str.eql(.initBorrowed("Hello")));
 }
 
 test "String.initOwned" {
@@ -316,14 +605,14 @@ test "String.initOwned" {
     try arr.appendSlice("Hello");
     var str = String.initOwned(arr);
     defer str.deinit();
-    try std.testing.expectEqualStrings("Hello", str.items());
+    try std.testing.expect(str.eql(.initBorrowed("Hello")));
 }
 
 test "String.allocPrint" {
     const allocator = std.testing.allocator;
     var str = try String.allocPrint(allocator, "Hello {d}", .{123});
     defer str.deinit();
-    try std.testing.expectEqualStrings("Hello 123", str.items());
+    try std.testing.expect(str.eql(.initBorrowed("Hello 123")));
 }
 
 test "String.ensureOwned" {
@@ -385,7 +674,7 @@ test "String.move" {
 
     // str2 still owns the memory after str is deinitialized
     str.deinit();
-    try std.testing.expectEqualStrings("Hello", str2.items());
+    try std.testing.expect(str2.eql(.initBorrowed("Hello")));
 }
 
 test "String.move borrowed" {
@@ -395,7 +684,7 @@ test "String.move borrowed" {
     var str2 = str.move();
     defer str2.deinit();
 
-    try std.testing.expectEqualStrings("Hello", str2.items());
+    try std.testing.expect(str2.eql(.initBorrowed("Hello")));
 }
 
 pub fn getNextCodePoint(text: []const u8, len: usize, offset: usize) !u21 {

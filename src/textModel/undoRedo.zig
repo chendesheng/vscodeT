@@ -2,6 +2,7 @@ const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Uri = std.Uri;
 const EditStackElement = @import("editStack.zig").EditStackElement;
+const String = @import("../basics/strings.zig").String;
 
 pub const ResourceEditStackSnapshot = struct {
     resource: Uri,
@@ -77,7 +78,7 @@ pub const UndoRedoSource = struct {
 pub const UndoRedoSourceOrUri = union(enum) {
     source: UndoRedoSource,
     uri: Uri,
-    str: []const u8,
+    str: String,
 };
 
 pub const UriComparisonKeyComputer = struct {

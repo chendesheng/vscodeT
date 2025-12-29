@@ -819,7 +819,7 @@ const EditModelTextModelTests = struct {
     fn testNormalizeIndentation(expected: []const u8, model: *TextModel, input: []const u8) !void {
         var str = try model.normalizeIndentation(input);
         defer str.deinit();
-        try std.testing.expectEqualStrings(expected, str.items());
+        try std.testing.expect(str.eql(.initBorrowed(expected)));
     }
 
     test "normalizeIndentation 1" {

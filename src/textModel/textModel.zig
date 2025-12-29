@@ -963,14 +963,14 @@ pub const TextModel = struct {
             const allocator = self.getAllocator();
             var incomingEdits = ArrayList(struct {
                 range: Range,
-                text: ?[]const u8,
+                text: ?String,
             }).init(allocator);
             defer incomingEdits.deinit();
 
             for (editOperations.items) |*op| {
                 try incomingEdits.append(.{
                     .range = self.validateRange(op.range),
-                    .text = if (op.text) |*text| text.items() else null,
+                    .text = if (op.text) |*text| text.move() else null,
                 });
             }
 
@@ -1013,12 +1013,12 @@ pub const TextModel = struct {
                         // At this point:
                         //   editRange.startLineNumber <= trimLine <= editRange.endLineNumber
 
-                        if (trimLineNumber == editRange.startLineNumber and editRange.startColumn == maxLineColumn and editRange.isEmpty() and editText != null and editText.?.len > 0 and editText.?[0] == '\n') {
+                        if (trimLineNumber == editRange.startLineNumber and editRange.startColumn == maxLineColumn and editRange.isEmpty() and editText != null and !editText.?.isEmpty() and editText.?.u8At(0) == '\n') {
                             // This edit inserts a new line (and maybe other text) after `trimLine`
                             continue;
                         }
 
-                        if (trimLineNumber == editRange.startLineNumber and editRange.startColumn == 1 and editRange.isEmpty() and editText != null and editText.?.len > 0 and editText.?[editText.?.len - 1] == '\n') {
+                        if (trimLineNumber == editRange.startLineNumber and editRange.startColumn == 1 and editRange.isEmpty() and editText != null and !editText.?.isEmpty() and editText.?.last() == '\n') {
                             // This edit inserts a new line (and maybe other text) before `trimLine`
                             continue;
                         }
@@ -1288,7 +1288,8 @@ pub const TextModel = struct {
 
             var lineCount = oldLineCount;
             for (contentChanges) |change| {
-                const res = countEOL(change.modelContentChange.text.items());
+                var reader = change.modelContentChange.text.reader();
+                const res = countEOL(&reader);
                 const eolCount = res.eolCount;
                 self._onDidChangeDecorations.fire();
 

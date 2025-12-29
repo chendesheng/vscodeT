@@ -306,7 +306,8 @@ pub const PieceTreeTextBuffer = struct {
             var lastLineLength: usize = 0;
             if (op.text) |*text| {
                 var strEOL: StringEOL = .Unknown;
-                const eolResult = countEOL(text.items());
+                var reader = text.reader();
+                const eolResult = countEOL(&reader);
                 eolCount = eolResult.eolCount;
                 firstLineLength = eolResult.firstLineLength;
                 lastLineLength = eolResult.lastLineLength;
@@ -317,8 +318,7 @@ pub const PieceTreeTextBuffer = struct {
                 if (strEOL != .Unknown or strEOL == expectedStrEOL) {
                     validText = text.move();
                 } else {
-                    var temp = ArrayList(u8).init(allocator);
-                    try temp.appendSlice(text.items());
+                    var temp = try text.slice(allocator);
                     try replaceEOL(&temp, bufferEOL);
                     validText = String.initOwned(temp);
                 }
@@ -502,8 +502,7 @@ pub const PieceTreeTextBuffer = struct {
         var lastEndLineNumber = firstEditRange.endLineNumber;
         var lastEndColumn = firstEditRange.endColumn;
 
-        var result = ArrayList([]const u8).init(allocator);
-        defer result.deinit();
+        var result = ArrayList(u8).init(allocator);
 
         for (operations) |operation| {
             const range = operation.range;
@@ -517,11 +516,11 @@ pub const PieceTreeTextBuffer = struct {
                 .endColumn = lastEndColumn,
             }, .TextDefined);
             defer oldText.deinit();
-            try result.append(oldText.items);
+            try result.appendSlice(oldText.items);
 
             // (2) -- Push new text
             if (!operation.text.isEmpty()) {
-                try result.append(operation.text.items());
+                try operation.text.fillItems(&result);
             }
 
             // (3) -- Update last end line number and column
@@ -529,12 +528,9 @@ pub const PieceTreeTextBuffer = struct {
             lastEndColumn = range.endColumn;
         }
 
-        const text = String.initOwned(ArrayList(u8){
-            .allocator = allocator,
-            .capacity = result.items.len,
-            .items = try std.mem.join(allocator, "", result.items),
-        });
-        const eolResult = countEOL(text.items());
+        const text = String.initOwned(result);
+        var textReader = text.reader();
+        const eolResult = countEOL(&textReader);
         return ValidatedEditOperation{
             .sortIndex = 0,
             .identifier = operations[0].identifier,
@@ -571,7 +567,10 @@ pub const PieceTreeTextBuffer = struct {
             if (!op.text.isEmpty()) {
                 // replacement
                 try self._pieceTree.delete(op.rangeOffset, op.rangeLength);
-                try self._pieceTree.insert(op.rangeOffset, op.text.items(), true);
+
+                var txt = try op.text.slice(allocator);
+                defer txt.deinit();
+                try self._pieceTree.insert(op.rangeOffset, txt.items, true);
             } else {
                 // deletion
                 try self._pieceTree.delete(op.rangeOffset, op.rangeLength);

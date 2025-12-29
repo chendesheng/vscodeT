@@ -330,8 +330,8 @@ test "SingleModelEditStackDataUnserialized" {
             ch.deinit();
         }
     }
-    try std.testing.expectEqualStrings("a", deserialized.changes.items[0].oldText.items());
-    try std.testing.expectEqualStrings("b", deserialized.changes.items[0].newText.items());
+    try std.testing.expect(deserialized.changes.items[0].oldText.eql(.initBorrowed("a")));
+    try std.testing.expect(deserialized.changes.items[0].newText.eql(.initBorrowed("b")));
 }
 
 const TextModelOrUri = union(enum) {

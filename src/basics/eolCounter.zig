@@ -32,56 +32,63 @@ pub const CountEOLResult = struct {
     eol: StringEOL,
 };
 
-pub fn countEOL(text: []const u8) CountEOLResult {
+pub fn countEOLFixed(text: []const u8) CountEOLResult {
+    var r = std.Io.Reader.fixed(text);
+    return countEOL(&r);
+}
+
+pub fn countEOL(text: *std.Io.Reader) CountEOLResult {
     var eolCount: usize = 0;
     var firstLineLength: usize = 0;
     var lastLineStart: usize = 0;
     var eol: u2 = Unknown;
 
-    var i: usize = 0;
-    const len = text.len;
-    while (i < len) : (i += 1) {
-        const chr = text[i];
-
+    while (true) {
+        const chr = text.peekByte() catch break;
         if (chr == '\r') {
             if (eolCount == 0) {
-                firstLineLength = i;
+                firstLineLength = text.seek;
             }
+            text.toss(1);
             eolCount += 1;
-            if (i + 1 < len and text[i + 1] == '\n') {
+            const next = text.peekByte() catch ' ';
+            if (next == '\n') {
                 // \r\n... case
                 eol |= CRLF;
-                i += 1; // skip \n
+                text.toss(1);
             } else {
                 // \r... case
                 eol |= Invalid;
             }
-            lastLineStart = i + 1;
+            lastLineStart = text.seek;
         } else if (chr == '\n') {
             // \n... case
             eol |= LF;
             if (eolCount == 0) {
-                firstLineLength = i;
+                firstLineLength = text.seek;
             }
+            text.toss(1);
             eolCount += 1;
-            lastLineStart = i + 1;
+            lastLineStart = text.seek;
+        } else {
+            text.toss(1);
         }
     }
 
     if (eolCount == 0) {
-        firstLineLength = len;
+        firstLineLength = text.seek;
     }
 
     return CountEOLResult{
         .eolCount = eolCount,
         .firstLineLength = firstLineLength,
-        .lastLineLength = len - lastLineStart,
+        .lastLineLength = text.seek - lastLineStart,
         .eol = @enumFromInt(eol),
     };
 }
 
 test "countEOL" {
-    const result = countEOL("Hello\nWorld\n");
+    const result = countEOLFixed("Hello\nWorld\n");
     try std.testing.expectEqual(2, result.eolCount);
     try std.testing.expectEqual(5, result.firstLineLength);
     try std.testing.expectEqual(0, result.lastLineLength);

@@ -2,6 +2,7 @@ const std = @import("std");
 const Uri = std.Uri;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
+const StringHashMap = @import("../basics/strings.zig").StringHashMap;
 const EditStackElement = @import("editStack.zig").EditStackElement;
 const UndoRedoGroup = @import("undoRedo.zig").UndoRedoGroup;
 const UndoRedoSource = @import("undoRedo.zig").UndoRedoSource;
@@ -176,7 +177,7 @@ const ResourceReasonPair = struct {
 };
 
 const RemovedResources = struct {
-    elements: std.StringHashMap(ResourceReasonPair),
+    elements: StringHashMap(ResourceReasonPair),
 
     pub fn createMessage(self: *RemovedResources, allocator: Allocator) ![]const u8 {
         var externalRemoval = ArrayList([]const u8).init(allocator);
@@ -207,15 +208,15 @@ const RemovedResources = struct {
         return self.elements.count();
     }
 
-    pub fn has(self: *const RemovedResources, strResource: []const u8) bool {
+    pub fn has(self: *const RemovedResources, strResource: String) bool {
         return self.elements.contains(strResource);
     }
 
-    pub fn set(self: *RemovedResources, strResource: []const u8, value: ResourceReasonPair) !void {
+    pub fn set(self: *RemovedResources, strResource: String, value: ResourceReasonPair) !void {
         try self.elements.put(strResource, value);
     }
 
-    pub fn delete(self: *RemovedResources, strResource: []const u8) bool {
+    pub fn delete(self: *RemovedResources, strResource: String) bool {
         return self.elements.remove(strResource);
     }
 };
@@ -267,12 +268,12 @@ const WorkspaceStackElement = struct {
         };
     }
 
-    pub fn removeResource(self: *WorkspaceStackElement, resourceLabel: []const u8, strResource: []const u8, reason: RemovedResourceReason) !void {
+    pub fn removeResource(self: *WorkspaceStackElement, resourceLabel: []const u8, strResource: String, reason: RemovedResourceReason) !void {
         if (self.removedResources) |*removedResources| {
             try removedResources.set(strResource, ResourceReasonPair{ .resourceLabel = resourceLabel, .reason = reason });
         } else {
             const allocator = self.actual.getAllocator();
-            self.removedResources = RemovedResources{ .elements = std.StringHashMap(ResourceReasonPair).init(allocator) };
+            self.removedResources = RemovedResources{ .elements = StringHashMap(ResourceReasonPair).init(allocator) };
         }
         if (self.removedResources) |*removedResources| {
             if (!removedResources.has(strResource)) {
@@ -281,7 +282,7 @@ const WorkspaceStackElement = struct {
         }
     }
 
-    pub fn setValid(self: *WorkspaceStackElement, resourceLabel: []const u8, strResource: []const u8, isValid: bool) !void {
+    pub fn setValid(self: *WorkspaceStackElement, resourceLabel: []const u8, strResource: String, isValid: bool) !void {
         if (isValid) {
             if (self.invalidatedResources) |invalidatedResources| {
                 invalidatedResources.delete(strResource);
@@ -367,7 +368,7 @@ const ResourceEditStack = struct {
         for (self._past.items) |*element| {
             switch (element.*) {
                 .workspaceStackElement => |*workspaceStackElement| {
-                    try workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.ExternalRemoval);
+                    try workspaceStackElement.removeResource(self.resourceLabel, self.strResource, RemovedResourceReason.ExternalRemoval);
                 },
                 .resourceStackElement => {},
             }
@@ -375,7 +376,7 @@ const ResourceEditStack = struct {
         for (self._future.items) |*element| {
             switch (element.*) {
                 .workspaceStackElement => |*workspaceStackElement| {
-                    try workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.ExternalRemoval);
+                    try workspaceStackElement.removeResource(self.resourceLabel, self.strResource, RemovedResourceReason.ExternalRemoval);
                 },
                 .resourceStackElement => {},
             }
@@ -387,7 +388,7 @@ const ResourceEditStack = struct {
         var result = ArrayList(u8).init(self.getAllocator());
         defer result.deinit();
         try result.appendSlice("* ");
-        try result.appendSlice(self.strResource.items());
+        try result.appendSlice(self.strResource);
         try result.appendSlice(":\n");
         for (self._past.items) |element| {
             try result.appendSlice("   * [UNDO] ");
@@ -418,7 +419,7 @@ const ResourceEditStack = struct {
         for (self._past.items) |element| {
             switch (element.*) {
                 .workspaceStackElement => |workspaceStackElement| {
-                    workspaceStackElement.setValid(self.resourceLabel, self.strResource.items(), isValid);
+                    workspaceStackElement.setValid(self.resourceLabel, self.strResource, isValid);
                 },
                 .resourceStackElement => |resourceStackElement| {
                     resourceStackElement.setValid(isValid);
@@ -428,7 +429,7 @@ const ResourceEditStack = struct {
         for (self._future.items) |element| {
             switch (element.*) {
                 .workspaceStackElement => |workspaceStackElement| {
-                    workspaceStackElement.setValid(self.resourceLabel, self.strResource.items(), isValid);
+                    workspaceStackElement.setValid(self.resourceLabel, self.strResource, isValid);
                 },
                 .resourceStackElement => |resourceStackElement| {
                     resourceStackElement.setValid(isValid);
@@ -440,7 +441,7 @@ const ResourceEditStack = struct {
     fn _setElementValidFlag(self: *ResourceEditStack, element: StackElement, isValid: bool) void {
         switch (element.*) {
             .workspaceStackElement => |workspaceStackElement| {
-                workspaceStackElement.setValid(self.resourceLabel, self.strResource.items(), isValid);
+                workspaceStackElement.setValid(self.resourceLabel, self.strResource, isValid);
             },
             .resourceStackElement => |resourceStackElement| {
                 resourceStackElement.setValid(isValid);
@@ -466,7 +467,7 @@ const ResourceEditStack = struct {
         for (self._future.items) |*futureElement| {
             switch (futureElement.*) {
                 .workspaceStackElement => {
-                    try futureElement.workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.NoParallelUniverses);
+                    try futureElement.workspaceStackElement.removeResource(self.resourceLabel, self.strResource, RemovedResourceReason.NoParallelUniverses);
                 },
                 .resourceStackElement => {},
             }
@@ -504,7 +505,7 @@ const ResourceEditStack = struct {
             switch (element.*) {
                 .workspaceStackElement => |workspaceStackElement| {
                     if (!isOK) {
-                        workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.ExternalRemoval);
+                        workspaceStackElement.removeResource(self.resourceLabel, self.strResource, RemovedResourceReason.ExternalRemoval);
                     }
                 },
                 .resourceStackElement => |_| {},
@@ -522,7 +523,7 @@ const ResourceEditStack = struct {
             switch (element.*) {
                 .workspaceStackElement => |workspaceStackElement| {
                     if (!isOK) {
-                        workspaceStackElement.removeResource(self.resourceLabel, self.strResource.items(), RemovedResourceReason.ExternalRemoval);
+                        workspaceStackElement.removeResource(self.resourceLabel, self.strResource, RemovedResourceReason.ExternalRemoval);
                     }
                 },
                 .resourceStackElement => |_| {},
@@ -583,11 +584,11 @@ const ResourceEditStack = struct {
         return self._future.items.len > 0;
     }
 
-    pub fn splitPastWorkspaceElement(self: *ResourceEditStack, toRemove: *const WorkspaceStackElement, individualMap: *std.StringHashMap(ResourceStackElement)) void {
+    pub fn splitPastWorkspaceElement(self: *ResourceEditStack, toRemove: *const WorkspaceStackElement, individualMap: *StringHashMap(ResourceStackElement)) void {
         var j: usize = self._past.items.len - 1;
         while (j >= 0) : (j -= 1) {
             if (self._past.items[j].id() == toRemove.id) {
-                if (individualMap.get(self.strResource.items())) |individual| {
+                if (individualMap.get(self.strResource)) |individual| {
                     // gets replaced
                     self._past.items[j] = .{ .resourceStackElement = individual };
                 } else {
@@ -600,11 +601,11 @@ const ResourceEditStack = struct {
         self.versionId += 1;
     }
 
-    pub fn splitFutureWorkspaceElement(self: *ResourceEditStack, toRemove: *const WorkspaceStackElement, individualMap: *std.StringHashMap(ResourceStackElement)) void {
+    pub fn splitFutureWorkspaceElement(self: *ResourceEditStack, toRemove: *const WorkspaceStackElement, individualMap: *StringHashMap(ResourceStackElement)) void {
         var j: usize = self._future.items.len - 1;
         while (j >= 0) : (j -= 1) {
             if (self._future.items[j].id() == toRemove.id) {
-                if (individualMap.get(self.strResource.items())) |individual| {
+                if (individualMap.get(self.strResource)) |individual| {
                     // gets replaced
                     self._future.items[j] = .{ .resourceStackElement = individual };
                 } else {
@@ -663,13 +664,13 @@ const KeyComputerPair = struct {
 };
 
 pub const UndoRedoService = struct {
-    _editStacks: std.StringHashMap(ResourceEditStack),
+    _editStacks: StringHashMap(ResourceEditStack),
     _uriComparisonKeyComputers: ArrayList(KeyComputerPair),
     _notificationService: NotificationService,
 
     pub fn init(allocator: Allocator) UndoRedoService {
         return UndoRedoService{
-            ._editStacks = std.StringHashMap(ResourceEditStack).init(allocator),
+            ._editStacks = StringHashMap(ResourceEditStack).init(allocator),
             ._uriComparisonKeyComputers = ArrayList(KeyComputerPair).init(allocator),
             ._notificationService = NotificationService{},
         };
@@ -677,7 +678,7 @@ pub const UndoRedoService = struct {
 
     pub fn create(allocator: Allocator) !*UndoRedoService {
         var self = try allocator.create(UndoRedoService);
-        self._editStacks = std.StringHashMap(ResourceEditStack).init(allocator);
+        self._editStacks = StringHashMap(ResourceEditStack).init(allocator);
         self._uriComparisonKeyComputers = ArrayList(KeyComputerPair).init(allocator);
         self._notificationService = NotificationService{};
         return self;
@@ -730,7 +731,7 @@ pub const UndoRedoService = struct {
         try str.appendSlice(": ");
         var iter = self._editStacks.keyIterator();
         while (iter.next()) |key| {
-            try str.appendSlice(key.*);
+            try key.fillItems(&str);
             try str.appendSlice("\n");
         }
         std.debug.print("{s}", .{str.items});
@@ -748,7 +749,7 @@ pub const UndoRedoService = struct {
             },
             .multiModel => |multiModel| {
                 const allocator = self._uriComparisonKeyComputers.allocator;
-                var seen = std.StringHashMap(void).init(allocator);
+                var seen = StringHashMap(void).init(allocator);
                 defer seen.deinit();
                 var resourceLabels = ArrayList([]const u8).init(allocator);
                 var strResources = ArrayList(String).init(allocator);
@@ -756,10 +757,10 @@ pub const UndoRedoService = struct {
                     const resourceLabel = getResourceLabel(resource);
                     const strResource = try self.getUriComparisonKey(resource);
 
-                    if (seen.contains(strResource.items())) {
+                    if (seen.contains(strResource)) {
                         continue;
                     }
-                    try seen.put(strResource.items(), {});
+                    try seen.put(strResource, {});
                     try resourceLabels.append(resourceLabel);
                     try strResources.append(strResource);
                 }
@@ -780,7 +781,7 @@ pub const UndoRedoService = struct {
         for (element.strResources(), 0..) |strResource, i| {
             const resourceLabel = element.resourceLabels()[i];
 
-            const res = try self._editStacks.getOrPut(strResource.items());
+            const res = try self._editStacks.getOrPut(strResource);
             if (!res.found_existing) {
                 res.value_ptr.* = ResourceEditStack.init(resourceLabel, strResource, allocator);
             }
@@ -791,8 +792,8 @@ pub const UndoRedoService = struct {
     pub fn getLastElement(self: *UndoRedoService, resource: Uri) !?*EditStackElement {
         var strResource = try self.getUriComparisonKey(resource);
         defer strResource.deinit();
-        if (self._editStacks.contains(strResource.items())) {
-            const editStack = self._editStacks.get(strResource.items()).?;
+        if (self._editStacks.contains(strResource)) {
+            const editStack = self._editStacks.get(strResource).?;
             if (editStack.hasFutureElements()) {
                 return null;
             }
@@ -806,20 +807,20 @@ pub const UndoRedoService = struct {
         const individualArr = try toRemove.actual.split();
         defer individualArr.deinit();
 
-        var individualMap = std.StringHashMap(ResourceStackElement).init(self._uriComparisonKeyComputers.allocator);
+        var individualMap = StringHashMap(ResourceStackElement).init(self._uriComparisonKeyComputers.allocator);
         defer individualMap.deinit();
         for (individualArr.items) |*_element| {
             const resourceLabel = getResourceLabel(_element.resource());
             const strResource = try self.getUriComparisonKey(_element.resource());
             const element = ResourceStackElement.init(_element, resourceLabel, strResource, 0, 0, 0, 0);
-            try individualMap.put(element.strResource.items(), element);
+            try individualMap.put(element.strResource, element);
         }
 
         for (toRemove.strResources.items) |strResource| {
-            if (ignoreResources != null and ignoreResources.?.has(strResource.items())) {
+            if (ignoreResources != null and ignoreResources.?.has(strResource)) {
                 continue;
             }
-            if (self._editStacks.getPtr(strResource.items())) |editStack| {
+            if (self._editStacks.getPtr(strResource)) |editStack| {
                 editStack.splitPastWorkspaceElement(toRemove, &individualMap);
             }
         }
@@ -827,26 +828,26 @@ pub const UndoRedoService = struct {
 
     fn _splitFutureWorkspaceElement(self: *UndoRedoService, toRemove: *const WorkspaceStackElement, ignoreResources: ?RemovedResources) !void {
         const individualArr = try toRemove.actual.split();
-        var individualMap = std.StringHashMap(ResourceStackElement).init(self._uriComparisonKeyComputers.allocator);
+        var individualMap = StringHashMap(ResourceStackElement).init(self._uriComparisonKeyComputers.allocator);
         defer individualMap.deinit();
         for (individualArr.items) |*_element| {
             const resourceLabel = getResourceLabel(_element.resource());
             const strResource = try self.getUriComparisonKey(_element.resource());
             const element = ResourceStackElement.init(_element, resourceLabel, strResource, 0, 0, 0, 0);
-            try individualMap.put(element.strResource.items(), element);
+            try individualMap.put(element.strResource, element);
         }
 
         for (toRemove.strResources.items) |strResource| {
-            if (ignoreResources != null and ignoreResources.?.has(strResource.items())) {
+            if (ignoreResources != null and ignoreResources.?.has(strResource)) {
                 continue;
             }
-            if (self._editStacks.getPtr(strResource.items())) |editStack| {
+            if (self._editStacks.getPtr(strResource)) |editStack| {
                 editStack.splitFutureWorkspaceElement(toRemove, &individualMap);
             }
         }
     }
 
-    pub fn removeElementsStr(self: *UndoRedoService, strResource: []const u8) !void {
+    pub fn removeElementsStr(self: *UndoRedoService, strResource: String) !void {
         if (self._editStacks.getPtr(strResource)) |editStack| {
             try editStack.dispose();
             _ = self._editStacks.remove(strResource);
@@ -859,7 +860,7 @@ pub const UndoRedoService = struct {
     pub fn removeElements(self: *UndoRedoService, resource: Uri) !void {
         var strResource = try self.getUriComparisonKey(resource);
         defer strResource.deinit();
-        try self.removeElementsStr(strResource.items());
+        try self.removeElementsStr(strResource);
     }
 
     pub fn setElementsValidFlag(self: *UndoRedoService, resource: Uri, isValid: bool, filter: fn (element: EditStackElement) bool) !void {
@@ -885,7 +886,7 @@ pub const UndoRedoService = struct {
     pub fn createSnapshot(self: *UndoRedoService, resource: Uri) !ResourceEditStackSnapshot {
         var strResource = try self.getUriComparisonKey(resource);
         defer strResource.deinit();
-        if (self._editStacks.get(strResource.items())) |*editStack| {
+        if (self._editStacks.get(strResource)) |*editStack| {
             return try editStack.createSnapshot(resource);
         }
         return ResourceEditStackSnapshot{ .resource = resource, .elements = ArrayList(u64).init(self._editStacks.allocator) };
@@ -894,7 +895,7 @@ pub const UndoRedoService = struct {
     pub fn restoreSnapshot(self: *UndoRedoService, snapshot: ResourceEditStackSnapshot) void {
         var strResource = try self.getUriComparisonKey(snapshot.resource);
         defer strResource.deinit();
-        if (self._editStacks.get(strResource.items())) |editStack| {
+        if (self._editStacks.get(strResource)) |editStack| {
             editStack.restoreSnapshot(snapshot);
 
             if (!editStack.hasPastElements() and !editStack.hasFutureElements()) {
@@ -910,7 +911,7 @@ pub const UndoRedoService = struct {
 
     pub fn getElements(self: *UndoRedoService, resource: Uri) PastFutureElements {
         const strResource = try self.getUriComparisonKey(resource);
-        if (self._editStacks.get(strResource.items())) |editStack| {
+        if (self._editStacks.get(strResource)) |editStack| {
             return editStack.getElements();
         }
         return PastFutureElements{ .past = &[_]StackElement{}, .future = &[_]StackElement{} };
@@ -923,7 +924,7 @@ pub const UndoRedoService = struct {
 
         // find an element with the sourceId and with the highest sourceOrder ready to be undone
         var matchedElement: ?StackElement = null;
-        var matchedStrResource: ?[]const u8 = null;
+        var matchedStrResource: ?String = null;
 
         var iter = self._editStacks.iterator();
         while (iter.next()) |entry| {
@@ -951,7 +952,7 @@ pub const UndoRedoService = struct {
             },
             .uri => |uri| {
                 const strResource = try self.getUriComparisonKey(uri);
-                if (self._editStacks.get(strResource.items())) |*editStack| {
+                if (self._editStacks.get(strResource)) |*editStack| {
                     return editStack.hasPastElements();
                 }
             },
@@ -969,7 +970,7 @@ pub const UndoRedoService = struct {
         // onUnexpectedError(err);
         // An error occurred while undoing or redoing => drop the undo/redo stack for all affected resources
         for (element.strResources()) |strResource| {
-            self.removeElementsStr(strResource.items());
+            self.removeElementsStr(strResource);
         }
         //self._notificationService.error(err);
     }
@@ -1064,12 +1065,12 @@ pub const UndoRedoService = struct {
     fn _getAffectedEditStacks(self: *UndoRedoService, element: *const WorkspaceStackElement) !EditStackSnapshot {
         var affectedEditStacks = ArrayList(ResourceEditStack).init(self._uriComparisonKeyComputers.allocator);
         for (element.strResources.items) |strResource| {
-            try affectedEditStacks.append(self._editStacks.get(strResource.items()) orelse missingEditStack);
+            try affectedEditStacks.append(self._editStacks.get(strResource) orelse missingEditStack);
         }
         return EditStackSnapshot.init(affectedEditStacks);
     }
 
-    fn _tryToSplitAndUndo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, ignoreResources: ?RemovedResources, message: []const u8) !WorkspaceVerificationError {
+    fn _tryToSplitAndUndo(self: *UndoRedoService, strResource: String, element: *WorkspaceStackElement, ignoreResources: ?RemovedResources, message: []const u8) !WorkspaceVerificationError {
         if (element.canSplit()) {
             try self._splitPastWorkspaceElement(element, ignoreResources);
             self._notificationService.warn(message);
@@ -1078,14 +1079,14 @@ pub const UndoRedoService = struct {
         } else {
             // Cannot safely split this workspace element => flush all undo/redo stacks
             for (element.strResources.items) |str| {
-                try self.removeElementsStr(str.items());
+                try self.removeElementsStr(str);
             }
             self._notificationService.warn(message);
             return WorkspaceVerificationError{ .returnValue = null };
         }
     }
 
-    fn _checkWorkspaceUndo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, editStackSnapshot: EditStackSnapshot, checkInvalidatedResources: bool) !?WorkspaceVerificationError {
+    fn _checkWorkspaceUndo(self: *UndoRedoService, strResource: String, element: *WorkspaceStackElement, editStackSnapshot: EditStackSnapshot, checkInvalidatedResources: bool) !?WorkspaceVerificationError {
         if (element.removedResources) |removedResources| {
             return try self._tryToSplitAndUndo(strResource, element, removedResources, "Could not undo '{0}' across all files. {1}" //, element.label, element.removedResources.createMessage()
             );
@@ -1131,7 +1132,7 @@ pub const UndoRedoService = struct {
         return null;
     }
 
-    fn _workspaceUndo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, undoConfirmed: bool) !void {
+    fn _workspaceUndo(self: *UndoRedoService, strResource: String, element: *WorkspaceStackElement, undoConfirmed: bool) !void {
         const affectedEditStacks = try self._getAffectedEditStacks(element);
         const verificationError = try self._checkWorkspaceUndo(strResource, element, affectedEditStacks, false); // invalidated resources will be checked after the prepare call
         if (verificationError) |err| {
@@ -1166,7 +1167,7 @@ pub const UndoRedoService = struct {
 
     const UndoChoice = enum(u2) { All = 0, This = 1, Cancel = 2 };
 
-    fn _confirmAndExecuteWorkspaceUndo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, editStackSnapshot: EditStackSnapshot, undoConfirmed: bool) !void {
+    fn _confirmAndExecuteWorkspaceUndo(self: *UndoRedoService, strResource: String, element: *WorkspaceStackElement, editStackSnapshot: EditStackSnapshot, undoConfirmed: bool) !void {
         if (element.canSplit() and !self._isPartOfUndoGroup(element)) {
             // this element can be split
 
@@ -1259,7 +1260,7 @@ pub const UndoRedoService = struct {
 
         // find another element with the same groupId and with the highest groupOrder ready to be undone
         var matchedElement: ?StackElement = null;
-        var matchedStrResource: ?[]const u8 = null;
+        var matchedStrResource: ?String = null;
 
         var iter = self._editStacks.iterator();
         while (iter.next()) |entry| {
@@ -1300,7 +1301,7 @@ pub const UndoRedoService = struct {
             .uri => |uri| {
                 var strResource = try self.getUriComparisonKey(uri);
                 defer strResource.deinit();
-                try self._undo(strResource.items(), 0, false);
+                try self._undo(strResource, 0, false);
             },
             .str => |strResource| {
                 try self._undo(strResource, 0, false);
@@ -1308,7 +1309,7 @@ pub const UndoRedoService = struct {
         }
     }
 
-    fn _undo(self: *UndoRedoService, strResource: []const u8, sourceId: u64, undoConfirmed: bool) anyerror!void {
+    fn _undo(self: *UndoRedoService, strResource: String, sourceId: u64, undoConfirmed: bool) anyerror!void {
         if (self._editStacks.getPtr(strResource)) |editStack| {
             var ele = editStack.getClosestPastElement();
             if (ele) |*element| {
@@ -1348,7 +1349,7 @@ pub const UndoRedoService = struct {
         }
     }
 
-    fn _confirmAndContinueUndo(self: *UndoRedoService, strResource: []const u8, sourceId: u64, element: *StackElement) !void {
+    fn _confirmAndContinueUndo(self: *UndoRedoService, strResource: String, sourceId: u64, element: *StackElement) !void {
         _ = element;
         // const result = await self._dialogService.confirm({
         //     message: nls.localize('confirmDifferentSource', "Would you like to undo '{0}'?", element.label),
@@ -1370,7 +1371,7 @@ pub const UndoRedoService = struct {
 
         // find an element with sourceId and with the lowest sourceOrder ready to be redone
         var matchedElement: ?StackElement = null;
-        var matchedStrResource: ?[]const u8 = null;
+        var matchedStrResource: ?String = null;
 
         var iter = self._editStacks.iterator();
         while (iter.next()) |entry| {
@@ -1412,7 +1413,7 @@ pub const UndoRedoService = struct {
         return false;
     }
 
-    fn _tryToSplitAndRedo(self: *UndoRedoService, strResource: []const u8, element: *const WorkspaceStackElement, ignoreResources: ?RemovedResources, message: []const u8) !WorkspaceVerificationError {
+    fn _tryToSplitAndRedo(self: *UndoRedoService, strResource: String, element: *const WorkspaceStackElement, ignoreResources: ?RemovedResources, message: []const u8) !WorkspaceVerificationError {
         if (element.canSplit()) {
             try self._splitFutureWorkspaceElement(element, ignoreResources);
             self._notificationService.warn(message);
@@ -1421,14 +1422,14 @@ pub const UndoRedoService = struct {
         } else {
             // Cannot safely split this workspace element => flush all undo/redo stacks
             for (element.strResources.items) |str| {
-                try self.removeElementsStr(str.items());
+                try self.removeElementsStr(str);
             }
             self._notificationService.warn(message);
             return WorkspaceVerificationError{ .returnValue = null };
         }
     }
 
-    fn _checkWorkspaceRedo(self: *UndoRedoService, strResource: []const u8, element: *const WorkspaceStackElement, editStackSnapshot: EditStackSnapshot, checkInvalidatedResources: bool) !?WorkspaceVerificationError {
+    fn _checkWorkspaceRedo(self: *UndoRedoService, strResource: String, element: *const WorkspaceStackElement, editStackSnapshot: EditStackSnapshot, checkInvalidatedResources: bool) !?WorkspaceVerificationError {
         if (element.removedResources) |removedResources| {
             return try self._tryToSplitAndRedo(strResource, element, removedResources, "Could not redo '{0}' across all files. {1}" //, element.label, element.removedResources.createMessage()
             );
@@ -1473,7 +1474,7 @@ pub const UndoRedoService = struct {
         return null;
     }
 
-    fn _workspaceRedo(self: *UndoRedoService, strResource: []const u8, element: *const WorkspaceStackElement) !void {
+    fn _workspaceRedo(self: *UndoRedoService, strResource: String, element: *const WorkspaceStackElement) !void {
         const affectedEditStacks = try self._getAffectedEditStacks(element);
         // invalidated resources will be checked after the prepare call
         const verificationError = try self._checkWorkspaceRedo(strResource, element, affectedEditStacks, false);
@@ -1483,7 +1484,7 @@ pub const UndoRedoService = struct {
         try self._executeWorkspaceRedo(strResource, element, affectedEditStacks);
     }
 
-    fn _executeWorkspaceRedo(self: *UndoRedoService, strResource: []const u8, element: *const WorkspaceStackElement, editStackSnapshot: EditStackSnapshot) !void {
+    fn _executeWorkspaceRedo(self: *UndoRedoService, strResource: String, element: *const WorkspaceStackElement, editStackSnapshot: EditStackSnapshot) !void {
         // prepare
         const cleanup = self._invokeWorkspacePrepare(element);
 
@@ -1527,7 +1528,7 @@ pub const UndoRedoService = struct {
         // });
     }
 
-    const ResultPair = Pair(?StackElement, ?[]const u8);
+    const ResultPair = Pair(?StackElement, ?String);
 
     fn _findClosestRedoElementInGroup(self: *UndoRedoService, groupId: u64) ResultPair {
         if (groupId == 0) {
@@ -1536,7 +1537,7 @@ pub const UndoRedoService = struct {
 
         // find another element with the same groupId and with the lowest groupOrder ready to be redone
         var matchedElement: ?StackElement = null;
-        var matchedStrResource: ?[]const u8 = null;
+        var matchedStrResource: ?String = null;
 
         var iter = self._editStacks.iterator();
         while (iter.next()) |entry| {
@@ -1575,7 +1576,7 @@ pub const UndoRedoService = struct {
             .uri => |uri| {
                 var strResource = try self.getUriComparisonKey(uri);
                 defer strResource.deinit();
-                try self._redo(strResource.items());
+                try self._redo(strResource);
             },
             .str => |str| {
                 try self._redo(str);
@@ -1583,7 +1584,7 @@ pub const UndoRedoService = struct {
         }
     }
 
-    fn _redo(self: *UndoRedoService, strResource: []const u8) anyerror!void {
+    fn _redo(self: *UndoRedoService, strResource: String) anyerror!void {
         if (self._editStacks.getPtr(strResource)) |editStack| {
             if (editStack.getClosestFutureElement()) |*element| {
                 const groupId = element.groupId();
