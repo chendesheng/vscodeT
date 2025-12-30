@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Range = @import("../basics/range.zig").Range;
 const InternalModelContentChangeEvent = @import("../textModel/textModelEvents.zig").InternalModelContentChangeEvent;
 const Position = @import("../basics/position.zig").Position;
 const String = @import("../basics/strings.zig").String;
@@ -13,6 +14,7 @@ const ArrayList = std.array_list.Managed;
 const ModelRawChange = @import("../textModel/textModelEvents.zig").ModelRawChange;
 const ModelRawLineChanged = @import("../textModel/textModelEvents.zig").ModelRawLineChanged;
 const ModelRawContentChangedEvent = @import("../textModel/textModelEvents.zig").ModelRawContentChangedEvent;
+const ModelRawLinesDeleted = @import("../textModel/textModelEvents.zig").ModelRawLinesDeleted;
 
 // --------- utils
 
@@ -210,8 +212,239 @@ const EditorModelModelTests = struct {
         var edits = [_]IdentifiedSingleEditOperation{EditOperation.insert(.init(1, 3), .initBorrowed(" new line\nNo longer"))};
         _ = try model.applyEdits(&edits, null);
     }
+
+    // --------- delete text
+
+    test "model delete empty text does not trigger eventing" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        try model.onDidChangeContentOrInjectedText(struct {
+            fn cb(e: InternalModelContentChangeEvent) void {
+                _ = e;
+                std.debug.print("was not expecting event\n", .{});
+                unreachable;
+            }
+        }.cb);
+        var edits = [_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 1, 1, 1))};
+        _ = try model.applyEdits(&edits, null);
+    }
+
+    test "model delete text from one line eventing" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        try model.onDidChangeContentOrInjectedText(struct {
+            fn cb(e: InternalModelContentChangeEvent) void {
+                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
+                std.testing.expectEqual(1, e.rawContentChangedEvent.changes.items.len) catch unreachable;
+                switch (e.rawContentChangedEvent.changes.items[0]) {
+                    .lineChanged => |line| {
+                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
+                        std.testing.expect(line.detail.eql(.initBorrowed("y First Line"))) catch unreachable;
+                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+                    },
+                    else => unreachable,
+                }
+            }
+        }.cb);
+        var edits = [_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 1, 1, 2))};
+        _ = try model.applyEdits(&edits, null);
+    }
+
+    test "model delete all text from a line eventing" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        try model.onDidChangeContentOrInjectedText(struct {
+            fn cb(e: InternalModelContentChangeEvent) void {
+                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
+                std.testing.expectEqual(1, e.rawContentChangedEvent.changes.items.len) catch unreachable;
+                switch (e.rawContentChangedEvent.changes.items[0]) {
+                    .lineChanged => |line| {
+                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
+                        std.testing.expect(line.detail.isEmpty()) catch unreachable;
+                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+                    },
+                    else => unreachable,
+                }
+            }
+        }.cb);
+        var edits = [_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 1, 1, 14))};
+        _ = try model.applyEdits(&edits, null);
+    }
+
+    test "model delete text from two lines eventing" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        try model.onDidChangeContentOrInjectedText(struct {
+            fn cb(e: InternalModelContentChangeEvent) void {
+                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
+                std.testing.expectEqual(2, e.rawContentChangedEvent.changes.items.len) catch unreachable;
+                switch (e.rawContentChangedEvent.changes.items[0]) {
+                    .lineChanged => |line| {
+                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
+                        std.testing.expect(line.detail.eql(.initBorrowed("My Second Line"))) catch unreachable;
+                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+                    },
+                    else => unreachable,
+                }
+                std.testing.expectEqualDeep(e.rawContentChangedEvent.changes.items[1], ModelRawChange{ .linesDeleted = .init(2, 2) }) catch unreachable;
+            }
+        }.cb);
+        var edits = [_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 4, 2, 6))};
+        _ = try model.applyEdits(&edits, null);
+    }
+
+    test "model delete text from many lines eventing" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        try model.onDidChangeContentOrInjectedText(struct {
+            fn cb(e: InternalModelContentChangeEvent) void {
+                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
+                std.testing.expectEqual(2, e.rawContentChangedEvent.changes.items.len) catch unreachable;
+                switch (e.rawContentChangedEvent.changes.items[0]) {
+                    .lineChanged => |line| {
+                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
+                        std.testing.expect(line.detail.eql(.initBorrowed("My Third Line"))) catch unreachable;
+                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+                    },
+                    else => unreachable,
+                }
+                std.testing.expectEqualDeep(e.rawContentChangedEvent.changes.items[1], ModelRawChange{ .linesDeleted = .init(2, 3) }) catch unreachable;
+            }
+        }.cb);
+        var edits = [_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 4, 3, 5))};
+        _ = try model.applyEdits(&edits, null);
+    }
+
+    // --------- getValueInRange
+
+    fn assertValueInRange(model: *TextModel, range: Range, expected: []const u8) !void {
+        var value = try model.getValueInRange(range, null);
+        defer value.deinit();
+        try std.testing.expectEqualStrings(expected, value.items);
+    }
+
+    test "model getValueInRange" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        try assertValueInRange(model, .init(1, 1, 1, 1), "");
+        try assertValueInRange(model, .init(1, 1, 1, 2), "M");
+        try assertValueInRange(model, .init(1, 2, 1, 3), "y");
+        try assertValueInRange(model, .init(1, 1, 1, 14), "My First Line");
+        try assertValueInRange(model, .init(1, 1, 2, 1), "My First Line\n");
+        try assertValueInRange(model, .init(1, 1, 2, 2), "My First Line\n\t");
+        try assertValueInRange(model, .init(1, 1, 2, 3), "My First Line\n\t\t");
+        try assertValueInRange(model, .init(1, 1, 2, 17), "My First Line\n\t\tMy Second Line");
+        try assertValueInRange(model, .init(1, 1, 3, 1), "My First Line\n\t\tMy Second Line\n");
+        try assertValueInRange(model, .init(1, 1, 4, 1), "My First Line\n\t\tMy Second Line\n    Third Line\n");
+    }
+
+    // --------- getValueLengthInRange
+
+    test "model getValueLengthInRange" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        try std.testing.expectEqual("".len, model.getValueLengthInRange(.init(1, 1, 1, 1), null));
+        try std.testing.expectEqual("M".len, model.getValueLengthInRange(.init(1, 1, 1, 2), null));
+        try std.testing.expectEqual("y".len, model.getValueLengthInRange(.init(1, 2, 1, 3), null));
+        try std.testing.expectEqual("My First Line".len, model.getValueLengthInRange(.init(1, 1, 1, 14), null));
+        try std.testing.expectEqual("My First Line\n".len, model.getValueLengthInRange(.init(1, 1, 2, 1), null));
+        try std.testing.expectEqual("My First Line\n\t".len, model.getValueLengthInRange(.init(1, 1, 2, 2), null));
+        try std.testing.expectEqual("My First Line\n\t\t".len, model.getValueLengthInRange(.init(1, 1, 2, 3), null));
+        try std.testing.expectEqual("My First Line\n\t\tMy Second Line".len, model.getValueLengthInRange(.init(1, 1, 2, 17), null));
+        try std.testing.expectEqual("My First Line\n\t\tMy Second Line\n".len, model.getValueLengthInRange(.init(1, 1, 3, 1), null));
+        try std.testing.expectEqual("My First Line\n\t\tMy Second Line\n    Third Line\n".len, model.getValueLengthInRange(.init(1, 1, 4, 1), null));
+    }
+
+    // --------- setValue
+    test "setValue eventing" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        try model.onDidChangeContentOrInjectedText(struct {
+            fn cb(e: InternalModelContentChangeEvent) void {
+                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
+                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
+                std.testing.expectEqual(1, e.rawContentChangedEvent.changes.items.len) catch unreachable;
+                std.testing.expectEqualDeep(e.rawContentChangedEvent.changes.items[0], ModelRawChange{ .flush = .init() }) catch unreachable;
+            }
+        }.cb);
+        try model.setValue("new value");
+    }
+
+    test "issue #46342: Maintain edit operation order in applyEdits" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        var edits = [_]IdentifiedSingleEditOperation{
+            EditOperation.replace(.init(2, 1, 2, 1), .initBorrowed("a")),
+            EditOperation.replace(.init(1, 1, 1, 1), .initBorrowed("b")),
+        };
+        const res = (try model.applyEdits(&edits, true)).?;
+        defer res.deinit();
+        defer {
+            for (res.items) |*item| {
+                item.deinit();
+            }
+        }
+        try std.testing.expectEqualDeep(res.items[0].range, Range.init(2, 1, 2, 2));
+        try std.testing.expectEqualDeep(res.items[1].range, Range.init(1, 1, 1, 2));
+    }
+};
+
+const EditorModelModelLineSeparatorsTests = struct {
+    fn createModel(allocator: Allocator) !*TextModel {
+        const text =
+            LINE1 ++ "\u{2028}" ++
+            LINE2 ++ "\n" ++
+            LINE3 ++ "\u{2028}" ++
+            LINE4 ++ "\r\n" ++
+            LINE5;
+        return try createTextModel(allocator, text, null);
+    }
+
+    fn assertValue(model: *TextModel, expected: []const u8) !void {
+        var value = try model.getValue(null, false);
+        defer value.deinit();
+        try std.testing.expect(value.eql(.initBorrowed(expected)));
+    }
+
+    test "model getValue" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        try assertValue(model, "My First Line\u{2028}\t\tMy Second Line\n    Third Line\u{2028}\n1");
+    }
+
+    test "model lines" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        try std.testing.expectEqual(3, model.getLineCount());
+    }
+
+    test "Bug 13333:Model should line break on lonely CR too" {
+        const model = try createTextModel(std.testing.allocator, "Hello\rWorld!\r\nAnother line", null);
+        defer disposeTextModel(model);
+        try std.testing.expectEqual(3, model.getLineCount());
+        try assertValue(model, "Hello\r\nWorld!\r\nAnother line");
+    }
 };
 
 test "model" {
     _ = EditorModelModelTests;
+    _ = EditorModelModelLineSeparatorsTests;
 }

@@ -1304,9 +1304,10 @@ pub const TextModel = struct {
                 const insertingLinesCnt = eolCount;
                 const editingLinesCnt: usize = @min(deletingLinesCnt, insertingLinesCnt);
 
-                const changeLineCountDelta: usize = (insertingLinesCnt - deletingLinesCnt);
+                // changeLineCountDelta is not used because integer overflow is possible
+                // const changeLineCountDelta = insertingLinesCnt - deletingLinesCnt;
 
-                const currentEditStartLineNumber: usize = newLineCount - lineCount - changeLineCountDelta + startLineNumber;
+                const currentEditStartLineNumber: usize = deletingLinesCnt + startLineNumber + newLineCount - lineCount - insertingLinesCnt;
                 const firstEditLineNumber: usize = currentEditStartLineNumber;
                 const lastInsertedLineNumber: usize = currentEditStartLineNumber + insertingLinesCnt;
 
@@ -1381,7 +1382,7 @@ pub const TextModel = struct {
                     try rawContentChanges.append(.{ .linesInserted = ModelRawLinesInserted.init(spliceLineNumber + 1, startLineNumber + insertingLinesCnt, newLines, injectedTexts) });
                 }
 
-                lineCount += changeLineCountDelta;
+                lineCount = lineCount + insertingLinesCnt - deletingLinesCnt;
             }
 
             var changes = ArrayList(ModelContentChange).init(allocator);
@@ -2234,7 +2235,7 @@ fn createTextBufferFactory(allocator: Allocator, reader: *std.Io.Reader) !PieceT
             break;
         }
     }
-    return try builder.finish(false);
+    return try builder.finish(null);
 }
 
 const LineHeightChangingDecoration = struct {

@@ -173,7 +173,8 @@ pub const PieceTreeBufferBuilder = struct {
         }
     }
 
-    pub fn finish(self: *PieceTreeBufferBuilder, normalizeEOL: bool) !PieceTreeTextBufferFactory {
+    pub fn finish(self: *PieceTreeBufferBuilder, _normalizeEOL: ?bool) !PieceTreeTextBufferFactory {
+        const normalizeEOL = _normalizeEOL orelse true;
         try self._finish();
         return PieceTreeTextBufferFactory{
             ._chunks = self.chunks,
