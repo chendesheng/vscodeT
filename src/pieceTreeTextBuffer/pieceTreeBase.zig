@@ -187,6 +187,7 @@ pub const StringBuffer = struct {
     }
 
     fn substring(self: *const StringBuffer, start: usize, end: usize) []const u8 {
+        if (start > end) return self.buffer.items[end..start];
         return self.buffer.items[start..end];
     }
 
@@ -672,13 +673,13 @@ pub const PieceTreeBase = struct {
         while (x != SENTINEL) {
             piece = x.piece.?;
             const buf = self._buffers.items[piece.bufferIndex];
-            const stOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
+            const startOffset2 = self.offsetInBuffer(piece.bufferIndex, piece.start);
 
             if (x == endPosition.node) {
-                try ret.appendSlice(buf.substring(stOffset, stOffset + endPosition.remainder));
+                try ret.appendSlice(buf.substring(startOffset2, startOffset2 + endPosition.remainder));
                 break;
             } else {
-                try ret.appendSlice(buf.substr(stOffset, piece.length));
+                try ret.appendSlice(buf.substr(startOffset2, piece.length));
             }
 
             x = x.next();

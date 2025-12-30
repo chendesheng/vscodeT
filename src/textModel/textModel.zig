@@ -2224,7 +2224,7 @@ pub fn createTextBuffer(allocator: Allocator, source: *std.Io.Reader, defaultEOL
 }
 
 var readerBuffer: [65535]u8 = undefined;
-fn createTextBufferFactory(allocator: Allocator, reader: *std.Io.Reader) !PieceTreeTextBufferFactory {
+pub fn createTextBufferFactory(allocator: Allocator, reader: *std.Io.Reader) !PieceTreeTextBufferFactory {
     var builder = PieceTreeBufferBuilder.init(allocator);
     while (true) {
         const len = try reader.readSliceShort(&readerBuffer);

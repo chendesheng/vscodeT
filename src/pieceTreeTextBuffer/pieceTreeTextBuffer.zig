@@ -29,7 +29,7 @@ const ModelContentChange = @import("../textModel/textModelEvents.zig").ModelCont
 const ValidEditOperation = @import("../textModel/model.zig").ValidEditOperation;
 const String = @import("../basics/strings.zig").String;
 
-const ValidatedEditOperation = struct {
+pub const ValidatedEditOperation = struct {
     sortIndex: i64,
     identifier: ?SingleEditOperationIdentifier,
     range: Range,
@@ -42,7 +42,7 @@ const ValidatedEditOperation = struct {
     forceMoveMarkers: bool,
     isAutoWhitespaceEdit: bool,
 
-    pub fn deinit(self: *const ValidatedEditOperation) void {
+    pub fn deinit(self: *ValidatedEditOperation) void {
         self.text.deinit();
     }
 };
@@ -128,7 +128,8 @@ pub const PieceTreeTextBuffer = struct {
         return Range.init(startPosition.lineNumber, startPosition.column, endPosition.lineNumber, endPosition.column);
     }
 
-    pub fn getValueInRange(self: *const PieceTreeTextBuffer, range: Range, eol: EndOfLinePreference) !ArrayList(u8) {
+    pub fn getValueInRange(self: *const PieceTreeTextBuffer, range: Range, _eol: ?EndOfLinePreference) !ArrayList(u8) {
+        const eol = _eol orelse .TextDefined;
         if (range.isEmpty()) {
             return ArrayList(u8).init(self._pieceTree.allocator);
         }
@@ -137,7 +138,8 @@ pub const PieceTreeTextBuffer = struct {
         return try self._pieceTree.getValueInRange(range, lineEnding);
     }
 
-    pub fn getValueLengthInRange(self: *const PieceTreeTextBuffer, range: Range, eol: EndOfLinePreference) usize {
+    pub fn getValueLengthInRange(self: *const PieceTreeTextBuffer, range: Range, _eol: ?EndOfLinePreference) usize {
+        const eol = _eol orelse .TextDefined;
         if (range.isEmpty()) {
             return 0;
         }
@@ -327,7 +329,7 @@ pub const PieceTreeTextBuffer = struct {
                 .identifier = op.identifier,
                 .range = validatedRange,
                 .rangeOffset = self.getOffsetAt(validatedRange.startLineNumber, validatedRange.startColumn),
-                .rangeLength = self.getValueLengthInRange(validatedRange, .TextDefined),
+                .rangeLength = self.getValueLengthInRange(validatedRange, null),
                 .text = validText,
                 .eolCount = eolCount,
                 .firstLineLength = firstLineLength,
@@ -485,21 +487,14 @@ pub const PieceTreeTextBuffer = struct {
         operations.items[0] = try self._toSingleEditOperation(operations.items);
     }
 
-    fn _toSingleEditOperation(self: *PieceTreeTextBuffer, operations: []ValidatedEditOperation) !ValidatedEditOperation {
+    pub fn _toSingleEditOperation(self: *const PieceTreeTextBuffer, operations: []const ValidatedEditOperation) !ValidatedEditOperation {
         const allocator = self._pieceTree.allocator;
         var forceMoveMarkers = false;
         const firstEditRange = operations[0].range;
         const lastEditRange = operations[operations.len - 1].range;
-        const entireEditRange = Range{
-            .startLineNumber = firstEditRange.startLineNumber,
-            .startColumn = firstEditRange.startColumn,
-            .endLineNumber = lastEditRange.endLineNumber,
-            .endColumn = lastEditRange.endColumn,
-        };
-
+        const entireEditRange = Range.init(firstEditRange.startLineNumber, firstEditRange.startColumn, lastEditRange.endLineNumber, lastEditRange.endColumn);
         var lastEndLineNumber = firstEditRange.endLineNumber;
         var lastEndColumn = firstEditRange.endColumn;
-
         var result = ArrayList(u8).init(allocator);
 
         for (operations) |operation| {
@@ -510,9 +505,9 @@ pub const PieceTreeTextBuffer = struct {
             const oldText = try self.getValueInRange(Range{
                 .startLineNumber = lastEndLineNumber,
                 .startColumn = lastEndColumn,
-                .endLineNumber = lastEndLineNumber,
-                .endColumn = lastEndColumn,
-            }, .TextDefined);
+                .endLineNumber = range.startLineNumber,
+                .endColumn = range.startColumn,
+            }, null);
             defer oldText.deinit();
             try result.appendSlice(oldText.items);
 
@@ -521,7 +516,6 @@ pub const PieceTreeTextBuffer = struct {
                 try operation.text.fillItems(&result);
             }
 
-            // (3) -- Update last end line number and column
             lastEndLineNumber = range.endLineNumber;
             lastEndColumn = range.endColumn;
         }
@@ -533,8 +527,8 @@ pub const PieceTreeTextBuffer = struct {
             .sortIndex = 0,
             .identifier = operations[0].identifier,
             .range = entireEditRange,
-            .rangeOffset = self.getOffsetAt(firstEditRange.startLineNumber, firstEditRange.startColumn),
-            .rangeLength = self.getValueLengthInRange(entireEditRange, .TextDefined),
+            .rangeOffset = self.getOffsetAt(entireEditRange.startLineNumber, entireEditRange.startColumn),
+            .rangeLength = self.getValueLengthInRange(entireEditRange, null),
             .text = text,
             .eolCount = eolResult.eolCount,
             .firstLineLength = eolResult.firstLineLength,
@@ -608,7 +602,7 @@ pub const PieceTreeTextBuffer = struct {
 };
 
 // Assumes `operations` are validated and sorted ascending
-fn _getInverseEditRanges(allocator: Allocator, operators: []ValidatedEditOperation) !ArrayList(Range) {
+pub fn _getInverseEditRanges(allocator: Allocator, operators: []const ValidatedEditOperation) !ArrayList(Range) {
     var result = ArrayList(Range).init(allocator);
 
     var prevOpEndLineNumber: usize = 0;
@@ -621,7 +615,7 @@ fn _getInverseEditRanges(allocator: Allocator, operators: []ValidatedEditOperati
         if (prevOp) |prev| {
             if (prev.range.endLineNumber == op.range.startLineNumber) {
                 startLineNumber = prevOpEndLineNumber;
-                startColumn = prevOpEndColumn + (op.range.startLineNumber - prev.range.endLineNumber);
+                startColumn = prevOpEndColumn + (op.range.startColumn - prev.range.endColumn);
             } else {
                 startLineNumber = prevOpEndLineNumber + (op.range.startLineNumber - prev.range.endLineNumber);
                 startColumn = op.range.startColumn;
@@ -650,7 +644,7 @@ fn _getInverseEditRanges(allocator: Allocator, operators: []ValidatedEditOperati
                     .startLineNumber = startLineNumber,
                     .startColumn = startColumn,
                     .endLineNumber = startLineNumber + lineCount - 1,
-                    .endColumn = startColumn + op.lastLineLength,
+                    .endColumn = op.lastLineLength + 1,
                 };
             }
         } else {
