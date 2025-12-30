@@ -556,6 +556,19 @@ pub const String = union(enum) {
         }
     }
 
+    pub fn debugPrint(self: *const String) void {
+        switch (self.*) {
+            .empty => std.debug.print("empty", .{}),
+            .owned => |list| std.debug.print("owned: \"{s}\"\n", .{list.items}),
+            .borrowed1 => |s| std.debug.print("borrowed1: \"{s}\"\n", .{s}),
+            .borrowed => |list| {
+                for (list.items) |s| {
+                    std.debug.print("borrowed: \"{s}\"\n", .{s});
+                }
+            },
+        }
+    }
+
     pub fn concat(self: *const String, allocator: Allocator, other: String) !String {
         var result = ArrayList(u8).init(allocator);
         try self.fillItems(&result);

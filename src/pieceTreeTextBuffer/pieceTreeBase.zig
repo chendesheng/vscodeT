@@ -625,18 +625,18 @@ pub const PieceTreeBase = struct {
         return Position.create(1, 1);
     }
 
-    pub fn getValueInRange(self: *const PieceTreeBase, range: Range, eol_: ?EOL) !ArrayList(u8) {
-        self.log("getValueInRange({d}, {d}, {d}, {d}, {s})\n", .{ range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn, if (eol_) |eol| if (eol == .CRLF) ".CRLF" else ".LF" else "null" });
+    pub fn getValueInRange(self: *const PieceTreeBase, range: Range, _eol: ?EOL) !ArrayList(u8) {
+        self.log("getValueInRange({d}, {d}, {d}, {d}, {s})\n", .{ range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn, if (_eol) |eol| if (eol == .CRLF) ".CRLF" else ".LF" else "null" });
 
         if (range.startLineNumber == range.endLineNumber and range.startColumn == range.endColumn) {
             return ArrayList(u8).init(self.allocator);
         }
 
-        const startPosition = self.nodeAtPosition(range.startLineNumber, range.startColumn).?;
-        const endPosition = self.nodeAtPosition(range.endLineNumber, range.endColumn).?;
+        const startPosition = self.nodeAt2(range.startLineNumber, range.startColumn).?;
+        const endPosition = self.nodeAt2(range.endLineNumber, range.endColumn).?;
 
         var value = try self.getValueInRange2(startPosition, endPosition);
-        if (eol_) |eol| {
+        if (_eol) |eol| {
             if (eol != self._EOL or !self._EOLNormalized) {
                 try replaceEOL(&value, eol);
                 return value;
@@ -870,18 +870,18 @@ pub const PieceTreeBase = struct {
     }
 
     pub fn getLineCharCode(self: *const PieceTreeBase, lineNumber: usize, index: usize) u8 {
-        const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
+        const nodePos = self.nodeAt2(lineNumber, index + 1).?;
         return self._getCharCode(nodePos);
     }
 
     pub fn getLineCodepoint(self: *const PieceTreeBase, lineNumber: usize, index: usize) u21 {
-        const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
+        const nodePos = self.nodeAt2(lineNumber, index + 1).?;
         return self._getCodepoint(nodePos);
     }
 
     // returns 0-based indices, end side is exclusive
     pub fn getLineCodepointRange(self: *const PieceTreeBase, lineNumber: usize, index: usize) [2]usize {
-        const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
+        const nodePos = self.nodeAt2(lineNumber, index + 1).?;
         const range = self._getCodepointRelativeRange(nodePos);
         return [2]usize{ usizeAdd(index, range[0]), usizeAdd(index, range[1]) };
     }
@@ -982,11 +982,11 @@ pub const PieceTreeBase = struct {
     pub fn findMatchesLineByLine(self: *PieceTreeBase, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
         var result = ArrayList(FindMatch).init(self.allocator);
 
-        const startPosition_ = self.nodeAtPosition(searchRange.startLineNumber, searchRange.startColumn);
+        const startPosition_ = self.nodeAt2(searchRange.startLineNumber, searchRange.startColumn);
         if (startPosition_ == null) {
             return result;
         }
-        const endPosition_ = self.nodeAtPosition(searchRange.endLineNumber, searchRange.endColumn);
+        const endPosition_ = self.nodeAt2(searchRange.endLineNumber, searchRange.endColumn);
         if (endPosition_ == null) {
             return result;
         }
@@ -1042,7 +1042,7 @@ pub const PieceTreeBase = struct {
             }
 
             startLineNumber += 1;
-            startPosition = self.nodeAtPosition(startLineNumber, 1).?;
+            startPosition = self.nodeAt2(startLineNumber, 1).?;
             currentNode = startPosition.node;
             start = self.positionInBuffer(startPosition.node, startPosition.remainder);
         }
@@ -1847,40 +1847,41 @@ pub const PieceTreeBase = struct {
         return undefined;
     }
 
-    fn nodeAtPosition(self: *const PieceTreeBase, lineNumber: usize, column: usize) ?NodePosition {
+    fn nodeAt2(self: *const PieceTreeBase, _lineNumber: usize, _column: usize) ?NodePosition {
+        var lineNumber = _lineNumber;
+        var column = _column;
+
         var x = self.root;
         var nodeStartOffset: usize = 0;
-        var col = column;
-        var line = lineNumber;
 
         while (x != SENTINEL) {
             const piece = x.piece.?;
-            if (x.left != SENTINEL and x.lf_left >= line - 1) {
+            if (x.left != SENTINEL and x.lf_left >= lineNumber - 1) {
                 x = x.left;
-            } else if (x.lf_left + piece.lineFeedCnt > line - 1) {
-                const prevAccumualtedValue = if (line < x.lf_left + 2) 0 else self.getAccumulatedValue(x, line - x.lf_left - 2);
-                const accumulatedValue = if (line < x.lf_left + 1) 0 else self.getAccumulatedValue(x, line - x.lf_left - 1);
+            } else if (x.lf_left + piece.lineFeedCnt > lineNumber - 1) {
+                const prevAccumualtedValue = if (lineNumber < x.lf_left + 2) 0 else self.getAccumulatedValue(x, lineNumber - x.lf_left - 2);
+                const accumulatedValue = if (lineNumber < x.lf_left + 1) 0 else self.getAccumulatedValue(x, lineNumber - x.lf_left - 1);
                 nodeStartOffset += x.size_left;
 
                 return .{
                     .node = x,
-                    .remainder = @intCast(@min(prevAccumualtedValue + col - 1, accumulatedValue)),
+                    .remainder = @intCast(@min(prevAccumualtedValue + column - 1, accumulatedValue)),
                     .nodeStartOffset = nodeStartOffset,
                 };
-            } else if (x.lf_left + piece.lineFeedCnt == line - 1) {
-                const prevAccumualtedValue = if (line < x.lf_left + 2) 0 else self.getAccumulatedValue(x, line - x.lf_left - 2);
-                if (prevAccumualtedValue + col - 1 <= piece.length) {
+            } else if (x.lf_left + piece.lineFeedCnt == lineNumber - 1) {
+                const prevAccumualtedValue = if (lineNumber < x.lf_left + 2) 0 else self.getAccumulatedValue(x, lineNumber - x.lf_left - 2);
+                if (prevAccumualtedValue + column - 1 <= piece.length) {
                     return .{
                         .node = x,
-                        .remainder = prevAccumualtedValue + col - 1,
+                        .remainder = prevAccumualtedValue + column - 1,
                         .nodeStartOffset = nodeStartOffset,
                     };
                 } else {
-                    col -= piece.length - prevAccumualtedValue;
+                    column -= piece.length - prevAccumualtedValue;
                     break;
                 }
             } else {
-                line -= x.lf_left + piece.lineFeedCnt;
+                lineNumber -= x.lf_left + piece.lineFeedCnt;
                 nodeStartOffset += x.size_left + piece.length;
                 x = x.right;
             }
@@ -1892,20 +1893,23 @@ pub const PieceTreeBase = struct {
             const piece = x.piece.?;
 
             if (piece.lineFeedCnt > 0) {
+                const accumulatedValue = self.getAccumulatedValue(x, 0);
+                const nodeStartOffset2 = self.offsetOfNode(x);
                 return .{
                     .node = x,
-                    .remainder = @min(col - 1, self.getAccumulatedValue(x, 0)),
-                    .nodeStartOffset = self.offsetOfNode(x),
+                    .remainder = @min(column - 1, accumulatedValue),
+                    .nodeStartOffset = nodeStartOffset2,
                 };
             } else {
-                if (piece.length >= col - 1) {
+                if (piece.length >= column - 1) {
+                    const nodeStartOffset2 = self.offsetOfNode(x);
                     return .{
                         .node = x,
-                        .remainder = col - 1,
-                        .nodeStartOffset = self.offsetOfNode(x),
+                        .remainder = column - 1,
+                        .nodeStartOffset = nodeStartOffset2,
                     };
                 } else {
-                    col -= piece.length;
+                    column -= piece.length;
                 }
             }
 

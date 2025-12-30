@@ -7,7 +7,7 @@ const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const _getInverseEditRanges = @import("../../pieceTreeTextBuffer/pieceTreeTextBuffer.zig")._getInverseEditRanges;
 
-fn toString(allocator: Allocator, lines: []const []const u8) !String {
+fn unlines(allocator: Allocator, lines: []const []const u8) !String {
     var result = ArrayList(u8).init(allocator);
 
     for (lines, 0..) |line, i| {
@@ -30,7 +30,7 @@ const PieceTreeTextBuffer_GetInverseEditsTests = struct {
             .range = Range.init(startLineNumber, startColumn, endLineNumber, endColumn),
             .rangeOffset = 0,
             .rangeLength = 0,
-            .text = if (text) |txt| try toString(allocator, txt) else String.Empty,
+            .text = if (text) |txt| try unlines(allocator, txt) else String.Empty,
             .eolCount = if (text) |txt| txt.len - 1 else 0,
             .firstLineLength = if (text) |txt| txt[0].len else 0,
             .lastLineLength = if (text) |txt| txt[txt.len - 1].len else 0,
@@ -238,7 +238,7 @@ const PieceTreeTextBuffer_toSingleEditOperationTests = struct {
             .range = Range.init(startLineNumber, startColumn, endLineNumber, endColumn),
             .rangeOffset = rangeOffset,
             .rangeLength = rangeLength,
-            .text = if (text) |txt| try toString(allocator, txt) else String.Empty,
+            .text = if (text) |txt| try unlines(allocator, txt) else String.Empty,
             .eolCount = if (text) |txt| txt.len - 1 else 0,
             .firstLineLength = if (text) |txt| txt[0].len else 0,
             .lastLineLength = if (text) |txt| txt[txt.len - 1].len else 0,

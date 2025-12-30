@@ -28,6 +28,7 @@ const safeUtf8Substring = @import("../basics/utf8Helper.zig").safeUtf8Substring;
 const ModelContentChange = @import("../textModel/textModelEvents.zig").ModelContentChange;
 const ValidEditOperation = @import("../textModel/model.zig").ValidEditOperation;
 const String = @import("../basics/strings.zig").String;
+const countEOLFixed = @import("../basics/eolCounter.zig").countEOLFixed;
 
 pub const ValidatedEditOperation = struct {
     sortIndex: i64,
@@ -502,12 +503,7 @@ pub const PieceTreeTextBuffer = struct {
             forceMoveMarkers = forceMoveMarkers or operation.forceMoveMarkers;
 
             // (1) -- Push old text
-            const oldText = try self.getValueInRange(Range{
-                .startLineNumber = lastEndLineNumber,
-                .startColumn = lastEndColumn,
-                .endLineNumber = range.startLineNumber,
-                .endColumn = range.startColumn,
-            }, null);
+            const oldText = try self.getValueInRange(.init(lastEndLineNumber, lastEndColumn, range.startLineNumber, range.startColumn), null);
             defer oldText.deinit();
             try result.appendSlice(oldText.items);
 
@@ -521,14 +517,14 @@ pub const PieceTreeTextBuffer = struct {
         }
 
         const text = String.initOwned(result);
-        var textReader = text.reader();
-        const eolResult = countEOL(&textReader);
+        const eolResult = countEOLFixed(result.items);
         return ValidatedEditOperation{
             .sortIndex = 0,
             .identifier = operations[0].identifier,
             .range = entireEditRange,
             .rangeOffset = self.getOffsetAt(entireEditRange.startLineNumber, entireEditRange.startColumn),
             .rangeLength = self.getValueLengthInRange(entireEditRange, null),
+            .rangeLength = self.getValueLengthInRange(entireEditRange, .TextDefined),
             .text = text,
             .eolCount = eolResult.eolCount,
             .firstLineLength = eolResult.firstLineLength,
