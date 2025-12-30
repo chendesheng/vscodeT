@@ -253,6 +253,16 @@ pub const TextModel = struct {
         }.cb);
     }
 
+    pub fn onDidChangeContentOrInjectedText(self: *TextModel, callback: fn (InternalModelContentChangeEvent) void) !void {
+        try self._eventEmitter.fastEvent({}, struct {
+            fn cb(evt: InternalModelContentChangeEvent, ctx: void) void {
+                _ = ctx;
+                callback(evt);
+            }
+        }.cb);
+        // try self._onDidChangeInjectedText.event(callback);
+    }
+
     pub fn init(allocator: Allocator, source: *std.Io.Reader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
@@ -1103,13 +1113,15 @@ pub const TextModel = struct {
     }
 
     fn _emitContentChangedEvent(self: *TextModel, rawChange: ModelRawContentChangedEvent, change: ModelContentChangedEvent) void {
+        var e = InternalModelContentChangeEvent.init(rawChange, change);
         if (self.__isDisposing) {
             // Do not confuse listeners by emitting any event after disposing
+            e.deinit();
             return;
         }
         // self._tokenizationTextModelPart.handleDidChangeContent(change);
         // self._bracketPairs.handleDidChangeContent(change);
-        self._eventEmitter.fire(InternalModelContentChangeEvent.init(rawChange, change));
+        self._eventEmitter.fire(e);
     }
 
     // TODO: Edit Source
@@ -1160,11 +1172,9 @@ pub const TextModel = struct {
         self._trimAutoWhitespaceLines = null;
 
         var changes = ArrayList(ModelRawChange).init(self.getAllocator());
-        defer changes.deinit();
         try changes.append(.{ .flush = ModelRawFlush.init() });
 
         const changed2 = try self._createContentChanged2(Range.init(1, 1, endLineNumber, endColumn), 0, oldModelValueLength, Position.init(endLineNumber, endColumn), try self.getValue(null, false), false, false, true, false);
-        defer changed2.deinit();
         self._emitContentChangedEvent(ModelRawContentChangedEvent.init(changes, self._versionId, false, false), changed2);
     }
 
@@ -1187,7 +1197,7 @@ pub const TextModel = struct {
         var rawChanges = ArrayList(ModelRawChange).init(self.getAllocator());
         try rawChanges.append(.{ .eolChanged = ModelRawEOLChanged.init() });
 
-        var contentChanged = try self._createContentChanged2(
+        const contentChanged = try self._createContentChanged2(
             Range.init(1, 1, endLineNumber, endColumn),
             0,
             oldModelValueLength,
@@ -1198,7 +1208,6 @@ pub const TextModel = struct {
             false,
             true,
         );
-        defer contentChanged.deinit();
         self._emitContentChangedEvent(ModelRawContentChangedEvent.init(rawChanges, self._versionId, false, false), contentChanged);
     }
 
@@ -1242,7 +1251,8 @@ pub const TextModel = struct {
         return if (computeUndoEdits) result else null;
     }
 
-    pub fn applyEdits(self: *TextModel, rawOperations: []IdentifiedSingleEditOperation, computeUndoEdits: bool) !?ArrayList(ValidEditOperation) {
+    pub fn applyEdits(self: *TextModel, rawOperations: []IdentifiedSingleEditOperation, _computeUndoEdits: ?bool) !?ArrayList(ValidEditOperation) {
+        const computeUndoEdits = _computeUndoEdits orelse false;
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
 
@@ -1277,12 +1287,6 @@ pub const TextModel = struct {
             }
 
             var rawContentChanges = ArrayList(ModelRawChange).init(allocator);
-            defer rawContentChanges.deinit();
-            defer {
-                for (rawContentChanges.items) |change| {
-                    change.deinit();
-                }
-            }
 
             self._increaseVersionId();
 
@@ -1333,7 +1337,7 @@ pub const TextModel = struct {
                         try rawContentChanges.append(.{
                             .lineChanged = ModelRawLineChanged.init(
                                 editLineNumber,
-                                try self.getLineContent(editLineNumber),
+                                .initOwned(try self.getLineContent(editLineNumber)),
                                 decorationsInCurrentLine,
                             ),
                         });
@@ -1356,11 +1360,11 @@ pub const TextModel = struct {
                     const cnt = insertingLinesCnt - editingLinesCnt;
                     const fromLineNumber = newLineCount - lineCount - cnt + spliceLineNumber + 1;
                     var injectedTexts = ArrayList(?[]const LineInjectedText).init(allocator);
-                    var newLines = ArrayList(ArrayList(u8)).init(allocator);
+                    var newLines = ArrayList(String).init(allocator);
                     var i: usize = 0;
                     while (i < cnt) : (i += 1) {
                         const lineNumber = fromLineNumber + i;
-                        try newLines.append(try self.getLineContent(lineNumber));
+                        try newLines.append(.initOwned(try self.getLineContent(lineNumber)));
 
                         _ = injectedTextInEditedRangeQueue.takeWhile(usize, lineNumber, struct {
                             fn predicate(ctx: usize, r: LineInjectedText) bool {
@@ -1385,7 +1389,7 @@ pub const TextModel = struct {
                 try changes.append(change.modelContentChange);
             }
 
-            var changedEvent = ModelContentChangedEvent{
+            const changedEvent = ModelContentChangedEvent{
                 .changes = changes,
                 .eol = self._buffer.getEOL(),
                 .isEolChange = false,
@@ -1394,7 +1398,7 @@ pub const TextModel = struct {
                 .isRedoing = self._isRedoing,
                 .isFlush = false,
             };
-            defer changedEvent.deinit();
+
             self._emitContentChangedEvent(
                 ModelRawContentChangedEvent.init(rawContentChanges, self.getVersionId(), self._isUndoing, self._isRedoing),
                 changedEvent,
@@ -1435,7 +1439,7 @@ pub const TextModel = struct {
                 defer lineChangeEvents.deinit();
 
                 for (affectedLines.items) |lineNumber| {
-                    try lineChangeEvents.append(ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), try self._getInjectedTextInLine(lineNumber)));
+                    try lineChangeEvents.append(ModelRawLineChanged.init(lineNumber, .initOwned(try self.getLineContent(lineNumber)), try self._getInjectedTextInLine(lineNumber)));
                 }
                 self._onDidChangeInjectedText.fire(ModelInjectedTextChangedEvent.init(lineChangeEvents.items));
             }
@@ -2392,14 +2396,17 @@ pub const DidChangeContentEmitter = struct {
     }
 
     pub fn deinit(self: *DidChangeContentEmitter) void {
+        if (self._deferredEvent) |evt| {
+            evt.deinit();
+        }
         self._fastEmitter.deinit();
         self._slowEmitter.deinit();
     }
 
-    pub fn fastEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent) void) !void {
+    pub fn fastEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent, ctx: @TypeOf(context)) void) !void {
         try self._fastEmitter.event(context, callback);
     }
-    pub fn slowEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent) void) !void {
+    pub fn slowEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent, ctx: @TypeOf(context)) void) !void {
         try self._slowEmitter.event(context, callback);
     }
 
@@ -2417,6 +2424,8 @@ pub const DidChangeContentEmitter = struct {
             if (self._deferredEvent) |evt| {
                 var e = evt;
                 e.rawContentChangedEvent.resultingSelection = resultingSelection;
+                defer e.deinit();
+
                 self._deferredEvent = null;
                 self._fastEmitter.fire(e);
                 self._slowEmitter.fire(e);
@@ -2426,13 +2435,15 @@ pub const DidChangeContentEmitter = struct {
 
     pub fn fire(self: *DidChangeContentEmitter, e: InternalModelContentChangeEvent) void {
         if (self._deferredCnt > 0) {
-            if (self._deferredEvent) |evt| {
-                self._deferredEvent = evt.merge(e) catch unreachable;
+            if (self._deferredEvent) |*evt| {
+                self._deferredEvent = evt.merge(&e) catch unreachable;
             } else {
                 self._deferredEvent = e;
             }
             return;
         }
+
+        defer e.deinit();
         self._fastEmitter.fire(e);
         self._slowEmitter.fire(e);
     }

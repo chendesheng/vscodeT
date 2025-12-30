@@ -37,7 +37,7 @@ pub const ModelContentChangedEvent = struct {
     // Flag that indicates that this event describes an eol change.
     isEolChange: bool,
 
-    pub fn deinit(self: *const ModelContentChangedEvent) void {
+    pub fn deinit(self: ModelContentChangedEvent) void {
         for (self.changes.items) |*change| {
             change.deinit();
         }
@@ -179,11 +179,11 @@ pub const ModelRawLineChanged = struct {
     // The line that has changed.
     lineNumber: usize,
     // The new value of the line.
-    detail: ArrayList(u8),
+    detail: String,
     // The injected text on the line.
     injectedText: ?[]const LineInjectedText,
 
-    pub fn init(lineNumber: usize, detail: ArrayList(u8), injectedText: ?[]const LineInjectedText) ModelRawLineChanged {
+    pub fn init(lineNumber: usize, detail: String, injectedText: ?[]const LineInjectedText) ModelRawLineChanged {
         return ModelRawLineChanged{
             .lineNumber = lineNumber,
             .detail = detail,
@@ -191,7 +191,7 @@ pub const ModelRawLineChanged = struct {
         };
     }
 
-    pub fn deinit(self: *const ModelRawLineChanged) void {
+    pub fn deinit(self: *ModelRawLineChanged) void {
         self.detail.deinit();
     }
 };
@@ -220,11 +220,11 @@ pub const ModelRawLinesInserted = struct {
     // `toLineNumber` - `fromLineNumber` + 1 denotes the number of lines that were inserted
     toLineNumber: usize,
     // The text that was inserted
-    detail: ArrayList(ArrayList(u8)),
+    detail: ArrayList(String),
     // The injected texts for every inserted line.
     injectedTexts: ArrayList(?[]const LineInjectedText),
 
-    pub fn init(fromLineNumber: usize, toLineNumber: usize, detail: ArrayList(ArrayList(u8)), injectedTexts: ArrayList(?[]const LineInjectedText)) ModelRawLinesInserted {
+    pub fn init(fromLineNumber: usize, toLineNumber: usize, detail: ArrayList(String), injectedTexts: ArrayList(?[]const LineInjectedText)) ModelRawLinesInserted {
         return ModelRawLinesInserted{
             .fromLineNumber = fromLineNumber,
             .toLineNumber = toLineNumber,
@@ -233,8 +233,12 @@ pub const ModelRawLinesInserted = struct {
         };
     }
 
-    pub fn deinit(self: *const ModelRawLinesInserted) void {
+    pub fn deinit(self: ModelRawLinesInserted) void {
+        for (self.detail.items) |*line| {
+            line.deinit();
+        }
         self.detail.deinit();
+
         self.injectedTexts.deinit();
     }
 };
@@ -264,7 +268,7 @@ pub const ModelRawChange = union(RawContentChangedType) {
         };
     }
 
-    pub fn deinit(self: *const ModelRawChange) void {
+    pub fn deinit(self: *ModelRawChange) void {
         switch (self.*) {
             .lineChanged => self.lineChanged.deinit(),
             .linesInserted => self.linesInserted.deinit(),
@@ -295,8 +299,8 @@ pub const ModelRawContentChangedEvent = struct {
         };
     }
 
-    pub fn deinit(self: *const ModelRawContentChangedEvent) void {
-        for (self.changes.items) |change| {
+    pub fn deinit(self: ModelRawContentChangedEvent) void {
+        for (self.changes.items) |*change| {
             change.deinit();
         }
         self.changes.deinit();
@@ -311,7 +315,7 @@ pub const ModelRawContentChangedEvent = struct {
         return false;
     }
 
-    pub fn merge(a: ModelRawContentChangedEvent, b: ModelRawContentChangedEvent) !ModelRawContentChangedEvent {
+    pub fn merge(a: *const ModelRawContentChangedEvent, b: *const ModelRawContentChangedEvent) !ModelRawContentChangedEvent {
         var changes = ArrayList(ModelRawChange).init(a.changes.allocator);
         try changes.appendSlice(a.changes.items);
         try changes.appendSlice(b.changes.items);
@@ -398,16 +402,21 @@ pub const InternalModelContentChangeEvent = struct {
         };
     }
 
-    pub fn merge(self: InternalModelContentChangeEvent, other: InternalModelContentChangeEvent) !InternalModelContentChangeEvent {
-        const rawContentChangedEvent = try ModelRawContentChangedEvent.merge(self.rawContentChangedEvent, other.rawContentChangedEvent);
-        const contentChangedEvent = try InternalModelContentChangeEvent._mergeChangeEvents(self.contentChangedEvent, other.contentChangedEvent);
+    pub fn deinit(self: InternalModelContentChangeEvent) void {
+        self.rawContentChangedEvent.deinit();
+        self.contentChangedEvent.deinit();
+    }
+
+    pub fn merge(self: *const InternalModelContentChangeEvent, other: *const InternalModelContentChangeEvent) !InternalModelContentChangeEvent {
+        const rawContentChangedEvent = try ModelRawContentChangedEvent.merge(&self.rawContentChangedEvent, &other.rawContentChangedEvent);
+        const contentChangedEvent = try InternalModelContentChangeEvent._mergeChangeEvents(&self.contentChangedEvent, &other.contentChangedEvent);
         return InternalModelContentChangeEvent{
             .rawContentChangedEvent = rawContentChangedEvent,
             .contentChangedEvent = contentChangedEvent,
         };
     }
 
-    fn _mergeChangeEvents(a: ModelContentChangedEvent, b: ModelContentChangedEvent) !ModelContentChangedEvent {
+    fn _mergeChangeEvents(a: *const ModelContentChangedEvent, b: *const ModelContentChangedEvent) !ModelContentChangedEvent {
         var changes = ArrayList(ModelContentChange).init(a.changes.allocator);
         try changes.appendSlice(a.changes.items);
         try changes.appendSlice(b.changes.items);

@@ -227,10 +227,6 @@ pub const String = union(enum) {
     }
 
     pub fn initOwned(arr: ArrayList(u8)) String {
-        if (arr.items.len == 0) {
-            return .empty;
-        }
-
         return .{ .owned = arr };
     }
 

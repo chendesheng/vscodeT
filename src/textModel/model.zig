@@ -1,5 +1,6 @@
 const std = @import("std");
 const io = std.io;
+const Position = @import("../basics/position.zig").Position;
 const Uri = std.Uri;
 const Allocator = std.mem.Allocator;
 const Range = @import("../basics/range.zig").Range;
@@ -30,20 +31,20 @@ pub const IdentifiedSingleEditOperation = struct {
     // The range to replace. This can be empty to emulate a simple insert.
     range: Range,
     // The text to replace with. This can be null to emulate a simple delete.
-    text: ?String,
+    text: ?String = null,
     // This indicates that this operation has "insert" semantics.
     // i.e. forceMoveMarkers = true => if `range` is collapsed, all markers at the position will be moved.
-    forceMoveMarkers: bool,
+    forceMoveMarkers: bool = false,
 
     // An identifier associated with this single edit operation.
-    identifier: ?SingleEditOperationIdentifier,
+    identifier: ?SingleEditOperationIdentifier = null,
     // This indicates that this operation is inserting automatic whitespace
     // that can be removed on next model edit operation if `config.trimAutoWhitespace` is true.
     // @internal
-    isAutoWhitespaceEdit: ?bool,
+    isAutoWhitespaceEdit: ?bool = null,
     // This indicates that this operation is in a set of operations that are tracked and should not be "simplified".
     // @internal
-    _isTracked: ?bool,
+    _isTracked: ?bool = null,
 
     pub fn init(range: Range, text: ?String) IdentifiedSingleEditOperation {
         return IdentifiedSingleEditOperation{
@@ -53,6 +54,37 @@ pub const IdentifiedSingleEditOperation = struct {
             .identifier = null,
             .isAutoWhitespaceEdit = null,
             ._isTracked = null,
+        };
+    }
+};
+
+pub const EditOperation = struct {
+    pub fn insert(position: Position, text: String) IdentifiedSingleEditOperation {
+        return .{
+            .range = Range.init(position.lineNumber, position.column, position.lineNumber, position.column),
+            .text = text,
+            .forceMoveMarkers = true,
+        };
+    }
+
+    pub fn delete(range: Range) IdentifiedSingleEditOperation {
+        return .{
+            .range = range,
+        };
+    }
+
+    pub fn replace(range: Range, text: ?String) IdentifiedSingleEditOperation {
+        return .{
+            .range = range,
+            .text = text,
+        };
+    }
+
+    pub fn replaceMove(range: Range, text: ?String) IdentifiedSingleEditOperation {
+        return .{
+            .range = range,
+            .text = text,
+            .forceMoveMarkers = true,
         };
     }
 };

@@ -31,4 +31,5 @@ comptime {
     _ = @import("textModel/undoRedo.zig");
     _ = @import("textModel/undoRedoService.zig");
     _ = @import("tui/ansi.zig");
+    _ = @import("test/modelTest.zig");
 }
