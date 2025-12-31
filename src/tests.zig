@@ -21,6 +21,7 @@ comptime {
     _ = @import("test/linesTextBuffer/linesTextBufferBuilderTest.zig");
     _ = @import("test/linesTextBuffer/linesTextBufferTest.zig");
     _ = @import("test/modelTest.zig");
+    _ = @import("test/modelEditOperationTest.zig");
     _ = @import("test/pieceTreeTextBufferTest.zig");
     _ = @import("test/textModelTest.zig");
     _ = @import("textModel/editStack.zig");
