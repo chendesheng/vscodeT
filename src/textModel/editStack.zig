@@ -169,29 +169,48 @@ pub const EditStackElement = union(enum) {
     }
 };
 
-pub const SingleModelEditStackData = union(enum) {
-    unserialized: SingleModelEditStackDataUnserialized,
-    serialized: ArrayList(u8),
+pub const SingleModelEditStackDataOrSerialized = union(enum) {
+    unserialized: SingleModelEditStackData,
+    serialized: []const u8,
 
-    pub fn deinit(self: *SingleModelEditStackData) void {
+    pub fn deinit(self: *SingleModelEditStackDataOrSerialized, allocator: Allocator) void {
         switch (self.*) {
             .unserialized => |*data| data.deinit(),
-            .serialized => |*data| data.deinit(),
+            .serialized => |data| allocator.free(data),
         }
     }
 };
 
-pub const SingleModelEditStackDataUnserialized = struct {
+pub const SingleModelEditStackData = struct {
     beforeVersionId: u32,
     afterVersionId: u32,
     beforeEOL: EOL,
     afterEOL: EOL,
-    beforeCursorState: ?[]Selection,
-    afterCursorState: ?[]Selection,
+    // FIXME: always own the cursor states??
+    beforeCursorState: ?[]const Selection,
+    afterCursorState: ?[]const Selection,
     changes: ArrayList(TextChange),
+    _ownBeforeCursorState: bool, // Whether the beforeCursorState is freed when deinit is called
+    _ownAfterCursorState: bool, // Whether the afterCursorState is freed when deinit is called
 
-    pub fn create(allocator: Allocator, alternativeVersionId: u32, eol: EOL, beforeCursorState: ?[]Selection) SingleModelEditStackDataUnserialized {
-        return SingleModelEditStackDataUnserialized{
+    pub fn init(allocator: Allocator, beforeVersionId: u32, afterVersionId: u32, beforeEOL: EOL, afterEOL: EOL, beforeCursorState: ?[]const Selection, afterCursorState: ?[]const Selection, changes: []const TextChange) !SingleModelEditStackData {
+        var changesList = ArrayList(TextChange).init(allocator);
+        try changesList.appendSlice(changes);
+        return .{
+            .beforeVersionId = beforeVersionId,
+            .afterVersionId = afterVersionId,
+            .beforeEOL = beforeEOL,
+            .afterEOL = afterEOL,
+            .beforeCursorState = beforeCursorState,
+            .afterCursorState = afterCursorState,
+            .changes = changesList,
+            ._ownBeforeCursorState = false,
+            ._ownAfterCursorState = false,
+        };
+    }
+
+    pub fn create(allocator: Allocator, alternativeVersionId: u32, eol: EOL, beforeCursorState: ?[]const Selection) SingleModelEditStackData {
+        return SingleModelEditStackData{
             .beforeVersionId = alternativeVersionId,
             .afterVersionId = alternativeVersionId,
             .beforeEOL = eol,
@@ -199,17 +218,37 @@ pub const SingleModelEditStackDataUnserialized = struct {
             .beforeCursorState = beforeCursorState,
             .afterCursorState = beforeCursorState,
             .changes = ArrayList(TextChange).init(allocator),
+            ._ownBeforeCursorState = false,
+            ._ownAfterCursorState = false,
         };
     }
 
-    pub fn deinit(self: *SingleModelEditStackDataUnserialized) void {
+    fn _freeBeforeCursorState(self: *SingleModelEditStackData, allocator: Allocator) void {
+        if (self._ownBeforeCursorState) {
+            if (self.beforeCursorState) |selections| {
+                allocator.free(selections);
+            }
+        }
+    }
+
+    fn _freeAfterCursorState(self: *SingleModelEditStackData, allocator: Allocator) void {
+        if (self._ownAfterCursorState) {
+            if (self.afterCursorState) |selections| {
+                allocator.free(selections);
+            }
+        }
+    }
+
+    pub fn deinit(self: *SingleModelEditStackData) void {
+        self._freeBeforeCursorState(self.changes.allocator);
+        self._freeAfterCursorState(self.changes.allocator);
         for (self.changes.items) |*change| {
             change.deinit();
         }
         self.changes.deinit();
     }
 
-    pub fn append(self: *SingleModelEditStackDataUnserialized, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *SingleModelEditStackData, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]const Selection) !void {
         if (textChanges.len > 0) {
             var changes = self.changes;
             defer changes.deinit();
@@ -218,14 +257,17 @@ pub const SingleModelEditStackDataUnserialized = struct {
         }
         self.afterEOL = afterEOL;
         self.afterVersionId = afterVersionId;
+
+        self._freeAfterCursorState(self.changes.allocator);
         self.afterCursorState = afterCursorState;
+        self._ownAfterCursorState = false;
     }
 
     pub fn _writeSelectionsSize(selections: ?[]const Selection) usize {
         return 4 + 4 * 4 * (if (selections) |s| s.len else 0);
     }
 
-    pub fn _writeSelections(b: *std.Io.Writer, selections: ?[]Selection) !void {
+    pub fn _writeSelections(b: *std.Io.Writer, selections: ?[]const Selection) !void {
         try b.writeInt(u32, if (selections) |s| @intCast(s.len) else 0, .big);
         if (selections) |s| {
             for (s) |selection| {
@@ -237,27 +279,27 @@ pub const SingleModelEditStackDataUnserialized = struct {
         }
     }
 
-    pub fn _readSelections(b: *std.Io.Reader, dest: *ArrayList(Selection)) !void {
+    pub fn _readSelections(b: *std.Io.Reader, allocator: Allocator) ![]const Selection {
         const count = try utils.readInt(b, u32, .big);
-        for (0..count) |_| {
+        const selections = try allocator.alloc(Selection, count);
+        for (selections) |*selection| {
             const selectionStartLineNumber = try utils.readInt(b, u32, .big);
             const selectionStartColumn = try utils.readInt(b, u32, .big);
             const positionLineNumber = try utils.readInt(b, u32, .big);
             const positionColumn = try utils.readInt(b, u32, .big);
-            try dest.append(Selection{
-                .startLineNumber = 0,
-                .startColumn = 0,
-                .endLineNumber = 0,
-                .endColumn = 0,
-                .selectionStartLineNumber = selectionStartLineNumber,
-                .selectionStartColumn = selectionStartColumn,
-                .positionLineNumber = positionLineNumber,
-                .positionColumn = positionColumn,
-            });
+            selection.* = Selection.init(
+                selectionStartLineNumber,
+                selectionStartColumn,
+                positionLineNumber,
+                positionColumn,
+            );
         }
+        return selections;
     }
 
-    pub fn serialize(self: *const SingleModelEditStackDataUnserialized) !ArrayList(u8) {
+    pub fn serialize(self: *const SingleModelEditStackData) ![]const u8 {
+        const allocator = self.changes.allocator;
+
         var necessarySize: usize = ( //
             4 // beforeVersionId
             + 4 // afterVersionId
@@ -271,9 +313,8 @@ pub const SingleModelEditStackDataUnserialized = struct {
             necessarySize += change.writeSize();
         }
 
-        var b = try ArrayList(u8).initCapacity(self.changes.allocator, necessarySize);
-        try b.resize(necessarySize);
-        var writer = std.Io.Writer.fixed(b.items);
+        const result = try allocator.alloc(u8, necessarySize);
+        var writer = std.Io.Writer.fixed(result);
 
         try writer.writeInt(u32, self.beforeVersionId, .big);
         try writer.writeInt(u32, self.afterVersionId, .big);
@@ -285,45 +326,45 @@ pub const SingleModelEditStackDataUnserialized = struct {
         for (self.changes.items) |change| {
             try change.write(&writer);
         }
-        return b;
+        return result;
     }
 
-    pub fn deserialize(allocator: Allocator, source: []const u8) !SingleModelEditStackDataUnserialized {
+    pub fn deserialize(allocator: Allocator, source: []const u8) !SingleModelEditStackData {
         var reader = std.Io.Reader.fixed(source);
 
         const beforeVersionId = try utils.readInt(&reader, u32, .big);
         const afterVersionId = try utils.readInt(&reader, u32, .big);
         const beforeEOL: EOL = @enumFromInt(try utils.readInt(&reader, u8, .big));
         const afterEOL: EOL = @enumFromInt(try utils.readInt(&reader, u8, .big));
-        var beforeCursorState = ArrayList(Selection).init(allocator);
-        try _readSelections(&reader, &beforeCursorState);
-        var afterCursorState = ArrayList(Selection).init(allocator);
-        try _readSelections(&reader, &afterCursorState);
+        const beforeCursorState = try _readSelections(&reader, allocator);
+        const afterCursorState = try _readSelections(&reader, allocator);
         const changeCount = try utils.readInt(&reader, u32, .big);
         var changes = ArrayList(TextChange).init(allocator);
         for (0..changeCount) |_| {
             try TextChange.read(&reader, allocator, &changes);
         }
-        return SingleModelEditStackDataUnserialized{
+        return SingleModelEditStackData{
             .beforeVersionId = beforeVersionId,
             .afterVersionId = afterVersionId,
             .beforeEOL = beforeEOL,
             .afterEOL = afterEOL,
-            .beforeCursorState = beforeCursorState.items,
-            .afterCursorState = afterCursorState.items,
+            .beforeCursorState = beforeCursorState,
+            .afterCursorState = afterCursorState,
             .changes = changes,
+            ._ownBeforeCursorState = true,
+            ._ownAfterCursorState = true,
         };
     }
 };
 
-test "SingleModelEditStackDataUnserialized" {
+test "SingleModelEditStackData" {
     const allocator = std.testing.allocator;
-    var data = SingleModelEditStackDataUnserialized.create(allocator, 1, .LF, null);
+    var data = SingleModelEditStackData.create(allocator, 1, .LF, null);
     defer data.deinit();
     try data.append(&[_]TextChange{TextChange.init(0, .initBorrowed("a"), 0, .initBorrowed("b"))}, .LF, 2, null);
     const serialized = try data.serialize();
-    defer serialized.deinit();
-    var deserialized = try SingleModelEditStackDataUnserialized.deserialize(allocator, serialized.items);
+    defer allocator.free(serialized);
+    var deserialized = try SingleModelEditStackData.deserialize(allocator, serialized);
     defer deserialized.deinit();
     defer {
         for (deserialized.changes.items) |*ch| {
@@ -357,7 +398,7 @@ const TextModelOrUri = union(enum) {
 
 pub const SingleModelEditStackElement = struct {
     model: TextModelOrUri,
-    _data: SingleModelEditStackData,
+    _data: SingleModelEditStackDataOrSerialized,
     label: []const u8,
     code: []const u8,
     confirmBeforeUndo: ?bool,
@@ -367,8 +408,8 @@ pub const SingleModelEditStackElement = struct {
         return SingleModelEditStackElement{
             .allocator = allocator,
             .model = .{ .model = model },
-            ._data = SingleModelEditStackData{
-                .unserialized = SingleModelEditStackDataUnserialized.create(
+            ._data = SingleModelEditStackDataOrSerialized{
+                .unserialized = SingleModelEditStackData.create(
                     allocator,
                     model.getAlternativeVersionId(),
                     model.getEOL(),
@@ -382,14 +423,14 @@ pub const SingleModelEditStackElement = struct {
     }
 
     pub fn deinit(self: *SingleModelEditStackElement) void {
-        self._data.deinit();
+        self._data.deinit(self.allocator);
     }
 
     pub fn toString(self: *const SingleModelEditStackElement) !ArrayList(u8) {
         const allocator = self.allocator;
         var data = switch (self._data) {
             .unserialized => |data| data,
-            .serialized => |data| try SingleModelEditStackDataUnserialized.deserialize(allocator, data.items),
+            .serialized => |data| try SingleModelEditStackData.deserialize(allocator, data),
         };
         defer {
             switch (self._data) {
@@ -461,7 +502,7 @@ pub const SingleModelEditStackElement = struct {
         switch (self._data) {
             .serialized => |data| {
                 const allocator = self.allocator;
-                self._data = try SingleModelEditStackDataUnserialized.deserialize(allocator, data.items);
+                self._data = try SingleModelEditStackData.deserialize(allocator, data.items);
                 allocator.free(data);
             },
             .unserialized => {},
@@ -474,12 +515,12 @@ pub const SingleModelEditStackElement = struct {
                 switch (self._data) {
                     .unserialized => |dat| {
                         var data = self._data;
-                        defer data.deinit();
+                        defer data.deinit(self.allocator);
                         self._data = .{ .serialized = try dat.serialize() };
                     },
                     .serialized => {},
                 }
-                var data = try SingleModelEditStackDataUnserialized.deserialize(self.allocator, self._data.serialized.items);
+                var data = try SingleModelEditStackData.deserialize(self.allocator, self._data.serialized);
                 defer data.deinit();
                 try model._applyUndo(data.changes, data.beforeEOL, data.beforeVersionId, data.beforeCursorState);
             },
@@ -495,12 +536,12 @@ pub const SingleModelEditStackElement = struct {
                 switch (self._data) {
                     .unserialized => |*dat| {
                         var data = self._data;
-                        defer data.deinit();
+                        defer data.deinit(self.allocator);
                         self._data = .{ .serialized = try dat.serialize() };
                     },
                     .serialized => {},
                 }
-                var data = try SingleModelEditStackDataUnserialized.deserialize(self.allocator, self._data.serialized.items);
+                var data = try SingleModelEditStackData.deserialize(self.allocator, self._data.serialized);
                 defer data.deinit();
                 try model._applyRedo(data.changes, data.afterEOL, data.afterVersionId, data.afterCursorState);
             },

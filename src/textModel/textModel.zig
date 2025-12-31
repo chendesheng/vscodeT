@@ -1053,7 +1053,7 @@ pub const TextModel = struct {
         return try self._commandManager.pushEditOperation(beforeCursorState, editOperations.items, cursorStateComputer, group);
     }
 
-    pub fn _applyUndo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) !void {
+    pub fn _applyUndo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]const Selection) !void {
         var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
         defer edits.deinit();
         for (changes.items) |change| {
@@ -1071,7 +1071,7 @@ pub const TextModel = struct {
         try self._applyUndoRedoEdits(edits, eol, true, false, resultingAlternativeVersionId, resultingSelection);
     }
 
-    pub fn _applyRedo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) !void {
+    pub fn _applyRedo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]const Selection) !void {
         var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
         defer edits.deinit();
         for (changes.items) |change| {
@@ -1089,7 +1089,7 @@ pub const TextModel = struct {
         try self._applyUndoRedoEdits(edits, eol, false, true, resultingAlternativeVersionId, resultingSelection);
     }
 
-    fn _applyUndoRedoEdits(self: *TextModel, edits: ArrayList(IdentifiedSingleEditOperation), eol: EOL, isUndoing: bool, isRedoing: bool, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) !void {
+    fn _applyUndoRedoEdits(self: *TextModel, edits: ArrayList(IdentifiedSingleEditOperation), eol: EOL, isUndoing: bool, isRedoing: bool, resultingAlternativeVersionId: u32, resultingSelection: ?[]const Selection) !void {
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
 
