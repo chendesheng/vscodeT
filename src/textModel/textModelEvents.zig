@@ -345,13 +345,13 @@ pub const ModelLineHeightChanged = struct {
     // Editor owner ID
     ownerId: usize,
     // The decoration ID that has changed.
-    decorationId: []const u8,
+    decorationId: u64,
     // The line that has changed.
     lineNumber: usize,
     // The line height on the line.
     lineHeight: ?usize,
 
-    pub fn init(ownerId: usize, decorationId: []const u8, lineNumber: usize, lineHeight: ?usize) ModelLineHeightChanged {
+    pub fn init(ownerId: usize, decorationId: u64, lineNumber: usize, lineHeight: ?usize) ModelLineHeightChanged {
         return ModelLineHeightChanged{
             .ownerId = ownerId,
             .decorationId = decorationId,

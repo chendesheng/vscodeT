@@ -122,7 +122,7 @@ pub const IntervalNode = struct {
 
     id: u64,
     ownerId: usize,
-    options: *ModelDecorationOptions,
+    options: *const ModelDecorationOptions,
 
     cachedVersionId: u32,
     cachedAbsoluteStart: usize,
@@ -174,12 +174,12 @@ pub const IntervalNode = struct {
         self.range = range;
     }
 
-    pub fn setOptions(self: *IntervalNode, options: *ModelDecorationOptions) void {
+    pub fn setOptions(self: *IntervalNode, options: *const ModelDecorationOptions) void {
         self.options = options;
-        const className = self.options.className;
-        setNodeIsForValidation(self, (className == ClassName.EditorErrorDecoration or
-            className == ClassName.EditorWarningDecoration or
-            className == ClassName.EditorInfoDecoration));
+        const className = self.options.className orelse std.math.maxInt(u8);
+        setNodeIsForValidation(self, (className == @intFromEnum(ClassName.EditorErrorDecoration) or
+            className == @intFromEnum(ClassName.EditorWarningDecoration) or
+            className == @intFromEnum(ClassName.EditorInfoDecoration)));
         setNodeIsInGlyphMargin(self, self.options.glyphMarginClassName != null);
         if (self.options.stickiness) |stickiness| {
             setNodeStickiness(self, stickiness);

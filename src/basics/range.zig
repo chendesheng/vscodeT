@@ -302,7 +302,7 @@ pub fn areOnlyIntersecting(a: *const Range, b: *const Range) bool {
 
 // A function that compares ranges, useful for sorting ranges
 // It will first compare ranges on the startPosition and then on the endPosition
-pub fn compareRangesUsingStarts(a: *const Range, b: *const Range) isize {
+pub fn compareRangesUsingStarts(a: *const Range, b: *const Range) bool {
     if (a != null and b != null) {
         const aStartLineNumber = a.startLineNumber | 0;
         const bStartLineNumber = b.startLineNumber | 0;
@@ -318,17 +318,17 @@ pub fn compareRangesUsingStarts(a: *const Range, b: *const Range) isize {
                 if (aEndLineNumber == bEndLineNumber) {
                     const aEndColumn = a.endColumn | 0;
                     const bEndColumn = b.endColumn | 0;
-                    return aEndColumn - bEndColumn;
+                    return aEndColumn < bEndColumn;
                 }
-                return aEndLineNumber - bEndLineNumber;
+                return aEndLineNumber < bEndLineNumber;
             }
-            return aStartColumn - bStartColumn;
+            return aStartColumn < bStartColumn;
         }
-        return aStartLineNumber - bStartLineNumber;
+        return aStartLineNumber < bStartLineNumber;
     }
     const aExists = if (a != null) 1 else 0;
     const bExists = if (b != null) 1 else 0;
-    return aExists - bExists;
+    return aExists < bExists;
 }
 
 // A function that compares ranges, useful for sorting ranges

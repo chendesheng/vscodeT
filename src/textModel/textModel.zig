@@ -74,6 +74,7 @@ const String = @import("../basics/strings.zig").String;
 const _normalizeIndentation = @import("../basics/indentation.zig").normalizeIndentation;
 const EDITOR_MODEL_DEFAULTS = @import("textModelDefaults.zig");
 const ModelRawFlush = @import("textModelEvents.zig").ModelRawFlush;
+const AutoHashMap = std.AutoHashMap;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -182,7 +183,7 @@ pub const TextModel = struct {
     _instanceId: u8,
     _deltaDecorationCallCnt: usize,
     _lastDecorationId: u32,
-    _decorations: std.AutoHashMap(u64, *IntervalNode),
+    _decorations: AutoHashMap(u64, *IntervalNode),
     _decorationsTree: DecorationsTrees,
     // _decorationProvider: ColorizedBracketPairsDecorationProvider,
     //#endregion
@@ -312,7 +313,7 @@ pub const TextModel = struct {
             ._instanceId = strings.singleLetterHash(MODEL_ID),
             ._lastDecorationId = 0,
             ._deltaDecorationCallCnt = 0,
-            ._decorations = std.AutoHashMap(u64, *IntervalNode).init(allocator),
+            ._decorations = AutoHashMap(u64, *IntervalNode).init(allocator),
             ._decorationsTree = DecorationsTrees.init(),
             ._commandManager = EditStack.init(model, undoRedoService),
             ._isUndoing = false,
@@ -323,7 +324,7 @@ pub const TextModel = struct {
 
             ._onWillDispose = Emitter(void).init(allocator),
             ._onDidChangeDecorations = DidChangeDecorationsEmitter.init(allocator, model, struct {
-                fn handle(m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) !void {
+                fn handle(m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(u192, LineHeightChangingDecoration)) !void {
                     const m1: *TextModel = @ptrCast(@alignCast(m));
                     try m1.handleBeforeFireDecorationsChangedEvent(affectedInjectedTextLines, affectedLineHeights);
                 }
@@ -337,10 +338,20 @@ pub const TextModel = struct {
         return model;
     }
 
+    fn destoryDecorations(self: *TextModel) void {
+        const allocator = self.getAllocator();
+        var decorationsValues = self._decorations.valueIterator();
+        while (decorationsValues.next()) |node| {
+            allocator.destroy(node.*);
+        }
+        self._decorations.deinit();
+    }
+
     pub fn deinit(self: *TextModel) void {
         const allocator = self._buffer.getAllocator();
         self._buffer.deinit();
-        self._decorations.deinit();
+
+        self.destoryDecorations();
         if (self._initialUndoRedoSnapshot) |*snapshot| {
             snapshot.deinit();
         }
@@ -619,8 +630,8 @@ pub const TextModel = struct {
 
         const initialStartLineNumber = range.startLineNumber;
         const initialStartColumn = range.startColumn;
-        var startLineNumber = @floor((if (initialStartLineNumber > 0) initialStartLineNumber else 1));
-        var startColumn = @floor((if (initialStartColumn > 0) initialStartColumn else 1));
+        var startLineNumber = range.startLineNumber;
+        var startColumn = range.startColumn;
 
         if (startLineNumber < 1) {
             startLineNumber = 1;
@@ -641,8 +652,8 @@ pub const TextModel = struct {
 
         const initialEndLineNumber = range.endLineNumber;
         const initialEndColumn = range.endColumn;
-        var endLineNumber = @floor((if (initialEndLineNumber > 0) initialEndLineNumber else 1));
-        var endColumn = @floor((if (initialEndColumn > 0) initialEndColumn else 1));
+        var endLineNumber = range.endLineNumber;
+        var endColumn = range.endColumn;
 
         if (endLineNumber < 1) {
             endLineNumber = 1;
@@ -661,7 +672,7 @@ pub const TextModel = struct {
             }
         }
 
-        if (initialStartLineNumber == startLineNumber and initialStartColumn == startColumn and initialEndLineNumber == endLineNumber and initialEndColumn == endColumn and range.startLineNumber == startLineNumber and range.startColumn == startColumn and range.endLineNumber == endLineNumber and range.endColumn == endColumn and !Selection.isSelection(range)) {
+        if (initialStartLineNumber == startLineNumber and initialStartColumn == startColumn and initialEndLineNumber == endLineNumber and initialEndColumn == endColumn and range.startLineNumber == startLineNumber and range.startColumn == startColumn and range.endLineNumber == endLineNumber and range.endColumn == endColumn) {
             return range;
         }
 
@@ -1162,8 +1173,8 @@ pub const TextModel = struct {
         self._increaseVersionId();
 
         // Destroy all my decorations
-        self._decorations.deinit();
-        self._decorations = std.AutoHashMap(u64, *IntervalNode).init(self.getAllocator());
+        self.destoryDecorations();
+        self._decorations = AutoHashMap(u64, *IntervalNode).init(self.getAllocator());
         self._decorationsTree = DecorationsTrees.init();
 
         // Destroy my edit history and settings
@@ -1429,7 +1440,7 @@ pub const TextModel = struct {
 
     //#region Decorations
 
-    fn handleBeforeFireDecorationsChangedEvent(self: *TextModel, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) !void {
+    fn handleBeforeFireDecorationsChangedEvent(self: *TextModel, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(u192, LineHeightChangingDecoration)) !void {
         // This is called before the decoration changed event is fired.
 
         if (affectedInjectedTextLines) |lines| {
@@ -1460,17 +1471,16 @@ pub const TextModel = struct {
         }
     }
 
-    pub fn changeDecorations(self: *TextModel, comptime T: type, callback: *fn (changeAccessor: ModelDecorationsChangeAccessor) T, ownerId: usize) ?T {
+    pub fn changeDecorations(self: *TextModel, comptime T: type, ctx: anytype, callback: fn (ctx: @TypeOf(ctx), changeAccessor: ModelDecorationsChangeAccessor) anyerror!T, _ownerId: ?usize) !?T {
+        const ownerId = _ownerId orelse 0;
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
-        return self._changeDecorations(T, ownerId, callback);
+        return try self._changeDecorations(T, ctx, ownerId, callback);
     }
 
-    fn _changeDecorations(comptime T: type, self: *TextModel, ownerId: usize, callback: *fn (changeAccessor: ModelDecorationsChangeAccessor) anyerror!T) !?T {
+    fn _changeDecorations(self: *TextModel, comptime T: type, ctx: anytype, ownerId: usize, callback: fn (ctx: @TypeOf(ctx), changeAccessor: ModelDecorationsChangeAccessor) anyerror!T) !?T {
         const changeAccessor = ModelDecorationsChangeAccessor.init(self, ownerId);
-        var result: ?T = null;
-        result = try callback(changeAccessor);
-        return result;
+        return callback(ctx, changeAccessor) catch return null;
     }
 
     pub fn deltaDecorations(self: *TextModel, oldDecorations: [][]u8, newDecorations: []ModelDeltaDecoration, ownerId: usize) ![][]u8 {
@@ -1487,45 +1497,44 @@ pub const TextModel = struct {
         }
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
-        return try self._deltaDecorationsImpl(ownerId, oldDecorations, newDecorations);
+        return try self._deltaDecorationsImpl(ownerId, oldDecorations, newDecorations, false);
     }
 
     fn _getTrackedRange(self: *TextModel, id: []const u8) ?Range {
         return self.getDecorationRange(id);
     }
 
-    fn _setTrackedRange(self: *TextModel, id: ?[]const u8, newRange: ?Range, newStickiness: TrackedRangeStickiness) !?[]const u8 {
-        const node = (if (id) |id_| self._decorations.get(id_) else null);
+    fn _setTrackedRange(self: *TextModel, id: ?u64, newRange: ?Range, newStickiness: TrackedRangeStickiness) !?u64 {
+        const _node = (if (id) |id_| self._decorations.get(id_) else null);
 
-        if (node == null) {
+        if (_node) |node| {
+            if (newRange == null) {
+                // node exists, the request is to delete => delete node
+                self._decorationsTree.delete(node);
+                self._decorations.remove(node.id);
+                return null;
+            }
+
+            const newRange_ = newRange.?;
+
+            // node exists, the request is to set => change the tracked range and its options
+            const range = self._validateRangeRelaxedNoAllocations(newRange_);
+            const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
+            const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
+
+            self._decorationsTree.delete(node);
+            node.reset(self.getVersionId(), startOffset, endOffset, range);
+            node.setOptions(TRACKED_RANGE_OPTIONS[@intFromEnum(newStickiness)]);
+            self._decorationsTree.insert(node);
+            return node.id;
+        } else {
             if (newRange == null) {
                 // node doesn't exist, the request is to delete => nothing to do
                 return null;
             }
             // node doesn't exist, the request is to set => add the tracked range
-            return try self._deltaDecorationsImpl(0, &[_][]const u8{}, &[_]ModelDeltaDecoration{.{ .range = newRange, .options = TRACKED_RANGE_OPTIONS[@intFromEnum(newStickiness)] }}, true);
+            return try self._deltaDecorationsImpl(0, &[_]u64{}, &[_]ModelDeltaDecoration{.{ .range = newRange, .options = TRACKED_RANGE_OPTIONS[@intFromEnum(newStickiness)] }}, true);
         }
-
-        if (newRange == null) {
-            // node exists, the request is to delete => delete node
-            self._decorationsTree.delete(node);
-            self._decorations.remove(node.id);
-            return null;
-        }
-
-        var node_ = node.?;
-        const newRange_ = newRange.?;
-
-        // node exists, the request is to set => change the tracked range and its options
-        const range = self._validateRangeRelaxedNoAllocations(newRange_);
-        const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
-        const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
-
-        self._decorationsTree.delete(node_);
-        node_.reset(self.getVersionId(), startOffset, endOffset, range);
-        node_.setOptions(TRACKED_RANGE_OPTIONS[@intFromEnum(newStickiness)]);
-        self._decorationsTree.insert(node_);
-        return node_.id;
     }
 
     pub fn removeAllDecorationsWithOwnerId(self: *TextModel, ownerId: usize) void {
@@ -1557,30 +1566,36 @@ pub const TextModel = struct {
         return self._decorationsTree.getNodeRange(self, node);
     }
 
-    pub fn getLineDecorations(self: *TextModel, lineNumber: usize, ownerId: usize, filterOutValidation: bool) ![]ModelDecoration {
+    pub fn getLineDecorations(self: *TextModel, lineNumber: usize, _ownerId: ?usize, _filterOutValidation: ?bool) !ArrayList(ModelDecoration) {
+        const ownerId = _ownerId orelse 0;
+        const filterOutValidation = _filterOutValidation orelse false;
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
-            return &[_]ModelDecoration{};
+            return .init(self.getAllocator());
         }
-        return try self.getLinesDecorations(lineNumber, lineNumber, ownerId, filterOutValidation);
+        return try self.getLinesDecorations(lineNumber, lineNumber, ownerId, filterOutValidation, null);
     }
 
-    pub fn getLinesDecorations(self: *TextModel, startLineNumber: usize, endLineNumber: usize, ownerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) ![]ModelDecoration {
+    pub fn getLinesDecorations(self: *TextModel, startLineNumber: usize, endLineNumber: usize, _ownerId: ?usize, _filterOutValidation: ?bool, _onlyMarginDecorations: ?bool) !ArrayList(ModelDecoration) {
+        const ownerId = _ownerId orelse 0;
+        const filterOutValidation = _filterOutValidation orelse false;
+        const onlyMarginDecorations = _onlyMarginDecorations orelse false;
         const lineCount = self.getLineCount();
         const startLineNumber_ = @min(lineCount, @max(1, startLineNumber));
         const endLineNumber_ = @min(lineCount, @max(1, endLineNumber));
         const endColumn = self.getLineMaxColumn(endLineNumber);
         const range = Range.init(startLineNumber_, 1, endLineNumber_, endColumn);
 
-        var decorations = try self._getDecorationsInRange(range, ownerId, filterOutValidation, onlyMarginDecorations);
-        try decorations.appendSlice(try self._decorationProvider.getDecorationsInRange(range, ownerId, filterOutValidation));
-        return decorations.toOwnedSlice();
+        const decorations = try self._getDecorationsInRange(range, ownerId, filterOutValidation, onlyMarginDecorations);
+        // try decorations.appendSlice(try self._decorationProvider.getDecorationsInRange(range, ownerId, filterOutValidation));
+        return decorations;
     }
 
     pub fn getDecorationsInRange(self: *TextModel, range: Range, ownerId: usize, filterOutValidation: bool, onlyMinimapDecorations: bool, onlyMarginDecorations: bool) ![]ModelDecoration {
+        _ = onlyMinimapDecorations;
         const validatedRange = self.validateRange(range);
 
         var decorations = try self._getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMarginDecorations);
-        try decorations.appendSlice(try self._decorationProvider.getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMinimapDecorations));
+        // try decorations.appendSlice(try self._decorationProvider.getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMinimapDecorations));
         return decorations.toOwnedSlice();
     }
 
@@ -1609,18 +1624,17 @@ pub const TextModel = struct {
         return try res.toOwnedSlice();
     }
 
-    pub fn getAllDecorations(self: *TextModel, ownerId: usize, filterOutValidation: bool) ![]ModelDecoration {
+    pub fn getAllDecorations(self: *TextModel, ownerId: usize, filterOutValidation: bool) !ArrayList(ModelDecoration) {
         var result = try self._decorationsTree.getAll(self, ownerId, filterOutValidation, false, false);
         try result.appendSlice(try self._decorationProvider.getAllDecorations(ownerId, filterOutValidation));
-        return result.toOwnedSlice();
+        return result;
     }
 
-    pub fn getAllMarginDecorations(self: *TextModel, ownerId: usize) ![]ModelDecoration {
-        var result = try self._decorationsTree.getAll(self, ownerId, false, false, true);
-        return result.toOwnedSlice();
+    pub fn getAllMarginDecorations(self: *TextModel, ownerId: usize) !ArrayList(ModelDecoration) {
+        return try self._decorationsTree.getAll(self, ownerId, false, false, true);
     }
 
-    fn _getDecorationsInRange(self: *TextModel, filterRange: Range, filterOwnerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    fn _getDecorationsInRange(self: *TextModel, filterRange: Range, filterOwnerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) !ArrayList(ModelDecoration) {
         const startOffset = self._buffer.getOffsetAt(filterRange.startLineNumber, filterRange.startColumn);
         const endOffset = self._buffer.getOffsetAt(filterRange.endLineNumber, filterRange.endColumn);
         return try self._decorationsTree.getAllInInterval(self, startOffset, endOffset, filterOwnerId, filterOutValidation, onlyMarginDecorations);
@@ -1630,20 +1644,20 @@ pub const TextModel = struct {
         return self._buffer.getRangeAt(start, end - start);
     }
 
-    fn _changeDecorationImpl(self: *TextModel, ownerId: usize, decorationId: []const u8, _range: Range) void {
+    fn _changeDecorationImpl(self: *TextModel, ownerId: usize, decorationId: []const u8, _range: Range) !void {
         if (self._decorations.get(decorationId)) |node| {
             if (node.options.after) {
                 const oldRange = self.getDecorationRange(decorationId);
-                self._onDidChangeDecorations.recordLineAffectedByInjectedText(oldRange.?.endLineNumber);
+                try self._onDidChangeDecorations.recordLineAffectedByInjectedText(oldRange.?.endLineNumber);
             }
 
             if (node.options.before) {
                 const oldRange = self.getDecorationRange(decorationId);
-                self._onDidChangeDecorations.recordLineAffectedByInjectedText(oldRange.?.startLineNumber);
+                try self._onDidChangeDecorations.recordLineAffectedByInjectedText(oldRange.?.startLineNumber);
             }
             if (node.options.lineHeight != null) {
                 const oldRange = self.getDecorationRange(decorationId);
-                self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, oldRange.?.startLineNumber, null);
+                try self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, oldRange.?.startLineNumber, null);
             }
 
             const range = self._validateRangeRelaxedNoAllocations(_range);
@@ -1656,13 +1670,13 @@ pub const TextModel = struct {
             self._onDidChangeDecorations.checkAffectedAndFire(node.options);
 
             if (node.options.after) {
-                self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.endLineNumber);
+                try self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.endLineNumber);
             }
             if (node.options.before) {
-                self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.startLineNumber);
+                try self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.startLineNumber);
             }
             if (node.options.lineHeight != null) {
-                self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, range.startLineNumber, node.options.lineHeight);
+                try self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, range.startLineNumber, node.options.lineHeight);
             }
         }
     }
@@ -1700,7 +1714,8 @@ pub const TextModel = struct {
         }
     }
 
-    fn _deltaDecorationsImpl(self: *TextModel, ownerId: usize, oldDecorationsIds: []const u64, newDecorations: []ModelDeltaDecoration, suppressEvents: bool) ![]const u64 {
+    fn _deltaDecorationsImpl(self: *TextModel, ownerId: usize, oldDecorationsIds: []const u64, newDecorations: []const ModelDeltaDecoration, suppressEvents: bool) !ArrayList(u64) {
+        const allocator = self.getAllocator();
         const versionId = self.getVersionId();
 
         const oldDecorationsLen = oldDecorationsIds.len;
@@ -1712,13 +1727,13 @@ pub const TextModel = struct {
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
 
-        const result = ArrayList([]const u8).initCapacity(self.getAllocator(), newDecorationsLen);
+        var result = ArrayList(u64).init(allocator);
         while (oldDecorationIndex < oldDecorationsLen or newDecorationIndex < newDecorationsLen) {
             var node: ?*IntervalNode = null;
 
             if (oldDecorationIndex < oldDecorationsLen) {
                 // (1) get ourselves an old node
-                var decorationId: []const u8 = undefined;
+                var decorationId: u64 = undefined;
                 while (true) {
                     decorationId = oldDecorationsIds[oldDecorationIndex];
                     oldDecorationIndex += 1;
@@ -1733,17 +1748,17 @@ pub const TextModel = struct {
 
                 // (2) remove the node from the tree (if it exists)
                 if (node) |node_| {
-                    if (node_.options.after) {
+                    if (node_.options.after != null) {
                         const nodeRange = self._decorationsTree.getNodeRange(self, node_);
-                        self._onDidChangeDecorations.recordLineAffectedByInjectedText(nodeRange.endLineNumber);
+                        try self._onDidChangeDecorations.recordLineAffectedByInjectedText(nodeRange.endLineNumber);
                     }
-                    if (node_.options.before) {
+                    if (node_.options.before != null) {
                         const nodeRange = self._decorationsTree.getNodeRange(self, node_);
-                        self._onDidChangeDecorations.recordLineAffectedByInjectedText(nodeRange.startLineNumber);
+                        try self._onDidChangeDecorations.recordLineAffectedByInjectedText(nodeRange.startLineNumber);
                     }
                     if (node_.options.lineHeight != null) {
                         const nodeRange = self._decorationsTree.getNodeRange(self, node_);
-                        self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, nodeRange.startLineNumber, null);
+                        try self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, decorationId, nodeRange.startLineNumber, null);
                     }
                     self._decorationsTree.delete(node_);
 
@@ -1759,8 +1774,8 @@ pub const TextModel = struct {
                     self._lastDecorationId += 1;
                     const internalDecorationId = self._lastDecorationId;
                     const decorationId: u64 = @as(u64, @intCast(self._instanceId)) << 32 | @as(u64, @intCast(internalDecorationId));
-                    node = try IntervalNode.init(self.getAllocator(), decorationId, 0, 0);
-                    try self._decorations.put(decorationId, node);
+                    node = try IntervalNode.create(self.getAllocator(), decorationId, 0, 0);
+                    try self._decorations.put(decorationId, node.?);
                 }
 
                 // (4) initialize node
@@ -1775,14 +1790,14 @@ pub const TextModel = struct {
                 node_.reset(versionId, startOffset, endOffset, range);
                 node_.setOptions(options);
 
-                if (node_.options.after) {
-                    self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.endLineNumber);
+                if (node_.options.after != null) {
+                    try self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.endLineNumber);
                 }
-                if (node_.options.before) {
-                    self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.startLineNumber);
+                if (node_.options.before != null) {
+                    try self._onDidChangeDecorations.recordLineAffectedByInjectedText(range.startLineNumber);
                 }
                 if (node_.options.lineHeight != null) {
-                    self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, node_.id, range.startLineNumber, node_.options.lineHeight);
+                    try self._onDidChangeDecorations.recordLineAffectedByLineHeightChange(ownerId, node_.id, range.startLineNumber, node_.options.lineHeight);
                 }
                 if (!suppressEvents) {
                     self._onDidChangeDecorations.checkAffectedAndFire(options);
@@ -1790,17 +1805,17 @@ pub const TextModel = struct {
 
                 self._decorationsTree.insert(node_);
 
-                result[newDecorationIndex] = node_.id;
+                try result.append(node_.id);
 
                 newDecorationIndex += 1;
             } else {
                 if (node) |node_| {
-                    self._decorations.remove(node_.id);
+                    _ = self._decorations.remove(node_.id);
                 }
             }
         }
 
-        return result.toOwnedSlice();
+        return result;
     }
 
     //#endregion
@@ -2054,10 +2069,11 @@ pub const DecorationsTrees = struct {
         const allocator = host.getAllocator();
         const versionId = host.getVersionId();
         const result = try self._intervalSearch(allocator, start, end, filterOwnerId, filterOutValidation, versionId, onlyMarginDecorations);
+        defer result.deinit();
         return try _ensureNodesHaveRanges(host, result);
     }
 
-    fn _intervalSearch(self: *DecorationsTrees, allocator: Allocator, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    fn _intervalSearch(self: *DecorationsTrees, allocator: Allocator, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         const r0 = try self._decorationsTree0.intervalSearch(allocator, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         defer r0.deinit();
         const r1 = try self._decorationsTree1.intervalSearch(allocator, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
@@ -2199,10 +2215,10 @@ pub const DecorationsTrees = struct {
         if (node.range == null) {
             node.range = host.getRangeAt(node.cachedAbsoluteStart, node.cachedAbsoluteEnd);
         }
-        return node.range;
+        return node.range.?;
     }
 
-    fn _resolveNode(self: *DecorationsTrees, node: *IntervalNode, cachedVersionId: usize) void {
+    fn _resolveNode(self: *DecorationsTrees, node: *IntervalNode, cachedVersionId: u32) void {
         if (isNodeInjectedText(node)) {
             self._injectedTextDecorationsTree.resolveNode(node, cachedVersionId);
         } else if (isNodeInOverviewRuler(node)) {
@@ -2241,15 +2257,16 @@ pub fn createTextBufferFactory(allocator: Allocator, reader: *std.Io.Reader) !Pi
 
 const LineHeightChangingDecoration = struct {
     ownerId: u64,
-    decorationId: []const u8,
+    decorationId: u64,
     lineNumber: usize,
     lineHeight: ?usize,
 
-    pub fn toKey(allocator: Allocator, obj: LineHeightChangingDecoration) ![]const u8 {
-        return try std.fmt.allocPrint(allocator, "{};{};{}", .{ obj.ownerId, obj.decorationId, obj.lineNumber });
+    pub fn toKey(obj: LineHeightChangingDecoration) u192 {
+        // return try std.fmt.allocPrint(allocator, "{};{};{}", .{ obj.ownerId, obj.decorationId, obj.lineNumber });
+        return @as(u192, @intCast(obj.ownerId)) << 128 | @as(u192, @intCast(obj.decorationId)) << 64 | @as(u192, @intCast(obj.lineNumber));
     }
 
-    pub fn init(ownerId: u64, decorationId: []const u8, lineNumber: usize, lineHeight: ?usize) LineHeightChangingDecoration {
+    pub fn init(ownerId: u64, decorationId: u64, lineNumber: usize, lineHeight: ?usize) LineHeightChangingDecoration {
         return LineHeightChangingDecoration{
             .ownerId = ownerId,
             .decorationId = decorationId,
@@ -2267,14 +2284,14 @@ const DidChangeDecorationsEmitter = struct {
     _affectsMinimap: bool,
     _affectsOverviewRuler: bool,
     _affectedInjectedTextLines: ?Set(usize),
-    _affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration),
+    _affectedLineHeights: ?SetWithKey(u192, LineHeightChangingDecoration),
     _affectsGlyphMargin: bool,
     _affectsLineNumber: bool,
 
     _model: *anyopaque,
-    handleBeforeFire: *const fn (m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) anyerror!void,
+    handleBeforeFire: *const fn (m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(u192, LineHeightChangingDecoration)) anyerror!void,
 
-    pub fn init(allocator: Allocator, model: *anyopaque, handleBeforeFire: *const fn (m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(LineHeightChangingDecoration)) anyerror!void) DidChangeDecorationsEmitter {
+    pub fn init(allocator: Allocator, model: *anyopaque, handleBeforeFire: *const fn (m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(u192, LineHeightChangingDecoration)) anyerror!void) DidChangeDecorationsEmitter {
         return DidChangeDecorationsEmitter{
             ._actual = Emitter(ModelDecorationsChangedEvent).init(allocator),
             .allocator = allocator,
@@ -2326,21 +2343,21 @@ const DidChangeDecorationsEmitter = struct {
         }
     }
 
-    pub fn recordLineAffectedByInjectedText(self: *DidChangeDecorationsEmitter, lineNumber: usize) void {
+    pub fn recordLineAffectedByInjectedText(self: *DidChangeDecorationsEmitter, lineNumber: usize) !void {
         if (self._affectedInjectedTextLines == null) {
             self._affectedInjectedTextLines = Set(usize).init(self.allocator);
         }
-        _ = self._affectedInjectedTextLines.?.add(lineNumber);
+        _ = try self._affectedInjectedTextLines.?.add(lineNumber);
     }
 
-    pub fn recordLineAffectedByLineHeightChange(self: *DidChangeDecorationsEmitter, ownerId: u64, decorationId: []const u8, lineNumber: usize, lineHeight: ?usize) void {
+    pub fn recordLineAffectedByLineHeightChange(self: *DidChangeDecorationsEmitter, ownerId: u64, decorationId: u64, lineNumber: usize, lineHeight: ?usize) !void {
         if (self._affectedLineHeights == null) {
-            self._affectedLineHeights = SetWithKey(LineHeightChangingDecoration).init(self.allocator, LineHeightChangingDecoration.toKey);
+            self._affectedLineHeights = SetWithKey(u192, LineHeightChangingDecoration).init(self.allocator, LineHeightChangingDecoration.toKey);
         }
-        self._affectedLineHeights.?.add(LineHeightChangingDecoration.init(ownerId, decorationId, lineNumber, lineHeight));
+        _ = try self._affectedLineHeights.?.add(LineHeightChangingDecoration.init(ownerId, decorationId, lineNumber, lineHeight));
     }
 
-    pub fn checkAffectedAndFire(self: *DidChangeDecorationsEmitter, options: *ModelDecorationOptions) void {
+    pub fn checkAffectedAndFire(self: *DidChangeDecorationsEmitter, options: *const ModelDecorationOptions) void {
         self._affectsMinimap = options.minimap != null;
         self._affectsOverviewRuler = options.overviewRuler != null;
         self._affectsGlyphMargin = options.glyphMarginClassName != null;
@@ -2467,25 +2484,27 @@ pub const ModelDecorationsChangeAccessor = struct {
     // @param range Range that this decoration covers.
     // @param options Options associated with this decoration.
     // @return An unique identifier associated with this decoration.
-    pub fn addDecoration(self: *ModelDecorationsChangeAccessor, range: Range, options: ModelDecorationOptions) !u64 {
-        return try self.model._deltaDecorationsImpl(self.ownerId, &[_]u64{}, &[_]ModelDeltaDecoration{.{ .range = range, .options = options }});
+    pub fn addDecoration(self: *const ModelDecorationsChangeAccessor, range: Range, options: *const ModelDecorationOptions) !u64 {
+        const res = try self.model._deltaDecorationsImpl(self.ownerId, &[_]u64{}, &[_]ModelDeltaDecoration{.{ .range = range, .options = options }}, false);
+        defer res.deinit();
+        return res.items[0];
     }
     // Change the range that an existing decoration covers.
     // @param id The unique identifier associated with the decoration.
     // @param newRange The new range that this decoration covers.
-    pub fn changeDecoration(self: *ModelDecorationsChangeAccessor, id: []const u8, newRange: Range) void {
-        self.model._changeDecorationImpl(self.ownerId, id, newRange);
+    pub fn changeDecoration(self: *const ModelDecorationsChangeAccessor, id: u64, newRange: Range) !void {
+        try self.model._changeDecorationImpl(self.ownerId, id, newRange);
     }
     // Change the options associated with an existing decoration.
     // @param id The unique identifier associated with the decoration.
     // @param newOptions The new options associated with this decoration.
-    pub fn changeDecorationOptions(self: *ModelDecorationsChangeAccessor, id: []const u8, newOptions: ModelDecorationOptions) void {
+    pub fn changeDecorationOptions(self: *const ModelDecorationsChangeAccessor, id: u64, newOptions: ModelDecorationOptions) void {
         self.model._changeDecorationOptionsImpl(self.ownerId, id, newOptions);
     }
     // Remove an existing decoration.
     // @param id The unique identifier associated with the decoration.
-    pub fn removeDecoration(self: *ModelDecorationsChangeAccessor, id: []const u8) void {
-        self.model._deltaDecorationsImpl(self.ownerId, &[_][]const u8{id}, &[_]ModelDeltaDecoration{}) catch unreachable;
+    pub fn removeDecoration(self: *const ModelDecorationsChangeAccessor, id: u64) void {
+        self.model._deltaDecorationsImpl(self.ownerId, &[_]u64{id}, &[_]ModelDeltaDecoration{}, false) catch unreachable;
     }
     // Perform a minimum amount of operations, in order to transform the decorations
     // identified by `oldDecorations` to the decorations described by `newDecorations`
@@ -2494,10 +2513,10 @@ pub const ModelDecorationsChangeAccessor = struct {
     // @param oldDecorations Array containing previous decorations identifiers.
     // @param newDecorations Array describing what decorations should result after the call.
     // @return An array containing the new decorations identifiers.
-    pub fn deltaDecorations(self: *ModelDecorationsChangeAccessor, oldDecorations: []const []const u8, newDecorations: []const ModelDeltaDecoration) ![]const []const u8 {
+    pub fn deltaDecorations(self: *const ModelDecorationsChangeAccessor, oldDecorations: []const u64, newDecorations: []const ModelDeltaDecoration) !ArrayList(u64) {
         if (oldDecorations.len == 0 and newDecorations.len == 0) {
-            return &[_][]const u8{};
+            return .init(self.model.getAllocator());
         }
-        return try self.model._deltaDecorationsImpl(self.ownerId, oldDecorations, newDecorations);
+        return try self.model._deltaDecorationsImpl(self.ownerId, oldDecorations, newDecorations, false);
     }
 };

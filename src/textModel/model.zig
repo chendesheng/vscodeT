@@ -566,6 +566,8 @@ pub const MinimapSectionHeaderStyle = enum(u2) {
 pub const ModelDecorationOverviewRulerOptions = struct {
     // The position in the overview ruler.
     position: OverviewRulerLane,
+    color: ?u32 = null,
+    darkColor: ?u32 = null,
 };
 
 // Options for rendering a model decoration in the minimap.
@@ -591,121 +593,91 @@ pub const ModelDecorationGlyphMarginOptions = struct {
 pub const ModelDecorationOptions = struct {
     // A debug description that can be used for inspecting model decorations.
     // @internal
-    description: []const u8,
+    description: ?[]const u8 = null,
     // Customize the growing behavior of the decoration when typing at the edges of the decoration.
     // Defaults to TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges
-    stickiness: ?TrackedRangeStickiness,
-    // CSS class name describing the decoration.
-    className: ?[]const u8,
+    stickiness: ?TrackedRangeStickiness = null,
+    // CSS class name describing the decoration. (enum)
+    className: ?u8 = null,
     // Indicates whether the decoration should span across the entire line when it continues onto the next line.
-    shouldFillLineOnLineBreak: ?bool,
-    blockClassName: ?[]const u8,
+    shouldFillLineOnLineBreak: bool = false,
+    blockClassName: ?[]const u8 = null,
     // Indicates if this block should be rendered after the last line.
     // In this case, the range must be empty and set to the last line.
-    blockIsAfterEnd: ?bool,
-    blockDoesNotCollapse: ?bool,
-    blockPadding: ?[4]usize,
+    blockIsAfterEnd: bool = false,
+    blockDoesNotCollapse: bool = false,
+    blockPadding: ?[4]usize = null,
     // Message to be rendered when hovering over the glyph margin decoration.
-    glyphMarginHoverMessage: ?[]const u8,
+    glyphMarginHoverMessage: ?[]const u8 = null,
     // Array of MarkdownString to render as the decoration message.
-    hoverMessage: ?[]const u8,
+    hoverMessage: ?[]const u8 = null,
     // Array of MarkdownString to render as the line number message.
-    lineNumberHoverMessage: ?[]const u8,
+    lineNumberHoverMessage: ?[]const u8 = null,
     // Should the decoration expand to encompass a whole line.
-    isWholeLine: ?bool,
+    isWholeLine: ?bool = null,
     // Always render the decoration (even when the range it encompasses is collapsed).
-    showIfCollapsed: ?bool,
+    showIfCollapsed: ?bool = null,
     // Collapse the decoration if its entire range is being replaced via an edit.
     // @internal
-    collapseOnReplaceEdit: ?bool,
+    collapseOnReplaceEdit: ?bool = null,
     // Specifies the stack order of a decoration.
     // A decoration with greater stack order is always in front of a decoration with
     // a lower stack order when the decorations are on the same line.
-    zIndex: ?usize,
+    zIndex: ?usize = null,
     // If set, render this decoration in the overview ruler.
-    overviewRuler: ?ModelDecorationOverviewRulerOptions,
+    overviewRuler: ?ModelDecorationOverviewRulerOptions = null,
     // If set, render this decoration in the minimap.
-    minimap: ?ModelDecorationMinimapOptions,
+    minimap: ?ModelDecorationMinimapOptions = null,
     // If set, the decoration will be rendered in the glyph margin with this CSS class name.
-    glyphMarginClassName: ?[]const u8,
+    glyphMarginClassName: ?[]const u8 = null,
     // If set and the decoration has {@link glyphMarginClassName} set, render this decoration
     // with the specified {@link IModelDecorationGlyphMarginOptions} in the glyph margin.
-    glyphMargin: ?ModelDecorationGlyphMarginOptions,
+    glyphMargin: ?ModelDecorationGlyphMarginOptions = null,
     // If set, the decoration will override the line height of the lines it spans. Maximum value is 300px.
-    lineHeight: ?usize,
+    lineHeight: ?usize = null,
     // If set, the decoration will be rendered in the lines decorations with this CSS class name.
-    linesDecorationsClassName: ?[]const u8,
+    linesDecorationsClassName: ?[]const u8 = null,
     // Controls the tooltip text of the line decoration.
-    linesDecorationsTooltip: ?[]const u8,
+    linesDecorationsTooltip: ?[]const u8 = null,
     // If set, the decoration will be rendered on the line number.
-    lineNumberClassName: ?[]const u8,
+    lineNumberClassName: ?[]const u8 = null,
     // If set, the decoration will be rendered in the lines decorations with
-    firstLineDecorationClassName: ?[]const u8,
+    firstLineDecorationClassName: ?[]const u8 = null,
     // If set, the decoration will be rendered in the margin (covering its full width) with this CSS class name.
-    marginClassName: ?[]const u8,
+    marginClassName: ?[]const u8 = null,
     // If set, the decoration will be rendered inline with the text with this CSS class name.
     // Please use this only for CSS rules that must impact the text. For example, use `className`
     // to have a background color decoration.
-    inlineClassName: ?[]const u8,
+    inlineClassName: ?[]const u8 = null,
     // If there is an `inlineClassName` which affects letter spacing.
-    inlineClassNameAffectsLetterSpacing: ?bool,
+    inlineClassNameAffectsLetterSpacing: ?bool = null,
     // If set, the decoration will be rendered before the text with this CSS class name.
-    beforeContentClassName: ?[]const u8,
+    beforeContentClassName: ?[]const u8 = null,
     // If set, the decoration will be rendered after the text with this CSS class name.
-    afterContentClassName: ?[]const u8,
+    afterContentClassName: ?[]const u8 = null,
     // If set, text will be injected in the view after the range.
-    after: ?InjectedTextOptions,
+    after: ?InjectedTextOptions = null,
     // If set, text will be injected in the view before the range.
-    before: ?InjectedTextOptions,
+    before: ?InjectedTextOptions = null,
     // If set, this decoration will not be rendered for comment tokens.
     // @internal
-    hideInCommentTokens: ?bool,
+    hideInCommentTokens: ?bool = null,
     // If set, this decoration will not be rendered for string tokens.
     // @internal
-    hideInStringTokens: ?bool,
+    hideInStringTokens: ?bool = null,
 
     pub fn init(description: []const u8, stickiness: TrackedRangeStickiness) ModelDecorationOptions {
         return ModelDecorationOptions{
             .description = description,
-            .blockClassName = null,
-            .blockDoesNotCollapse = null,
-            .blockIsAfterEnd = null,
-            .blockPadding = null,
             .stickiness = stickiness,
             .zIndex = 0,
-            .className = null,
-            .shouldFillLineOnLineBreak = null,
-            .hoverMessage = null,
-            .glyphMarginHoverMessage = null,
-            .lineNumberHoverMessage = null,
-            .isWholeLine = null,
-            .lineHeight = null,
-            .showIfCollapsed = null,
-            .collapseOnReplaceEdit = null,
-            .overviewRuler = null,
-            .minimap = null,
-            .glyphMargin = null,
-            .glyphMarginClassName = null,
-            .linesDecorationsClassName = null,
-            .lineNumberClassName = null,
-            .linesDecorationsTooltip = null,
-            .firstLineDecorationClassName = null,
-            .marginClassName = null,
-            .inlineClassName = null,
-            .inlineClassNameAffectsLetterSpacing = null,
-            .beforeContentClassName = null,
-            .afterContentClassName = null,
-            .after = null,
-            .before = null,
-            .hideInCommentTokens = null,
-            .hideInStringTokens = null,
         };
     }
 
     fn initModelDecorationOptionsDefaults(options: *ModelDecorationOptions) void {
         options.stickiness = options.stickiness orelse TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges;
         options.zIndex = options.zIndex orelse 0;
-        options.className = if (options.className) |className| cleanClassName(className) else null;
+        // options.className = if (options.className) |className| cleanClassName(className) else null;
         options.overviewRuler = if (options.overviewRuler) |overviewRuler| ModelDecorationOverviewRulerOptions.init(overviewRuler) else null;
         options.minimap = if (options.minimap) |minimap| ModelDecorationMinimapOptions.init(minimap) else null;
         options.glyphMargin = if (options.glyphMargin) |glyphMargin| ModelDecorationGlyphMarginOptions.init(glyphMargin) else null;
@@ -730,7 +702,7 @@ pub const ModelDecoration = struct {
     // Range that this decoration covers.
     range: Range,
     // Options associated with this decoration.
-    options: *ModelDecorationOptions,
+    options: *const ModelDecorationOptions,
 };
 
 // New model decorations.
@@ -738,7 +710,7 @@ pub const ModelDeltaDecoration = struct {
     // Range that this decoration covers.
     range: Range,
     // Options associated with this decoration.
-    options: *ModelDecorationOptions,
+    options: *const ModelDecorationOptions,
 };
 
 pub fn cleanClassName(className: []const u8) []const u8 {

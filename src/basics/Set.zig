@@ -110,48 +110,39 @@ test "Set([]u8)" {
     try std.testing.expectEqual(3, set.count());
 }
 
-pub fn SetWithKey(comptime V: type) type {
+pub fn SetWithKey(comptime K: type, comptime V: type) type {
     return struct {
         const Self = @This();
-        map: std.StringHashMap(V),
-        toKey: *const fn (allocator: Allocator, v: V) []const u8,
+        map: std.AutoHashMap(K, V),
+        toKey: *const fn (v: V) K,
 
-        pub fn init(allocator: Allocator, toKeyFn: *const fn (allocator: Allocator, v: V) []const u8) Self {
+        pub fn init(allocator: Allocator, toKeyFn: *const fn (v: V) K) Self {
             return Self{
-                .map = std.StringHashMap(V).init(allocator),
+                .map = std.AutoHashMap(K, V).init(allocator),
                 .toKey = toKeyFn,
             };
         }
 
         pub fn deinit(self: *Self) void {
-            var it = self.map.keyIterator();
-            while (it.next()) |key| {
-                self.map.allocator.free(key.*);
-            }
-
             self.map.deinit();
         }
 
         pub fn add(self: *Self, item: V) !void {
-            const allocator = self.map.allocator;
-            const key = self.toKey(allocator, item);
+            const key = self.toKey(item);
             if (self.map.contains(key)) {
                 try self.map.put(key, item);
-                allocator.free(key);
             } else {
                 try self.map.put(key, item);
             }
         }
 
         pub fn delete(self: *Self, item: V) void {
-            const allocator = self.map.allocator;
-            const key = self.toKey(allocator, item);
+            const key = self.toKey(item);
             _ = self.map.remove(key);
         }
 
         pub fn has(self: *Self, item: V) bool {
-            const allocator = self.map.allocator;
-            const key = self.toKey(allocator, item);
+            const key = self.toKey(item);
             return self.map.contains(key);
         }
 
@@ -166,12 +157,12 @@ const TestStruct = struct {
     b: u8,
 };
 
-fn toKey(allocator: Allocator, v: TestStruct) []const u8 {
-    return std.fmt.allocPrint(allocator, "{d}+{d}", .{ v.a, v.b }) catch unreachable;
+fn toKey(v: TestStruct) u16 {
+    return @as(u16, @intCast(v.a)) << 8 | @as(u16, @intCast(v.b));
 }
 
 test "SetWithKey" {
-    var set = SetWithKey(TestStruct).init(std.testing.allocator, toKey);
+    var set = SetWithKey(u16, TestStruct).init(std.testing.allocator, toKey);
     defer set.deinit();
 
     try set.add(TestStruct{ .a = 1, .b = 2 });
