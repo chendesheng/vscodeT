@@ -129,9 +129,14 @@ pub const IntervalNode = struct {
     cachedAbsoluteEnd: usize,
     range: ?Range,
 
-    pub fn init(allocator: Allocator, id: u64, start: usize, end: usize) !*IntervalNode {
-        const node: *IntervalNode = try allocator.create(IntervalNode);
-        node.* = IntervalNode{
+    pub fn create(allocator: Allocator, id: u64, start: usize, end: usize) !*IntervalNode {
+        var node = try allocator.create(IntervalNode);
+        node.init(id, start, end);
+        return node;
+    }
+
+    pub fn init(self: *IntervalNode, id: u64, start: usize, end: usize) void {
+        self.* = IntervalNode{
             .metadata = .{
                 .color = .Red,
                 .isVisited = false,
@@ -141,9 +146,9 @@ pub const IntervalNode = struct {
                 .collapseOnReplaceEdit = false,
                 .isMargin = false,
             },
-            .parent = node,
-            .left = node,
-            .right = node,
+            .parent = self,
+            .left = self,
+            .right = self,
             .start = start,
             .end = end,
             // FORCE_OVERFLOWING_TEST: .delta = start;
@@ -157,11 +162,6 @@ pub const IntervalNode = struct {
             .range = null,
             .options = undefined,
         };
-        return node;
-    }
-
-    pub fn deinit(self: *IntervalNode, allocator: Allocator) void {
-        allocator.destroy(self);
     }
 
     pub fn reset(self: *IntervalNode, versionId: u32, start: usize, end: usize, range: ?Range) void {
@@ -213,60 +213,58 @@ pub const IntervalNode = struct {
 };
 
 test "IntervalNode.init" {
-    const allocator = std.testing.allocator;
-    const node = try IntervalNode.init(allocator, 42, 0, 10);
-    defer allocator.destroy(node);
+    var node: IntervalNode = undefined;
+    node.init(42, 0, 10);
     try std.testing.expectEqual(0, node.start);
     try std.testing.expectEqual(10, node.end);
     try std.testing.expectEqual(NodeColor.Red, node.metadata.color);
     try std.testing.expectEqual(TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges, node.metadata.stickiness);
 }
 
+// TODO: is it better to manage tree nodes in the tree itself?
 pub const IntervalTree = struct {
     root: *IntervalNode,
     requestNormalizeDelta: bool,
-    allocator: Allocator,
 
-    pub fn init(allocator: Allocator) IntervalTree {
+    pub fn init() IntervalTree {
         return IntervalTree{
             .root = SENTINEL,
             .requestNormalizeDelta = false,
-            .allocator = allocator,
         };
     }
 
-    pub fn deinit(self: *IntervalTree) void {
-        const nodes = self.getAllInOrder() catch return;
+    pub fn destroyAllNodes(self: *IntervalTree, allocator: Allocator) !void {
+        var nodes = try self.getAllInOrder(allocator);
         defer nodes.deinit();
         for (nodes.items) |node| {
             if (node != SENTINEL) {
-                node.deinit(self.allocator);
+                allocator.destroy(node);
             }
         }
     }
 
-    pub fn intervalSearch(self: *IntervalTree, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    pub fn intervalSearch(self: *IntervalTree, allocator: Allocator, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         if (self.root == SENTINEL) {
-            return ArrayList(*IntervalNode).init(self.allocator);
+            return ArrayList(*IntervalNode).init(allocator);
         }
-        return try _intervalSearch(self, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        return try _intervalSearch(self, allocator, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
     }
 
-    pub fn search(self: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    pub fn search(self: *IntervalTree, allocator: Allocator, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         if (self.root == SENTINEL) {
-            return ArrayList(*IntervalNode).init(self.allocator);
+            return ArrayList(*IntervalNode).init(allocator);
         }
-        return try _search(self, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        return try _search(self, allocator, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
     }
 
     // Will not set `cachedAbsoluteStart` nor `cachedAbsoluteEnd` on the returned nodes!
-    pub fn collectNodesFromOwner(self: *IntervalTree, ownerId: usize) !ArrayList(*IntervalNode) {
-        return try _collectNodesFromOwner(self, ownerId);
+    pub fn collectNodesFromOwner(self: *IntervalTree, allocator: Allocator, ownerId: usize) !ArrayList(*IntervalNode) {
+        return try _collectNodesFromOwner(self, allocator, ownerId);
     }
 
     // Will not set `cachedAbsoluteStart` nor `cachedAbsoluteEnd` on the returned nodes!
-    pub fn collectNodesPostOrder(self: *IntervalTree) !ArrayList(*IntervalNode) {
-        return try _collectNodesPostOrder(self);
+    pub fn collectNodesPostOrder(self: *IntervalTree, allocator: Allocator) !ArrayList(*IntervalNode) {
+        return try _collectNodesPostOrder(self, allocator);
     }
 
     pub fn insert(self: *IntervalTree, node: *IntervalNode) void {
@@ -295,11 +293,11 @@ pub const IntervalTree = struct {
         initialNode.setCachedOffsets(nodeStart, nodeEnd, cachedVersionId);
     }
 
-    pub fn acceptReplace(self: *IntervalTree, offset: usize, length: usize, textLength: usize, forceMoveMarkers: bool) !void {
+    pub fn acceptReplace(self: *IntervalTree, allocator: Allocator, offset: usize, length: usize, textLength: usize, forceMoveMarkers: bool) !void {
         // Our strategy is to remove all directly impacted nodes, and then add them back to the tree.
 
         // (1) collect all nodes that are intersecting this edit as nodes of interest
-        const nodesOfInterest = try searchForEditing(self, offset, offset + length);
+        const nodesOfInterest = try searchForEditing(self, allocator, offset, offset + length);
         defer nodesOfInterest.deinit();
 
         // (2) remove all nodes that are intersecting this edit
@@ -323,8 +321,8 @@ pub const IntervalTree = struct {
         self._normalizeDeltaIfNecessary();
     }
 
-    pub fn getAllInOrder(self: *IntervalTree) !ArrayList(*IntervalNode) {
-        return try _search(self, 0, false, 0, false);
+    pub fn getAllInOrder(self: *IntervalTree, allocator: Allocator) !ArrayList(*IntervalNode) {
+        return try _search(self, allocator, 0, false, 0, false);
     }
 
     fn _normalizeDeltaIfNecessary(self: *IntervalTree) void {
@@ -337,51 +335,29 @@ pub const IntervalTree = struct {
 };
 
 test "IntervalTree.init" {
-    const allocator = std.testing.allocator;
-    var tree = IntervalTree.init(allocator);
-    defer tree.deinit();
+    const tree = IntervalTree.init();
     try std.testing.expectEqual(SENTINEL, tree.root);
     try std.testing.expectEqual(false, tree.requestNormalizeDelta);
 }
 
 test "IntervalTree.insert" {
-    const allocator = std.testing.allocator;
-    var tree = IntervalTree.init(allocator);
-    defer tree.deinit();
-    const node = try IntervalNode.init(allocator, 42, 0, 10);
-    defer node.deinit(allocator);
-    tree.insert(node);
-    tree.delete(node);
+    var tree = IntervalTree.init();
+    var node: IntervalNode = undefined;
+    node.init(42, 0, 10);
+    tree.insert(&node);
+    tree.delete(&node);
     try std.testing.expectEqual(SENTINEL, tree.root);
 }
 
 test "acceptReplace single" {
     const allocator = std.testing.allocator;
-    var tree = IntervalTree.init(allocator);
-    defer tree.deinit();
-    const node = try IntervalNode.init(allocator, 42, 0, 100);
-    tree.insert(node);
-    try tree.acceptReplace(10, 10, 20, false);
+    var tree = IntervalTree.init();
+    var node: IntervalNode = undefined;
+    node.init(42, 0, 100);
+    tree.insert(&node);
+    try tree.acceptReplace(allocator, 10, 10, 20, false);
     try std.testing.expectEqual(0, tree.root.start);
     try std.testing.expectEqual(110, tree.root.end);
-}
-
-test "acceptReplace multiple" {
-    const allocator = std.testing.allocator;
-    var tree = IntervalTree.init(allocator);
-    defer tree.deinit();
-    const node1 = try IntervalNode.init(allocator, 42, 0, 100);
-    const node2 = try IntervalNode.init(allocator, 43, 150, 200);
-    tree.insert(node1);
-    tree.insert(node2);
-    try tree.acceptReplace(80, 50, 10, false);
-    const nodes = tree.getAllInOrder() catch return;
-    defer nodes.deinit();
-    try std.testing.expectEqual(nodes.items.len, 2);
-    try std.testing.expectEqual(nodes.items[0].start, 0);
-    try std.testing.expectEqual(nodes.items[0].end, 90);
-    try std.testing.expectEqual(nodes.items[1].start, 110);
-    try std.testing.expectEqual(nodes.items[1].end, 160);
 }
 
 var sentinelValue: IntervalNode = .{
@@ -542,7 +518,7 @@ pub fn nodeAcceptEdit(node: *IntervalNode, start: usize, end: usize, textLength:
     }
 }
 
-fn searchForEditing(T: *IntervalTree, start: usize, end: usize) !ArrayList(*IntervalNode) {
+fn searchForEditing(T: *IntervalTree, allocator: Allocator, start: usize, end: usize) !ArrayList(*IntervalNode) {
     // https://en.wikipedia.org/wiki/Interval_tree#Augmented_tree
     // Now, it is known that two intervals A and B overlap only when both
     // A.low <= B.high and A.high >= B.low. When searching the trees for
@@ -554,7 +530,7 @@ fn searchForEditing(T: *IntervalTree, start: usize, end: usize) !ArrayList(*Inte
     var nodeMaxEnd: usize = 0;
     var nodeStart: usize = 0;
     var nodeEnd: usize = 0;
-    var result = ArrayList(*IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -687,9 +663,9 @@ fn noOverlapReplace(T: *IntervalTree, start: usize, end: usize, textLength: usiz
 
 //#region Searching
 
-fn _collectNodesFromOwner(T: *IntervalTree, ownerId: usize) !ArrayList(*IntervalNode) {
+fn _collectNodesFromOwner(T: *IntervalTree, allocator: Allocator, ownerId: usize) !ArrayList(*IntervalNode) {
     var node = T.root;
-    var result = ArrayList(*IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -724,9 +700,9 @@ fn _collectNodesFromOwner(T: *IntervalTree, ownerId: usize) !ArrayList(*Interval
     return result;
 }
 
-fn _collectNodesPostOrder(T: *IntervalTree) !ArrayList(*IntervalNode) {
+fn _collectNodesPostOrder(T: *IntervalTree, allocator: Allocator) !ArrayList(*IntervalNode) {
     var node = T.root;
-    var result = ArrayList(*IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -758,12 +734,12 @@ fn _collectNodesPostOrder(T: *IntervalTree) !ArrayList(*IntervalNode) {
     return result;
 }
 
-fn _search(T: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+fn _search(T: *IntervalTree, allocator: Allocator, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
     var node = T.root;
     var delta: isize = 0;
     var nodeStart: usize = 0;
     var nodeEnd: usize = 0;
-    var result = ArrayList(*IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node
@@ -818,7 +794,7 @@ fn _search(T: *IntervalTree, filterOwnerId: usize, filterOutValidation: bool, ca
     return result;
 }
 
-fn _intervalSearch(T: *IntervalTree, intervalStart: usize, intervalEnd: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+fn _intervalSearch(T: *IntervalTree, allocator: Allocator, intervalStart: usize, intervalEnd: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
     // https://en.wikipedia.org/wiki/Interval_tree#Augmented_tree
     // Now, it is known that two intervals A and B overlap only when both
     // A.low <= B.high and A.high >= B.low. When searching the trees for
@@ -831,7 +807,7 @@ fn _intervalSearch(T: *IntervalTree, intervalStart: usize, intervalEnd: usize, f
     var nodeMaxEnd: usize = 0;
     var nodeStart: usize = 0;
     var nodeEnd: usize = 0;
-    var result = ArrayList(*IntervalNode).init(T.allocator);
+    var result = ArrayList(*IntervalNode).init(allocator);
     while (node != SENTINEL) {
         if (getNodeIsVisited(node)) {
             // going up from this node

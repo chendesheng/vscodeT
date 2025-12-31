@@ -25,6 +25,7 @@ var rand = pcg.random();
 var SENTINEL = @import("../textModel/intervalTree.zig").SENTINEL;
 
 const IntervalTree1Tests = struct {
+    const allocator = std.testing.allocator;
     const Interval = struct {
         _intervalBrand: void = {},
 
@@ -46,7 +47,7 @@ const IntervalTree1Tests = struct {
     const Oracle = struct {
         intervals: ArrayList(Interval),
 
-        fn init(allocator: Allocator) Oracle {
+        fn init() Oracle {
             return .{
                 .intervals = ArrayList(Interval).init(allocator),
             };
@@ -96,10 +97,10 @@ const IntervalTree1Tests = struct {
         _treeNodes: ArrayList(?*IntervalNode),
         _oracleNodes: ArrayList(?Interval),
 
-        pub fn init(allocator: Allocator) TestState {
+        pub fn init() TestState {
             return .{
-                ._oracle = Oracle.init(allocator),
-                ._tree = IntervalTree.init(allocator),
+                ._oracle = Oracle.init(),
+                ._tree = IntervalTree.init(),
                 ._lastNodeId = -1,
                 ._treeNodes = ArrayList(?*IntervalNode).init(allocator),
                 ._oracleNodes = ArrayList(?Interval).init(allocator),
@@ -108,9 +109,13 @@ const IntervalTree1Tests = struct {
 
         pub fn deinit(self: *TestState) void {
             self._oracle.deinit();
+            for (self._treeNodes.items) |node| {
+                if (node) |nd| {
+                    allocator.destroy(nd);
+                }
+            }
             self._treeNodes.deinit();
             self._oracleNodes.deinit();
-            self._tree.deinit();
         }
 
         pub fn acceptOp(self: *TestState, _op: Operation) !void {
@@ -120,7 +125,7 @@ const IntervalTree1Tests = struct {
                         // console.log(`insert: {${JSON.stringify(new Interval(op.begin, op.end))}}`);
                     }
                     self._lastNodeId += 1;
-                    const node = try IntervalNode.init(self._tree.allocator, 0, op.begin, op.end);
+                    const node = try IntervalNode.create(allocator, 0, op.begin, op.end);
                     try self._treeNodes.append(node);
                     self._tree.insert(node);
                     try self._oracleNodes.append(try self._oracle.insert(Interval.init(op.begin, op.end)));
@@ -131,7 +136,7 @@ const IntervalTree1Tests = struct {
                     }
 
                     const node = self._treeNodes.items[op.id].?;
-                    defer node.deinit(self._tree.allocator);
+                    defer allocator.destroy(node);
                     self._tree.delete(node);
                     self._oracle.delete(self._oracleNodes.items[op.id].?);
 
@@ -150,7 +155,7 @@ const IntervalTree1Tests = struct {
                     _ = try self._oracle.insert(self._oracleNodes.items[op.id].?);
                 },
                 .search => |op| {
-                    const actualNodes = try self._tree.intervalSearch(op.begin, op.end, 0, false, 0, false);
+                    const actualNodes = try self._tree.intervalSearch(allocator, op.begin, op.end, 0, false, 0, false);
                     defer actualNodes.deinit();
                     var expected = try self._oracle.search(Interval.init(op.begin, op.end));
                     defer expected.deinit();
@@ -168,7 +173,7 @@ const IntervalTree1Tests = struct {
 
             try assertTreeInvariants(&self._tree);
 
-            const actual = try self._tree.getAllInOrder();
+            const actual = try self._tree.getAllInOrder(allocator);
             defer actual.deinit();
             const expected = self._oracle.intervals;
             for (expected.items, 0..) |expectedItem, i| {
@@ -219,8 +224,7 @@ const IntervalTree1Tests = struct {
     };
 
     fn testIntervalTree(ops: []const Operation) !void {
-        const allocator = std.testing.allocator;
-        var state = TestState.init(allocator);
+        var state = TestState.init();
         defer state.deinit();
         for (ops) |op| {
             try state.acceptOp(op);
@@ -252,10 +256,10 @@ const IntervalTree1Tests = struct {
         _deleteCnt: usize,
         _changeCnt: usize,
 
-        fn init(allocator: Allocator) AutoTest {
+        fn init() AutoTest {
             return .{
                 ._ops = ArrayList(Operation).init(allocator),
-                ._state = TestState.init(allocator),
+                ._state = TestState.init(),
                 ._insertCnt = getRandomInt(MIN_INSERTS, MAX_INSERTS),
                 ._changeCnt = getRandomInt(MIN_CHANGE_CNT, MAX_CHANGE_CNT),
                 ._deleteCnt = 0,
@@ -546,7 +550,7 @@ const IntervalTree1Tests = struct {
             if (i % 100 == 0) {
                 std.debug.print("TEST {d}/{d}\n", .{ i + 1, TEST_COUNT });
             }
-            var autoTest = AutoTest.init(std.testing.allocator);
+            var autoTest = AutoTest.init();
             defer autoTest.deinit();
             try autoTest.run();
         }
@@ -554,8 +558,9 @@ const IntervalTree1Tests = struct {
 };
 
 const SearchingTests = struct {
-    fn createCormenTree(allocator: Allocator) !IntervalTree {
-        var r = IntervalTree.init(allocator);
+    const allocator = std.testing.allocator;
+    fn createCormenTree() !IntervalTree {
+        var r = IntervalTree.init();
         const data = [_][2]usize{
             .{ 16, 21 },
             .{ 8, 9 },
@@ -569,17 +574,19 @@ const SearchingTests = struct {
             .{ 19, 20 },
         };
         for (data) |rg| {
-            const node = try IntervalNode.init(std.testing.allocator, 0, rg[0], rg[1]);
+            const node = try IntervalNode.create(allocator, 0, rg[0], rg[1]);
             r.insert(node);
         }
         return r;
     }
 
     fn assertIntervalSearch(start: usize, end: usize, expected: []const [2]usize) !void {
-        var tree = try createCormenTree(std.testing.allocator);
-        defer tree.deinit();
+        var tree = try createCormenTree();
+        defer {
+            tree.destroyAllNodes(allocator) catch unreachable;
+        }
 
-        const actualNodes = try tree.intervalSearch(start, end, 0, false, 0, false);
+        const actualNodes = try tree.intervalSearch(allocator, start, end, 0, false, 0, false);
         defer actualNodes.deinit();
         for (expected, 0..) |expectedItem, i| {
             try std.testing.expectEqual(expectedItem[0], actualNodes.items[i].cachedAbsoluteStart);
@@ -622,10 +629,10 @@ const SearchingTests = struct {
 const IntervalTree2Tests = struct {
     const allocator = std.testing.allocator;
     fn assertNodeAcceptEdit(msg: []const u8, nodeStart: usize, nodeEnd: usize, nodeStickiness: TrackedRangeStickiness, start: usize, end: usize, textLength: usize, forceMoveMarkers: bool, expectedNodeStart: usize, expectedNodeEnd: usize) !void {
-        const node = try IntervalNode.init(allocator, 0, nodeStart, nodeEnd);
-        defer node.deinit(allocator);
+        var node: IntervalNode = undefined;
+        node.init(0, nodeStart, nodeEnd);
         node.metadata.stickiness = nodeStickiness;
-        nodeAcceptEdit(node, start, end, textLength, forceMoveMarkers);
+        nodeAcceptEdit(&node, start, end, textLength, forceMoveMarkers);
 
         errdefer {
             std.debug.print("test case: {s}\n", .{msg});

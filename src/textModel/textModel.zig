@@ -313,7 +313,7 @@ pub const TextModel = struct {
             ._lastDecorationId = 0,
             ._deltaDecorationCallCnt = 0,
             ._decorations = std.AutoHashMap(u64, *IntervalNode).init(allocator),
-            ._decorationsTree = DecorationsTrees.init(allocator),
+            ._decorationsTree = DecorationsTrees.init(),
             ._commandManager = EditStack.init(model, undoRedoService),
             ._isUndoing = false,
             ._isRedoing = false,
@@ -1164,8 +1164,7 @@ pub const TextModel = struct {
         // Destroy all my decorations
         self._decorations.deinit();
         self._decorations = std.AutoHashMap(u64, *IntervalNode).init(self.getAllocator());
-        self._decorationsTree.deinit();
-        self._decorationsTree = DecorationsTrees.init(self.getAllocator());
+        self._decorationsTree = DecorationsTrees.init();
 
         // Destroy my edit history and settings
         try self._commandManager.clear();
@@ -1218,8 +1217,9 @@ pub const TextModel = struct {
 
     fn _onAfterEOLChange(self: *TextModel) !void {
         // Transform back `range` to offsets
+        const allocator = self.getAllocator();
         const versionId = self.getVersionId();
-        var allDecorations = try self._decorationsTree.collectNodesPostOrder();
+        var allDecorations = try self._decorationsTree.collectNodesPostOrder(allocator);
         defer allDecorations.deinit();
         for (allDecorations.items) |node| {
             const range = node.range.?; // the range is defined due to `_onBeforeEOLChange`
@@ -1283,7 +1283,7 @@ pub const TextModel = struct {
             // where we will emit content change events
             // and we want to read the final decorations
             for (contentChanges) |change| {
-                try self._decorationsTree.acceptReplace(change.modelContentChange.rangeOffset, change.modelContentChange.rangeLength, change.modelContentChange.text.len(), change.forceMoveMarkers);
+                try self._decorationsTree.acceptReplace(allocator, change.modelContentChange.rangeOffset, change.modelContentChange.rangeLength, change.modelContentChange.text.len(), change.forceMoveMarkers);
             }
 
             var rawContentChanges = ArrayList(ModelRawChange).init(allocator);
@@ -1532,7 +1532,8 @@ pub const TextModel = struct {
         if (self._isDisposed) {
             return;
         }
-        const nodes = try self._decorationsTree.collectNodesFromOwner(ownerId);
+        const allocator = self.getAllocator();
+        const nodes = try self._decorationsTree.collectNodesFromOwner(allocator, ownerId);
         defer nodes.deinit();
         for (nodes.items) |node| {
             self._decorationsTree.delete(node);
@@ -2012,21 +2013,18 @@ pub const DecorationsTrees = struct {
     // This tree holds decorations that contain injected text.
     _injectedTextDecorationsTree: IntervalTree,
 
-    allocator: Allocator,
-
-    pub fn init(allocator: Allocator) DecorationsTrees {
+    pub fn init() DecorationsTrees {
         return DecorationsTrees{
-            .allocator = allocator,
-            ._decorationsTree0 = IntervalTree.init(allocator),
-            ._decorationsTree1 = IntervalTree.init(allocator),
-            ._injectedTextDecorationsTree = IntervalTree.init(allocator),
+            ._decorationsTree0 = IntervalTree.init(),
+            ._decorationsTree1 = IntervalTree.init(),
+            ._injectedTextDecorationsTree = IntervalTree.init(),
         };
     }
 
-    pub fn deinit(self: *DecorationsTrees) void {
-        self._decorationsTree0.deinit();
-        self._decorationsTree1.deinit();
-        self._injectedTextDecorationsTree.deinit();
+    pub fn destroyAllNodes(self: *DecorationsTrees, allocator: Allocator) !void {
+        try self._decorationsTree0.destroyAllNodes(allocator);
+        try self._decorationsTree1.destroyAllNodes(allocator);
+        try self._injectedTextDecorationsTree.destroyAllNodes(allocator);
     }
 
     fn ensureAllNodesHaveRanges(self: *DecorationsTrees, host: *TextModel) !void {
@@ -2053,21 +2051,21 @@ pub const DecorationsTrees = struct {
     }
 
     pub fn getAllInInterval(self: *DecorationsTrees, host: *TextModel, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) !ArrayList(ModelDecoration) {
+        const allocator = host.getAllocator();
         const versionId = host.getVersionId();
-        const result = try self._intervalSearch(start, end, filterOwnerId, filterOutValidation, versionId, onlyMarginDecorations);
+        const result = try self._intervalSearch(allocator, start, end, filterOwnerId, filterOutValidation, versionId, onlyMarginDecorations);
         return try _ensureNodesHaveRanges(host, result);
     }
 
-    fn _intervalSearch(self: *DecorationsTrees, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
-        const r0 = try self._decorationsTree0.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+    fn _intervalSearch(self: *DecorationsTrees, allocator: Allocator, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+        const r0 = try self._decorationsTree0.intervalSearch(allocator, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         defer r0.deinit();
-        const r1 = try self._decorationsTree1.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        const r1 = try self._decorationsTree1.intervalSearch(allocator, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         defer r1.deinit();
-        const r2 = try self._injectedTextDecorationsTree.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        const r2 = try self._injectedTextDecorationsTree.intervalSearch(allocator, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         defer r2.deinit();
 
-        var result = ArrayList(*IntervalNode).init(self.allocator);
-        defer result.deinit();
+        var result = ArrayList(*IntervalNode).init(allocator);
         try result.appendSlice(r0.items);
         try result.appendSlice(r1.items);
         try result.appendSlice(r2.items);
@@ -2075,8 +2073,9 @@ pub const DecorationsTrees = struct {
     }
 
     pub fn getInjectedTextInInterval(self: *DecorationsTrees, host: *TextModel, start: usize, end: usize, filterOwnerId: usize) !ArrayList(ModelDecoration) {
+        const allocator = host.getAllocator();
         const versionId = host.getVersionId();
-        const result = try self._injectedTextDecorationsTree.intervalSearch(start, end, filterOwnerId, false, versionId, false);
+        const result = try self._injectedTextDecorationsTree.intervalSearch(allocator, start, end, filterOwnerId, false, versionId, false);
         return try _ensureNodesHaveRanges(host, result);
     }
 
@@ -2097,8 +2096,9 @@ pub const DecorationsTrees = struct {
     }
 
     pub fn getAllCustomLineHeights(self: *DecorationsTrees, host: *TextModel, filterOwnerId: usize) !ArrayList(ModelDecoration) {
+        const allocator = host.getAllocator();
         const versionId = host.getVersionId();
-        const searchResult = try self._search(filterOwnerId, false, false, versionId, false);
+        const searchResult = try self._search(allocator, filterOwnerId, false, false, versionId, false);
         defer searchResult.deinit();
         const result = try _ensureNodesHaveRanges(host, searchResult);
         var write_index = 0;
@@ -2113,23 +2113,24 @@ pub const DecorationsTrees = struct {
     }
 
     pub fn getAll(self: *DecorationsTrees, host: *TextModel, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, onlyMarginDecorations: bool) !ArrayList(ModelDecoration) {
+        const allocator = host.getAllocator();
         const versionId = host.getVersionId();
-        const result = try self._search(filterOwnerId, filterOutValidation, overviewRulerOnly, versionId, onlyMarginDecorations);
+        const result = try self._search(allocator, filterOwnerId, filterOutValidation, overviewRulerOnly, versionId, onlyMarginDecorations);
         return try _ensureNodesHaveRanges(host, result);
     }
 
-    fn _search(self: *DecorationsTrees, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    fn _search(self: *DecorationsTrees, allocator: Allocator, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         if (overviewRulerOnly) {
-            return try self._decorationsTree1.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+            return try self._decorationsTree1.search(allocator, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         } else {
-            const r0 = try self._decorationsTree0.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+            const r0 = try self._decorationsTree0.search(allocator, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
             defer r0.deinit();
-            const r1 = try self._decorationsTree1.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+            const r1 = try self._decorationsTree1.search(allocator, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
             defer r1.deinit();
-            const r2 = try self._injectedTextDecorationsTree.search(filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+            const r2 = try self._injectedTextDecorationsTree.search(allocator, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
             defer r2.deinit();
 
-            var result = ArrayList(*IntervalNode).init(self.allocator);
+            var result = ArrayList(*IntervalNode).init(allocator);
             defer result.deinit();
             try result.appendSlice(r0.items);
             try result.appendSlice(r1.items);
@@ -2138,15 +2139,15 @@ pub const DecorationsTrees = struct {
         }
     }
 
-    pub fn collectNodesFromOwner(self: *DecorationsTrees, ownerId: usize) !ArrayList(*IntervalNode) {
-        const r0 = try self._decorationsTree0.collectNodesFromOwner(ownerId);
+    pub fn collectNodesFromOwner(self: *DecorationsTrees, allocator: Allocator, ownerId: usize) !ArrayList(*IntervalNode) {
+        const r0 = try self._decorationsTree0.collectNodesFromOwner(allocator, ownerId);
         defer r0.deinit();
-        const r1 = try self._decorationsTree1.collectNodesFromOwner(ownerId);
+        const r1 = try self._decorationsTree1.collectNodesFromOwner(allocator, ownerId);
         defer r1.deinit();
-        const r2 = try self._injectedTextDecorationsTree.collectNodesFromOwner(ownerId);
+        const r2 = try self._injectedTextDecorationsTree.collectNodesFromOwner(allocator, ownerId);
         defer r2.deinit();
 
-        var result = ArrayList(*IntervalNode).init(self.allocator);
+        var result = ArrayList(*IntervalNode).init(allocator);
         defer result.deinit();
         try result.appendSlice(r0.items);
         try result.appendSlice(r1.items);
@@ -2154,15 +2155,15 @@ pub const DecorationsTrees = struct {
         return result;
     }
 
-    pub fn collectNodesPostOrder(self: *DecorationsTrees) !ArrayList(*IntervalNode) {
-        const r0 = try self._decorationsTree0.collectNodesPostOrder();
+    pub fn collectNodesPostOrder(self: *DecorationsTrees, allocator: Allocator) !ArrayList(*IntervalNode) {
+        const r0 = try self._decorationsTree0.collectNodesPostOrder(allocator);
         defer r0.deinit();
-        const r1 = try self._decorationsTree1.collectNodesPostOrder();
+        const r1 = try self._decorationsTree1.collectNodesPostOrder(allocator);
         defer r1.deinit();
-        const r2 = try self._injectedTextDecorationsTree.collectNodesPostOrder();
+        const r2 = try self._injectedTextDecorationsTree.collectNodesPostOrder(allocator);
         defer r2.deinit();
 
-        var result = ArrayList(*IntervalNode).init(self.allocator);
+        var result = ArrayList(*IntervalNode).init(allocator);
         defer result.deinit();
         try result.appendSlice(r0.items);
         try result.appendSlice(r1.items);
@@ -2211,10 +2212,10 @@ pub const DecorationsTrees = struct {
         }
     }
 
-    pub fn acceptReplace(self: *DecorationsTrees, offset: usize, length: usize, textLength: usize, forceMoveMarkers: bool) !void {
-        try self._decorationsTree0.acceptReplace(offset, length, textLength, forceMoveMarkers);
-        try self._decorationsTree1.acceptReplace(offset, length, textLength, forceMoveMarkers);
-        try self._injectedTextDecorationsTree.acceptReplace(offset, length, textLength, forceMoveMarkers);
+    pub fn acceptReplace(self: *DecorationsTrees, allocator: Allocator, offset: usize, length: usize, textLength: usize, forceMoveMarkers: bool) !void {
+        try self._decorationsTree0.acceptReplace(allocator, offset, length, textLength, forceMoveMarkers);
+        try self._decorationsTree1.acceptReplace(allocator, offset, length, textLength, forceMoveMarkers);
+        try self._injectedTextDecorationsTree.acceptReplace(allocator, offset, length, textLength, forceMoveMarkers);
     }
 };
 pub fn createTextBuffer(allocator: Allocator, source: *std.Io.Reader, defaultEOL: EOL) !PieceTreeTextBuffer {
