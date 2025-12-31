@@ -2,14 +2,14 @@ const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const Range = @import("../basics/range.zig").Range;
-const PieceTreeBase = @import("pieceTreeBase.zig").PieceTreeBase;
-const PieceTreeBufferBuilder = @import("pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
+const PieceTreeBase = @import("../pieceTreeTextBuffer/pieceTreeBase.zig").PieceTreeBase;
+const PieceTreeBufferBuilder = @import("../pieceTreeTextBuffer/pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
 const re = @import("../basics/RegExp.zig");
 const RegExp = re.RegExp;
 const Position = @import("../basics/position.zig").Position;
-const PieceTreeTextBuffer = @import("pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
-const SENTINEL = @import("rbTreeBase.zig").SENTINEL;
-const TreeNode = @import("rbTreeBase.zig").TreeNode;
+const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
+const SENTINEL = @import("../pieceTreeTextBuffer/rbTreeBase.zig").SENTINEL;
+const TreeNode = @import("../pieceTreeTextBuffer/rbTreeBase.zig").TreeNode;
 const countLines = @import("../basics/strings.zig").countLines;
 const splitLines = @import("../basics/strings.zig").splitLines;
 const SearchData = @import("../textModel/model.zig").SearchData;
@@ -2071,7 +2071,7 @@ const ChunkBasedSearchTests = struct {
     }
 };
 
-test "insert and deletes" {
+test "pieceTreeTextBuffer" {
     _ = InsertAndDeleteTests;
     _ = PrefixSumForLineFeedTests;
     _ = Offset2PositionTests;
