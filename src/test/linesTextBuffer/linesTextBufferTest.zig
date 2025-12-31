@@ -248,7 +248,7 @@ const PieceTreeTextBuffer_toSingleEditOperationTests = struct {
     }
 
     fn testToSingleEditOperation(original: []const []const u8, edits: []const ValidatedEditOperation, expected: ValidatedEditOperation) !void {
-        var str = try toString(allocator, original);
+        var str = try unlines(allocator, original);
         defer str.deinit();
         var reader = str.reader();
         const factory = try createTextBufferFactory(allocator, &reader);

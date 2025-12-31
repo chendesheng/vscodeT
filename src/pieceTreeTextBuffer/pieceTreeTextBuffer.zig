@@ -523,7 +523,6 @@ pub const PieceTreeTextBuffer = struct {
             .identifier = operations[0].identifier,
             .range = entireEditRange,
             .rangeOffset = self.getOffsetAt(entireEditRange.startLineNumber, entireEditRange.startColumn),
-            .rangeLength = self.getValueLengthInRange(entireEditRange, null),
             .rangeLength = self.getValueLengthInRange(entireEditRange, .TextDefined),
             .text = text,
             .eolCount = eolResult.eolCount,
