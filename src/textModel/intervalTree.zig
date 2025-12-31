@@ -146,6 +146,7 @@ pub const IntervalNode = struct {
             .right = node,
             .start = start,
             .end = end,
+            // FORCE_OVERFLOWING_TEST: .delta = start;
             .delta = 0,
             .maxEnd = end,
             .id = id,
@@ -275,7 +276,6 @@ pub const IntervalTree = struct {
 
     pub fn delete(self: *IntervalTree, node: *IntervalNode) void {
         rbTreeDelete(self, node);
-        node.deinit(self.allocator);
         self._normalizeDeltaIfNecessary();
     }
 
@@ -349,6 +349,7 @@ test "IntervalTree.insert" {
     var tree = IntervalTree.init(allocator);
     defer tree.deinit();
     const node = try IntervalNode.init(allocator, 42, 0, 10);
+    defer node.deinit(allocator);
     tree.insert(node);
     tree.delete(node);
     try std.testing.expectEqual(SENTINEL, tree.root);
@@ -408,7 +409,7 @@ var sentinelValue: IntervalNode = .{
     .range = null,
     .options = undefined,
 };
-pub var SENTINEL: *IntervalNode = &sentinelValue;
+pub const SENTINEL: *IntervalNode = &sentinelValue;
 
 //#region Delta Normalization
 fn normalizeDelta(T: *IntervalTree) void {
@@ -471,7 +472,7 @@ fn adjustMarkerBeforeColumn(markerOffset: usize, markerStickToPreviousCharacter:
 
 // This is a lot more complicated than strictly necessary to maintain the same behaviour
 // as when decorations were implemented using two markers.
-fn nodeAcceptEdit(node: *IntervalNode, start: usize, end: usize, textLength: usize, forceMoveMarkers: bool) void {
+pub fn nodeAcceptEdit(node: *IntervalNode, start: usize, end: usize, textLength: usize, forceMoveMarkers: bool) void {
     const nodeStickiness = getNodeStickiness(node);
     const startStickToPreviousCharacter = (nodeStickiness == TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges or nodeStickiness == TrackedRangeStickiness.GrowsOnlyWhenTypingBefore);
     const endStickToPreviousCharacter = (nodeStickiness == TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges or nodeStickiness == TrackedRangeStickiness.GrowsOnlyWhenTypingBefore);
@@ -1266,7 +1267,7 @@ fn rightRotate(T: *IntervalTree, y: *IntervalNode) void {
 }
 
 fn computeMaxEnd(node: *const IntervalNode) usize {
-    var maxEnd = node.maxEnd;
+    var maxEnd = node.end;
     if (node.left != SENTINEL) {
         const leftMaxEnd = node.left.maxEnd;
         if (leftMaxEnd > maxEnd) {
