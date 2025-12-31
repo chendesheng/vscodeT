@@ -17,6 +17,12 @@ comptime {
     _ = @import("pieceTreeTextBuffer/pieceTreeBufferBuilder.zig");
     _ = @import("pieceTreeTextBuffer/pieceTreeTextBuffer.zig");
     _ = @import("pieceTreeTextBuffer/rbTreeBase.zig");
+    _ = @import("test/editStackTest.zig");
+    _ = @import("test/linesTextBuffer/linesTextBufferBuilderTest.zig");
+    _ = @import("test/linesTextBuffer/linesTextBufferTest.zig");
+    _ = @import("test/modelTest.zig");
+    _ = @import("test/pieceTreeTextBufferTest.zig");
+    _ = @import("test/textModelTest.zig");
     _ = @import("textModel/editStack.zig");
     _ = @import("textModel/indentationGuesser.zig");
     _ = @import("textModel/intervalTree.zig");
@@ -26,13 +32,7 @@ comptime {
     _ = @import("textModel/textModel.zig");
     _ = @import("textModel/textModelEvents.zig");
     _ = @import("textModel/textModelSearch.zig");
-    _ = @import("textModel/textModelTests.zig");
     _ = @import("textModel/undoRedo.zig");
     _ = @import("textModel/undoRedoService.zig");
     _ = @import("tui/ansi.zig");
-    _ = @import("test/editStackTest.zig");
-    _ = @import("test/modelTest.zig");
-    _ = @import("test/linesTextBuffer/linesTextBufferTest.zig");
-    _ = @import("test/linesTextBuffer/linesTextBufferBuilderTest.zig");
-    _ = @import("test/pieceTreeTextBufferTest.zig");
 }
