@@ -494,8 +494,8 @@ pub const PieceTreeTextBuffer = struct {
         const firstEditRange = operations[0].range;
         const lastEditRange = operations[operations.len - 1].range;
         const entireEditRange = Range.init(firstEditRange.startLineNumber, firstEditRange.startColumn, lastEditRange.endLineNumber, lastEditRange.endColumn);
-        var lastEndLineNumber = firstEditRange.endLineNumber;
-        var lastEndColumn = firstEditRange.endColumn;
+        var lastEndLineNumber = firstEditRange.startLineNumber;
+        var lastEndColumn = firstEditRange.startColumn;
         var result = ArrayList(u8).init(allocator);
 
         for (operations) |operation| {

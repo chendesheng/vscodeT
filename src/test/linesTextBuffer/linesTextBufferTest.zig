@@ -296,31 +296,300 @@ const PieceTreeTextBuffer_toSingleEditOperationTests = struct {
         );
     }
 
-    // test "two edits on one line" {
-    //     var ops = [_]ValidatedEditOperation{
-    //         try editOp(1, 1, 1, 3, 0, 2, &[_][]const u8{"Your"}), //
-    //         try editOp(1, 4, 1, 4, 3, 0, &[_][]const u8{"Interesting "}),
-    //         try editOp(2, 3, 2, 6, 16, 3, null),
-    //     };
-    //     defer {
-    //         for (&ops) |*op| {
-    //             op.deinit();
-    //         }
-    //     }
-    //     var expected = try editOp(1, 1, 2, 6, 0, 19, &[_][]const u8{ "Your Interesting First Line", "\t\t" });
-    //     defer expected.deinit();
-    //     try testToSingleEditOperation(
-    //         &[_][]const u8{
-    //             "My First Line", //
-    //             "\t\tMy Second Line",
-    //             "    Third Line",
-    //             "",
-    //             "1",
-    //         },
-    //         &ops,
-    //         expected,
-    //     );
-    // }
+    test "two edits on one line" {
+        var ops = [_]ValidatedEditOperation{
+            try editOp(1, 1, 1, 3, 0, 2, &[_][]const u8{"Your"}), //
+            try editOp(1, 4, 1, 4, 3, 0, &[_][]const u8{"Interesting "}),
+            try editOp(2, 3, 2, 6, 16, 3, null),
+        };
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+        var expected = try editOp(1, 1, 2, 6, 0, 19, &[_][]const u8{ "Your Interesting First Line", "\t\t" });
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                "My First Line", //
+                "\t\tMy Second Line",
+                "    Third Line",
+                "",
+                "1",
+            },
+            &ops,
+            expected,
+        );
+    }
+
+    test "insert multiple newlines" {
+        var ops = [_]ValidatedEditOperation{
+            try editOp(1, 3, 1, 3, 2, 0, &[_][]const u8{ "", "", "", "", "" }), //
+            try editOp(3, 15, 3, 15, 45, 0, &[_][]const u8{ "a", "b" }),
+        };
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+
+        var expected = try editOp(1, 3, 3, 15, 2, 43, &[_][]const u8{
+            "", //
+            "",
+            "",
+            "",
+            " First Line",
+            "\t\tMy Second Line",
+            "    Third Linea",
+            "b",
+        });
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                "My First Line",
+                "\t\tMy Second Line",
+                "    Third Line",
+                "",
+                "1",
+            },
+            &ops,
+            expected,
+        );
+    }
+
+    test "delete empty text" {
+        var ops = [_]ValidatedEditOperation{try editOp(1, 1, 1, 1, 0, 0, &[_][]const u8{""})};
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+        var expected = try editOp(1, 1, 1, 1, 0, 0, &[_][]const u8{""});
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                "My First Line",
+                "\t\tMy Second Line",
+                "    Third Line",
+                "",
+                "1",
+            },
+            &[_]ValidatedEditOperation{try editOp(1, 1, 1, 1, 0, 0, &[_][]const u8{""})},
+            expected,
+        );
+    }
+
+    test "two unrelated edits" {
+        var ops = [_]ValidatedEditOperation{
+            try editOp(2, 1, 2, 3, 14, 2, &[_][]const u8{"\t"}),
+            try editOp(3, 1, 3, 5, 31, 4, &[_][]const u8{""}),
+        };
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+        var expected = try editOp(2, 1, 3, 5, 14, 21, &[_][]const u8{ "\tMy Second Line", "" });
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                "My First Line",
+                "\t\tMy Second Line",
+                "    Third Line",
+                "",
+                "123",
+            },
+            &ops,
+            expected,
+        );
+    }
+
+    test "many edits" {
+        var ops = [_]ValidatedEditOperation{
+            try editOp(1, 2, 1, 2, 1, 0, &[_][]const u8{"\n  "}),
+            try editOp(1, 5, 1, 6, 4, 1, &[_][]const u8{""}),
+            try editOp(1, 9, 1, 9, 8, 0, &[_][]const u8{"\n"}),
+        };
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+        var expected = try editOp(1, 2, 1, 9, 1, 7, &[_][]const u8{
+            "",
+            "  \"x\": 1",
+            "",
+        });
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                "{\"x\" : 1}",
+                "",
+                "  \"x\": 1",
+                "",
+            },
+            &ops,
+            expected,
+        );
+    }
+
+    test "many edits reversed" {
+        var ops = [_]ValidatedEditOperation{
+            try editOp(1, 2, 2, 3, 1, 3, &[_][]const u8{""}),
+            try editOp(2, 6, 2, 6, 7, 0, &[_][]const u8{" "}),
+            try editOp(2, 9, 3, 1, 10, 1, &[_][]const u8{""}),
+        };
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+        var expected = try editOp(1, 2, 3, 1, 1, 10, &[_][]const u8{"\"x\" : 1"});
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                "{",
+                "  \"x\": 1",
+                "}",
+            },
+            &ops,
+            expected,
+        );
+    }
+
+    test "replacing newlines 1" {
+        var ops = [_]ValidatedEditOperation{
+            try editOp(1, 2, 2, 1, 1, 1, &[_][]const u8{ "", "\t" }),
+            try editOp(2, 11, 4, 1, 12, 2, &[_][]const u8{ "", "\t" }),
+        };
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+        var expected = try editOp(1, 2, 4, 1, 1, 13, &[_][]const u8{
+            "",
+            "\t\"a\": true,",
+            "\t",
+        });
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                "{",
+                "\"a\": true,",
+                "",
+                "\"b\": true",
+                "}",
+            },
+            &ops,
+            expected,
+        );
+    }
+
+    test "replacing newlines 2" {
+        var ops = [_]ValidatedEditOperation{
+            try editOp(1, 5, 3, 1, 4, 21, &[_][]const u8{ " text", "some more text", "some more text" }),
+            try editOp(3, 2, 4, 1, 26, 23, &[_][]const u8{ "o more lines", "asd", "asd", "asd" }),
+            try editOp(5, 1, 5, 6, 50, 5, &[_][]const u8{"zzzzzzzz"}),
+            try editOp(5, 11, 6, 16, 60, 22, &[_][]const u8{ "1", "2", "3", "4" }),
+        };
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+        var expected = try editOp(1, 5, 6, 16, 4, 78, &[_][]const u8{
+            " text",
+            "some more text",
+            "some more textno more lines",
+            "asd",
+            "asd",
+            "asd",
+            "zzzzzzzz empt1",
+            "2",
+            "3",
+            "4",
+        });
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                "some text",
+                "some more text",
+                "now comes an empty line",
+                "",
+                "after empty line",
+                "and the last line",
+            },
+            &ops,
+            expected,
+        );
+    }
+
+    test "advanced" {
+        var ops = [_]ValidatedEditOperation{
+            try editOp(1, 1, 1, 2, 0, 1, &[_][]const u8{""}),
+            try editOp(1, 3, 1, 10, 2, 7, &[_][]const u8{ "", "  " }),
+            try editOp(1, 16, 2, 14, 15, 14, &[_][]const u8{ "", "    " }),
+            try editOp(2, 18, 3, 9, 33, 9, &[_][]const u8{ "", "  " }),
+            try editOp(3, 22, 4, 9, 55, 9, &[_][]const u8{""}),
+            try editOp(4, 10, 4, 10, 65, 0, &[_][]const u8{ "", "  " }),
+            try editOp(4, 28, 4, 28, 83, 0, &[_][]const u8{ "", "    " }),
+            try editOp(4, 32, 4, 32, 87, 0, &[_][]const u8{ "", "  " }),
+            try editOp(4, 33, 4, 34, 88, 1, &[_][]const u8{ "", "" }),
+        };
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+        var expected = try editOp(1, 1, 4, 34, 0, 89, &[_][]const u8{
+            "{",
+            "  \"d\": [",
+            "    null",
+            "  ] /*comment*/,",
+            "  \"e\": /*comment*/ [",
+            "    null",
+            "  ]",
+            "",
+        });
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                " {       \"d\": [",
+                "             null",
+                "        ] /*comment*/",
+                "        ,\"e\": /*comment*/ [null] }",
+            },
+            &ops,
+            expected,
+        );
+    }
+
+    test "advanced simplified" {
+        var ops = [_]ValidatedEditOperation{
+            try editOp(1, 1, 1, 4, 0, 3, &[_][]const u8{""}),
+            try editOp(1, 7, 2, 2, 6, 2, &[_][]const u8{""}),
+            try editOp(2, 3, 2, 3, 9, 0, &[_][]const u8{ "", "" }),
+        };
+        defer {
+            for (&ops) |*op| {
+                op.deinit();
+            }
+        }
+        var expected = try editOp(1, 1, 2, 3, 0, 9, &[_][]const u8{
+            "abc,",
+            "",
+        });
+        defer expected.deinit();
+        try testToSingleEditOperation(
+            &[_][]const u8{
+                "   abc",
+                " ,def",
+            },
+            &ops,
+            expected,
+        );
+    }
 };
 
 test "linesTextBuffer" {

@@ -98,7 +98,8 @@ pub const PieceTreeBufferBuilder = struct {
         };
     }
 
-    pub fn acceptChunk(self: *PieceTreeBufferBuilder, chunk: []const u8) !void {
+    pub fn acceptChunk(self: *PieceTreeBufferBuilder, _chunk: []const u8) !void {
+        var chunk = _chunk;
         if (chunk.len == 0) {
             return;
         }
@@ -106,6 +107,7 @@ pub const PieceTreeBufferBuilder = struct {
         if (self.chunks.items.len == 0) {
             if (strings.startsWithUTF8BOM(chunk)) {
                 self.BOM = strings.UTF8_BOM_CHARACTER;
+                chunk = chunk[strings.UTF8_BOM_CHARACTER.len..];
             } else {
                 self.BOM = "";
             }

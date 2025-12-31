@@ -62,7 +62,6 @@ pub fn createLineStarts(allocator: Allocator, str: []const u8) !LineStarts {
     var r = ArrayList(usize).init(allocator);
 
     try r.append(0);
-    var rLength: usize = 1;
     var cr: usize = 0;
     var lf: usize = 0;
     var crlf: usize = 0;
@@ -76,18 +75,15 @@ pub fn createLineStarts(allocator: Allocator, str: []const u8) !LineStarts {
                 // \r\n... case
                 crlf += 1;
                 try r.append(i + 2);
-                rLength += 1;
                 i += 1; // skip \n
             } else {
                 cr += 1;
                 // \r... case
                 try r.append(i + 1);
-                rLength += 1;
             }
         } else if (chr == '\n') {
             lf += 1;
             try r.append(i + 1);
-            rLength += 1;
         } else {
             if (isBasicASCII) {
                 if (chr != '\t' and (chr < 32 or chr > 126)) {
