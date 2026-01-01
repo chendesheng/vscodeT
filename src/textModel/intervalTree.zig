@@ -27,10 +27,9 @@ const Metadata = packed struct {
     color: NodeColor,
     isVisited: bool,
     isForValidation: bool,
-    isInGlyphMargin: bool,
     stickiness: TrackedRangeStickiness,
     collapseOnReplaceEdit: bool,
-    isMargin: bool,
+    isInGlyphMargin: bool,
 };
 
 test "metadata" {
@@ -38,10 +37,9 @@ test "metadata" {
         .color = .Red,
         .isVisited = false,
         .isForValidation = false,
-        .isInGlyphMargin = false,
         .stickiness = .NeverGrowsWhenTypingAtEdges,
         .collapseOnReplaceEdit = false,
-        .isMargin = false,
+        .isInGlyphMargin = false,
     };
     try std.testing.expectEqual(metadata.color, .Red);
     try std.testing.expectEqual(metadata.isVisited, false);
@@ -49,7 +47,6 @@ test "metadata" {
     try std.testing.expectEqual(metadata.isInGlyphMargin, false);
     try std.testing.expectEqual(metadata.stickiness, .NeverGrowsWhenTypingAtEdges);
     try std.testing.expectEqual(metadata.collapseOnReplaceEdit, false);
-    try std.testing.expectEqual(metadata.isMargin, false);
 }
 
 // Due to how deletion works (in order to avoid always walking the right subtree of the deleted node),
@@ -141,10 +138,9 @@ pub const IntervalNode = struct {
                 .color = .Red,
                 .isVisited = false,
                 .isForValidation = false,
-                .isInGlyphMargin = false,
                 .stickiness = .NeverGrowsWhenTypingAtEdges,
                 .collapseOnReplaceEdit = false,
-                .isMargin = false,
+                .isInGlyphMargin = false,
             },
             .parent = self,
             .left = self,
@@ -181,9 +177,7 @@ pub const IntervalNode = struct {
             className == @intFromEnum(ClassName.EditorWarningDecoration) or
             className == @intFromEnum(ClassName.EditorInfoDecoration)));
         setNodeIsInGlyphMargin(self, self.options.glyphMarginClassName != null);
-        if (self.options.stickiness) |stickiness| {
-            setNodeStickiness(self, stickiness);
-        }
+        setNodeStickiness(self, self.options.stickiness orelse TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges);
         setCollapseOnReplaceEdit(self, self.options.collapseOnReplaceEdit orelse false);
     }
 
@@ -365,10 +359,9 @@ var sentinelValue: IntervalNode = .{
         .color = .Black,
         .isVisited = false,
         .isForValidation = false,
-        .isInGlyphMargin = false,
         .stickiness = .NeverGrowsWhenTypingAtEdges,
         .collapseOnReplaceEdit = false,
-        .isMargin = false,
+        .isInGlyphMargin = false,
     },
     .left = &sentinelValue,
     .right = &sentinelValue,

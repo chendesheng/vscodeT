@@ -1,5 +1,6 @@
 const std = @import("std");
 const ModelDecorationsChangeAccessor = @import("../textModel/textModel.zig").ModelDecorationsChangeAccessor;
+const IdentifiedSingleEditOperation = @import("../textModel/model.zig").IdentifiedSingleEditOperation;
 const ModelDecorationOptions = @import("../textModel/model.zig").ModelDecorationOptions;
 const Range = @import("../basics/range.zig").Range;
 const compareRangesUsingStarts = @import("../basics/range.zig").compareRangesUsingStarts;
@@ -8,6 +9,11 @@ const TextModel = @import("../textModel/textModel.zig").TextModel;
 const Allocator = std.mem.Allocator;
 const createTextModel = @import("../textModel/testTextModel.zig").createTextModel;
 const disposeTextModel = @import("../textModel/testTextModel.zig").disposeTextModel;
+const ModelDecorationsChangedEvent = @import("../textModel/textModelEvents.zig").ModelDecorationsChangedEvent;
+const EditOperation = @import("../textModel/model.zig").EditOperation;
+const ModelDeltaDecoration = @import("../textModel/model.zig").ModelDeltaDecoration;
+const TrackedRangeStickiness = @import("../textModel/model.zig").TrackedRangeStickiness;
+const String = @import("../basics/strings.zig").String;
 
 // --------- utils
 
@@ -16,13 +22,14 @@ const LightWeightDecoration2 = struct {
     className: ?u8,
 };
 
-fn compareLightWeightDecoration2(a: LightWeightDecoration2, b: LightWeightDecoration2) bool {
+fn compareLightWeightDecoration2(_: void, a: LightWeightDecoration2, b: LightWeightDecoration2) bool {
     return compareRangesUsingStarts(&a.range, &b.range);
 }
 
 fn modelHasDecorations(model: *TextModel, decorations: []const LightWeightDecoration2) !void {
-    const modelDecorations = ArrayList(LightWeightDecoration2).init(model.getAllocator());
-    const actualDecorations = try model.getAllDecorations();
+    var modelDecorations = ArrayList(LightWeightDecoration2).init(model.getAllocator());
+    defer modelDecorations.deinit();
+    var actualDecorations = try model.getAllDecorations(null, null);
     defer actualDecorations.deinit();
     for (actualDecorations.items) |decoration| {
         try modelDecorations.append(LightWeightDecoration2{
@@ -30,12 +37,12 @@ fn modelHasDecorations(model: *TextModel, decorations: []const LightWeightDecora
             .className = decoration.options.className,
         });
     }
-    std.sort.block(LightWeightDecoration2, modelDecorations.items, compareLightWeightDecoration2);
-    try std.testing.expectEqual(modelDecorations.items, decorations);
+    std.sort.block(LightWeightDecoration2, modelDecorations.items, {}, compareLightWeightDecoration2);
+    try std.testing.expectEqualDeep(modelDecorations.items, decorations);
 }
 
 fn modelHasDecoration(model: *TextModel, startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColumn: usize, className: u8) !void {
-    modelHasDecorations(
+    try modelHasDecorations(
         model,
         &[_]LightWeightDecoration2{.{
             .range = Range.init(startLineNumber, startColumn, endLineNumber, endColumn),
@@ -45,21 +52,33 @@ fn modelHasDecoration(model: *TextModel, startLineNumber: usize, startColumn: us
 }
 
 fn modelHasNoDecorations(model: *TextModel) !void {
-    const actualDecorations = try model.getAllDecorations();
+    const actualDecorations = try model.getAllDecorations(null, null);
     defer actualDecorations.deinit();
     try std.testing.expectEqual(actualDecorations.items.len, 0);
 }
 
-fn addDecoration(model: *TextModel, startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColumn: usize, className: u8) !?u64 {
+const AddDecorationArguments = struct {
+    range: Range,
+    options: *const ModelDecorationOptions,
+};
+
+fn addDecoration(
+    model: *TextModel,
+    startLineNumber: usize,
+    startColumn: usize,
+    endLineNumber: usize,
+    endColumn: usize,
+    options: *const ModelDecorationOptions,
+) !?u64 {
     return try model.changeDecorations(
         u64,
-        LightWeightDecoration2{ .range = Range.init(startLineNumber, startColumn, endLineNumber, endColumn), .className = className },
+        AddDecorationArguments{
+            .range = Range.init(startLineNumber, startColumn, endLineNumber, endColumn),
+            .options = options,
+        },
         (struct {
-            fn cb(d: LightWeightDecoration2, changeAccessor: ModelDecorationsChangeAccessor) anyerror!u64 {
-                return try changeAccessor.addDecoration(d.range, &ModelDecorationOptions{
-                    .description = "test",
-                    .className = d.className,
-                });
+            fn cb(arg: AddDecorationArguments, changeAccessor: ModelDecorationsChangeAccessor) anyerror!u64 {
+                return try changeAccessor.addDecoration(arg.range, arg.options);
             }
         }).cb,
         null,
@@ -128,21 +147,956 @@ const ModelDecorationsTests = struct {
 
     const TestClassName = enum(u8) {
         myType,
+        myType1,
+        myType2,
+        myType3,
+        myType4,
+        myType5,
+        myType6,
+        myType7,
+        myType8,
+        myType9,
     };
 
     test "single character decoration" {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        _ = try addDecoration(model, 1, 1, 1, 2, @intFromEnum(TestClassName.myType));
+        _ = try addDecoration(model, 1, 1, 1, 2, &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.myType) });
         try lineHasDecoration(model, 1, 1, 2, @intFromEnum(TestClassName.myType));
         try lineHasNoDecorations(model, 2);
         try lineHasNoDecorations(model, 3);
         try lineHasNoDecorations(model, 4);
         try lineHasNoDecorations(model, 5);
     }
+
+    test "line decoration" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        _ = try addDecoration(model, 1, 1, 1, 14, &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.myType) });
+        try lineHasDecoration(model, 1, 1, 14, @intFromEnum(TestClassName.myType));
+        try lineHasNoDecorations(model, 2);
+        try lineHasNoDecorations(model, 3);
+        try lineHasNoDecorations(model, 4);
+        try lineHasNoDecorations(model, 5);
+    }
+
+    test "full line decoration" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        _ = try addDecoration(model, 1, 1, 2, 1, &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.myType) });
+
+        var line1Decorations = try model.getLineDecorations(1, null, null);
+        defer line1Decorations.deinit();
+        try std.testing.expectEqual(1, line1Decorations.items.len);
+        try std.testing.expectEqual(@intFromEnum(TestClassName.myType), line1Decorations.items[0].options.className);
+
+        var line2Decorations = try model.getLineDecorations(1, null, null);
+        defer line2Decorations.deinit();
+        try std.testing.expectEqual(1, line2Decorations.items.len);
+        try std.testing.expectEqual(@intFromEnum(TestClassName.myType), line2Decorations.items[0].options.className);
+
+        try lineHasNoDecorations(model, 3);
+        try lineHasNoDecorations(model, 4);
+        try lineHasNoDecorations(model, 5);
+    }
+
+    test "multiple line decoration" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.myType) });
+
+        var line1Decorations = try model.getLineDecorations(1, null, null);
+        defer line1Decorations.deinit();
+        try std.testing.expectEqual(1, line1Decorations.items.len);
+        try std.testing.expectEqual(@intFromEnum(TestClassName.myType), line1Decorations.items[0].options.className);
+
+        var line2Decorations = try model.getLineDecorations(1, null, null);
+        defer line2Decorations.deinit();
+        try std.testing.expectEqual(1, line2Decorations.items.len);
+        try std.testing.expectEqual(@intFromEnum(TestClassName.myType), line2Decorations.items[0].options.className);
+
+        var line3Decorations = try model.getLineDecorations(1, null, null);
+        defer line3Decorations.deinit();
+        try std.testing.expectEqual(1, line3Decorations.items.len);
+        try std.testing.expectEqual(@intFromEnum(TestClassName.myType), line3Decorations.items[0].options.className);
+
+        try lineHasNoDecorations(model, 4);
+        try lineHasNoDecorations(model, 5);
+    }
+
+    // --------- removing, changing decorations
+
+    test "decoration gets removed" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        const decId = (try addDecoration(
+            model,
+            1,
+            2,
+            3,
+            2,
+            &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.myType) },
+        )).?;
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.changeDecorations(void, decId, (struct {
+            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+                try changeAccessor.removeDecoration(decId_);
+            }
+        }).cb, null);
+        try modelHasNoDecorations(model);
+    }
+
+    test "decorations get removed" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        const decId1 = (try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType1) })).?;
+        const decId2 = (try addDecoration(model, 1, 2, 3, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType2) })).?;
+        try modelHasDecorations(model, &[_]LightWeightDecoration2{ .{
+            .range = .init(1, 2, 3, 1),
+            .className = @intFromEnum(TestClassName.myType2),
+        }, .{
+            .range = .init(1, 2, 3, 2),
+            .className = @intFromEnum(TestClassName.myType1),
+        } });
+        _ = try model.changeDecorations(void, decId1, (struct {
+            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+                try changeAccessor.removeDecoration(decId_);
+            }
+        }).cb, null);
+        try modelHasDecorations(model, &[_]LightWeightDecoration2{.{
+            .range = .init(1, 2, 3, 1),
+            .className = @intFromEnum(TestClassName.myType2),
+        }});
+        _ = try model.changeDecorations(void, decId2, (struct {
+            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+                try changeAccessor.removeDecoration(decId_);
+            }
+        }).cb, null);
+        try modelHasNoDecorations(model);
+    }
+
+    test "decoration range can be changed" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        const decId = (try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) })).?;
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.changeDecorations(void, decId, (struct {
+            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+                try changeAccessor.changeDecoration(decId_, .init(1, 1, 1, 2));
+            }
+        }).cb, null);
+        try modelHasDecoration(model, 1, 1, 1, 2, @intFromEnum(TestClassName.myType));
+    }
+
+    // --------- eventing
+
+    test "decorations emit event on add" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        var listenerCalled: bool = false;
+        try model.onDidChangeDecorations(&listenerCalled, struct {
+            fn cb(_: ModelDecorationsChangedEvent, ctx: *bool) void {
+                ctx.* = true;
+            }
+        }.cb);
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try std.testing.expect(listenerCalled);
+    }
+
+    test "decorations emit event on change" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        var listenerCalled: bool = false;
+        const decId = (try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) })).?;
+        try model.onDidChangeDecorations(&listenerCalled, struct {
+            fn cb(_: ModelDecorationsChangedEvent, ctx: *bool) void {
+                ctx.* = true;
+            }
+        }.cb);
+        _ = try model.changeDecorations(void, decId, (struct {
+            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+                try changeAccessor.changeDecoration(decId_, .init(1, 1, 1, 2));
+            }
+        }).cb, null);
+        try std.testing.expect(listenerCalled);
+    }
+
+    test "decorations emit event on remove" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        var listenerCalled: bool = false;
+        const decId = (try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) })).?;
+        try model.onDidChangeDecorations(&listenerCalled, struct {
+            fn cb(_: ModelDecorationsChangedEvent, ctx: *bool) void {
+                ctx.* = true;
+            }
+        }.cb);
+        _ = try model.changeDecorations(void, decId, (struct {
+            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+                try changeAccessor.removeDecoration(decId_);
+            }
+        }).cb, null);
+        try std.testing.expect(listenerCalled);
+    }
+
+    test "decorations emit event when inserting one line text before it" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        var listenerCalled: bool = false;
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try model.onDidChangeDecorations(&listenerCalled, struct {
+            fn cb(_: ModelDecorationsChangedEvent, ctx: *bool) void {
+                ctx.* = true;
+            }
+        }.cb);
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(1, 1), .initBorrowed("Hallo "))}, null);
+        try std.testing.expect(listenerCalled);
+    }
+
+    test "decorations do not emit event on no-op deltaDecorations" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        var listenerCalled: bool = false;
+
+        try model.onDidChangeDecorations(&listenerCalled, struct {
+            fn cb(_: ModelDecorationsChangedEvent, ctx: *bool) void {
+                ctx.* = true;
+            }
+        }.cb);
+        _ = try model.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{}, null);
+        _ = try model.changeDecorations(void, {}, (struct {
+            fn cb(_: void, accessor: ModelDecorationsChangeAccessor) anyerror!void {
+                var res = try accessor.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{});
+                defer res.deinit();
+            }
+        }).cb, null);
+
+        errdefer std.debug.print("listener not called\n", .{});
+        try std.testing.expect(!listenerCalled);
+    }
+
+    // --------- editing text & effects on decorations
+
+    test "decorations are updated when inserting one line text before it" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(1, 1), .initBorrowed("Hallo "))}, null);
+        try modelHasDecoration(model, 1, 8, 3, 2, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when inserting one line text before it 2" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 1, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 1, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.replace(.init(1, 1, 1, 1), .initBorrowed("Hallo "))}, null);
+        try modelHasDecoration(model, 1, 1, 3, 2, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when inserting multiple lines text before it" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(1, 1), .initBorrowed("Hallo\nI'm inserting multiple\nlines"))}, null);
+        try modelHasDecoration(model, 3, 7, 5, 2, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations change when inserting text after them" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(3, 2), .initBorrowed("Hallo"))}, null);
+        try modelHasDecoration(model, 1, 2, 3, 7, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when inserting text inside" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(1, 3), .initBorrowed("Hallo "))}, null);
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when inserting text inside 2" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(3, 1), .initBorrowed("Hallo "))}, null);
+        try modelHasDecoration(model, 1, 2, 3, 8, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when inserting text inside 3" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 1, 2, 16, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 1, 2, 16, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(2, 2), .initBorrowed("\n"))}, null);
+        try modelHasDecoration(model, 1, 1, 3, 15, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when inserting multiple lines text inside" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(1, 3), .initBorrowed("Hallo\nI'm inserting multiple\nlines "))}, null);
+        try modelHasDecoration(model, 1, 2, 5, 2, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when deleting one line text before it" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 1, 1, 2))}, null);
+        try modelHasDecoration(model, 1, 1, 3, 2, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when deleting multiple lines text before it" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 2, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 2, 2, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 1, 2, 1))}, null);
+        try modelHasDecoration(model, 1, 2, 2, 2, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when deleting multiple lines text before it 2" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 2, 3, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 2, 3, 3, 2, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 1, 2, 2))}, null);
+        try modelHasDecoration(model, 1, 2, 2, 2, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when deleting text inside" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 4, 1, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 3, 2, 1))}, null);
+        try modelHasDecoration(model, 1, 2, 3, 1, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when deleting text inside 2" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 4, 1, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{ EditOperation.delete(.init(1, 1, 1, 2)), EditOperation.delete(.init(4, 1, 4, 1)) }, null);
+        try modelHasDecoration(model, 1, 1, 4, 1, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when deleting multiple lines text" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) });
+        try modelHasDecoration(model, 1, 2, 4, 1, @intFromEnum(TestClassName.myType));
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 1, 3, 1))}, null);
+        try modelHasDecoration(model, 1, 1, 2, 1, @intFromEnum(TestClassName.myType));
+    }
+
+    test "decorations are updated when changing EOL" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+
+        _ = try addDecoration(model, 1, 2, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType1) });
+        _ = try addDecoration(model, 1, 3, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType2) });
+        _ = try addDecoration(model, 1, 4, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType3) });
+        _ = try addDecoration(model, 1, 5, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType4) });
+        _ = try addDecoration(model, 1, 6, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType5) });
+        _ = try addDecoration(model, 1, 7, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType6) });
+        _ = try addDecoration(model, 1, 8, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType7) });
+        _ = try addDecoration(model, 1, 9, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType8) });
+        _ = try addDecoration(model, 1, 10, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType9) });
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(1, 1), .initBorrowed("x"))}, null);
+        try model.setEOL(.CRLF);
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.insert(.init(1, 1), .initBorrowed("x"))}, null);
+        try modelHasDecorations(model, &[_]LightWeightDecoration2{
+            .{
+                .range = .init(1, 4, 4, 1),
+                .className = @intFromEnum(TestClassName.myType1),
+            },
+            .{
+                .range = .init(1, 5, 4, 1),
+                .className = @intFromEnum(TestClassName.myType2),
+            },
+            .{
+                .range = .init(1, 6, 4, 1),
+                .className = @intFromEnum(TestClassName.myType3),
+            },
+            .{
+                .range = .init(1, 7, 4, 1),
+                .className = @intFromEnum(TestClassName.myType4),
+            },
+            .{
+                .range = .init(1, 8, 4, 1),
+                .className = @intFromEnum(TestClassName.myType5),
+            },
+            .{
+                .range = .init(1, 9, 4, 1),
+                .className = @intFromEnum(TestClassName.myType6),
+            },
+            .{
+                .range = .init(1, 10, 4, 1),
+                .className = @intFromEnum(TestClassName.myType7),
+            },
+            .{
+                .range = .init(1, 11, 4, 1),
+                .className = @intFromEnum(TestClassName.myType8),
+            },
+            .{
+                .range = .init(1, 12, 4, 1),
+                .className = @intFromEnum(TestClassName.myType9),
+            },
+        });
+    }
+
+    test "an apparently simple edit" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        _ = try addDecoration(model, 1, 2, 4, 1, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType1) });
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{EditOperation.replace(.init(1, 14, 2, 1), .initBorrowed("x"))}, null);
+        try modelHasDecorations(model, &[_]LightWeightDecoration2{
+            .{
+                .range = .init(1, 2, 3, 1),
+                .className = @intFromEnum(TestClassName.myType1),
+            },
+        });
+    }
+
+    test "removeAllDecorationsWithOwnerId can be called after model dispose" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        try model.removeAllDecorationsWithOwnerId(1);
+    }
+
+    test "removeAllDecorationsWithOwnerId works" {
+        const model = try createModel(std.testing.allocator);
+        defer disposeTextModel(model);
+        var ids = try model.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{
+            .{ .range = .init(1, 2, 4, 1), .options = &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType1) } },
+        }, 1);
+        defer ids.deinit();
+        try model.removeAllDecorationsWithOwnerId(1);
+        try modelHasNoDecorations(model);
+    }
+};
+
+const DecorationsAndEditing = struct {
+    const allocator = std.testing.allocator;
+    fn _runTest(decRange: Range, stickiness: TrackedRangeStickiness, editRange: Range, editText: []const u8, editForceMoveMarkers: bool, expectedDecRange: Range, msg: []const u8) !void {
+        const model = try createTextModel(allocator, "My First Line\n" ++ "My Second Line\n" ++ "Third Line", null);
+        defer disposeTextModel(model);
+
+        var ids = try model.deltaDecorations(
+            &[_]u64{},
+            &[_]ModelDeltaDecoration{.{ .range = decRange, .options = &ModelDecorationOptions{ .description = "test", .stickiness = stickiness } }},
+            null,
+        );
+        defer ids.deinit();
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = editRange,
+            .text = String.initBorrowed(editText),
+            .forceMoveMarkers = editForceMoveMarkers,
+        }}, null);
+        const actual = model.getDecorationRange(ids.items[0]);
+        errdefer std.debug.print("run test failed: {s}\n", .{msg});
+        try std.testing.expectEqualDeep(actual, expectedDecRange);
+    }
+
+    fn runTest(decRange: Range, editRange: Range, editText: []const u8, expectedDecRange: []const []const Range) !void {
+        try _runTest(decRange, .AlwaysGrowsWhenTypingAtEdges, editRange, editText, false, expectedDecRange[0][0], "no-0-AlwaysGrowsWhenTypingAtEdges");
+        try _runTest(decRange, .NeverGrowsWhenTypingAtEdges, editRange, editText, false, expectedDecRange[0][1], "no-1-NeverGrowsWhenTypingAtEdges");
+        try _runTest(decRange, .GrowsOnlyWhenTypingBefore, editRange, editText, false, expectedDecRange[0][2], "no-2-GrowsOnlyWhenTypingBefore");
+        try _runTest(decRange, .GrowsOnlyWhenTypingAfter, editRange, editText, false, expectedDecRange[0][3], "no-3-GrowsOnlyWhenTypingAfter");
+
+        try _runTest(decRange, .AlwaysGrowsWhenTypingAtEdges, editRange, editText, true, expectedDecRange[1][0], "force-0-AlwaysGrowsWhenTypingAtEdges");
+        try _runTest(decRange, .NeverGrowsWhenTypingAtEdges, editRange, editText, true, expectedDecRange[1][1], "force-1-NeverGrowsWhenTypingAtEdges");
+        try _runTest(decRange, .GrowsOnlyWhenTypingBefore, editRange, editText, true, expectedDecRange[1][2], "force-2-GrowsOnlyWhenTypingBefore");
+        try _runTest(decRange, .GrowsOnlyWhenTypingAfter, editRange, editText, true, expectedDecRange[1][3], "force-3-GrowsOnlyWhenTypingAfter");
+    }
+
+    const InsertTests = struct {};
+
+    test "insert - collapsed dec - before" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 3, 1, 3), "xx", &[_][]const Range{
+            &[_]Range{ .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6) },
+            &[_]Range{ .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6) },
+        });
+    }
+
+    test "insert - collapsed dec - equal" {
+        try runTest(
+            .init(1, 4, 1, 4),
+            .init(1, 4, 1, 4),
+            "xx",
+            &[_][]const Range{
+                &[_]Range{ .init(1, 4, 1, 6), .init(1, 6, 1, 6), .init(1, 4, 1, 4), .init(1, 6, 1, 6) },
+                &[_]Range{ .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6) },
+            },
+        );
+    }
+
+    test "insert - collapsed dec - after" {
+        try runTest(
+            .init(1, 4, 1, 4),
+            .init(1, 5, 1, 5),
+            "xx",
+            &[_][]const Range{
+                &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+                &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            },
+        );
+    }
+
+    test "insert - non-collapsed dec - before" {
+        try runTest(
+            .init(1, 4, 1, 9),
+            .init(1, 3, 1, 3),
+            "xx",
+            &[_][]const Range{
+                &[_]Range{ .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11) },
+                &[_]Range{ .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11) },
+            },
+        );
+    }
+    test "insert - non-collapsed dec - start" {
+        try runTest(
+            .init(1, 4, 1, 9),
+            .init(1, 4, 1, 4),
+            "xx",
+            &[_][]const Range{
+                &[_]Range{ .init(1, 4, 1, 11), .init(1, 6, 1, 11), .init(1, 4, 1, 11), .init(1, 6, 1, 11) },
+                &[_]Range{ .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11) },
+            },
+        );
+    }
+    test "insert - non-collapsed dec - inside" {
+        try runTest(
+            .init(1, 4, 1, 9),
+            .init(1, 5, 1, 5),
+            "xx",
+            &[_][]const Range{
+                &[_]Range{ .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11) },
+                &[_]Range{ .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11) },
+            },
+        );
+    }
+    test "insert - non-collapsed dec - end" {
+        try runTest(
+            .init(1, 4, 1, 9),
+            .init(1, 9, 1, 9),
+            "xx",
+            &[_][]const Range{
+                &[_]Range{ .init(1, 4, 1, 11), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 11) },
+                &[_]Range{ .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11) },
+            },
+        );
+    }
+    test "insert - non-collapsed dec - after" {
+        try runTest(
+            .init(1, 4, 1, 9),
+            .init(1, 10, 1, 10),
+            "xx",
+            &[_][]const Range{
+                &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+                &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+            },
+        );
+    }
+
+    test "delete - collapsed dec - edit.end < range.start" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 1, 1, 3), "", &[_][]const Range{
+            &[_]Range{ .init(1, 2, 1, 2), .init(1, 2, 1, 2), .init(1, 2, 1, 2), .init(1, 2, 1, 2) },
+            &[_]Range{ .init(1, 2, 1, 2), .init(1, 2, 1, 2), .init(1, 2, 1, 2), .init(1, 2, 1, 2) },
+        });
+    }
+    test "delete - collapsed dec - edit.end <= range.start" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 2, 1, 4), "", &[_][]const Range{
+            &[_]Range{ .init(1, 2, 1, 2), .init(1, 2, 1, 2), .init(1, 2, 1, 2), .init(1, 2, 1, 2) },
+            &[_]Range{ .init(1, 2, 1, 2), .init(1, 2, 1, 2), .init(1, 2, 1, 2), .init(1, 2, 1, 2) },
+        });
+    }
+    test "delete - collapsed dec - edit.start < range.start && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 3, 1, 5), "", &[_][]const Range{
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+        });
+    }
+    test "delete - collapsed dec - edit.start >= range.end" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 4, 1, 6), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+        });
+    }
+    test "delete - collapsed dec - edit.start > range.end" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 5, 1, 7), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.end < range.start" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 1, 1, 3), "", &[_][]const Range{
+            &[_]Range{ .init(1, 2, 1, 7), .init(1, 2, 1, 7), .init(1, 2, 1, 7), .init(1, 2, 1, 7) },
+            &[_]Range{ .init(1, 2, 1, 7), .init(1, 2, 1, 7), .init(1, 2, 1, 7), .init(1, 2, 1, 7) },
+        });
+    }
+    test "delete - non-collapsed dec - edit.end <= range.start" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 2, 1, 4), "", &[_][]const Range{
+            &[_]Range{ .init(1, 2, 1, 7), .init(1, 2, 1, 7), .init(1, 2, 1, 7), .init(1, 2, 1, 7) },
+            &[_]Range{ .init(1, 2, 1, 7), .init(1, 2, 1, 7), .init(1, 2, 1, 7), .init(1, 2, 1, 7) },
+        });
+    }
+    test "delete - non-collapsed dec - edit.start < range.start && edit.end < range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 3, 1, 5), "", &[_][]const Range{
+            &[_]Range{ .init(1, 3, 1, 7), .init(1, 3, 1, 7), .init(1, 3, 1, 7), .init(1, 3, 1, 7) },
+            &[_]Range{ .init(1, 3, 1, 7), .init(1, 3, 1, 7), .init(1, 3, 1, 7), .init(1, 3, 1, 7) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start < range.start && edit.end == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 3, 1, 9), "", &[_][]const Range{
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start < range.start && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 3, 1, 10), "", &[_][]const Range{
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start == range.start && edit.end < range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 4, 1, 6), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7) },
+            &[_]Range{ .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start == range.start && edit.end == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 4, 1, 9), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start == range.start && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 4, 1, 10), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start > range.start && edit.start < range.end && edit.end < range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 5, 1, 7), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7) },
+            &[_]Range{ .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start > range.start && edit.start < range.end && edit.end == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 5, 1, 9), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5) },
+            &[_]Range{ .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start > range.start && edit.start < range.end && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 5, 1, 10), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5) },
+            &[_]Range{ .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 9, 1, 11), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+        });
+    }
+
+    test "delete - non-collapsed dec - edit.start > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 10, 1, 11), "", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+        });
+    }
+
+    test "replace short - collapsed dec - edit.end < range.start" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 1, 1, 3), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+        });
+    }
+    test "replace short - collapsed dec - edit.end <= range.start" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 2, 1, 4), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+            &[_]Range{ .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3), .init(1, 3, 1, 3) },
+        });
+    }
+    test "replace short - collapsed dec - edit.start < range.start && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 3, 1, 5), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+        });
+    }
+    test "replace short - collapsed dec - edit.start >= range.end" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 4, 1, 6), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 5, 1, 5), .init(1, 5, 1, 5), .init(1, 5, 1, 5), .init(1, 5, 1, 5) },
+        });
+    }
+    test "replace short - collapsed dec - edit.start > range.end" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 5, 1, 7), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.end < range.start" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 1, 1, 3), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 3, 1, 8), .init(1, 3, 1, 8), .init(1, 3, 1, 8), .init(1, 3, 1, 8) },
+            &[_]Range{ .init(1, 3, 1, 8), .init(1, 3, 1, 8), .init(1, 3, 1, 8), .init(1, 3, 1, 8) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.end <= range.start" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 2, 1, 4), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 3, 1, 8), .init(1, 3, 1, 8), .init(1, 3, 1, 8), .init(1, 3, 1, 8) },
+            &[_]Range{ .init(1, 3, 1, 8), .init(1, 3, 1, 8), .init(1, 3, 1, 8), .init(1, 3, 1, 8) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start < range.start && edit.end < range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 3, 1, 5), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8) },
+            &[_]Range{ .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start < range.start && edit.end == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 3, 1, 9), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start < range.start && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 3, 1, 10), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start == range.start && edit.end < range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 4, 1, 6), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8) },
+            &[_]Range{ .init(1, 5, 1, 8), .init(1, 5, 1, 8), .init(1, 5, 1, 8), .init(1, 5, 1, 8) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start == range.start && edit.end == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 4, 1, 9), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5) },
+            &[_]Range{ .init(1, 5, 1, 5), .init(1, 5, 1, 5), .init(1, 5, 1, 5), .init(1, 5, 1, 5) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start == range.start && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 4, 1, 10), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5), .init(1, 4, 1, 5) },
+            &[_]Range{ .init(1, 5, 1, 5), .init(1, 5, 1, 5), .init(1, 5, 1, 5), .init(1, 5, 1, 5) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start > range.start && edit.start < range.end && edit.end < range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 5, 1, 7), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8) },
+            &[_]Range{ .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start > range.start && edit.start < range.end && edit.end == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 5, 1, 9), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 6), .init(1, 4, 1, 6), .init(1, 4, 1, 6), .init(1, 4, 1, 6) },
+            &[_]Range{ .init(1, 4, 1, 6), .init(1, 4, 1, 6), .init(1, 4, 1, 6), .init(1, 4, 1, 6) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start > range.start && edit.start < range.end && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 5, 1, 10), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 6), .init(1, 4, 1, 6), .init(1, 4, 1, 6), .init(1, 4, 1, 6) },
+            &[_]Range{ .init(1, 4, 1, 6), .init(1, 4, 1, 6), .init(1, 4, 1, 6), .init(1, 4, 1, 6) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 9, 1, 11), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+            &[_]Range{ .init(1, 4, 1, 10), .init(1, 4, 1, 10), .init(1, 4, 1, 10), .init(1, 4, 1, 10) },
+        });
+    }
+    test "replace short - non-collapsed dec - edit.start > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 10, 1, 11), "c", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+        });
+    }
+
+    test "replace long - collapsed dec - edit.end < range.start" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 1, 1, 3), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6) },
+            &[_]Range{ .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6) },
+        });
+    }
+    test "replace long - collapsed dec - edit.end <= range.start" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 2, 1, 4), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 6), .init(1, 6, 1, 6), .init(1, 4, 1, 4), .init(1, 6, 1, 6) },
+            &[_]Range{ .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6), .init(1, 6, 1, 6) },
+        });
+    }
+    test "replace long - collapsed dec - edit.start < range.start && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 3, 1, 5), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 7, 1, 7), .init(1, 7, 1, 7), .init(1, 7, 1, 7), .init(1, 7, 1, 7) },
+        });
+    }
+    test "replace long - collapsed dec - edit.start >= range.end" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 4, 1, 6), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 8, 1, 8), .init(1, 8, 1, 8), .init(1, 8, 1, 8), .init(1, 8, 1, 8) },
+        });
+    }
+    test "replace long - collapsed dec - edit.start > range.end" {
+        try runTest(.init(1, 4, 1, 4), .init(1, 5, 1, 7), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+            &[_]Range{ .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4), .init(1, 4, 1, 4) },
+        });
+    }
+
+    test "replace long - non-collapsed dec - edit.end < range.start" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 1, 1, 3), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11) },
+            &[_]Range{ .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.end <= range.start" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 2, 1, 4), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 11), .init(1, 6, 1, 11), .init(1, 4, 1, 11), .init(1, 6, 1, 11) },
+            &[_]Range{ .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11), .init(1, 6, 1, 11) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start < range.start && edit.end < range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 3, 1, 5), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11) },
+            &[_]Range{ .init(1, 7, 1, 11), .init(1, 7, 1, 11), .init(1, 7, 1, 11), .init(1, 7, 1, 11) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start < range.start && edit.end == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 3, 1, 9), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7) },
+            &[_]Range{ .init(1, 7, 1, 7), .init(1, 7, 1, 7), .init(1, 7, 1, 7), .init(1, 7, 1, 7) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start < range.start && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 3, 1, 10), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7), .init(1, 4, 1, 7) },
+            &[_]Range{ .init(1, 7, 1, 7), .init(1, 7, 1, 7), .init(1, 7, 1, 7), .init(1, 7, 1, 7) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start == range.start && edit.end < range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 4, 1, 6), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11) },
+            &[_]Range{ .init(1, 8, 1, 11), .init(1, 8, 1, 11), .init(1, 8, 1, 11), .init(1, 8, 1, 11) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start == range.start && edit.end == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 4, 1, 9), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8) },
+            &[_]Range{ .init(1, 8, 1, 8), .init(1, 8, 1, 8), .init(1, 8, 1, 8), .init(1, 8, 1, 8) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start == range.start && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 4, 1, 10), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8), .init(1, 4, 1, 8) },
+            &[_]Range{ .init(1, 8, 1, 8), .init(1, 8, 1, 8), .init(1, 8, 1, 8), .init(1, 8, 1, 8) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start > range.start && edit.start < range.end && edit.end < range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 5, 1, 7), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11) },
+            &[_]Range{ .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11), .init(1, 4, 1, 11) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start > range.start && edit.start < range.end && edit.end == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 5, 1, 9), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start > range.start && edit.start < range.end && edit.end > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 5, 1, 10), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start == range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 9, 1, 11), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+            &[_]Range{ .init(1, 4, 1, 13), .init(1, 4, 1, 13), .init(1, 4, 1, 13), .init(1, 4, 1, 13) },
+        });
+    }
+    test "replace long - non-collapsed dec - edit.start > range.end" {
+        try runTest(.init(1, 4, 1, 9), .init(1, 10, 1, 11), "cccc", &[_][]const Range{
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+            &[_]Range{ .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9), .init(1, 4, 1, 9) },
+        });
+    }
+};
+
+const LightWeightDecoration = struct {
+    id: u8,
+    range: Range,
+};
+
+const DeltaDecorationsTests = struct {
+    fn decoration(id: u64, startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColum: usize) LightWeightDecoration {
+        return .{
+            .id = id,
+            .range = .init(startLineNumber, startColumn, endLineNumber, endColum),
+        };
+    }
+
+    fn toModelDeltaDecoration(dec: LightWeightDecoration) ModelDeltaDecoration {
+        return .{ .range = dec.range, .options = &ModelDecorationOptions{
+            .description = "test",
+            .className = dec.id,
+        } };
+    }
 };
 
 test "model decorations" {
-    _ = ModelDecorationsTests;
+    _ = ModelDecorationsTests{};
+    _ = DecorationsAndEditing{};
+    _ = DeltaDecorationsTests{};
 }

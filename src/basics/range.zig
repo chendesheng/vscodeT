@@ -302,32 +302,34 @@ pub fn areOnlyIntersecting(a: *const Range, b: *const Range) bool {
 
 // A function that compares ranges, useful for sorting ranges
 // It will first compare ranges on the startPosition and then on the endPosition
-pub fn compareRangesUsingStarts(a: *const Range, b: *const Range) bool {
-    if (a != null and b != null) {
-        const aStartLineNumber = a.startLineNumber | 0;
-        const bStartLineNumber = b.startLineNumber | 0;
+pub fn compareRangesUsingStarts(_a: ?*const Range, _b: ?*const Range) bool {
+    if (_a) |a| {
+        if (_b) |b| {
+            const aStartLineNumber = a.startLineNumber | 0;
+            const bStartLineNumber = b.startLineNumber | 0;
 
-        if (aStartLineNumber == bStartLineNumber) {
-            const aStartColumn = a.startColumn | 0;
-            const bStartColumn = b.startColumn | 0;
+            if (aStartLineNumber == bStartLineNumber) {
+                const aStartColumn = a.startColumn | 0;
+                const bStartColumn = b.startColumn | 0;
 
-            if (aStartColumn == bStartColumn) {
-                const aEndLineNumber = a.endLineNumber | 0;
-                const bEndLineNumber = b.endLineNumber | 0;
+                if (aStartColumn == bStartColumn) {
+                    const aEndLineNumber = a.endLineNumber | 0;
+                    const bEndLineNumber = b.endLineNumber | 0;
 
-                if (aEndLineNumber == bEndLineNumber) {
-                    const aEndColumn = a.endColumn | 0;
-                    const bEndColumn = b.endColumn | 0;
-                    return aEndColumn < bEndColumn;
+                    if (aEndLineNumber == bEndLineNumber) {
+                        const aEndColumn = a.endColumn | 0;
+                        const bEndColumn = b.endColumn | 0;
+                        return aEndColumn < bEndColumn;
+                    }
+                    return aEndLineNumber < bEndLineNumber;
                 }
-                return aEndLineNumber < bEndLineNumber;
+                return aStartColumn < bStartColumn;
             }
-            return aStartColumn < bStartColumn;
+            return aStartLineNumber < bStartLineNumber;
         }
-        return aStartLineNumber < bStartLineNumber;
     }
-    const aExists = if (a != null) 1 else 0;
-    const bExists = if (b != null) 1 else 0;
+    const aExists = if (_a != null) @as(u8, 1) else @as(u8, 0);
+    const bExists = if (_b != null) @as(u8, 1) else @as(u8, 0);
     return aExists < bExists;
 }
 
