@@ -13,6 +13,15 @@ pub const Range = struct {
     // Column on which the range ends in line `endLineNumber`.
     endColumn: usize,
 
+    pub fn initRaw(startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColumn: usize) Range {
+        return .{
+            .startLineNumber = startLineNumber,
+            .startColumn = startColumn,
+            .endLineNumber = endLineNumber,
+            .endColumn = endColumn,
+        };
+    }
+
     pub fn init(startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColumn: usize) Range {
         if ((startLineNumber > endLineNumber) or (startLineNumber == endLineNumber and startColumn > endColumn)) {
             return .{

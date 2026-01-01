@@ -1476,16 +1476,17 @@ pub const TextModel = struct {
         }
     }
 
-    pub fn changeDecorations(self: *TextModel, comptime T: type, ctx: anytype, callback: fn (ctx: @TypeOf(ctx), changeAccessor: ModelDecorationsChangeAccessor) anyerror!T, _ownerId: ?usize) !?T {
+    pub fn changeDecorations(self: *TextModel, comptime T: type, ctx: anytype, callback: fn (changeAccessor: ModelDecorationsChangeAccessor, ctx: @TypeOf(ctx)) anyerror!T, _ownerId: ?usize) !?T {
         const ownerId = _ownerId orelse 0;
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
         return try self._changeDecorations(T, ctx, ownerId, callback);
     }
 
-    fn _changeDecorations(self: *TextModel, comptime T: type, ctx: anytype, ownerId: usize, callback: fn (ctx: @TypeOf(ctx), changeAccessor: ModelDecorationsChangeAccessor) anyerror!T) !?T {
+    // FIXME: this callback function seems unnecessary, why not just return the accessor directly?
+    fn _changeDecorations(self: *TextModel, comptime T: type, ctx: anytype, ownerId: usize, callback: fn (changeAccessor: ModelDecorationsChangeAccessor, ctx: @TypeOf(ctx)) anyerror!T) !?T {
         const changeAccessor = ModelDecorationsChangeAccessor.init(self, ownerId);
-        return callback(ctx, changeAccessor) catch return null;
+        return callback(changeAccessor, ctx) catch return null;
     }
 
     pub fn deltaDecorations(self: *TextModel, oldDecorations: []const u64, newDecorations: []const ModelDeltaDecoration, _ownerId: ?usize) !ArrayList(u64) {
@@ -1558,12 +1559,11 @@ pub const TextModel = struct {
         }
     }
 
-    pub fn getDecorationOptions(self: *TextModel, decorationId: u64) ?ModelDecorationOptions {
-        const node = self._decorations.get(decorationId);
-        if (node == null) {
-            return null;
+    pub fn getDecorationOptions(self: *const TextModel, decorationId: u64) ?*const ModelDecorationOptions {
+        if (self._decorations.get(decorationId)) |node| {
+            return node.options;
         }
-        return node.options;
+        return null;
     }
 
     pub fn getDecorationRange(self: *TextModel, decorationId: u64) ?Range {
@@ -1597,13 +1597,18 @@ pub const TextModel = struct {
         return decorations;
     }
 
-    pub fn getDecorationsInRange(self: *TextModel, range: Range, ownerId: usize, filterOutValidation: bool, onlyMinimapDecorations: bool, onlyMarginDecorations: bool) ![]ModelDecoration {
+    pub fn getDecorationsInRange(self: *TextModel, range: Range, _ownerId: ?usize, _filterOutValidation: ?bool, _onlyMinimapDecorations: ?bool, _onlyMarginDecorations: ?bool) !ArrayList(ModelDecoration) {
+        const ownerId = _ownerId orelse 0;
+        const filterOutValidation = _filterOutValidation orelse false;
+        const onlyMinimapDecorations = _onlyMinimapDecorations orelse false;
+        const onlyMarginDecorations = _onlyMarginDecorations orelse false;
+
         _ = onlyMinimapDecorations;
         const validatedRange = self.validateRange(range);
 
-        var decorations = try self._getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMarginDecorations);
+        const decorations = try self._getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMarginDecorations);
         // try decorations.appendSlice(try self._decorationProvider.getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMinimapDecorations));
-        return decorations.toOwnedSlice();
+        return decorations;
     }
 
     pub fn getOverviewRulerDecorations(self: *TextModel, ownerId: usize, filterOutValidation: bool) ![]ModelDecoration {

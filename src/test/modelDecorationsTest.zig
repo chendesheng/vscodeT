@@ -77,7 +77,7 @@ fn addDecoration(
             .options = options,
         },
         (struct {
-            fn cb(arg: AddDecorationArguments, changeAccessor: ModelDecorationsChangeAccessor) anyerror!u64 {
+            fn cb(changeAccessor: ModelDecorationsChangeAccessor, arg: AddDecorationArguments) anyerror!u64 {
                 return try changeAccessor.addDecoration(arg.range, arg.options);
             }
         }).cb,
@@ -240,7 +240,7 @@ const ModelDecorationsTests = struct {
         )).?;
         try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
         _ = try model.changeDecorations(void, decId, (struct {
-            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+            fn cb(changeAccessor: ModelDecorationsChangeAccessor, decId_: u64) anyerror!void {
                 try changeAccessor.removeDecoration(decId_);
             }
         }).cb, null);
@@ -261,7 +261,7 @@ const ModelDecorationsTests = struct {
             .className = @intFromEnum(TestClassName.myType1),
         } });
         _ = try model.changeDecorations(void, decId1, (struct {
-            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+            fn cb(changeAccessor: ModelDecorationsChangeAccessor, decId_: u64) anyerror!void {
                 try changeAccessor.removeDecoration(decId_);
             }
         }).cb, null);
@@ -270,7 +270,7 @@ const ModelDecorationsTests = struct {
             .className = @intFromEnum(TestClassName.myType2),
         }});
         _ = try model.changeDecorations(void, decId2, (struct {
-            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+            fn cb(changeAccessor: ModelDecorationsChangeAccessor, decId_: u64) anyerror!void {
                 try changeAccessor.removeDecoration(decId_);
             }
         }).cb, null);
@@ -283,7 +283,7 @@ const ModelDecorationsTests = struct {
         const decId = (try addDecoration(model, 1, 2, 3, 2, &ModelDecorationOptions{ .className = @intFromEnum(TestClassName.myType) })).?;
         try modelHasDecoration(model, 1, 2, 3, 2, @intFromEnum(TestClassName.myType));
         _ = try model.changeDecorations(void, decId, (struct {
-            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+            fn cb(changeAccessor: ModelDecorationsChangeAccessor, decId_: u64) anyerror!void {
                 try changeAccessor.changeDecoration(decId_, .init(1, 1, 1, 2));
             }
         }).cb, null);
@@ -318,7 +318,7 @@ const ModelDecorationsTests = struct {
             }
         }.cb);
         _ = try model.changeDecorations(void, decId, (struct {
-            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+            fn cb(changeAccessor: ModelDecorationsChangeAccessor, decId_: u64) anyerror!void {
                 try changeAccessor.changeDecoration(decId_, .init(1, 1, 1, 2));
             }
         }).cb, null);
@@ -337,7 +337,7 @@ const ModelDecorationsTests = struct {
             }
         }.cb);
         _ = try model.changeDecorations(void, decId, (struct {
-            fn cb(decId_: u64, changeAccessor: ModelDecorationsChangeAccessor) anyerror!void {
+            fn cb(changeAccessor: ModelDecorationsChangeAccessor, decId_: u64) anyerror!void {
                 try changeAccessor.removeDecoration(decId_);
             }
         }).cb, null);
@@ -372,7 +372,7 @@ const ModelDecorationsTests = struct {
         }.cb);
         _ = try model.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{}, null);
         _ = try model.changeDecorations(void, {}, (struct {
-            fn cb(_: void, accessor: ModelDecorationsChangeAccessor) anyerror!void {
+            fn cb(accessor: ModelDecorationsChangeAccessor, _: void) anyerror!void {
                 var res = try accessor.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{});
                 defer res.deinit();
             }
@@ -1080,18 +1080,332 @@ const LightWeightDecoration = struct {
 };
 
 const DeltaDecorationsTests = struct {
-    fn decoration(id: u64, startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColum: usize) LightWeightDecoration {
+    const allocator = std.testing.allocator;
+
+    fn decoration(id: u8, startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColumn: usize) LightWeightDecoration {
         return .{
             .id = id,
-            .range = .init(startLineNumber, startColumn, endLineNumber, endColum),
+            .range = .init(startLineNumber, startColumn, endLineNumber, endColumn),
         };
     }
 
-    fn toModelDeltaDecoration(dec: LightWeightDecoration) ModelDeltaDecoration {
-        return .{ .range = dec.range, .options = &ModelDecorationOptions{
-            .description = "test",
-            .className = dec.id,
-        } };
+    fn toModelDeltaDecorations(decorations: []const LightWeightDecoration) ![]ModelDeltaDecoration {
+        var modelDeltaDecorations = try allocator.alloc(ModelDeltaDecoration, decorations.len);
+        for (decorations, 0..) |dec, i| {
+            const options = try allocator.create(ModelDecorationOptions);
+            options.* = .{
+                .description = "test",
+                .className = dec.id,
+            };
+            modelDeltaDecorations[i] = .{ .range = dec.range, .options = options };
+        }
+        return modelDeltaDecorations;
+    }
+
+    fn readModelDecorations(model: *TextModel, ids: []const u64) ![]LightWeightDecoration {
+        var decorations = try allocator.alloc(LightWeightDecoration, ids.len);
+        for (ids, 0..) |id, i| {
+            decorations[i] = .{
+                .range = model.getDecorationRange(id).?,
+                .id = model.getDecorationOptions(id).?.className.?,
+            };
+        }
+        return decorations;
+    }
+    fn compareLightWeightDecoration(_: void, a: LightWeightDecoration, b: LightWeightDecoration) bool {
+        return a.id < b.id;
+    }
+
+    fn testDeltaDecorations(lines: []const []const u8, _decorations: []const LightWeightDecoration, _newDecorations: []const LightWeightDecoration) !void {
+        const text = try std.mem.join(allocator, "\n", lines);
+        defer allocator.free(text);
+
+        const decorations = try allocator.alloc(LightWeightDecoration, _decorations.len);
+        defer allocator.free(decorations);
+        std.mem.copyForwards(LightWeightDecoration, decorations, _decorations);
+
+        const newDecorations = try allocator.alloc(LightWeightDecoration, _newDecorations.len);
+        defer allocator.free(newDecorations);
+        std.mem.copyForwards(LightWeightDecoration, newDecorations, _newDecorations);
+
+        var model = try createTextModel(allocator, text, null);
+        defer disposeTextModel(model);
+
+        // Add initial decorations & assert they are added
+        const decs = try toModelDeltaDecorations(decorations);
+        defer allocator.free(decs);
+        defer {
+            for (decs) |dec| {
+                allocator.destroy(dec.options);
+            }
+        }
+        const initialIds = try model.deltaDecorations(&[_]u64{}, decs, null);
+        defer initialIds.deinit();
+
+        {
+            const actualDecorations = try readModelDecorations(model, initialIds.items);
+            defer allocator.free(actualDecorations);
+
+            std.testing.expectEqual(initialIds.items.len, decorations.len) catch std.debug.print("returns expected cnt of ids", .{});
+            const allDecorations = try model.getAllDecorations(null, null);
+            defer allDecorations.deinit();
+            std.testing.expectEqual(initialIds.items.len, allDecorations.items.len) catch std.debug.print("does not leak decorations", .{});
+            std.sort.block(LightWeightDecoration, actualDecorations, {}, compareLightWeightDecoration);
+            std.sort.block(LightWeightDecoration, decorations, {}, compareLightWeightDecoration);
+            try std.testing.expectEqualDeep(actualDecorations, decorations);
+        }
+
+        {
+            const newDecs = try toModelDeltaDecorations(newDecorations);
+            defer allocator.free(newDecs);
+            defer {
+                for (newDecs) |dec| {
+                    allocator.destroy(dec.options);
+                }
+            }
+            const newIds = try model.deltaDecorations(initialIds.items, newDecs, null);
+            defer newIds.deinit();
+            const actualNewDecorations = try readModelDecorations(model, newIds.items);
+            defer allocator.free(actualNewDecorations);
+
+            std.testing.expectEqual(newIds.items.len, newDecorations.len) catch std.debug.print("returns expected cnt of ids", .{});
+
+            const allDecorations = try model.getAllDecorations(null, null);
+            defer allDecorations.deinit();
+            std.testing.expectEqual(newIds.items.len, allDecorations.items.len) catch std.debug.print("does not leak decorations", .{});
+
+            std.sort.block(LightWeightDecoration, actualNewDecorations, {}, compareLightWeightDecoration);
+            std.sort.block(LightWeightDecoration, newDecorations, {}, compareLightWeightDecoration);
+            try std.testing.expectEqualDeep(actualNewDecorations, newDecorations);
+        }
+    }
+
+    test "result respects input" {
+        const model = try createTextModel(allocator, "Hello world,\n" ++ "How are you?\n", null);
+        defer disposeTextModel(model);
+        const decorations = try toModelDeltaDecorations(&[_]LightWeightDecoration{
+            decoration('a', 1, 1, 1, 12),
+            decoration('b', 2, 1, 2, 13),
+        });
+        defer allocator.free(decorations);
+        defer {
+            for (decorations) |dec| {
+                allocator.destroy(dec.options);
+            }
+        }
+        const ids = try model.deltaDecorations(&[_]u64{}, decorations, null);
+        defer ids.deinit();
+
+        try std.testing.expectEqualDeep(Range.initRaw(1, 1, 1, 12), model.getDecorationRange(ids.items[0]).?);
+        try std.testing.expectEqualDeep(Range.initRaw(2, 1, 2, 13), model.getDecorationRange(ids.items[1]).?);
+    }
+
+    test "deltaDecorations 1" {
+        try testDeltaDecorations(&[_][]const u8{
+            "This is a text",
+            "That has multiple lines",
+            "And is very friendly",
+            "Towards testing",
+        }, &[_]LightWeightDecoration{
+            decoration('a', 1, 1, 1, 2),
+            decoration('b', 1, 1, 1, 15),
+            decoration('c', 1, 1, 2, 1),
+            decoration('d', 1, 1, 2, 24),
+            decoration('e', 2, 1, 2, 24),
+            decoration('f', 2, 1, 4, 16),
+        }, &[_]LightWeightDecoration{
+            decoration('x', 1, 1, 1, 2),
+            decoration('b', 1, 1, 1, 15),
+            decoration('c', 1, 1, 2, 1),
+            decoration('d', 1, 1, 2, 24),
+            decoration('e', 2, 1, 2, 21),
+            decoration('f', 2, 17, 4, 16),
+        });
+    }
+
+    test "deltaDecorations 2" {
+        try testDeltaDecorations(
+            &[_][]const u8{
+                "This is a text",
+                "That has multiple lines",
+                "And is very friendly",
+                "Towards testing",
+            },
+            &[_]LightWeightDecoration{
+                decoration('a', 1, 1, 1, 2),
+                decoration('b', 1, 2, 1, 3),
+                decoration('c', 1, 3, 1, 4),
+                decoration('d', 1, 4, 1, 5),
+                decoration('e', 1, 5, 1, 6),
+            },
+            &[_]LightWeightDecoration{
+                decoration('a', 1, 2, 1, 3),
+                decoration('b', 1, 3, 1, 4),
+                decoration('c', 1, 4, 1, 5),
+                decoration('d', 1, 5, 1, 6),
+            },
+        );
+    }
+
+    test "deltaDecorations 3" {
+        try testDeltaDecorations(
+            &[_][]const u8{
+                "This is a text",
+                "That has multiple lines",
+                "And is very friendly",
+                "Towards testing",
+            },
+            &[_]LightWeightDecoration{
+                decoration('a', 1, 1, 1, 2),
+                decoration('b', 1, 2, 1, 3),
+                decoration('c', 1, 3, 1, 4),
+                decoration('d', 1, 4, 1, 5),
+                decoration('e', 1, 5, 1, 6),
+            },
+            &[_]LightWeightDecoration{},
+        );
+    }
+
+    test "issue #4317: editor.setDecorations doesn't update the hover message" {
+        const model = try createTextModel(allocator, "Hello world!", null);
+        defer disposeTextModel(model);
+
+        const ids = try model.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{
+            .{
+                .range = .initRaw(1, 1, 100, 1),
+                .options = &ModelDecorationOptions{ .description = "test", .hoverMessage = "hello1" },
+            },
+        }, null);
+        defer ids.deinit();
+
+        const ids2 = try model.deltaDecorations(ids.items, &[_]ModelDeltaDecoration{
+            .{
+                .range = .initRaw(1, 1, 100, 1),
+                .options = &ModelDecorationOptions{ .description = "test", .hoverMessage = "hello2" },
+            },
+        }, null);
+        defer ids2.deinit();
+
+        const actualDecoration = model.getDecorationOptions(ids2.items[0]).?;
+        try std.testing.expectEqual("hello2", actualDecoration.hoverMessage);
+    }
+
+    test "model doesn't get confused with individual tracked ranges" {
+        const model = try createTextModel(allocator, "Hello world,\n" ++ "How are you?", null);
+        defer disposeTextModel(model);
+
+        const options = ModelDecorationOptions{ .description = "test", .stickiness = .AlwaysGrowsWhenTypingAtEdges };
+        const trackedRangeId = (try model.changeDecorations(u64, &options, struct {
+            fn cb(changeAccessor: ModelDecorationsChangeAccessor, op: *const ModelDecorationOptions) anyerror!u64 {
+                return try changeAccessor.addDecoration(.initRaw(1, 1, 1, 1), op);
+            }
+        }.cb, null)).?;
+
+        _ = try model.changeDecorations(void, trackedRangeId, struct {
+            fn cb(changeAccessor: ModelDecorationsChangeAccessor, tid: u64) anyerror!void {
+                try changeAccessor.removeDecoration(tid);
+            }
+        }.cb, null);
+
+        const newDecorations = try toModelDeltaDecorations(&[_]LightWeightDecoration{ decoration('a', 1, 1, 1, 12), decoration('b', 2, 1, 2, 13) });
+        defer allocator.free(newDecorations);
+        defer {
+            for (newDecorations) |dec| {
+                allocator.destroy(dec.options);
+            }
+        }
+        var ids = try model.deltaDecorations(&[_]u64{}, newDecorations, null);
+        defer ids.deinit();
+
+        try std.testing.expectEqualDeep(Range.initRaw(1, 1, 1, 12), model.getDecorationRange(ids.items[0]).?);
+        try std.testing.expectEqualDeep(Range.initRaw(2, 1, 2, 13), model.getDecorationRange(ids.items[1]).?);
+
+        const newDecorations2 = try toModelDeltaDecorations(&[_]LightWeightDecoration{ decoration('a', 1, 1, 1, 12), decoration('b', 2, 1, 2, 13) });
+        defer allocator.free(newDecorations2);
+        defer {
+            for (newDecorations2) |dec| {
+                allocator.destroy(dec.options);
+            }
+        }
+        var ids2 = try model.deltaDecorations(ids.items, newDecorations2, null);
+        defer ids2.deinit();
+
+        try std.testing.expectEqualDeep(Range.initRaw(1, 1, 1, 12), model.getDecorationRange(ids2.items[0]).?);
+        try std.testing.expectEqualDeep(Range.initRaw(2, 1, 2, 13), model.getDecorationRange(ids2.items[1]).?);
+    }
+
+    test "issue #16922: Clicking on link doesn't seem to do anything" {
+        const model = try createTextModel(allocator, "Hello world,\n" ++ "How are you?\n" ++ "Fine.\n" ++ "Good.", null);
+        defer disposeTextModel(model);
+
+        const TestClassName = enum(u8) {
+            d1 = '1',
+            d2 = '2',
+            d3 = '3',
+            d4 = '4',
+            d5 = '5',
+            d6 = '6',
+            x1,
+            x2,
+            x3,
+            x4,
+        };
+
+        const ids = try model.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{
+            .{ .range = .initRaw(1, 1, 1, 1), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.d1) } },
+            .{ .range = .initRaw(1, 13, 1, 13), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.d2) } },
+            .{ .range = .initRaw(2, 1, 2, 1), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.d3) } },
+            .{ .range = .initRaw(2, 1, 2, 4), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.d4) } },
+            .{ .range = .initRaw(2, 8, 2, 13), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.d5) } },
+            .{ .range = .initRaw(3, 1, 4, 6), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.d6) } },
+            .{ .range = .initRaw(1, 1, 3, 6), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.x1) } },
+            .{ .range = .initRaw(2, 5, 2, 8), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.x2) } },
+            .{ .range = .initRaw(1, 1, 2, 8), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.x3) } },
+            .{ .range = .initRaw(2, 5, 3, 1), .options = &ModelDecorationOptions{ .description = "test", .className = @intFromEnum(TestClassName.x4) } },
+        }, null);
+        defer ids.deinit();
+
+        const inRange = try model.getDecorationsInRange(.initRaw(2, 6, 2, 6), null, null, null, null);
+        defer inRange.deinit();
+        const inRangeClassNames = try allocator.alloc(u8, inRange.items.len);
+        defer allocator.free(inRangeClassNames);
+        for (inRange.items, 0..) |dec, i| {
+            inRangeClassNames[i] = dec.options.className.?;
+        }
+        std.sort.block(u8, inRangeClassNames, {}, std.sort.asc(u8));
+        try std.testing.expectEqualDeep(&[_]u8{
+            @intFromEnum(TestClassName.x1),
+            @intFromEnum(TestClassName.x2),
+            @intFromEnum(TestClassName.x3),
+            @intFromEnum(TestClassName.x4),
+        }, inRangeClassNames);
+    }
+
+    test "issue #41492: URL highlighting persists after pasting over url" {
+        const model = try createTextModel(allocator, "My First Line", null);
+        defer disposeTextModel(model);
+
+        const ids = try model.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{
+            .{
+                .range = Range.initRaw(1, 2, 1, 14),
+                .options = &ModelDecorationOptions{
+                    .description = "test",
+                    .stickiness = .NeverGrowsWhenTypingAtEdges,
+                    .collapseOnReplaceEdit = true,
+                },
+            },
+        }, null);
+        defer ids.deinit();
+
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = Range.initRaw(1, 1, 1, 14),
+            .text = .initBorrowed("Some new text that is longer than the previous one"),
+            .forceMoveMarkers = false,
+        }}, null);
+
+        const id = ids.items[0];
+        const actual = model.getDecorationRange(id).?;
+        try std.testing.expectEqualDeep(Range.initRaw(1, 1, 1, 1), actual);
     }
 };
 
