@@ -430,6 +430,18 @@ pub const String = union(enum) {
         }
     }
 
+    pub fn expectEqual(self: *const String, other: String) !void {
+        const allocator = std.testing.allocator;
+        std.testing.expect(self.eql(other)) catch |err| {
+            const s = try self.display(allocator);
+            const o = try other.display(allocator);
+            std.debug.print("Expected {s} to be equal to {s}", .{ s, o });
+            allocator.free(s);
+            allocator.free(o);
+            return err;
+        };
+    }
+
     pub fn len(self: *const String) usize {
         switch (self.*) {
             .empty => return 0,
@@ -558,7 +570,7 @@ pub const String = union(enum) {
 
     pub fn debugPrint(self: *const String) void {
         switch (self.*) {
-            .empty => std.debug.print("empty", .{}),
+            .empty => std.debug.print("empty\n", .{}),
             .owned => |list| std.debug.print("owned: \"{s}\"\n", .{list.items}),
             .borrowed1 => |s| std.debug.print("borrowed1: \"{s}\"\n", .{s}),
             .borrowed => |list| {

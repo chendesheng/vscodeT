@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Range = @import("../basics/range.zig").Range;
-const InternalModelContentChangeEvent = @import("../textModel/textModelEvents.zig").InternalModelContentChangeEvent;
+const InternalModelContentChangeOrModelInjectedTextChangedEvent = @import("../textModel/textModelEvents.zig").InternalModelContentChangeOrModelInjectedTextChangedEvent;
 const Position = @import("../basics/position.zig").Position;
 const String = @import("../basics/strings.zig").String;
 const IdentifiedSingleEditOperation = @import("../textModel/model.zig").IdentifiedSingleEditOperation;
@@ -142,8 +142,9 @@ const EditorModelModelTests = struct {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        try model.onDidChangeContentOrInjectedText(struct {
-            fn cb(e: InternalModelContentChangeEvent) void {
+        try model.onDidChangeContentOrInjectedText({}, struct {
+            fn cb(e: InternalModelContentChangeOrModelInjectedTextChangedEvent, ctx: void) anyerror!void {
+                _ = ctx;
                 _ = e;
                 std.debug.print("was not expecting event\n", .{});
                 unreachable;
@@ -157,19 +158,28 @@ const EditorModelModelTests = struct {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        try model.onDidChangeContentOrInjectedText(struct {
-            fn cb(e: InternalModelContentChangeEvent) void {
-                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
-                std.testing.expectEqual(1, e.rawContentChangedEvent.changes.items.len) catch unreachable;
-                switch (e.rawContentChangedEvent.changes.items[0]) {
-                    .lineChanged => |line| {
-                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
-                        std.testing.expect(line.detail.eql(.initBorrowed("foo My First Line"))) catch unreachable;
-                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+        try model.onDidChangeContentOrInjectedText({}, struct {
+            fn cb(e: InternalModelContentChangeOrModelInjectedTextChangedEvent, ctx: void) anyerror!void {
+                _ = ctx;
+                switch (e) {
+                    .injectedTextChangedEvent => {
+                        try std.testing.expect(false);
                     },
-                    else => unreachable,
+                    .internalModelContentChangeEvent => |evt| {
+                        const changedEvent = evt.rawContentChangedEvent;
+                        std.testing.expectEqual(2, changedEvent.versionId) catch unreachable;
+                        std.testing.expectEqual(false, changedEvent.isUndoing) catch unreachable;
+                        std.testing.expectEqual(false, changedEvent.isRedoing) catch unreachable;
+                        std.testing.expectEqual(1, changedEvent.changes.items.len) catch unreachable;
+                        switch (changedEvent.changes.items[0]) {
+                            .lineChanged => |line| {
+                                std.testing.expectEqual(1, line.lineNumber) catch unreachable;
+                                std.testing.expect(line.detail.eql(.initBorrowed("foo My First Line"))) catch unreachable;
+                                std.testing.expectEqual(null, line.injectedText) catch unreachable;
+                            },
+                            else => unreachable,
+                        }
+                    },
                 }
             }
         }.cb);
@@ -181,31 +191,39 @@ const EditorModelModelTests = struct {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        try model.onDidChangeContentOrInjectedText(struct {
-            fn cb(e: InternalModelContentChangeEvent) void {
-                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
-                std.testing.expectEqual(2, e.rawContentChangedEvent.changes.items.len) catch unreachable;
-
-                switch (e.rawContentChangedEvent.changes.items[0]) {
-                    .lineChanged => |line| {
-                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
-                        std.testing.expect(line.detail.eql(.initBorrowed("My new line"))) catch unreachable;
-                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+        try model.onDidChangeContentOrInjectedText({}, struct {
+            fn cb(e: InternalModelContentChangeOrModelInjectedTextChangedEvent, _: void) anyerror!void {
+                switch (e) {
+                    .injectedTextChangedEvent => {
+                        try std.testing.expect(false);
                     },
-                    else => unreachable,
-                }
+                    .internalModelContentChangeEvent => |evt| {
+                        const changedEvent = evt.rawContentChangedEvent;
+                        std.testing.expectEqual(2, changedEvent.versionId) catch unreachable;
+                        std.testing.expectEqual(false, changedEvent.isUndoing) catch unreachable;
+                        std.testing.expectEqual(false, changedEvent.isRedoing) catch unreachable;
+                        std.testing.expectEqual(2, changedEvent.changes.items.len) catch unreachable;
 
-                switch (e.rawContentChangedEvent.changes.items[1]) {
-                    .linesInserted => |lines| {
-                        std.testing.expectEqual(2, lines.fromLineNumber) catch unreachable;
-                        std.testing.expectEqual(2, lines.toLineNumber) catch unreachable;
-                        std.testing.expectEqual(1, lines.detail.items.len) catch unreachable;
-                        std.testing.expect(lines.detail.items[0].eql(.initBorrowed("No longer First Line"))) catch unreachable;
-                        std.testing.expectEqual(null, lines.injectedTexts.items[0]) catch unreachable;
+                        switch (changedEvent.changes.items[0]) {
+                            .lineChanged => |line| {
+                                std.testing.expectEqual(1, line.lineNumber) catch unreachable;
+                                std.testing.expect(line.detail.eql(.initBorrowed("My new line"))) catch unreachable;
+                                std.testing.expectEqual(null, line.injectedText) catch unreachable;
+                            },
+                            else => unreachable,
+                        }
+
+                        switch (changedEvent.changes.items[1]) {
+                            .linesInserted => |lines| {
+                                std.testing.expectEqual(2, lines.fromLineNumber) catch unreachable;
+                                std.testing.expectEqual(2, lines.toLineNumber) catch unreachable;
+                                std.testing.expectEqual(1, lines.detail.items.len) catch unreachable;
+                                std.testing.expect(lines.detail.items[0].eql(.initBorrowed("No longer First Line"))) catch unreachable;
+                                std.testing.expectEqual(null, lines.injectedTexts.items[0]) catch unreachable;
+                            },
+                            else => unreachable,
+                        }
                     },
-                    else => unreachable,
                 }
             }
         }.cb);
@@ -219,8 +237,9 @@ const EditorModelModelTests = struct {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        try model.onDidChangeContentOrInjectedText(struct {
-            fn cb(e: InternalModelContentChangeEvent) void {
+        try model.onDidChangeContentOrInjectedText({}, struct {
+            fn cb(e: InternalModelContentChangeOrModelInjectedTextChangedEvent, ctx: void) anyerror!void {
+                _ = ctx;
                 _ = e;
                 std.debug.print("was not expecting event\n", .{});
                 unreachable;
@@ -234,19 +253,27 @@ const EditorModelModelTests = struct {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        try model.onDidChangeContentOrInjectedText(struct {
-            fn cb(e: InternalModelContentChangeEvent) void {
-                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
-                std.testing.expectEqual(1, e.rawContentChangedEvent.changes.items.len) catch unreachable;
-                switch (e.rawContentChangedEvent.changes.items[0]) {
-                    .lineChanged => |line| {
-                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
-                        std.testing.expect(line.detail.eql(.initBorrowed("y First Line"))) catch unreachable;
-                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+        try model.onDidChangeContentOrInjectedText({}, struct {
+            fn cb(e: InternalModelContentChangeOrModelInjectedTextChangedEvent, _: void) anyerror!void {
+                switch (e) {
+                    .injectedTextChangedEvent => {
+                        try std.testing.expect(false);
                     },
-                    else => unreachable,
+                    .internalModelContentChangeEvent => |evt| {
+                        const changedEvent = evt.rawContentChangedEvent;
+                        std.testing.expectEqual(2, changedEvent.versionId) catch unreachable;
+                        std.testing.expectEqual(false, changedEvent.isUndoing) catch unreachable;
+                        std.testing.expectEqual(false, changedEvent.isRedoing) catch unreachable;
+                        std.testing.expectEqual(1, changedEvent.changes.items.len) catch unreachable;
+                        switch (changedEvent.changes.items[0]) {
+                            .lineChanged => |line| {
+                                std.testing.expectEqual(1, line.lineNumber) catch unreachable;
+                                std.testing.expect(line.detail.eql(.initBorrowed("y First Line"))) catch unreachable;
+                                std.testing.expectEqual(null, line.injectedText) catch unreachable;
+                            },
+                            else => unreachable,
+                        }
+                    },
                 }
             }
         }.cb);
@@ -258,19 +285,27 @@ const EditorModelModelTests = struct {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        try model.onDidChangeContentOrInjectedText(struct {
-            fn cb(e: InternalModelContentChangeEvent) void {
-                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
-                std.testing.expectEqual(1, e.rawContentChangedEvent.changes.items.len) catch unreachable;
-                switch (e.rawContentChangedEvent.changes.items[0]) {
-                    .lineChanged => |line| {
-                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
-                        std.testing.expect(line.detail.isEmpty()) catch unreachable;
-                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+        try model.onDidChangeContentOrInjectedText({}, struct {
+            fn cb(e: InternalModelContentChangeOrModelInjectedTextChangedEvent, _: void) anyerror!void {
+                switch (e) {
+                    .injectedTextChangedEvent => {
+                        try std.testing.expect(false);
                     },
-                    else => unreachable,
+                    .internalModelContentChangeEvent => |evt| {
+                        const changedEvent = evt.rawContentChangedEvent;
+                        try std.testing.expectEqual(2, changedEvent.versionId);
+                        try std.testing.expectEqual(false, changedEvent.isUndoing);
+                        try std.testing.expectEqual(false, changedEvent.isRedoing);
+                        try std.testing.expectEqual(1, changedEvent.changes.items.len);
+                        switch (changedEvent.changes.items[0]) {
+                            .lineChanged => |line| {
+                                try std.testing.expectEqual(1, line.lineNumber);
+                                try std.testing.expect(line.detail.isEmpty());
+                                try std.testing.expectEqual(null, line.injectedText);
+                            },
+                            else => unreachable,
+                        }
+                    },
                 }
             }
         }.cb);
@@ -282,21 +317,29 @@ const EditorModelModelTests = struct {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        try model.onDidChangeContentOrInjectedText(struct {
-            fn cb(e: InternalModelContentChangeEvent) void {
-                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
-                std.testing.expectEqual(2, e.rawContentChangedEvent.changes.items.len) catch unreachable;
-                switch (e.rawContentChangedEvent.changes.items[0]) {
-                    .lineChanged => |line| {
-                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
-                        std.testing.expect(line.detail.eql(.initBorrowed("My Second Line"))) catch unreachable;
-                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+        try model.onDidChangeContentOrInjectedText({}, struct {
+            fn cb(e: InternalModelContentChangeOrModelInjectedTextChangedEvent, _: void) anyerror!void {
+                switch (e) {
+                    .injectedTextChangedEvent => {
+                        try std.testing.expect(false);
                     },
-                    else => unreachable,
+                    .internalModelContentChangeEvent => |evt| {
+                        const changedEvent = evt.rawContentChangedEvent;
+                        try std.testing.expectEqual(2, changedEvent.versionId);
+                        try std.testing.expectEqual(false, changedEvent.isUndoing);
+                        try std.testing.expectEqual(false, changedEvent.isRedoing);
+                        try std.testing.expectEqual(2, changedEvent.changes.items.len);
+                        switch (changedEvent.changes.items[0]) {
+                            .lineChanged => |line| {
+                                try std.testing.expectEqual(1, line.lineNumber);
+                                try std.testing.expect(line.detail.eql(.initBorrowed("My Second Line")));
+                                try std.testing.expectEqual(null, line.injectedText);
+                            },
+                            else => unreachable,
+                        }
+                        try std.testing.expectEqualDeep(changedEvent.changes.items[1], ModelRawChange{ .linesDeleted = .init(2, 2) });
+                    },
                 }
-                std.testing.expectEqualDeep(e.rawContentChangedEvent.changes.items[1], ModelRawChange{ .linesDeleted = .init(2, 2) }) catch unreachable;
             }
         }.cb);
         var edits = [_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 4, 2, 6))};
@@ -307,21 +350,29 @@ const EditorModelModelTests = struct {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        try model.onDidChangeContentOrInjectedText(struct {
-            fn cb(e: InternalModelContentChangeEvent) void {
-                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
-                std.testing.expectEqual(2, e.rawContentChangedEvent.changes.items.len) catch unreachable;
-                switch (e.rawContentChangedEvent.changes.items[0]) {
-                    .lineChanged => |line| {
-                        std.testing.expectEqual(1, line.lineNumber) catch unreachable;
-                        std.testing.expect(line.detail.eql(.initBorrowed("My Third Line"))) catch unreachable;
-                        std.testing.expectEqual(null, line.injectedText) catch unreachable;
+        try model.onDidChangeContentOrInjectedText({}, struct {
+            fn cb(e: InternalModelContentChangeOrModelInjectedTextChangedEvent, _: void) anyerror!void {
+                switch (e) {
+                    .injectedTextChangedEvent => {
+                        try std.testing.expect(false);
                     },
-                    else => unreachable,
+                    .internalModelContentChangeEvent => |evt| {
+                        const changedEvent = evt.rawContentChangedEvent;
+                        try std.testing.expectEqual(2, changedEvent.versionId);
+                        try std.testing.expectEqual(false, changedEvent.isUndoing);
+                        try std.testing.expectEqual(false, changedEvent.isRedoing);
+                        try std.testing.expectEqual(2, changedEvent.changes.items.len);
+                        switch (changedEvent.changes.items[0]) {
+                            .lineChanged => |line| {
+                                try std.testing.expectEqual(1, line.lineNumber);
+                                try std.testing.expect(line.detail.eql(.initBorrowed("My Third Line")));
+                                try std.testing.expectEqual(null, line.injectedText);
+                            },
+                            else => unreachable,
+                        }
+                        try std.testing.expectEqualDeep(changedEvent.changes.items[1], ModelRawChange{ .linesDeleted = .init(2, 3) });
+                    },
                 }
-                std.testing.expectEqualDeep(e.rawContentChangedEvent.changes.items[1], ModelRawChange{ .linesDeleted = .init(2, 3) }) catch unreachable;
             }
         }.cb);
         var edits = [_]IdentifiedSingleEditOperation{EditOperation.delete(.init(1, 4, 3, 5))};
@@ -375,13 +426,21 @@ const EditorModelModelTests = struct {
         const model = try createModel(std.testing.allocator);
         defer disposeTextModel(model);
 
-        try model.onDidChangeContentOrInjectedText(struct {
-            fn cb(e: InternalModelContentChangeEvent) void {
-                std.testing.expectEqual(2, e.rawContentChangedEvent.versionId) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isUndoing) catch unreachable;
-                std.testing.expectEqual(false, e.rawContentChangedEvent.isRedoing) catch unreachable;
-                std.testing.expectEqual(1, e.rawContentChangedEvent.changes.items.len) catch unreachable;
-                std.testing.expectEqualDeep(e.rawContentChangedEvent.changes.items[0], ModelRawChange{ .flush = .init() }) catch unreachable;
+        try model.onDidChangeContentOrInjectedText({}, struct {
+            fn cb(e: InternalModelContentChangeOrModelInjectedTextChangedEvent, _: void) anyerror!void {
+                switch (e) {
+                    .injectedTextChangedEvent => {
+                        try std.testing.expect(false);
+                    },
+                    .internalModelContentChangeEvent => |evt| {
+                        const changedEvent = evt.rawContentChangedEvent;
+                        try std.testing.expectEqual(2, changedEvent.versionId);
+                        try std.testing.expectEqual(false, changedEvent.isUndoing);
+                        try std.testing.expectEqual(false, changedEvent.isRedoing);
+                        try std.testing.expectEqual(1, changedEvent.changes.items.len);
+                        try std.testing.expectEqualDeep(changedEvent.changes.items[0], ModelRawChange{ .flush = .init() });
+                    },
+                }
             }
         }.cb);
         try model.setValue("new value");

@@ -259,6 +259,7 @@ const CacheEntry = struct {
     node: *TreeNode,
     nodeStartOffset: usize,
     nodeStartLineNumber: ?usize,
+    _toRemove: bool = false,
 };
 
 const PieceTreeSearchCache = struct {
@@ -323,17 +324,27 @@ const PieceTreeSearchCache = struct {
         try self._cache.append(nodePosition);
     }
 
-    fn validate(self: *PieceTreeSearchCache, offset: usize) void {
-        var tmp = self._cache;
+    fn validate(self: *PieceTreeSearchCache, offset: usize) !void {
+        var hasInvalidVal = false;
 
-        var i: usize = tmp.items.len;
-        while (i > 0) {
-            i -= 1;
-
-            const nodePos = tmp.items[i];
-            if (nodePos.node == SENTINEL or nodePos.nodeStartOffset >= offset) {
-                _ = tmp.orderedRemove(i);
+        const tmp = self._cache.items;
+        for (tmp) |*nodePos| {
+            if (nodePos.node._detached or nodePos.nodeStartOffset >= offset) {
+                nodePos._toRemove = true;
+                hasInvalidVal = true;
+                continue;
             }
+        }
+
+        if (hasInvalidVal) {
+            var newArr = try ArrayList(CacheEntry).initCapacity(self._cache.allocator, self._cache.items.len);
+            for (tmp) |nodePos| {
+                if (!nodePos._toRemove) {
+                    try newArr.append(nodePos);
+                }
+            }
+            self._cache.deinit();
+            self._cache = newArr;
         }
     }
 
@@ -442,7 +453,7 @@ pub const PieceTreeBase = struct {
 
         self._searchCache = PieceTreeSearchCache.init(allocator, 1);
         self._lastVisitedLine = LastVisitedLine.init(allocator);
-        self.computeBufferMetadata();
+        try self.computeBufferMetadata();
     }
 
     pub fn deinit(self: *const PieceTreeBase) void {
@@ -1123,13 +1134,13 @@ pub const PieceTreeBase = struct {
             {
                 // changed buffer
                 try self.appendToNode(node, value);
-                self.computeBufferMetadata();
+                try self.computeBufferMetadata();
                 return;
             }
 
             if (nodeStartOffset == offset) {
                 try self.insertContentToNodeLeft(value, node);
-                self._searchCache.validate(offset);
+                try self._searchCache.validate(offset);
             } else if (nodeStartOffset + node.piece.?.length > offset) {
                 var appendLF = false;
                 var prependCR = false;
@@ -1228,7 +1239,7 @@ pub const PieceTreeBase = struct {
         }
 
         // todo, this is too brutal. Total line feed count should be updated the same way as lf_left.
-        self.computeBufferMetadata();
+        try self.computeBufferMetadata();
     }
 
     pub fn delete(self: *PieceTreeBase, offset: usize, cnt: usize) !void {
@@ -1254,26 +1265,26 @@ pub const PieceTreeBase = struct {
                     const next = startNode.next();
                     self.rbDelete(startNode);
                     try self.validateCRLFWithPrevNode(next);
-                    self.computeBufferMetadata();
+                    try self.computeBufferMetadata();
                     return;
                 }
                 self.deleteNodeHead(startNode, endSplitPosInBuffer);
-                self._searchCache.validate(offset);
+                try self._searchCache.validate(offset);
                 try self.validateCRLFWithPrevNode(startNode);
-                self.computeBufferMetadata();
+                try self.computeBufferMetadata();
                 return;
             }
 
             if (startPosition.nodeStartOffset + startNode.piece.?.length == offset + cnt) {
                 self.deleteNodeTail(startNode, startSplitPosInBuffer);
                 try self.validateCRLFWithNextNode(startNode);
-                self.computeBufferMetadata();
+                try self.computeBufferMetadata();
                 return;
             }
 
             // delete content in the middle, self node will be splitted to nodes
             try self.shrinkNode(startNode, startSplitPosInBuffer, endSplitPosInBuffer);
-            self.computeBufferMetadata();
+            try self.computeBufferMetadata();
             return;
         }
 
@@ -1282,7 +1293,7 @@ pub const PieceTreeBase = struct {
 
         const startSplitPosInBuffer = self.positionInBuffer(startNode, startPosition.remainder);
         self.deleteNodeTail(startNode, startSplitPosInBuffer);
-        self._searchCache.validate(offset);
+        try self._searchCache.validate(offset);
         if (startNode.piece.?.length == 0) {
             try nodesToDel.append(startNode);
         }
@@ -1304,7 +1315,7 @@ pub const PieceTreeBase = struct {
         const prev = if (startNode.piece.?.length == 0) startNode.prev() else startNode;
         self.deleteNodes(nodesToDel.items);
         try self.validateCRLFWithNextNode(prev);
-        self.computeBufferMetadata();
+        try self.computeBufferMetadata();
     }
 
     fn insertContentToNodeLeft(self: *PieceTreeBase, value: []const u8, node: *TreeNode) !void {
@@ -1638,7 +1649,7 @@ pub const PieceTreeBase = struct {
         return ret;
     }
 
-    fn computeBufferMetadata(self: *PieceTreeBase) void {
+    fn computeBufferMetadata(self: *PieceTreeBase) !void {
         var x = self.root;
 
         var lfCnt: usize = 1;
@@ -1652,7 +1663,7 @@ pub const PieceTreeBase = struct {
 
         self._lineCnt = lfCnt;
         self._length = len;
-        self._searchCache.validate(len);
+        try self._searchCache.validate(len);
     }
 
     fn getIndexOf(self: *const PieceTreeBase, node: *const TreeNode, accumulatedValue: usize) struct { index: usize, remainder: usize } {

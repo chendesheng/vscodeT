@@ -514,18 +514,18 @@ pub const InjectedTextOptions = struct {
     // tokens: ?[]TokenArray,
 
     // If set, the decoration will be rendered inline with the text with this CSS class name.
-    inlineClassName: ?[]const u8,
+    inlineClassName: ?[]const u8 = null,
 
     // If there is an `inlineClassName` which affects letter spacing.
-    inlineClassNameAffectsLetterSpacing: bool,
+    inlineClassNameAffectsLetterSpacing: bool = false,
 
     // This field allows to attach data to this injected text.
     // The data can be read when injected texts at a given position are queried.
-    attachedData: ?*anyopaque,
+    attachedData: ?*anyopaque = null,
 
     // Configures cursor stops around injected text.
     // Defaults to {@link InjectedTextCursorStops.Both}.
-    cursorStops: ?InjectedTextCursorStops,
+    cursorStops: ?InjectedTextCursorStops = null,
 };
 
 pub const InjectedTextCursorStops = enum {

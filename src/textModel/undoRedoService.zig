@@ -734,7 +734,7 @@ pub const UndoRedoService = struct {
             try key.fillItems(&str);
             try str.appendSlice("\n");
         }
-        std.debug.print("{s}", .{str.items});
+        std.debug.print("{s}\n", .{str.items});
     }
 
     pub fn pushElement(self: *UndoRedoService, element: *EditStackElement, _group: ?UndoRedoGroup, _source: ?UndoRedoSource) !void {

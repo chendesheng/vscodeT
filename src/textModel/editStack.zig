@@ -474,8 +474,8 @@ pub const SingleModelEditStackElement = struct {
 
     pub fn canAppend(self: *const SingleModelEditStackElement, model: *const TextModel) bool {
         return self.model.eqlModel(model) and switch (self._data) {
-            .serialized => true,
-            .unserialized => false,
+            .serialized => false,
+            .unserialized => true,
         };
     }
 
@@ -492,7 +492,7 @@ pub const SingleModelEditStackElement = struct {
         switch (self._data) {
             .unserialized => |*dat| {
                 defer dat.deinit();
-                self._data = .{ .unserialized = try dat.serialize() };
+                self._data = .{ .serialized = try dat.serialize() };
             },
             .serialized => {},
         }

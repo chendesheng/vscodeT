@@ -14,6 +14,7 @@ pub const TreeNode = struct {
     piece: ?Piece,
     size_left: usize,
     lf_left: usize,
+    _detached: bool = false,
 
     fn pieceSize(self: *const TreeNode) usize {
         return if (self.piece != null) self.piece.?.length else 0;
@@ -116,6 +117,7 @@ pub const TreeNode = struct {
     }
 
     pub fn detach(self: *TreeNode) void {
+        self._detached = true;
         self.parent = undefined;
         self.left = undefined;
         self.right = undefined;

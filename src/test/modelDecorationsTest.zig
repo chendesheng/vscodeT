@@ -1146,10 +1146,16 @@ const DeltaDecorationsTests = struct {
             const actualDecorations = try readModelDecorations(model, initialIds.items);
             defer allocator.free(actualDecorations);
 
-            std.testing.expectEqual(initialIds.items.len, decorations.len) catch std.debug.print("returns expected cnt of ids", .{});
+            std.testing.expectEqual(initialIds.items.len, decorations.len) catch |err| {
+                std.debug.print("returns expected cnt of ids\n", .{});
+                return err;
+            };
             const allDecorations = try model.getAllDecorations(null, null);
             defer allDecorations.deinit();
-            std.testing.expectEqual(initialIds.items.len, allDecorations.items.len) catch std.debug.print("does not leak decorations", .{});
+            std.testing.expectEqual(initialIds.items.len, allDecorations.items.len) catch |err| {
+                std.debug.print("does not leak decorations\n", .{});
+                return err;
+            };
             std.sort.block(LightWeightDecoration, actualDecorations, {}, compareLightWeightDecoration);
             std.sort.block(LightWeightDecoration, decorations, {}, compareLightWeightDecoration);
             try std.testing.expectEqualDeep(actualDecorations, decorations);
@@ -1168,11 +1174,17 @@ const DeltaDecorationsTests = struct {
             const actualNewDecorations = try readModelDecorations(model, newIds.items);
             defer allocator.free(actualNewDecorations);
 
-            std.testing.expectEqual(newIds.items.len, newDecorations.len) catch std.debug.print("returns expected cnt of ids", .{});
+            std.testing.expectEqual(newIds.items.len, newDecorations.len) catch |err| {
+                std.debug.print("returns expected cnt of ids\n", .{});
+                return err;
+            };
 
             const allDecorations = try model.getAllDecorations(null, null);
             defer allDecorations.deinit();
-            std.testing.expectEqual(newIds.items.len, allDecorations.items.len) catch std.debug.print("does not leak decorations", .{});
+            std.testing.expectEqual(newIds.items.len, allDecorations.items.len) catch |err| {
+                std.debug.print("does not leak decorations\n", .{});
+                return err;
+            };
 
             std.sort.block(LightWeightDecoration, actualNewDecorations, {}, compareLightWeightDecoration);
             std.sort.block(LightWeightDecoration, newDecorations, {}, compareLightWeightDecoration);

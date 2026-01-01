@@ -95,19 +95,19 @@ pub const LineInjectedText = struct {
     options: InjectedTextOptions,
     order: usize,
 
-    pub fn applyInjectedText(lineText: []const u8, injectedTexts: ?[]LineInjectedText) []const u8 {
-        if (injectedTexts == null or injectedTexts.len == 0) {
-            return lineText;
+    pub fn applyInjectedText(allocator: Allocator, lineText: String, injectedTexts: ?[]const LineInjectedText) !String {
+        if (injectedTexts == null or injectedTexts.?.len == 0) {
+            return .initOwned(try lineText.toSlice(allocator));
         }
-        var result: []const u8 = "";
+        var result = ArrayList(u8).init(allocator);
         var lastOriginalOffset: usize = 0;
         for (injectedTexts.?) |injectedText| {
-            result = result ++ lineText[lastOriginalOffset .. injectedText.column - 1];
+            try (try lineText.substring(lastOriginalOffset, injectedText.column - 1)).fillItems(&result);
             lastOriginalOffset = injectedText.column - 1;
-            result += injectedText.options.content;
+            try result.appendSlice(injectedText.options.content);
         }
-        result = result ++ lineText[lastOriginalOffset..];
-        return result;
+        try (try lineText.substring(lastOriginalOffset, lineText.len())).fillItems(&result);
+        return .initOwned(result);
     }
 
     pub fn fromDecorations(allocator: Allocator, decorations: []const ModelDecoration) !ArrayList(LineInjectedText) {
@@ -183,16 +183,24 @@ pub const ModelRawLineChanged = struct {
     // The injected text on the line.
     injectedText: ?[]const LineInjectedText,
 
-    pub fn init(lineNumber: usize, detail: String, injectedText: ?[]const LineInjectedText) ModelRawLineChanged {
+    allocator: ?Allocator = null,
+
+    pub fn init(lineNumber: usize, detail: String, injectedText: ?[]const LineInjectedText, allocator: ?Allocator) ModelRawLineChanged {
         return ModelRawLineChanged{
             .lineNumber = lineNumber,
             .detail = detail,
             .injectedText = injectedText,
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *ModelRawLineChanged) void {
         self.detail.deinit();
+        if (self.allocator) |allocator| {
+            if (self.injectedText) |injectedText| {
+                allocator.free(injectedText);
+            }
+        }
     }
 };
 
@@ -239,6 +247,11 @@ pub const ModelRawLinesInserted = struct {
         }
         self.detail.deinit();
 
+        for (self.injectedTexts.items) |item| {
+            if (item) |injectedText| {
+                self.injectedTexts.allocator.free(injectedText);
+            }
+        }
         self.injectedTexts.deinit();
     }
 };
@@ -389,6 +402,11 @@ pub const ModelLineHeightChangedEvent = struct {
             return false;
         }
     }
+};
+
+pub const InternalModelContentChangeOrModelInjectedTextChangedEvent = union(enum) {
+    internalModelContentChangeEvent: InternalModelContentChangeEvent,
+    injectedTextChangedEvent: ModelInjectedTextChangedEvent,
 };
 
 pub const InternalModelContentChangeEvent = struct {

@@ -75,6 +75,7 @@ const _normalizeIndentation = @import("../basics/indentation.zig").normalizeInde
 const EDITOR_MODEL_DEFAULTS = @import("textModelDefaults.zig");
 const ModelRawFlush = @import("textModelEvents.zig").ModelRawFlush;
 const AutoHashMap = std.AutoHashMap;
+const InternalModelContentChangeOrModelInjectedTextChangedEvent = @import("textModelEvents.zig").InternalModelContentChangeOrModelInjectedTextChangedEvent;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -237,31 +238,46 @@ pub const TextModel = struct {
         try self._onDidChangeAttached.event(callback);
     }
 
-    pub fn onDidChangeInjectedText(self: *TextModel, callback: fn (ModelInjectedTextChangedEvent) void) !void {
-        try self._onDidChangeInjectedText.event(callback);
-    }
-
-    pub fn onDidChangeLineHeight(self: *TextModel, callback: fn (ModelLineHeightChangedEvent) void) !void {
-        try self._onDidChangeLineHeight.event(callback);
-    }
-
-    pub fn onDidChangeContent(self: *TextModel, callback: fn (ModelContentChangedEvent) void) !void {
-        try self._eventEmitter.slowEvent({}, struct {
-            fn cb(evt: InternalModelContentChangeEvent, ctx: void) void {
-                _ = ctx;
-                callback(evt.contentChangedEvent);
+    pub fn onDidChangeInjectedText(self: *TextModel, ctx: anytype, callback: fn (ModelInjectedTextChangedEvent, ctx: @TypeOf(ctx)) anyerror!void) !void {
+        try self._onDidChangeInjectedText.event(ctx, struct {
+            fn cb(evt: ModelInjectedTextChangedEvent, ctx_: @TypeOf(ctx)) void {
+                // FIXME: handle error
+                callback(evt, ctx_) catch unreachable;
             }
         }.cb);
     }
 
-    pub fn onDidChangeContentOrInjectedText(self: *TextModel, callback: fn (InternalModelContentChangeEvent) void) !void {
-        try self._eventEmitter.fastEvent({}, struct {
-            fn cb(evt: InternalModelContentChangeEvent, ctx: void) void {
-                _ = ctx;
-                callback(evt);
+    pub fn onDidChangeLineHeight(self: *TextModel, ctx: anytype, callback: fn (ModelLineHeightChangedEvent, ctx: @TypeOf(ctx)) anyerror!void) !void {
+        try self._onDidChangeLineHeight.event(ctx, struct {
+            fn cb(evt: ModelLineHeightChangedEvent, ctx_: @TypeOf(ctx)) void {
+                // FIXME: handle error
+                callback(evt, ctx_) catch unreachable;
             }
         }.cb);
-        // try self._onDidChangeInjectedText.event(callback);
+    }
+
+    pub fn onDidChangeContent(self: *TextModel, ctx: anytype, callback: fn (ModelContentChangedEvent, ctx: @TypeOf(ctx)) anyerror!void) !void {
+        try self._eventEmitter.slowEvent(ctx, struct {
+            fn cb(evt: InternalModelContentChangeEvent, ctx_: @TypeOf(ctx)) void {
+                // FIXME: handle error
+                callback(evt.contentChangedEvent, ctx_) catch unreachable;
+            }
+        }.cb);
+    }
+
+    pub fn onDidChangeContentOrInjectedText(self: *TextModel, ctx: anytype, callback: fn (InternalModelContentChangeOrModelInjectedTextChangedEvent, ctx: @TypeOf(ctx)) anyerror!void) !void {
+        try self._eventEmitter.fastEvent(ctx, struct {
+            fn cb(evt: InternalModelContentChangeEvent, ctx_: @TypeOf(ctx)) void {
+                // FIXME: handle error
+                callback(.{ .internalModelContentChangeEvent = evt }, ctx_) catch unreachable;
+            }
+        }.cb);
+        try self._onDidChangeInjectedText.event(ctx, struct {
+            fn cb(evt: ModelInjectedTextChangedEvent, ctx_: @TypeOf(ctx)) void {
+                // FIXME: handle error
+                callback(.{ .injectedTextChangedEvent = evt }, ctx_) catch unreachable;
+            }
+        }.cb);
     }
 
     pub fn onDidChangeDecorations(self: *TextModel, ctx: anytype, callback: fn (ModelDecorationsChangedEvent, ctx: @TypeOf(ctx)) void) !void {
@@ -1072,12 +1088,12 @@ pub const TextModel = struct {
     pub fn _applyUndo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]const Selection) !void {
         var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
         defer edits.deinit();
-        for (changes.items) |change| {
+        for (changes.items) |*change| {
             const rangeStart = self.getPositionAt(change.newPosition);
             const rangeEnd = self.getPositionAt(change.newEnd());
             try edits.append(.{
                 .range = Range.init(rangeStart.lineNumber, rangeStart.column, rangeEnd.lineNumber, rangeEnd.column),
-                .text = change.oldText,
+                .text = change.oldText.move(),
                 .forceMoveMarkers = false,
                 .identifier = null,
                 .isAutoWhitespaceEdit = null,
@@ -1090,12 +1106,12 @@ pub const TextModel = struct {
     pub fn _applyRedo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]const Selection) !void {
         var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
         defer edits.deinit();
-        for (changes.items) |change| {
+        for (changes.items) |*change| {
             const rangeStart = self.getPositionAt(change.oldPosition);
             const rangeEnd = self.getPositionAt(change.oldEnd());
             try edits.append(.{
                 .range = Range.init(rangeStart.lineNumber, rangeStart.column, rangeEnd.lineNumber, rangeEnd.column),
-                .text = change.newText,
+                .text = change.newText.move(),
                 .forceMoveMarkers = false,
                 .identifier = null,
                 .isAutoWhitespaceEdit = null,
@@ -1328,6 +1344,7 @@ pub const TextModel = struct {
                 const lastInsertedLineNumber: usize = currentEditStartLineNumber + insertingLinesCnt;
 
                 const decorationsWithInjectedTextInEditedRange = try self._decorationsTree.getInjectedTextInInterval(self, self.getOffsetAt(Position.init(firstEditLineNumber, 1)), self.getOffsetAt(Position.init(lastInsertedLineNumber, self.getLineMaxColumn(lastInsertedLineNumber))), 0);
+                defer decorationsWithInjectedTextInEditedRange.deinit();
 
                 const injectedTextInEditedRange = try LineInjectedText.fromDecorations(allocator, decorationsWithInjectedTextInEditedRange.items);
                 defer injectedTextInEditedRange.deinit();
@@ -1355,7 +1372,8 @@ pub const TextModel = struct {
                             .lineChanged = ModelRawLineChanged.init(
                                 editLineNumber,
                                 .initOwned(try self.getLineContent(editLineNumber)),
-                                decorationsInCurrentLine,
+                                if (decorationsInCurrentLine) |injectedText| try allocator.dupe(LineInjectedText, injectedText) else null,
+                                allocator,
                             ),
                         });
 
@@ -1388,22 +1406,37 @@ pub const TextModel = struct {
                                 return r.lineNumber < ctx;
                             }
                         }.predicate);
-                        try injectedTexts.append(injectedTextInEditedRangeQueue.takeWhile(usize, lineNumber, struct {
+
+                        if (injectedTextInEditedRangeQueue.takeWhile(usize, lineNumber, struct {
                             fn predicate(ctx: usize, r: LineInjectedText) bool {
                                 return r.lineNumber == ctx;
                             }
-                        }.predicate));
+                        }.predicate)) |injectedText| {
+                            try injectedTexts.append(try allocator.dupe(LineInjectedText, injectedText));
+                        } else {
+                            try injectedTexts.append(null);
+                        }
                     }
 
-                    try rawContentChanges.append(.{ .linesInserted = ModelRawLinesInserted.init(spliceLineNumber + 1, startLineNumber + insertingLinesCnt, newLines, injectedTexts) });
+                    try rawContentChanges.append(.{ .linesInserted = ModelRawLinesInserted.init(
+                        spliceLineNumber + 1,
+                        startLineNumber + insertingLinesCnt,
+                        newLines,
+                        injectedTexts,
+                    ) });
                 }
 
                 lineCount = lineCount + insertingLinesCnt - deletingLinesCnt;
             }
 
             var changes = ArrayList(ModelContentChange).init(allocator);
-            for (contentChanges) |change| {
-                try changes.append(change.modelContentChange);
+            for (contentChanges) |*change| {
+                try changes.append(.{
+                    .range = change.modelContentChange.range,
+                    .rangeOffset = change.modelContentChange.rangeOffset,
+                    .rangeLength = change.modelContentChange.rangeLength,
+                    .text = change.modelContentChange.text.move(),
+                });
             }
 
             const changedEvent = ModelContentChangedEvent{
@@ -1450,13 +1483,24 @@ pub const TextModel = struct {
 
         if (affectedInjectedTextLines) |lines| {
             if (lines.count() > 0) {
+                const allocator = self.getAllocator();
                 const affectedLines = lines.list;
 
-                var lineChangeEvents = ArrayList(ModelRawLineChanged).init(self.getAllocator());
+                var lineChangeEvents = ArrayList(ModelRawLineChanged).init(allocator);
                 defer lineChangeEvents.deinit();
+                defer {
+                    for (lineChangeEvents.items) |*item| {
+                        item.deinit();
+                    }
+                }
 
                 for (affectedLines.items) |lineNumber| {
-                    try lineChangeEvents.append(ModelRawLineChanged.init(lineNumber, .initOwned(try self.getLineContent(lineNumber)), try self._getInjectedTextInLine(lineNumber)));
+                    try lineChangeEvents.append(ModelRawLineChanged.init(
+                        lineNumber,
+                        .initOwned(try self.getLineContent(lineNumber)),
+                        try self._getInjectedTextInLine(lineNumber),
+                        allocator,
+                    ));
                 }
                 self._onDidChangeInjectedText.fire(ModelInjectedTextChangedEvent.init(lineChangeEvents.items));
             }
@@ -1753,7 +1797,7 @@ pub const TextModel = struct {
                     oldDecorationIndex += 1;
                     node = self._decorations.get(decorationId);
 
-                    if (node != null and oldDecorationIndex < oldDecorationsLen) {
+                    if (node == null and oldDecorationIndex < oldDecorationsLen) {
                         continue;
                     } else {
                         break;
@@ -2108,6 +2152,7 @@ pub const DecorationsTrees = struct {
         const allocator = host.getAllocator();
         const versionId = host.getVersionId();
         const result = try self._injectedTextDecorationsTree.intervalSearch(allocator, start, end, filterOwnerId, false, versionId, false);
+        defer result.deinit();
         return try _ensureNodesHaveRanges(host, result);
     }
 
@@ -2436,10 +2481,10 @@ pub const DidChangeContentEmitter = struct {
         self._slowEmitter.deinit();
     }
 
-    pub fn fastEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent, ctx: @TypeOf(context)) void) !void {
+    pub fn fastEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (e: InternalModelContentChangeEvent, ctx: @TypeOf(context)) void) !void {
         try self._fastEmitter.event(context, callback);
     }
-    pub fn slowEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent, ctx: @TypeOf(context)) void) !void {
+    pub fn slowEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (e: InternalModelContentChangeEvent, ctx: @TypeOf(context)) void) !void {
         try self._slowEmitter.event(context, callback);
     }
 

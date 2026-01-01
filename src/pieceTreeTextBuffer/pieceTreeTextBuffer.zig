@@ -321,6 +321,7 @@ pub const PieceTreeTextBuffer = struct {
                 if (strEOL != .Unknown or strEOL == expectedStrEOL) {
                     validText = text.move();
                 } else {
+                    defer text.deinit();
                     validText = try text.replaceEOL(allocator, bufferEOL);
                 }
             }
@@ -344,16 +345,18 @@ pub const PieceTreeTextBuffer = struct {
         std.sort.heap(ValidatedEditOperation, operations.items, {}, _sortOpsAscending);
 
         var hasTouchingRanges = false;
-        for (operations.items[0 .. operations.items.len - 1], 0..) |op, i| {
-            const rangeEnd = op.range.getEndPosition();
-            const nextRangeStart = operations.items[i + 1].range.getStartPosition();
+        if (operations.items.len > 0) {
+            for (operations.items[0 .. operations.items.len - 1], 0..) |op, i| {
+                const rangeEnd = op.range.getEndPosition();
+                const nextRangeStart = operations.items[i + 1].range.getStartPosition();
 
-            if (nextRangeStart.isBeforeOrEqual(rangeEnd)) {
-                if (nextRangeStart.isBefore(rangeEnd)) {
-                    // overlapping ranges
-                    return error.OverlappingRanges;
+                if (nextRangeStart.isBeforeOrEqual(rangeEnd)) {
+                    if (nextRangeStart.isBefore(rangeEnd)) {
+                        // overlapping ranges
+                        return error.OverlappingRanges;
+                    }
+                    hasTouchingRanges = true;
                 }
-                hasTouchingRanges = true;
             }
         }
 

@@ -166,9 +166,9 @@ pub const Range = struct {
     }
 
     // Transform to a user presentable string representation.
-    pub fn toString(self: *const Range) ![]const u8 {
+    pub fn toString(self: *const Range) []const u8 {
         var buf: [1024]u8 = undefined;
-        return try fmt.bufPrint(&buf, "[{d},{d} -> {d},{d}]", .{ self.startLineNumber, self.startColumn, self.endLineNumber, self.endColumn });
+        return fmt.bufPrint(&buf, "[{d},{d} -> {d},{d}]", .{ self.startLineNumber, self.startColumn, self.endLineNumber, self.endColumn }) catch unreachable;
     }
 
     // Create a new range using this range's start position, and using endLineNumber and endColumn as the end position.

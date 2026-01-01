@@ -318,6 +318,12 @@ pub const TextChangeCompressor = struct {
                 defer oldText.deinit();
                 var newText = prev.newText;
                 defer newText.deinit();
+
+                var currOldText = curr.oldText;
+                defer currOldText.deinit();
+                var currNewText = curr.newText;
+                defer currNewText.deinit();
+
                 prev.oldText = try prev.oldText.concat(result.allocator, curr.oldText);
                 prev.newText = try prev.newText.concat(result.allocator, curr.newText);
             } else {
@@ -328,7 +334,7 @@ pub const TextChangeCompressor = struct {
                 }
             }
         }
-        try self._result.resize(write_index);
+        try self._result.resize(write_index + 1);
     }
 
     pub fn _removeNoOps(self: *TextChangeCompressor) !void {
@@ -338,11 +344,13 @@ pub const TextChangeCompressor = struct {
 
         var result = &self._result;
         var write_index: usize = 0;
-        for (result.items) |edit| {
+        for (result.items) |*edit| {
             if (edit.oldText.eql(edit.newText)) {
+                edit.oldText.deinit();
+                edit.newText.deinit();
                 continue;
             }
-            result.items[write_index] = edit;
+            result.items[write_index] = edit.*;
             write_index += 1;
         }
 
