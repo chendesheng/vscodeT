@@ -254,7 +254,7 @@ pub const SingleModelEditStackData = struct {
             var changes = self.changes;
             defer changes.deinit();
 
-            self.changes = try compressConsecutiveTextChanges(self.changes.allocator, changes, textChanges);
+            self.changes = try compressConsecutiveTextChanges(self.changes.allocator, changes.items, textChanges);
         }
         self.afterEOL = afterEOL;
         self.afterVersionId = afterVersionId;

@@ -98,14 +98,14 @@ pub const TextChange = struct {
     }
 };
 
-pub fn compressConsecutiveTextChanges(allocator: Allocator, prevEdits: ArrayList(TextChange), currEdits: []const TextChange) !ArrayList(TextChange) {
-    if (prevEdits.items.len == 0) {
+pub fn compressConsecutiveTextChanges(allocator: Allocator, prevEdits: []const TextChange, currEdits: []const TextChange) !ArrayList(TextChange) {
+    if (prevEdits.len == 0) {
         var result = ArrayList(TextChange).init(allocator);
         try result.appendSlice(currEdits);
         return result;
     }
 
-    var compressor = TextChangeCompressor.init(allocator, prevEdits.items, currEdits);
+    var compressor = TextChangeCompressor.init(allocator, prevEdits, currEdits);
     return try compressor.compress();
 }
 
@@ -220,8 +220,8 @@ pub const TextChangeCompressor = struct {
                 .newText = mergeCurr.newText,
             });
 
-            mergePrev.newText.deinit();
-            mergeCurr.oldText.deinit();
+            defer mergePrev.newText.deinit();
+            defer mergeCurr.oldText.deinit();
 
             self._prevDeltaOffset = self._prevDeltaOffset + usizeSub(mergePrev.newLength(), mergePrev.oldLength());
             self._currDeltaOffset = self._currDeltaOffset + usizeSub(mergeCurr.newLength(), mergeCurr.oldLength());
