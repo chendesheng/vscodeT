@@ -482,6 +482,19 @@ pub const String = union(enum) {
         }
     }
 
+    pub fn splitAt(self: *const String, allocator: Allocator, index: usize) !struct { String, String } {
+        const slice = try self.toSlice(allocator);
+        defer slice.deinit();
+
+        var first = ArrayList(u8).init(allocator);
+        try first.appendSlice(slice.items[0..index]);
+
+        var second = ArrayList(u8).init(allocator);
+        try second.appendSlice(slice.items[index..]);
+
+        return .{ String.initOwned(first), String.initOwned(second) };
+    }
+
     pub fn display(self: *const String, allocator: Allocator) ![]const u8 {
         var result = ArrayList(u8).init(allocator);
         defer result.deinit();
@@ -500,6 +513,10 @@ pub const String = union(enum) {
         try self.fillItems(&result);
         try _replaceEOL(&result, eol);
         return String.initOwned(result);
+    }
+
+    pub fn copy(self: *const String, allocator: Allocator) !String {
+        return String.initOwned(try self.toSlice(allocator));
     }
 
     // transfer ownership to the caller
@@ -569,14 +586,19 @@ pub const String = union(enum) {
     }
 
     pub fn debugPrint(self: *const String) void {
+        const allocator = std.testing.allocator;
+
+        const s = self.display(allocator) catch unreachable;
+        defer allocator.free(s);
+
         switch (self.*) {
             .empty => std.debug.print("empty\n", .{}),
-            .owned => |list| std.debug.print("owned: \"{s}\"\n", .{list.items}),
-            .borrowed1 => |s| std.debug.print("borrowed1: \"{s}\"\n", .{s}),
-            .borrowed => |list| {
-                for (list.items) |s| {
-                    std.debug.print("borrowed: \"{s}\"\n", .{s});
-                }
+            .owned => {
+                std.debug.print("owned: \"{s}\"\n", .{s});
+            },
+            .borrowed1 => std.debug.print("borrowed1: \"{s}\"\n", .{s}),
+            .borrowed => {
+                std.debug.print("borrowed: \"{s}\"\n", .{s});
             },
         }
     }

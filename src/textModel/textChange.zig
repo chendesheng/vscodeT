@@ -27,6 +27,8 @@ pub const TextChange = struct {
     }
 
     pub fn deinit(self: *TextChange) void {
+        // std.debug.print("deinit oldText: {}\n", .{self.oldText});
+        // std.debug.print("deinit newText: {}\n", .{self.newText});
         self.oldText.deinit();
         self.newText.deinit();
     }
@@ -132,6 +134,7 @@ pub const TextChangeCompressor = struct {
     }
 
     pub fn compress(self: *TextChangeCompressor) !ArrayList(TextChange) {
+        const allocator = self._result.allocator;
         var prevIndex: usize = 0;
         var currIndex: usize = 0;
 
@@ -168,14 +171,14 @@ pub const TextChangeCompressor = struct {
             }
 
             if (currEdit.?.oldPosition < prevEdit.?.newPosition) {
-                const split = try _splitCurr(currEdit.?, prevEdit.?.newPosition - currEdit.?.oldPosition);
+                const split = try _splitCurr(allocator, &(currEdit.?), prevEdit.?.newPosition - currEdit.?.oldPosition);
                 try self._acceptCurr(split.first);
                 currEdit = split.second;
                 continue;
             }
 
             if (prevEdit.?.newPosition < currEdit.?.oldPosition) {
-                const split = try _splitPrev(prevEdit.?, currEdit.?.oldPosition - prevEdit.?.newPosition);
+                const split = try _splitPrev(allocator, &(prevEdit.?), currEdit.?.oldPosition - prevEdit.?.newPosition);
                 try self._acceptPrev(split.first);
                 prevEdit = split.second;
                 continue;
@@ -194,14 +197,14 @@ pub const TextChangeCompressor = struct {
                 currIndex += 1;
                 currEdit = self._getCurr(currIndex);
             } else if (currEdit.?.oldEnd() < prevEdit.?.newEnd()) {
-                const split = try _splitPrev(prevEdit.?, currEdit.?.oldLength());
+                const split = try _splitPrev(allocator, &(prevEdit.?), currEdit.?.oldLength());
                 mergePrev = split.first;
                 mergeCurr = currEdit.?;
                 prevEdit = split.second;
                 currIndex += 1;
                 currEdit = self._getCurr(currIndex);
             } else {
-                const split = try _splitCurr(currEdit.?, prevEdit.?.newLength());
+                const split = try _splitCurr(allocator, &(currEdit.?), prevEdit.?.newLength());
 
                 mergePrev = prevEdit.?;
                 mergeCurr = split.first;
@@ -216,6 +219,10 @@ pub const TextChangeCompressor = struct {
                 .newPosition = mergeCurr.newPosition,
                 .newText = mergeCurr.newText,
             });
+
+            mergePrev.newText.deinit();
+            mergeCurr.oldText.deinit();
+
             self._prevDeltaOffset = self._prevDeltaOffset + usizeSub(mergePrev.newLength(), mergePrev.oldLength());
             self._currDeltaOffset = self._currDeltaOffset + usizeSub(mergeCurr.newLength(), mergeCurr.oldLength());
         }
@@ -227,6 +234,7 @@ pub const TextChangeCompressor = struct {
 
     pub fn _acceptCurr(self: *TextChangeCompressor, currEdit: TextChange) !void {
         try self._result.append(_rebaseCurr(self._prevDeltaOffset, currEdit));
+        // std.debug.print("_result.append2: {}\n", .{self._result.items[self._result.items.len - 1]});
         self._currDeltaOffset = self._currDeltaOffset + usizeSub(currEdit.newLength(), currEdit.oldLength());
     }
 
@@ -236,6 +244,7 @@ pub const TextChangeCompressor = struct {
 
     pub fn _acceptPrev(self: *TextChangeCompressor, prevEdit: TextChange) !void {
         try self._result.append(_rebasePrev(self._currDeltaOffset, prevEdit));
+        // std.debug.print("_result.append3: {}\n", .{self._result.items[self._result.items.len - 1]});
         self._prevDeltaOffset = self._prevDeltaOffset + usizeSub(prevEdit.newLength(), prevEdit.oldLength());
     }
 
@@ -261,9 +270,12 @@ pub const TextChangeCompressor = struct {
         };
     }
 
-    pub fn _splitPrev(edit: TextChange, offset: usize) !PairTextChange {
-        const preText = try edit.newText.substring(0, offset);
-        const postText = try edit.newText.substring(offset, edit.newText.len());
+    pub fn _splitPrev(allocator: Allocator, edit: *TextChange, offset: usize) !PairTextChange {
+        const split = try edit.newText.splitAt(allocator, offset);
+        defer edit.newText.deinit();
+        const preText = split.@"0";
+        const postText = split.@"1";
+        // std.debug.print("splitPrev: preText={} postText={}\n", .{ preText, postText });
 
         return pair(
             TextChange{
@@ -281,9 +293,12 @@ pub const TextChangeCompressor = struct {
         );
     }
 
-    pub fn _splitCurr(edit: TextChange, offset: usize) !PairTextChange {
-        const preText = try edit.oldText.substring(0, offset);
-        const postText = try edit.oldText.substring(offset, edit.oldText.len());
+    pub fn _splitCurr(allocator: Allocator, edit: *TextChange, offset: usize) !PairTextChange {
+        const split = try edit.oldText.splitAt(allocator, offset);
+        defer edit.oldText.deinit();
+        const preText = split.@"0";
+        const postText = split.@"1";
+        // std.debug.print("splitCurr: preText={} postText={}\n", .{ preText, postText });
 
         return pair(
             TextChange{

@@ -1,5 +1,6 @@
 const std = @import("std");
 const io = std.io;
+const String = @import("../basics/strings.zig").String;
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const Uri = std.Uri;
@@ -491,8 +492,9 @@ pub const SingleModelEditStackElement = struct {
     pub fn close(self: *SingleModelEditStackElement) !void {
         switch (self._data) {
             .unserialized => |*dat| {
-                defer dat.deinit();
-                self._data = .{ .serialized = try dat.serialize() };
+                const serialized = try dat.serialize();
+                dat.deinit();
+                self._data = .{ .serialized = serialized };
             },
             .serialized => {},
         }
@@ -502,8 +504,9 @@ pub const SingleModelEditStackElement = struct {
         switch (self._data) {
             .serialized => |data| {
                 const allocator = self.allocator;
-                self._data = try SingleModelEditStackData.deserialize(allocator, data.items);
+                const unserialized = try SingleModelEditStackData.deserialize(allocator, data);
                 allocator.free(data);
+                self._data = .{ .unserialized = unserialized };
             },
             .unserialized => {},
         }
@@ -726,8 +729,8 @@ pub const MultiModelEditStackElement = struct {
 
     pub fn toString(self: *MultiModelEditStackElement) !ArrayList(u8) {
         const allocator = self.allocator;
-        const result = ArrayList(u8).init(allocator);
-        result.append('{');
+        var result = ArrayList(u8).init(allocator);
+        try result.append('{');
         for (self._editStackElementsArr.items, 0..) |editStackElement, index| {
             const s = try editStackElement.toString();
             defer s.deinit();
@@ -743,7 +746,7 @@ pub const MultiModelEditStackElement = struct {
                 try result.appendSlice(", ");
             }
         }
-        result.append('}');
+        try result.append('}');
         return result;
     }
 
@@ -805,14 +808,12 @@ pub const EditStack = struct {
         defer inverseEditOperations.deinit();
         const afterCursorState = EditStack._computeCursorState(cursorStateComputer, inverseEditOperations.items);
 
-        var textChangesWithIndex = ArrayList(Pair(*TextChange, usize)).init(self._model.getAllocator());
-        for (inverseEditOperations.items, 0..) |*op, i| {
-            try textChangesWithIndex.append(pair(&op.textChange, i));
+        var textChanges = ArrayList(TextChange).init(self._model.getAllocator());
+        for (inverseEditOperations.items) |*op| {
+            try textChanges.append(op.textChange);
         }
-        defer textChangesWithIndex.deinit();
-        std.sort.heap(Pair(*TextChange, usize), textChangesWithIndex.items, {}, lessThanTextChangeWithIndex);
-        const textChanges = try fromIndexedPair(TextChange, self._model.getAllocator(), textChangesWithIndex.items);
         defer textChanges.deinit();
+        std.sort.block(TextChange, textChanges.items, {}, textChangeLessThan);
 
         try editStackElement.append(self._model, textChanges.items, self._model.getEOL(), self._model.getAlternativeVersionId(), afterCursorState);
         return afterCursorState;
@@ -834,9 +835,6 @@ const UndoRedoDelegate = struct {
     prepareUndoRedo: *const fn (self: *UndoRedoDelegate, element: *const MultiModelEditStackElement) ?Disposable,
 };
 
-fn lessThanTextChangeWithIndex(_: void, a: Pair(*TextChange, usize), b: Pair(*TextChange, usize)) bool {
-    if (a.first.oldPosition == b.first.oldPosition) {
-        return a.second - b.second < 0;
-    }
-    return a.first.oldPosition - b.first.oldPosition < 0;
+fn textChangeLessThan(_: void, a: TextChange, b: TextChange) bool {
+    return a.oldPosition - b.oldPosition < 0;
 }

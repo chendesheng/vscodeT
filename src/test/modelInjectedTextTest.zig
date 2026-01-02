@@ -68,7 +68,7 @@ const InjectedTextEventsTests = struct {
             var change = recordedChanges.items[0];
             try std.testing.expectEqual(1, change.lineNumber);
             try std.testing.expectEqual(0, change.kind);
-            try std.testing.expect(change.line.eql(String.initBorrowed("[injected1]First Line")));
+            try change.line.expectEqual(String.initBorrowed("[injected1]First Line"));
         }
 
         {
@@ -100,16 +100,11 @@ const InjectedTextEventsTests = struct {
 
             try std.testing.expectEqual(0, recordedChanges.items[0].kind);
             try std.testing.expectEqual(1, recordedChanges.items[0].lineNumber);
-            std.testing.expect(recordedChanges.items[0].line.eql(String.initBorrowed("First Line"))) catch |err| {
-                const s = try recordedChanges.items[0].line.display(allocator);
-                std.debug.print("line: {s}\n", .{s});
-                allocator.free(s);
-                return err;
-            };
+            try recordedChanges.items[0].line.expectEqual(.initBorrowed("First Line"));
 
             try std.testing.expectEqual(0, recordedChanges.items[1].kind);
             try std.testing.expectEqual(2, recordedChanges.items[1].lineNumber);
-            try std.testing.expect(recordedChanges.items[1].line.eql(String.initBorrowed("[injected1]S[injected2]econd Line")));
+            try recordedChanges.items[1].line.expectEqual(.initBorrowed("[injected1]S[injected2]econd Line"));
         }
 
         {
@@ -127,7 +122,7 @@ const InjectedTextEventsTests = struct {
             try std.testing.expectEqual(1, recordedChanges.items.len);
             try std.testing.expectEqual(0, recordedChanges.items[0].kind);
             try std.testing.expectEqual(2, recordedChanges.items[0].lineNumber);
-            try std.testing.expect(recordedChanges.items[0].line.eql(String.initBorrowed("[injected1]SHello[injected2]econd Line")));
+            try recordedChanges.items[0].line.expectEqual(.initBorrowed("[injected1]SHello[injected2]econd Line"));
         }
 
         {
@@ -152,12 +147,13 @@ const InjectedTextEventsTests = struct {
 
             try std.testing.expectEqual(0, recordedChanges.items[0].kind);
             try std.testing.expectEqual(2, recordedChanges.items[0].lineNumber);
-            try recordedChanges.items[0].line.expectEqual(String.initBorrowed("[injected1]S"));
+            try recordedChanges.items[0].line.expectEqual(.initBorrowed("[injected1]S"));
 
             try std.testing.expectEqual(1, recordedChanges.items[1].kind);
             try std.testing.expectEqual(3, recordedChanges.items[1].lineNumber);
-            try recordedChanges.items[1].line.expectEqual(String.initBorrowed("\n\nHello[injected2]econd Line\n"));
+            try recordedChanges.items[1].line.expectEqual(.initBorrowed("\n\nHello[injected2]econd Line\n"));
         }
+
         {
             // Multi-Line Replace
             _ = try thisModel.pushEditOperations(
@@ -179,19 +175,19 @@ const InjectedTextEventsTests = struct {
 
             try std.testing.expectEqual(0, recordedChanges.items[0].kind);
             try std.testing.expectEqual(5, recordedChanges.items[0].lineNumber);
-            try recordedChanges.items[0].line.expectEqual(String.initBorrowed(""));
+            try recordedChanges.items[0].line.expectEqual(.initBorrowed(""));
 
             try std.testing.expectEqual(0, recordedChanges.items[1].kind);
             try std.testing.expectEqual(4, recordedChanges.items[1].lineNumber);
-            try recordedChanges.items[1].line.expectEqual(String.initBorrowed(""));
+            try recordedChanges.items[1].line.expectEqual(.initBorrowed(""));
 
             try std.testing.expectEqual(0, recordedChanges.items[2].kind);
             try std.testing.expectEqual(3, recordedChanges.items[2].lineNumber);
-            try recordedChanges.items[2].line.expectEqual(String.initBorrowed(""));
+            try recordedChanges.items[2].line.expectEqual(.initBorrowed(""));
 
             try std.testing.expectEqual(1, recordedChanges.items[3].kind);
             try std.testing.expectEqual(6, recordedChanges.items[3].lineNumber);
-            try recordedChanges.items[3].line.expectEqual(String.initBorrowed(([_]u8{'\n'} ** 10) ++ "Hello[injected2]econd Line\n"));
+            try recordedChanges.items[3].line.expectEqual(.initBorrowed(([_]u8{'\n'} ** 10) ++ "Hello[injected2]econd Line\n"));
         }
 
         {
@@ -203,15 +199,11 @@ const InjectedTextEventsTests = struct {
                     item.deinit();
                 }
             }
-            for (recordedChanges.items) |item| {
-                item.line.debugPrint();
-                std.debug.print("kind: {d}, lineNumber: {d}\n", .{ item.kind, item.lineNumber });
-            }
             try std.testing.expectEqual(2, recordedChanges.items.len);
 
             try std.testing.expectEqual(0, recordedChanges.items[0].kind);
             try std.testing.expectEqual(2, recordedChanges.items[0].lineNumber);
-            try recordedChanges.items[0].line.expectEqual(String.initBorrowed("[injected1]SHello[injected2]econd Line"));
+            try recordedChanges.items[0].line.expectEqual(.initBorrowed("[injected1]SHello[injected2]econd Line"));
 
             try std.testing.expectEqual(2, recordedChanges.items[1].kind);
         }
@@ -220,7 +212,7 @@ const InjectedTextEventsTests = struct {
 
 const ChangeData = struct {
     kind: u8,
-    line: String = String.Empty,
+    line: String = .Empty,
     lineNumber: usize = 0,
 
     fn deinit(self: *ChangeData) void {

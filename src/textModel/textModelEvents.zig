@@ -43,6 +43,16 @@ pub const ModelContentChangedEvent = struct {
         }
         self.changes.deinit();
     }
+
+    pub fn merge(self: *ModelContentChangedEvent, other: *const ModelContentChangedEvent) !void {
+        try self.changes.appendSlice(other.changes.items);
+        self.eol = other.eol;
+        self.versionId = other.versionId;
+        self.isUndoing = (self.isUndoing or other.isUndoing);
+        self.isRedoing = (self.isRedoing or other.isRedoing);
+        self.isFlush = (self.isFlush or other.isFlush);
+        self.isEolChange = self.isEolChange and other.isEolChange; // both must be true to not confuse listeners who skip such edits
+    }
 };
 
 // An event describing that model decorations have changed.
@@ -328,15 +338,12 @@ pub const ModelRawContentChangedEvent = struct {
         return false;
     }
 
-    pub fn merge(a: *const ModelRawContentChangedEvent, b: *const ModelRawContentChangedEvent) !ModelRawContentChangedEvent {
-        var changes = ArrayList(ModelRawChange).init(a.changes.allocator);
-        try changes.appendSlice(a.changes.items);
-        try changes.appendSlice(b.changes.items);
+    pub fn merge(self: *ModelRawContentChangedEvent, other: *const ModelRawContentChangedEvent) !void {
+        try self.changes.appendSlice(other.changes.items);
 
-        const versionId = b.versionId;
-        const isUndoing = (a.isUndoing or b.isUndoing);
-        const isRedoing = (a.isRedoing or b.isRedoing);
-        return ModelRawContentChangedEvent.init(changes, versionId, isUndoing, isRedoing);
+        self.versionId = other.versionId;
+        self.isUndoing = (self.isUndoing or other.isUndoing);
+        self.isRedoing = (self.isRedoing or other.isRedoing);
     }
 };
 
@@ -425,33 +432,8 @@ pub const InternalModelContentChangeEvent = struct {
         self.contentChangedEvent.deinit();
     }
 
-    pub fn merge(self: *const InternalModelContentChangeEvent, other: *const InternalModelContentChangeEvent) !InternalModelContentChangeEvent {
-        const rawContentChangedEvent = try ModelRawContentChangedEvent.merge(&self.rawContentChangedEvent, &other.rawContentChangedEvent);
-        const contentChangedEvent = try InternalModelContentChangeEvent._mergeChangeEvents(&self.contentChangedEvent, &other.contentChangedEvent);
-        return InternalModelContentChangeEvent{
-            .rawContentChangedEvent = rawContentChangedEvent,
-            .contentChangedEvent = contentChangedEvent,
-        };
-    }
-
-    fn _mergeChangeEvents(a: *const ModelContentChangedEvent, b: *const ModelContentChangedEvent) !ModelContentChangedEvent {
-        var changes = ArrayList(ModelContentChange).init(a.changes.allocator);
-        try changes.appendSlice(a.changes.items);
-        try changes.appendSlice(b.changes.items);
-        const eol = b.eol;
-        const versionId = b.versionId;
-        const isUndoing = (a.isUndoing or b.isUndoing);
-        const isRedoing = (a.isRedoing or b.isRedoing);
-        const isFlush = (a.isFlush or b.isFlush);
-        const isEolChange = a.isEolChange and b.isEolChange; // both must be true to not confuse listeners who skip such edits
-        return ModelContentChangedEvent{
-            .changes = changes,
-            .eol = eol,
-            .isEolChange = isEolChange,
-            .versionId = versionId,
-            .isUndoing = isUndoing,
-            .isRedoing = isRedoing,
-            .isFlush = isFlush,
-        };
+    pub fn merge(self: *InternalModelContentChangeEvent, other: *const InternalModelContentChangeEvent) !void {
+        try self.rawContentChangedEvent.merge(&other.rawContentChangedEvent);
+        try self.contentChangedEvent.merge(&other.contentChangedEvent);
     }
 };
