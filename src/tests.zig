@@ -26,6 +26,7 @@ comptime {
     _ = @import("test/modelTest.zig");
     _ = @import("test/modelInjectedTextTest.zig");
     _ = @import("test/pieceTreeTextBufferTest.zig");
+    _ = @import("test/textChangeTest.zig");
     _ = @import("test/textModelTest.zig");
     _ = @import("textModel/editStack.zig");
     _ = @import("textModel/indentationGuesser.zig");
