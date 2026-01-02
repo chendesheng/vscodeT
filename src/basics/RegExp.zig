@@ -302,7 +302,7 @@ pub const RegExp = struct {
         const res = c.onig_new(&regex, pattern.ptr, pattern.ptr + pattern.len, @bitCast(option), &c.OnigEncodingUTF8, syntax_, &errorInfos);
         errdefer c.onig_free(regex);
         if (res != c.ONIG_NORMAL) {
-            printError(res, &errorInfos);
+            // printError(res, &errorInfos);
             return errorCodeToError(res);
         }
 
@@ -336,7 +336,7 @@ pub const RegExp = struct {
     }
 
     pub fn searchFrom(self: *const RegExp, input: []const u8, start: usize) ?SearchResult {
-        if (start >= input.len) {
+        if (start > input.len) {
             return null;
         }
 
@@ -455,9 +455,23 @@ pub const SearchResultIterator = struct {
     fn nextIndex(current: *const SearchResult) usize {
         const input = current._input;
         const index = current.index();
+
+        const matchLen = current.length();
+
+        // For non-empty matches, advance past the match end
+        if (matchLen > 0) {
+            const matchEnd = index + matchLen;
+            // If we're not at end of input, return match end position
+            if (matchEnd < input.len) {
+                return matchEnd;
+            }
+            // We're at end, prevent matching empty string here
+            return input.len + 1;
+        }
+
         const rest = input[index..];
         if (rest.len == 0) {
-            return input.len;
+            return input.len + 1;
         }
         const len = unicode.utf8ByteSequenceLength(rest[0]) catch {
             return input.len;
@@ -575,10 +589,9 @@ test "SearchResultIterator" {
         try matches.append(current.groupN(0));
     }
 
-    try std.testing.expectEqual(3, matches.items.len);
+    // Non-overlapping: only "123" matches, "45" is too short
+    try std.testing.expectEqual(1, matches.items.len);
     try std.testing.expectEqualSlices(u8, "123", matches.items[0]);
-    try std.testing.expectEqualSlices(u8, "234", matches.items[1]);
-    try std.testing.expectEqualSlices(u8, "345", matches.items[2]);
 }
 
 test "SearchResultIterator not match" {

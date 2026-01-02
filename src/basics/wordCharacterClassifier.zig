@@ -83,6 +83,14 @@ pub fn getMapForWordSeparators(allocator: Allocator, wordSeparators: []const u8)
     unreachable;
 }
 
+pub fn clearWordClassifierCache() void {
+    if (wordClassifierCache) |*cache| {
+        cache.clearAndFree();
+        cache.deinit();
+        wordClassifierCache = null;
+    }
+}
+
 test "getMapForWordSeparators" {
     const allocator = std.testing.allocator;
     defer freeWordClassifierCache();

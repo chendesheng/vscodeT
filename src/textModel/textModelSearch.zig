@@ -36,7 +36,7 @@ pub const SearchParams = struct {
         };
     }
 
-    pub fn parseSearchRequest(self: *SearchParams, allocator: Allocator) !?SearchData {
+    pub fn parseSearchRequest(self: *const SearchParams, allocator: Allocator) !?SearchData {
         if (self.searchString.len == 0) {
             return null;
         }
@@ -50,8 +50,8 @@ pub const SearchParams = struct {
         }
 
         const regex: ?RegExp = strings.createRegExp(allocator, self.searchString, self.isRegex, false, .{
-            .ignore_case = self.matchCase,
-            .multiline = multiline,
+            .ignore_case = !self.matchCase,
+            .singleline = !multiline, // option name is confusing, there is regex.Option.multiline but it's not the same as the js regexes' multiline
         }) catch null;
 
         if (regex == null) {
@@ -123,9 +123,18 @@ pub fn isMultilineRegexSource(searchString: []const u8) bool {
 }
 
 test "isMultilineRegexSource" {
+    try std.testing.expect(!isMultilineRegexSource("foo"));
     try std.testing.expect(!isMultilineRegexSource(""));
-    try std.testing.expect(isMultilineRegexSource("1\n2\n"));
-    try std.testing.expect(!isMultilineRegexSource("12"));
+    try std.testing.expect(!isMultilineRegexSource("foo\\sbar"));
+    try std.testing.expect(!isMultilineRegexSource("\\\\notnewline"));
+
+    try std.testing.expect(isMultilineRegexSource("foo\\nbar"));
+    try std.testing.expect(isMultilineRegexSource("foo\\nbar\\s"));
+    try std.testing.expect(isMultilineRegexSource("foo\\r\\n"));
+    try std.testing.expect(isMultilineRegexSource("\\n"));
+    try std.testing.expect(isMultilineRegexSource("foo\\W"));
+    try std.testing.expect(isMultilineRegexSource("foo\n"));
+    try std.testing.expect(isMultilineRegexSource("foo\r\n"));
 }
 
 pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchResult, captureMatches: bool) !FindMatch {
@@ -133,6 +142,7 @@ pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchRes
         return FindMatch.init(range, null);
     }
     var matches = ArrayList([]const u8).init(allocator);
+    defer matches.deinit();
     for (0..rawMatches.numberOfGroups()) |i| {
         // FIXME: do we need to copy the string?
         try matches.append(rawMatches.groupN(i));
@@ -155,12 +165,12 @@ pub const LineFeedCounter = struct {
         };
     }
 
-    pub fn deinit(self: *LineFeedCounter) void {
+    pub fn deinit(self: *const LineFeedCounter) void {
         self._lineFeedsOffsets.deinit();
     }
 
     // offset is exclusive
-    pub fn findLineFeedCountBeforeOffset(self: *LineFeedCounter, offset: usize) usize {
+    pub fn findLineFeedCountBeforeOffset(self: *const LineFeedCounter, offset: usize) usize {
         const lineFeedsOffsets = self._lineFeedsOffsets.items;
         if (lineFeedsOffsets.len == 0) {
             // no line feeds
@@ -209,8 +219,9 @@ pub const TextModelSearch = struct {
     pub fn findMatches(model: *TextModel, searchParams: SearchParams, searchRange: Range, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
         const allocator = model.getAllocator();
         if (try searchParams.parseSearchRequest(allocator)) |searchData| {
-            if (searchData.regex.options().multiline) {
-                return _doFindMatchesMultiline(model, searchRange, Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0), captureMatches, limitResultCount);
+            if (!searchData.regex.options().singleline) {
+                var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
+                return _doFindMatchesMultiline(model, searchRange, &searcher, captureMatches, limitResultCount);
             }
             return _doFindMatchesLineByLine(model, searchRange, searchData, captureMatches, limitResultCount);
         }
@@ -220,7 +231,7 @@ pub const TextModelSearch = struct {
 
     // Multiline search always executes on the lines concatenated with \n.
     // We must therefore compensate for the count of \n in case the model is CRLF
-    fn _getMultilineMatchRange(model: *TextModel, deltaOffset: usize, text: []const u8, lfCounter: ?*LineFeedCounter, matchIndex: usize, match0: []const u8) !Range {
+    fn _getMultilineMatchRange(model: *TextModel, deltaOffset: usize, text: []const u8, lfCounter: ?LineFeedCounter, matchIndex: usize, match0: []const u8) !Range {
         _ = text;
         var startOffset: usize = undefined;
         var lineFeedCountBeforeMatch: usize = 0;
@@ -233,11 +244,11 @@ pub const TextModelSearch = struct {
 
         var endOffset: usize = undefined;
         if (lfCounter) |lf| {
-            const lineFeedCountBeforeEndOfMatch = lf.findLineFeedCountBeforeOffset(matchIndex + match0.length);
+            const lineFeedCountBeforeEndOfMatch = lf.findLineFeedCountBeforeOffset(matchIndex + match0.len);
             const lineFeedCountInMatch = lineFeedCountBeforeEndOfMatch - lineFeedCountBeforeMatch;
-            endOffset = startOffset + match0.length + lineFeedCountInMatch; // add as many \r as there were \n
+            endOffset = startOffset + match0.len + lineFeedCountInMatch; // add as many \r as there were \n
         } else {
-            endOffset = startOffset + match0.length;
+            endOffset = startOffset + match0.len;
         }
 
         const startPosition = model.getPositionAt(startOffset);
@@ -245,7 +256,7 @@ pub const TextModelSearch = struct {
         return Range.init(startPosition.lineNumber, startPosition.column, endPosition.lineNumber, endPosition.column);
     }
 
-    fn _doFindMatchesMultiline(model: *TextModel, searchRange: Range, searcher: Searcher, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
+    fn _doFindMatchesMultiline(model: *TextModel, searchRange: Range, searcher: *Searcher, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
         const allocator = model.getAllocator();
         const deltaOffset = model.getOffsetAt(searchRange.getStartPosition());
         // We always execute multiline search over the lines joined with \n
@@ -255,6 +266,7 @@ pub const TextModelSearch = struct {
         defer value.deinit();
         const text = value.items;
         const lfCounter: ?LineFeedCounter = if (model.getEOL() == .CRLF) try LineFeedCounter.init(allocator, text) else null;
+        defer if (lfCounter) |lfc| lfc.deinit();
 
         var result = ArrayList(FindMatch).init(allocator);
 
@@ -309,32 +321,34 @@ pub const TextModelSearch = struct {
 
     fn _findMatchesInLine(searchData: SearchData, text: []const u8, lineNumber: usize, deltaOffset: usize, result: *ArrayList(FindMatch), captureMatches: bool, limitResultCount: usize) !void {
         const wordSeparators = searchData.wordSeparators;
-        if (!captureMatches and searchData.simpleSearch != null) {
-            const searchString = searchData.simpleSearch.?;
-            const searchStringLen = searchString.len;
-            const textLength = text.len;
+        if (!captureMatches) {
+            if (searchData.simpleSearch) |searchString| {
+                const searchStringLen = searchString.len;
+                const textLength = text.len;
 
-            var lastMatchIndex: usize = 0;
-            while (true) {
-                if (std.mem.indexOf(text[lastMatchIndex..], searchString)) |index| {
-                    lastMatchIndex = index + searchStringLen;
-                } else {
-                    break;
-                }
+                var lastMatchIndex: usize = 0;
+                while (true) {
+                    if (std.mem.indexOf(u8, text[lastMatchIndex..], searchString)) |index| {
+                        lastMatchIndex += index + searchStringLen;
+                    } else {
+                        break;
+                    }
 
-                if (wordSeparators == null or isValidMatch(wordSeparators.?, text, textLength, lastMatchIndex, searchStringLen)) {
-                    try result.append(FindMatch.init(Range.init(lineNumber, lastMatchIndex - searchStringLen + 1 + deltaOffset, lineNumber, lastMatchIndex + 1 + deltaOffset), null));
-                    if (result.items.len >= limitResultCount) {
-                        return;
+                    if (wordSeparators == null or isValidMatch(wordSeparators.?, text, textLength, lastMatchIndex - searchStringLen, searchStringLen)) {
+                        try result.append(FindMatch.init(Range.init(lineNumber, lastMatchIndex + 1 + deltaOffset - searchStringLen, lineNumber, lastMatchIndex + 1 + deltaOffset), null));
+                        if (result.items.len >= limitResultCount) {
+                            return;
+                        }
                     }
                 }
+                return;
             }
-            return;
         }
 
         const allocator = result.allocator;
-        const searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, text, 0);
+        var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, text, 0);
         // Reset regex to search from the beginning
+        searcher.reset(text, 0);
         while (searcher.next()) |m| {
             const index = m.index();
             const mLength = m.length();
@@ -348,18 +362,18 @@ pub const TextModelSearch = struct {
 
     pub fn findNextMatch(model: *TextModel, searchParams: SearchParams, searchStart: Position, captureMatches: bool) !?FindMatch {
         if (try searchParams.parseSearchRequest(model.getAllocator())) |searchData| {
-            const searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
+            var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
 
-            if (searchData.regex.options().multiline) {
-                return _doFindNextMatchMultiline(model, searchStart, searcher, captureMatches);
+            if (!searchData.regex.options().singleline) {
+                return _doFindNextMatchMultiline(model, searchStart, &searcher, captureMatches);
             }
-            return _doFindNextMatchLineByLine(model, searchStart, searcher, captureMatches);
+            return _doFindNextMatchLineByLine(model, searchStart, &searcher, captureMatches);
         } else {
             return null;
         }
     }
 
-    fn _doFindNextMatchMultiline(model: *TextModel, searchStart: Position, searcher: Searcher, captureMatches: bool) !?FindMatch {
+    fn _doFindNextMatchMultiline(model: *TextModel, searchStart: Position, searcher: *Searcher, captureMatches: bool) !?FindMatch {
         const allocator = model.getAllocator();
         const searchTextStart = Position.init(searchStart.lineNumber, 1);
         const deltaOffset = model.getOffsetAt(searchTextStart);
@@ -371,7 +385,8 @@ pub const TextModelSearch = struct {
         defer value.deinit();
         const text = value.items;
         const lfCounter: ?LineFeedCounter = if (model.getEOL() == .CRLF) try LineFeedCounter.init(allocator, text) else null;
-        searcher.reset(text, 0);
+        defer if (lfCounter) |lfc| lfc.deinit();
+        searcher.reset(text, searchStart.column - 1);
         if (searcher.next()) |m| {
             return try createFindMatch(allocator, try _getMultilineMatchRange(model, deltaOffset, text, lfCounter, m.index(), m.groupN(0)), m, captureMatches);
         }
@@ -384,22 +399,24 @@ pub const TextModelSearch = struct {
         return null;
     }
 
-    fn _doFindNextMatchLineByLine(model: *TextModel, searchStart: Position, searcher: Searcher, captureMatches: bool) !?FindMatch {
+    fn _doFindNextMatchLineByLine(model: *TextModel, searchStart: Position, searcher: *Searcher, captureMatches: bool) !?FindMatch {
         const allocator = model.getAllocator();
         const lineCount = model.getLineCount();
         const startLineNumber = searchStart.lineNumber;
 
         // Look in first line
         const text = try model.getLineContent(startLineNumber);
-        const r = try _findFirstMatchInLine(allocator, searcher, text, startLineNumber, searchStart.column, captureMatches);
+        defer text.deinit();
+        const r = try _findFirstMatchInLine(allocator, searcher, text.items, startLineNumber, searchStart.column, captureMatches);
         if (r != null) {
             return r;
         }
 
         for (1..lineCount + 1) |i| {
             const lineIndex = (startLineNumber + i - 1) % lineCount;
-            const text2 = try model.getLineContent(lineIndex + 1);
-            const r2 = try _findFirstMatchInLine(allocator, searcher, text2, lineIndex + 1, 1, captureMatches);
+            var text2 = try model.getLineContent(lineIndex + 1);
+            defer text2.deinit();
+            const r2 = try _findFirstMatchInLine(allocator, searcher, text2.items, lineIndex + 1, 1, captureMatches);
             if (r2 != null) {
                 return r2;
             }
@@ -408,7 +425,7 @@ pub const TextModelSearch = struct {
         return null;
     }
 
-    fn _findFirstMatchInLine(allocator: Allocator, searcher: Searcher, text: []const u8, lineNumber: usize, fromColumn: usize, captureMatches: bool) !?FindMatch {
+    fn _findFirstMatchInLine(allocator: Allocator, searcher: *Searcher, text: []const u8, lineNumber: usize, fromColumn: usize, captureMatches: bool) !?FindMatch {
         // Set regex to search from column
         searcher.reset(text, fromColumn - 1);
         if (searcher.next()) |m| {
@@ -421,20 +438,26 @@ pub const TextModelSearch = struct {
 
     pub fn findPreviousMatch(model: *TextModel, searchParams: SearchParams, searchStart: Position, captureMatches: bool) !?FindMatch {
         if (try searchParams.parseSearchRequest(model.getAllocator())) |searchData| {
-            const searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
+            var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
 
-            if (searchData.regex.options().multiline) {
-                return _doFindPreviousMatchMultiline(model, searchStart, searcher, captureMatches);
+            if (!searchData.regex.options().singleline) {
+                return _doFindPreviousMatchMultiline(model, searchStart, &searcher, captureMatches);
             }
-            return _doFindPreviousMatchLineByLine(model, searchStart, searcher, captureMatches);
+            return _doFindPreviousMatchLineByLine(model, searchStart, &searcher, captureMatches);
         } else {
             return null;
         }
     }
 
-    fn _doFindPreviousMatchMultiline(model: *TextModel, searchStart: Position, searcher: Searcher, captureMatches: bool) !?FindMatch {
+    fn _doFindPreviousMatchMultiline(model: *TextModel, searchStart: Position, searcher: *Searcher, captureMatches: bool) !?FindMatch {
         const matches = try _doFindMatchesMultiline(model, Range.init(1, 1, searchStart.lineNumber, searchStart.column), searcher, captureMatches, 10 * LIMIT_FIND_COUNT);
+        defer matches.deinit();
         if (matches.items.len > 0) {
+            defer {
+                for (matches.items[0 .. matches.items.len - 1]) |match| {
+                    match.free(model.getAllocator());
+                }
+            }
             return matches.items[matches.items.len - 1];
         }
 
@@ -447,22 +470,25 @@ pub const TextModelSearch = struct {
         return null;
     }
 
-    fn _doFindPreviousMatchLineByLine(model: *TextModel, searchStart: Position, searcher: Searcher, captureMatches: bool) !?FindMatch {
+    fn _doFindPreviousMatchLineByLine(model: *TextModel, searchStart: Position, searcher: *Searcher, captureMatches: bool) !?FindMatch {
         const allocator = model.getAllocator();
         const lineCount = model.getLineCount();
         const startLineNumber = searchStart.lineNumber;
 
         // Look in first line
-        const text = (try model.getLineContent(startLineNumber))[0 .. searchStart.column - 1];
-        const r = try _findLastMatchInLine(allocator, searcher, text, startLineNumber, captureMatches);
+        var text = try model.getLineContent(startLineNumber);
+        defer text.deinit();
+        const text_slice = text.items[0 .. searchStart.column - 1];
+        const r = try _findLastMatchInLine(allocator, searcher, text_slice, startLineNumber, captureMatches);
         if (r != null) {
             return r;
         }
 
         for (1..lineCount + 1) |i| {
             const lineIndex = (lineCount + startLineNumber - i - 1) % lineCount;
-            const text2 = try model.getLineContent(lineIndex + 1);
-            const r2 = try _findLastMatchInLine(allocator, searcher, text2, lineIndex + 1, captureMatches);
+            var text2 = try model.getLineContent(lineIndex + 1);
+            defer text2.deinit();
+            const r2 = try _findLastMatchInLine(allocator, searcher, text2.items, lineIndex + 1, captureMatches);
             if (r2 != null) {
                 return r2;
             }
@@ -471,7 +497,7 @@ pub const TextModelSearch = struct {
         return null;
     }
 
-    fn _findLastMatchInLine(allocator: Allocator, searcher: Searcher, text: []const u8, lineNumber: usize, captureMatches: bool) !?FindMatch {
+    fn _findLastMatchInLine(allocator: Allocator, searcher: *Searcher, text: []const u8, lineNumber: usize, captureMatches: bool) !?FindMatch {
         searcher.reset(text, 0);
 
         var lastMatch: ?SearchResult = null;

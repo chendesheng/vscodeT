@@ -2019,7 +2019,7 @@ const ChunkBasedSearchTests = struct {
         try pieceTable.delete(16, 1);
 
         try pieceTable.insert(16, " ", false);
-        var regex = try RegExp.init("\\[", .{ .ignore_case = true, .multiline = true });
+        var regex = try RegExp.init("\\[", .{ .ignore_case = true, .singleline = false });
         defer regex.deinit();
         var wordSeparators = try WordCharacterClassifier.init(allocator, ",./");
         defer wordSeparators.deinit();
