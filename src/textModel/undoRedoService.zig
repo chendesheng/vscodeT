@@ -20,7 +20,7 @@ const Selection = @import("../basics/selection.zig").Selection;
 const String = @import("../basics/strings.zig").String;
 const NotificationService = @import("notificationService.zig").NotificationService;
 
-const DEBUG = true;
+const DEBUG = false;
 
 fn getResourceLabel(resource: Uri) []const u8 {
     switch (resource.path) {
