@@ -123,44 +123,6 @@ pub fn isMultilineRegexSource(searchString: []const u8) bool {
     return false;
 }
 
-test "isMultilineRegexSource" {
-    try std.testing.expect(!isMultilineRegexSource("foo"));
-    try std.testing.expect(!isMultilineRegexSource(""));
-    try std.testing.expect(!isMultilineRegexSource("foo\\sbar"));
-    try std.testing.expect(!isMultilineRegexSource("\\\\notnewline"));
-
-    try std.testing.expect(isMultilineRegexSource("foo\\nbar"));
-    try std.testing.expect(isMultilineRegexSource("foo\\nbar\\s"));
-    try std.testing.expect(isMultilineRegexSource("foo\\r\\n"));
-    try std.testing.expect(isMultilineRegexSource("\\n"));
-    try std.testing.expect(isMultilineRegexSource("foo\\W"));
-    try std.testing.expect(isMultilineRegexSource("foo\n"));
-    try std.testing.expect(isMultilineRegexSource("foo\r\n"));
-}
-
-test "isMultilineRegexSource correctly identifies multiline patterns" {
-    const singleLinePatterns = [_][]const u8{
-        "MARK:\\s*(?<label>.*)$",
-        "^// Header$",
-        "\\s*[-=]+\\s*",
-    };
-
-    const multiLinePatterns = [_][]const u8{
-        "^// =+\\n^// (?<label>[^\\n]+?)\\n^// =+$",
-        "header\\r\\nfooter",
-        "start\\r|\\nend",
-        "top\nmiddle\r\nbottom",
-    };
-
-    for (singleLinePatterns) |pattern| {
-        try std.testing.expect(!isMultilineRegexSource(pattern));
-    }
-
-    for (multiLinePatterns) |pattern| {
-        try std.testing.expect(isMultilineRegexSource(pattern));
-    }
-}
-
 pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchResult, captureMatches: bool) !FindMatch {
     if (!captureMatches) {
         return FindMatch.init(range);

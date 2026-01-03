@@ -14,6 +14,7 @@ const Range = @import("../basics/range.zig").Range;
 const FindMatch = @import("../textModel/model.zig").FindMatch;
 const Position = @import("../basics/position.zig").Position;
 const SearchData = @import("../textModel/model.zig").SearchData;
+const isMultilineRegexSource = @import("../textModel/textModelSearch.zig").isMultilineRegexSource;
 
 const TextModelSearchTests = struct {
     const allocator = std.testing.allocator;
@@ -913,6 +914,131 @@ const TextModelSearchTests = struct {
             &[_]Range{
                 .init(1, 5, 1, 7),
                 .init(1, 16, 3, 1),
+            },
+        );
+    }
+
+    test "Simple find using unicode escape sequences" {
+        try assertFindMatches(
+            regularText,
+            "\\x{0066}\\x{006f}\\x{006F}",
+            true,
+            false,
+            null,
+            &[_]Range{
+                .init(1, 14, 1, 17),
+                .init(1, 44, 1, 47),
+                .init(2, 22, 2, 25),
+                .init(2, 48, 2, 51),
+                .init(4, 59, 4, 62),
+            },
+        );
+    }
+
+    test "isMultilineRegexSource" {
+        try std.testing.expect(!isMultilineRegexSource("foo"));
+        try std.testing.expect(!isMultilineRegexSource(""));
+        try std.testing.expect(!isMultilineRegexSource("foo\\sbar"));
+        try std.testing.expect(!isMultilineRegexSource("\\\\notnewline"));
+
+        try std.testing.expect(isMultilineRegexSource("foo\\nbar"));
+        try std.testing.expect(isMultilineRegexSource("foo\\nbar\\s"));
+        try std.testing.expect(isMultilineRegexSource("foo\\r\\n"));
+        try std.testing.expect(isMultilineRegexSource("\\n"));
+        try std.testing.expect(isMultilineRegexSource("foo\\W"));
+        try std.testing.expect(isMultilineRegexSource("foo\n"));
+        try std.testing.expect(isMultilineRegexSource("foo\r\n"));
+    }
+
+    test "isMultilineRegexSource correctly identifies multiline patterns" {
+        const singleLinePatterns = [_][]const u8{
+            "MARK:\\s*(?<label>.*)$",
+            "^// Header$",
+            "\\s*[-=]+\\s*",
+        };
+
+        const multiLinePatterns = [_][]const u8{
+            "^// =+\\n^// (?<label>[^\\n]+?)\\n^// =+$",
+            "header\\r\\nfooter",
+            "start\\r|\\nend",
+            "top\nmiddle\r\nbottom",
+        };
+
+        for (singleLinePatterns) |pattern| {
+            try std.testing.expect(!isMultilineRegexSource(pattern));
+        }
+
+        for (multiLinePatterns) |pattern| {
+            try std.testing.expect(isMultilineRegexSource(pattern));
+        }
+    }
+
+    test "issue #74715. \\d* finds empty string and stops searching." {
+        const model = try createTextModel(allocator, "10.243.30.10", null);
+        defer disposeTextModel(model);
+
+        const searchParams = SearchParams.init("\\d*", true, false, null);
+
+        const actual = try TextModelSearch.findMatches(model, searchParams, model.getFullModelRange(), true, 100);
+        defer {
+            for (actual.items) |item| {
+                item.deinit();
+            }
+            actual.deinit();
+        }
+        try std.testing.expectEqualDeep(&[_]FindMatch{
+            FindMatch.initWithMatches(.init(1, 1, 1, 3), &[_][]const u8{"10"}, allocator),
+            FindMatch.initWithMatches(.init(1, 3, 1, 3), &[_][]const u8{""}, allocator),
+            FindMatch.initWithMatches(.init(1, 4, 1, 7), &[_][]const u8{"243"}, allocator),
+            FindMatch.initWithMatches(.init(1, 7, 1, 7), &[_][]const u8{""}, allocator),
+            FindMatch.initWithMatches(.init(1, 8, 1, 10), &[_][]const u8{"30"}, allocator),
+            FindMatch.initWithMatches(.init(1, 10, 1, 10), &[_][]const u8{""}, allocator),
+            FindMatch.initWithMatches(.init(1, 11, 1, 13), &[_][]const u8{"10"}, allocator),
+        }, actual.items);
+    }
+
+    test "issue #100134. Zero-length matches should properly step over surrogate pairs" {
+        // 1[Laptop]1 - there shoud be no matches inside of [Laptop] emoji
+        try assertFindMatches(
+            "1\u{1F4BB}1",
+            "()",
+            true,
+            false,
+            null,
+            &[_]Range{
+                // expected ranges is different in utf-8
+                // [1, 1, 1, 1],
+                // [1, 2, 1, 2],
+                // [1, 4, 1, 4],
+                // [1, 5, 1, 5],
+                .init(1, 1, 1, 1),
+                .init(1, 2, 1, 2),
+                .init(1, 6, 1, 6),
+                .init(1, 7, 1, 7),
+            },
+        );
+        // 1[Hacker Cat]1 = 1[Cat Face][ZWJ][Laptop]1 - there shoud be matches between emoji and ZWJ
+        // there shoud be no matches inside of [Cat Face] and [Laptop] emoji
+        try assertFindMatches(
+            "1\u{1F431}\u{200D}\u{1F4BB}1",
+            "()",
+            true,
+            false,
+            null,
+            // expected ranges is different in utf-8
+            // [1, 1, 1, 1],
+            // [1, 2, 1, 2],
+            // [1, 4, 1, 4],
+            // [1, 5, 1, 5],
+            // [1, 7, 1, 7],
+            // [1, 8, 1, 8]
+            &[_]Range{
+                .init(1, 1, 1, 1),
+                .init(1, 2, 1, 2),
+                .init(1, 6, 1, 6),
+                .init(1, 9, 1, 9),
+                .init(1, 13, 1, 13),
+                .init(1, 14, 1, 14),
             },
         );
     }
