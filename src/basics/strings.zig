@@ -770,24 +770,30 @@ fn initArrayList(allocator: Allocator, str: []const u8) !ArrayList(u8) {
     return arr;
 }
 
-pub fn createRegExp(allocator: Allocator, searchString: []const u8, isRegex: bool, wholeWord: bool, options: RegExpOptions) !RegExp {
+fn createRegexpPattern(allocator: Allocator, searchString: []const u8, isRegex: bool, wholeWord: bool) ![]const u8 {
     if (searchString.len == 0) {
-        unreachable;
+        return error.CannotCreateRegExpFromEmptyString;
     }
 
-    if (isRegex and !wholeWord) {
-        return RegExp.init(searchString, options);
-    }
-
-    var escapedSearchString = if (isRegex) try initArrayList(allocator, searchString) else try escapeRegExp(allocator, searchString);
-    defer escapedSearchString.deinit();
+    var escapedSearchString = if (isRegex)
+        try initArrayList(allocator, searchString)
+    else
+        try escapeRegExp(allocator, searchString);
 
     if (wholeWord) {
         try escapedSearchString.insertSlice(0, "\\b");
         try escapedSearchString.appendSlice("\\b");
     }
 
-    return RegExp.init(escapedSearchString.items, options);
+    defer escapedSearchString.deinit();
+
+    return try escapedSearchString.toOwnedSlice();
+}
+
+pub fn createRegExp(allocator: Allocator, searchString: []const u8, isRegex: bool, wholeWord: bool, options: RegExpOptions) !RegExp {
+    const pattern = try createRegexpPattern(allocator, searchString, isRegex, wholeWord);
+    errdefer allocator.free(pattern);
+    return RegExp.initWithAllocator(allocator, pattern, options);
 }
 
 test "createRegExp" {

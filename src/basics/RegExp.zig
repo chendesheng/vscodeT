@@ -245,6 +245,7 @@ pub const Options = packed struct(c_int) {
     dont_capture_group: bool = false,
     capture_group: bool = false,
     not_bol: bool = false,
+    not_eol: bool = false,
     posix_region: bool = false,
     check_validity_of_string: bool = false,
     ignorecase_is_ascii: bool = false,
@@ -259,7 +260,11 @@ pub const Options = packed struct(c_int) {
     not_begin_position: bool = false,
     callback_each_match: bool = false,
     match_whole_string: bool = false,
-    _rest_bits: u8 = 0,
+    _rest_bits: u7 = 0,
+
+    pub fn int(self: Options) c_uint {
+        return @bitCast(self);
+    }
 };
 
 pub const DefaultOption: Options = @bitCast(c.ONIG_OPTION_DEFAULT);
@@ -291,15 +296,24 @@ fn printError(res: c_int, errorInfos: ?*const c.OnigErrorInfo) void {
 
 pub const RegExp = struct {
     regex: c.OnigRegex,
+    pattern: ?[]const u8 = null,
+    allocator: ?Allocator = null,
 
     pub fn init(pattern: []const u8, option: Options) !RegExp {
         return try initWithSyntax(pattern, option, c.OnigDefaultSyntax);
     }
 
+    pub fn initWithAllocator(allocator: Allocator, pattern: []const u8, option: Options) !RegExp {
+        var r = try initWithSyntax(pattern, option, c.OnigDefaultSyntax);
+        r.allocator = allocator;
+        r.pattern = pattern;
+        return r;
+    }
+
     pub fn initWithSyntax(pattern: []const u8, option: Options, syntax_: OnigSyntax) !RegExp {
         var regex: c.OnigRegex = undefined;
         var errorInfos: c.OnigErrorInfo = undefined;
-        const res = c.onig_new(&regex, pattern.ptr, pattern.ptr + pattern.len, @bitCast(option), &c.OnigEncodingUTF8, syntax_, &errorInfos);
+        const res = c.onig_new(&regex, pattern.ptr, pattern.ptr + pattern.len, Options.int(option), &c.OnigEncodingUTF8, syntax_, &errorInfos);
         errdefer c.onig_free(regex);
         if (res != c.ONIG_NORMAL) {
             // printError(res, &errorInfos);
@@ -313,6 +327,11 @@ pub const RegExp = struct {
 
     pub fn deinit(self: *const RegExp) void {
         c.onig_free(self.regex);
+        if (self.allocator) |allocator| {
+            if (self.pattern) |pattern| {
+                allocator.free(pattern);
+            }
+        }
     }
 
     pub fn isMatch(self: *const RegExp, input: []const u8) bool {
@@ -570,6 +589,24 @@ test "searchFrom" {
         try std.testing.expectEqualStrings("345", result.groupN(0));
     } else {
         unreachable;
+    }
+}
+
+test "captures" {
+    try initialize(null);
+    defer uninitialize();
+
+    const regex = try RegExp.init("(l(in)e)", .{ .ignore_case = true });
+    defer regex.deinit();
+
+    const result = regex.search("one line line");
+    try std.testing.expect(result != null);
+    if (result) |res| {
+        defer res.deinit();
+        try std.testing.expectEqual(3, res.numberOfGroups());
+        try std.testing.expectEqualStrings("line", res.groupN(0));
+        try std.testing.expectEqualStrings("line", res.groupN(1));
+        try std.testing.expectEqualStrings("in", res.groupN(2));
     }
 }
 

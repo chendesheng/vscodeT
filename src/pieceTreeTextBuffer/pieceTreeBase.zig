@@ -1083,7 +1083,7 @@ pub const PieceTreeBase = struct {
                     }
 
                     if (searchData.wordSeparators == null or isValidMatch(searchData.wordSeparators.?, text, textLength, lastMatchIndex, searchStringLen)) {
-                        try result.append(FindMatch.init(Range.init(lineNumber, lastMatchIndex - searchStringLen + 1 + deltaOffset, lineNumber, lastMatchIndex + 1 + deltaOffset), null));
+                        try result.append(FindMatch.init(Range.init(lineNumber, lastMatchIndex - searchStringLen + 1 + deltaOffset, lineNumber, lastMatchIndex + 1 + deltaOffset)));
                         if (result.items.len >= limitResultCount) {
                             return;
                         }
@@ -2317,11 +2317,11 @@ test "findMatchesInNode" {
     try tree.findMatchesInNode(tree.root, 1, 1, BufferCursor{ .line = 0, .column = 0 }, BufferCursor{ .line = 2, .column = 0 }, searchData, true, 10, &result);
     defer {
         for (result.items) |item| {
-            item.free(allocator);
+            item.deinit();
         }
     }
     try std.testing.expectEqual(1, result.items.len);
-    try std.testing.expectEqualDeep(FindMatch.init(Range.init(2, 1, 2, 4), &[_][]const u8{"Sec"}), result.items[0]);
+    try std.testing.expectEqualDeep(FindMatch.initWithMatches(Range.init(2, 1, 2, 4), &[_][]const u8{"Sec"}, allocator), result.items[0]);
 }
 
 test "findMatchesLineByLine" {
@@ -2340,13 +2340,13 @@ test "findMatchesLineByLine" {
     const result = try tree.findMatchesLineByLine(Range.init(1, 1, 3, 4), searchData, true, 10);
     defer {
         for (result.items) |item| {
-            item.free(allocator);
+            item.deinit();
         }
         result.deinit();
     }
     try std.testing.expectEqual(2, result.items.len);
-    try std.testing.expectEqualDeep(FindMatch.init(Range.init(1, 2, 1, 3), &[_][]const u8{"i"}), result.items[0]);
-    try std.testing.expectEqualDeep(FindMatch.init(Range.init(3, 3, 3, 4), &[_][]const u8{"i"}), result.items[1]);
+    try std.testing.expectEqualDeep(FindMatch.initWithMatches(Range.init(1, 2, 1, 3), &[_][]const u8{"i"}, allocator), result.items[0]);
+    try std.testing.expectEqualDeep(FindMatch.initWithMatches(Range.init(3, 3, 3, 4), &[_][]const u8{"i"}, allocator), result.items[1]);
 }
 
 test "_findMatchesInLine simple search" {
@@ -2362,11 +2362,11 @@ test "_findMatchesInLine simple search" {
     try PieceTreeBase._findMatchesInLine(searchData, "hello world", 1, 0, &result, false, 100);
     defer {
         for (result.items) |item| {
-            item.free(allocator);
+            item.deinit();
         }
     }
     try std.testing.expectEqual(1, result.items.len);
-    try std.testing.expectEqualDeep(FindMatch.init(Range.init(1, 7, 1, 10), null), result.items[0]);
+    try std.testing.expectEqualDeep(FindMatch.init(Range.init(1, 7, 1, 10)), result.items[0]);
 }
 
 test "_findMatchesInLine regex search" {
@@ -2382,11 +2382,11 @@ test "_findMatchesInLine regex search" {
     try PieceTreeBase._findMatchesInLine(searchData, "hello world", 1, 0, &result, false, 100);
     defer {
         for (result.items) |item| {
-            item.free(allocator);
+            item.deinit();
         }
     }
     try std.testing.expectEqual(1, result.items.len);
-    try std.testing.expectEqualDeep(FindMatch.init(Range.init(1, 7, 1, 10), null), result.items[0]);
+    try std.testing.expectEqualDeep(FindMatch.init(Range.init(1, 7, 1, 10)), result.items[0]);
 }
 
 test "insert" {

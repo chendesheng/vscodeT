@@ -157,6 +157,10 @@ pub const SearchData = struct {
             .simpleSearch = simpleSearch,
         };
     }
+
+    pub fn deinit(self: *const SearchData) void {
+        self.regex.deinit();
+    }
 };
 
 pub const InternalModelContentChange = struct {
@@ -282,19 +286,30 @@ pub const TextModelResolvedOptions = struct {
 
 pub const FindMatch = struct {
     range: Range,
-    matches: ?[]const []const u8,
+    matches: ?[]const []const u8 = null,
+    allocator: ?Allocator = null,
 
     // @internal
-    pub fn init(range: Range, matches: ?[]const []const u8) FindMatch {
-        return FindMatch{
+    pub fn init(range: Range) FindMatch {
+        return .{ .range = range };
+    }
+
+    pub fn initWithMatches(range: Range, matches: ?[]const []const u8, allocator: ?Allocator) FindMatch {
+        return .{
             .range = range,
             .matches = matches,
+            .allocator = allocator,
         };
     }
 
-    pub fn free(self: *const FindMatch, allocator: Allocator) void {
-        if (self.matches) |matches| {
-            allocator.free(matches);
+    pub fn deinit(self: *const FindMatch) void {
+        if (self.allocator) |allocator| {
+            if (self.matches) |matches| {
+                for (matches) |match| {
+                    allocator.free(match);
+                }
+                allocator.free(matches);
+            }
         }
     }
 };

@@ -1,5 +1,6 @@
 const std = @import("std");
 const re = @import("../basics/RegExp.zig");
+const RegExp = @import("../basics/RegExp.zig").RegExp;
 const TextModel = @import("../textModel/textModel.zig").TextModel;
 const ArrayList = std.array_list.Managed;
 const createTextModel = @import("../textModel/testTextModel.zig").createTextModel;
@@ -12,14 +13,14 @@ const USUAL_WORD_SEPARATORS = @import("../basics/wordHelper.zig").USUAL_WORD_SEP
 const Range = @import("../basics/range.zig").Range;
 const FindMatch = @import("../textModel/model.zig").FindMatch;
 const Position = @import("../basics/position.zig").Position;
+const SearchData = @import("../textModel/model.zig").SearchData;
 
 const TextModelSearchTests = struct {
     const allocator = std.testing.allocator;
-    const usualWordSeparators = getMapForWordSeparators(allocator, USUAL_WORD_SEPARATORS);
 
     fn assertFindMatch(_actual: ?FindMatch, expectedRange: Range, expectedMatches: ?[]const []const u8) !void {
         if (_actual) |actual| {
-            try std.testing.expectEqualDeep(FindMatch.init(expectedRange, expectedMatches), actual);
+            try std.testing.expectEqualDeep(FindMatch.initWithMatches(expectedRange, expectedMatches, if (expectedMatches == null) null else allocator), actual);
         } else {
             try std.testing.expect(expectedMatches == null);
         }
@@ -36,7 +37,7 @@ const TextModelSearchTests = struct {
         // test `findNextMatch`
         var startPos = Position.init(1, 1);
         const match = try TextModelSearch.findNextMatch(model, searchParams, startPos, false);
-        defer if (match) |m| m.free(allocator);
+        defer if (match) |m| m.deinit();
         std.testing.expectEqualDeep(expectedMatches[0], match) catch |err| {
             std.debug.print("findNextMatch {}\n", .{startPos});
             return err;
@@ -45,7 +46,7 @@ const TextModelSearchTests = struct {
         for (expectedMatches) |expectedMatch| {
             startPos = expectedMatch.range.getStartPosition();
             const match2 = try TextModelSearch.findNextMatch(model, searchParams, startPos, false);
-            defer if (match2) |m| m.free(allocator);
+            defer if (match2) |m| m.deinit();
             std.testing.expectEqualDeep(expectedMatch, match2) catch |err| {
                 std.debug.print("findNextMatch {}\n", .{startPos});
                 return err;
@@ -55,7 +56,7 @@ const TextModelSearchTests = struct {
         // test `findPrevMatch`
         startPos = Position.init(model.getLineCount(), model.getLineMaxColumn(model.getLineCount()));
         const match3 = try TextModelSearch.findPreviousMatch(model, searchParams, startPos, false);
-        defer if (match3) |m| m.free(allocator);
+        defer if (match3) |m| m.deinit();
         std.testing.expectEqualDeep(expectedMatches[expectedMatches.len - 1], match3) catch |err| {
             std.debug.print("findPrevMatch {}\n", .{startPos});
             return err;
@@ -63,7 +64,7 @@ const TextModelSearchTests = struct {
         for (expectedMatches) |expectedMatch| {
             startPos = expectedMatch.range.getEndPosition();
             const match4 = try TextModelSearch.findPreviousMatch(model, searchParams, startPos, false);
-            defer if (match4) |m| m.free(allocator);
+            defer if (match4) |m| m.deinit();
             std.testing.expectEqualDeep(expectedMatch, match4) catch |err| {
                 std.debug.print("findPrevMatch {}\n", .{startPos});
                 return err;
@@ -75,7 +76,7 @@ const TextModelSearchTests = struct {
         var expectedMatches = ArrayList(FindMatch).init(allocator);
         defer expectedMatches.deinit();
         for (expectedRanges) |expectedRange| {
-            try expectedMatches.append(FindMatch.init(expectedRange, null));
+            try expectedMatches.append(FindMatch.init(expectedRange));
         }
 
         const searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
@@ -426,23 +427,23 @@ const TextModelSearchTests = struct {
         const searchParams = SearchParams.init("line", false, false, null);
 
         const actual = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 1), false);
-        defer if (actual) |m| m.free(allocator);
+        defer if (actual) |m| m.deinit();
         try assertFindMatch(actual, .init(1, 1, 1, 5), null);
 
         const actual2 = try TextModelSearch.findNextMatch(model, searchParams, actual.?.range.getEndPosition(), false);
-        defer if (actual2) |m| m.free(allocator);
+        defer if (actual2) |m| m.deinit();
         try assertFindMatch(actual2, .init(1, 6, 1, 10), null);
 
         const actual3 = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 3), false);
-        defer if (actual3) |m| m.free(allocator);
+        defer if (actual3) |m| m.deinit();
         try assertFindMatch(actual3, .init(1, 6, 1, 10), null);
 
         const actual4 = try TextModelSearch.findNextMatch(model, searchParams, actual3.?.range.getEndPosition(), false);
-        defer if (actual4) |m| m.free(allocator);
+        defer if (actual4) |m| m.deinit();
         try assertFindMatch(actual4, .init(2, 1, 2, 5), null);
 
         const actual5 = try TextModelSearch.findNextMatch(model, searchParams, actual4.?.range.getEndPosition(), false);
-        defer if (actual5) |m| m.free(allocator);
+        defer if (actual5) |m| m.deinit();
         try assertFindMatch(actual5, .init(1, 1, 1, 5), null);
     }
 
@@ -453,19 +454,19 @@ const TextModelSearchTests = struct {
         const searchParams = SearchParams.init("^line", true, false, null);
 
         const actual = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 1), false);
-        defer if (actual) |m| m.free(allocator);
+        defer if (actual) |m| m.deinit();
         try assertFindMatch(actual, .init(1, 1, 1, 5), null);
 
         const actual2 = try TextModelSearch.findNextMatch(model, searchParams, actual.?.range.getEndPosition(), false);
-        defer if (actual2) |m| m.free(allocator);
+        defer if (actual2) |m| m.deinit();
         try assertFindMatch(actual2, .init(2, 1, 2, 5), null);
 
         const actual3 = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 3), false);
-        defer if (actual3) |m| m.free(allocator);
+        defer if (actual3) |m| m.deinit();
         try assertFindMatch(actual3, .init(2, 1, 2, 5), null);
 
         const actual4 = try TextModelSearch.findNextMatch(model, searchParams, actual3.?.range.getEndPosition(), false);
-        defer if (actual4) |m| m.free(allocator);
+        defer if (actual4) |m| m.deinit();
         try assertFindMatch(actual4, .init(1, 1, 1, 5), null);
     }
 
@@ -476,19 +477,19 @@ const TextModelSearchTests = struct {
         const searchParams = SearchParams.init("^line", true, false, null);
 
         const actual = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 1), false);
-        defer if (actual) |m| m.free(allocator);
+        defer if (actual) |m| m.deinit();
         try assertFindMatch(actual, .init(1, 1, 1, 5), null);
 
         const actual2 = try TextModelSearch.findNextMatch(model, searchParams, actual.?.range.getEndPosition(), false);
-        defer if (actual2) |m| m.free(allocator);
+        defer if (actual2) |m| m.deinit();
         try assertFindMatch(actual2, .init(2, 1, 2, 5), null);
 
         const actual3 = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 3), false);
-        defer if (actual3) |m| m.free(allocator);
+        defer if (actual3) |m| m.deinit();
         try assertFindMatch(actual3, .init(2, 1, 2, 5), null);
 
         const actual4 = try TextModelSearch.findNextMatch(model, searchParams, actual3.?.range.getEndPosition(), false);
-        defer if (actual4) |m| m.free(allocator);
+        defer if (actual4) |m| m.deinit();
         try assertFindMatch(actual4, .init(1, 1, 1, 5), null);
     }
 
@@ -499,15 +500,15 @@ const TextModelSearchTests = struct {
         const searchParams = SearchParams.init("^line.*\\nline", true, false, null);
 
         const actual = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 1), false);
-        defer if (actual) |m| m.free(allocator);
+        defer if (actual) |m| m.deinit();
         try assertFindMatch(actual, .init(1, 1, 2, 5), null);
 
         const actual2 = try TextModelSearch.findNextMatch(model, searchParams, actual.?.range.getEndPosition(), false);
-        defer if (actual2) |m| m.free(allocator);
+        defer if (actual2) |m| m.deinit();
         try assertFindMatch(actual2, .init(3, 1, 4, 5), null);
 
         const actual3 = try TextModelSearch.findNextMatch(model, searchParams, Position.init(2, 1), false);
-        defer if (actual3) |m| m.free(allocator);
+        defer if (actual3) |m| m.deinit();
         try assertFindMatch(actual3, .init(2, 1, 3, 5), null);
     }
 
@@ -518,19 +519,19 @@ const TextModelSearchTests = struct {
         const searchParams = SearchParams.init("line$", true, false, null);
 
         const actual = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 1), false);
-        defer if (actual) |m| m.free(allocator);
+        defer if (actual) |m| m.deinit();
         try assertFindMatch(actual, .init(1, 10, 1, 14), null);
 
         const actual2 = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 4), false);
-        defer if (actual2) |m| m.free(allocator);
+        defer if (actual2) |m| m.deinit();
         try assertFindMatch(actual2, .init(1, 10, 1, 14), null);
 
         const actual3 = try TextModelSearch.findNextMatch(model, searchParams, actual2.?.range.getEndPosition(), false);
-        defer if (actual3) |m| m.free(allocator);
+        defer if (actual3) |m| m.deinit();
         try assertFindMatch(actual3, .init(2, 5, 2, 9), null);
 
         const actual4 = try TextModelSearch.findNextMatch(model, searchParams, actual3.?.range.getEndPosition(), false);
-        defer if (actual4) |m| m.free(allocator);
+        defer if (actual4) |m| m.deinit();
         try assertFindMatch(actual4, .init(1, 10, 1, 14), null);
     }
 
@@ -543,15 +544,377 @@ const TextModelSearchTests = struct {
         const actual = try TextModelSearch.findMatches(model, searchParams, model.getFullModelRange(), true, 100);
         defer {
             for (actual.items) |item| {
-                item.free(allocator);
+                item.deinit();
             }
             actual.deinit();
         }
         try std.testing.expectEqualDeep(&[_]FindMatch{
-            .init(.init(1, 5, 1, 9), &[_][]const u8{ "line", "line", "in" }),
-            .init(.init(1, 10, 1, 14), &[_][]const u8{ "line", "line", "in" }),
-            .init(.init(2, 5, 2, 9), &[_][]const u8{ "line", "line", "in" }),
+            .initWithMatches(.init(1, 5, 1, 9), &[_][]const u8{ "line", "line", "in" }, allocator),
+            .initWithMatches(.init(1, 10, 1, 14), &[_][]const u8{ "line", "line", "in" }, allocator),
+            .initWithMatches(.init(2, 5, 2, 9), &[_][]const u8{ "line", "line", "in" }, allocator),
         }, actual.items);
+    }
+
+    test "findMatches multiline with capturing matches" {
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        defer disposeTextModel(model);
+
+        const searchParams = SearchParams.init("(l(in)e)\\n", true, false, null);
+
+        const actual = try TextModelSearch.findMatches(model, searchParams, model.getFullModelRange(), true, 100);
+        defer {
+            for (actual.items) |item| {
+                item.deinit();
+            }
+            actual.deinit();
+        }
+        try std.testing.expectEqualDeep(&[_]FindMatch{
+            FindMatch.initWithMatches(.init(1, 10, 2, 1), &[_][]const u8{ "line\n", "line", "in" }, allocator),
+            FindMatch.initWithMatches(.init(2, 5, 3, 1), &[_][]const u8{ "line\n", "line", "in" }, allocator),
+        }, actual.items);
+    }
+
+    test "findNextMatch with capturing matches" {
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        defer disposeTextModel(model);
+
+        const searchParams = SearchParams.init("(l(in)e)", true, false, null);
+
+        const actual = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 1), true);
+        defer if (actual) |m| m.deinit();
+        try assertFindMatch(actual, .init(1, 5, 1, 9), &[_][]const u8{ "line", "line", "in" });
+    }
+
+    test "findNextMatch multiline with capturing matches" {
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        defer disposeTextModel(model);
+
+        const searchParams = SearchParams.init("(l(in)e)\\n", true, false, null);
+
+        const actual = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 1), true);
+        defer if (actual) |m| m.deinit();
+        try assertFindMatch(actual, .init(1, 10, 2, 1), &[_][]const u8{ "line\n", "line", "in" });
+    }
+
+    test "findPreviousMatch with capturing matches" {
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        defer disposeTextModel(model);
+
+        const searchParams = SearchParams.init("(l(in)e)", true, false, null);
+
+        const actual = try TextModelSearch.findPreviousMatch(model, searchParams, Position.init(1, 1), true);
+        defer if (actual) |m| m.deinit();
+        try assertFindMatch(actual, .init(2, 5, 2, 9), &[_][]const u8{ "line", "line", "in" });
+    }
+
+    test "findPreviousMatch multiline with capturing matches" {
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        defer disposeTextModel(model);
+
+        const searchParams = SearchParams.init("(l(in)e)\\n", true, false, null);
+
+        const actual = try TextModelSearch.findPreviousMatch(model, searchParams, Position.init(1, 1), true);
+        defer if (actual) |m| m.deinit();
+        try assertFindMatch(actual, .init(2, 5, 3, 1), &[_][]const u8{ "line\n", "line", "in" });
+    }
+
+    test "\\n matches \\r\\n" {
+        const model = try createTextModel(allocator, "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh\r\ni", null);
+        defer disposeTextModel(model);
+
+        try std.testing.expectEqual(.CRLF, model.getEOL());
+
+        const searchParams = SearchParams.init("h\\n", true, false, null);
+        const actual = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 1), true);
+        defer if (actual) |m| m.deinit();
+        try assertFindMatch(actual, .init(8, 1, 9, 1), &[_][]const u8{"h\n"});
+
+        const searchParams2 = SearchParams.init("g\\nh\\n", true, false, null);
+        const actual2 = try TextModelSearch.findNextMatch(model, searchParams2, Position.init(1, 1), true);
+        defer if (actual2) |m| m.deinit();
+        try assertFindMatch(actual2, .init(7, 1, 9, 1), &[_][]const u8{"g\nh\n"});
+
+        const searchParams3 = SearchParams.init("\\ni", true, false, null);
+        const actual3 = try TextModelSearch.findNextMatch(model, searchParams3, Position.init(1, 1), true);
+        defer if (actual3) |m| m.deinit();
+        try assertFindMatch(actual3, .init(8, 2, 9, 2), &[_][]const u8{"\ni"});
+    }
+
+    test "\\r can never be found" {
+        const model = try createTextModel(allocator, "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh\r\ni", null);
+        defer disposeTextModel(model);
+
+        try std.testing.expectEqual(.CRLF, model.getEOL());
+
+        const searchParams = SearchParams.init("\\r\\n", true, false, null);
+        const actual = try TextModelSearch.findNextMatch(model, searchParams, Position.init(1, 1), true);
+        defer if (actual) |m| m.deinit();
+        try std.testing.expect(actual == null);
+        const actual2 = try TextModelSearch.findMatches(model, searchParams, model.getFullModelRange(), true, 1000);
+        defer {
+            for (actual2.items) |item| {
+                item.deinit();
+            }
+            actual2.deinit();
+        }
+        try std.testing.expectEqual(0, actual2.items.len);
+    }
+
+    fn assertParseSearchResult(searchString: []const u8, isRegex: bool, matchCase: bool, wordSeparators: ?[]const u8, _expected: ?SearchData) !void {
+        const searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
+        const _actual = try searchParams.parseSearchRequest(allocator);
+        defer if (_actual) |actual| actual.deinit();
+
+        if (_expected) |expected| {
+            if (_actual) |actual| {
+                try std.testing.expectEqualStrings(expected.regex.pattern.?, actual.regex.pattern.?);
+                try std.testing.expectEqualDeep(expected.simpleSearch, actual.simpleSearch);
+                try std.testing.expectEqual(wordSeparators != null, actual.wordSeparators != null);
+            } else {
+                try std.testing.expect(false);
+            }
+        } else {
+            try std.testing.expect(_actual == null);
+        }
+    }
+
+    test "parseSearchRequest invalid" {
+        defer clearWordClassifierCache();
+
+        try assertParseSearchResult("", true, true, USUAL_WORD_SEPARATORS, null);
+        try assertParseSearchResult("(", true, false, null, null);
+    }
+
+    test "parseSearchRequest non regex" {
+        const usualWordSeparators = try getMapForWordSeparators(allocator, USUAL_WORD_SEPARATORS);
+        defer clearWordClassifierCache();
+
+        try assertParseSearchResult(
+            "foo",
+            false,
+            false,
+            null,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo", .{ .ignore_case = true }), null, null),
+        );
+        try assertParseSearchResult(
+            "foo",
+            false,
+            false,
+            USUAL_WORD_SEPARATORS,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo", .{ .ignore_case = true }), usualWordSeparators, null),
+        );
+        try assertParseSearchResult(
+            "foo",
+            false,
+            true,
+            null,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo", .{ .ignore_case = false }), null, "foo"),
+        );
+        try assertParseSearchResult(
+            "foo",
+            false,
+            true,
+            USUAL_WORD_SEPARATORS,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo", .{ .ignore_case = false }), usualWordSeparators, "foo"),
+        );
+        try assertParseSearchResult(
+            "foo\\n",
+            false,
+            false,
+            null,
+            SearchData.init(
+                try RegExp.initWithAllocator(allocator, "foo\\\\n", .{ .ignore_case = true }),
+                null,
+                null,
+            ),
+        );
+        try assertParseSearchResult(
+            "foo\\\\n",
+            false,
+            false,
+            null,
+            SearchData.init(
+                try RegExp.initWithAllocator(allocator, "foo\\\\\\\\n", .{ .ignore_case = true }),
+                null,
+                null,
+            ),
+        );
+        try assertParseSearchResult(
+            "foo\\r",
+            false,
+            false,
+            null,
+            SearchData.init(
+                try RegExp.initWithAllocator(allocator, "foo\\\\r", .{ .ignore_case = true }),
+                null,
+                null,
+            ),
+        );
+        try assertParseSearchResult(
+            "foo\\\\r",
+            false,
+            false,
+            null,
+            SearchData.init(
+                try RegExp.initWithAllocator(allocator, "foo\\\\\\\\r", .{ .ignore_case = true }),
+                null,
+                null,
+            ),
+        );
+    }
+
+    test "parseSearchRequest regex" {
+        const usualWordSeparators = try getMapForWordSeparators(allocator, USUAL_WORD_SEPARATORS);
+        defer clearWordClassifierCache();
+
+        try assertParseSearchResult(
+            "foo",
+            true,
+            false,
+            null,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo", .{ .ignore_case = true }), null, null),
+        );
+        try assertParseSearchResult(
+            "foo",
+            true,
+            false,
+            USUAL_WORD_SEPARATORS,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo", .{ .ignore_case = true }), usualWordSeparators, null),
+        );
+        try assertParseSearchResult(
+            "foo",
+            true,
+            true,
+            null,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo", .{ .ignore_case = false }), null, null),
+        );
+        try assertParseSearchResult(
+            "foo",
+            true,
+            true,
+            USUAL_WORD_SEPARATORS,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo", .{ .ignore_case = false }), usualWordSeparators, null),
+        );
+        try assertParseSearchResult(
+            "foo\\n",
+            true,
+            false,
+            null,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo\\n", .{ .ignore_case = true }), null, null),
+        );
+        try assertParseSearchResult(
+            "foo\\\\n",
+            true,
+            false,
+            null,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo\\\\n", .{ .ignore_case = true }), null, null),
+        );
+        try assertParseSearchResult(
+            "foo\\r",
+            true,
+            false,
+            null,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo\\r", .{ .ignore_case = true }), null, null),
+        );
+        try assertParseSearchResult(
+            "foo\\\\r",
+            true,
+            false,
+            null,
+            SearchData.init(try RegExp.initWithAllocator(allocator, "foo\\\\r", .{ .ignore_case = true }), null, null),
+        );
+    }
+
+    test "issue #53415. \\W should match line break." {
+        try assertFindMatches(
+            \\text
+            \\180702-
+            \\180703-180704
+        ,
+            "\\d{6}-\\W",
+            true,
+            false,
+            null,
+            &[_]Range{
+                .init(2, 1, 3, 1),
+            },
+        );
+
+        try assertFindMatches(
+            \\Just some text
+            \\
+            \\Just
+        ,
+            "\\W",
+            true,
+            false,
+            null,
+            &[_]Range{
+                .init(1, 5, 1, 6),
+                .init(1, 10, 1, 11),
+                .init(1, 15, 2, 1),
+                .init(2, 1, 3, 1),
+            },
+        );
+
+        // Line break doesn't affect the result as we always use \n as line break when doing search
+        try assertFindMatches(
+            "Just some text\r\n\r\nJust",
+            "\\W",
+            true,
+            false,
+            null,
+            &[_]Range{
+                .init(1, 5, 1, 6),
+                .init(1, 10, 1, 11),
+                .init(1, 15, 2, 1),
+                .init(2, 1, 3, 1),
+            },
+        );
+
+        try assertFindMatches(
+            "Just some text\n\tJust\nJust",
+            "\\W",
+            true,
+            false,
+            null,
+            &[_]Range{
+                .init(1, 5, 1, 6),
+                .init(1, 10, 1, 11),
+                .init(1, 15, 2, 1),
+                .init(2, 1, 2, 2),
+                .init(2, 6, 3, 1),
+            },
+        );
+
+        // line break is seen as one non-word character
+        try assertFindMatches(
+            \\Just  some text
+            \\
+            \\Just
+        ,
+            "\\W{2}",
+            true,
+            false,
+            null,
+            &[_]Range{
+                .init(1, 5, 1, 7),
+                .init(1, 16, 3, 1),
+            },
+        );
+
+        // even if it's \r\n
+        try assertFindMatches(
+            "Just  some text\r\n\r\nJust",
+            "\\W{2}",
+            true,
+            false,
+            null,
+            &[_]Range{
+                .init(1, 5, 1, 7),
+                .init(1, 16, 3, 1),
+            },
+        );
     }
 };
 

@@ -73,7 +73,8 @@ pub const SearchParams = struct {
 test "SearchParams" {
     const allocator = std.testing.allocator;
     var params = SearchParams.init("Hello", false, false, null);
-    if (try params.parseSearchRequest(allocator)) |searchData| {
+    if (try params.parseSearchRequest(allocator)) |*searchData| {
+        defer searchData.deinit();
         try std.testing.expect(searchData.regex.isMatch("Hello"));
         try std.testing.expect(searchData.wordSeparators == null);
         try std.testing.expect(searchData.simpleSearch == null);
@@ -137,17 +138,41 @@ test "isMultilineRegexSource" {
     try std.testing.expect(isMultilineRegexSource("foo\r\n"));
 }
 
+test "isMultilineRegexSource correctly identifies multiline patterns" {
+    const singleLinePatterns = [_][]const u8{
+        "MARK:\\s*(?<label>.*)$",
+        "^// Header$",
+        "\\s*[-=]+\\s*",
+    };
+
+    const multiLinePatterns = [_][]const u8{
+        "^// =+\\n^// (?<label>[^\\n]+?)\\n^// =+$",
+        "header\\r\\nfooter",
+        "start\\r|\\nend",
+        "top\nmiddle\r\nbottom",
+    };
+
+    for (singleLinePatterns) |pattern| {
+        try std.testing.expect(!isMultilineRegexSource(pattern));
+    }
+
+    for (multiLinePatterns) |pattern| {
+        try std.testing.expect(isMultilineRegexSource(pattern));
+    }
+}
+
 pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchResult, captureMatches: bool) !FindMatch {
     if (!captureMatches) {
-        return FindMatch.init(range, null);
+        return FindMatch.init(range);
     }
     var matches = ArrayList([]const u8).init(allocator);
     defer matches.deinit();
     for (0..rawMatches.numberOfGroups()) |i| {
+        std.debug.print("group {d}: {s}\n", .{ i, rawMatches.groupN(i) });
         // FIXME: do we need to copy the string?
-        try matches.append(rawMatches.groupN(i));
+        try matches.append(try allocator.dupe(u8, rawMatches.groupN(i)));
     }
-    return FindMatch.init(range, try matches.toOwnedSlice());
+    return FindMatch.initWithMatches(range, try matches.toOwnedSlice(), allocator);
 }
 
 pub const LineFeedCounter = struct {
@@ -218,7 +243,8 @@ test "LineFeedCounter" {
 pub const TextModelSearch = struct {
     pub fn findMatches(model: *TextModel, searchParams: SearchParams, searchRange: Range, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
         const allocator = model.getAllocator();
-        if (try searchParams.parseSearchRequest(allocator)) |searchData| {
+        if (try searchParams.parseSearchRequest(allocator)) |*searchData| {
+            defer searchData.deinit();
             if (!searchData.regex.options().singleline) {
                 var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
                 return _doFindMatchesMultiline(model, searchRange, &searcher, captureMatches, limitResultCount);
@@ -282,7 +308,7 @@ pub const TextModelSearch = struct {
         return result;
     }
 
-    fn _doFindMatchesLineByLine(model: *TextModel, searchRange: Range, searchData: SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
+    fn _doFindMatchesLineByLine(model: *TextModel, searchRange: Range, searchData: *const SearchData, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
         const allocator = model.getAllocator();
         var result = ArrayList(FindMatch).init(allocator);
 
@@ -319,7 +345,7 @@ pub const TextModelSearch = struct {
         return result;
     }
 
-    fn _findMatchesInLine(searchData: SearchData, text: []const u8, lineNumber: usize, deltaOffset: usize, result: *ArrayList(FindMatch), captureMatches: bool, limitResultCount: usize) !void {
+    fn _findMatchesInLine(searchData: *const SearchData, text: []const u8, lineNumber: usize, deltaOffset: usize, result: *ArrayList(FindMatch), captureMatches: bool, limitResultCount: usize) !void {
         const wordSeparators = searchData.wordSeparators;
         if (!captureMatches) {
             if (searchData.simpleSearch) |searchString| {
@@ -335,7 +361,7 @@ pub const TextModelSearch = struct {
                     }
 
                     if (wordSeparators == null or isValidMatch(wordSeparators.?, text, textLength, lastMatchIndex - searchStringLen, searchStringLen)) {
-                        try result.append(FindMatch.init(Range.init(lineNumber, lastMatchIndex + 1 + deltaOffset - searchStringLen, lineNumber, lastMatchIndex + 1 + deltaOffset), null));
+                        try result.append(FindMatch.init(Range.init(lineNumber, lastMatchIndex + 1 + deltaOffset - searchStringLen, lineNumber, lastMatchIndex + 1 + deltaOffset)));
                         if (result.items.len >= limitResultCount) {
                             return;
                         }
@@ -361,7 +387,8 @@ pub const TextModelSearch = struct {
     }
 
     pub fn findNextMatch(model: *TextModel, searchParams: SearchParams, searchStart: Position, captureMatches: bool) !?FindMatch {
-        if (try searchParams.parseSearchRequest(model.getAllocator())) |searchData| {
+        if (try searchParams.parseSearchRequest(model.getAllocator())) |*searchData| {
+            defer searchData.deinit();
             var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
 
             if (!searchData.regex.options().singleline) {
@@ -437,7 +464,8 @@ pub const TextModelSearch = struct {
     }
 
     pub fn findPreviousMatch(model: *TextModel, searchParams: SearchParams, searchStart: Position, captureMatches: bool) !?FindMatch {
-        if (try searchParams.parseSearchRequest(model.getAllocator())) |searchData| {
+        if (try searchParams.parseSearchRequest(model.getAllocator())) |*searchData| {
+            defer searchData.deinit();
             var searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
 
             if (!searchData.regex.options().singleline) {
@@ -455,7 +483,7 @@ pub const TextModelSearch = struct {
         if (matches.items.len > 0) {
             defer {
                 for (matches.items[0 .. matches.items.len - 1]) |match| {
-                    match.free(model.getAllocator());
+                    match.deinit();
                 }
             }
             return matches.items[matches.items.len - 1];

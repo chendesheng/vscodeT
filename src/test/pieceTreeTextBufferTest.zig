@@ -2026,7 +2026,7 @@ const ChunkBasedSearchTests = struct {
         const ret = try pieceTable.findMatchesLineByLine(.init(1, 1, 4, 13), .init(regex, &wordSeparators, "["), true, 1000);
         defer {
             for (ret.items) |item| {
-                item.free(allocator);
+                item.deinit();
             }
             ret.deinit();
         }
@@ -2049,7 +2049,7 @@ const ChunkBasedSearchTests = struct {
         var ret = try pieceTable.findMatchesLineByLine(.init(2, 3, 2, 6), .init(regex, null, "a"), true, 1000);
         defer {
             for (ret.items) |item| {
-                item.free(allocator);
+                item.deinit();
             }
             ret.deinit();
         }
@@ -2062,7 +2062,7 @@ const ChunkBasedSearchTests = struct {
         var ret2 = try pieceTable.findMatchesLineByLine(.init(2, 2, 2, 5), .init(regex2, null, "a"), true, 1000);
         defer {
             for (ret2.items) |item| {
-                item.free(allocator);
+                item.deinit();
             }
             ret2.deinit();
         }
