@@ -168,8 +168,6 @@ pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchRes
     var matches = ArrayList([]const u8).init(allocator);
     defer matches.deinit();
     for (0..rawMatches.numberOfGroups()) |i| {
-        std.debug.print("group {d}: {s}\n", .{ i, rawMatches.groupN(i) });
-        // FIXME: do we need to copy the string?
         try matches.append(try allocator.dupe(u8, rawMatches.groupN(i)));
     }
     return FindMatch.initWithMatches(range, try matches.toOwnedSlice(), allocator);
