@@ -1,6 +1,6 @@
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
-const TextModel = @import("../textModel.zig").TextModel;
+const TextModel = @import("../textModel/textModel.zig").TextModel;
 const Position = @import("../basics/position.zig").Position;
 const Range = @import("../basics/range.zig").Range;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
@@ -40,7 +40,7 @@ pub const TokenizationTextModelPart = struct {
     tokens: TokenizerSyntaxTokenBackend,
     _useTreeSitter: bool,
     _languageId: []const u8,
-    _textModel: *anyopaque,
+    _textModel: *TextModel,
     _attachedViews: AttachedViews,
     // _bracketPairsTextModelPart: BracketPairsTextModelPart,
     _languageService: *LanguageService,
@@ -161,10 +161,10 @@ pub const TokenizationTextModelPart = struct {
     }
 
     // Includes grammar and semantic tokens.
-    pub fn getLineTokens(self: *TokenizationTextModelPart, lineNumber: usize) LineTokens {
+    pub fn getLineTokens(self: *TokenizationTextModelPart, lineNumber: usize) !LineTokens {
         self.validateLineNumber(lineNumber);
-        const syntacticTokens = self.tokens.getLineTokens(lineNumber);
-        return self._semanticTokens.addSparseTokens(lineNumber, syntacticTokens);
+        const syntacticTokens = try self.tokens.getLineTokens(lineNumber);
+        return try self._semanticTokens.addSparseTokens(lineNumber, syntacticTokens);
     }
 
     fn _emitModelTokensChangedEvent(self: *TokenizationTextModelPart, e: ModelTokensChangedEvent) void {

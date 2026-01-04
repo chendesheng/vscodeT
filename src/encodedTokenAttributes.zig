@@ -133,6 +133,16 @@ pub const StandardTokenType = enum(u2) { Other = 0, Comment = 1, String = 2, Reg
 // FONT_STYLE_OFFSET = 11,
 // FOREGROUND_OFFSET = 15,
 // BACKGROUND_OFFSET = 24
+
+pub const MetadataConsts = struct {
+    const SEMANTIC_USE_ITALIC: u8 = 0b00000001;
+    const SEMANTIC_USE_BOLD: u8 = 0b00000010;
+    const SEMANTIC_USE_UNDERLINE: u8 = 0b00000100;
+    const SEMANTIC_USE_STRIKETHROUGH: u8 = 0b00001000;
+    const SEMANTIC_USE_FOREGROUND: u8 = 0b00010000;
+    const SEMANTIC_USE_BACKGROUND: u8 = 0b00100000;
+};
+
 pub const SemanticMetadata = packed struct(u8) {
     useItalic: bool,
     useBold: bool,
