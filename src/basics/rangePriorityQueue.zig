@@ -4,8 +4,6 @@ const Allocator = std.mem.Allocator;
 const OffsetRange = @import("offsetRange.zig").OffsetRange;
 const OffsetRangeSet = @import("offsetRange.zig").OffsetRangeSet;
 const findIndex = @import("utils.zig").findIndex;
-const usizeAdd = @import("utils.zig").usizeAdd;
-const usizeSub = @import("utils.zig").usizeSub;
 
 pub const RangePriorityQueue = struct {
     _ranges: ArrayList(OffsetRange),
@@ -14,16 +12,20 @@ pub const RangePriorityQueue = struct {
         return RangePriorityQueue{ ._ranges = ArrayList(OffsetRange).init(allocator) };
     }
 
-    pub fn getRanges(self: *RangePriorityQueue) []OffsetRange {
-        return self._ranges.items;
+    pub fn deinit(self: RangePriorityQueue) void {
+        self._ranges.deinit();
     }
 
-    pub fn min(self: *RangePriorityQueue) ?usize {
+    pub fn getRanges(self: *RangePriorityQueue) *ArrayList(OffsetRange) {
+        return &self._ranges;
+    }
+
+    pub fn min(self: RangePriorityQueue) ?usize {
         if (self._ranges.items.len == 0) return null;
         return self._ranges.items[0].start;
     }
 
-    pub fn removeMin(self: *RangePriorityQueue) ?usize {
+    pub fn removeMin(self: RangePriorityQueue) ?usize {
         if (self._ranges.items.len == 0) return null;
         const range = self._ranges.items[0];
         if (range.start + 1 == range.endExclusive) {
@@ -34,7 +36,7 @@ pub const RangePriorityQueue = struct {
         return range.start;
     }
 
-    pub fn delete(self: *RangePriorityQueue, value: usize) !void {
+    pub fn delete(self: RangePriorityQueue, value: usize) !void {
         if (findIndex(OffsetRange, self._ranges.items, value, struct {
             fn pred(r: OffsetRange, val: usize) bool {
                 return r.contains(val);
@@ -59,10 +61,10 @@ pub const RangePriorityQueue = struct {
     }
 
     pub fn addRange(self: *RangePriorityQueue, range: OffsetRange) !void {
-        try OffsetRange.addRange(range, self._ranges);
+        try OffsetRange.addRange(range, &self._ranges);
     }
 
-    pub fn addRangeAndResize(self: *RangePriorityQueue, range: OffsetRange, newLength: usize) !void {
+    pub fn addRangeAndResize(self: *RangePriorityQueue, range: OffsetRange, newLength: isize) !void {
         var idxFirstMightBeIntersecting: usize = 0;
         while (!(idxFirstMightBeIntersecting >= self._ranges.items.len or range.start <= self._ranges.items[idxFirstMightBeIntersecting].endExclusive)) {
             idxFirstMightBeIntersecting += 1;
@@ -71,31 +73,31 @@ pub const RangePriorityQueue = struct {
         while (!(idxFirstIsAfter >= self._ranges.items.len or range.endExclusive < self._ranges.items[idxFirstIsAfter].start)) {
             idxFirstIsAfter += 1;
         }
-        const delta = usizeSub(newLength, range.length());
+        const delta = newLength - range.length();
 
-        for (self._ranges.items, idxFirstIsAfter..) |_, i| {
+        for (idxFirstIsAfter..self._ranges.items.len) |i| {
             self._ranges.items[i] = self._ranges.items[i].delta(delta);
         }
 
         if (idxFirstMightBeIntersecting == idxFirstIsAfter) {
             const newRange = OffsetRange.init(range.start, range.start + newLength);
             if (!newRange.isEmpty()) {
-                try self._ranges.insert(idxFirstMightBeIntersecting, newRange);
+                try self._ranges.insert(@intCast(idxFirstMightBeIntersecting), newRange);
             }
         } else {
             const start = @min(range.start, self._ranges.items[idxFirstMightBeIntersecting].start);
             const endEx = @max(range.endExclusive, self._ranges.items[idxFirstIsAfter - 1].endExclusive);
 
-            const newRange = OffsetRange.init(start, usizeAdd(endEx, delta));
+            const newRange = OffsetRange.init(start, endEx + delta);
             if (!newRange.isEmpty()) {
-                try self._ranges.insert(idxFirstMightBeIntersecting, newRange);
+                try self._ranges.replaceRange(idxFirstMightBeIntersecting, idxFirstIsAfter - idxFirstMightBeIntersecting, &[_]OffsetRange{newRange});
             } else {
                 try self._ranges.replaceRange(idxFirstMightBeIntersecting, idxFirstIsAfter - idxFirstMightBeIntersecting, &[_]OffsetRange{});
             }
         }
     }
 
-    pub fn toString(self: *RangePriorityQueue) !ArrayList(u8) {
+    pub fn toString(self: RangePriorityQueue) !ArrayList(u8) {
         const allocator = self._ranges.allocator;
         var result = ArrayList(u8).init(allocator);
         for (self._ranges.items) |range| {

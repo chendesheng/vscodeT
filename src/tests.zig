@@ -34,6 +34,7 @@ comptime {
     _ = @import("test/textChangeTest.zig");
     _ = @import("test/textModelSearchTest.zig");
     _ = @import("test/textModelTest.zig");
+    _ = @import("test/textModelTokensTest.zig");
     _ = @import("textModel/editStack.zig");
     _ = @import("textModel/indentationGuesser.zig");
     _ = @import("textModel/intervalTree.zig");

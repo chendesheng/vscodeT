@@ -6,47 +6,47 @@ const clamp = @import("utils.zig").clamp;
 
 // A range of offsets (0-based).
 pub const OffsetRange = struct {
-    start: usize,
-    endExclusive: usize,
+    start: isize,
+    endExclusive: isize,
 
-    pub fn init(start: usize, endExclusive: usize) OffsetRange {
+    pub fn init(start: isize, endExclusive: isize) OffsetRange {
         return OffsetRange{ .start = start, .endExclusive = endExclusive };
     }
 
     pub fn addRange(range: OffsetRange, sortedRanges: *ArrayList(OffsetRange)) !void {
         var i: usize = 0;
-        while (i < sortedRanges.len and sortedRanges[i].endExclusive < range.start) {
+        while (i < sortedRanges.items.len and sortedRanges.items[i].endExclusive < range.start) {
             i += 1;
         }
         var j: usize = i;
-        while (j < sortedRanges.len and sortedRanges[j].start <= range.endExclusive) {
+        while (j < sortedRanges.items.len and sortedRanges.items[j].start <= range.endExclusive) {
             j += 1;
         }
         if (i == j) {
             try sortedRanges.insert(i, range);
         } else {
-            const start = @min(range.start, sortedRanges[i].start);
-            const end = @max(range.endExclusive, sortedRanges[j - 1].endExclusive);
-            try sortedRanges.insert(i, OffsetRange.init(start, end));
+            const start = @min(range.start, sortedRanges.items[i].start);
+            const end = @max(range.endExclusive, sortedRanges.items[j - 1].endExclusive);
+            try sortedRanges.replaceRange(i, j - i, &[_]OffsetRange{.init(start, end)});
         }
     }
 
-    pub fn tryCreate(start: usize, endExclusive: usize) !OffsetRange {
+    pub fn tryCreate(start: isize, endExclusive: isize) !OffsetRange {
         if (start > endExclusive) {
             return error.InvalidRange;
         }
         return OffsetRange.init(start, endExclusive);
     }
 
-    pub fn ofLength(len: usize) OffsetRange {
+    pub fn ofLength(len: isize) OffsetRange {
         return OffsetRange.init(0, len);
     }
 
-    pub fn ofStartAndLength(start: usize, len: usize) OffsetRange {
+    pub fn ofStartAndLength(start: isize, len: isize) OffsetRange {
         return OffsetRange.init(start, start + len);
     }
 
-    pub fn emptyAt(offset: usize) OffsetRange {
+    pub fn emptyAt(offset: isize) OffsetRange {
         return OffsetRange.init(offset, offset);
     }
 
@@ -55,18 +55,18 @@ pub const OffsetRange = struct {
     }
 
     pub fn delta(self: OffsetRange, offset: isize) OffsetRange {
-        return OffsetRange.init(usizeAdd(self.start, offset), usizeAdd(self.endExclusive, offset));
+        return OffsetRange.init(self.start + offset, self.endExclusive + offset);
     }
 
-    pub fn deltaStart(self: OffsetRange, offset: usize) OffsetRange {
+    pub fn deltaStart(self: OffsetRange, offset: isize) OffsetRange {
         return OffsetRange.init(self.start + offset, self.endExclusive);
     }
 
-    pub fn deltaEnd(self: OffsetRange, offset: usize) OffsetRange {
+    pub fn deltaEnd(self: OffsetRange, offset: isize) OffsetRange {
         return OffsetRange.init(self.start, self.endExclusive + offset);
     }
 
-    pub fn length(self: OffsetRange) usize {
+    pub fn length(self: OffsetRange) isize {
         return self.endExclusive - self.start;
     }
 
@@ -82,7 +82,7 @@ pub const OffsetRange = struct {
         return self.start <= other.start and other.endExclusive <= self.endExclusive;
     }
 
-    pub fn contains(self: OffsetRange, offset: usize) bool {
+    pub fn contains(self: OffsetRange, offset: isize) bool {
         return self.start <= offset and offset < self.endExclusive;
     }
 
@@ -104,7 +104,7 @@ pub const OffsetRange = struct {
         return null;
     }
 
-    pub fn intersectionLength(self: OffsetRange, range: OffsetRange) usize {
+    pub fn intersectionLength(self: OffsetRange, range: OffsetRange) isize {
         const start = @max(self.start, range.start);
         const end = @min(self.endExclusive, range.endExclusive);
         if (end >= start) return end - start;
@@ -141,7 +141,7 @@ pub const OffsetRange = struct {
 
     // Returns the given value if it is contained in this instance, otherwise the closest value that is contained.
     // The range must not be empty.
-    pub fn clip(self: OffsetRange, value: usize) !usize {
+    pub fn clip(self: OffsetRange, value: isize) !isize {
         if (self.isEmpty()) {
             return error.InvalidRange;
         }
@@ -152,20 +152,20 @@ pub const OffsetRange = struct {
     // The range must not be empty.
     //
     // E.g. `[5, 10).clipCyclic(10) === 5`, `[5, 10).clipCyclic(11) === 6` and `[5, 10).clipCyclic(4) === 9`.
-    pub fn clipCyclic(self: OffsetRange, value: usize) !usize {
+    pub fn clipCyclic(self: OffsetRange, value: isize) !isize {
         if (self.isEmpty()) {
             return error.InvalidRange;
         }
         if (value < self.start) {
-            return self.endExclusive - ((self.start - value) % self.length());
+            return self.endExclusive - @rem((self.start - value), self.length());
         }
         if (value >= self.endExclusive) {
-            return self.start + ((value - self.start) % self.length());
+            return self.start + @rem((value - self.start), self.length());
         }
         return value;
     }
 
-    pub fn map(comptime T: type, allocator: Allocator, self: OffsetRange, context: anytype, f: fn (offset: usize, ctx: @TypeOf(context)) T) !ArrayList(T) {
+    pub fn map(comptime T: type, allocator: Allocator, self: OffsetRange, context: anytype, f: fn (offset: isize, ctx: @TypeOf(context)) T) !ArrayList(T) {
         var result = ArrayList(T).init(allocator);
         for (self.start..self.endExclusive) |i| {
             try result.append(try f(i, context));
@@ -173,7 +173,7 @@ pub const OffsetRange = struct {
         return result;
     }
 
-    pub fn forEach(self: OffsetRange, context: anytype, f: fn (offset: usize, ctx: @TypeOf(context)) void) void {
+    pub fn forEach(self: OffsetRange, context: anytype, f: fn (offset: isize, ctx: @TypeOf(context)) void) void {
         for (self.start..self.endExclusive) |i| {
             f(i, context);
         }
@@ -284,7 +284,7 @@ pub const OffsetRangeSet = struct {
         return (try self.intersectWithRange(other)).length();
     }
 
-    pub fn length(self: OffsetRangeSet) usize {
+    pub fn length(self: OffsetRangeSet) isize {
         var result: usize = 0;
         for (self.sortedRanges.items) |range| {
             result += range.length();
