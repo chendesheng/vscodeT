@@ -23,6 +23,33 @@ pub const TokenPacked = packed struct(u64) {
     }
 };
 
+pub fn implementsIViewLineTokens(comptime T: type) void {
+    comptime {
+        const methods = [_][]const u8{
+            "getLanguageIdCodec",
+            "equals",
+            "getCount",
+            "getStandardTokenType",
+            "getForeground",
+            "getEndOffset",
+            "getClassName",
+            "getInlineStyle",
+            "getPresentation",
+            "findTokenIndexAtOffset",
+            "getLineContent",
+            "getMetadata",
+            "getLanguageId",
+            "getTokenText",
+            "forEach",
+        };
+        for (methods) |method| {
+            if (!@hasDecl(T, method)) {
+                @compileError("Type " ++ @typeName(T) ++ " does not implement method " ++ method);
+            }
+        }
+    }
+}
+
 pub const LineTokens = struct {
     _tokens: ArrayList(TokenPacked),
     _text: []const u8,
@@ -73,7 +100,7 @@ pub const LineTokens = struct {
         }
 
         var low: usize = 0;
-        var high: usize = (tokens.len >> 1) - 1;
+        var high: usize = tokens.len - 1;
 
         while (low < high) {
             const mid = low + @divFloor(high - low, 2);
@@ -101,6 +128,10 @@ pub const LineTokens = struct {
             ._text = text,
             .languageIdCodec = decoder,
         };
+    }
+
+    pub fn getLanguageIdCodec(self: *const LineTokens) LanguageIdCodec {
+        return self.languageIdCodec;
     }
 
     pub fn getTextLength(self: *const LineTokens) usize {
@@ -181,7 +212,7 @@ pub const LineTokens = struct {
         return LineTokens.findIndexInTokensArray(self._tokens.items, offset);
     }
 
-    pub fn inflate(self: *LineTokens) LineTokens {
+    pub fn inflate(self: *const LineTokens) LineTokens {
         return self;
     }
 
@@ -201,7 +232,7 @@ pub const LineTokens = struct {
 
     // @pure
     // @param insertTokens Must be sorted by offset.
-    pub fn withInserted(self: *LineTokens, insertTokens: []const InsertTokenArg) !LineTokens {
+    pub fn withInserted(self: *const LineTokens, insertTokens: []const InsertTokenArg) !LineTokens {
         if (insertTokens.len == 0) {
             return self.*;
         }
@@ -244,7 +275,7 @@ pub const LineTokens = struct {
         return LineTokens.init(newTokens, try text.toOwnedSlice(), self.languageIdCodec);
     }
 
-    pub fn getTokensInRange(self: *LineTokens, range: OffsetRange) TokenArray {
+    pub fn getTokensInRange(self: *const LineTokens, range: OffsetRange) TokenArray {
         var builder = TokenArrayBuilder.init(self._tokens.allocator);
 
         const startTokenIndex = self.findTokenIndexAtOffset(range.start);
@@ -267,14 +298,14 @@ pub const LineTokens = struct {
         return self._text[startOffset..endOffset];
     }
 
-    pub fn forEach(self: *LineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
+    pub fn forEach(self: *const LineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
         const tokenCount = self.getCount();
         for (0..tokenCount) |tokenIndex| {
             callback(tokenIndex, context);
         }
     }
 
-    pub fn toString(self: *LineTokens) !ArrayList(u8) {
+    pub fn toString(self: *const LineTokens) !ArrayList(u8) {
         var result = ArrayList(u8).init(self._tokens.allocator);
         var writer = result.writer();
         const tokenCount = self.getCount();
@@ -288,7 +319,7 @@ pub const LineTokens = struct {
 };
 
 pub const SliceLineTokens = struct {
-    _source: LineTokens,
+    _source: *const LineTokens,
     _startOffset: usize,
     _endOffset: usize,
     _deltaOffset: usize,
@@ -296,81 +327,85 @@ pub const SliceLineTokens = struct {
     _firstTokenIndex: usize,
     _tokensCount: usize,
 
-    languageIdCodec: LanguageIdCodec,
+    pub fn init(source: *const LineTokens, startOffset: usize, endOffset: usize, deltaOffset: usize) SliceLineTokens {
+        const firstTokenIndex = source.findTokenIndexAtOffset(startOffset);
 
-    pub fn init(source: LineTokens, startOffset: usize, endOffset: usize, deltaOffset: usize) SliceLineTokens {
         var tokensCount: usize = 0;
-        for (0..source.getCount()) |i| {
+        for (firstTokenIndex..source.getCount()) |i| {
             const tokenStartOffset = source.getStartOffset(i);
             if (tokenStartOffset >= endOffset) {
                 break;
             }
             tokensCount += 1;
         }
+
         return SliceLineTokens{
-            .source = source,
-            .startOffset = startOffset,
-            .endOffset = endOffset,
-            .deltaOffset = deltaOffset,
-            .firstTokenIndex = source.findTokenIndexAtOffset(startOffset),
-            .tokensCount = tokensCount,
-            .languageIdCodec = source.languageIdCodec,
+            ._source = source,
+            ._startOffset = startOffset,
+            ._endOffset = endOffset,
+            ._deltaOffset = deltaOffset,
+            ._firstTokenIndex = firstTokenIndex,
+            ._tokensCount = tokensCount,
         };
     }
 
-    pub fn getMetadata(self: *SliceLineTokens, tokenIndex: usize) TokenMetadata {
+    pub fn getLanguageIdCodec(self: *const SliceLineTokens) LanguageIdCodec {
+        return self._source.getLanguageIdCodec();
+    }
+
+    pub fn getMetadata(self: *const SliceLineTokens, tokenIndex: usize) TokenMetadata {
         return self._source.getMetadata(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getLanguageId(self: *SliceLineTokens, tokenIndex: usize) []const u8 {
+    pub fn getLanguageId(self: *const SliceLineTokens, tokenIndex: usize) []const u8 {
         return self._source.getLanguageId(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getLineContent(self: *SliceLineTokens) []const u8 {
+    pub fn getLineContent(self: *const SliceLineTokens) []const u8 {
         return self._source.getLineContent()[self._startOffset..self._endOffset];
     }
 
-    pub fn equals(self: *SliceLineTokens, other: *SliceLineTokens) bool {
+    pub fn equals(self: *const SliceLineTokens, other: *const SliceLineTokens) bool {
         if (other == SliceLineTokens) {
             return (self._startOffset == other._startOffset and self._endOffset == other._endOffset and self._deltaOffset == other._deltaOffset and self._source.slicedEquals(other._source, self._firstTokenIndex, self._tokensCount));
         }
         return false;
     }
 
-    pub fn getCount(self: *SliceLineTokens) usize {
+    pub fn getCount(self: *const SliceLineTokens) usize {
         return self._tokensCount;
     }
 
-    pub fn getStandardTokenType(self: *SliceLineTokens, tokenIndex: usize) StandardTokenType {
+    pub fn getStandardTokenType(self: *const SliceLineTokens, tokenIndex: usize) StandardTokenType {
         return self._source.getStandardTokenType(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getForeground(self: *SliceLineTokens, tokenIndex: usize) ColorId {
+    pub fn getForeground(self: *const SliceLineTokens, tokenIndex: usize) ColorId {
         return self._source.getForeground(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getEndOffset(self: *SliceLineTokens, tokenIndex: usize) usize {
+    pub fn getEndOffset(self: *const SliceLineTokens, tokenIndex: usize) usize {
         const tokenEndOffset = self._source.getEndOffset(self._firstTokenIndex + tokenIndex);
         return @min(self._endOffset, tokenEndOffset) - self._startOffset + self._deltaOffset;
     }
 
-    pub fn getClassName(self: *SliceLineTokens, tokenIndex: usize) !ArrayList(u8) {
+    pub fn getClassName(self: *const SliceLineTokens, tokenIndex: usize) !ArrayList(u8) {
         return try self._source.getClassName(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getInlineStyle(self: *SliceLineTokens, tokenIndex: usize, colorMap: []const []const u8) !ArrayList(u8) {
+    pub fn getInlineStyle(self: *const SliceLineTokens, tokenIndex: usize, colorMap: []const []const u8) !ArrayList(u8) {
         return try self._source.getInlineStyle(self._firstTokenIndex + tokenIndex, colorMap);
     }
 
-    pub fn getPresentation(self: *SliceLineTokens, tokenIndex: usize) TokenPresentation {
+    pub fn getPresentation(self: *const SliceLineTokens, tokenIndex: usize) TokenPresentation {
         return self._source.getPresentation(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn findTokenIndexAtOffset(self: *SliceLineTokens, offset: usize) usize {
+    pub fn findTokenIndexAtOffset(self: *const SliceLineTokens, offset: usize) usize {
         return self._source.findTokenIndexAtOffset(offset + self._startOffset - self._deltaOffset) - self._firstTokenIndex;
     }
 
-    pub fn getTokenText(self: *SliceLineTokens, tokenIndex: usize) []const u8 {
+    pub fn getTokenText(self: *const SliceLineTokens, tokenIndex: usize) []const u8 {
         const adjustedTokenIndex = self._firstTokenIndex + tokenIndex;
         const tokenStartOffset = self._source.getStartOffset(adjustedTokenIndex);
         const tokenEndOffset = self._source.getEndOffset(adjustedTokenIndex);
@@ -384,7 +419,7 @@ pub const SliceLineTokens = struct {
         return text;
     }
 
-    pub fn forEach(self: *SliceLineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
+    pub fn forEach(self: *const SliceLineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
         for (0..self.getCount()) |tokenIndex| {
             callback(tokenIndex, context);
         }
