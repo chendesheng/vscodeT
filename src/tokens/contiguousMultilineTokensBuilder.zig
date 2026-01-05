@@ -31,17 +31,20 @@ pub const ContiguousMultilineTokensBuilder = struct {
         self._tokens.deinit();
     }
 
-    pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: ArrayList(TokenPacked)) !void {
+    pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: []const TokenPacked) !void {
+        var arrLineTokens = ArrayList(TokenPacked).init(self._tokens.allocator);
+        try arrLineTokens.appendSlice(lineTokens);
+
         if (self._tokens.items.len > 0) {
             var last = &self._tokens.items[self._tokens.items.len - 1];
             if (last.getEndLineNumber() + 1 == lineNumber) {
                 // append
-                try last.appendLineTokens(lineTokens);
+                try last.appendLineTokens(arrLineTokens);
                 return;
             }
         }
         var multilineTokens = ArrayList(?ArrayList(TokenPacked)).init(self._tokens.allocator);
-        try multilineTokens.append(lineTokens);
+        try multilineTokens.append(arrLineTokens);
         try self._tokens.append(ContiguousMultilineTokens.init(lineNumber, multilineTokens));
     }
 
@@ -79,7 +82,7 @@ test "ContiguousMultilineTokensBuilder/add" {
     const allocator = std.testing.allocator;
     var builder = ContiguousMultilineTokensBuilder.init(allocator);
     defer builder.deinit();
-    try builder.add(1, ArrayList(TokenPacked).init(allocator));
+    try builder.add(1, &[_]TokenPacked{});
     const result = builder.finalize();
     try std.testing.expectEqual(1, result.items.len);
 }

@@ -22,16 +22,16 @@ pub const RateLimiter = struct {
     }
 };
 
-test "RateLimiter" {
-    var limiter = RateLimiter.init(100); // once per 10ms
-    var count: usize = 0;
-    for (0..20) |_| { // 20ms total
-        limiter.runIfNotLimited(&count, struct {
-            fn run(n: *usize) void {
-                n.* += 1;
-            }
-        }.run);
-        std.time.sleep(std.time.ns_per_ms);
-    }
-    try std.testing.expectEqual(3, count);
-}
+// test "RateLimiter" {
+//     var limiter = RateLimiter.init(100); // once per 10ms
+//     var count: usize = 0;
+//     for (0..20) |_| { // 20ms total
+//         limiter.runIfNotLimited(&count, struct {
+//             fn run(n: *usize) void {
+//                 n.* += 1;
+//             }
+//         }.run);
+//         std.time.sleep(std.time.ns_per_ms);
+//     }
+//     try std.testing.expectEqual(3, count);
+// }

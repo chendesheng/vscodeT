@@ -5,7 +5,7 @@ const LineTokens = @import("lineTokens.zig").LineTokens;
 const usizeSub = @import("../basics/utils.zig").usizeSub;
 const TokenPacked = @import("lineTokens.zig").TokenPacked;
 
-pub const EMPTY_LINE_TOKENS = &[_]TokenPacked{};
+pub const EMPTY_LINE_TOKENS: []TokenPacked = &[_]TokenPacked{};
 pub const ContiguousTokensEditing = struct {
     pub fn deleteBeginning(_lineTokens: *?ArrayList(TokenPacked), toChIndex: usize) !void {
         if (_lineTokens.* == null or _lineTokens.*.?.items.len == 0) {

@@ -14,10 +14,10 @@ const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
 const MetadataConsts = @import("../encodedTokenAttributes.zig").MetadataConsts;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
-const TextModel = @import("../textModel.zig").TextModel;
+const TextModel = @import("../textModel/textModel.zig").TextModel;
 const ContiguousMultilineTokens = @import("./contiguousMultilineTokens.zig").ContiguousMultilineTokens;
 const TokenPacked = @import("./lineTokens.zig").TokenPacked;
-const ModelTokensChangedRange = @import("../textModelEvents.zig").ModelTokensChangedRange;
+const ModelTokensChangedRange = @import("../textModel/textModelEvents.zig").ModelTokensChangedRange;
 
 // Represents contiguous tokens in a text model.
 pub const ContiguousTokensStore = struct {
@@ -31,6 +31,10 @@ pub const ContiguousTokensStore = struct {
             ._len = 0,
             ._languageIdCodec = languageIdCodec,
         };
+    }
+
+    pub fn deinit(self: *ContiguousTokensStore) void {
+        self._lineTokens.deinit();
     }
 
     pub fn flush(self: *ContiguousTokensStore) void {
@@ -57,17 +61,17 @@ pub const ContiguousTokensStore = struct {
         return LineTokens.init(lineTokens, lineText, self._languageIdCodec);
     }
 
-    fn _massageTokens(allocator: Allocator, topLevelLanguageId: LanguageId, lineTextLength: usize, _tokens: ?[]TokenPacked) []TokenPacked {
-        const tokens = _tokens orelse null;
-
-        if (tokens == null) {
+    fn _massageTokens(allocator: Allocator, topLevelLanguageId: u8, lineTextLength: usize, _tokens: ?[]TokenPacked) ![]TokenPacked {
+        if (_tokens == null) {
             return EMPTY_LINE_TOKENS;
         }
+
+        var tokens = _tokens.?;
 
         if (lineTextLength == 0) {
             var hasDifferentLanguageId = false;
             if (tokens.len > 1) {
-                hasDifferentLanguageId = (TokenMetadata.getLanguageId(tokens[1]) != topLevelLanguageId);
+                hasDifferentLanguageId = (tokens[1].metadata.languageId != topLevelLanguageId);
             }
 
             if (!hasDifferentLanguageId) {
@@ -77,18 +81,14 @@ pub const ContiguousTokensStore = struct {
 
         if (tokens.len == 0) {
             var tokens2 = ArrayList(TokenPacked).init(allocator);
-            try tokens2.append(TokenPacked{ .endOffset = lineTextLength, .metadata = getDefaultMetadata(topLevelLanguageId) });
+            try tokens2.append(TokenPacked{ .endOffset = @intCast(lineTextLength), .metadata = getDefaultMetadata(topLevelLanguageId) });
             return tokens2.items;
         }
 
         // Ensure the last token covers the end of the text
-        tokens[tokens.len - 2] = TokenPacked{ .endOffset = lineTextLength, .metadata = tokens[tokens.len - 2].metadata };
+        tokens[tokens.len - 2] = TokenPacked{ .endOffset = @intCast(lineTextLength), .metadata = tokens[tokens.len - 2].metadata };
 
-        if (tokens.items.byteOffset == 0 and tokens.items.byteLength == tokens.items.buffer.byteLength) {
-            // Store directly the ArrayBuffer pointer to save an object
-            return tokens.items.buffer;
-        }
-        return tokens.items;
+        return tokens;
     }
 
     fn _ensureLine(self: *ContiguousTokensStore, lineIndex: usize) !void {
@@ -121,14 +121,16 @@ pub const ContiguousTokensStore = struct {
         self._len += insertCount;
     }
 
-    pub fn setTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineTextLength: usize, _tokens: ?[]TokenPacked, checkEquality: bool) bool {
-        const tokens = ContiguousTokensStore._massageTokens(self._lineTokens.allocator, self._languageIdCodec.encodeLanguageId(topLevelLanguageId), lineTextLength, _tokens);
-        self._ensureLine(lineIndex);
-        const oldTokens = self._lineTokens[lineIndex];
-        self._lineTokens[lineIndex] = tokens;
+    pub fn setTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineTextLength: usize, _tokens: ?[]TokenPacked, checkEquality: bool) !bool {
+        const tokens = try ContiguousTokensStore._massageTokens(self._lineTokens.allocator, self._languageIdCodec.encodeLanguageId(topLevelLanguageId), lineTextLength, _tokens);
+        var arrTokens = ArrayList(TokenPacked).init(self._lineTokens.allocator);
+        try arrTokens.appendSlice(tokens);
+        try self._ensureLine(lineIndex);
+        const oldTokens = self._lineTokens.items[lineIndex];
+        self._lineTokens.items[lineIndex] = arrTokens;
 
         if (checkEquality) {
-            return !ContiguousTokensStore._equals(oldTokens.?, tokens);
+            return !ContiguousTokensStore._equals(oldTokens.?.items, tokens);
         }
         return false;
     }
@@ -138,11 +140,11 @@ pub const ContiguousTokensStore = struct {
             return a == null and b == null;
         }
 
-        if (a.len != b.len) {
+        if (a.?.len != b.?.len) {
             return false;
         }
-        for (0..a.len) |i| {
-            if (a[i] != b[i]) {
+        for (0..a.?.len) |i| {
+            if (a.?[i] != b.?[i]) {
                 return false;
             }
         }
@@ -213,23 +215,23 @@ pub const ContiguousTokensStore = struct {
 
     //#endregion
 
-    pub fn setMultilineTokens(self: *ContiguousTokensStore, tokens: []ContiguousMultilineTokens, textModel: TextModel) struct { changes: []ModelTokensChangedRange } {
+    pub fn setMultilineTokens(self: *ContiguousTokensStore, tokens: []ContiguousMultilineTokens, textModel: *TextModel) !struct { changes: []ModelTokensChangedRange } {
         if (tokens.len == 0) {
             return .{ .changes = &.{} };
         }
 
-        var ranges: ArrayList(ModelTokensChangedRange) = ArrayList(ModelTokensChangedRange).init(std.heap.page_allocator);
+        var ranges: ArrayList(ModelTokensChangedRange) = ArrayList(ModelTokensChangedRange).init(textModel.getAllocator());
 
         for (tokens) |element| {
-            var minChangedLineNumber = 0;
-            var maxChangedLineNumber = 0;
+            var minChangedLineNumber: usize = 0;
+            var maxChangedLineNumber: usize = 0;
             var hasChange = false;
-            for (element.startLineNumber..element.endLineNumber) |lineNumber| {
+            for (element.getStartLineNumber()..element.getEndLineNumber()) |lineNumber| {
                 if (hasChange) {
-                    self.setTokens(textModel.getLanguageId(), lineNumber - 1, textModel.getLineLength(lineNumber), element.getLineTokens(lineNumber), false);
+                    _ = try self.setTokens(textModel.getLanguageId(), lineNumber - 1, textModel.getLineLength(lineNumber), element.getLineTokens(lineNumber), false);
                     maxChangedLineNumber = lineNumber;
                 } else {
-                    const lineHasChange = self.setTokens(textModel.getLanguageId(), lineNumber - 1, textModel.getLineLength(lineNumber), element.getLineTokens(lineNumber), true);
+                    const lineHasChange = try self.setTokens(textModel.getLanguageId(), lineNumber - 1, textModel.getLineLength(lineNumber), element.getLineTokens(lineNumber), true);
                     if (lineHasChange) {
                         hasChange = true;
                         minChangedLineNumber = lineNumber;
@@ -238,7 +240,7 @@ pub const ContiguousTokensStore = struct {
                 }
             }
             if (hasChange) {
-                ranges.append(.{ .fromLineNumber = minChangedLineNumber, .toLineNumber = maxChangedLineNumber });
+                try ranges.append(.{ .fromLineNumber = minChangedLineNumber, .toLineNumber = maxChangedLineNumber });
             }
         }
 

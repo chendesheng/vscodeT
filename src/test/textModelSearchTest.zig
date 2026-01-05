@@ -82,11 +82,11 @@ const TextModelSearchTests = struct {
 
         const searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
 
-        const model = try createTextModel(allocator, text, null);
+        const model = try createTextModel(allocator, text, null, null);
         defer disposeTextModel(model);
         try _assertFindMatches(model, searchParams, expectedMatches.items);
 
-        const model2 = try createTextModel(allocator, text, null);
+        const model2 = try createTextModel(allocator, text, null, null);
         defer disposeTextModel(model2);
         try model2.setEOL(.CRLF);
         try _assertFindMatches(model2, searchParams, expectedMatches.items);
@@ -422,7 +422,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findNextMatch without regex" {
-        const model = try createTextModel(allocator, "line line one\nline two\nthree", null);
+        const model = try createTextModel(allocator, "line line one\nline two\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("line", false, false, null);
@@ -449,7 +449,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findNextMatch with beginning boundary regex" {
-        const model = try createTextModel(allocator, "line one\nline two\nthree", null);
+        const model = try createTextModel(allocator, "line one\nline two\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("^line", true, false, null);
@@ -472,7 +472,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findNextMatch with beginning boundary regex and line has repetitive beginnings" {
-        const model = try createTextModel(allocator, "line line one\nline two\nthree", null);
+        const model = try createTextModel(allocator, "line line one\nline two\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("^line", true, false, null);
@@ -495,7 +495,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findNextMatch with beginning boundary multiline regex and line has repetitive beginnings" {
-        const model = try createTextModel(allocator, "line line one\nline two\nline three\nline four", null);
+        const model = try createTextModel(allocator, "line line one\nline two\nline three\nline four", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("^line.*\\nline", true, false, null);
@@ -514,7 +514,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findNextMatch with ending boundary regex" {
-        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("line$", true, false, null);
@@ -537,7 +537,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findMatches with capturing matches" {
-        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("(l(in)e)", true, false, null);
@@ -557,7 +557,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findMatches multiline with capturing matches" {
-        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("(l(in)e)\\n", true, false, null);
@@ -576,7 +576,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findNextMatch with capturing matches" {
-        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("(l(in)e)", true, false, null);
@@ -587,7 +587,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findNextMatch multiline with capturing matches" {
-        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("(l(in)e)\\n", true, false, null);
@@ -598,7 +598,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findPreviousMatch with capturing matches" {
-        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("(l(in)e)", true, false, null);
@@ -609,7 +609,7 @@ const TextModelSearchTests = struct {
     }
 
     test "findPreviousMatch multiline with capturing matches" {
-        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null);
+        const model = try createTextModel(allocator, "one line line\ntwo line\nthree", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("(l(in)e)\\n", true, false, null);
@@ -620,7 +620,7 @@ const TextModelSearchTests = struct {
     }
 
     test "\\n matches \\r\\n" {
-        const model = try createTextModel(allocator, "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh\r\ni", null);
+        const model = try createTextModel(allocator, "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh\r\ni", null, null);
         defer disposeTextModel(model);
 
         try std.testing.expectEqual(.CRLF, model.getEOL());
@@ -642,7 +642,7 @@ const TextModelSearchTests = struct {
     }
 
     test "\\r can never be found" {
-        const model = try createTextModel(allocator, "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh\r\ni", null);
+        const model = try createTextModel(allocator, "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh\r\ni", null, null);
         defer disposeTextModel(model);
 
         try std.testing.expectEqual(.CRLF, model.getEOL());
@@ -974,7 +974,7 @@ const TextModelSearchTests = struct {
     }
 
     test "issue #74715. \\d* finds empty string and stops searching." {
-        const model = try createTextModel(allocator, "10.243.30.10", null);
+        const model = try createTextModel(allocator, "10.243.30.10", null, null);
         defer disposeTextModel(model);
 
         const searchParams = SearchParams.init("\\d*", true, false, null);

@@ -8,6 +8,8 @@ const TextModelCreationOptions = @import("model.zig").TextModelCreationOptions;
 const IndentSize = @import("model.zig").IndentSize;
 const BracketPairColorizationOptions = @import("model.zig").BracketPairColorizationOptions;
 const EDITOR_MODEL_DEFAULTS = @import("textModelDefaults.zig");
+const LanguageService = @import("../languages/languageService.zig").LanguageService;
+const ILanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
 
 pub const RelaxedTextModelCreationOptions = struct {
     tabSize: ?usize = null,
@@ -38,15 +40,35 @@ fn resolveOptions(_options: ?RelaxedTextModelCreationOptions) TextModelCreationO
     };
 }
 
-pub fn createTextModel(allocator: Allocator, text: []const u8, options: ?RelaxedTextModelCreationOptions) !*TextModel {
+const PLAINTEXT_LANGUAGE_ID = "plaintext";
+
+pub fn createTextModel(allocator: Allocator, text: []const u8, _languageId: ?[]const u8, options: ?RelaxedTextModelCreationOptions) !*TextModel {
+    const languageId = _languageId orelse PLAINTEXT_LANGUAGE_ID;
     const undoRedoService = try UndoRedoService.create(allocator);
     var source = std.Io.Reader.fixed(text);
-    return try TextModel.init(allocator, &source, resolveOptions(options), null, undoRedoService);
+    const languageService = try allocator.create(LanguageService);
+    languageService.* = try LanguageService.init(allocator);
+    const languageConfigurationService = try allocator.create(ILanguageConfigurationService);
+    const textModel = try TextModel.init(
+        allocator,
+        &source,
+        languageId,
+        resolveOptions(options),
+        null,
+        undoRedoService,
+        languageService,
+        languageConfigurationService,
+    );
+    return textModel;
 }
 
 pub fn disposeTextModel(textModel: *TextModel) void {
-    textModel.deinit();
+    const allocator = textModel.getAllocator();
+    textModel.tokenization()._languageService.deinit();
     textModel._undoRedoService.deinit();
-    textModel.getAllocator().destroy(textModel._undoRedoService);
-    textModel.getAllocator().destroy(textModel);
+    allocator.destroy(textModel._undoRedoService);
+    allocator.destroy(textModel.tokenization()._languageService);
+    allocator.destroy(textModel.tokenization()._languageConfigurationService);
+    textModel.deinit();
+    allocator.destroy(textModel);
 }

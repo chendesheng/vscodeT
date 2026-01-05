@@ -71,7 +71,7 @@ const TokensStoreTests = struct {
         defer result.deinit();
 
         for (1..model.getLineCount() + 1) |lineNumber| {
-            const lineTokens = model.tokenization.getLineTokens(lineNumber);
+            const lineTokens = try model.tokenization().getLineTokens(lineNumber);
             const lineContent = try model.getLineContent(lineNumber);
 
             var lineText = ArrayList(u8).init(allocator);
@@ -83,7 +83,7 @@ const TokensStoreTests = struct {
                 const metadata = lineTokens.getMetadata(i);
                 const color = metadata.foreground;
                 const tokenText = lineContent.substring(tokenStartCharacter, tokenEndCharacter);
-                if (color == SEMANTIC_COLOR) {
+                if (color == .Color5) { // SEMANTIC_COLOR
                     try lineText.append('|');
                     try lineText.appendSlice(tokenText);
                     try lineText.append('|');

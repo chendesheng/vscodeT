@@ -18,7 +18,7 @@ fn testGuessIndentation(allocator: Allocator, defaultInsertSpaces: bool, default
 
     const textString = try std.mem.join(allocator, "\n", text);
     defer allocator.free(textString);
-    const m = try createTextModel(allocator, textString, .{
+    const m = try createTextModel(allocator, textString, null, .{
         .tabSize = defaultTabSize,
         .insertSpaces = defaultInsertSpaces,
         .detectIndentation = true,
@@ -165,7 +165,7 @@ const EditModelTextModelTests = struct {
     test "getValueLengthInRange" {
         const allocator = std.testing.allocator;
         {
-            var m = try createTextModel(allocator, "My First Line\r\nMy Second Line\r\nMy Third Line", null);
+            var m = try createTextModel(allocator, "My First Line\r\nMy Second Line\r\nMy Third Line", null, null);
             defer disposeTextModel(m);
             try std.testing.expectEqual("".len, m.getValueLengthInRange(.init(1, 1, 1, 1), null));
             try std.testing.expectEqual("M".len, m.getValueLengthInRange(.init(1, 1, 1, 2), null));
@@ -181,7 +181,7 @@ const EditModelTextModelTests = struct {
         }
 
         {
-            var m = try createTextModel(allocator, "My First Line\nMy Second Line\nMy Third Line", null);
+            var m = try createTextModel(allocator, "My First Line\nMy Second Line\nMy Third Line", null, null);
             defer disposeTextModel(m);
             try std.testing.expectEqual("".len, m.getValueLengthInRange(.init(1, 1, 1, 1), null));
             try std.testing.expectEqual("M".len, m.getValueLengthInRange(.init(1, 1, 1, 2), null));
@@ -200,7 +200,7 @@ const EditModelTextModelTests = struct {
     test "getValueLengthInRange different EOL" {
         const allocator = std.testing.allocator;
         {
-            var m = try createTextModel(allocator, "My First Line\r\nMy Second Line\r\nMy Third Line", null);
+            var m = try createTextModel(allocator, "My First Line\r\nMy Second Line\r\nMy Third Line", null, null);
             defer disposeTextModel(m);
 
             try std.testing.expectEqual("My First Line\r\n".len, m.getValueLengthInRange(.init(1, 1, 2, 1), .TextDefined));
@@ -212,7 +212,7 @@ const EditModelTextModelTests = struct {
         }
 
         {
-            var m = try createTextModel(allocator, "My First Line\nMy Second Line\nMy Third Line", null);
+            var m = try createTextModel(allocator, "My First Line\nMy Second Line\nMy Third Line", null, null);
             defer disposeTextModel(m);
             try std.testing.expectEqual("My First Line\n".len, m.getValueLengthInRange(.init(1, 1, 2, 1), .TextDefined));
             try std.testing.expectEqual("My First Line\n".len, m.getValueLengthInRange(.init(1, 1, 2, 1), .LF));
@@ -640,7 +640,7 @@ const EditModelTextModelTests = struct {
 
     test "validatePosition" {
         const allocator = std.testing.allocator;
-        const m = try createTextModel(allocator, "line one\nline two", null);
+        const m = try createTextModel(allocator, "line one\nline two", null, null);
         defer disposeTextModel(m);
 
         try std.testing.expectEqual(Position.init(1, 1), m.validatePosition(Position.init(0, 0)));
@@ -670,7 +670,7 @@ const EditModelTextModelTests = struct {
 
     test "validatePosition around high-low surrogate pairs 1" {
         const allocator = std.testing.allocator;
-        const m = try createTextModel(allocator, "a📚b", null); // 0x61 0xf0 0x9f 0x93 0x9a 0x62
+        const m = try createTextModel(allocator, "a📚b", null, null); // 0x61 0xf0 0x9f 0x93 0x9a 0x62
         defer disposeTextModel(m);
 
         try std.testing.expectEqual(Position.init(1, 1), m.validatePosition(Position.init(0, 0)));
@@ -700,7 +700,7 @@ const EditModelTextModelTests = struct {
     test "validatePosition around high-low surrogate pairs 2" {
         const allocator = std.testing.allocator;
 
-        const m = try createTextModel(allocator, "a📚📚b", null); // 0x61 0xf0 0x9f 0x93 0x9a 0xf0 0x9f 0x93 0x9a 0x62
+        const m = try createTextModel(allocator, "a📚📚b", null, null); // 0x61 0xf0 0x9f 0x93 0x9a 0xf0 0x9f 0x93 0x9a 0x62
         defer disposeTextModel(m);
 
         try std.testing.expectEqual(Position.init(1, 1), m.validatePosition(Position.init(1, 1)));
@@ -757,7 +757,7 @@ const EditModelTextModelTests = struct {
 
     test "validateRange around unicode 1" {
         const allocator = std.testing.allocator;
-        const m = try createTextModel(allocator, "a📚b", null);
+        const m = try createTextModel(allocator, "a📚b", null, null);
         defer disposeTextModel(m);
 
         // column should starts at 1
@@ -772,7 +772,7 @@ const EditModelTextModelTests = struct {
 
     test "validateRange around unicode 2" {
         const allocator = std.testing.allocator;
-        const m = try createTextModel(allocator, "a📚📚b", null);
+        const m = try createTextModel(allocator, "a📚📚b", null, null);
         defer disposeTextModel(m);
 
         // column should starts at 1
@@ -787,7 +787,7 @@ const EditModelTextModelTests = struct {
 
     test "modifyPosition" {
         const allocator = std.testing.allocator;
-        const m = try createTextModel(allocator, "line one\nline two", null);
+        const m = try createTextModel(allocator, "line one\nline two", null, null);
         defer disposeTextModel(m);
         try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(1, 1), 0));
         try std.testing.expectEqual(Position.init(1, 1), m.modifyPosition(Position.init(0, 0), 0));
@@ -824,7 +824,7 @@ const EditModelTextModelTests = struct {
 
     test "normalizeIndentation 1" {
         const allocator = std.testing.allocator;
-        const model = try createTextModel(allocator, "", .{ .insertSpaces = false });
+        const model = try createTextModel(allocator, "", null, .{ .insertSpaces = false });
         defer disposeTextModel(model);
 
         try testNormalizeIndentation("\t", model, "\t");
@@ -853,7 +853,7 @@ const EditModelTextModelTests = struct {
 
     test "normalizeIndentation 2" {
         const allocator = std.testing.allocator;
-        const model = try createTextModel(allocator, "", null);
+        const model = try createTextModel(allocator, "", null, null);
         defer disposeTextModel(model);
 
         try testNormalizeIndentation("    a", model, "\ta");
@@ -883,7 +883,7 @@ const EditModelTextModelTests = struct {
                 "\t\n" ++
                 "\t\t\n" ++
                 "  \tasd\n" ++
-                "\n", null);
+                "\n", null, null);
         defer disposeTextModel(model);
 
         try std.testing.expectEqual(1, model.getLineFirstNonWhitespaceColumn(1));
@@ -912,7 +912,7 @@ const EditModelTextModelTests = struct {
             "\t\n" ++
             "\t\t\n" ++
             "asd  \t\n" ++
-            "\n", null);
+            "\n", null, null);
         defer disposeTextModel(model);
 
         try std.testing.expectEqual(4, model.getLineLastNonWhitespaceColumn(1));
@@ -931,7 +931,7 @@ const EditModelTextModelTests = struct {
 
     test "issue #168836: updating tabSize should also update indentSize when indentSize is set to 'tabSize'" {
         const allocator = std.testing.allocator;
-        var m = try createTextModel(allocator, "some text", .{
+        var m = try createTextModel(allocator, "some text", null, .{
             .tabSize = 2,
             .indentSize = .tabSize,
         });
@@ -949,21 +949,21 @@ const EditModelTextModelTests = struct {
 const TextModelMightContainRTLTests = struct {
     test "nope" {
         const allocator = std.testing.allocator;
-        const model = try createTextModel(allocator, "hello world!", null);
+        const model = try createTextModel(allocator, "hello world!", null, null);
         defer disposeTextModel(model);
         try std.testing.expectEqual(false, model.mightContainRTL());
     }
 
     test "yes" {
         const allocator = std.testing.allocator;
-        const model = try createTextModel(allocator, "Hello,\nזוהי עובדה מבוססת שדעתו", null);
+        const model = try createTextModel(allocator, "Hello,\nזוהי עובדה מבוססת שדעתו", null, null);
         defer disposeTextModel(model);
         try std.testing.expectEqual(true, model.mightContainRTL());
     }
 
     test "setValue resets 1" {
         const allocator = std.testing.allocator;
-        const model = try createTextModel(allocator, "hello world!", null);
+        const model = try createTextModel(allocator, "hello world!", null, null);
         defer disposeTextModel(model);
         try std.testing.expectEqual(false, model.mightContainRTL());
         try model.setValue("Hello,\nזוהי עובדה מבוססת שדעתו");
@@ -972,7 +972,7 @@ const TextModelMightContainRTLTests = struct {
 
     test "setValue resets 2" {
         const allocator = std.testing.allocator;
-        const model = try createTextModel(allocator, "Hello,\nهناك حقيقة مثبتة منذ زمن طويل", null);
+        const model = try createTextModel(allocator, "Hello,\nهناك حقيقة مثبتة منذ زمن طويل", null, null);
         defer disposeTextModel(model);
         try std.testing.expectEqual(true, model.mightContainRTL());
         try model.setValue("hello world!");

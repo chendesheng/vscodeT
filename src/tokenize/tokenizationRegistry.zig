@@ -30,7 +30,7 @@ pub const TokenizationRegistry = struct {
         self._onDidChange.fire(.{ .changedLanguages = languageIds, .changedColorMap = false });
     }
 
-    pub fn onDidChange(self: *TokenizationRegistry, ctx: anytype, callback: fn (e: TokenizationSupportChangedEvent, ctx: @TypeOf(ctx)) anyerror!void) !void {
+    pub fn onDidChange(self: *TokenizationRegistry, ctx: anytype, callback: fn (e: TokenizationSupportChangedEvent, ctx: @TypeOf(ctx)) void) !void {
         try self._onDidChange.event(ctx, callback);
     }
 
@@ -125,7 +125,7 @@ pub const TokenizationSupportFactoryData = struct {
     _factory: LazyTokenizationSupport,
 
     _isDisposed: bool = false,
-    _resolvePromise: ?std.Promise(void) = null,
+    // _resolvePromise: ?std.Promise(void) = null,
     _isResolved: bool = false,
 
     pub fn isResolved(self: *const TokenizationSupportFactoryData) bool {
@@ -142,7 +142,7 @@ pub const TokenizationSupportFactoryData = struct {
             ._languageId = languageId,
             ._factory = factory,
             ._isDisposed = false,
-            ._resolvePromise = null,
+            // ._resolvePromise = null,
             ._isResolved = false,
         };
     }
@@ -151,12 +151,12 @@ pub const TokenizationSupportFactoryData = struct {
         self._isDisposed = true;
     }
 
-    pub fn resolve(self: *TokenizationSupportFactoryData) !void {
-        if (self._resolvePromise == null) {
-            self._resolvePromise = try self._create();
-        }
-        return self._resolvePromise;
-    }
+    // pub fn resolve(self: *TokenizationSupportFactoryData) !void {
+    // if (self._resolvePromise == null) {
+    // self._resolvePromise = try self._create();
+    // }
+    // return self._resolvePromise;
+    // }
 
     fn _create(self: *TokenizationSupportFactoryData) !void {
         self._isResolved = true;

@@ -108,11 +108,11 @@ pub const LanguageService = struct {
     requestBasicLanguageFeatures: *const fn (languageId: []const u8) void,
 
     // Request rich language features for a language.
-    requestRichLanguageFeatures: *const fn (languageId: []const u8) void,
+    requestRichLanguageFeatures: *const fn (self: *LanguageService, languageId: []const u8) void,
 
-    pub fn init(allocator: Allocator, languageIdCodec: LanguageIdCodec) LanguageService {
+    pub fn init(allocator: Allocator) !LanguageService {
         return LanguageService{
-            .languageIdCodec = languageIdCodec,
+            .languageIdCodec = try LanguageIdCodec.init(allocator),
             .onDidRequestBasicLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidRequestRichLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidChange = Emitter(void).init(allocator),
@@ -135,5 +135,12 @@ pub const LanguageService = struct {
             .requestBasicLanguageFeatures = undefined,
             .requestRichLanguageFeatures = undefined,
         };
+    }
+
+    pub fn deinit(self: *LanguageService) void {
+        self.languageIdCodec.deinit();
+        self.onDidRequestBasicLanguageFeatures.deinit();
+        self.onDidRequestRichLanguageFeatures.deinit();
+        self.onDidChange.deinit();
     }
 };

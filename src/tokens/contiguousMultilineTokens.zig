@@ -122,7 +122,8 @@ pub const ContiguousMultilineTokens = struct {
     }
 
     pub fn applyEdit(self: *ContiguousMultilineTokens, range: Range, text: []const u8) !void {
-        const res = countEOL(text);
+        var reader = std.io.Reader.fixed(text);
+        const res = countEOL(&reader);
         const eolCount = res.eolCount;
         const firstLineLength = res.firstLineLength;
         try self._acceptDeleteRange(range);

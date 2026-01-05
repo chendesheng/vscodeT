@@ -67,12 +67,7 @@ pub const ModelDecorationsChangedEvent = struct {
 // @internal
 pub const ModelTokensChangedEvent = struct {
     semanticTokensApplied: bool,
-    ranges: []struct {
-        // The start of the range (inclusive)
-        fromLineNumber: usize,
-        // The end of the range (inclusive)
-        toLineNumber: usize,
-    },
+    ranges: []const ModelTokensChangedRange,
 };
 
 pub const ModelOptionsChangedEvent = struct {
@@ -437,3 +432,21 @@ pub const InternalModelContentChangeEvent = struct {
         try self.contentChangedEvent.merge(&other.contentChangedEvent);
     }
 };
+
+pub const ModelTokensChangedRange = struct {
+    fromLineNumber: usize,
+    toLineNumber: usize,
+};
+
+// An event describing that the current language associated with a model has changed.
+pub const ModelLanguageChangedEvent = struct {
+    // Previous language
+    oldLanguage: []const u8,
+    // New language
+    newLanguage: []const u8,
+    // Source of the call that caused the event.
+    source: []const u8,
+};
+
+// An event describing that the language configuration associated with a model has changed.
+pub const ModelLanguageConfigurationChangedEvent = struct {};

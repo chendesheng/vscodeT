@@ -20,32 +20,32 @@ pub const RangePriorityQueue = struct {
         return &self._ranges;
     }
 
-    pub fn min(self: RangePriorityQueue) ?usize {
+    pub fn min(self: RangePriorityQueue) ?isize {
         if (self._ranges.items.len == 0) return null;
         return self._ranges.items[0].start;
     }
 
-    pub fn removeMin(self: RangePriorityQueue) ?usize {
+    pub fn removeMin(self: RangePriorityQueue) ?isize {
         if (self._ranges.items.len == 0) return null;
         const range = self._ranges.items[0];
         if (range.start + 1 == range.endExclusive) {
-            self._ranges.orderedRemove(0);
+            _ = self._ranges.orderedRemove(0);
         } else {
             self._ranges.items[0] = OffsetRange.init(range.start + 1, range.endExclusive);
         }
         return range.start;
     }
 
-    pub fn delete(self: RangePriorityQueue, value: usize) !void {
+    pub fn delete(self: *RangePriorityQueue, value: isize) !void {
         if (findIndex(OffsetRange, self._ranges.items, value, struct {
-            fn pred(r: OffsetRange, val: usize) bool {
+            fn pred(r: OffsetRange, val: isize) bool {
                 return r.contains(val);
             }
         }.pred)) |idx| {
             const range = self._ranges.items[idx];
             if (range.start == value) {
                 if (range.endExclusive == value + 1) {
-                    self._ranges.orderedRemove(idx);
+                    _ = self._ranges.orderedRemove(idx);
                 } else {
                     self._ranges.items[idx] = OffsetRange.init(value + 1, range.endExclusive);
                 }

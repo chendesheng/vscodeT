@@ -7,14 +7,14 @@ const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardToken
 const LineTokens = @import("../tokens/lineTokens.zig").LineTokens;
 const SparseMultilineTokens = @import("../tokens/sparseMultilineTokens.zig").SparseMultilineTokens;
 const SparseTokensStore = @import("../tokens/sparseTokensStore.zig").SparseTokensStore;
-const ModelLanguageChangedEvent = @import("../textModelEvents.zig").ModelLanguageChangedEvent;
-const ModelLanguageConfigurationChangedEvent = @import("../textModelEvents.zig").ModelLanguageConfigurationChangedEvent;
-const ModelTokensChangedEvent = @import("../textModelEvents.zig").ModelTokensChangedEvent;
+const ModelLanguageChangedEvent = @import("../textModel/textModelEvents.zig").ModelLanguageChangedEvent;
+const ModelLanguageConfigurationChangedEvent = @import("../textModel/textModelEvents.zig").ModelLanguageConfigurationChangedEvent;
+const ModelTokensChangedEvent = @import("../textModel/textModelEvents.zig").ModelTokensChangedEvent;
 const Emitter = @import("../basics/event.zig").Emitter;
 const AbstractSyntaxTokenBackend = @import("./abstractSyntaxTokenBackend.zig").AbstractSyntaxTokenBackend;
 const TokenizerSyntaxTokenBackend = @import("./tokenizerSyntaxTokenBackend.zig").TokenizerSyntaxTokenBackend;
 const AttachedViews = @import("./abstractSyntaxTokenBackend.zig").AttachedViews;
-const ModelContentChangedEvent = @import("../textModelEvents.zig").ModelContentChangedEvent;
+const ModelContentChangedEvent = @import("../textModel/textModelEvents.zig").ModelContentChangedEvent;
 const WordAtPosition = @import("../basics/utils.zig").WordAtPosition;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
@@ -22,7 +22,7 @@ const BackgroundTokenizationState = @import("./abstractSyntaxTokenBackend.zig").
 const getWordAtText = @import("../basics/utils.zig").getWordAtText;
 const ILanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
 const ResolvedLanguageConfiguration = @import("../languages/languageConfigurationRegistry.zig").ResolvedLanguageConfiguration;
-const ModelTokensChangedRange = @import("../textModelEvents.zig").ModelTokensChangedRange;
+const ModelTokensChangedRange = @import("../textModel/textModelEvents.zig").ModelTokensChangedRange;
 const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
 const LanguageService = @import("../languages/languageService.zig").LanguageService;
 
@@ -41,7 +41,7 @@ pub const TokenizationTextModelPart = struct {
     _useTreeSitter: bool,
     _languageId: []const u8,
     _textModel: *TextModel,
-    _attachedViews: AttachedViews,
+    _attachedViews: *AttachedViews,
     // _bracketPairsTextModelPart: BracketPairsTextModelPart,
     _languageService: *LanguageService,
     _languageConfigurationService: *ILanguageConfigurationService,
@@ -51,10 +51,10 @@ pub const TokenizationTextModelPart = struct {
     pub fn init(
         textModel_: *TextModel,
         languageId: []const u8,
-        attachedViews: AttachedViews,
+        attachedViews: *AttachedViews,
         languageService: *LanguageService,
         languageConfigurationService: *ILanguageConfigurationService,
-    ) TokenizationTextModelPart {
+    ) !TokenizationTextModelPart {
         //tokens = derived(this, reader => {
         //   let tokens: AbstractSyntaxTokenBackend;
         //   if (this._useTreeSitter.read(reader)) {
@@ -103,7 +103,7 @@ pub const TokenizationTextModelPart = struct {
             ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
             ._languageService = languageService,
             ._languageConfigurationService = languageConfigurationService,
-            .tokens = TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel_, languageId, attachedViews),
+            .tokens = try TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel_, languageId, attachedViews),
         };
     }
 
@@ -112,6 +112,7 @@ pub const TokenizationTextModelPart = struct {
         self._onDidChangeLanguage.deinit();
         self._onDidChangeLanguageConfiguration.deinit();
         self._onDidChangeTokens.deinit();
+        self._attachedViews.deinit();
         self.tokens.deinit();
     }
 
@@ -342,13 +343,13 @@ pub const TokenizationTextModelPart = struct {
 
     // #region Language Id handling
 
-    pub fn getLanguageId(self: *TokenizationTextModelPart) []const u8 {
+    pub fn getLanguageId(self: *const TokenizationTextModelPart) []const u8 {
         return self._languageId;
     }
 
-    pub fn getLanguageIdAtPosition(self: *TokenizationTextModelPart, lineNumber: usize, column: usize) []const u8 {
+    pub fn getLanguageIdAtPosition(self: *const TokenizationTextModelPart, lineNumber: usize, column: usize) ![]const u8 {
         const position = self._textModel.validatePosition(Position.init(lineNumber, column));
-        const lineTokens = self.getLineTokens(position.lineNumber);
+        const lineTokens = try self.getLineTokens(position.lineNumber);
         return lineTokens.getLanguageId(lineTokens.findTokenIndexAtOffset(position.column - 1));
     }
 

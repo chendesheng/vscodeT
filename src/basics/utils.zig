@@ -215,3 +215,13 @@ test "findFirstIdxMonotonousOrArrLen" {
     try std.testing.expectEqual(10, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(11), 0, items.len));
     try std.testing.expectEqual(10, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(12), 0, items.len));
 }
+
+// Word inside a model.
+pub const WordAtPosition = struct {
+    // The word.
+    word: []const u8,
+    // The column where the word starts.
+    startColumn: usize,
+    // The column where the word ends.
+    endColumn: usize,
+};

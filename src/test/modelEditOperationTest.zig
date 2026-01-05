@@ -23,7 +23,7 @@ const ModelEditOperationTests = struct {
             LINE3 ++ "\n" ++
             LINE4 ++ "\r\n" ++
             LINE5;
-        return try createTextModel(allocator, text, null);
+        return try createTextModel(allocator, text, null, null);
     }
 
     fn createSingleEditOp(text: []const u8, positionLineNumber: usize, positionColumn: usize, _selectionLineNumber: ?usize, _selectionColumn: ?usize) IdentifiedSingleEditOperation {

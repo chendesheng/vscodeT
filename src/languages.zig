@@ -43,11 +43,11 @@ pub const LanguageIdCodec = struct {
         try self._register(language, languageId);
     }
 
-    pub fn encodeLanguageId(self: *LanguageIdCodec, language: []const u8) !u8 {
+    pub fn encodeLanguageId(self: *const LanguageIdCodec, language: []const u8) u8 {
         if (self._languageToLanguageId.get(language)) |languageId| {
             return languageId;
         }
-        return LanguageId.Null;
+        return @intFromEnum(LanguageId.Null);
     }
 
     pub fn decodeLanguageId(self: *LanguageIdCodec, languageId: u8) []const u8 {
@@ -137,12 +137,12 @@ pub const ITokenizationSupport = struct {
 
     getInitialState: *const fn () IState,
 
-    tokenize: *const fn (line: []u8, hasEOL: bool, state: IState) TokenizationResult,
+    tokenize: *const fn (line: []const u8, hasEOL: bool, state: IState) TokenizationResult,
 
-    tokenizeEncoded: *const fn (line: []u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
+    tokenizeEncoded: *const fn (line: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
 
     // Can be/return undefined if default background tokenization should be used.
-    createBackgroundTokenizer: ?*const fn (textModel: TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
+    createBackgroundTokenizer: ?*const fn (textModel: *TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
 };
 
 // @internal

@@ -142,7 +142,7 @@ const ModelDecorationsTests = struct {
             LINE3 ++ "\n" ++
             LINE4 ++ "\r\n" ++
             LINE5;
-        return try createTextModel(allocator, text, null);
+        return try createTextModel(allocator, text, null, null);
     }
 
     const TestClassName = enum(u8) {
@@ -614,7 +614,7 @@ const ModelDecorationsTests = struct {
 const DecorationsAndEditing = struct {
     const allocator = std.testing.allocator;
     fn _runTest(decRange: Range, stickiness: TrackedRangeStickiness, editRange: Range, editText: []const u8, editForceMoveMarkers: bool, expectedDecRange: Range, msg: []const u8) !void {
-        const model = try createTextModel(allocator, "My First Line\n" ++ "My Second Line\n" ++ "Third Line", null);
+        const model = try createTextModel(allocator, "My First Line\n" ++ "My Second Line\n" ++ "Third Line", null, null);
         defer disposeTextModel(model);
 
         var ids = try model.deltaDecorations(
@@ -1128,7 +1128,7 @@ const DeltaDecorationsTests = struct {
         defer allocator.free(newDecorations);
         std.mem.copyForwards(LightWeightDecoration, newDecorations, _newDecorations);
 
-        var model = try createTextModel(allocator, text, null);
+        var model = try createTextModel(allocator, text, null, null);
         defer disposeTextModel(model);
 
         // Add initial decorations & assert they are added
@@ -1193,7 +1193,7 @@ const DeltaDecorationsTests = struct {
     }
 
     test "result respects input" {
-        const model = try createTextModel(allocator, "Hello world,\n" ++ "How are you?\n", null);
+        const model = try createTextModel(allocator, "Hello world,\n" ++ "How are you?\n", null, null);
         defer disposeTextModel(model);
         const decorations = try toModelDeltaDecorations(&[_]LightWeightDecoration{
             decoration('a', 1, 1, 1, 12),
@@ -1279,7 +1279,7 @@ const DeltaDecorationsTests = struct {
     }
 
     test "issue #4317: editor.setDecorations doesn't update the hover message" {
-        const model = try createTextModel(allocator, "Hello world!", null);
+        const model = try createTextModel(allocator, "Hello world!", null, null);
         defer disposeTextModel(model);
 
         const ids = try model.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{
@@ -1303,7 +1303,7 @@ const DeltaDecorationsTests = struct {
     }
 
     test "model doesn't get confused with individual tracked ranges" {
-        const model = try createTextModel(allocator, "Hello world,\n" ++ "How are you?", null);
+        const model = try createTextModel(allocator, "Hello world,\n" ++ "How are you?", null, null);
         defer disposeTextModel(model);
 
         const options = ModelDecorationOptions{ .description = "test", .stickiness = .AlwaysGrowsWhenTypingAtEdges };
@@ -1347,7 +1347,7 @@ const DeltaDecorationsTests = struct {
     }
 
     test "issue #16922: Clicking on link doesn't seem to do anything" {
-        const model = try createTextModel(allocator, "Hello world,\n" ++ "How are you?\n" ++ "Fine.\n" ++ "Good.", null);
+        const model = try createTextModel(allocator, "Hello world,\n" ++ "How are you?\n" ++ "Fine.\n" ++ "Good.", null, null);
         defer disposeTextModel(model);
 
         const TestClassName = enum(u8) {
@@ -1394,7 +1394,7 @@ const DeltaDecorationsTests = struct {
     }
 
     test "issue #41492: URL highlighting persists after pasting over url" {
-        const model = try createTextModel(allocator, "My First Line", null);
+        const model = try createTextModel(allocator, "My First Line", null, null);
         defer disposeTextModel(model);
 
         const ids = try model.deltaDecorations(&[_]u64{}, &[_]ModelDeltaDecoration{

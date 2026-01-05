@@ -76,6 +76,11 @@ const EDITOR_MODEL_DEFAULTS = @import("textModelDefaults.zig");
 const ModelRawFlush = @import("textModelEvents.zig").ModelRawFlush;
 const AutoHashMap = std.AutoHashMap;
 const InternalModelContentChangeOrModelInjectedTextChangedEvent = @import("textModelEvents.zig").InternalModelContentChangeOrModelInjectedTextChangedEvent;
+const TokenizationTextModelPart = @import("../tokenize/tokenizationTextModelPart.zig").TokenizationTextModelPart;
+const LanguageService = @import("../languages/languageService.zig").LanguageService;
+const AttachedViews = @import("../tokenize/abstractSyntaxTokenBackend.zig").AttachedViews;
+const ILanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
+const WordAtPosition = @import("../basics/utils.zig").WordAtPosition;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -189,6 +194,9 @@ pub const TextModel = struct {
     // _decorationProvider: ColorizedBracketPairsDecorationProvider,
     //#endregion
 
+    _tokenizationTextModelPart: TokenizationTextModelPart,
+    _attachedViews: *AttachedViews,
+
     _undoRedoService: *UndoRedoService,
     //#region Events
     _onWillDispose: Emitter(void),
@@ -199,6 +207,10 @@ pub const TextModel = struct {
     _onDidChangeLineHeight: Emitter(ModelLineHeightChangedEvent),
     _eventEmitter: DidChangeContentEmitter,
     //#endregion
+
+    pub fn tokenization(self: *const TextModel) TokenizationTextModelPart {
+        return self._tokenizationTextModelPart;
+    }
 
     pub fn resolveOptions(textBuffer: *PieceTreeTextBuffer, options: TextModelCreationOptions) TextModelResolvedOptions {
         if (options.detectIndentation) {
@@ -284,7 +296,16 @@ pub const TextModel = struct {
         try self._onDidChangeDecorations.event(ctx, callback);
     }
 
-    pub fn init(allocator: Allocator, source: *std.Io.Reader, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService) !*TextModel {
+    pub fn init(
+        allocator: Allocator,
+        source: *std.Io.Reader,
+        languageIdOrSelection: []const u8,
+        creationOptions: TextModelCreationOptions,
+        associatedResource: ?Uri,
+        undoRedoService: *UndoRedoService,
+        languageService: *LanguageService,
+        languageConfigurationService: *ILanguageConfigurationService,
+    ) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
 
@@ -304,6 +325,9 @@ pub const TextModel = struct {
             tooLargeForTokenization = false;
             tooLargeForHeapOperation = false;
         }
+
+        const attachedViews = try allocator.create(AttachedViews);
+        attachedViews.* = AttachedViews.init(allocator);
 
         const model = try allocator.create(TextModel);
         model.* = TextModel{
@@ -335,6 +359,8 @@ pub const TextModel = struct {
             ._deltaDecorationCallCnt = 0,
             ._decorations = AutoHashMap(u64, *IntervalNode).init(allocator),
             ._decorationsTree = DecorationsTrees.init(),
+            ._tokenizationTextModelPart = try TokenizationTextModelPart.init(model, languageIdOrSelection, attachedViews, languageService, languageConfigurationService),
+            ._attachedViews = attachedViews,
             ._commandManager = EditStack.init(model, undoRedoService),
             ._isUndoing = false,
             ._isRedoing = false,
@@ -380,6 +406,8 @@ pub const TextModel = struct {
             .raw => |raw| allocator.free(raw),
             .percent_encoded => |percent_encoded| allocator.free(percent_encoded),
         }
+        self._tokenizationTextModelPart.deinit();
+        allocator.destroy(self._attachedViews);
         self._onWillDispose.deinit();
         self._onDidChangeDecorations.deinit();
         self._onDidChangeInjectedText.deinit();
@@ -1867,6 +1895,37 @@ pub const TextModel = struct {
         }
 
         return result;
+    }
+
+    //#endregion
+
+    //#region Tokenization
+
+    // TODO move them to the tokenization part.
+    pub fn getLanguageId(self: *const TextModel) []const u8 {
+        return self._tokenizationTextModelPart.getLanguageId();
+    }
+
+    pub fn setLanguage(self: *TextModel, languageIdOrSelection: []const u8, source: ?[]const u8) !void {
+        self._languageSelectionListener.clear();
+        self._setLanguage(languageIdOrSelection, source);
+    }
+
+    fn _setLanguage(self: *TextModel, languageId: []const u8, source: ?[]const u8) void {
+        self._tokenizationTextModelPart.setLanguageId(languageId, source);
+        self._tokenizationTextModelPart._languageService.requestRichLanguageFeatures(languageId);
+    }
+
+    pub fn getLanguageIdAtPosition(self: *TextModel, lineNumber: usize, column: usize) []const u8 {
+        return self._tokenizationTextModelPart.getLanguageIdAtPosition(lineNumber, column);
+    }
+
+    pub fn getWordAtPosition(self: *TextModel, position: Position) ?WordAtPosition {
+        return self._tokenizationTextModelPart.getWordAtPosition(position);
+    }
+
+    pub fn getWordUntilPosition(self: *TextModel, position: Position) WordAtPosition {
+        return self._tokenizationTextModelPart.getWordUntilPosition(position);
     }
 
     //#endregion

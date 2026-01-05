@@ -1,18 +1,18 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
-const TextModel = @import("../textModel.zig").TextModel;
+const TextModel = @import("../textModel/textModel.zig").TextModel;
 const LineTokens = @import("../tokens/lineTokens.zig").LineTokens;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
 const Emitter = @import("../basics/event.zig").Emitter;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
-const ModelContentChangedEvent = @import("../textModelEvents.zig").ModelContentChangedEvent;
+const ModelContentChangedEvent = @import("../textModel/textModelEvents.zig").ModelContentChangedEvent;
+const ModelTokensChangedEvent = @import("../textModel/textModelEvents.zig").ModelTokensChangedEvent;
 const LineRange = @import("../basics/lineRange.zig").LineRange;
 const LineRangeSet = @import("../basics/lineRange.zig").LineRangeSet;
 const Set = @import("../basics/set.zig").Set;
 const Pair = @import("../basics/utils.zig").Pair;
 const pair = @import("../basics/utils.zig").pair;
-const ModelTokensChangedEvent = @import("../textModelEvents.zig").ModelTokensChangedEvent;
 
 pub const BackgroundTokenizationState = enum(u8) {
     InProgress = 1,
@@ -47,9 +47,9 @@ pub const AttachedViews = struct {
         var set = LineRangeSet.empty(self.visibleLineRanges.allocator);
         defer set.deinit();
 
-        for (self._views.values()) |view| {
+        for (self._views.list.items) |view| {
             if (view._state) |state| {
-                for (state.visibleLineRanges) |lineRange| {
+                for (state.visibleLineRanges.items) |lineRange| {
                     try set.addRange(lineRange);
                 }
             }
@@ -59,8 +59,8 @@ pub const AttachedViews = struct {
         try self.visibleLineRanges.appendSlice(set.ranges());
     }
 
-    pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: *const fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) void) !void {
-        self._onDidChangeVisibleRanges.event(ctx, callback);
+    pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) void) !void {
+        try self._onDidChangeVisibleRanges.event(ctx, callback);
         try self.triggerViewChanged();
     }
 
@@ -133,7 +133,7 @@ pub const AttachedView = struct {
     }
 
     pub fn deinit(self: *AttachedView) void {
-        if (self._state) |state| {
+        if (self._state) |*state| {
             state.deinit();
         }
     }
@@ -158,9 +158,9 @@ pub const AttachedView = struct {
 pub const AttachedViewHandler = struct {
     _computedLineRanges: []LineRange,
     _lineRanges: []LineRange,
-    refreshTokens: *const fn (AttachedViewHandler) void,
+    refreshTokens: *const fn (*const AttachedViewHandler) void,
 
-    pub fn init(refreshTokens: *const fn (AttachedViewHandler) void) AttachedViewHandler {
+    pub fn init(refreshTokens: *const fn (*const AttachedViewHandler) void) AttachedViewHandler {
         return AttachedViewHandler{
             ._computedLineRanges = &[_]LineRange{},
             ._lineRanges = &[_]LineRange{},

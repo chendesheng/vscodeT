@@ -18,7 +18,7 @@ const InjectedTextEventsTests = struct {
     const allocator = std.testing.allocator;
 
     test "Basic" {
-        const thisModel = try createTextModel(allocator, "First Line\nSecond Line", null);
+        const thisModel = try createTextModel(allocator, "First Line\nSecond Line", null, null);
         defer disposeTextModel(thisModel);
 
         var recordedChanges = ArrayList(ChangeData).init(allocator);

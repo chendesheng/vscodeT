@@ -32,7 +32,7 @@ const EditorModelModelTests = struct {
             LINE3 ++ "\n" ++
             LINE4 ++ "\r\n" ++
             LINE5;
-        return try createTextModel(allocator, text, null);
+        return try createTextModel(allocator, text, null, null);
     }
 
     test "model getValue" {
@@ -474,7 +474,7 @@ const EditorModelModelLineSeparatorsTests = struct {
             LINE3 ++ "\u{2028}" ++
             LINE4 ++ "\r\n" ++
             LINE5;
-        return try createTextModel(allocator, text, null);
+        return try createTextModel(allocator, text, null, null);
     }
 
     fn assertValue(model: *TextModel, expected: []const u8) !void {
@@ -496,7 +496,7 @@ const EditorModelModelLineSeparatorsTests = struct {
     }
 
     test "Bug 13333:Model should line break on lonely CR too" {
-        const model = try createTextModel(std.testing.allocator, "Hello\rWorld!\r\nAnother line", null);
+        const model = try createTextModel(std.testing.allocator, "Hello\rWorld!\r\nAnother line", null, null);
         defer disposeTextModel(model);
         try std.testing.expectEqual(3, model.getLineCount());
         try assertValue(model, "Hello\r\nWorld!\r\nAnother line");
