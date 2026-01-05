@@ -177,7 +177,7 @@ pub const TokenizationTextModelPart = struct {
 
     // #region Grammar Tokens
 
-    fn validateLineNumber(self: *TokenizationTextModelPart, lineNumber: usize) void {
+    fn validateLineNumber(self: *const TokenizationTextModelPart, lineNumber: usize) void {
         if (lineNumber < 1 or lineNumber > self._textModel.getLineCount()) {
             unreachable();
         }
@@ -195,24 +195,24 @@ pub const TokenizationTextModelPart = struct {
         return self.tokens.getBackgroundTokenizationState();
     }
 
-    pub fn forceTokenization(self: *TokenizationTextModelPart, lineNumber: usize) void {
+    pub fn forceTokenization(self: *TokenizationTextModelPart, lineNumber: usize) !void {
         self.validateLineNumber(lineNumber);
-        self.tokens.forceTokenization(lineNumber);
+        try self.tokens.forceTokenization(lineNumber);
     }
 
-    pub fn hasAccurateTokensForLine(self: *TokenizationTextModelPart, lineNumber: usize) bool {
+    pub fn hasAccurateTokensForLine(self: *const TokenizationTextModelPart, lineNumber: usize) bool {
         self.validateLineNumber(lineNumber);
         return self.tokens.hasAccurateTokensForLine(lineNumber);
     }
 
-    pub fn isCheapToTokenize(self: *TokenizationTextModelPart, lineNumber: usize) bool {
+    pub fn isCheapToTokenize(self: *const TokenizationTextModelPart, lineNumber: usize) bool {
         self.validateLineNumber(lineNumber);
         return self.tokens.isCheapToTokenize(lineNumber);
     }
 
     pub fn tokenizeIfCheap(self: *TokenizationTextModelPart, lineNumber: usize) void {
         self.validateLineNumber(lineNumber);
-        self.tokens.tokenizeIfCheap(lineNumber);
+        self.tokens.super.tokenizeIfCheap(lineNumber);
     }
 
     pub fn getTokenTypeIfInsertingCharacter(self: *TokenizationTextModelPart, lineNumber: usize, column: usize, character: []const u8) StandardTokenType {

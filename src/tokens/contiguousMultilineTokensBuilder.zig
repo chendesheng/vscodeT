@@ -70,10 +70,10 @@ pub const ContiguousMultilineTokensBuilder = struct {
     }
 
     fn _serialize(self: *ContiguousMultilineTokensBuilder, destination: []u8) !void {
-        var w = io.fixedBufferStream(destination).writer();
-        try w.writeInt(u32, self._tokens.items.len, .big);
+        var w = io.Writer.fixed(destination);
+        try w.writeInt(u32, @intCast(self._tokens.items.len), .big);
         for (self._tokens.items) |item| {
-            try item.serialize(w);
+            try item.serialize(&w);
         }
     }
 };

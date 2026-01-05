@@ -11,6 +11,7 @@ const TokenPacked = @import("lineTokens.zig").TokenPacked;
 const usizeSub = @import("../basics/utils.zig").usizeSub;
 const usizeAdd = @import("../basics/utils.zig").usizeAdd;
 const LineTokens = @import("lineTokens.zig").LineTokens;
+const readInt = @import("../basics/utils.zig").readInt;
 
 // Represents contiguous tokens over a contiguous range of lines.
 pub const ContiguousMultilineTokens = struct {
@@ -41,19 +42,19 @@ pub const ContiguousMultilineTokens = struct {
     }
 
     // TODO: avoid copy when deserializing
-    pub fn deserialize(buff: io.AnyReader, result: *ArrayList(ContiguousMultilineTokens)) !void {
+    pub fn deserialize(buff: *io.Reader, result: *ArrayList(ContiguousMultilineTokens)) !void {
         const allocator = result.allocator;
-        const startLineNumber = try buff.readInt(u32, .big);
-        const count = try buff.readInt(u32, .big);
+        const startLineNumber = try readInt(buff, u32, .big);
+        const count = try readInt(buff, u32, .big);
 
         var multilineTokens = ArrayList(?ArrayList(TokenPacked)).init(allocator);
         for (0..count) |_| {
-            const byteCount = try buff.readInt(i32, .big);
+            const byteCount = try readInt(buff, i32, .big);
             const tokensCount: usize = @intCast(@divFloor(byteCount, @sizeOf(TokenPacked)));
             var tokens = ArrayList(TokenPacked).init(allocator);
             for (0..tokensCount) |_| {
-                const offset = try buff.readInt(u32, .big);
-                const metadata = try buff.readInt(u32, .big);
+                const offset = try readInt(buff, u32, .big);
+                const metadata = try readInt(buff, u32, .big);
                 try tokens.append(LineTokens.initTokenPacked(@intCast(offset), @bitCast(metadata)));
             }
             try multilineTokens.append(tokens);
@@ -103,7 +104,7 @@ pub const ContiguousMultilineTokens = struct {
         return result;
     }
 
-    pub fn serialize(self: *const ContiguousMultilineTokens, destination: io.AnyWriter) !void {
+    pub fn serialize(self: *const ContiguousMultilineTokens, destination: *io.Writer) !void {
         try destination.writeInt(u32, @intCast(self._startLineNumber), .big);
         try destination.writeInt(u32, @intCast(self._tokens.items.len), .big);
         for (self._tokens.items) |_lineTokens| {
@@ -254,14 +255,15 @@ test "ContiguousMultilineTokens/serialize empty" {
     defer tokens.deinit();
     try std.testing.expectEqual(8, try tokens.serializeSize());
 
-    var destination = ArrayList(u8).init(allocator);
-    defer destination.deinit();
-    try tokens.serialize(destination.writer().any());
-    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, destination.items);
-    var stream = io.fixedBufferStream(destination.items);
+    const destination = try allocator.alloc(u8, 8);
+    defer allocator.free(destination);
+    var w = io.Writer.fixed(destination);
+    try tokens.serialize(&w);
+    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, destination);
+    var r = io.Reader.fixed(destination);
     var result = ArrayList(ContiguousMultilineTokens).init(allocator);
     defer result.deinit();
-    try ContiguousMultilineTokens.deserialize(stream.reader().any(), &result);
+    try ContiguousMultilineTokens.deserialize(&r, &result);
     try std.testing.expectEqualDeep(tokens, result.items[0]);
 }
 
@@ -280,11 +282,12 @@ test "ContiguousMultilineTokens/serialize nonempty" {
 
     try std.testing.expectEqual(32, try multilineTokens.serializeSize());
 
-    var destination = ArrayList(u8).init(allocator);
-    defer destination.deinit();
-    try multilineTokens.serialize(destination.writer().any());
+    const destination = try allocator.alloc(u8, 32);
+    defer allocator.free(destination);
+    var w = io.Writer.fixed(destination);
+    try multilineTokens.serialize(&w);
 
-    var stream = io.fixedBufferStream(destination.items);
+    var r = io.Reader.fixed(destination);
     var result = ArrayList(ContiguousMultilineTokens).init(allocator);
     defer result.deinit();
     defer {
@@ -292,7 +295,7 @@ test "ContiguousMultilineTokens/serialize nonempty" {
             item.deinit();
         }
     }
-    try ContiguousMultilineTokens.deserialize(stream.reader().any(), &result);
+    try ContiguousMultilineTokens.deserialize(&r, &result);
     for (multilineTokens._tokens.items, result.items[0]._tokens.items) |token1, token2| {
         try std.testing.expectEqualDeep(token1, token2);
     }

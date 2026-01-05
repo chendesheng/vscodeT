@@ -187,7 +187,7 @@ pub const AttachedViewHandler = struct {
 pub const AbstractSyntaxTokenBackend = struct {
     _backgroundTokenizationState: BackgroundTokenizationState,
     _languageIdCodec: LanguageIdCodec,
-    _textModel: *anyopaque,
+    _textModel: *TextModel,
 
     _onDidChangeBackgroundTokenizationState: Emitter(void),
     _onDidChangeTokens: Emitter(ModelTokensChangedEvent),
@@ -206,13 +206,13 @@ pub const AbstractSyntaxTokenBackend = struct {
     pub fn init(
         backgroundTokenizationState: BackgroundTokenizationState,
         languageIdCodec: LanguageIdCodec,
-        textModel_: *TextModel,
+        textModel: *TextModel,
     ) AbstractSyntaxTokenBackend {
-        const allocator = textModel_.getAllocator();
+        const allocator = textModel.getAllocator();
         return AbstractSyntaxTokenBackend{
             ._backgroundTokenizationState = backgroundTokenizationState,
             ._languageIdCodec = languageIdCodec,
-            ._textModel = textModel_,
+            ._textModel = textModel,
             ._onDidChangeBackgroundTokenizationState = Emitter(void).init(allocator),
             ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
             .forceTokenization = undefined,
@@ -222,10 +222,6 @@ pub const AbstractSyntaxTokenBackend = struct {
             .tokenizeLinesAt = undefined,
             .hasTokens = undefined,
         };
-    }
-
-    pub fn textModel(self: *AbstractSyntaxTokenBackend) *TextModel {
-        return @ptrCast(@alignCast(self._textModel));
     }
 
     pub fn tokenizeIfCheap(self: *AbstractSyntaxTokenBackend, lineNumber: usize) void {

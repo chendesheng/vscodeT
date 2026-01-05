@@ -40,26 +40,26 @@ pub const SparseMultilineTokens = struct {
         self._tokens.deinit();
     }
 
-    pub fn toString(self: *SparseMultilineTokens) !ArrayList(u8) {
-        return try self._tokens.toString(self._startLineNumber);
+    pub fn toString(self: *SparseMultilineTokens, writer: *io.Writer) !void {
+        return try self._tokens.toString(writer, self._startLineNumber);
     }
 
     fn _updateEndLineNumber(self: *SparseMultilineTokens) void {
         self._endLineNumber = self._tokens.addStartLineNumber(self._startLineNumber);
     }
 
-    pub fn isEmpty(self: *SparseMultilineTokens) bool {
+    pub fn isEmpty(self: *const SparseMultilineTokens) bool {
         return self._tokens.isEmpty();
     }
 
-    pub fn getLineTokens(self: *SparseMultilineTokens, lineNumber: usize) ?SparseLineTokens {
+    pub fn getLineTokens(self: *const SparseMultilineTokens, lineNumber: usize) ?SparseLineTokens {
         if (self._startLineNumber <= lineNumber and lineNumber <= self._endLineNumber) {
             return self._tokens.getLineTokens(lineNumber - self._startLineNumber);
         }
         return null;
     }
 
-    pub fn getRange(self: *SparseMultilineTokens) ?Range {
+    pub fn getRange(self: *const SparseMultilineTokens) ?Range {
         const deltaRange = self._tokens.getRange();
         if (!deltaRange) {
             return deltaRange;
@@ -212,7 +212,7 @@ pub const SparseMultilineTokensStorage = struct {
         self._tokens.deinit();
     }
 
-    pub fn toString(self: *const SparseMultilineTokensStorage, writer: io.AnyWriter, startLineNumber: usize) !void {
+    pub fn toString(self: *const SparseMultilineTokensStorage, writer: *io.Writer, startLineNumber: usize) !void {
         try writer.writeAll("[");
         for (0..self._tokens.len) |i| {
             try writer.print("({d},{d}-{d})", .{

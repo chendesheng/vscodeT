@@ -41,7 +41,7 @@ pub const SparseTokensStore = struct {
         self._isComplete = false;
     }
 
-    pub fn isEmpty(self: *SparseTokensStore) bool {
+    pub fn isEmpty(self: *const SparseTokensStore) bool {
         return self._pieces.items.len == 0;
     }
 
@@ -138,7 +138,7 @@ pub const SparseTokensStore = struct {
         return range;
     }
 
-    pub fn isComplete(self: *SparseTokensStore) bool {
+    pub fn isComplete(self: *const SparseTokensStore) bool {
         return self._isComplete;
     }
 

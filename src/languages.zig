@@ -75,7 +75,7 @@ pub const Token = struct {
         };
     }
 
-    pub fn toString(self: *Token, writer: io.AnyWriter) !void {
+    pub fn toString(self: *const Token, writer: *io.Writer) !void {
         try writer.print("({d}, {s})", .{ self.offset, self.type_ });
     }
 };

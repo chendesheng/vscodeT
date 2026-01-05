@@ -225,23 +225,22 @@ pub const TokenMetadata = packed struct(u32) {
     pub fn getClassNameFromMetadata(self: TokenMetadata, allocator: Allocator) !ArrayList(u8) {
         const foreground = self.foreground;
         var className = ArrayList(u8).init(allocator);
-        var classNameWriter = className.writer();
-        try classNameWriter.writeAll("mtk");
+        try className.appendSlice("mtk");
 
-        try classNameWriter.print("{d}", .{foreground});
+        try className.print("{d}", .{foreground});
 
         const fontStyle = self.fontStyle;
         if (fontStyle.italic) {
-            try classNameWriter.writeAll(" mtki");
+            try className.appendSlice(" mtki");
         }
         if (fontStyle.bold) {
-            try classNameWriter.writeAll(" mtkb");
+            try className.appendSlice(" mtkb");
         }
         if (fontStyle.underline) {
-            try classNameWriter.writeAll(" mtku");
+            try className.appendSlice(" mtku");
         }
         if (fontStyle.strikethrough) {
-            try classNameWriter.writeAll(" mtks");
+            try className.appendSlice(" mtks");
         }
 
         return className;
@@ -252,28 +251,28 @@ pub const TokenMetadata = packed struct(u32) {
         const fontStyle = self.fontStyle;
 
         var result = ArrayList(u8).init(allocator);
-        result.appendSlice("color: ");
-        result.appendSlice(colorMap[@as(usize, @intCast(foreground))]);
-        result.appendSlice(";");
+        try result.appendSlice("color: ");
+        try result.appendSlice(colorMap[@as(usize, @intCast(foreground))]);
+        try result.appendSlice(";");
         if (fontStyle.italic) {
-            result.appendSlice("font-style: italic;");
+            try result.appendSlice("font-style: italic;");
         }
         if (fontStyle.bold) {
-            result.appendSlice("font-weight: bold;");
+            try result.appendSlice("font-weight: bold;");
         }
 
         var textDecoration = ArrayList(u8).init(allocator);
         defer textDecoration.deinit();
         if (fontStyle.underline) {
-            textDecoration.appendSlice(" underline");
+            try textDecoration.appendSlice(" underline");
         }
         if (fontStyle.strikethrough) {
-            textDecoration.appendSlice(" line-through");
+            try textDecoration.appendSlice(" line-through");
         }
         if (textDecoration.items.len > 0) {
-            result.appendSlice("text-decoration: ");
-            result.appendSlice(textDecoration.items);
-            result.appendSlice(";");
+            try result.appendSlice("text-decoration: ");
+            try result.appendSlice(textDecoration.items);
+            try result.appendSlice(";");
         }
         return result;
     }
