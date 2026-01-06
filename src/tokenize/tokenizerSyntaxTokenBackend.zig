@@ -239,25 +239,35 @@ pub const TokenizerSyntaxTokenBackend = struct {
         self._defaultBackgroundTokenizer.?.handleChanges();
     }
 
-    pub fn handleDidChangeContent(self: *TokenizerSyntaxTokenBackend, e: ModelContentChangedEvent) void {
+    pub fn handleDidChangeContent(self: *TokenizerSyntaxTokenBackend, e: ModelContentChangedEvent) !void {
         if (e.isFlush) {
             // Don't fire the event, as the view might not have got the text change event yet
-            self.todo_resetTokenization(false);
+            try self.todo_resetTokenization(false);
         } else if (!e.isEolChange) { // We don't have to do anything on an EOL change
-            for (e.changes) |c| {
-                const res = countEOL(c.text);
-                const eolCount = res.first;
-                const firstLineLength = res.second;
+            for (e.changes.items) |c| {
+                var reader = c.text.reader();
+                const res = countEOL(&reader);
+                const eolCount = res.eolCount;
+                const firstLineLength = res.firstLineLength;
 
-                self._tokens.acceptEdit(c.range, eolCount, firstLineLength);
-                self._debugBackgroundTokens.?.acceptEdit(c.range, eolCount, firstLineLength);
+                try self._tokens.acceptEdit(c.range, eolCount, firstLineLength);
+                if (self._debugBackgroundTokens) |*debugBackgroundTokens| {
+                    try debugBackgroundTokens.acceptEdit(c.range, eolCount, firstLineLength);
+                }
             }
-            self._debugBackgroundStates.?.acceptChanges(e.changes);
+
+            if (self._debugBackgroundStates) |*debugBackgroundStates| {
+                try debugBackgroundStates.acceptChanges(e.changes.items);
+            }
 
             if (self._tokenizer) |tokenizer| {
-                tokenizer.getStore().acceptChanges(e.changes);
+                var store = tokenizer.getStore();
+                try store.acceptChanges(e.changes.items);
             }
-            self._defaultBackgroundTokenizer.?.handleChanges();
+
+            if (self._defaultBackgroundTokenizer) |*defaultBackgroundTokenizer| {
+                defaultBackgroundTokenizer.handleChanges();
+            }
         }
     }
 
@@ -345,13 +355,14 @@ pub const TokenizerSyntaxTokenBackend = struct {
     }
 
     pub fn getLineTokens(self: *TokenizerSyntaxTokenBackend, lineNumber: usize) !LineTokens {
-        const lineText = self.super._textModel.getLineContent(lineNumber);
-        const result = try self._tokens.getTokens(self.super._textModel.getLanguageId(), lineNumber - 1, lineText);
+        const lineText = try self.super._textModel.getLineContent(lineNumber);
+        defer lineText.deinit();
+        const result = try self._tokens.getTokens(self.super._textModel.getLanguageId(), lineNumber - 1, lineText.items);
         if (self._debugBackgroundTokens) |debugBackgroundTokens| {
             if (self._debugBackgroundStates) |debugBackgroundStates| {
                 if (self._tokenizer) |tokenizer| {
                     if (debugBackgroundStates.getFirstInvalidEndStateLineNumberOrMax() > lineNumber and tokenizer.getStore().getFirstInvalidEndStateLineNumberOrMax() > lineNumber) {
-                        const backgroundResult = try debugBackgroundTokens.getTokens(self.super._textModel.getLanguageId(), lineNumber - 1, lineText);
+                        const backgroundResult = try debugBackgroundTokens.getTokens(self.super._textModel.getLanguageId(), lineNumber - 1, lineText.items);
                         if (!result.equals(&backgroundResult)) {
                             if (self._debugBackgroundTokenizer) |debugBackgroundTokenizer| {
                                 if (debugBackgroundTokenizer.reportMismatchingTokens) |reportMismatchingTokens| {

@@ -46,7 +46,7 @@ pub const ContiguousTokensStore = struct {
         return self._lineTokens.items.len > 0;
     }
 
-    pub fn getTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineText: []const u8) !LineTokens {
+    pub fn getTokens(self: *const ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineText: []const u8) !LineTokens {
         var rawLineTokens: ?ArrayList(TokenPacked) = null;
         if (lineIndex < self._len) {
             rawLineTokens = self._lineTokens.items[lineIndex];
@@ -58,7 +58,7 @@ pub const ContiguousTokensStore = struct {
 
         var lineTokens = ArrayList(TokenPacked).init(self._lineTokens.allocator);
         try lineTokens.append(TokenPacked{
-            .endOffset = lineText.len,
+            .endOffset = @intCast(lineText.len),
             .metadata = getDefaultMetadata(self._languageIdCodec.encodeLanguageId(topLevelLanguageId)),
         });
         return LineTokens.init(lineTokens, lineText, self._languageIdCodec);
@@ -107,14 +107,15 @@ pub const ContiguousTokensStore = struct {
         }
     }
 
-    fn _deleteLines(self: *ContiguousTokensStore, start: usize, deleteCount: usize) !void {
+    fn _deleteLines(self: *ContiguousTokensStore, start: usize, _deleteCount: usize) !void {
+        var deleteCount = _deleteCount;
         if (deleteCount == 0) {
             return;
         }
         if (start + deleteCount > self._len) {
             deleteCount = self._len - start;
         }
-        try self._lineTokens.replaceRange(start, deleteCount, &[_]?TokenPacked{});
+        try self._lineTokens.replaceRange(start, deleteCount, &[_]?ArrayList(TokenPacked){});
         self._len -= deleteCount;
     }
 
@@ -122,11 +123,9 @@ pub const ContiguousTokensStore = struct {
         if (insertCount == 0) {
             return;
         }
-        var lineTokens = ArrayList(?TokenPacked).init(self._lineTokens.allocator);
-        for (0..insertCount) |_| {
-            try lineTokens.append(null);
+        for (0..insertCount) |i| {
+            try self._lineTokens.insert(insertIndex + i, null);
         }
-        self._lineTokens = try self._lineTokens.insertSlice(insertIndex, lineTokens.items);
         self._len += insertCount;
     }
 
@@ -167,9 +166,9 @@ pub const ContiguousTokensStore = struct {
 
     //#region Editing
 
-    pub fn acceptEdit(self: *ContiguousTokensStore, range: Range, eolCount: usize, firstLineLength: usize) void {
-        self._acceptDeleteRange(range);
-        self._acceptInsertText(Position.init(range.startLineNumber, range.startColumn), eolCount, firstLineLength);
+    pub fn acceptEdit(self: *ContiguousTokensStore, range: Range, eolCount: usize, firstLineLength: usize) !void {
+        try self._acceptDeleteRange(range);
+        try self._acceptInsertText(Position.init(range.startLineNumber, range.startColumn), eolCount, firstLineLength);
     }
 
     fn _acceptDeleteRange(self: *ContiguousTokensStore, range: Range) !void {
@@ -184,26 +183,26 @@ pub const ContiguousTokensStore = struct {
                 return;
             }
 
-            try ContiguousTokensEditing.delete(&self._lineTokens[firstLineIndex], range.startColumn - 1, range.endColumn - 1);
+            try ContiguousTokensEditing.delete(&self._lineTokens.items[firstLineIndex], range.startColumn - 1, range.endColumn - 1);
             return;
         }
 
-        try ContiguousTokensEditing.deleteEnding(&self._lineTokens[firstLineIndex], range.startColumn - 1);
+        try ContiguousTokensEditing.deleteEnding(&self._lineTokens.items[firstLineIndex], range.startColumn - 1);
 
         const lastLineIndex = range.endLineNumber - 1;
-        const lastLineTokens = &self._lineTokens[lastLineIndex];
+        const lastLineTokens = &self._lineTokens.items[lastLineIndex];
         if (lastLineIndex < self._len) {
             try ContiguousTokensEditing.deleteBeginning(lastLineTokens, range.endColumn - 1);
         }
 
         // Take remaining text on last line and append it to remaining text on first line
-        try ContiguousTokensEditing.append(&self._lineTokens[firstLineIndex], lastLineTokens);
+        try ContiguousTokensEditing.append(&self._lineTokens.items[firstLineIndex], lastLineTokens);
 
         // Delete middle lines
         try self._deleteLines(range.startLineNumber, range.endLineNumber - range.startLineNumber);
     }
 
-    fn _acceptInsertText(self: *ContiguousTokensStore, position: Position, eolCount: usize, firstLineLength: usize) void {
+    fn _acceptInsertText(self: *ContiguousTokensStore, position: Position, eolCount: usize, firstLineLength: usize) !void {
         if (eolCount == 0 and firstLineLength == 0) {
             // Nothing to insert
             return;
@@ -214,7 +213,7 @@ pub const ContiguousTokensStore = struct {
             return;
         }
 
-        const lineTokens = &self._lineTokens[lineIndex];
+        const lineTokens = &self._lineTokens.items[lineIndex];
         if (eolCount == 0) {
             // Inserting text on one line
             ContiguousTokensEditing.insert(lineTokens, position.column - 1, firstLineLength);

@@ -208,8 +208,8 @@ pub const TextModel = struct {
     _eventEmitter: DidChangeContentEmitter,
     //#endregion
 
-    pub fn tokenization(self: *const TextModel) TokenizationTextModelPart {
-        return self._tokenizationTextModelPart;
+    pub fn tokenization(self: *TextModel) *TokenizationTextModelPart {
+        return &self._tokenizationTextModelPart;
     }
 
     pub fn resolveOptions(textBuffer: *PieceTreeTextBuffer, options: TextModelCreationOptions) TextModelResolvedOptions {
@@ -330,57 +330,55 @@ pub const TextModel = struct {
         attachedViews.* = AttachedViews.init(allocator);
 
         const model = try allocator.create(TextModel);
-        model.* = TextModel{
-            .id = try fmt.allocPrint(allocator, "$model{d}", .{MODEL_ID}),
-            .isForSimpleWidget = creationOptions.isForSimpleWidget,
-            ._associatedResource = if (associatedResource) |url| url else .{
-                .scheme = "inmemory",
-                .user = null,
-                .password = null,
-                .host = .{ .raw = "model" },
-                .port = null,
-                .path = .{ .raw = try fmt.allocPrint(allocator, "/{d}", .{MODEL_ID}) },
-                .query = null,
-                .fragment = null,
-            },
-            ._attachedEditorCount = 0,
-            ._options = resolveOptions(&buffer, creationOptions),
-            ._buffer = buffer,
-            ._isTooLargeForSyncing = bufferTextLength > MODEL_SYNC_LIMIT,
-            ._isTooLargeForTokenization = tooLargeForTokenization,
-            ._isTooLargeForHeapOperation = tooLargeForHeapOperation,
-            ._versionId = 1,
-            ._alternativeVersionId = 1,
-            ._initialUndoRedoSnapshot = null,
-            .__isDisposing = false,
-
-            ._instanceId = strings.singleLetterHash(MODEL_ID),
-            ._lastDecorationId = 0,
-            ._deltaDecorationCallCnt = 0,
-            ._decorations = AutoHashMap(u64, *IntervalNode).init(allocator),
-            ._decorationsTree = DecorationsTrees.init(),
-            ._tokenizationTextModelPart = try TokenizationTextModelPart.init(model, languageIdOrSelection, attachedViews, languageService, languageConfigurationService),
-            ._attachedViews = attachedViews,
-            ._commandManager = EditStack.init(model, undoRedoService),
-            ._isUndoing = false,
-            ._isRedoing = false,
-            ._trimAutoWhitespaceLines = null,
-
-            ._undoRedoService = undoRedoService,
-
-            ._onWillDispose = Emitter(void).init(allocator),
-            ._onDidChangeDecorations = DidChangeDecorationsEmitter.init(allocator, model, struct {
-                fn handle(m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(u192, LineHeightChangingDecoration)) !void {
-                    const m1: *TextModel = @ptrCast(@alignCast(m));
-                    try m1.handleBeforeFireDecorationsChangedEvent(affectedInjectedTextLines, affectedLineHeights);
-                }
-            }.handle),
-            ._onDidChangeOptions = Emitter(ModelOptionsChangedEvent).init(allocator),
-            ._onDidChangeAttached = Emitter(void).init(allocator),
-            ._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator),
-            ._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator),
-            ._eventEmitter = DidChangeContentEmitter.init(allocator),
+        model.id = try fmt.allocPrint(allocator, "$model{d}", .{MODEL_ID});
+        model.isForSimpleWidget = creationOptions.isForSimpleWidget;
+        model._associatedResource = if (associatedResource) |url| url else .{
+            .scheme = "inmemory",
+            .user = null,
+            .password = null,
+            .host = .{ .raw = "model" },
+            .port = null,
+            .path = .{ .raw = try fmt.allocPrint(allocator, "/{d}", .{MODEL_ID}) },
+            .query = null,
+            .fragment = null,
         };
+        model._attachedEditorCount = 0;
+        model._options = resolveOptions(&buffer, creationOptions);
+        model._buffer = buffer;
+        model._isTooLargeForSyncing = bufferTextLength > MODEL_SYNC_LIMIT;
+        model._isTooLargeForTokenization = tooLargeForTokenization;
+        model._isTooLargeForHeapOperation = tooLargeForHeapOperation;
+        model._versionId = 1;
+        model._alternativeVersionId = 1;
+        model._initialUndoRedoSnapshot = null;
+        model.__isDisposing = false;
+
+        model._instanceId = strings.singleLetterHash(MODEL_ID);
+        model._lastDecorationId = 0;
+        model._deltaDecorationCallCnt = 0;
+        model._decorations = AutoHashMap(u64, *IntervalNode).init(allocator);
+        model._decorationsTree = DecorationsTrees.init();
+        model._attachedViews = attachedViews;
+        model._commandManager = EditStack.init(model, undoRedoService);
+        model._isUndoing = false;
+        model._isRedoing = false;
+        model._trimAutoWhitespaceLines = null;
+
+        model._undoRedoService = undoRedoService;
+
+        model._onWillDispose = Emitter(void).init(allocator);
+        model._onDidChangeDecorations = DidChangeDecorationsEmitter.init(allocator, model, struct {
+            fn handle(m: *anyopaque, affectedInjectedTextLines: ?Set(usize), affectedLineHeights: ?SetWithKey(u192, LineHeightChangingDecoration)) !void {
+                const m1: *TextModel = @ptrCast(@alignCast(m));
+                try m1.handleBeforeFireDecorationsChangedEvent(affectedInjectedTextLines, affectedLineHeights);
+            }
+        }.handle);
+        model._onDidChangeOptions = Emitter(ModelOptionsChangedEvent).init(allocator);
+        model._onDidChangeAttached = Emitter(void).init(allocator);
+        model._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator);
+        model._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator);
+        model._eventEmitter = DidChangeContentEmitter.init(allocator);
+        model._tokenizationTextModelPart = try TokenizationTextModelPart.init(model, languageIdOrSelection, attachedViews, languageService, languageConfigurationService);
         return model;
     }
 
@@ -1172,14 +1170,14 @@ pub const TextModel = struct {
         return self._buffer.getAllocator();
     }
 
-    fn _emitContentChangedEvent(self: *TextModel, rawChange: ModelRawContentChangedEvent, change: ModelContentChangedEvent) void {
+    fn _emitContentChangedEvent(self: *TextModel, rawChange: ModelRawContentChangedEvent, change: ModelContentChangedEvent) !void {
         var e = InternalModelContentChangeEvent.init(rawChange, change);
         if (self.__isDisposing) {
             // Do not confuse listeners by emitting any event after disposing
             e.deinit();
             return;
         }
-        // self._tokenizationTextModelPart.handleDidChangeContent(change);
+        try self._tokenizationTextModelPart.handleDidChangeContent(change);
         // self._bracketPairs.handleDidChangeContent(change);
         self._eventEmitter.fire(e);
     }
@@ -1234,7 +1232,7 @@ pub const TextModel = struct {
         try changes.append(.{ .flush = ModelRawFlush.init() });
 
         const changed2 = try self._createContentChanged2(Range.init(1, 1, endLineNumber, endColumn), 0, oldModelValueLength, Position.init(endLineNumber, endColumn), try self.getValue(null, false), false, false, true, false);
-        self._emitContentChangedEvent(ModelRawContentChangedEvent.init(changes, self._versionId, false, false), changed2);
+        try self._emitContentChangedEvent(ModelRawContentChangedEvent.init(changes, self._versionId, false, false), changed2);
     }
 
     pub fn setEOL(self: *TextModel, eol: EOL) !void {
@@ -1267,7 +1265,7 @@ pub const TextModel = struct {
             false,
             true,
         );
-        self._emitContentChangedEvent(ModelRawContentChangedEvent.init(rawChanges, self._versionId, false, false), contentChanged);
+        try self._emitContentChangedEvent(ModelRawContentChangedEvent.init(rawChanges, self._versionId, false, false), contentChanged);
     }
 
     fn _onBeforeEOLChange(self: *TextModel) !void {
@@ -1471,7 +1469,7 @@ pub const TextModel = struct {
                 .isFlush = false,
             };
 
-            self._emitContentChangedEvent(
+            try self._emitContentChangedEvent(
                 ModelRawContentChangedEvent.init(rawContentChanges, self.getVersionId(), self._isUndoing, self._isRedoing),
                 changedEvent,
             );

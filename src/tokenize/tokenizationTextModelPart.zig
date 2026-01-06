@@ -48,6 +48,25 @@ pub const TokenizationTextModelPart = struct {
     // _instantiationService: IInstantiationService,
     // _treeSitterLibraryService: ITreeSitterLibraryService,
 
+    pub fn create(
+        textModel_: *TextModel,
+        languageId: []const u8,
+        attachedViews: *AttachedViews,
+        languageService: *LanguageService,
+        languageConfigurationService: *ILanguageConfigurationService,
+    ) !*TokenizationTextModelPart {
+        const allocator = textModel_.getAllocator();
+        const self = try allocator.create(TokenizationTextModelPart);
+        self.* = try TokenizationTextModelPart.init(
+            textModel_,
+            languageId,
+            attachedViews,
+            languageService,
+            languageConfigurationService,
+        );
+        return self;
+    }
+
     pub fn init(
         textModel_: *TextModel,
         languageId: []const u8,
@@ -140,21 +159,28 @@ pub const TokenizationTextModelPart = struct {
         }
     }
 
-    pub fn handleDidChangeContent(self: *TokenizationTextModelPart, e: ModelContentChangedEvent) void {
+    pub fn handleDidChangeContent(self: *TokenizationTextModelPart, e: ModelContentChangedEvent) !void {
         if (e.isFlush) {
             self._semanticTokens.flush();
         } else if (!e.isEolChange) { // We don't have to do anything on an EOL change
             for (e.changes.items) |c| {
-                const res = countEOL(c.text.items());
+                var reader = c.text.reader();
+                const res = countEOL(&reader);
                 const eolCount = res.eolCount;
                 const firstLineLength = res.firstLineLength;
                 const lastLineLength = res.lastLineLength;
 
-                self._semanticTokens.acceptEdit(c.range, eolCount, firstLineLength, lastLineLength, if (c.text.len > 0) c.text.items()[0] else 0);
+                self._semanticTokens.acceptEdit(
+                    c.range,
+                    eolCount,
+                    firstLineLength,
+                    lastLineLength,
+                    c.text.getFistCodepoint() orelse 0,
+                );
             }
         }
 
-        self.tokens.handleDidChangeContent(e);
+        try self.tokens.handleDidChangeContent(e);
     }
 
     pub fn handleDidChangeAttached(self: *TokenizationTextModelPart) void {
@@ -164,15 +190,18 @@ pub const TokenizationTextModelPart = struct {
     // Includes grammar and semantic tokens.
     pub fn getLineTokens(self: *TokenizationTextModelPart, lineNumber: usize) !LineTokens {
         self.validateLineNumber(lineNumber);
-        const syntacticTokens = try self.tokens.getLineTokens(lineNumber);
-        return try self._semanticTokens.addSparseTokens(lineNumber, syntacticTokens);
+        var syntacticTokens = try self.tokens.getLineTokens(lineNumber);
+        const result = try self._semanticTokens.addSparseTokens(lineNumber, syntacticTokens);
+        // Only deinit if addSparseTokens created a new LineTokens
+        if (result._tokens.items.ptr != syntacticTokens._tokens.items.ptr) {
+            syntacticTokens.deinit();
+        }
+        return result;
     }
 
     fn _emitModelTokensChangedEvent(self: *TokenizationTextModelPart, e: ModelTokensChangedEvent) void {
-        if (!self._textModel._isDisposing()) {
-            // self._bracketPairsTextModelPart.handleDidChangeTokens(e);
-            self._onDidChangeTokens.fire(e);
-        }
+        // self._bracketPairsTextModelPart.handleDidChangeTokens(e);
+        self._onDidChangeTokens.fire(e);
     }
 
     // #region Grammar Tokens
@@ -227,12 +256,15 @@ pub const TokenizationTextModelPart = struct {
 
     // #region Semantic Tokens
 
-    pub fn setSemanticTokens(self: *TokenizationTextModelPart, tokens: ?[]SparseMultilineTokens, isComplete: bool) void {
-        self._semanticTokens.set(tokens, isComplete, self._textModel);
+    pub fn setSemanticTokens(self: *TokenizationTextModelPart, tokens: ?[]const SparseMultilineTokens, isComplete: bool) !void {
+        try self._semanticTokens.set(tokens, isComplete, self._textModel);
 
+        var ranges = ArrayList(ModelTokensChangedRange).init(self._textModel.getAllocator());
+        defer ranges.deinit();
+        try ranges.append(.{ .fromLineNumber = 1, .toLineNumber = self._textModel.getLineCount() });
         self._emitModelTokensChangedEvent(.{
             .semanticTokensApplied = tokens != null,
-            .ranges = .{.{ .fromLineNumber = 1, .toLineNumber = self._textModel.getLineCount() }},
+            .ranges = ranges.items,
         });
     }
 

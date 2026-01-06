@@ -26,6 +26,21 @@ pub fn safeUtf8Range(str: []const u8, start: usize, end: usize) [2]usize {
     return [2]usize{ safeStart, safeEnd };
 }
 
+pub fn firstCodepoint(bytes: []const u8) !u21 {
+    if (bytes.len == 0) return error.EmptyInput;
+
+    const len = try std.unicode.utf8ByteSequenceLength(bytes[0]);
+    if (@as(usize, @intCast(len)) > bytes.len) return error.InvalidUtf8Sequence;
+
+    return switch (len) {
+        1 => @as(u21, bytes[0]),
+        2 => try std.unicode.utf8Decode2(bytes[0..2].*),
+        3 => try std.unicode.utf8Decode3(bytes[0..3].*),
+        4 => try std.unicode.utf8Decode4(bytes[0..4].*),
+        else => error.InvalidUtf8Sequence,
+    };
+}
+
 pub fn lastCodepoint(str: []const u8, limit: usize) !u21 {
     if (limit == 0 or limit > str.len) {
         unreachable;

@@ -10,6 +10,7 @@ const escapeRegExp = re.escapeRegExp;
 const HashMap = std.HashMap;
 const EOL = @import("eolCounter.zig").EOL;
 const _replaceEOL = @import("eolCounter.zig").replaceEOL;
+const firstCodepoint = @import("utf8Helper.zig").firstCodepoint;
 
 pub fn firstNonWhitespaceIndex(str: []const u8) ?usize {
     for (str, 0..) |c, i| {
@@ -626,6 +627,25 @@ pub const String = union(enum) {
                     result.appendSlice(s) catch unreachable;
                 }
                 return std.Io.Reader.fixed(result.items);
+            },
+        }
+    }
+
+    pub fn getFistCodepoint(self: *const String) ?u21 {
+        switch (self.*) {
+            .empty => return null,
+            .owned => |list| {
+                return firstCodepoint(list.items) catch null;
+            },
+            .borrowed1 => |s| {
+                return firstCodepoint(s) catch null;
+            },
+            .borrowed => |list| {
+                for (list.items) |s| {
+                    if (s.len == 0) continue;
+                    return firstCodepoint(s) catch null;
+                }
+                return null;
             },
         }
     }

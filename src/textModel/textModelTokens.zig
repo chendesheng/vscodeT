@@ -7,7 +7,7 @@ const RangePriorityQueue = @import("../basics/rangePriorityQueue.zig").RangePrio
 const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const LineRange = @import("../basics/lineRange.zig").LineRange;
-const ModelContentChange = @import("./model.zig").ModelContentChange;
+const ModelContentChange = @import("../textModel/textModelEvents.zig").ModelContentChange;
 const FixedArray = @import("../basics/FixedArray.zig").FixedArray;
 const LineTokens = @import("../tokens/lineTokens.zig").LineTokens;
 const TextModel = @import("./textModel.zig").TextModel;
@@ -276,13 +276,14 @@ pub const TrackingTokenizationStateStore = struct {
 
     pub fn acceptChange(self: *Self, range: LineRange, newLineCount: usize) !void {
         self._lineCount = self._lineCount + newLineCount - range.length();
-        self._tokenizationStateStore.acceptChange(range, newLineCount);
-        self._invalidEndStatesLineNumbers.addRangeAndResize(OffsetRange.init(@intCast(range.startLineNumber), @intCast(range.endLineNumberExclusive)), newLineCount);
+        try self._tokenizationStateStore.acceptChange(range, newLineCount);
+        try self._invalidEndStatesLineNumbers.addRangeAndResize(OffsetRange.init(@intCast(range.startLineNumber), @intCast(range.endLineNumberExclusive)), @intCast(newLineCount));
     }
 
     pub fn acceptChanges(self: *Self, changes: []ModelContentChange) !void {
         for (changes) |c| {
-            const result = countEOL(c.text);
+            var reader = c.text.reader();
+            const result = countEOL(&reader);
             try self.acceptChange(LineRange.init(c.range.startLineNumber, c.range.endLineNumber + 1), result.eolCount + 1);
         }
     }
@@ -352,7 +353,8 @@ pub const TokenizationStateStore = struct {
         return true;
     }
 
-    pub fn acceptChange(self: *Self, range: LineRange, newLineCount: usize) !void {
+    pub fn acceptChange(self: *Self, range: LineRange, _newLineCount: usize) !void {
+        var newLineCount = _newLineCount;
         var len = range.length();
         if (newLineCount > 0 and len > 0) {
             // Keep the last state, even though it is unrelated.
@@ -407,17 +409,17 @@ pub const DefaultBackgroundTokenizer = struct {
     }
 
     fn _beginBackgroundTokenization(self: *Self) void {
-        if (self._isScheduled or !self.tokenizerWithStateStore.?.textModel().isAttachedToEditor() or !self._hasLinesToTokenize()) {
+        if (self._isScheduled or !self.tokenizerWithStateStore.?._textModel.isAttachedToEditor() or !self._hasLinesToTokenize()) {
             return;
         }
 
-        self._isScheduled = true;
-        runWhenGlobalIdle(self, struct {
-            fn callback(deadline: IdleDeadline, this: *Self) void {
-                this._isScheduled = false;
-                this._backgroundTokenizeWithDeadline(deadline);
-            }
-        }.callback);
+        // self._isScheduled = true;
+        // runWhenGlobalIdle(self, struct {
+        //     fn callback(deadline: IdleDeadline, this: *Self) void {
+        //         this._isScheduled = false;
+        //         this._backgroundTokenizeWithDeadline(deadline);
+        //     }
+        // }.callback);
     }
 
     // Tokenize until the deadline occurs, but try to yield every 1-2ms.

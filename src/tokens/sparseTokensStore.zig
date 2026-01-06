@@ -45,10 +45,13 @@ pub const SparseTokensStore = struct {
         return self._pieces.items.len == 0;
     }
 
-    pub fn set(self: *SparseTokensStore, pieces: ?ArrayList(SparseMultilineTokens), isComplete_: bool, textModel: ?*const TextModel) !void {
+    pub fn set(self: *SparseTokensStore, pieces: ?[]const SparseMultilineTokens, _isComplete: bool, textModel: ?*const TextModel) !void {
+        const allocator = self._pieces.allocator;
         self._pieces.deinit();
-        self._pieces = pieces orelse ArrayList(SparseMultilineTokens).init(self._pieces.allocator);
-        self._isComplete = isComplete_;
+        self._pieces = ArrayList(SparseMultilineTokens).init(allocator);
+        if (pieces) |tokens| try self._pieces.appendSlice(tokens);
+
+        self._isComplete = _isComplete;
 
         if (textModel) |model| {
             for (self._pieces.items) |p| {
@@ -258,7 +261,7 @@ pub const SparseTokensStore = struct {
     }
 
     pub fn acceptEdit(self: *SparseTokensStore, range: Range, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: u21) void {
-        for (self._pieces.items) |piece| {
+        for (self._pieces.items) |*piece| {
             piece.acceptEdit(range, eolCount, firstLineLength, lastLineLength, firstCharCode);
         }
     }

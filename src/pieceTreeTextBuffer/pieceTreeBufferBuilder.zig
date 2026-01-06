@@ -120,6 +120,7 @@ pub const PieceTreeBufferBuilder = struct {
             self._previousChar[0] = lastChar;
         } else {
             const chunk2 = safeUtf8Prefix(chunk, chunk.len);
+            std.debug.print("chunk2: {d}, chunk: {d}, chunk: {s}\n", .{ chunk2.len, chunk.len, chunk });
             try self._acceptChunk1(chunk2, false);
             if (chunk2.len < chunk.len) {
                 std.debug.assert(chunk.len - chunk2.len < 4);
