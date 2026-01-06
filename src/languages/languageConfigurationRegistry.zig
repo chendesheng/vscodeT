@@ -12,6 +12,7 @@ const EditorAutoIndentStrategy = @import("../editorOptions.zig").EditorAutoInden
 const EnterAction = @import("./languageConfiguration.zig").EnterAction;
 const AutoClosingPairs = @import("./languageConfiguration.zig").AutoClosingPairs;
 const IAutoClosingPair = @import("./languageConfiguration.zig").IAutoClosingPair;
+const Allocator = std.mem.Allocator;
 
 // Interface used to support insertion of mode specific comments.
 pub const ICommentsConfiguration = struct {
@@ -76,8 +77,8 @@ pub const ResolvedLanguageConfiguration = struct {
         };
     }
 
-    pub fn getWordDefinition(self: *ResolvedLanguageConfiguration) RegExp {
-        return ensureValidWordDefinition(self.wordDefinition);
+    pub fn getWordDefinition(self: *const ResolvedLanguageConfiguration, allocator: Allocator) !RegExp {
+        return try ensureValidWordDefinition(allocator, self.wordDefinition);
     }
 
     // TODO: Implement this

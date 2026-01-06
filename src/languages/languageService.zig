@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../basics/event.zig").Emitter;
 const Uri = std.Uri;
-const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
+const LanguageIdCodec = @import("../services/languageRegistry.zig").LanguageIdCodec;
 
 pub const ILanguageExtensionPoint = struct {
     id: []const u8,

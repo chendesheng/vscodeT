@@ -3,7 +3,10 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
 // Open ended enum at runtime
-pub const LanguageId = enum(u8) { Null = 0, PlainText = 1 };
+pub const LanguageId = struct {
+    pub const none: u8 = 0;
+    pub const plainText: u8 = 1;
+};
 
 // A font style. Values are 2^x such that a bit mask can be used.
 pub const FontStyle = packed struct(u4) {

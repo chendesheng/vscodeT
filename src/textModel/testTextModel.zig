@@ -10,6 +10,7 @@ const BracketPairColorizationOptions = @import("model.zig").BracketPairColorizat
 const EDITOR_MODEL_DEFAULTS = @import("textModelDefaults.zig");
 const LanguageService = @import("../languages/languageService.zig").LanguageService;
 const ILanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
+const PLAINTEXT_LANGUAGE_ID = @import("../services/languageRegistry.zig").PLAINTEXT_LANGUAGE_ID;
 
 pub const RelaxedTextModelCreationOptions = struct {
     tabSize: ?usize = null,
@@ -39,8 +40,6 @@ fn resolveOptions(_options: ?RelaxedTextModelCreationOptions) TextModelCreationO
         .bracketPairColorizationOptions = options.bracketColorizationOptions orelse defaultOptions.bracketPairColorizationOptions,
     };
 }
-
-const PLAINTEXT_LANGUAGE_ID = "plaintext";
 
 pub fn createTextModel(allocator: Allocator, text: []const u8, _languageId: ?[]const u8, options: ?RelaxedTextModelCreationOptions) !*TextModel {
     const languageId = _languageId orelse PLAINTEXT_LANGUAGE_ID;

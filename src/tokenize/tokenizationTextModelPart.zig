@@ -16,10 +16,10 @@ const TokenizerSyntaxTokenBackend = @import("./tokenizerSyntaxTokenBackend.zig")
 const AttachedViews = @import("./abstractSyntaxTokenBackend.zig").AttachedViews;
 const ModelContentChangedEvent = @import("../textModel/textModelEvents.zig").ModelContentChangedEvent;
 const WordAtPosition = @import("../basics/utils.zig").WordAtPosition;
-const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
+const LanguageIdCodec = @import("../services/languageRegistry.zig").LanguageIdCodec;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const BackgroundTokenizationState = @import("./abstractSyntaxTokenBackend.zig").BackgroundTokenizationState;
-const getWordAtText = @import("../basics/utils.zig").getWordAtText;
+const getWordAtText = @import("../basics/wordHelper.zig").getWordAtText;
 const ILanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
 const ResolvedLanguageConfiguration = @import("../languages/languageConfigurationRegistry.zig").ResolvedLanguageConfiguration;
 const ModelTokensChangedRange = @import("../textModel/textModelEvents.zig").ModelTokensChangedRange;
@@ -297,23 +297,32 @@ pub const TokenizationTextModelPart = struct {
 
     // #region Utility Methods
 
-    pub fn getWordAtPosition(self: *TokenizationTextModelPart, _position: Position) ?WordAtPosition {
+    pub fn getWordAtPosition(self: *TokenizationTextModelPart, _position: Position) !?WordAtPosition {
+        const allocator = self._textModel.getAllocator();
         const position = self._textModel.validatePosition(_position);
-        const lineContent = self._textModel.getLineContent(position.lineNumber);
-        const lineTokens = self.getLineTokens(position.lineNumber);
+        const lineContent = try self._textModel.getLineContent(position.lineNumber);
+        defer lineContent.deinit();
+        const lineTokens = try self.getLineTokens(position.lineNumber);
         const tokenIndex = lineTokens.findTokenIndexAtOffset(position.column - 1);
 
         // (1). First try checking right biased word
         const res = TokenizationTextModelPart._findLanguageBoundaries(lineTokens, tokenIndex);
         const rbStartOffset = res[0];
         const rbEndOffset = res[1];
-        const rightBiasedWord = getWordAtText(position.column, self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex)).getWordDefinition(), lineContent[rbStartOffset..rbEndOffset], rbStartOffset);
+        const rightBiasedWord = try getWordAtText(
+            allocator,
+            position.column,
+            try self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex)).getWordDefinition(allocator),
+            lineContent.items[rbStartOffset..rbEndOffset],
+            rbStartOffset,
+            null,
+        );
         // Make sure the result touches the original passed in position
-        if (rightBiasedWord and
-            rightBiasedWord.startColumn <= _position.column and
-            _position.column <= rightBiasedWord.endColumn)
+        if (rightBiasedWord != null and
+            rightBiasedWord.?.startColumn <= _position.column and
+            _position.column <= rightBiasedWord.?.endColumn)
         {
-            return rightBiasedWord;
+            return rightBiasedWord.?;
         }
 
         // (2). Else, if we were at a language boundary, check the left biased word
@@ -322,13 +331,13 @@ pub const TokenizationTextModelPart = struct {
             const b = TokenizationTextModelPart._findLanguageBoundaries(lineTokens, tokenIndex - 1);
             const lbStartOffset = b[0];
             const lbEndOffset = b[1];
-            const leftBiasedWord = getWordAtText(position.column, self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex - 1)).getWordDefinition(), lineContent.substring(lbStartOffset, lbEndOffset), lbStartOffset);
+            const leftBiasedWord = try getWordAtText(allocator, position.column, try self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex - 1)).getWordDefinition(allocator), lineContent.items[lbStartOffset..lbEndOffset], lbStartOffset, null);
             // Make sure the result touches the original passed in position
-            if (leftBiasedWord and
-                leftBiasedWord.startColumn <= _position.column and
-                _position.column <= leftBiasedWord.endColumn)
+            if (leftBiasedWord != null and
+                leftBiasedWord.?.startColumn <= _position.column and
+                _position.column <= leftBiasedWord.?.endColumn)
             {
-                return leftBiasedWord;
+                return leftBiasedWord.?;
             }
         }
 
@@ -343,21 +352,21 @@ pub const TokenizationTextModelPart = struct {
         const languageId = lineTokens.getLanguageId(tokenIndex);
 
         // go left until a different language is hit
-        var startOffset = 0;
+        var startOffset: u32 = 0;
         var i = tokenIndex;
-        while (i >= 0 and lineTokens.getLanguageId(i) == languageId) {
+        while (i >= 0 and std.mem.eql(u8, lineTokens.getLanguageId(i), languageId)) {
             startOffset = lineTokens.getStartOffset(i);
         }
 
         // go right until a different language is hit
-        var endOffset = lineTokens.getLineContent().len;
+        var endOffset = @as(u32, @intCast(lineTokens.getLineContent().len));
         i = tokenIndex;
         const tokenCount = lineTokens.getCount();
-        while (i < tokenCount and lineTokens.getLanguageId(i) == languageId) : (i += 1) {
+        while (i < tokenCount and std.mem.eql(u8, lineTokens.getLanguageId(i), languageId)) : (i += 1) {
             endOffset = lineTokens.getEndOffset(i);
         }
 
-        return .{ startOffset, endOffset };
+        return .{ @intCast(startOffset), @intCast(endOffset) };
     }
 
     pub fn getWordUntilPosition(self: *TokenizationTextModelPart, position: Position) WordAtPosition {

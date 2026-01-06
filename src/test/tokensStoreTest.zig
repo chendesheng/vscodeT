@@ -9,6 +9,8 @@ const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const MetadataConsts = @import("../encodedTokenAttributes.zig").MetadataConsts;
 const disposeTextModel = @import("../textModel/testTextModel.zig").disposeTextModel;
 const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
+const TokenPacked = @import("../tokens/lineTokens.zig").TokenPacked;
+const Position = @import("../basics/position.zig").Position;
 
 const TokensStoreTests = struct {
     const allocator = std.testing.allocator;
@@ -218,6 +220,68 @@ const TokensStoreTests = struct {
             "|export| |'year_selector.dart'|;",
         });
     }
+
+    test "issue #91936: Semantic token color highlighting fails on line with selected text" {
+        const model = try createTextModel(allocator, "                    else if ($s = 08) then '\\b'", null, null);
+        defer disposeTextModel(model);
+
+        var tokens = ArrayList(SparseToken).init(allocator);
+        try tokens.appendSlice(&[_]SparseToken{
+            @as(SparseToken, @bitCast([4]u32{ 0, 20, 24, 0b01111000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 0, 25, 27, 0b01111000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 0, 28, 29, 0b00001000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 0, 29, 31, 0b10000000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 0, 32, 33, 0b00001000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 0, 34, 36, 0b00110000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 0, 36, 37, 0b00001000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 0, 38, 42, 0b01111000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 0, 43, 47, 0b01011000000000010000 })),
+        });
+        try model.tokenization()
+            .setSemanticTokens(&[_]SparseMultilineTokens{.initFromTokens(1, tokens)}, true);
+
+        var lineTokens = try model.tokenization().getLineTokens(1);
+        defer lineTokens.deinit();
+
+        try std.testing.expectEqualDeep(&[_]TokenPacked{
+            @as(TokenPacked, @bitCast([2]u32{ 20, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 24, 0b10000001111000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 25, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 27, 0b10000001111000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 28, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 29, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 31, 0b10000010000000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 32, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 33, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 34, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 36, 0b10000000110000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 37, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 38, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 42, 0b10000001111000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 43, 0b10000000001000010000000001 })),
+            @as(TokenPacked, @bitCast([2]u32{ 47, 0b10000001011000010000000001 })),
+        }, lineTokens._tokens.items);
+    }
+
+    // test "issue #147944: Language id 'vs.editor.nullLanguage' is not configured nor known" {
+    //     // const disposables = new DisposableStore();
+    //     // const instantiationService = createModelServices(disposables, [
+    //     //[ILanguageConfigurationService, LanguageConfigurationService]
+    //     //]);
+    //     //const model = disposables.add(instantiateTextModel(instantiationService, '--[[\n\n]]'));
+    //     const model = try createTextModel(allocator, "--[[\n\n]]", null, null);
+    //     defer disposeTextModel(model);
+    //     var tokens = ArrayList(SparseToken).init(allocator);
+    //     try tokens.appendSlice(&[_]SparseToken{
+    //         @as(SparseToken, @bitCast([4]u32{ 0, 2, 4, 0b100000000000010000 })),
+    //         @as(SparseToken, @bitCast([4]u32{ 1, 0, 0, 0b100000000000010000 })),
+    //         @as(SparseToken, @bitCast([4]u32{ 2, 0, 2, 0b100000000000010000 })),
+    //     });
+    //     try model.tokenization().setSemanticTokens(&[_]SparseMultilineTokens{
+    //         .initFromTokens(1, tokens),
+    //     }, true);
+    //     try std.testing.expectEqual(null, model.getWordAtPosition(.init(2, 1)));
+    // }
 };
 
 test "tokensStore" {

@@ -7,7 +7,7 @@ const ContiguousTokensEditing = @import("./contiguousTokensEditing.zig").Contigu
 const EMPTY_LINE_TOKENS = @import("./contiguousTokensEditing.zig").EMPTY_LINE_TOKENS;
 const toUint32Array = @import("./contiguousTokensEditing.zig").toUint32Array;
 const LineTokens = @import("./lineTokens.zig").LineTokens;
-const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
+const LanguageIdCodec = @import("../services/languageRegistry.zig").LanguageIdCodec;
 const LanguageId = @import("../encodedTokenAttributes.zig").LanguageId;
 const FontStyle = @import("../encodedTokenAttributes.zig").FontStyle;
 const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
@@ -276,5 +276,8 @@ pub const ContiguousTokensStore = struct {
 fn getDefaultMetadata(topLevelLanguageId: u8) TokenMetadata {
     var metadata = TokenMetadata.default;
     metadata.languageId = topLevelLanguageId;
+    metadata.foreground = ColorId.DefaultForeground;
+    metadata.background = @intFromEnum(ColorId.DefaultBackground);
+    metadata.balancedBrackets = true;
     return metadata;
 }

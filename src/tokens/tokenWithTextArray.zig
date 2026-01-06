@@ -2,7 +2,7 @@ const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
 const LineTokens = @import("lineTokens.zig").LineTokens;
-const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
+const LanguageIdCodec = @import("../services/languageRegistry.zig").LanguageIdCodec;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 
 // This class represents a sequence of tokens.

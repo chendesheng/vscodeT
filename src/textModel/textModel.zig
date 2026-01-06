@@ -1918,8 +1918,8 @@ pub const TextModel = struct {
         return self._tokenizationTextModelPart.getLanguageIdAtPosition(lineNumber, column);
     }
 
-    pub fn getWordAtPosition(self: *TextModel, position: Position) ?WordAtPosition {
-        return self._tokenizationTextModelPart.getWordAtPosition(position);
+    pub fn getWordAtPosition(self: *TextModel, position: Position) !?WordAtPosition {
+        return try self._tokenizationTextModelPart.getWordAtPosition(position);
     }
 
     pub fn getWordUntilPosition(self: *TextModel, position: Position) WordAtPosition {

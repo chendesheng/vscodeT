@@ -952,3 +952,31 @@ test "countLines" {
     const input = "\n\r\n\r\r\n\r";
     try std.testing.expectEqual(6, countLines(input));
 }
+
+//
+
+pub fn isNewlineCharacter(charCode: u8) bool {
+    return charCode == '\r' or charCode == '\n';
+}
+
+pub fn getWordAtText(text: []const u8, offset: usize, wordDefinition: RegExp) !struct { usize, usize } {
+    var lineStart = offset;
+    while (lineStart > 0 and !isNewlineCharacter(text[lineStart - 1])) {
+        lineStart -= 1;
+    }
+    const offsetInLine = offset - lineStart;
+
+    // make a copy of the regex as to not keep the state
+    // const flags = wordDefinition.ignoreCase ? 'gi' : 'g';
+    // wordDefinition = new RegExp(wordDefinition.source, flags);
+
+    var iter = wordDefinition.searchIterator(text, lineStart);
+    var match = iter.next();
+    while (match != null and match.?.index() + match.?.length() < offsetInLine) {
+        match = iter.next();
+    }
+    if (match != null and match.?.index() <= offsetInLine) {
+        return .{ match.?.index() + lineStart, match.?.length() };
+    }
+    return .{ offset, 0 };
+}

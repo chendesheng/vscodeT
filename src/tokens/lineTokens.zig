@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 
-const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
+const LanguageIdCodec = @import("../services/languageRegistry.zig").LanguageIdCodec;
 const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
 const TokenPresentation = @import("../encodedTokenAttributes.zig").TokenPresentation;
