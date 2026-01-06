@@ -121,7 +121,6 @@ pub const LineTokens = struct {
     pub fn init(tokens: ArrayList(TokenPacked), text: []const u8, decoder: LanguageIdCodec) LineTokens {
         const tokensLength = if (tokens.items.len > 0) tokens.items[tokens.items.len - 1].endOffset else 0;
         // Token length and text length do not match!
-        std.debug.print("tokensLength: {d}, text.len: {d}\n", .{ tokensLength, text.len });
         std.debug.assert(tokensLength == text.len);
 
         return LineTokens{

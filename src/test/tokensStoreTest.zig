@@ -116,8 +116,6 @@ const TokensStoreTests = struct {
     fn testTokensAdjustment(rawInitialState: []const []const u8, edits: []const IdentifiedSingleEditOperation, rawFinalState: []const []const u8) !void {
         const initialState = try parseTokensState(rawInitialState);
         defer allocator.free(initialState.@"0");
-        // defer initialState.@"1".deinit();
-        std.debug.print("initialState: {s}\n", .{initialState.@"0"});
         const model = try createTextModel(allocator, initialState.@"0", null, null);
         defer disposeTextModel(model);
         try model.tokenization().setSemanticTokens(&[_]SparseMultilineTokens{initialState.@"1"}, true);
