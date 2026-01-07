@@ -89,7 +89,7 @@ pub fn getWordAtText(allocator: Allocator, column: usize, _wordDefinition: RegEx
         } else {
             textOffset += start;
         }
-        return getWordAtText(allocator, column, wordDefinition, text[start .. column + config.maxLen / 2], textOffset, config);
+        return try getWordAtText(allocator, column, wordDefinition, text[start .. column + config.maxLen / 2], textOffset, config);
     }
 
     const t1 = std.time.milliTimestamp();
@@ -112,7 +112,7 @@ pub fn getWordAtText(allocator: Allocator, column: usize, _wordDefinition: RegEx
             @max(0, regexIndex),
             text,
             pos,
-            @intCast(prevRegexIndex),
+            prevRegexIndex,
         );
 
         if (thisMatch == null and match != null) {
@@ -140,7 +140,7 @@ pub fn getWordAtText(allocator: Allocator, column: usize, _wordDefinition: RegEx
     return null;
 }
 
-fn _findRegexMatchEnclosingPosition(wordDefinition: RegExp, start: usize, text: []const u8, pos: usize, stopPos: usize) !?SearchResult {
+fn _findRegexMatchEnclosingPosition(wordDefinition: RegExp, start: usize, text: []const u8, pos: usize, stopPos: isize) !?SearchResult {
     var iter = wordDefinition.searchIterator(text, start);
     while (true) {
         var match = iter.next();
@@ -149,7 +149,7 @@ fn _findRegexMatchEnclosingPosition(wordDefinition: RegExp, start: usize, text: 
         const matchIndex = match.?.index();
         if (matchIndex <= pos and iter._lastIndex >= pos) {
             return match;
-        } else if (stopPos > 0 and matchIndex > stopPos) {
+        } else if (stopPos > 0 and @as(isize, @intCast(matchIndex)) > stopPos) {
             return null;
         }
     }

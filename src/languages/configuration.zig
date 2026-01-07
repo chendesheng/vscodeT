@@ -1,10 +1,29 @@
 const std = @import("std");
 const Uri = std.Uri;
+const Set = @import("../basics/Set.zig").Set;
 const Emitter = @import("../basics/event.zig").Emitter;
 
 pub const IConfigurationOverrides = struct {
     overrideIdentifier: ?[]const u8,
     resource: ?Uri,
+};
+
+pub const IConfigurationChange = struct {
+    keys: []const []const u8,
+    overrides: []struct { []const u8, []const []const u8 },
+};
+
+pub const IConfigurationChangeEvent = struct {
+    source: ConfigurationTarget,
+    affectedKeys: Set([]const u8),
+    change: IConfigurationChange,
+
+    pub fn affectsConfiguration(self: *IConfigurationChangeEvent, configuration: []const u8, overrides: ?IConfigurationOverrides) bool {
+        _ = self;
+        _ = configuration;
+        _ = overrides;
+        return true;
+    }
 };
 
 pub fn IConfigurationValue(comptime T: type) type {
@@ -32,6 +51,20 @@ pub fn IConfigurationValue(comptime T: type) type {
 
         overrideIdentifiers: ?[]const []const u8,
     };
+}
+
+pub fn getConfigValueInTarget(comptime T: type, configValue: IConfigurationValue(T), scope: ConfigurationTarget) !?T {
+    switch (scope) {
+        .application => return configValue.applicationValue,
+        .user => return configValue.userValue,
+        .user_local => return configValue.userLocalValue,
+        .user_remote => return configValue.userRemoteValue,
+        .workspace => return configValue.workspaceValue,
+        .workspace_folder => return configValue.workspaceFolderValue,
+        .default => return configValue.defaultValue,
+        .memory => return configValue.memoryValue,
+        else => return error.InvalidConfigurationTarget,
+    }
 }
 
 pub fn IInspectValue(comptime T: type) type {

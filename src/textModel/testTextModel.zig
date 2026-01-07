@@ -11,6 +11,7 @@ const EDITOR_MODEL_DEFAULTS = @import("textModelDefaults.zig");
 const LanguageService = @import("../languages/languageService.zig").LanguageService;
 const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const PLAINTEXT_LANGUAGE_ID = @import("../services/languageRegistry.zig").PLAINTEXT_LANGUAGE_ID;
+const TestConfigurationService = @import("../test/testConfigurationService.zig").TestConfigurationService;
 
 pub const RelaxedTextModelCreationOptions = struct {
     tabSize: ?usize = null,
@@ -47,8 +48,11 @@ pub fn createTextModel(allocator: Allocator, text: []const u8, _languageId: ?[]c
     var source = std.Io.Reader.fixed(text);
     const languageService = try allocator.create(LanguageService);
     languageService.* = try LanguageService.init(allocator);
+    // const configurationService = try allocator.create(TestConfigurationService);
+    // configurationService.* = TestConfigurationService.init(allocator, null);
     const languageConfigurationService = try allocator.create(LanguageConfigurationService);
-    const textModel = try TextModel.init(
+    languageConfigurationService.* = try LanguageConfigurationService.init(allocator, undefined, languageService);
+    return try TextModel.init(
         allocator,
         &source,
         languageId,
@@ -58,12 +62,12 @@ pub fn createTextModel(allocator: Allocator, text: []const u8, _languageId: ?[]c
         languageService,
         languageConfigurationService,
     );
-    return textModel;
 }
 
 pub fn disposeTextModel(textModel: *TextModel) void {
     const allocator = textModel.getAllocator();
     textModel.tokenization()._languageService.deinit();
+    textModel.tokenization()._languageConfigurationService.deinit();
     textModel._undoRedoService.deinit();
     allocator.destroy(textModel._undoRedoService);
     allocator.destroy(textModel.tokenization()._languageService);

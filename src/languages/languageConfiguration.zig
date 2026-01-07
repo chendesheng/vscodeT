@@ -2,7 +2,7 @@ const std = @import("std");
 const StringHashMap = std.StringHashMap;
 const Allocator = std.mem.Allocator;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
-const RegExp = @import("../basics/regexp.zig").RegExp;
+const RegExp = @import("../basics/RegExp.zig").RegExp;
 
 pub const LineCommentConfig = struct {
     // The line comment token, like `//`
@@ -89,9 +89,9 @@ pub const FoldingRules = struct {
     // A language adheres to the off-side rule if blocks in that language are expressed by their indentation.
     // See [wikipedia](https://en.wikipedia.org/wiki/Off-side_rule) for more information.
     // If not set, `false` is used and empty lines belong to the previous block.
-    offSide: ?bool,
+    offSide: ?bool = null,
     // Region markers used by the language.
-    markers: ?FoldingMarkers,
+    markers: ?FoldingMarkers = null,
 };
 
 // Describes a rule to be evaluated when pressing Enter.

@@ -302,7 +302,8 @@ pub const TokenizationTextModelPart = struct {
         const position = self._textModel.validatePosition(_position);
         const lineContent = try self._textModel.getLineContent(position.lineNumber);
         defer lineContent.deinit();
-        const lineTokens = try self.getLineTokens(position.lineNumber);
+        var lineTokens = try self.getLineTokens(position.lineNumber);
+        defer lineTokens.deinit();
         const tokenIndex = lineTokens.findTokenIndexAtOffset(position.column - 1);
 
         // (1). First try checking right biased word

@@ -43,8 +43,8 @@ pub fn init(config: LanguageConfiguration) Self {
     // }
 
     return Self{
-        ._autoClosingPairs = autoClosingPairs,
-        ._surroundingPairs = config.surroundingPairs orelse autoClosingPairs.items,
+        ._autoClosingPairs = autoClosingPairs.items,
+        ._surroundingPairs = config.surroundingPairs orelse undefined, // autoClosingPairs.items,
         ._autoCloseBeforeForQuotes = config.autoCloseBefore orelse DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_QUOTES,
         ._autoCloseBeforeForBrackets = config.autoCloseBefore orelse DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_BRACKETS,
     };
