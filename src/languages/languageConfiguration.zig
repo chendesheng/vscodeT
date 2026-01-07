@@ -25,35 +25,35 @@ pub const CommentRule = struct {
 // various editor features, like automatic bracket insertion, automatic indentation etc.
 pub const LanguageConfiguration = struct {
     // The language's comment settings.
-    comments: ?CommentRule,
+    comments: ?CommentRule = null,
     // The language's brackets.
     // This configuration implicitly affects pressing Enter around these brackets.
-    brackets: ?[]CharacterPair,
+    brackets: ?[]CharacterPair = null,
     // The language's word definition.
     // If the language supports Unicode identifiers (e.g. JavaScript), it is preferable
     // * to provide a word definition that uses exclusion of known separators.
     // * e.g.: A regex that matches anything except known separators (and dot is allowed to occur in a floating point number):
     //   /(-?\d*\.\d\w*)|([^\`\~\!\@\#\%\^\&\*\(\)\-\=\+\[\{\]\}\\\|\;\:\'\"\,\.\<\>\/\?\s]+)/g
-    wordPattern: ?RegExp,
+    wordPattern: ?RegExp = null,
     // The language's indentation settings.
-    indentationRules: ?IndentationRule,
+    indentationRules: ?IndentationRule = null,
     // The language's rules to be evaluated when pressing Enter.
-    onEnterRules: ?[]OnEnterRule,
+    onEnterRules: ?[]OnEnterRule = null,
     // The language's auto closing pairs. The 'close' character is automatically inserted with the
     // 'open' character is typed. If not set, the configured brackets will be used.
-    autoClosingPairs: ?[]IAutoClosingPairConditional,
+    autoClosingPairs: ?[]IAutoClosingPairConditional = null,
     // The language's surrounding pairs. When the 'open' character is typed on a selection, the
     // selected string is surrounded by the open and close characters. If not set, the autoclosing pairs
     // settings will be used.
-    surroundingPairs: ?[]IAutoClosingPair,
+    surroundingPairs: ?[]IAutoClosingPair = null,
     // Defines a list of bracket pairs that are colorized depending on their nesting level.
     // If not set, the configured brackets will be used.
-    colorizedBracketPairs: ?[]CharacterPair,
+    colorizedBracketPairs: ?[]CharacterPair = null,
     // Defines what characters must be after the cursor for bracket or quote autoclosing to occur when using the \'languageDefined\' autoclosing setting.
     // This is typically the set of characters which can not start an expression, such as whitespace, closing brackets, non-unary operators, etc.
-    autoCloseBefore: ?[]const u8,
+    autoCloseBefore: ?[]const u8 = null,
     // The language's folding rules.
-    folding: ?FoldingRules,
+    folding: ?FoldingRules = null,
 
     // **Deprecated** Do not use.
     // @deprecated Will be replaced by a better API soon.
@@ -65,13 +65,13 @@ pub const LanguageConfiguration = struct {
 // Describes indentation rules for a language.
 pub const IndentationRule = struct {
     // If a line matches this pattern, then all the lines after it should be unindented once (until another rule matches).
-    decreaseIndentPattern: ?RegExp,
+    decreaseIndentPattern: ?RegExp = null,
     // If a line matches this pattern, then all the lines after it should be indented once (until another rule matches).
-    increaseIndentPattern: ?RegExp,
+    increaseIndentPattern: ?RegExp = null,
     // If a line matches this pattern, then **only the next line** after it should be indented once.
-    indentNextLinePattern: ?RegExp,
+    indentNextLinePattern: ?RegExp = null,
     // If a line matches this pattern, then its indentation should not be changed and it should not be evaluated against the other rules.
-    unIndentedLinePattern: ?RegExp,
+    unIndentedLinePattern: ?RegExp = null,
 };
 
 // Describes language specific folding markers such as '#region' and '#endregion'.
@@ -116,7 +116,7 @@ pub const IDocComment = struct {
 
 // A tuple of two characters, like a pair of
 // opening and closing brackets.
-pub const CharacterPair = [2][]const u8;
+pub const CharacterPair = []const [2]u8;
 
 pub const IAutoClosingPair = struct {
     open: []const u8,

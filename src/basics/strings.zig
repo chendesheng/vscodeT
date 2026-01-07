@@ -980,3 +980,18 @@ pub fn getWordAtText(text: []const u8, offset: usize, wordDefinition: RegExp) !s
     }
     return .{ offset, 0 };
 }
+
+// Returns the leading whitespace of the string.
+// If the string contains only whitespaces, returns entire string
+pub fn getLeadingWhitespace(str: []const u8, _start: ?usize, _end: ?usize) []const u8 {
+    const start = _start orelse 0;
+    const end = _end orelse str.len;
+
+    for (start..end) |i| {
+        const chCode = str[i];
+        if (chCode != ' ' and chCode != '\t') {
+            return str[start..i];
+        }
+    }
+    return str[start..end];
+}

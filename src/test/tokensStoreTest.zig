@@ -263,25 +263,25 @@ const TokensStoreTests = struct {
         }, lineTokens._tokens.items);
     }
 
-    // test "issue #147944: Language id 'vs.editor.nullLanguage' is not configured nor known" {
-    //     // const disposables = new DisposableStore();
-    //     // const instantiationService = createModelServices(disposables, [
-    //     //[ILanguageConfigurationService, LanguageConfigurationService]
-    //     //]);
-    //     //const model = disposables.add(instantiateTextModel(instantiationService, '--[[\n\n]]'));
-    //     const model = try createTextModel(allocator, "--[[\n\n]]", null, null);
-    //     defer disposeTextModel(model);
-    //     var tokens = ArrayList(SparseToken).init(allocator);
-    //     try tokens.appendSlice(&[_]SparseToken{
-    //         @as(SparseToken, @bitCast([4]u32{ 0, 2, 4, 0b100000000000010000 })),
-    //         @as(SparseToken, @bitCast([4]u32{ 1, 0, 0, 0b100000000000010000 })),
-    //         @as(SparseToken, @bitCast([4]u32{ 2, 0, 2, 0b100000000000010000 })),
-    //     });
-    //     try model.tokenization().setSemanticTokens(&[_]SparseMultilineTokens{
-    //         .initFromTokens(1, tokens),
-    //     }, true);
-    //     try std.testing.expectEqual(null, model.getWordAtPosition(.init(2, 1)));
-    // }
+    test "issue #147944: Language id 'vs.editor.nullLanguage' is not configured nor known" {
+        // const disposables = new DisposableStore();
+        // const instantiationService = createModelServices(disposables, [
+        //[ILanguageConfigurationService, LanguageConfigurationService]
+        //]);
+        //const model = disposables.add(instantiateTextModel(instantiationService, '--[[\n\n]]'));
+        const model = try createTextModel(allocator, "--[[\n\n]]", null, null);
+        defer disposeTextModel(model);
+        var tokens = ArrayList(SparseToken).init(allocator);
+        try tokens.appendSlice(&[_]SparseToken{
+            @as(SparseToken, @bitCast([4]u32{ 0, 2, 4, 0b100000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 1, 0, 0, 0b100000000000010000 })),
+            @as(SparseToken, @bitCast([4]u32{ 2, 0, 2, 0b100000000000010000 })),
+        });
+        try model.tokenization().setSemanticTokens(&[_]SparseMultilineTokens{
+            .initFromTokens(1, tokens),
+        }, true);
+        try std.testing.expectEqual(null, model.getWordAtPosition(.init(2, 1)));
+    }
 };
 
 test "tokensStore" {

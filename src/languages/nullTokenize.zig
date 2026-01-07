@@ -1,16 +1,16 @@
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
-const Token = @import("./languages.zig").Token;
-const TokenizationResult = @import("./languages.zig").TokenizationResult;
-const EncodedTokenizationResult = @import("./languages.zig").EncodedTokenizationResult;
-const IState = @import("./languages.zig").IState;
-const LanguageId = @import("./encodedTokenAttributes.zig").LanguageId;
-const FontStyle = @import("./encodedTokenAttributes.zig").FontStyle;
-const ColorId = @import("./encodedTokenAttributes.zig").ColorId;
-const StandardTokenType = @import("./encodedTokenAttributes.zig").StandardTokenType;
-const TokenMetadata = @import("./encodedTokenAttributes.zig").TokenMetadata;
-const TokenPacked = @import("./tokens/lineTokens.zig").TokenPacked;
+const Token = @import("../languages.zig").Token;
+const TokenizationResult = @import("../languages.zig").TokenizationResult;
+const EncodedTokenizationResult = @import("../languages.zig").EncodedTokenizationResult;
+const IState = @import("../languages.zig").IState;
+const LanguageId = @import("../encodedTokenAttributes.zig").LanguageId;
+const FontStyle = @import("../encodedTokenAttributes.zig").FontStyle;
+const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
+const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
+const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
+const TokenPacked = @import("../tokens/lineTokens.zig").TokenPacked;
 
 const NullState = IState{
     .clone = nullStateClone,

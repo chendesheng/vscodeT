@@ -331,7 +331,14 @@ pub const TokenizationTextModelPart = struct {
             const b = TokenizationTextModelPart._findLanguageBoundaries(lineTokens, tokenIndex - 1);
             const lbStartOffset = b[0];
             const lbEndOffset = b[1];
-            const leftBiasedWord = try getWordAtText(allocator, position.column, try self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex - 1)).getWordDefinition(allocator), lineContent.items[lbStartOffset..lbEndOffset], lbStartOffset, null);
+            const leftBiasedWord = try getWordAtText(
+                allocator,
+                position.column,
+                try self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex - 1)).getWordDefinition(allocator),
+                lineContent.items[lbStartOffset..lbEndOffset],
+                lbStartOffset,
+                null,
+            );
             // Make sure the result touches the original passed in position
             if (leftBiasedWord != null and
                 leftBiasedWord.?.startColumn <= _position.column and
@@ -356,6 +363,8 @@ pub const TokenizationTextModelPart = struct {
         var i = tokenIndex;
         while (i >= 0 and std.mem.eql(u8, lineTokens.getLanguageId(i), languageId)) {
             startOffset = lineTokens.getStartOffset(i);
+            if (i == 0) break;
+            i -= 1;
         }
 
         // go right until a different language is hit
