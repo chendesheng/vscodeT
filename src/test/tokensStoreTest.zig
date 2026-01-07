@@ -11,6 +11,10 @@ const disposeTextModel = @import("../textModel/testTextModel.zig").disposeTextMo
 const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
 const TokenPacked = @import("../tokens/lineTokens.zig").TokenPacked;
 const Position = @import("../basics/position.zig").Position;
+const LanguageIdCodec = @import("../services/languageRegistry.zig").LanguageIdCodec;
+const SparseTokensStore = @import("../tokens/sparseTokensStore.zig").SparseTokensStore;
+const Range = @import("../basics/range.zig").Range;
+const LineTokens = @import("../tokens/lineTokens.zig").LineTokens;
 
 const TokensStoreTests = struct {
     const allocator = std.testing.allocator;
@@ -281,6 +285,56 @@ const TokensStoreTests = struct {
             .initFromTokens(1, tokens),
         }, true);
         try std.testing.expectEqual(null, model.getWordAtPosition(.init(2, 1)));
+    }
+
+    test "partial tokens 1" {
+        var codec = try LanguageIdCodec.init(allocator);
+        defer codec.deinit();
+        var store = SparseTokensStore.init(allocator, codec);
+        defer store.deinit();
+
+        // setPartial: [1,1 -> 31,2], [(5,5-10),(10,5-10),(15,5-10),(20,5-10),(25,5-10),(30,5-10)]
+        var arr = ArrayList(SparseToken).init(allocator);
+        defer arr.deinit();
+        try arr.appendSlice(&[_]SparseToken{
+            @as(SparseToken, @bitCast([4]u32{ 0, 5, 10, 1 })),
+            @as(SparseToken, @bitCast([4]u32{ 5, 5, 10, 2 })),
+            @as(SparseToken, @bitCast([4]u32{ 10, 5, 10, 3 })),
+            @as(SparseToken, @bitCast([4]u32{ 15, 5, 10, 4 })),
+            @as(SparseToken, @bitCast([4]u32{ 20, 5, 10, 5 })),
+            @as(SparseToken, @bitCast([4]u32{ 25, 5, 10, 6 })),
+        });
+        _ = try store.setPartial(.init(1, 1, 31, 2), &[_]SparseMultilineTokens{.initFromTokens(5, arr)});
+
+        // setPartial: [18,1 -> 42,1], [(20,5-10),(25,5-10),(30,5-10),(35,5-10),(40,5-10)]
+        var arr2 = ArrayList(SparseToken).init(allocator);
+        defer arr2.deinit();
+        try arr2.appendSlice(&[_]SparseToken{
+            @as(SparseToken, @bitCast([4]u32{ 0, 5, 10, 4 })),
+            @as(SparseToken, @bitCast([4]u32{ 5, 5, 10, 5 })),
+            @as(SparseToken, @bitCast([4]u32{ 10, 5, 10, 6 })),
+            @as(SparseToken, @bitCast([4]u32{ 15, 5, 10, 7 })),
+            @as(SparseToken, @bitCast([4]u32{ 20, 5, 10, 8 })),
+        });
+        _ = try store.setPartial(.init(18, 1, 42, 1), &[_]SparseMultilineTokens{.initFromTokens(20, arr2)});
+
+        // setPartial: [1,1 -> 31,2], [(5,5-10),(10,5-10),(15,5-10),(20,5-10),(25,5-10),(30,5-10)]
+        var arr3 = ArrayList(SparseToken).init(allocator);
+        defer arr3.deinit();
+        try arr3.appendSlice(&[_]SparseToken{
+            @as(SparseToken, @bitCast([4]u32{ 0, 5, 10, 1 })),
+            @as(SparseToken, @bitCast([4]u32{ 5, 5, 10, 2 })),
+            @as(SparseToken, @bitCast([4]u32{ 10, 5, 10, 3 })),
+            @as(SparseToken, @bitCast([4]u32{ 15, 5, 10, 4 })),
+            @as(SparseToken, @bitCast([4]u32{ 20, 5, 10, 5 })),
+            @as(SparseToken, @bitCast([4]u32{ 25, 5, 10, 6 })),
+        });
+        _ = try store.setPartial(.init(1, 1, 31, 2), &[_]SparseMultilineTokens{.initFromTokens(5, arr3)});
+
+        var tokens = ArrayList(TokenPacked).init(allocator);
+        try tokens.append(@as(TokenPacked, @bitCast([2]u32{ 12, 1 })));
+        const lineTokens = try store.addSparseTokens(10, LineTokens.init(tokens, "enum Enum1 {", codec));
+        try std.testing.expectEqual(3, lineTokens.getCount());
     }
 };
 

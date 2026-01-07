@@ -62,34 +62,36 @@ pub const SparseMultilineTokens = struct {
     }
 
     pub fn getRange(self: *const SparseMultilineTokens) ?Range {
-        const deltaRange = self._tokens.getRange();
-        if (!deltaRange) {
-            return deltaRange;
+        if (self._tokens.getRange()) |deltaRange| {
+            return Range.init(
+                self._startLineNumber + deltaRange.startLineNumber,
+                deltaRange.startColumn,
+                self._startLineNumber + deltaRange.endLineNumber,
+                deltaRange.endColumn,
+            );
         }
-        return Range.init(
-            self._startLineNumber + deltaRange.startLineNumber,
-            deltaRange.startColumn,
-            self._startLineNumber + deltaRange.endLineNumber,
-            deltaRange.endColumn,
-        );
+        return null;
     }
 
     pub fn removeTokens(self: *SparseMultilineTokens, range: Range) void {
-        const startLineIndex = range.startLineNumber - self._startLineNumber;
-        const endLineIndex = range.endLineNumber - self._startLineNumber;
+        const startLineIndex = usizeSub(range.startLineNumber, self._startLineNumber);
+        const endLineIndex = usizeSub(range.endLineNumber, self._startLineNumber);
 
-        self._startLineNumber += self._tokens.removeTokens(startLineIndex, range.startColumn - 1, endLineIndex, range.endColumn - 1);
+        self._startLineNumber = usizeAdd(
+            self._startLineNumber,
+            self._tokens.removeTokens(startLineIndex, range.startColumn - 1, endLineIndex, range.endColumn - 1),
+        );
         self._updateEndLineNumber();
     }
 
-    pub fn split(self: *SparseMultilineTokens, range: Range) [2]SparseMultilineTokens {
+    pub fn split(self: *SparseMultilineTokens, range: Range) ![2]SparseMultilineTokens {
         // split tokens to two:
         // a) all the tokens before `range`
         // b) all the tokens after `range`
-        const startLineIndex = range.startLineNumber - self._startLineNumber;
-        const endLineIndex = range.endLineNumber - self._startLineNumber;
+        const startLineIndex = usizeSub(range.startLineNumber, self._startLineNumber);
+        const endLineIndex = usizeSub(range.endLineNumber, self._startLineNumber);
 
-        const result = self._tokens.split(startLineIndex, range.startColumn - 1, endLineIndex, range.endColumn - 1);
+        const result = try self._tokens.split(startLineIndex, range.startColumn - 1, endLineIndex, range.endColumn - 1);
         const a = result.a;
         const b = result.b;
         const bDeltaLine = result.destFirstDeltaLine;
@@ -321,13 +323,15 @@ pub const SparseMultilineTokensStorage = struct {
         self._tokens.clearRetainingCapacity();
     }
 
-    pub fn removeTokens(self: *SparseMultilineTokensStorage, startDeltaLine: usize, startChar: usize, endDeltaLine: usize, endChar: usize) usize {
+    pub fn removeTokens(self: *SparseMultilineTokensStorage, startDeltaLine: isize, _startChar: usize, endDeltaLine: isize, _endChar: usize) isize {
+        const startChar = @as(u32, @intCast(_startChar));
+        const endChar = @as(u32, @intCast(_endChar));
         const tokens = self._tokens.items;
         var newTokenCount: usize = 0;
         var hasDeletedTokens = false;
-        var firstDeltaLine: usize = 0;
+        var firstDeltaLine: isize = 0;
         for (tokens) |*token| {
-            const tokenDeltaLine = token.deltaLine;
+            const tokenDeltaLine = @as(isize, @intCast(token.deltaLine));
             const tokenStartCharacter = token.startCharacter;
             const tokenEndCharacter = token.endCharacter;
 
@@ -339,7 +343,7 @@ pub const SparseMultilineTokensStorage = struct {
                 }
                 if (hasDeletedTokens) {
                     // must move the token to the left
-                    token.deltaLine = tokenDeltaLine - firstDeltaLine;
+                    token.deltaLine = @intCast(tokenDeltaLine - firstDeltaLine);
                     token.startCharacter = tokenStartCharacter;
                     token.endCharacter = tokenEndCharacter;
                 }
@@ -350,15 +354,15 @@ pub const SparseMultilineTokensStorage = struct {
         return firstDeltaLine;
     }
 
-    pub fn split(self: *SparseMultilineTokensStorage, startDeltaLine: usize, startChar: usize, endDeltaLine: usize, endChar: usize) struct { a: SparseMultilineTokensStorage, b: SparseMultilineTokensStorage, destFirstDeltaLine: usize } {
+    pub fn split(self: *SparseMultilineTokensStorage, startDeltaLine: isize, startChar: usize, endDeltaLine: isize, endChar: usize) !struct { a: SparseMultilineTokensStorage, b: SparseMultilineTokensStorage, destFirstDeltaLine: usize } {
         const tokens = self._tokens.items;
         const allocator = self._tokens.allocator;
         var aTokens = ArrayList(SparseToken).init(allocator);
         var bTokens = ArrayList(SparseToken).init(allocator);
         var destTokens = &aTokens;
-        var destFirstDeltaLine: usize = 0;
+        var destFirstDeltaLine: isize = 0;
         for (tokens) |*token| {
-            const tokenDeltaLine = token.deltaLine;
+            const tokenDeltaLine = @as(isize, @intCast(token.deltaLine));
             const tokenStartCharacter = token.startCharacter;
             const tokenEndCharacter = token.endCharacter;
             const tokenMetadata = token.metadata;
@@ -369,7 +373,7 @@ pub const SparseMultilineTokensStorage = struct {
                     continue;
                 } else {
                     // this token is after the range
-                    if (destTokens != bTokens) {
+                    if (destTokens != &bTokens) {
                         // this token is the first token after the range
                         destTokens = &bTokens;
                         destFirstDeltaLine = tokenDeltaLine;
@@ -377,8 +381,8 @@ pub const SparseMultilineTokensStorage = struct {
                 }
             }
 
-            destTokens.append(SparseToken{
-                .deltaLine = tokenDeltaLine - destFirstDeltaLine,
+            try destTokens.append(SparseToken{
+                .deltaLine = @intCast(tokenDeltaLine - destFirstDeltaLine),
                 .startCharacter = tokenStartCharacter,
                 .endCharacter = tokenEndCharacter,
                 .metadata = tokenMetadata,
@@ -388,7 +392,7 @@ pub const SparseMultilineTokensStorage = struct {
         return .{
             .a = SparseMultilineTokensStorage.init(aTokens),
             .b = SparseMultilineTokensStorage.init(bTokens),
-            .destFirstDeltaLine = destFirstDeltaLine,
+            .destFirstDeltaLine = @intCast(destFirstDeltaLine),
         };
     }
 

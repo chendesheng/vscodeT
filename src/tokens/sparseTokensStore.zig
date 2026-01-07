@@ -60,13 +60,13 @@ pub const SparseTokensStore = struct {
         }
     }
 
-    pub fn setPartial(self: *SparseTokensStore, _range: Range, pieces: ArrayList(SparseMultilineTokens)) Range {
+    pub fn setPartial(self: *SparseTokensStore, _range: Range, pieces: []const SparseMultilineTokens) !Range {
         // console.log(`setPartial ${_range} ${pieces.map(p => p.toString()).join(', ')}`);
 
         var range = _range;
-        if (pieces.items.len > 0) {
-            const _firstRange = pieces.items[0].getRange();
-            const _lastRange = pieces.items[pieces.items.len - 1].getRange();
+        if (pieces.len > 0) {
+            const _firstRange = pieces[0].getRange();
+            const _lastRange = pieces[pieces.len - 1].getRange();
             if (_firstRange == null or _lastRange == null) {
                 return _range;
             }
@@ -76,13 +76,13 @@ pub const SparseTokensStore = struct {
         var insertPosition: ?struct { index: usize } = null;
         var i: usize = 0;
         while (i < self._pieces.items.len) : (i += 1) {
-            const piece = self._pieces.items[i];
-            if (piece.endLineNumber < range.startLineNumber) {
+            var piece = self._pieces.items[i];
+            if (piece._endLineNumber < range.startLineNumber) {
                 // this piece is before the range
                 continue;
             }
 
-            if (piece.startLineNumber > range.endLineNumber) {
+            if (piece._startLineNumber > range.endLineNumber) {
                 // this piece is after the range, so mark the spot before this piece
                 // as a good insertion position and stop looping
                 insertPosition = insertPosition orelse .{ .index = i };
@@ -94,7 +94,7 @@ pub const SparseTokensStore = struct {
 
             if (piece.isEmpty()) {
                 // remove the piece if it became empty
-                self._pieces.orderedRemove(i);
+                _ = self._pieces.orderedRemove(i);
                 i -= 1;
                 continue;
             }
@@ -111,7 +111,7 @@ pub const SparseTokensStore = struct {
             }
 
             // after removal, this piece contains the range
-            const res = piece.split(range);
+            const res = try piece.split(range);
             const a = res[0];
             const b = res[1];
             if (a.isEmpty()) {
@@ -123,7 +123,7 @@ pub const SparseTokensStore = struct {
                 // this piece is actually before the range
                 continue;
             }
-            self._pieces.replaceRange(i, 1, &[_]SparseMultilineTokens{ a, b });
+            try self._pieces.replaceRange(i, 1, &[_]SparseMultilineTokens{ a, b });
             i += 1;
 
             insertPosition = insertPosition orelse .{ .index = i };
@@ -131,8 +131,8 @@ pub const SparseTokensStore = struct {
 
         insertPosition = insertPosition orelse .{ .index = self._pieces.items.len };
 
-        if (pieces.items.len > 0) {
-            self._pieces.insertSlice(insertPosition.?.index, pieces.items);
+        if (pieces.len > 0) {
+            try self._pieces.insertSlice(insertPosition.?.index, pieces);
         }
 
         // console.log(`I HAVE ${this._pieces.length} pieces`);
