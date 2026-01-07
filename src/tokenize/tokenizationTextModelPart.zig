@@ -20,7 +20,7 @@ const LanguageIdCodec = @import("../services/languageRegistry.zig").LanguageIdCo
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const BackgroundTokenizationState = @import("./abstractSyntaxTokenBackend.zig").BackgroundTokenizationState;
 const getWordAtText = @import("../basics/wordHelper.zig").getWordAtText;
-const ILanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
+const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const ResolvedLanguageConfiguration = @import("../languages/languageConfigurationRegistry.zig").ResolvedLanguageConfiguration;
 const ModelTokensChangedRange = @import("../textModel/textModelEvents.zig").ModelTokensChangedRange;
 const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
@@ -44,7 +44,7 @@ pub const TokenizationTextModelPart = struct {
     _attachedViews: *AttachedViews,
     // _bracketPairsTextModelPart: BracketPairsTextModelPart,
     _languageService: *LanguageService,
-    _languageConfigurationService: *ILanguageConfigurationService,
+    _languageConfigurationService: *LanguageConfigurationService,
     // _instantiationService: IInstantiationService,
     // _treeSitterLibraryService: ITreeSitterLibraryService,
 
@@ -53,7 +53,7 @@ pub const TokenizationTextModelPart = struct {
         languageId: []const u8,
         attachedViews: *AttachedViews,
         languageService: *LanguageService,
-        languageConfigurationService: *ILanguageConfigurationService,
+        languageConfigurationService: *LanguageConfigurationService,
     ) !*TokenizationTextModelPart {
         const allocator = textModel_.getAllocator();
         const self = try allocator.create(TokenizationTextModelPart);
@@ -72,7 +72,7 @@ pub const TokenizationTextModelPart = struct {
         languageId: []const u8,
         attachedViews: *AttachedViews,
         languageService: *LanguageService,
-        languageConfigurationService: *ILanguageConfigurationService,
+        languageConfigurationService: *LanguageConfigurationService,
     ) !TokenizationTextModelPart {
         //tokens = derived(this, reader => {
         //   let tokens: AbstractSyntaxTokenBackend;
@@ -312,7 +312,7 @@ pub const TokenizationTextModelPart = struct {
         const rightBiasedWord = try getWordAtText(
             allocator,
             position.column,
-            try self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex)).getWordDefinition(allocator),
+            try (try self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex))).getWordDefinition(),
             lineContent.items[rbStartOffset..rbEndOffset],
             rbStartOffset,
             null,
@@ -334,7 +334,7 @@ pub const TokenizationTextModelPart = struct {
             const leftBiasedWord = try getWordAtText(
                 allocator,
                 position.column,
-                try self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex - 1)).getWordDefinition(allocator),
+                try (try self.getLanguageConfiguration(lineTokens.getLanguageId(tokenIndex - 1))).getWordDefinition(),
                 lineContent.items[lbStartOffset..lbEndOffset],
                 lbStartOffset,
                 null,
@@ -351,8 +351,8 @@ pub const TokenizationTextModelPart = struct {
         return null;
     }
 
-    fn getLanguageConfiguration(self: *TokenizationTextModelPart, languageId: []const u8) ResolvedLanguageConfiguration {
-        return self._languageConfigurationService.getLanguageConfiguration(languageId);
+    fn getLanguageConfiguration(self: *TokenizationTextModelPart, languageId: []const u8) !ResolvedLanguageConfiguration {
+        return try self._languageConfigurationService.getLanguageConfiguration(languageId);
     }
 
     fn _findLanguageBoundaries(lineTokens: LineTokens, tokenIndex: usize) [2]usize {

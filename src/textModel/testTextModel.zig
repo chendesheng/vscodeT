@@ -9,7 +9,7 @@ const IndentSize = @import("model.zig").IndentSize;
 const BracketPairColorizationOptions = @import("model.zig").BracketPairColorizationOptions;
 const EDITOR_MODEL_DEFAULTS = @import("textModelDefaults.zig");
 const LanguageService = @import("../languages/languageService.zig").LanguageService;
-const ILanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
+const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const PLAINTEXT_LANGUAGE_ID = @import("../services/languageRegistry.zig").PLAINTEXT_LANGUAGE_ID;
 
 pub const RelaxedTextModelCreationOptions = struct {
@@ -47,7 +47,7 @@ pub fn createTextModel(allocator: Allocator, text: []const u8, _languageId: ?[]c
     var source = std.Io.Reader.fixed(text);
     const languageService = try allocator.create(LanguageService);
     languageService.* = try LanguageService.init(allocator);
-    const languageConfigurationService = try allocator.create(ILanguageConfigurationService);
+    const languageConfigurationService = try allocator.create(LanguageConfigurationService);
     const textModel = try TextModel.init(
         allocator,
         &source,

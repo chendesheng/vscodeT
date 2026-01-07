@@ -116,7 +116,7 @@ pub const IDocComment = struct {
 
 // A tuple of two characters, like a pair of
 // opening and closing brackets.
-pub const CharacterPair = []const [2]u8;
+pub const CharacterPair = [2][]const u8;
 
 pub const IAutoClosingPair = struct {
     open: []const u8,
@@ -167,8 +167,7 @@ pub const CompleteEnterAction = struct {
 
 // @internal
 pub const StandardAutoClosingPairConditional = struct {
-    open: []const u8,
-    close: []const u8,
+    pair: IAutoClosingPair,
     _inString: bool,
     _inComment: bool,
     _inRegEx: bool,
@@ -178,8 +177,10 @@ pub const StandardAutoClosingPairConditional = struct {
     pub fn init(source: IAutoClosingPairConditional) StandardAutoClosingPairConditional {
         // initially allowed in all tokens
         var self = StandardAutoClosingPairConditional{
-            .open = source.open,
-            .close = source.close,
+            .pair = .{
+                .open = source.open,
+                .close = source.close,
+            },
             ._inString = true,
             ._inComment = true,
             ._inRegEx = true,
@@ -187,13 +188,15 @@ pub const StandardAutoClosingPairConditional = struct {
             .neutralCharacterSearched = false,
         };
 
-        for (source.notIn) |notIn| {
-            if (std.mem.eql(u8, notIn, "string")) {
-                self._inString = false;
-            } else if (std.mem.eql(u8, notIn, "comment")) {
-                self._inComment = false;
-            } else if (std.mem.eql(u8, notIn, "regex")) {
-                self._inRegEx = false;
+        if (source.notIn) |notIns| {
+            for (notIns) |notIn| {
+                if (std.mem.eql(u8, notIn, "string")) {
+                    self._inString = false;
+                } else if (std.mem.eql(u8, notIn, "comment")) {
+                    self._inComment = false;
+                } else if (std.mem.eql(u8, notIn, "regex")) {
+                    self._inRegEx = false;
+                }
             }
         }
         return self;

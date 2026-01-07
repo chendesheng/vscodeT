@@ -7,7 +7,7 @@ const IndentationRule = @import("./languageConfiguration.zig").IndentationRule;
 const FoldingRules = @import("./languageConfiguration.zig").FoldingRules;
 const LanguageBracketsConfiguration = @import("./supports/languageBracketsConfiguration.zig").LanguageBracketsConfiguration;
 const ensureValidWordDefinition = @import("../basics/wordHelper.zig").ensureValidWordDefinition;
-const DEFAULT_WORD_REGEXP = @import("../basics/wordHelper.zig").DEFAULT_WORD_REGEXP;
+const createWordRegExp = @import("../basics/wordHelper.zig").createWordRegExp;
 const EditorAutoIndentStrategy = @import("../editorOptions.zig").EditorAutoIndentStrategy;
 const EnterAction = @import("./languageConfiguration.zig").EnterAction;
 const AutoClosingPairs = @import("./languageConfiguration.zig").AutoClosingPairs;
@@ -58,6 +58,8 @@ pub const LanguageConfigurationService = struct {
     onDidChangeEmitter: Emitter(LanguageConfigurationServiceChangeEvent),
 
     configurations: StringHashMap(ResolvedLanguageConfiguration), // = new Map<string, ResolvedLanguageConfiguration>();
+    configurationService: IConfigurationService,
+    languageService: ILanguageService,
 
     pub fn init(configurationService: IConfigurationService, languageService: ILanguageService) LanguageConfigurationService {
         _ = configurationService;
@@ -104,13 +106,13 @@ pub const LanguageConfigurationService = struct {
         return self._registry.register(languageId, configuration, priority);
     }
 
-    pub fn getLanguageConfiguration(self: *LanguageConfigurationService, languageId: []const u8) ResolvedLanguageConfiguration {
+    pub fn getLanguageConfiguration(self: *LanguageConfigurationService, languageId: []const u8) !ResolvedLanguageConfiguration {
         var result = self.configurations.get(languageId);
-        if (!result) {
-            result = computeConfig(languageId, self._registry, self.configurationService, self.languageService);
-            self.configurations.set(languageId, result);
+        if (result == null) {
+            result = try computeConfig(languageId, self._registry, self.configurationService, self.languageService);
+            try self.configurations.put(languageId, result.?);
         }
-        return result;
+        return result.?;
     }
 };
 
@@ -119,8 +121,8 @@ fn computeConfig(
     registry: LanguageConfigurationRegistry,
     configurationService: IConfigurationService,
     languageService: ILanguageService,
-) ResolvedLanguageConfiguration {
-    var languageConfig = registry.getLanguageConfiguration(languageId);
+) !ResolvedLanguageConfiguration {
+    var languageConfig = try registry.getLanguageConfiguration(languageId);
 
     if (languageConfig == null) {
         if (!languageService.isRegisteredLanguageId(languageId)) {
@@ -131,9 +133,9 @@ fn computeConfig(
         languageConfig = ResolvedLanguageConfiguration.init(languageId, .{});
     }
 
-    const customizedConfig = getCustomizedLanguageConfig(languageConfig.languageId, configurationService);
-    const data = combineLanguageConfigurations(&[_]LanguageConfiguration{ languageConfig.underlyingConfig, customizedConfig });
-    const config = ResolvedLanguageConfiguration.init(languageConfig.languageId, data);
+    const customizedConfig = getCustomizedLanguageConfig(languageConfig.?.languageId, configurationService);
+    const data = combineLanguageConfigurations(&[_]LanguageConfiguration{ languageConfig.?.underlyingConfig, customizedConfig });
+    const config = ResolvedLanguageConfiguration.init(languageConfig.?.languageId, data);
     return config;
 }
 
@@ -204,22 +206,29 @@ const ComposedLanguageConfiguration = struct {
         self._resolved = null;
     }
 
-    pub fn getResolvedConfiguration(self: *ComposedLanguageConfiguration) ?ResolvedLanguageConfiguration {
+    pub fn getResolvedConfiguration(_self: *const ComposedLanguageConfiguration) !?ResolvedLanguageConfiguration {
+        var self: *ComposedLanguageConfiguration = @constCast(_self);
         if (self._resolved == null) {
-            const config = self._resolve();
-            if (config) {
-                self._resolved = ResolvedLanguageConfiguration.init(self.languageId, config);
+            const config = try self._resolve();
+            if (config != null) {
+                self._resolved = try ResolvedLanguageConfiguration.init(self.languageId, config.?);
             }
         }
         return self._resolved;
     }
 
-    fn _resolve(self: *ComposedLanguageConfiguration) ?LanguageConfiguration {
-        if (self._entries.len == 0) {
+    fn _resolve(self: *ComposedLanguageConfiguration) !?LanguageConfiguration {
+        if (self._entries.items.len == 0) {
             return null;
         }
-        std.sort.sort(LanguageConfigurationContribution, self._entries.items, {}, LanguageConfigurationContribution.lessThan);
-        return combineLanguageConfigurations(self._entries.items);
+        std.sort.block(LanguageConfigurationContribution, self._entries.items, {}, LanguageConfigurationContribution.lessThan);
+
+        var configs = ArrayList(LanguageConfiguration).init(self._entries.allocator);
+        defer configs.deinit();
+        for (self._entries.items) |entry| {
+            try configs.append(entry.configuration);
+        }
+        return combineLanguageConfigurations(configs.items);
     }
 };
 
@@ -247,7 +256,7 @@ pub const LanguageConfigurationContribution = struct {
     priority: usize,
     order: usize,
 
-    pub fn lessThan(a: LanguageConfigurationContribution, b: LanguageConfigurationContribution) bool {
+    pub fn lessThan(_: void, a: LanguageConfigurationContribution, b: LanguageConfigurationContribution) bool {
         if (a.priority == b.priority) {
             // higher order last
             return a.order < b.order;
@@ -309,9 +318,9 @@ pub const LanguageConfigurationRegistry = struct {
         //}));
     }
 
-    pub fn getLanguageConfiguration(self: *LanguageConfigurationRegistry, languageId: []const u8) ?ResolvedLanguageConfiguration {
-        if (self._entries.get(languageId)) |entries| {
-            return entries.getResolvedConfiguration();
+    pub fn getLanguageConfiguration(self: *const LanguageConfigurationRegistry, languageId: []const u8) !?ResolvedLanguageConfiguration {
+        if (self._entries.get(languageId)) |*entries| {
+            return try entries.getResolvedConfiguration();
         }
         return null;
     }
@@ -333,7 +342,7 @@ pub const ResolvedLanguageConfiguration = struct {
     languageId: []const u8,
     underlyingConfig: LanguageConfiguration,
 
-    pub fn init(languageId: []const u8, underlyingConfig: LanguageConfiguration) ResolvedLanguageConfiguration {
+    pub fn init(languageId: []const u8, underlyingConfig: LanguageConfiguration) !ResolvedLanguageConfiguration {
         //this._onEnterSupport =
         //    underlyingConfig.brackets or
         //    underlyingConfig.indentationRules or
@@ -342,12 +351,12 @@ pub const ResolvedLanguageConfiguration = struct {
         return .{
             .languageId = languageId,
             .underlyingConfig = underlyingConfig,
-            ._brackets = null,
-            ._electricCharacter = null,
-            ._onEnterSupport = null,
-            .comments = ResolvedLanguageConfiguration._handleComments(underlyingConfig),
+            // ._brackets = null,
+            // ._electricCharacter = null,
+            // ._onEnterSupport = null,
+            .comments = undefined, // ResolvedLanguageConfiguration._handleComments(underlyingConfig),
             .characterPair = CharacterPairSupport.init(underlyingConfig),
-            .wordDefinition = underlyingConfig.wordPattern orelse DEFAULT_WORD_REGEXP,
+            .wordDefinition = underlyingConfig.wordPattern orelse (try createWordRegExp(null)),
             .indentationRules = underlyingConfig.indentationRules,
             .indentRulesSupport = if (underlyingConfig.indentationRules) IndentRulesSupport.init(underlyingConfig.indentationRules) else null,
             .foldingRules = underlyingConfig.folding orelse .{},
@@ -355,8 +364,8 @@ pub const ResolvedLanguageConfiguration = struct {
         };
     }
 
-    pub fn getWordDefinition(self: *const ResolvedLanguageConfiguration, allocator: Allocator) !RegExp {
-        return try ensureValidWordDefinition(allocator, self.wordDefinition);
+    pub fn getWordDefinition(self: *const ResolvedLanguageConfiguration) !RegExp {
+        return try ensureValidWordDefinition(self.wordDefinition);
     }
 
     // TODO: Implement this

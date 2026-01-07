@@ -79,7 +79,7 @@ const InternalModelContentChangeOrModelInjectedTextChangedEvent = @import("textM
 const TokenizationTextModelPart = @import("../tokenize/tokenizationTextModelPart.zig").TokenizationTextModelPart;
 const LanguageService = @import("../languages/languageService.zig").LanguageService;
 const AttachedViews = @import("../tokenize/abstractSyntaxTokenBackend.zig").AttachedViews;
-const ILanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
+const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const WordAtPosition = @import("../basics/utils.zig").WordAtPosition;
 
 const LIMIT_FIND_COUNT = 999;
@@ -304,7 +304,7 @@ pub const TextModel = struct {
         associatedResource: ?Uri,
         undoRedoService: *UndoRedoService,
         languageService: *LanguageService,
-        languageConfigurationService: *ILanguageConfigurationService,
+        languageConfigurationService: *LanguageConfigurationService,
     ) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);

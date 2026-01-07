@@ -14,27 +14,28 @@ pub const USUAL_WORD_SEPARATORS = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
 // The default would look like this:
 // /(-?\d*\.\d\w*)|([^\`\~\!\@\#\$\%\^\&\*\(\)\-\=\+\[\{\]\}\\\|\;\:\'\"\,\.\<\>\/\?\s]+)/g
-pub fn createWordRegExp(allocator: Allocator, _allowInWords: ?[]const u8) !RegExp {
+pub fn createWordRegExp(_allowInWords: ?[]const u8) !RegExp {
     const allowInWords = _allowInWords orelse "";
 
-    var source = ArrayList(u8).init(allocator);
-    try source.appendSlice("(-?\\d*\\.\\d\\w*)|([^");
+    var items = [_]u8{0} ** 1024;
+    var source = std.ArrayList(u8).initBuffer(&items);
+    source.appendSliceAssumeCapacity("(-?\\d*\\.\\d\\w*)|([^");
     for (USUAL_WORD_SEPARATORS) |sep| {
         if (std.mem.indexOfScalar(u8, allowInWords, sep) != null) {
             continue;
         }
-        try source.append('\\');
-        try source.append(sep);
+        source.appendAssumeCapacity('\\');
+        source.appendAssumeCapacity(sep);
     }
-    try source.appendSlice("\\s]+)");
+    source.appendSliceAssumeCapacity("\\s]+)");
     return try RegExp.init(source.items, .{});
 }
 
 // catches numbers (including floating numbers) in the first group, and alphanum in the second
-// pub const DEFAULT_WORD_REGEXP = createWordRegExp(null);
+// pub var DEFAULT_WORD_REGEXP = createWordRegExp(null);
 
-pub fn ensureValidWordDefinition(allocator: Allocator, _wordDefinition: ?RegExp) !RegExp {
-    const result = try createWordRegExp(allocator, null);
+pub fn ensureValidWordDefinition(_wordDefinition: ?RegExp) !RegExp {
+    const result = try createWordRegExp(null);
 
     // if (_wordDefinition) |wordDefinition| {
     //     if (!wordDefinition.global) {
@@ -76,7 +77,7 @@ const _defaultConfig = IGetWordAtTextConfig{
 pub fn getWordAtText(allocator: Allocator, column: usize, _wordDefinition: RegExp, text: []const u8, _textOffset: usize, _config: ?IGetWordAtTextConfig) !?WordAtPosition {
     var textOffset = _textOffset;
     // Ensure the regex has the 'g' flag, otherwise this will loop forever
-    const wordDefinition = try ensureValidWordDefinition(allocator, _wordDefinition);
+    const wordDefinition = try ensureValidWordDefinition(_wordDefinition);
     const config = _config orelse _defaultConfig;
 
     if (text.len > config.maxLen) {
