@@ -83,7 +83,10 @@ const TokensStoreTests = struct {
             try text.append(try lineText.toOwnedSlice());
         }
 
-        return .{ try std.mem.join(allocator, "\n", text.items), SparseMultilineTokens.initFromTokens(baseLine, tokens) };
+        return .{
+            try std.mem.join(allocator, "\n", text.items),
+            SparseMultilineTokens.initFromTokens(baseLine, tokens),
+        };
     }
 
     fn extractState(model: *TextModel) ![]const []const u8 {
