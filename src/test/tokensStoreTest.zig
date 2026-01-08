@@ -295,7 +295,6 @@ const TokensStoreTests = struct {
 
         // setPartial: [1,1 -> 31,2], [(5,5-10),(10,5-10),(15,5-10),(20,5-10),(25,5-10),(30,5-10)]
         var arr = ArrayList(SparseToken).init(allocator);
-        defer arr.deinit();
         try arr.appendSlice(&[_]SparseToken{
             @as(SparseToken, @bitCast([4]u32{ 0, 5, 10, 1 })),
             @as(SparseToken, @bitCast([4]u32{ 5, 5, 10, 2 })),
@@ -308,7 +307,6 @@ const TokensStoreTests = struct {
 
         // setPartial: [18,1 -> 42,1], [(20,5-10),(25,5-10),(30,5-10),(35,5-10),(40,5-10)]
         var arr2 = ArrayList(SparseToken).init(allocator);
-        defer arr2.deinit();
         try arr2.appendSlice(&[_]SparseToken{
             @as(SparseToken, @bitCast([4]u32{ 0, 5, 10, 4 })),
             @as(SparseToken, @bitCast([4]u32{ 5, 5, 10, 5 })),
@@ -320,7 +318,6 @@ const TokensStoreTests = struct {
 
         // setPartial: [1,1 -> 31,2], [(5,5-10),(10,5-10),(15,5-10),(20,5-10),(25,5-10),(30,5-10)]
         var arr3 = ArrayList(SparseToken).init(allocator);
-        defer arr3.deinit();
         try arr3.appendSlice(&[_]SparseToken{
             @as(SparseToken, @bitCast([4]u32{ 0, 5, 10, 1 })),
             @as(SparseToken, @bitCast([4]u32{ 5, 5, 10, 2 })),
@@ -332,8 +329,10 @@ const TokensStoreTests = struct {
         _ = try store.setPartial(.init(1, 1, 31, 2), &[_]SparseMultilineTokens{.initFromTokens(5, arr3)});
 
         var tokens = ArrayList(TokenPacked).init(allocator);
+        defer tokens.deinit();
         try tokens.append(@as(TokenPacked, @bitCast([2]u32{ 12, 1 })));
-        const lineTokens = try store.addSparseTokens(10, LineTokens.init(tokens, "enum Enum1 {", codec));
+        var lineTokens = try store.addSparseTokens(10, LineTokens.init(tokens, "enum Enum1 {", codec));
+        defer lineTokens.deinit();
         try std.testing.expectEqual(3, lineTokens.getCount());
     }
 };

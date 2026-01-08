@@ -9,7 +9,6 @@ const TextModel = @import("../textModel/textModel.zig").TextModel;
 const Allocator = std.mem.Allocator;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const SemanticMetadata = @import("../encodedTokenAttributes.zig").SemanticMetadata;
-const SparseMultilineTokensStorage = @import("sparseMultilineTokens.zig").SparseMultilineTokensStorage;
 const SparseToken = @import("sparseMultilineTokens.zig").SparseToken;
 const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
 const FontStyle = @import("../encodedTokenAttributes.zig").FontStyle;
@@ -112,14 +111,16 @@ pub const SparseTokensStore = struct {
 
             // after removal, this piece contains the range
             const res = try piece.split(range);
-            const a = res[0];
-            const b = res[1];
+            var a = res[0];
+            var b = res[1];
             if (a.isEmpty()) {
+                defer b.deinit();
                 // this piece is actually after the range
                 insertPosition = insertPosition orelse .{ .index = i };
                 continue;
             }
             if (b.isEmpty()) {
+                defer a.deinit();
                 // this piece is actually before the range
                 continue;
             }

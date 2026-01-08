@@ -30,7 +30,7 @@ pub const SparseMultilineTokens = struct {
         return SparseMultilineTokens.init(startLineNumber, SparseMultilineTokensStorage.init(tokens));
     }
 
-    pub fn init(startLineNumber: usize, tokens: SparseMultilineTokensStorage) SparseMultilineTokens {
+    fn init(startLineNumber: usize, tokens: SparseMultilineTokensStorage) SparseMultilineTokens {
         return .{
             ._startLineNumber = startLineNumber,
             ._tokens = tokens,
@@ -200,7 +200,7 @@ pub const SparseToken = packed struct {
     }
 };
 
-pub const SparseMultilineTokensStorage = struct {
+const SparseMultilineTokensStorage = struct {
     // The encoding of tokens is:
     //  4*i    deltaLine (from `startLineNumber`)
     //  4*i+1  startCharacter (from the line start)

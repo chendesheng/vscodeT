@@ -62,17 +62,29 @@ pub const LineTokens = struct {
         };
     }
 
-    pub fn createEmpty(allocator: Allocator, lineContent: []const u8, decoder: LanguageIdCodec) !LineTokens {
-        const tokens = ArrayList(TokenPacked).init(allocator);
-        try tokens.append(initTokenPacked(lineContent.items.len, TokenMetadata.default));
-        return LineTokens.init(tokens, lineContent, decoder);
+    pub fn init(tokens: ArrayList(TokenPacked), text: []const u8, decoder: LanguageIdCodec) LineTokens {
+        const tokensLength = if (tokens.items.len > 0) tokens.items[tokens.items.len - 1].endOffset else 0;
+        // Token length and text length do not match!
+        std.debug.assert(tokensLength == text.len);
+
+        return LineTokens{
+            ._tokens = tokens,
+            ._text = text,
+            .languageIdCodec = decoder,
+        };
     }
 
     pub fn deinit(self: *LineTokens) void {
         self._tokens.deinit();
     }
 
-    pub fn createFromTextAndMetadata(allocator: Allocator, data: []struct { text: []const u8, metadata: TokenMetadata }, decoder: LanguageIdCodec) !LineTokens {
+    pub fn createEmpty(allocator: Allocator, lineContent: []const u8, decoder: LanguageIdCodec) !LineTokens {
+        const tokens = ArrayList(TokenPacked).init(allocator);
+        try tokens.append(initTokenPacked(lineContent.items.len, TokenMetadata.default));
+        return LineTokens.init(tokens, lineContent, decoder);
+    }
+
+    pub fn createFromTextAndMetadata(allocator: Allocator, data: []const struct { text: []const u8, metadata: TokenMetadata }, decoder: LanguageIdCodec) !LineTokens {
         var offset: usize = 0;
         var fullText = ArrayList(u8).init(allocator);
         var tokens = ArrayList(TokenPacked).init(allocator);
@@ -116,18 +128,6 @@ pub const LineTokens = struct {
         }
 
         return low;
-    }
-
-    pub fn init(tokens: ArrayList(TokenPacked), text: []const u8, decoder: LanguageIdCodec) LineTokens {
-        const tokensLength = if (tokens.items.len > 0) tokens.items[tokens.items.len - 1].endOffset else 0;
-        // Token length and text length do not match!
-        std.debug.assert(tokensLength == text.len);
-
-        return LineTokens{
-            ._tokens = tokens,
-            ._text = text,
-            .languageIdCodec = decoder,
-        };
     }
 
     pub fn getLanguageIdCodec(self: *const LineTokens) LanguageIdCodec {
@@ -232,16 +232,16 @@ pub const LineTokens = struct {
 
     // @pure
     // @param insertTokens Must be sorted by offset.
-    pub fn withInserted(self: *const LineTokens, insertTokens: []const InsertTokenArg) !LineTokens {
+    pub fn withInserted(self: *const LineTokens, allocator: Allocator, insertTokens: []const InsertTokenArg) !LineTokens {
         if (insertTokens.len == 0) {
             return self.*;
         }
 
         var nextOriginalTokenIdx: usize = 0;
         var nextInsertTokenIdx: usize = 0;
-        var text = ArrayList(u8).init(self._tokens.allocator);
+        var text = ArrayList(u8).init(allocator);
         defer text.deinit();
-        var newTokens = ArrayList(TokenPacked).init(self._tokens.allocator);
+        var newTokens = ArrayList(TokenPacked).init(allocator);
 
         var originalEndOffset: usize = 0;
         while (true) {
@@ -275,8 +275,8 @@ pub const LineTokens = struct {
         return LineTokens.init(newTokens, try text.toOwnedSlice(), self.languageIdCodec);
     }
 
-    pub fn getTokensInRange(self: *const LineTokens, range: OffsetRange) TokenArray {
-        var builder = TokenArrayBuilder.init(self._tokens.allocator);
+    pub fn getTokensInRange(self: *const LineTokens, allocator: Allocator, range: OffsetRange) TokenArray {
+        var builder = TokenArrayBuilder.init(allocator);
 
         const startTokenIndex = self.findTokenIndexAtOffset(range.start);
         const endTokenIndex = self.findTokenIndexAtOffset(range.endExclusive);
