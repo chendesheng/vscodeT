@@ -13,7 +13,7 @@ const usizeSub = @import("../basics/utils.zig").usizeSub;
 // Represents sparse tokens over a contiguous range of lines.
 pub const SparseMultilineTokens = struct {
     _startLineNumber: usize,
-    _endLineNumber: usize,
+    _endLineNumber: isize,
     _tokens: SparseMultilineTokensStorage,
 
     // (Inclusive) start line number for these tokens.
@@ -22,7 +22,7 @@ pub const SparseMultilineTokens = struct {
     }
 
     // (Inclusive) end line number for these tokens.
-    pub fn getEndLineNumber(self: *const SparseMultilineTokens) usize {
+    pub fn getEndLineNumber(self: *const SparseMultilineTokens) isize {
         return self._endLineNumber;
     }
 
@@ -34,7 +34,7 @@ pub const SparseMultilineTokens = struct {
         return .{
             ._startLineNumber = startLineNumber,
             ._tokens = tokens,
-            ._endLineNumber = tokens.addStartLineNumber(startLineNumber),
+            ._endLineNumber = @as(isize, @intCast(startLineNumber)) + tokens.getMaxDeltaLine(),
         };
     }
 
@@ -47,7 +47,7 @@ pub const SparseMultilineTokens = struct {
     }
 
     fn _updateEndLineNumber(self: *SparseMultilineTokens) void {
-        self._endLineNumber = self._tokens.addStartLineNumber(self._startLineNumber);
+        self._endLineNumber = @as(isize, @intCast(self._startLineNumber)) + self._tokens.getMaxDeltaLine();
     }
 
     pub fn isEmpty(self: *const SparseMultilineTokens) bool {
@@ -55,7 +55,7 @@ pub const SparseMultilineTokens = struct {
     }
 
     pub fn getLineTokens(self: *const SparseMultilineTokens, lineNumber: usize) ?SparseLineTokens {
-        if (self._startLineNumber <= lineNumber and lineNumber <= self._endLineNumber) {
+        if (self._startLineNumber <= lineNumber and @as(isize, @intCast(lineNumber)) <= self._endLineNumber) {
             return self._tokens.getLineTokens(lineNumber - self._startLineNumber);
         }
         return null;
@@ -131,7 +131,7 @@ pub const SparseMultilineTokens = struct {
             return;
         }
 
-        const tokenMaxDeltaLine = @as(isize, @intCast(self._tokens.addStartLineNumber(0)));
+        const tokenMaxDeltaLine = self._tokens.getMaxDeltaLine();
 
         if (firstLineIndex >= tokenMaxDeltaLine + 1) {
             // this deletion occurs entirely after this block, so there is nothing to do
@@ -169,7 +169,7 @@ pub const SparseMultilineTokens = struct {
             return;
         }
 
-        const tokenMaxDeltaLine = self._tokens.addStartLineNumber(0);
+        const tokenMaxDeltaLine = self._tokens.getMaxDeltaLine();
 
         if (lineIndex >= tokenMaxDeltaLine + 1) {
             // this insertion occurs after this block, so there is nothing to do
@@ -231,19 +231,12 @@ const SparseMultilineTokensStorage = struct {
         try writer.writeAll("]");
     }
 
-    pub fn addStartLineNumber(self: *const SparseMultilineTokensStorage, startLineNumber: usize) usize {
-        if (self.getMaxDeltaLine()) |maxDeltaLine| {
-            return startLineNumber + maxDeltaLine + 1;
-        }
-        return startLineNumber;
-    }
-
-    pub fn getMaxDeltaLine(self: *const SparseMultilineTokensStorage) ?usize {
+    pub fn getMaxDeltaLine(self: *const SparseMultilineTokensStorage) isize {
         const tokenCount = self._getTokenCount();
         if (tokenCount == 0) {
-            return null;
+            return -1;
         }
-        return self._getDeltaLine(tokenCount - 1);
+        return @as(isize, @intCast(self._getDeltaLine(tokenCount - 1)));
     }
 
     pub fn getRange(self: *const SparseMultilineTokensStorage) ?Range {
@@ -330,10 +323,12 @@ const SparseMultilineTokensStorage = struct {
         var newTokenCount: usize = 0;
         var hasDeletedTokens = false;
         var firstDeltaLine: isize = 0;
-        for (tokens) |*token| {
+        for (0..tokens.len) |i| {
+            const token = tokens[i];
             const tokenDeltaLine = @as(isize, @intCast(token.deltaLine));
             const tokenStartCharacter = token.startCharacter;
             const tokenEndCharacter = token.endCharacter;
+            const tokenMetadata = token.metadata;
 
             if ((tokenDeltaLine > startDeltaLine or (tokenDeltaLine == startDeltaLine and tokenEndCharacter >= startChar)) and (tokenDeltaLine < endDeltaLine or (tokenDeltaLine == endDeltaLine and tokenStartCharacter <= endChar))) {
                 hasDeletedTokens = true;
@@ -343,14 +338,19 @@ const SparseMultilineTokensStorage = struct {
                 }
                 if (hasDeletedTokens) {
                     // must move the token to the left
-                    token.deltaLine = @intCast(tokenDeltaLine - firstDeltaLine);
-                    token.startCharacter = tokenStartCharacter;
-                    token.endCharacter = tokenEndCharacter;
+                    tokens[newTokenCount].deltaLine = @intCast(tokenDeltaLine - firstDeltaLine);
+                    tokens[newTokenCount].startCharacter = tokenStartCharacter;
+                    tokens[newTokenCount].endCharacter = tokenEndCharacter;
+                    tokens[newTokenCount].metadata = tokenMetadata;
+                } else if (firstDeltaLine != 0) {
+                    // must adjust the delta line in place
+                    tokens[i].deltaLine = @intCast(tokenDeltaLine - firstDeltaLine);
                 }
                 newTokenCount += 1;
             }
         }
 
+        self._tokens.shrinkRetainingCapacity(newTokenCount);
         return firstDeltaLine;
     }
 

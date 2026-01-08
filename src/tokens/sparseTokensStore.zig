@@ -74,9 +74,10 @@ pub const SparseTokensStore = struct {
 
         var insertPosition: ?struct { index: usize } = null;
         var i: usize = 0;
-        while (i < self._pieces.items.len) : (i += 1) {
-            var piece = self._pieces.items[i];
+        while (i < self._pieces.items.len) {
+            var piece = &self._pieces.items[i];
             if (piece._endLineNumber < range.startLineNumber) {
+                i += 1;
                 // this piece is before the range
                 continue;
             }
@@ -93,19 +94,21 @@ pub const SparseTokensStore = struct {
 
             if (piece.isEmpty()) {
                 // remove the piece if it became empty
-                _ = self._pieces.orderedRemove(i);
-                i -= 1;
+                var p = self._pieces.orderedRemove(i);
+                defer p.deinit();
                 continue;
             }
 
-            if (piece.getEndLineNumber() < range.startLineNumber) {
+            if (piece.getEndLineNumber() < @as(isize, @intCast(range.startLineNumber))) {
                 // after removal, this piece is before the range
+                i += 1;
                 continue;
             }
 
             if (piece.getStartLineNumber() > range.endLineNumber) {
                 // after removal, this piece is after the range
                 insertPosition = insertPosition orelse .{ .index = i };
+                i += 1;
                 continue;
             }
 
@@ -117,15 +120,19 @@ pub const SparseTokensStore = struct {
                 defer b.deinit();
                 // this piece is actually after the range
                 insertPosition = insertPosition orelse .{ .index = i };
+                i += 1;
                 continue;
             }
             if (b.isEmpty()) {
                 defer a.deinit();
                 // this piece is actually before the range
+                i += 1;
                 continue;
             }
+
+            self._pieces.items[i].deinit();
             try self._pieces.replaceRange(i, 1, &[_]SparseMultilineTokens{ a, b });
-            i += 1;
+            i += 2;
 
             insertPosition = insertPosition orelse .{ .index = i };
         }
@@ -246,12 +253,12 @@ pub const SparseTokensStore = struct {
         while (low < high) {
             var mid = low + @divFloor(high - low, 2);
 
-            if (pieces[mid].getEndLineNumber() < lineNumber) {
+            if (pieces[mid].getEndLineNumber() < @as(isize, @intCast(lineNumber))) {
                 low = mid + 1;
             } else if (pieces[mid].getStartLineNumber() > lineNumber) {
                 high = mid - 1;
             } else {
-                while (mid > low and pieces[mid - 1].getStartLineNumber() <= lineNumber and lineNumber <= pieces[mid - 1].getEndLineNumber()) {
+                while (mid > low and pieces[mid - 1].getStartLineNumber() <= lineNumber and @as(isize, @intCast(lineNumber)) <= pieces[mid - 1].getEndLineNumber()) {
                     mid -= 1;
                 }
                 return mid;
@@ -262,8 +269,16 @@ pub const SparseTokensStore = struct {
     }
 
     pub fn acceptEdit(self: *SparseTokensStore, range: Range, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: u21) void {
-        for (self._pieces.items) |*piece| {
+        var i: usize = 0;
+        while (i < self._pieces.items.len) {
+            var piece = &self._pieces.items[i];
             piece.acceptEdit(range, eolCount, firstLineLength, lastLineLength, firstCharCode);
+            if (piece.isEmpty()) {
+                var p = self._pieces.orderedRemove(i);
+                defer p.deinit();
+            } else {
+                i += 1;
+            }
         }
     }
 };
