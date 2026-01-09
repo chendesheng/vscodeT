@@ -198,8 +198,8 @@ pub const SparseTokensStore = struct {
                 bMask.fontStyle.bold = semanticMask.useBold;
                 bMask.fontStyle.underline = semanticMask.useUnderline;
                 bMask.fontStyle.strikethrough = semanticMask.useStrikethrough;
-                bMask.foreground = if (semanticMask.useForeground) ColorId.Mask else ColorId.None;
-                bMask.background = @intCast(@intFromEnum(if (semanticMask.useBackground) ColorId.Mask else ColorId.None));
+                bMask.foreground = if (semanticMask.useForeground) ColorId.ForegroundMask else 0;
+                bMask.background = if (semanticMask.useBackground) ColorId.BackgroundMask else 0;
 
                 const aMask: u32 = (~@as(u32, @bitCast(bMask))) >> 0;
 

@@ -277,7 +277,7 @@ fn getDefaultMetadata(topLevelLanguageId: u8) TokenMetadata {
     var metadata = TokenMetadata.default;
     metadata.languageId = topLevelLanguageId;
     metadata.foreground = ColorId.DefaultForeground;
-    metadata.background = @intFromEnum(ColorId.DefaultBackground);
+    metadata.background = ColorId.DefaultBackground;
     metadata.balancedBrackets = true;
     return metadata;
 }

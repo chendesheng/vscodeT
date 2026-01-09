@@ -185,7 +185,7 @@ pub const LineTokens = struct {
         return self.getMetadata(tokenIndex).tokenType;
     }
 
-    pub fn getForeground(self: *const LineTokens, tokenIndex: usize) ColorId {
+    pub fn getForeground(self: *const LineTokens, tokenIndex: usize) u9 {
         return self.getMetadata(tokenIndex).foreground;
     }
 
@@ -380,7 +380,7 @@ pub const SliceLineTokens = struct {
         return self._source.getStandardTokenType(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getForeground(self: *const SliceLineTokens, tokenIndex: usize) ColorId {
+    pub fn getForeground(self: *const SliceLineTokens, tokenIndex: usize) u9 {
         return self._source.getForeground(self._firstTokenIndex + tokenIndex);
     }
 

@@ -36,8 +36,8 @@ pub fn nullTokenizeEncoded(languageId: u8, state: ?IState) EncodedTokenizationRe
         .endOffset = 0,
         .metadata = .{
             .languageId = languageId,
-            .background = @intFromEnum(ColorId.DefaultBackground),
-            .foreground = .DefaultForeground,
+            .background = ColorId.DefaultBackground,
+            .foreground = ColorId.DefaultForeground,
         },
     }};
     return EncodedTokenizationResult.init(&tokens, if (state == null) NullState else state.?);

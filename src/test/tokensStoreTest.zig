@@ -19,7 +19,7 @@ const FontStyle = @import("../encodedTokenAttributes.zig").FontStyle;
 
 const TokensStoreTests = struct {
     const allocator = std.testing.allocator;
-    const SEMANTIC_COLOR = ColorId.Color5;
+    const SEMANTIC_COLOR = 5;
 
     fn parseTokensState(state: []const []const u8) !struct { []const u8, SparseMultilineTokens } {
         var text = ArrayList([]const u8).init(allocator);
@@ -491,7 +491,7 @@ const TokensStoreTests = struct {
         return @bitCast(TokenMetadata{
             .languageId = languageId,
             .fontStyle = fontStyle,
-            .foreground = @enumFromInt(foreground),
+            .foreground = foreground,
         });
     }
 

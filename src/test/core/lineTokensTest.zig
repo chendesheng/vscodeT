@@ -13,7 +13,7 @@ const LineTokensTests = struct {
 
     const ILineToken = struct {
         startIndex: u32,
-        foreground: ColorId,
+        foreground: u9,
     };
 
     fn createLineTokens(text: []const u8, tokens: []const ILineToken) !LineTokens {
@@ -41,13 +41,13 @@ const LineTokensTests = struct {
         return try createLineTokens(
             "Hello world, this is a lovely day",
             &[_]ILineToken{
-                .{ .startIndex = 0, .foreground = .DefaultForeground }, // Hello_
-                .{ .startIndex = 6, .foreground = .DefaultBackground }, // world,_
-                .{ .startIndex = 13, .foreground = .Color3 }, // this_
-                .{ .startIndex = 18, .foreground = .Color4 }, // is_
-                .{ .startIndex = 21, .foreground = .Color5 }, // a_
-                .{ .startIndex = 23, .foreground = .Color6 }, // lovely_
-                .{ .startIndex = 30, .foreground = .Color7 }, // day
+                .{ .startIndex = 0, .foreground = 1 }, // Hello_
+                .{ .startIndex = 6, .foreground = 2 }, // world,_
+                .{ .startIndex = 13, .foreground = 3 }, // this_
+                .{ .startIndex = 18, .foreground = 4 }, // is_
+                .{ .startIndex = 21, .foreground = 5 }, // a_
+                .{ .startIndex = 23, .foreground = 6 }, // lovely_
+                .{ .startIndex = 30, .foreground = 7 }, // day
             },
         );
     }
@@ -182,7 +182,7 @@ const LineTokensTests = struct {
 
     const TestViewLineToken = struct {
         endIndex: usize,
-        foreground: ColorId,
+        foreground: u9,
     };
 
     fn assertViewLineTokens(_actual: anytype, expected: []const TestViewLineToken) !void {
@@ -203,13 +203,13 @@ const LineTokensTests = struct {
         var lineTokens = try createTestLineTokens();
         defer lineTokens.deinit();
         try assertViewLineTokens(lineTokens, &[_]TestViewLineToken{
-            .{ .endIndex = 6, .foreground = .DefaultForeground },
-            .{ .endIndex = 13, .foreground = .DefaultBackground },
-            .{ .endIndex = 18, .foreground = .Color3 },
-            .{ .endIndex = 21, .foreground = .Color4 },
-            .{ .endIndex = 23, .foreground = .Color5 },
-            .{ .endIndex = 30, .foreground = .Color6 },
-            .{ .endIndex = 33, .foreground = .Color7 },
+            .{ .endIndex = 6, .foreground = 1 },
+            .{ .endIndex = 13, .foreground = 2 },
+            .{ .endIndex = 18, .foreground = 3 },
+            .{ .endIndex = 21, .foreground = 4 },
+            .{ .endIndex = 23, .foreground = 5 },
+            .{ .endIndex = 30, .foreground = 6 },
+            .{ .endIndex = 33, .foreground = 7 },
         });
     }
 
@@ -217,62 +217,62 @@ const LineTokensTests = struct {
         var lineTokens = try createTestLineTokens();
         defer lineTokens.deinit();
         try assertViewLineTokens(lineTokens.sliceAndInflate(0, 33, 0), &[_]TestViewLineToken{
-            .{ .endIndex = 6, .foreground = .DefaultForeground },
-            .{ .endIndex = 13, .foreground = .DefaultBackground },
-            .{ .endIndex = 18, .foreground = .Color3 },
-            .{ .endIndex = 21, .foreground = .Color4 },
-            .{ .endIndex = 23, .foreground = .Color5 },
-            .{ .endIndex = 30, .foreground = .Color6 },
-            .{ .endIndex = 33, .foreground = .Color7 },
+            .{ .endIndex = 6, .foreground = 1 },
+            .{ .endIndex = 13, .foreground = 2 },
+            .{ .endIndex = 18, .foreground = 3 },
+            .{ .endIndex = 21, .foreground = 4 },
+            .{ .endIndex = 23, .foreground = 5 },
+            .{ .endIndex = 30, .foreground = 6 },
+            .{ .endIndex = 33, .foreground = 7 },
         });
 
         try assertViewLineTokens(lineTokens.sliceAndInflate(0, 32, 0), &[_]TestViewLineToken{
-            .{ .endIndex = 6, .foreground = .DefaultForeground },
-            .{ .endIndex = 13, .foreground = .DefaultBackground },
-            .{ .endIndex = 18, .foreground = .Color3 },
-            .{ .endIndex = 21, .foreground = .Color4 },
-            .{ .endIndex = 23, .foreground = .Color5 },
-            .{ .endIndex = 30, .foreground = .Color6 },
-            .{ .endIndex = 32, .foreground = .Color7 },
+            .{ .endIndex = 6, .foreground = 1 },
+            .{ .endIndex = 13, .foreground = 2 },
+            .{ .endIndex = 18, .foreground = 3 },
+            .{ .endIndex = 21, .foreground = 4 },
+            .{ .endIndex = 23, .foreground = 5 },
+            .{ .endIndex = 30, .foreground = 6 },
+            .{ .endIndex = 32, .foreground = 7 },
         });
 
         try assertViewLineTokens(lineTokens.sliceAndInflate(0, 30, 0), &[_]TestViewLineToken{
-            .{ .endIndex = 6, .foreground = .DefaultForeground },
-            .{ .endIndex = 13, .foreground = .DefaultBackground },
-            .{ .endIndex = 18, .foreground = .Color3 },
-            .{ .endIndex = 21, .foreground = .Color4 },
-            .{ .endIndex = 23, .foreground = .Color5 },
-            .{ .endIndex = 30, .foreground = .Color6 },
+            .{ .endIndex = 6, .foreground = 1 },
+            .{ .endIndex = 13, .foreground = 2 },
+            .{ .endIndex = 18, .foreground = 3 },
+            .{ .endIndex = 21, .foreground = 4 },
+            .{ .endIndex = 23, .foreground = 5 },
+            .{ .endIndex = 30, .foreground = 6 },
         });
 
         try assertViewLineTokens(lineTokens.sliceAndInflate(0, 30, 1), &[_]TestViewLineToken{
-            .{ .endIndex = 7, .foreground = .DefaultForeground },
-            .{ .endIndex = 14, .foreground = .DefaultBackground },
-            .{ .endIndex = 19, .foreground = .Color3 },
-            .{ .endIndex = 22, .foreground = .Color4 },
-            .{ .endIndex = 24, .foreground = .Color5 },
-            .{ .endIndex = 31, .foreground = .Color6 },
+            .{ .endIndex = 7, .foreground = 1 },
+            .{ .endIndex = 14, .foreground = 2 },
+            .{ .endIndex = 19, .foreground = 3 },
+            .{ .endIndex = 22, .foreground = 4 },
+            .{ .endIndex = 24, .foreground = 5 },
+            .{ .endIndex = 31, .foreground = 6 },
         });
 
         try assertViewLineTokens(lineTokens.sliceAndInflate(6, 18, 0), &[_]TestViewLineToken{
-            .{ .endIndex = 7, .foreground = .DefaultBackground },
-            .{ .endIndex = 12, .foreground = .Color3 },
+            .{ .endIndex = 7, .foreground = 2 },
+            .{ .endIndex = 12, .foreground = 3 },
         });
 
         try assertViewLineTokens(lineTokens.sliceAndInflate(7, 18, 0), &[_]TestViewLineToken{
-            .{ .endIndex = 6, .foreground = .DefaultBackground },
-            .{ .endIndex = 11, .foreground = .Color3 },
+            .{ .endIndex = 6, .foreground = 2 },
+            .{ .endIndex = 11, .foreground = 3 },
         });
 
         try assertViewLineTokens(lineTokens.sliceAndInflate(6, 17, 0), &[_]TestViewLineToken{
-            .{ .endIndex = 7, .foreground = .DefaultBackground },
-            .{ .endIndex = 11, .foreground = .Color3 },
+            .{ .endIndex = 7, .foreground = 2 },
+            .{ .endIndex = 11, .foreground = 3 },
         });
 
         try assertViewLineTokens(lineTokens.sliceAndInflate(6, 19, 0), &[_]TestViewLineToken{
-            .{ .endIndex = 7, .foreground = .DefaultBackground },
-            .{ .endIndex = 12, .foreground = .Color3 },
-            .{ .endIndex = 13, .foreground = .Color4 },
+            .{ .endIndex = 7, .foreground = 2 },
+            .{ .endIndex = 12, .foreground = 3 },
+            .{ .endIndex = 13, .foreground = 4 },
         });
     }
 };

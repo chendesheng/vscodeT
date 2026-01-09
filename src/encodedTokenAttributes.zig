@@ -73,18 +73,11 @@ pub const FontStyle = packed struct(u4) {
 };
 
 // Open ended enum at runtime
-pub const ColorId = enum(u9) {
-    None = 0,
-    DefaultForeground = 1,
-    DefaultBackground = 2,
-    Color3 = 3,
-    Color4 = 4,
-    Color5 = 5,
-    Color6 = 6,
-    Color7 = 7,
-    Color8 = 8,
-    Color9 = 9,
-    Mask = 0b111111111,
+pub const ColorId = struct {
+    pub const DefaultForeground = 1;
+    pub const DefaultBackground = 2;
+    pub const ForegroundMask = 0b111111111;
+    pub const BackgroundMask = 0b11111111;
 };
 
 // A standard token type.
@@ -221,7 +214,7 @@ pub const TokenMetadata = packed struct(u32) {
     tokenType: StandardTokenType = .Other,
     balancedBrackets: bool = false,
     fontStyle: FontStyle = .{ .italic = false, .bold = false, .underline = false, .strikethrough = false },
-    foreground: ColorId = .None,
+    foreground: u9 = 0,
     background: u8 = 0,
 
     pub const default = TokenMetadata{};
@@ -293,7 +286,7 @@ pub const TokenMetadata = packed struct(u32) {
 };
 
 pub const TokenPresentation = struct {
-    foreground: ColorId,
+    foreground: u9,
     italic: bool,
     bold: bool,
     underline: bool,
@@ -306,9 +299,9 @@ test "TokenMetadata" {
         .tokenType = .Comment,
         .balancedBrackets = true,
         .fontStyle = .{ .italic = true, .bold = true, .underline = true, .strikethrough = true },
-        .foreground = .DefaultForeground,
+        .foreground = ColorId.DefaultForeground,
         .background = 0,
     };
     const presentation = metadata.getPresentationFromMetadata();
-    try std.testing.expectEqual(presentation.foreground, .DefaultForeground);
+    try std.testing.expectEqual(presentation.foreground, ColorId.DefaultForeground);
 }
