@@ -43,7 +43,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     _tokens: ContiguousTokensStore,
     _debugBackgroundTokens: ?ContiguousTokensStore = null,
     _debugBackgroundStates: ?TrackingTokenizationStateStore = null,
-    _debugBackgroundTokenizer: ?IBackgroundTokenizer = null,
+    _debugBackgroundTokenizer: ?*IBackgroundTokenizer = null,
     _defaultBackgroundTokenizer: ?DefaultBackgroundTokenizer = null,
     // _backgroundTokenizer: ?IBackgroundTokenizer = null,
     _attachedViewStates: AutoHashMap(AttachedView, AttachedViewHandler),
@@ -139,12 +139,12 @@ pub const TokenizerSyntaxTokenBackend = struct {
             });
         }
 
-        var tokenizationSupport: ?ITokenizationSupport = null;
+        var tokenizationSupport: ?*ITokenizationSupport = null;
         var initialState: ?IState = null;
         if (!self.super._textModel.isTooLargeForTokenization()) {
             tokenizationSupport = TokenizationRegistry.instance.get(self._languageId);
             if (tokenizationSupport != null) {
-                initialState = tokenizationSupport.?.getInitialState();
+                initialState = tokenizationSupport.?.getInitialState(tokenizationSupport.?);
             }
         }
 
@@ -366,7 +366,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
                         if (!result.equals(&backgroundResult)) {
                             if (self._debugBackgroundTokenizer) |debugBackgroundTokenizer| {
                                 if (debugBackgroundTokenizer.reportMismatchingTokens) |reportMismatchingTokens| {
-                                    reportMismatchingTokens(lineNumber);
+                                    reportMismatchingTokens(debugBackgroundTokenizer, lineNumber);
                                 }
                             }
                         }

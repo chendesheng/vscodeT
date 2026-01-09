@@ -32,9 +32,9 @@ pub const TokenizerWithStateStore = struct {
     initialState: IState,
     store: TrackingTokenizationStateStore,
 
-    pub fn init(allocator: Allocator, lineCount: usize, tokenizationSupport: ITokenizationSupport) !Self {
+    pub fn init(allocator: Allocator, lineCount: usize, tokenizationSupport: *ITokenizationSupport) !Self {
         return Self{
-            .initialState = tokenizationSupport.getInitialState(),
+            .initialState = tokenizationSupport.getInitialState(tokenizationSupport),
             .store = try TrackingTokenizationStateStore.init(allocator, lineCount),
         };
     }
@@ -54,11 +54,11 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     super: TokenizerWithStateStore,
 
     lineCount: usize,
-    tokenizationSupport: ITokenizationSupport,
+    tokenizationSupport: *ITokenizationSupport,
     _textModel: *TextModel,
     _languageIdCodec: LanguageIdCodec,
 
-    pub fn init(lineCount: usize, tokenizationSupport: ITokenizationSupport, _textModel: *TextModel, languageIdCodec: LanguageIdCodec) !Self {
+    pub fn init(lineCount: usize, tokenizationSupport: *ITokenizationSupport, _textModel: *TextModel, languageIdCodec: LanguageIdCodec) !Self {
         return Self{
             .super = try TokenizerWithStateStore.init(_textModel.getAllocator(), lineCount, tokenizationSupport),
             .lineCount = lineCount,
@@ -195,7 +195,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         var initialState = res.initialState;
 
         if (initialState == null) {
-            initialState = self.tokenizationSupport.getInitialState();
+            initialState = self.tokenizationSupport.getInitialState(self.tokenizationSupport);
         }
 
         const languageId = self._textModel.getLanguageId();
@@ -344,7 +344,7 @@ pub const TokenizationStateStore = struct {
 
     pub fn setEndState(self: *Self, lineNumber: usize, state: IState) !bool {
         if (self._lineEndStates.get(lineNumber)) |oldState| {
-            if (oldState.equals(state)) {
+            if (oldState.equals(oldState, state)) {
                 return false;
             }
         }
@@ -374,9 +374,9 @@ pub const TokenizationStateStore = struct {
     }
 };
 
-fn safeTokenize(languageIdCodec: LanguageIdCodec, languageId: []const u8, _tokenizationSupport: ?ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult {
+fn safeTokenize(languageIdCodec: LanguageIdCodec, languageId: []const u8, _tokenizationSupport: ?*ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult {
     const r: EncodedTokenizationResult = if (_tokenizationSupport) |tokenizationSupport|
-        tokenizationSupport.tokenizeEncoded(text, hasEOL, state.clone())
+        tokenizationSupport.tokenizeEncoded(tokenizationSupport, text, hasEOL, state.clone(state))
     else
         nullTokenizeEncoded(languageIdCodec.encodeLanguageId(languageId), state);
 
@@ -389,11 +389,11 @@ pub const DefaultBackgroundTokenizer = struct {
     _isScheduled: bool = false,
 
     tokenizerWithStateStore: ?TokenizerWithStateStoreAndTextModel,
-    backgroundTokenStore: IBackgroundTokenizationStore,
+    backgroundTokenStore: *IBackgroundTokenizationStore,
 
     const Self = @This();
 
-    pub fn init(tokenizerWithStateStore: ?TokenizerWithStateStoreAndTextModel, backgroundTokenStore: IBackgroundTokenizationStore) Self {
+    pub fn init(tokenizerWithStateStore: ?TokenizerWithStateStoreAndTextModel, backgroundTokenStore: *IBackgroundTokenizationStore) Self {
         return Self{
             .tokenizerWithStateStore = tokenizerWithStateStore,
             .backgroundTokenStore = backgroundTokenStore,
@@ -468,7 +468,7 @@ pub const DefaultBackgroundTokenizer = struct {
             }
         }
 
-        self.backgroundTokenStore.setTokens(builder.finalize());
+        self.backgroundTokenStore.setTokens(self.backgroundTokenStore, builder.finalize());
         self.checkFinished();
     }
 
@@ -493,7 +493,7 @@ pub const DefaultBackgroundTokenizer = struct {
             return;
         }
         if (self.tokenizerWithStateStore.?.getStore().allStatesValid()) {
-            self.backgroundTokenStore.backgroundTokenizationFinished();
+            self.backgroundTokenStore.backgroundTokenizationFinished(self.backgroundTokenStore);
         }
     }
 

@@ -6,20 +6,19 @@ const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
 const ITokenizationSupport = @import("../languages.zig").ITokenizationSupport;
 const TokenizationSupportChangedEvent = @import("../languages.zig").TokenizationSupportChangedEvent;
 const Color = @import("../basics/color.zig").Color;
-const getKeys = @import("../basics/utils.zig").getKeys;
 const LazyTokenizationSupport = @import("../languages.zig").LazyTokenizationSupport;
 
 pub const TokenizationRegistry = struct {
     pub var instance: TokenizationRegistry = TokenizationRegistry.init(std.heap.page_allocator);
 
-    _tokenizationSupports: StringHashMap(ITokenizationSupport),
+    _tokenizationSupports: StringHashMap(*ITokenizationSupport),
     _factories: StringHashMap(TokenizationSupportFactoryData),
     _onDidChange: Emitter(TokenizationSupportChangedEvent),
     _colorMap: ?[]Color,
 
     pub fn init(allocator: Allocator) TokenizationRegistry {
         return TokenizationRegistry{
-            ._tokenizationSupports = StringHashMap(ITokenizationSupport).init(allocator),
+            ._tokenizationSupports = StringHashMap(*ITokenizationSupport).init(allocator),
             ._factories = StringHashMap(TokenizationSupportFactoryData).init(allocator),
             ._onDidChange = Emitter(TokenizationSupportChangedEvent).init(allocator),
             ._colorMap = null,
@@ -34,7 +33,7 @@ pub const TokenizationRegistry = struct {
         try self._onDidChange.event(ctx, callback);
     }
 
-    pub fn register(self: *TokenizationRegistry, languageId: []const u8, support: ITokenizationSupport) !void {
+    pub fn register(self: *TokenizationRegistry, languageId: []const u8, support: *ITokenizationSupport) !void {
         try self._tokenizationSupports.put(languageId, support);
         self.handleChange(&[_]u8{languageId});
         // return toDisposable(() => {
@@ -46,11 +45,11 @@ pub const TokenizationRegistry = struct {
         // });
     }
 
-    pub fn get(self: *TokenizationRegistry, languageId: []const u8) ?ITokenizationSupport {
+    pub fn get(self: *TokenizationRegistry, languageId: []const u8) ?*ITokenizationSupport {
         return self._tokenizationSupports.get(languageId);
     }
 
-    pub fn registerFactory(self: *TokenizationRegistry, languageId: []const u8, factory: ITokenizationSupport) !void {
+    pub fn registerFactory(self: *TokenizationRegistry, languageId: []const u8, factory: *ITokenizationSupport) !void {
         const res = try self._factories.getOrPut(languageId);
         if (res.found_existing) {
             res.value_ptr.dispose();
@@ -68,7 +67,7 @@ pub const TokenizationRegistry = struct {
         // });
     }
 
-    pub fn getOrCreate(self: *TokenizationRegistry, languageId: []const u8) !?ITokenizationSupport {
+    pub fn getOrCreate(self: *TokenizationRegistry, languageId: []const u8) !?*ITokenizationSupport {
         // check first if the support is already set
         if (self.get(languageId)) |tokenizationSupport| {
             return tokenizationSupport;
@@ -102,7 +101,7 @@ pub const TokenizationRegistry = struct {
     pub fn setColorMap(self: *TokenizationRegistry, colorMap: []const Color) void {
         self._colorMap = colorMap;
         self._onDidChange.fire(.{
-            .changedLanguages = getKeys(ITokenizationSupport, self._tokenizationSupports).items,
+            // .changedLanguages = getKeys(ITokenizationSupport, self._tokenizationSupports).items,
             .changedColorMap = true,
         });
     }
@@ -135,7 +134,7 @@ pub const TokenizationSupportFactoryData = struct {
     pub fn init(
         registry: *TokenizationRegistry,
         languageId: []const u8,
-        factory: ITokenizationSupport,
+        factory: *ITokenizationSupport,
     ) TokenizationSupportFactoryData {
         return TokenizationSupportFactoryData{
             ._registry = registry,

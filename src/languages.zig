@@ -87,14 +87,14 @@ pub const ITokenizationSupport = struct {
     // Used for debugging.
     backgroundTokenizerShouldOnlyVerifyTokens: ?bool,
 
-    getInitialState: *const fn () IState,
+    getInitialState: *const fn (t: *ITokenizationSupport) IState,
 
-    tokenize: *const fn (line: []const u8, hasEOL: bool, state: IState) TokenizationResult,
+    tokenize: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) TokenizationResult,
 
-    tokenizeEncoded: *const fn (line: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
+    tokenizeEncoded: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
 
     // Can be/return undefined if default background tokenization should be used.
-    createBackgroundTokenizer: ?*const fn (textModel: *TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
+    createBackgroundTokenizer: ?*const fn (t: *ITokenizationSupport, textModel: *TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
 };
 
 // @internal
@@ -102,37 +102,37 @@ pub const IBackgroundTokenizer = struct {
     // Instructs the background tokenizer to set the tokens for the given range again.
     // This might be necessary if the renderer overwrote those tokens with heuristically computed ones for some viewport,
     // when the change does not even propagate to that viewport.
-    requestTokens: *const fn (startLineNumber: usize, endLineNumberExclusive: usize) void,
+    requestTokens: *const fn (b: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) void,
 
-    reportMismatchingTokens: ?*const fn (lineNumber: usize) void,
+    reportMismatchingTokens: ?*const fn (b: *IBackgroundTokenizer, lineNumber: usize) void,
 };
 
 // @internal
 pub const IBackgroundTokenizationStore = struct {
-    setTokens: *const fn (tokens: []ContiguousMultilineTokens) void,
+    setTokens: *const fn (b: *IBackgroundTokenizationStore, tokens: []ContiguousMultilineTokens) void,
 
-    setEndState: *const fn (lineNumber: usize, state: IState) void,
+    setEndState: *const fn (b: *IBackgroundTokenizationStore, lineNumber: usize, state: IState) void,
 
     // Should be called to indicate that the background tokenization has finished for now.
     // (This triggers bracket pair colorization to re-parse the bracket pairs with token information)
-    backgroundTokenizationFinished: *const fn () void,
+    backgroundTokenizationFinished: *const fn (b: *IBackgroundTokenizationStore) void,
 };
 
 // The state of the tokenizer between two lines.
 // It is useful to store flags such as in multiline comment, etc.
 // The model will clone the previous line's state and pass it in to tokenize the next line.
 pub const IState = struct {
-    clone: *const fn () IState,
-    equals: *const fn (other: IState) bool,
+    clone: *const fn (s: IState) IState,
+    equals: *const fn (s: IState, other: IState) bool,
 };
 
 // @internal
 pub const LazyTokenizationSupport = struct {
-    _tokenizationSupport: ?ITokenizationSupport,
+    _tokenizationSupport: ?*ITokenizationSupport,
 
-    createSupport: *const fn () ?ITokenizationSupport,
+    createSupport: *const fn (l: *LazyTokenizationSupport) ?*ITokenizationSupport,
 
-    pub fn init(createSupport: *const fn () ?ITokenizationSupport) LazyTokenizationSupport {
+    pub fn init(createSupport: *const fn (l: *LazyTokenizationSupport) ?*ITokenizationSupport) LazyTokenizationSupport {
         return LazyTokenizationSupport{
             ._tokenizationSupport = null,
             .createSupport = createSupport,
@@ -145,7 +145,7 @@ pub const LazyTokenizationSupport = struct {
     //     }
     // }
 
-    pub fn getTokenizationSupport(self: *LazyTokenizationSupport) ?ITokenizationSupport {
+    pub fn getTokenizationSupport(self: *LazyTokenizationSupport) ?*ITokenizationSupport {
         if (self._tokenizationSupport) |tokenizationSupport| {
             return tokenizationSupport;
         }

@@ -17,11 +17,13 @@ const NullState = IState{
     .equals = nullStateEquals,
 };
 
-fn nullStateClone() IState {
+fn nullStateClone(state: IState) IState {
+    _ = state;
     return NullState;
 }
 
-fn nullStateEquals(self: IState) bool {
+fn nullStateEquals(self: IState, other: IState) bool {
+    _ = other;
     return self.clone == NullState.clone and self.equals == NullState.equals;
 }
 
