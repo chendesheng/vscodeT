@@ -37,7 +37,7 @@ pub const TokenizationTextModelPart = struct {
     _onDidChangeLanguageConfiguration: Emitter(ModelLanguageConfigurationChangedEvent),
     _onDidChangeTokens: Emitter(ModelTokensChangedEvent),
     // public readonly tokens: IObservable<AbstractSyntaxTokenBackend>;
-    tokens: TokenizerSyntaxTokenBackend,
+    tokens: AbstractSyntaxTokenBackend,
     _useTreeSitter: bool,
     _languageId: []const u8,
     _textModel: *TextModel,
