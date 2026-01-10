@@ -12,6 +12,7 @@ const LanguageService = @import("../languages/languageService.zig").LanguageServ
 const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const PLAINTEXT_LANGUAGE_ID = @import("../services/languageRegistry.zig").PLAINTEXT_LANGUAGE_ID;
 const TestConfigurationService = @import("../test/testConfigurationService.zig").TestConfigurationService;
+const TokenizationRegistry = @import("../tokenize/tokenizationRegistry.zig").TokenizationRegistry;
 
 pub const RelaxedTextModelCreationOptions = struct {
     tabSize: ?usize = null,
@@ -74,4 +75,6 @@ pub fn disposeTextModel(textModel: *TextModel) void {
     allocator.destroy(textModel.tokenization()._languageConfigurationService);
     textModel.deinit();
     allocator.destroy(textModel);
+
+    TokenizationRegistry.deinitInstance();
 }

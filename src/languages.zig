@@ -139,11 +139,12 @@ pub const LazyTokenizationSupport = struct {
         };
     }
 
-    // pub fn dispose(self: *LazyTokenizationSupport) void {
-    //     if (self._tokenizationSupport) |tokenizationSupport| {
-    //         tokenizationSupport.dispose();
-    //     }
-    // }
+    pub fn deinit(self: *LazyTokenizationSupport) void {
+        _ = self;
+        // if (self._tokenizationSupport) |tokenizationSupport| {
+        //     tokenizationSupport.deinit();
+        // }
+    }
 
     pub fn getTokenizationSupport(self: *LazyTokenizationSupport) ?*ITokenizationSupport {
         if (self._tokenizationSupport) |tokenizationSupport| {

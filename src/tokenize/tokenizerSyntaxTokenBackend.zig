@@ -37,17 +37,22 @@ const LineRangeSet = @import("../basics/lineRange.zig").LineRangeSet;
 
 // For TextMate
 pub const TokenizerSyntaxTokenBackend = struct {
+    _tokenizer: ?TokenizerWithStateStoreAndTextModel = null,
     super: AbstractSyntaxTokenBackend,
 
-    _tokenizer: ?TokenizerWithStateStoreAndTextModel = null,
+    _defaultBackgroundTokenizer: ?DefaultBackgroundTokenizer = null,
+    _backgroundTokenizer: ?IBackgroundTokenizer = null,
+
+    // FIXME
+    _languageId: []const u8,
+
     _tokens: ContiguousTokensStore,
     _debugBackgroundTokens: ?ContiguousTokensStore = null,
     _debugBackgroundStates: ?TrackingTokenizationStateStore = null,
+
     _debugBackgroundTokenizer: ?*IBackgroundTokenizer = null,
-    _defaultBackgroundTokenizer: ?DefaultBackgroundTokenizer = null,
-    // _backgroundTokenizer: ?IBackgroundTokenizer = null,
+
     _attachedViewStates: AutoHashMap(AttachedView, AttachedViewHandler),
-    _languageId: []const u8,
 
     pub fn init(
         languageIdCodec: LanguageIdCodec,
@@ -61,9 +66,10 @@ pub const TokenizerSyntaxTokenBackend = struct {
             ._tokens = ContiguousTokensStore.init(allocator, languageIdCodec),
             ._languageId = languageId,
             ._attachedViewStates = AutoHashMap(AttachedView, AttachedViewHandler).init(allocator),
+            ._backgroundTokenizer = undefined,
         };
 
-        try TokenizationRegistry.instance.onDidChange(&self, struct {
+        try TokenizationRegistry.instance(allocator).onDidChange(&self, struct {
             fn cb(e: TokenizationSupportChangedEvent, this: *TokenizerSyntaxTokenBackend) void {
                 if (std.mem.indexOf(u8, e.changedLanguages, this._languageId) == null) {
                     return;
@@ -75,10 +81,9 @@ pub const TokenizerSyntaxTokenBackend = struct {
         try self.todo_resetTokenization(false);
 
         try attachedViews.onDidChangeVisibleRanges(&self, struct {
-            fn cb(p: AttachedViewAndState, this: *TokenizerSyntaxTokenBackend) void {
-                const view = p.first;
-                const _state = p.second;
-                if (_state) |state| {
+            fn cb(e: AttachedViewAndState, this: *TokenizerSyntaxTokenBackend) void {
+                const view = e.view;
+                if (e.state) |state| {
                     var existing = this._attachedViewStates.get(view);
                     if (existing == null) {
                         existing = AttachedViewHandler.init(struct {
@@ -122,6 +127,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     }
 
     pub fn todo_resetTokenization(self: *TokenizerSyntaxTokenBackend, fireTokenChangeEvent: bool) !void {
+        const allocator = self.super._textModel.getAllocator();
         self._tokens.flush();
         // self._debugBackgroundTokens.?.flush();
         if (self._debugBackgroundStates != null) {
@@ -142,7 +148,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
         var tokenizationSupport: ?*ITokenizationSupport = null;
         var initialState: ?IState = null;
         if (!self.super._textModel.isTooLargeForTokenization()) {
-            tokenizationSupport = TokenizationRegistry.instance.get(self._languageId);
+            tokenizationSupport = TokenizationRegistry.instance(allocator).get(self._languageId);
             if (tokenizationSupport != null) {
                 initialState = tokenizationSupport.?.getInitialState(tokenizationSupport.?);
             }

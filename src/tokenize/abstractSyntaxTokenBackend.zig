@@ -19,7 +19,10 @@ pub const BackgroundTokenizationState = enum(u8) {
     Completed = 2,
 };
 
-pub const AttachedViewAndState = Pair(AttachedView, ?AttachedViewState);
+pub const AttachedViewAndState = struct {
+    view: AttachedView,
+    state: ?AttachedViewState,
+};
 
 // @internal
 pub const AttachedViews = struct {

@@ -9,7 +9,19 @@ const Color = @import("../basics/color.zig").Color;
 const LazyTokenizationSupport = @import("../languages.zig").LazyTokenizationSupport;
 
 pub const TokenizationRegistry = struct {
-    pub var instance: TokenizationRegistry = TokenizationRegistry.init(std.heap.page_allocator);
+    var _instance: ?TokenizationRegistry = null;
+    pub fn instance(allocator: Allocator) *TokenizationRegistry {
+        if (_instance == null) {
+            _instance = TokenizationRegistry.init(allocator);
+        }
+        return &(_instance.?);
+    }
+    pub fn deinitInstance() void {
+        if (_instance != null) {
+            _instance.?.deinit();
+            _instance = null;
+        }
+    }
 
     _tokenizationSupports: StringHashMap(*ITokenizationSupport),
     _factories: StringHashMap(TokenizationSupportFactoryData),
@@ -25,6 +37,12 @@ pub const TokenizationRegistry = struct {
         };
     }
 
+    pub fn deinit(self: *TokenizationRegistry) void {
+        self._tokenizationSupports.deinit();
+        self._factories.deinit();
+        self._onDidChange.deinit();
+    }
+
     pub fn handleChange(self: *TokenizationRegistry, languageIds: []const u8) void {
         self._onDidChange.fire(.{ .changedLanguages = languageIds, .changedColorMap = false });
     }
@@ -36,35 +54,29 @@ pub const TokenizationRegistry = struct {
     pub fn register(self: *TokenizationRegistry, languageId: []const u8, support: *ITokenizationSupport) !void {
         try self._tokenizationSupports.put(languageId, support);
         self.handleChange(&[_]u8{languageId});
-        // return toDisposable(() => {
-        //     if (self._tokenizationSupports.get(languageId) != support) {
-        //         return;
-        //     }
-        //     self._tokenizationSupports.delete(languageId);
-        //     self.handleChange(&[_]u8{languageId});
-        // });
+    }
+
+    pub fn unregister(self: *TokenizationRegistry, languageId: []const u8) void {
+        if (self._tokenizationSupports.remove(languageId)) {
+            self.handleChange(&[_]u8{languageId});
+        }
     }
 
     pub fn get(self: *TokenizationRegistry, languageId: []const u8) ?*ITokenizationSupport {
         return self._tokenizationSupports.get(languageId);
     }
 
-    pub fn registerFactory(self: *TokenizationRegistry, languageId: []const u8, factory: *ITokenizationSupport) !void {
+    pub fn registerFactory(self: *TokenizationRegistry, languageId: []const u8, factory: *LazyTokenizationSupport) !void {
         const res = try self._factories.getOrPut(languageId);
         if (res.found_existing) {
-            res.value_ptr.dispose();
+            res.value_ptr.deinit();
         }
 
         res.value_ptr.* = TokenizationSupportFactoryData.init(self, languageId, factory);
+    }
 
-        // return toDisposable(() => {
-        //     const v = self._factories.get(languageId);
-        //     if (!v or v != myData) {
-        //         return;
-        //     }
-        //     self._factories.delete(languageId);
-        //     v.dispose();
-        // });
+    pub fn unregisterFactory(self: *TokenizationRegistry, languageId: []const u8) void {
+        _ = self._factories.remove(languageId);
     }
 
     pub fn getOrCreate(self: *TokenizationRegistry, languageId: []const u8) !?*ITokenizationSupport {
@@ -79,7 +91,7 @@ pub const TokenizationRegistry = struct {
             return null;
         }
 
-        try factory.?.resolve();
+        factory.?.resolve();
 
         return self.get(languageId);
     }
@@ -111,8 +123,10 @@ pub const TokenizationRegistry = struct {
     }
 
     pub fn getDefaultBackground(self: *TokenizationRegistry) ?Color {
-        if (self._colorMap != null and self._colorMap.?.len > @intFromEnum(ColorId.DefaultBackground)) {
-            return self._colorMap.?[@intFromEnum(ColorId.DefaultBackground)];
+        if (self._colorMap) |colorMap| {
+            if (colorMap.len > ColorId.DefaultBackground) {
+                return colorMap[ColorId.DefaultBackground];
+            }
         }
         return null;
     }
@@ -134,7 +148,7 @@ pub const TokenizationSupportFactoryData = struct {
     pub fn init(
         registry: *TokenizationRegistry,
         languageId: []const u8,
-        factory: *ITokenizationSupport,
+        factory: *LazyTokenizationSupport,
     ) TokenizationSupportFactoryData {
         return TokenizationSupportFactoryData{
             ._registry = registry,
@@ -146,16 +160,18 @@ pub const TokenizationSupportFactoryData = struct {
         };
     }
 
-    pub fn dispose(self: *TokenizationSupportFactoryData) void {
+    pub fn deinit(self: *TokenizationSupportFactoryData) void {
+        self._factory.deinit();
         self._isDisposed = true;
     }
 
-    // pub fn resolve(self: *TokenizationSupportFactoryData) !void {
-    // if (self._resolvePromise == null) {
-    // self._resolvePromise = try self._create();
-    // }
-    // return self._resolvePromise;
-    // }
+    pub fn resolve(self: *TokenizationSupportFactoryData) void {
+        _ = self;
+        // if (self._resolvePromise == null) {
+        // self._resolvePromise = try self._create();
+        // }
+        // return self._resolvePromise;
+    }
 
     fn _create(self: *TokenizationSupportFactoryData) !void {
         self._isResolved = true;
