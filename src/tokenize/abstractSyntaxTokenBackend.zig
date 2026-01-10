@@ -199,15 +199,17 @@ pub const AbstractSyntaxTokenBackend = struct {
 
     pub const VTable = struct {
         handleDidChangeAttached: *const fn (s: *AbstractSyntaxTokenBackend) void,
-        handleDidChangeContent: *const fn (s: *AbstractSyntaxTokenBackend, e: ModelContentChangedEvent) void,
-        forceTokenization: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) void,
+        handleDidChangeContent: *const fn (s: *AbstractSyntaxTokenBackend, e: ModelContentChangedEvent) anyerror!void,
+        forceTokenization: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) anyerror!void,
         hasAccurateTokensForLine: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) bool,
         isCheapToTokenize: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) bool,
 
-        getLineTokens: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) LineTokens,
-        getTokenTypeIfInsertingCharacter: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize, column: usize, character: []const u8) StandardTokenType,
-        tokenizeLinesAt: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize, lines: []const []const u8) ?[]LineTokens,
+        getLineTokens: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) anyerror!LineTokens,
+        getTokenTypeIfInsertingCharacter: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize, column: usize, character: []const u8) anyerror!StandardTokenType,
+        tokenizeLinesAt: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize, lines: []const []const u8) anyerror!?[]LineTokens,
         hasTokens: *const fn (s: *AbstractSyntaxTokenBackend) bool,
+        deinit: *const fn (s: *AbstractSyntaxTokenBackend) void,
+        destroy: *const fn (s: *AbstractSyntaxTokenBackend, allocator: Allocator) void,
     };
 
     pub fn init(
@@ -227,9 +229,9 @@ pub const AbstractSyntaxTokenBackend = struct {
         };
     }
 
-    pub fn tokenizeIfCheap(self: *AbstractSyntaxTokenBackend, lineNumber: usize) void {
+    pub fn tokenizeIfCheap(self: *AbstractSyntaxTokenBackend, lineNumber: usize) !void {
         if (self.isCheapToTokenize(lineNumber)) {
-            self.forceTokenization(lineNumber);
+            try self.forceTokenization(lineNumber);
         }
     }
 
@@ -246,11 +248,11 @@ pub const AbstractSyntaxTokenBackend = struct {
     pub fn handleDidChangeAttached(self: *AbstractSyntaxTokenBackend) void {
         self.vtable.handleDidChangeAttached(self);
     }
-    pub fn handleDidChangeContent(self: *AbstractSyntaxTokenBackend, e: ModelContentChangedEvent) void {
-        self.vtable.handleDidChangeContent(self, e);
+    pub fn handleDidChangeContent(self: *AbstractSyntaxTokenBackend, e: ModelContentChangedEvent) !void {
+        try self.vtable.handleDidChangeContent(self, e);
     }
-    pub fn forceTokenization(self: *AbstractSyntaxTokenBackend, lineNumber: usize) void {
-        self.vtable.forceTokenization(self, lineNumber);
+    pub fn forceTokenization(self: *AbstractSyntaxTokenBackend, lineNumber: usize) !void {
+        try self.vtable.forceTokenization(self, lineNumber);
     }
     pub fn hasAccurateTokensForLine(self: *AbstractSyntaxTokenBackend, lineNumber: usize) bool {
         return self.vtable.hasAccurateTokensForLine(self, lineNumber);
@@ -258,16 +260,23 @@ pub const AbstractSyntaxTokenBackend = struct {
     pub fn isCheapToTokenize(self: *AbstractSyntaxTokenBackend, lineNumber: usize) bool {
         return self.vtable.isCheapToTokenize(self, lineNumber);
     }
-    pub fn getLineTokens(self: *AbstractSyntaxTokenBackend, lineNumber: usize) LineTokens {
+    pub fn getLineTokens(self: *AbstractSyntaxTokenBackend, lineNumber: usize) !LineTokens {
         return self.vtable.getLineTokens(self, lineNumber);
     }
-    pub fn getTokenTypeIfInsertingCharacter(self: *AbstractSyntaxTokenBackend, lineNumber: usize, column: usize, character: []const u8) StandardTokenType {
-        return self.vtable.getTokenTypeIfInsertingCharacter(self, lineNumber, column, character);
+    pub fn getTokenTypeIfInsertingCharacter(self: *AbstractSyntaxTokenBackend, lineNumber: usize, column: usize, character: []const u8) !StandardTokenType {
+        return try self.vtable.getTokenTypeIfInsertingCharacter(self, lineNumber, column, character);
     }
-    pub fn tokenizeLinesAt(self: *AbstractSyntaxTokenBackend, lineNumber: usize, lines: []const []const u8) ?[]LineTokens {
-        return self.vtable.tokenizeLinesAt(self, lineNumber, lines);
+    pub fn tokenizeLinesAt(self: *AbstractSyntaxTokenBackend, lineNumber: usize, lines: []const []const u8) !?[]LineTokens {
+        return try self.vtable.tokenizeLinesAt(self, lineNumber, lines);
     }
     pub fn hasTokens(self: *AbstractSyntaxTokenBackend) bool {
         return self.vtable.hasTokens(self);
+    }
+    pub fn deinit(self: *AbstractSyntaxTokenBackend) void {
+        self.vtable.deinit(self);
+    }
+    pub fn destroy(self: *AbstractSyntaxTokenBackend, allocator: Allocator) void {
+        self.vtable.deinit(self);
+        self.vtable.destroy(self, allocator);
     }
 };

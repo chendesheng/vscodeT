@@ -37,7 +37,7 @@ pub const TokenizationTextModelPart = struct {
     _onDidChangeLanguageConfiguration: Emitter(ModelLanguageConfigurationChangedEvent),
     _onDidChangeTokens: Emitter(ModelTokensChangedEvent),
     // public readonly tokens: IObservable<AbstractSyntaxTokenBackend>;
-    tokens: AbstractSyntaxTokenBackend,
+    tokens: *AbstractSyntaxTokenBackend,
     _useTreeSitter: bool,
     _languageId: []const u8,
     _textModel: *TextModel,
@@ -122,7 +122,13 @@ pub const TokenizationTextModelPart = struct {
             ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
             ._languageService = languageService,
             ._languageConfigurationService = languageConfigurationService,
-            .tokens = try TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel_, languageId, attachedViews),
+            .tokens = try TokenizerSyntaxTokenBackend.create(
+                allocator,
+                languageIdCodec,
+                textModel_,
+                languageId,
+                attachedViews,
+            ),
         };
     }
 
@@ -131,7 +137,7 @@ pub const TokenizationTextModelPart = struct {
         self._onDidChangeLanguage.deinit();
         self._onDidChangeLanguageConfiguration.deinit();
         self._onDidChangeTokens.deinit();
-        self.tokens.deinit();
+        self.tokens.destroy(self._textModel.getAllocator());
     }
 
     pub fn textModel(self: *TokenizationTextModelPart) *TextModel {

@@ -791,7 +791,9 @@ pub const PieceTreeBase = struct {
         return self._lineCnt;
     }
 
-    pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) !ArrayList(u8) {
+    pub fn getLineContent(_self: *const PieceTreeBase, lineNumber: usize) !ArrayList(u8) {
+        // TODO: change LastVisitoredLine to a pointer
+        var self: *PieceTreeBase = @constCast(_self);
         self.log("getLineContent({d})\n", .{lineNumber});
 
         if (self._lastVisitedLine.lineNumber == lineNumber) {

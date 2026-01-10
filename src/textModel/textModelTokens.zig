@@ -23,6 +23,7 @@ const StopWatch = @import("../basics/stopWatch.zig").StopWatch;
 const IBackgroundTokenizationStore = @import("../languages.zig").IBackgroundTokenizationStore;
 const IdleDeadline = @import("../basics/utils.zig").IdleDeadline;
 const runWhenGlobalIdle = @import("../basics/utils.zig").runWhenGlobalIdle;
+const TokenPacked = @import("../tokens/lineTokens.zig").TokenPacked;
 
 const CHEAP_TOKENIZATION_LENGTH_LIMIT = 2048;
 
@@ -68,7 +69,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         };
     }
 
-    pub fn getStartState(self: *Self, lineNumber: usize) ?IState {
+    pub fn getStartState(self: *const Self, lineNumber: usize) ?IState {
         return self.super.getStartState(lineNumber);
     }
 
@@ -102,7 +103,8 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     }
 
     // assumes state is up to date
-    pub fn getTokenTypeIfInsertingCharacter(self: *Self, position: Position, character: []const u8) StandardTokenType {
+    pub fn getTokenTypeIfInsertingCharacter(self: *const Self, position: Position, character: []const u8) !StandardTokenType {
+        const allocator = self._textModel.getAllocator();
         // TODO@hediet: use tokenizeLineWithEdit
         const lineStartState = self.getStartState(position.lineNumber);
         if (lineStartState == null) {
@@ -110,13 +112,20 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         }
 
         const languageId = self._textModel.getLanguageId();
-        const lineContent = self._textModel.getLineContent(position.lineNumber);
+        const lineContent = try self._textModel.getLineContent(position.lineNumber);
 
         // Create the text as if `character` was inserted
-        const text = (lineContent[0 .. position.column - 1] ++ character ++ lineContent[position.column - 1 ..]);
+        // FIXME: text is leaked
+        var text = ArrayList(u8).init(allocator);
+        try text.appendSlice(lineContent.items[0 .. position.column - 1]);
+        try text.appendSlice(character);
+        try text.appendSlice(lineContent.items[position.column - 1 ..]);
 
-        const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text, true, lineStartState);
-        const lineTokens = LineTokens.init(r.tokens, text, self._languageIdCodec);
+        const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineStartState.?);
+        var tokens = ArrayList(TokenPacked).init(allocator);
+        try tokens.appendSlice(r.tokens);
+        var lineTokens = LineTokens.init(tokens, text.items, self._languageIdCodec);
+        defer lineTokens.deinit();
         if (lineTokens.getCount() == 0) {
             return StandardTokenType.Other;
         }
@@ -126,7 +135,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     }
 
     // assumes state is up to date
-    pub fn tokenizeLinesAt(self: *Self, lineNumber: usize, lines: []const []const u8) !?ArrayList(LineTokens) {
+    pub fn tokenizeLinesAt(self: *const Self, lineNumber: usize, lines: []const []const u8) !?ArrayList(LineTokens) {
         if (self.getStartState(lineNumber)) |lineStartState| {
             const allocator = self._textModel.getAllocator();
             const languageId = self._textModel.getLanguageId();
@@ -135,7 +144,9 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             var state = lineStartState;
             for (lines) |line| {
                 const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, line, true, state);
-                try result.append(LineTokens.createFromTextAndMetadata(r.tokens, line, self._languageIdCodec));
+                var tokens = ArrayList(TokenPacked).init(allocator);
+                try tokens.appendSlice(r.tokens);
+                try result.append(LineTokens.init(tokens, line, self._languageIdCodec));
                 state = r.endState;
             }
 

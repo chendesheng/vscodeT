@@ -611,12 +611,12 @@ pub const TextModel = struct {
         return self._buffer.getLineCount();
     }
 
-    pub fn getLineContent(self: *TextModel, lineNumber: usize) !ArrayList(u8) {
+    pub fn getLineContent(self: *const TextModel, lineNumber: usize) !ArrayList(u8) {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
             return error.IllegalValueForLineNumber;
         }
 
-        return self._buffer.getLineContent(lineNumber);
+        return try self._buffer.getLineContent(lineNumber);
     }
 
     pub fn getLineLength(self: *const TextModel, lineNumber: usize) usize {

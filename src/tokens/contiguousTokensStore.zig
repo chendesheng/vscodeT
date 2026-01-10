@@ -228,12 +228,13 @@ pub const ContiguousTokensStore = struct {
 
     //#endregion
 
-    pub fn setMultilineTokens(self: *ContiguousTokensStore, tokens: []ContiguousMultilineTokens, textModel: *TextModel) !struct { changes: []ModelTokensChangedRange } {
+    pub fn setMultilineTokens(self: *ContiguousTokensStore, tokens: []const ContiguousMultilineTokens, textModel: *TextModel) !struct { changes: []ModelTokensChangedRange } {
         if (tokens.len == 0) {
             return .{ .changes = &.{} };
         }
 
-        var ranges: ArrayList(ModelTokensChangedRange) = ArrayList(ModelTokensChangedRange).init(textModel.getAllocator());
+        var ranges = ArrayList(ModelTokensChangedRange).init(textModel.getAllocator());
+        defer ranges.deinit();
 
         for (tokens) |element| {
             var minChangedLineNumber: usize = 0;
@@ -269,7 +270,7 @@ pub const ContiguousTokensStore = struct {
             }
         }
 
-        return .{ .changes = ranges.items };
+        return .{ .changes = try ranges.toOwnedSlice() };
     }
 };
 

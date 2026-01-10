@@ -1,5 +1,6 @@
 const std = @import("std");
 const AutoHashMap = std.AutoHashMap;
+const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 const Emitter = @import("../basics/event.zig").Emitter;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
@@ -62,7 +63,19 @@ pub const TokenizerSyntaxTokenBackend = struct {
     ) !TokenizerSyntaxTokenBackend {
         const allocator = textModel.getAllocator();
         var self: TokenizerSyntaxTokenBackend = .{
-            .super = AbstractSyntaxTokenBackend.init(BackgroundTokenizationState.InProgress, languageIdCodec, textModel),
+            .super = AbstractSyntaxTokenBackend.init(BackgroundTokenizationState.InProgress, languageIdCodec, textModel, &.{
+                .handleDidChangeAttached = handleDidChangeAttached,
+                .handleDidChangeContent = handleDidChangeContent,
+                .forceTokenization = forceTokenization,
+                .hasAccurateTokensForLine = hasAccurateTokensForLine,
+                .isCheapToTokenize = isCheapToTokenize,
+                .getLineTokens = getLineTokens,
+                .getTokenTypeIfInsertingCharacter = getTokenTypeIfInsertingCharacter,
+                .tokenizeLinesAt = tokenizeLinesAt,
+                .hasTokens = getHasTokens,
+                .deinit = deinit,
+                .destroy = destroy,
+            }),
             ._tokens = ContiguousTokensStore.init(allocator, languageIdCodec),
             ._languageId = languageId,
             ._attachedViewStates = AutoHashMap(AttachedView, AttachedViewHandler).init(allocator),
@@ -102,7 +115,25 @@ pub const TokenizerSyntaxTokenBackend = struct {
         return self;
     }
 
-    pub fn deinit(self: *TokenizerSyntaxTokenBackend) void {
+    pub fn create(
+        allocator: Allocator,
+        languageIdCodec: *const LanguageIdCodec,
+        textModel: *TextModel,
+        languageId: []const u8,
+        attachedViews: *AttachedViews,
+    ) !*AbstractSyntaxTokenBackend {
+        const self = try allocator.create(TokenizerSyntaxTokenBackend);
+        self.* = try TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel, languageId, attachedViews);
+        return &self.super;
+    }
+
+    pub fn destroy(s: *AbstractSyntaxTokenBackend, allocator: Allocator) void {
+        const self = getSelf(s);
+        allocator.destroy(self);
+    }
+
+    pub fn deinit(s: *AbstractSyntaxTokenBackend) void {
+        var self = getSelf(s);
         var iter = self._attachedViewStates.keyIterator();
         while (iter.next()) |view| {
             view.deinit();
@@ -247,11 +278,17 @@ pub const TokenizerSyntaxTokenBackend = struct {
         try self.refreshAllVisibleLineTokens();
     }
 
-    pub fn handleDidChangeAttached(self: *TokenizerSyntaxTokenBackend) void {
+    fn getSelf(s: *AbstractSyntaxTokenBackend) *TokenizerSyntaxTokenBackend {
+        return @alignCast(@fieldParentPtr("super", s));
+    }
+
+    pub fn handleDidChangeAttached(s: *AbstractSyntaxTokenBackend) void {
+        var self = getSelf(s);
         self._defaultBackgroundTokenizer.?.handleChanges();
     }
 
-    pub fn handleDidChangeContent(self: *TokenizerSyntaxTokenBackend, e: ModelContentChangedEvent) !void {
+    pub fn handleDidChangeContent(s: *AbstractSyntaxTokenBackend, e: ModelContentChangedEvent) !void {
+        var self = getSelf(s);
         if (e.isFlush) {
             // Don't fire the event, as the view might not have got the text change event yet
             try self.todo_resetTokenization(false);
@@ -343,30 +380,36 @@ pub const TokenizerSyntaxTokenBackend = struct {
         }
     }
 
-    pub fn forceTokenization(self: *TokenizerSyntaxTokenBackend, lineNumber: usize) !void {
-        var builder = ContiguousMultilineTokensBuilder.init();
-        if (self._tokenizer) |tokenizer| {
+    pub fn forceTokenization(s: *AbstractSyntaxTokenBackend, lineNumber: usize) !void {
+        var self = getSelf(s);
+        const allocator = self.super._textModel.getAllocator();
+        var builder = ContiguousMultilineTokensBuilder.init(allocator);
+        defer builder.deinit();
+        if (self._tokenizer) |*tokenizer| {
             try tokenizer.updateTokensUntilLine(&builder, lineNumber);
         }
-        try self.setTokens(builder.finalize());
+        _ = try self.setTokens(builder.finalize().items);
         self._defaultBackgroundTokenizer.?.checkFinished();
     }
 
-    pub fn hasAccurateTokensForLine(self: *const TokenizerSyntaxTokenBackend, lineNumber: usize) bool {
+    pub fn hasAccurateTokensForLine(s: *AbstractSyntaxTokenBackend, lineNumber: usize) bool {
+        const self = getSelf(s);
         if (self._tokenizer) |tokenizer| {
             return tokenizer.hasAccurateTokensForLine(lineNumber);
         }
         return true;
     }
 
-    pub fn isCheapToTokenize(self: *const TokenizerSyntaxTokenBackend, lineNumber: usize) bool {
+    pub fn isCheapToTokenize(s: *AbstractSyntaxTokenBackend, lineNumber: usize) bool {
+        const self = getSelf(s);
         if (self._tokenizer) |tokenizer| {
             return tokenizer.isCheapToTokenize(lineNumber);
         }
         return true;
     }
 
-    pub fn getLineTokens(self: *TokenizerSyntaxTokenBackend, lineNumber: usize) !LineTokens {
+    pub fn getLineTokens(s: *AbstractSyntaxTokenBackend, lineNumber: usize) !LineTokens {
+        const self = getSelf(s);
         const lineText = try self.super._textModel.getLineContent(lineNumber);
         defer lineText.deinit();
         const result = try self._tokens.getTokens(self.super._textModel.getLanguageId(), lineNumber - 1, lineText.items);
@@ -389,19 +432,21 @@ pub const TokenizerSyntaxTokenBackend = struct {
         return result;
     }
 
-    pub fn getTokenTypeIfInsertingCharacter(self: *TokenizerSyntaxTokenBackend, lineNumber: usize, column: usize, character: []const u8) StandardTokenType {
+    pub fn getTokenTypeIfInsertingCharacter(s: *AbstractSyntaxTokenBackend, lineNumber: usize, column: usize, character: []const u8) !StandardTokenType {
+        const self = getSelf(s);
         if (self._tokenizer) |tokenizer| {
             const position = self.super._textModel.validatePosition(Position.init(lineNumber, column));
-            try self.forceTokenization(position.lineNumber);
+            try self.super.forceTokenization(position.lineNumber);
             return tokenizer.getTokenTypeIfInsertingCharacter(position, character);
         } else {
             return StandardTokenType.Other;
         }
     }
 
-    pub fn tokenizeLinesAt(self: *TokenizerSyntaxTokenBackend, lineNumber: usize, lines: []const []const u8) ?[]LineTokens {
+    pub fn tokenizeLinesAt(s: *AbstractSyntaxTokenBackend, lineNumber: usize, lines: []const []const u8) !?[]LineTokens {
+        const self = getSelf(s);
         if (self._tokenizer) |tokenizer| {
-            try self.forceTokenization(lineNumber);
+            try self.super.forceTokenization(lineNumber);
             if (try tokenizer.tokenizeLinesAt(lineNumber, lines)) |tokens| {
                 return tokens.items;
             } else {
@@ -412,7 +457,8 @@ pub const TokenizerSyntaxTokenBackend = struct {
         }
     }
 
-    pub fn getHasTokens(self: *const TokenizerSyntaxTokenBackend) bool {
+    pub fn getHasTokens(s: *AbstractSyntaxTokenBackend) bool {
+        const self = getSelf(s);
         return self._tokens.hasTokens();
     }
 };
