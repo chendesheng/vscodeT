@@ -108,7 +108,7 @@ pub const TokenizationTextModelPart = struct {
         //    hadTokens = true;
         // });
 
-        const languageIdCodec = languageService.languageIdCodec;
+        const languageIdCodec = &languageService.languageIdCodec;
         const allocator = textModel_.getAllocator();
 
         return TokenizationTextModelPart{

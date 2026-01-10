@@ -53,7 +53,7 @@ pub fn implementsIViewLineTokens(comptime T: type) void {
 pub const LineTokens = struct {
     _tokens: ArrayList(TokenPacked),
     _text: []const u8,
-    languageIdCodec: LanguageIdCodec,
+    languageIdCodec: *const LanguageIdCodec,
 
     pub fn initTokenPacked(offset: usize, metadata: TokenMetadata) TokenPacked {
         return TokenPacked{
@@ -62,7 +62,7 @@ pub const LineTokens = struct {
         };
     }
 
-    pub fn init(tokens: ArrayList(TokenPacked), text: []const u8, decoder: LanguageIdCodec) LineTokens {
+    pub fn init(tokens: ArrayList(TokenPacked), text: []const u8, decoder: *const LanguageIdCodec) LineTokens {
         const tokensLength = if (tokens.items.len > 0) tokens.items[tokens.items.len - 1].endOffset else 0;
         // Token length and text length do not match!
         std.debug.assert(tokensLength == text.len);
@@ -78,13 +78,17 @@ pub const LineTokens = struct {
         self._tokens.deinit();
     }
 
-    pub fn createEmpty(allocator: Allocator, lineContent: []const u8, decoder: LanguageIdCodec) !LineTokens {
+    pub fn createEmpty(allocator: Allocator, lineContent: []const u8, decoder: *const LanguageIdCodec) !LineTokens {
         const tokens = ArrayList(TokenPacked).init(allocator);
         try tokens.append(initTokenPacked(lineContent.items.len, TokenMetadata.default));
         return LineTokens.init(tokens, lineContent, decoder);
     }
 
-    pub fn createFromTextAndMetadata(allocator: Allocator, data: []const struct { text: []const u8, metadata: TokenMetadata }, decoder: LanguageIdCodec) !LineTokens {
+    pub fn createFromTextAndMetadata(
+        allocator: Allocator,
+        data: []const struct { text: []const u8, metadata: TokenMetadata },
+        decoder: *const LanguageIdCodec,
+    ) !LineTokens {
         var offset: usize = 0;
         var fullText = ArrayList(u8).init(allocator);
         var tokens = ArrayList(TokenPacked).init(allocator);
@@ -130,7 +134,7 @@ pub const LineTokens = struct {
         return low;
     }
 
-    pub fn getLanguageIdCodec(self: *const LineTokens) LanguageIdCodec {
+    pub fn getLanguageIdCodec(self: *const LineTokens) *LanguageIdCodec {
         return self.languageIdCodec;
     }
 
@@ -349,7 +353,7 @@ pub const SliceLineTokens = struct {
         };
     }
 
-    pub fn getLanguageIdCodec(self: *const SliceLineTokens) LanguageIdCodec {
+    pub fn getLanguageIdCodec(self: *const SliceLineTokens) *LanguageIdCodec {
         return self._source.getLanguageIdCodec();
     }
 
@@ -465,8 +469,8 @@ pub const TokenArray = struct {
         return TokenArray.init(tokenInfo);
     }
 
-    pub fn toLineTokens(self: *TokenArray, lineContent: []const u8, decoder: LanguageIdCodec) LineTokens {
-        return LineTokens.createFromTextAndMetadata(self.map(struct { text: []const u8, metadata: TokenMetadata }, {}, struct {
+    pub fn toLineTokens(self: *TokenArray, lineContent: []const u8, decoder: *const LanguageIdCodec) !LineTokens {
+        return try LineTokens.createFromTextAndMetadata(self.map(struct { text: []const u8, metadata: TokenMetadata }, {}, struct {
             fn cb(_: void, r: OffsetRange, t: TokenInfo) struct { text: []const u8, metadata: TokenMetadata } {
                 return .{ .text = r.substring(lineContent), .metadata = t.metadata };
             }

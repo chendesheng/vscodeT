@@ -189,7 +189,7 @@ pub const AttachedViewHandler = struct {
 
 pub const AbstractSyntaxTokenBackend = struct {
     _backgroundTokenizationState: BackgroundTokenizationState,
-    _languageIdCodec: LanguageIdCodec,
+    _languageIdCodec: *const LanguageIdCodec,
     _textModel: *TextModel,
 
     _onDidChangeBackgroundTokenizationState: Emitter(void),
@@ -208,7 +208,7 @@ pub const AbstractSyntaxTokenBackend = struct {
 
     pub fn init(
         backgroundTokenizationState: BackgroundTokenizationState,
-        languageIdCodec: LanguageIdCodec,
+        languageIdCodec: *const LanguageIdCodec,
         textModel: *TextModel,
     ) AbstractSyntaxTokenBackend {
         const allocator = textModel.getAllocator();

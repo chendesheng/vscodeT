@@ -56,9 +56,9 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     lineCount: usize,
     tokenizationSupport: *ITokenizationSupport,
     _textModel: *TextModel,
-    _languageIdCodec: LanguageIdCodec,
+    _languageIdCodec: *const LanguageIdCodec,
 
-    pub fn init(lineCount: usize, tokenizationSupport: *ITokenizationSupport, _textModel: *TextModel, languageIdCodec: LanguageIdCodec) !Self {
+    pub fn init(lineCount: usize, tokenizationSupport: *ITokenizationSupport, _textModel: *TextModel, languageIdCodec: *const LanguageIdCodec) !Self {
         return Self{
             .super = try TokenizerWithStateStore.init(_textModel.getAllocator(), lineCount, tokenizationSupport),
             .lineCount = lineCount,
@@ -374,7 +374,7 @@ pub const TokenizationStateStore = struct {
     }
 };
 
-fn safeTokenize(languageIdCodec: LanguageIdCodec, languageId: []const u8, _tokenizationSupport: ?*ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult {
+fn safeTokenize(languageIdCodec: *const LanguageIdCodec, languageId: []const u8, _tokenizationSupport: ?*ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult {
     const r: EncodedTokenizationResult = if (_tokenizationSupport) |tokenizationSupport|
         tokenizationSupport.tokenizeEncoded(tokenizationSupport, text, hasEOL, state.clone(state))
     else

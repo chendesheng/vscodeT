@@ -23,9 +23,9 @@ const ModelTokensChangedRange = @import("../textModel/textModelEvents.zig").Mode
 pub const ContiguousTokensStore = struct {
     _lineTokens: ArrayList(?ArrayList(TokenPacked)),
     _len: usize,
-    _languageIdCodec: LanguageIdCodec,
+    _languageIdCodec: *const LanguageIdCodec,
 
-    pub fn init(allocator: Allocator, languageIdCodec: LanguageIdCodec) ContiguousTokensStore {
+    pub fn init(allocator: Allocator, languageIdCodec: *const LanguageIdCodec) ContiguousTokensStore {
         return ContiguousTokensStore{
             ._lineTokens = ArrayList(?ArrayList(TokenPacked)).init(allocator),
             ._len = 0,

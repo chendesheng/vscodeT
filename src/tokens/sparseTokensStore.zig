@@ -18,9 +18,9 @@ const TokenPacked = @import("lineTokens.zig").TokenPacked;
 pub const SparseTokensStore = struct {
     _pieces: ArrayList(SparseMultilineTokens),
     _isComplete: bool,
-    _languageIdCodec: LanguageIdCodec,
+    _languageIdCodec: *const LanguageIdCodec,
 
-    pub fn init(allocator: Allocator, languageIdCodec: LanguageIdCodec) SparseTokensStore {
+    pub fn init(allocator: Allocator, languageIdCodec: *const LanguageIdCodec) SparseTokensStore {
         return SparseTokensStore{
             ._pieces = ArrayList(SparseMultilineTokens).init(allocator),
             ._isComplete = false,

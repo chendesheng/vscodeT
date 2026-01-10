@@ -34,7 +34,7 @@ const LineTokensTests = struct {
         }
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        return LineTokens.init(data, text, codec);
+        return LineTokens.init(data, text, &codec);
     }
 
     fn createTestLineTokens() !LineTokens {

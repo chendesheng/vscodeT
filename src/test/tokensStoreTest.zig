@@ -294,7 +294,7 @@ const TokensStoreTests = struct {
     test "partial tokens 1" {
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        var store = SparseTokensStore.init(allocator, codec);
+        var store = SparseTokensStore.init(allocator, &codec);
         defer store.deinit();
 
         // setPartial: [1,1 -> 31,2], [(5,5-10),(10,5-10),(15,5-10),(20,5-10),(25,5-10),(30,5-10)]
@@ -335,7 +335,7 @@ const TokensStoreTests = struct {
         var tokens = ArrayList(TokenPacked).init(allocator);
         defer tokens.deinit();
         try tokens.append(@as(TokenPacked, @bitCast([2]u32{ 12, 1 })));
-        var lineTokens = try store.addSparseTokens(10, LineTokens.init(tokens, "enum Enum1 {", codec));
+        var lineTokens = try store.addSparseTokens(10, LineTokens.init(tokens, "enum Enum1 {", &codec));
         defer lineTokens.deinit();
         try std.testing.expectEqual(3, lineTokens.getCount());
     }
@@ -343,7 +343,7 @@ const TokensStoreTests = struct {
     test "partial tokens 2" {
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        var store = SparseTokensStore.init(allocator, codec);
+        var store = SparseTokensStore.init(allocator, &codec);
         defer store.deinit();
 
         // setPartial: [1,1 -> 31,2], [(5,5-10),(10,5-10),(15,5-10),(20,5-10),(25,5-10),(30,5-10)]
@@ -384,7 +384,7 @@ const TokensStoreTests = struct {
         var tokens = ArrayList(TokenPacked).init(allocator);
         defer tokens.deinit();
         try tokens.append(@as(TokenPacked, @bitCast([2]u32{ 12, 1 })));
-        var lineTokens = try store.addSparseTokens(20, LineTokens.init(tokens, "enum Enum1 {", codec));
+        var lineTokens = try store.addSparseTokens(20, LineTokens.init(tokens, "enum Enum1 {", &codec));
         defer lineTokens.deinit();
         try std.testing.expectEqual(3, lineTokens.getCount());
     }
@@ -392,7 +392,7 @@ const TokensStoreTests = struct {
     test "partial tokens 3" {
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        var store = SparseTokensStore.init(allocator, codec);
+        var store = SparseTokensStore.init(allocator, &codec);
         defer store.deinit();
 
         // setPartial: [1,1 -> 31,2], [(5,5-10),(10,5-10),(15,5-10),(20,5-10),(25,5-10),(30,5-10)]
@@ -418,7 +418,7 @@ const TokensStoreTests = struct {
         var tokens = ArrayList(TokenPacked).init(allocator);
         defer tokens.deinit();
         try tokens.append(@as(TokenPacked, @bitCast([2]u32{ 12, 1 })));
-        var lineTokens = try store.addSparseTokens(5, LineTokens.init(tokens, "enum Enum1 {", codec));
+        var lineTokens = try store.addSparseTokens(5, LineTokens.init(tokens, "enum Enum1 {", &codec));
         defer lineTokens.deinit();
         try std.testing.expectEqual(3, lineTokens.getCount());
     }
@@ -426,7 +426,7 @@ const TokensStoreTests = struct {
     test "issue #94133: Semantic colors stick around when using (only) range provider" {
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        var store = SparseTokensStore.init(allocator, codec);
+        var store = SparseTokensStore.init(allocator, &codec);
         defer store.deinit();
 
         // setPartial: [1,1 -> 1,20] [(1,9-11)]
@@ -442,7 +442,7 @@ const TokensStoreTests = struct {
         var tokens = ArrayList(TokenPacked).init(allocator);
         defer tokens.deinit();
         try tokens.append(@as(TokenPacked, @bitCast([2]u32{ 12, 1 })));
-        var lineTokens = try store.addSparseTokens(1, LineTokens.init(tokens, "enum Enum1 {", codec));
+        var lineTokens = try store.addSparseTokens(1, LineTokens.init(tokens, "enum Enum1 {", &codec));
         try std.testing.expectEqual(1, lineTokens.getCount());
     }
 
@@ -468,7 +468,7 @@ const TokensStoreTests = struct {
     test "bug" {
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        var store = SparseTokensStore.init(allocator, codec);
+        var store = SparseTokensStore.init(allocator, &codec);
         defer store.deinit();
         // setPartial [36446,1 -> 36475,115] [(36448,24-29),(36448,33-46),(36448,47-54),(36450,25-35),(36450,36-50),(36451,28-33),(36451,36-49),(36451,50-57),(36452,35-53),(36452,54-62),(36454,33-38),(36454,41-54),(36454,55-60),(36455,35-53),(36455,54-62),(36457,33-44),(36457,45-49),(36457,50-56),(36457,62-83),(36457,84-88),(36458,35-53),(36458,54-62),(36460,33-37),(36460,38-42),(36460,47-57),(36460,58-67),(36461,35-53),(36461,54-62),(36463,34-38),(36463,39-45),(36463,46-51),(36463,54-63),(36463,64-71),(36463,76-80),(36463,81-87),(36463,88-92),(36463,97-107),(36463,108-119),(36464,35-53),(36464,54-62),(36466,33-71),(36466,72-76),(36467,35-53),(36467,54-62),(36469,24-29),(36469,33-46),(36469,47-54),(36470,24-35),(36470,38-46),(36473,25-35),(36473,36-51),(36474,28-33),(36474,36-49),(36474,50-58),(36475,35-53),(36475,54-62)]
         _ = try store.setPartial(.init(36446, 1, 36475, 115), &[_]SparseMultilineTokens{try createTokens("[(36448,24-29),(36448,33-46),(36448,47-54),(36450,25-35),(36450,36-50),(36451,28-33),(36451,36-49),(36451,50-57),(36452,35-53),(36452,54-62),(36454,33-38),(36454,41-54),(36454,55-60),(36455,35-53),(36455,54-62),(36457,33-44),(36457,45-49),(36457,50-56),(36457,62-83),(36457,84-88),(36458,35-53),(36458,54-62),(36460,33-37),(36460,38-42),(36460,47-57),(36460,58-67),(36461,35-53),(36461,54-62),(36463,34-38),(36463,39-45),(36463,46-51),(36463,54-63),(36463,64-71),(36463,76-80),(36463,81-87),(36463,88-92),(36463,97-107),(36463,108-119),(36464,35-53),(36464,54-62),(36466,33-71),(36466,72-76),(36467,35-53),(36467,54-62),(36469,24-29),(36469,33-46),(36469,47-54),(36470,24-35),(36470,38-46),(36473,25-35),(36473,36-51),(36474,28-33),(36474,36-49),(36474,50-58),(36475,35-53),(36475,54-62)]")});
@@ -482,7 +482,7 @@ const TokensStoreTests = struct {
         var tokens = ArrayList(TokenPacked).init(allocator);
         defer tokens.deinit();
         try tokens.append(@as(TokenPacked, @bitCast([2]u32{ 60, 1 })));
-        var lineTokens = try store.addSparseTokens(36451, LineTokens.init(tokens, "                        if (flags & ModifierFlags.Ambient) {", codec));
+        var lineTokens = try store.addSparseTokens(36451, LineTokens.init(tokens, "                        if (flags & ModifierFlags.Ambient) {", &codec));
         defer lineTokens.deinit();
         try std.testing.expectEqual(7, lineTokens.getCount());
     }
@@ -507,7 +507,7 @@ const TokensStoreTests = struct {
     test "issue #95949: Identifiers are colored in bold when targetting keywords" {
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        var store = SparseTokensStore.init(allocator, codec);
+        var store = SparseTokensStore.init(allocator, &codec);
         defer store.deinit();
 
         var arrTokens = ArrayList(SparseToken).init(allocator);
@@ -527,7 +527,7 @@ const TokensStoreTests = struct {
             @as(TokenPacked, @bitCast([2]u32{ 17, createTMMetadata(6, FontStyle.None, 53) })),
             @as(TokenPacked, @bitCast([2]u32{ 18, createTMMetadata(1, FontStyle.None, 53) })),
         });
-        var lineTokens = try store.addSparseTokens(1, LineTokens.init(arrTokenPakced, "const hello = 123;", codec));
+        var lineTokens = try store.addSparseTokens(1, LineTokens.init(arrTokenPakced, "const hello = 123;", &codec));
         defer lineTokens.deinit();
 
         const actual = try toArr(lineTokens);
@@ -553,7 +553,7 @@ const TokensStoreTests = struct {
         // - endLineNumber becomes 5 + (-1) = 4
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        var store = SparseTokensStore.init(allocator, codec);
+        var store = SparseTokensStore.init(allocator, &codec);
         defer store.deinit();
 
         var arrTokens = ArrayList(SparseToken).init(allocator);
@@ -583,7 +583,7 @@ const TokensStoreTests = struct {
     test "BUG: setPartial with split that creates empty first piece with invalid line numbers" {
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        var store = SparseTokensStore.init(allocator, codec);
+        var store = SparseTokensStore.init(allocator, &codec);
         defer store.deinit();
 
         // Set initial tokens - token is on line 11
@@ -607,7 +607,7 @@ const TokensStoreTests = struct {
             @as(TokenPacked, @bitCast([2]u32{ 22, 1 })),
         });
         defer arrTokenPakced.deinit();
-        var lineTokens = try store.addSparseTokens(11, LineTokens.init(arrTokenPakced, "    test line text    ", codec));
+        var lineTokens = try store.addSparseTokens(11, LineTokens.init(arrTokenPakced, "    test line text    ", &codec));
         defer lineTokens.deinit();
         std.testing.expectEqual(3, lineTokens.getCount()) catch |err| {
             std.debug.print("Should have 3 tokens: base token start + semantic token from line 11 + base token end\n", .{});
@@ -626,7 +626,7 @@ const TokensStoreTests = struct {
     test "piece with startLineNumber 0 and endLineNumber -1 after encompassing deletion" {
         var codec = try LanguageIdCodec.init(allocator);
         defer codec.deinit();
-        var store = SparseTokensStore.init(allocator, codec);
+        var store = SparseTokensStore.init(allocator, &codec);
         defer store.deinit();
 
         // Set initial tokens on lines 5-10

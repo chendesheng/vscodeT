@@ -55,7 +55,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     _attachedViewStates: AutoHashMap(AttachedView, AttachedViewHandler),
 
     pub fn init(
-        languageIdCodec: LanguageIdCodec,
+        languageIdCodec: *const LanguageIdCodec,
         textModel: *TextModel,
         languageId: []const u8,
         attachedViews: *AttachedViews,

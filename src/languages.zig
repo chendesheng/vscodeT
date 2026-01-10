@@ -6,8 +6,6 @@ const Position = @import("./basics/position.zig").Position;
 const ContiguousMultilineTokens = @import("./tokens/contiguousMultilineTokens.zig").ContiguousMultilineTokens;
 const TextModel = @import("./textModel/textModel.zig").TextModel;
 const TokenPacked = @import("./tokens/lineTokens.zig").TokenPacked;
-const LanguageId = @import("./encodedTokenAttributes.zig").LanguageId;
-const LanguageIdCodec = @import("./services/languageRegistry.zig").LanguageIdCodec;
 const Emitter = @import("./basics/event.zig").Emitter;
 
 pub const Token = struct {
