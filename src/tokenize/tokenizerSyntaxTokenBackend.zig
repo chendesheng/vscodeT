@@ -131,7 +131,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
         self._tokens.flush();
         // self._debugBackgroundTokens.?.flush();
         if (self._debugBackgroundStates != null) {
-            self._debugBackgroundStates = try TrackingTokenizationStateStore.init(self.super._textModel.getAllocator(), self.super._textModel.getLineCount());
+            self._debugBackgroundStates = try TrackingTokenizationStateStore.init(allocator, self.super._textModel.getLineCount());
         }
         if (fireTokenChangeEvent) {
             self.super._onDidChangeTokens.fire(.{
@@ -147,11 +147,17 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
         var tokenizationSupport: ?*ITokenizationSupport = null;
         var initialState: ?IState = null;
-        if (!self.super._textModel.isTooLargeForTokenization()) {
-            tokenizationSupport = TokenizationRegistry.instance(allocator).get(self._languageId);
-            if (tokenizationSupport != null) {
-                initialState = tokenizationSupport.?.getInitialState(tokenizationSupport.?);
+        initializeTokenization: {
+            if (self.super._textModel.isTooLargeForTokenization()) {
+                tokenizationSupport = null;
+                initialState = null;
+                break :initializeTokenization;
             }
+            tokenizationSupport = TokenizationRegistry.instance(allocator).get(self._languageId);
+            if (tokenizationSupport == null) {
+                break :initializeTokenization;
+            }
+            initialState = tokenizationSupport.?.getInitialState(tokenizationSupport.?);
         }
 
         if (tokenizationSupport != null and initialState != null) {
