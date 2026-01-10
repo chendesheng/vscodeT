@@ -195,7 +195,7 @@ pub const TextModel = struct {
     //#endregion
 
     _tokenizationTextModelPart: TokenizationTextModelPart,
-    _attachedViews: *AttachedViews,
+    _attachedViews: AttachedViews,
 
     _undoRedoService: *UndoRedoService,
     //#region Events
@@ -326,9 +326,6 @@ pub const TextModel = struct {
             tooLargeForHeapOperation = false;
         }
 
-        const attachedViews = try allocator.create(AttachedViews);
-        attachedViews.* = AttachedViews.init(allocator);
-
         const model = try allocator.create(TextModel);
         model.id = try fmt.allocPrint(allocator, "$model{d}", .{MODEL_ID});
         model.isForSimpleWidget = creationOptions.isForSimpleWidget;
@@ -358,7 +355,7 @@ pub const TextModel = struct {
         model._deltaDecorationCallCnt = 0;
         model._decorations = AutoHashMap(u64, *IntervalNode).init(allocator);
         model._decorationsTree = DecorationsTrees.init();
-        model._attachedViews = attachedViews;
+        model._attachedViews = AttachedViews.init(allocator);
         model._commandManager = EditStack.init(model, undoRedoService);
         model._isUndoing = false;
         model._isRedoing = false;
@@ -378,7 +375,7 @@ pub const TextModel = struct {
         model._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator);
         model._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator);
         model._eventEmitter = DidChangeContentEmitter.init(allocator);
-        model._tokenizationTextModelPart = try TokenizationTextModelPart.init(model, languageIdOrSelection, attachedViews, languageService, languageConfigurationService);
+        model._tokenizationTextModelPart = try TokenizationTextModelPart.init(model, languageIdOrSelection, &model._attachedViews, languageService, languageConfigurationService);
         return model;
     }
 
@@ -405,7 +402,7 @@ pub const TextModel = struct {
             .percent_encoded => |percent_encoded| allocator.free(percent_encoded),
         }
         self._tokenizationTextModelPart.deinit();
-        allocator.destroy(self._attachedViews);
+        self._attachedViews.deinit();
         self._onWillDispose.deinit();
         self._onDidChangeDecorations.deinit();
         self._onDidChangeInjectedText.deinit();

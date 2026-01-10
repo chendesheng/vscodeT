@@ -131,7 +131,6 @@ pub const TokenizationTextModelPart = struct {
         self._onDidChangeLanguage.deinit();
         self._onDidChangeLanguageConfiguration.deinit();
         self._onDidChangeTokens.deinit();
-        self._attachedViews.deinit();
         self.tokens.deinit();
     }
 

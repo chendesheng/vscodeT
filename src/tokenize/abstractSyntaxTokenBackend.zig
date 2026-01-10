@@ -151,7 +151,7 @@ pub const AttachedView = struct {
 
         const state = AttachedViewState.init(visibleLineRanges, stabilized);
         self._state = state;
-        self.handleStateChange(self.*, state);
+        self.handleStateChange(self, state);
     }
 };
 
@@ -192,10 +192,10 @@ pub const AbstractSyntaxTokenBackend = struct {
     _onDidChangeBackgroundTokenizationState: Emitter(void),
     _onDidChangeTokens: Emitter(ModelTokensChangedEvent),
 
-    // handleDidChangeAttached: fn () void,
-    // handleDidChangeContent: fn (e: ModelContentChangedEvent) void,
+    handleDidChangeAttached: *const fn () void,
+    handleDidChangeContent: *const fn (e: ModelContentChangedEvent) void,
     forceTokenization: *const fn (lineNumber: usize) void,
-    // hasAccurateTokensForLine: fn (lineNumber: usize) bool,
+    hasAccurateTokensForLine: *const fn (lineNumber: usize) bool,
     isCheapToTokenize: *const fn (lineNumber: usize) bool,
 
     getLineTokens: *const fn (lineNumber: usize) LineTokens,
@@ -221,6 +221,9 @@ pub const AbstractSyntaxTokenBackend = struct {
             .getTokenTypeIfInsertingCharacter = undefined,
             .tokenizeLinesAt = undefined,
             .hasTokens = undefined,
+            .handleDidChangeAttached = undefined,
+            .handleDidChangeContent = undefined,
+            .hasAccurateTokensForLine = undefined,
         };
     }
 
@@ -231,12 +234,12 @@ pub const AbstractSyntaxTokenBackend = struct {
     }
 
     // @internal, should not be exposed by the text model!
-    pub fn onDidChangeBackgroundTokenizationState(self: *AbstractSyntaxTokenBackend, f: *const fn (void) void) void {
+    pub fn onDidChangeBackgroundTokenizationState(self: *AbstractSyntaxTokenBackend, f: fn (void) void) void {
         self._onDidChangeBackgroundTokenizationState.event({}, f);
     }
 
     // //** @internal, should not be exposed by the text model! */
-    pub fn onDidChangeTokens(self: *AbstractSyntaxTokenBackend, f: *const fn (ModelTokensChangedEvent, void) void) void {
+    pub fn onDidChangeTokens(self: *AbstractSyntaxTokenBackend, f: fn (ModelTokensChangedEvent, void) void) void {
         self._onDidChangeTokens.event({}, f);
     }
 };

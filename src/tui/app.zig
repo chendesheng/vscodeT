@@ -25,6 +25,7 @@ const Position = @import("../basics/position.zig").Position;
 const View = @import("View.zig");
 const ts = @import("tree-sitter");
 const ts_languages = @import("../treeSitter/languages.zig");
+const PLAINTEXT_LANGUAGE_ID = @import("../services/languageRegistry.zig").PLAINTEXT_LANGUAGE_ID;
 
 fn getFirstArg() !ArrayList(u8) {
     const allocator = std.heap.page_allocator;
@@ -43,7 +44,7 @@ fn loadFile(allocator: Allocator, path: []const u8, undoRedoService: *UndoRedoSe
     defer file.close();
     var buf: [1024]u8 = undefined;
     var reader = file.readerStreaming(&buf);
-    return try TextModel.init(allocator, &reader.interface, TextModelCreationOptions{
+    return try TextModel.init(allocator, &reader.interface, PLAINTEXT_LANGUAGE_ID, TextModelCreationOptions{
         .tabSize = 4,
         .indentSize = .{ .number = 4 },
         .insertSpaces = true,
@@ -56,7 +57,7 @@ fn loadFile(allocator: Allocator, path: []const u8, undoRedoService: *UndoRedoSe
             .enabled = false,
             .independentColorPoolPerBracketType = false,
         },
-    }, null, undoRedoService);
+    }, null, undoRedoService, undefined, undefined);
 }
 
 pub fn testTreeSitterZig() !void {
