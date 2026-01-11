@@ -188,7 +188,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
             if (tokenizationSupport == null) {
                 break :initializeTokenization;
             }
-            initialState = tokenizationSupport.?.getInitialState(tokenizationSupport.?);
+            initialState = try tokenizationSupport.?.getInitialState();
         }
 
         if (tokenizationSupport != null and initialState != null) {
@@ -420,9 +420,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
                         const backgroundResult = try debugBackgroundTokens.getTokens(self.super._textModel.getLanguageId(), lineNumber - 1, lineText.items);
                         if (!result.equals(&backgroundResult)) {
                             if (self._debugBackgroundTokenizer) |debugBackgroundTokenizer| {
-                                if (debugBackgroundTokenizer.reportMismatchingTokens) |reportMismatchingTokens| {
-                                    reportMismatchingTokens(debugBackgroundTokenizer, lineNumber);
-                                }
+                                debugBackgroundTokenizer.reportMismatchingTokens(lineNumber);
                             }
                         }
                     }

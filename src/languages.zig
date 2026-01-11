@@ -81,28 +81,53 @@ pub const QueryCapture = struct {
 
 // @internal
 pub const ITokenizationSupport = struct {
+    vtable: *const VTable,
     // If true, the background tokenizer will only be used to verify tokens against the default background tokenizer.
     // Used for debugging.
-    backgroundTokenizerShouldOnlyVerifyTokens: ?bool,
+    backgroundTokenizerShouldOnlyVerifyTokens: bool = false,
 
-    getInitialState: *const fn (t: *ITokenizationSupport) IState,
+    pub const VTable = struct {
+        getInitialState: *const fn (t: *ITokenizationSupport) anyerror!IState,
+        tokenize: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) anyerror!TokenizationResult,
+        tokenizeEncoded: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult,
+        // Can be/return undefined if default background tokenization should be used.
+        createBackgroundTokenizer: ?*const fn (t: *ITokenizationSupport, textModel: *TextModel, store: IBackgroundTokenizationStore) anyerror!?IBackgroundTokenizer,
+    };
 
-    tokenize: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) TokenizationResult,
-
-    tokenizeEncoded: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
-
-    // Can be/return undefined if default background tokenization should be used.
-    createBackgroundTokenizer: ?*const fn (t: *ITokenizationSupport, textModel: *TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
+    pub fn getInitialState(self: *ITokenizationSupport) !IState {
+        return try self.vtable.getInitialState(self);
+    }
+    pub fn tokenize(self: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) !TokenizationResult {
+        return try self.vtable.tokenize(self, line, hasEOL, state);
+    }
+    pub fn tokenizeEncoded(self: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
+        return try self.vtable.tokenizeEncoded(self, line, hasEOL, state);
+    }
+    pub fn createBackgroundTokenizer(self: *ITokenizationSupport, textModel: *TextModel, store: IBackgroundTokenizationStore) !?IBackgroundTokenizer {
+        return try self.vtable.createBackgroundTokenizer(self, textModel, store);
+    }
 };
 
 // @internal
 pub const IBackgroundTokenizer = struct {
-    // Instructs the background tokenizer to set the tokens for the given range again.
-    // This might be necessary if the renderer overwrote those tokens with heuristically computed ones for some viewport,
-    // when the change does not even propagate to that viewport.
-    requestTokens: *const fn (b: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) void,
+    vtable: *const VTable,
 
-    reportMismatchingTokens: ?*const fn (b: *IBackgroundTokenizer, lineNumber: usize) void,
+    pub const VTable = struct {
+        // Instructs the background tokenizer to set the tokens for the given range again.
+        // This might be necessary if the renderer overwrote those tokens with heuristically computed ones for some viewport,
+        // when the change does not even propagate to that viewport.
+        requestTokens: *const fn (b: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) void,
+        reportMismatchingTokens: ?*const fn (b: *IBackgroundTokenizer, lineNumber: usize) void,
+    };
+
+    pub fn requestTokens(self: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) void {
+        return self.vtable.requestTokens(self, startLineNumber, endLineNumberExclusive);
+    }
+    pub fn reportMismatchingTokens(self: *IBackgroundTokenizer, lineNumber: usize) void {
+        if (self.vtable.reportMismatchingTokens) |r| {
+            return r(self, lineNumber);
+        }
+    }
 };
 
 // @internal
@@ -120,8 +145,25 @@ pub const IBackgroundTokenizationStore = struct {
 // It is useful to store flags such as in multiline comment, etc.
 // The model will clone the previous line's state and pass it in to tokenize the next line.
 pub const IState = struct {
-    clone: *const fn (s: IState) IState,
-    equals: *const fn (s: IState, other: IState) bool,
+    data: []u8,
+
+    pub fn init(comptime T: type, data: *T) IState {
+        return .{
+            .data = @as([*]u8, @ptrCast(data))[0..@sizeOf(T)],
+        };
+    }
+
+    pub fn getPtr(self: IState, comptime T: type) *T {
+        return @ptrCast(self.data.ptr);
+    }
+
+    pub fn clone(self: IState, allocator: Allocator) !IState {
+        return .{ .data = try allocator.dupe(u8, self.data) };
+    }
+
+    pub fn equals(self: IState, other: IState) bool {
+        return std.mem.eql(u8, self.data, other.data);
+    }
 };
 
 // @internal

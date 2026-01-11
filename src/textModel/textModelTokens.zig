@@ -35,7 +35,7 @@ pub const TokenizerWithStateStore = struct {
 
     pub fn init(allocator: Allocator, lineCount: usize, tokenizationSupport: *ITokenizationSupport) !Self {
         return Self{
-            .initialState = tokenizationSupport.getInitialState(tokenizationSupport),
+            .initialState = try tokenizationSupport.getInitialState(),
             .store = try TrackingTokenizationStateStore.init(allocator, lineCount),
         };
     }
@@ -86,6 +86,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     }
 
     pub fn updateTokensUntilLine(self: *Self, builder: *ContiguousMultilineTokensBuilder, lineNumber: usize) !void {
+        const allocator = self._textModel.getAllocator();
         const languageId = self._textModel.getLanguageId();
 
         while (true) {
@@ -95,7 +96,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             }
 
             const text = try self._textModel.getLineContent(lineToTokenize.first);
-            const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.second);
+            const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.second);
             try builder.add(lineToTokenize.first, r.tokens);
             var store = self.getStore();
             _ = try store.setEndState(lineToTokenize.first, r.endState);
@@ -121,7 +122,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         try text.appendSlice(character);
         try text.appendSlice(lineContent.items[position.column - 1 ..]);
 
-        const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineStartState.?);
+        const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineStartState.?);
         var tokens = ArrayList(TokenPacked).init(allocator);
         try tokens.appendSlice(r.tokens);
         var lineTokens = LineTokens.init(tokens, text.items, self._languageIdCodec);
@@ -143,7 +144,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
 
             var state = lineStartState;
             for (lines) |line| {
-                const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, line, true, state);
+                const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, line, true, state);
                 var tokens = ArrayList(TokenPacked).init(allocator);
                 try tokens.appendSlice(r.tokens);
                 try result.append(LineTokens.init(tokens, line, self._languageIdCodec));
@@ -186,12 +187,13 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             return .{ .heuristicTokens = false };
         }
 
-        var state = try self.guessStartState(startLineNumber);
+        const allocator = self._textModel.getAllocator();
+        var state = try self.guessStartState(allocator, startLineNumber);
         const languageId = self._textModel.getLanguageId();
 
         for (startLineNumber..endLineNumber + 1) |lineNumber| {
             const text = try self._textModel.getLineContent(lineNumber);
-            const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
+            const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
             try builder.add(lineNumber, r.tokens);
             state = r.endState;
         }
@@ -199,21 +201,21 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         return .{ .heuristicTokens = true };
     }
 
-    fn guessStartState(self: *Self, lineNumber: usize) !IState {
+    fn guessStartState(self: *Self, allocator: Allocator, lineNumber: usize) !IState {
         const res = try findLikelyRelevantLines(self._textModel, lineNumber, self.super);
         const likelyRelevantLines = res.likelyRelevantLines;
         defer likelyRelevantLines.deinit();
         var initialState = res.initialState;
 
         if (initialState == null) {
-            initialState = self.tokenizationSupport.getInitialState(self.tokenizationSupport);
+            initialState = try self.tokenizationSupport.getInitialState();
         }
 
         const languageId = self._textModel.getLanguageId();
         var state = initialState.?;
         for (likelyRelevantLines.items) |line| {
             defer line.deinit();
-            const r = safeTokenize(self._languageIdCodec, languageId, self.tokenizationSupport, line.items, false, state);
+            const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, line.items, false, state);
             state = r.endState;
         }
         return state;
@@ -355,7 +357,7 @@ pub const TokenizationStateStore = struct {
 
     pub fn setEndState(self: *Self, lineNumber: usize, state: IState) !bool {
         if (self._lineEndStates.get(lineNumber)) |oldState| {
-            if (oldState.equals(oldState, state)) {
+            if (oldState.equals(state)) {
                 return false;
             }
         }
@@ -385,9 +387,9 @@ pub const TokenizationStateStore = struct {
     }
 };
 
-fn safeTokenize(languageIdCodec: *const LanguageIdCodec, languageId: []const u8, _tokenizationSupport: ?*ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult {
+fn safeTokenize(allocator: Allocator, languageIdCodec: *const LanguageIdCodec, languageId: []const u8, _tokenizationSupport: ?*ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
     const r: EncodedTokenizationResult = if (_tokenizationSupport) |tokenizationSupport|
-        tokenizationSupport.tokenizeEncoded(tokenizationSupport, text, hasEOL, state.clone(state))
+        try tokenizationSupport.tokenizeEncoded(text, hasEOL, try state.clone(allocator))
     else
         nullTokenizeEncoded(languageIdCodec.encodeLanguageId(languageId), state);
 

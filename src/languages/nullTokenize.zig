@@ -12,20 +12,7 @@ const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardToken
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const TokenPacked = @import("../tokens/lineTokens.zig").TokenPacked;
 
-const NullState = IState{
-    .clone = nullStateClone,
-    .equals = nullStateEquals,
-};
-
-fn nullStateClone(state: IState) IState {
-    _ = state;
-    return NullState;
-}
-
-fn nullStateEquals(self: IState, other: IState) bool {
-    _ = other;
-    return self.clone == NullState.clone and self.equals == NullState.equals;
-}
+const nullState = IState{ .data = &[_]u8{} };
 
 pub fn nullTokenize(languageId: []u8, state: IState) TokenizationResult {
     return TokenizationResult.init(ArrayList(Token).init(Token.init(0, languageId, 0)), state);
@@ -40,5 +27,5 @@ pub fn nullTokenizeEncoded(languageId: u8, state: ?IState) EncodedTokenizationRe
             .foreground = ColorId.DefaultForeground,
         },
     }};
-    return EncodedTokenizationResult.init(&tokens, if (state == null) NullState else state.?);
+    return EncodedTokenizationResult.init(&tokens, state orelse nullState);
 }
