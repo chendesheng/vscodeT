@@ -261,7 +261,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
         self._defaultBackgroundTokenizer = null;
         if (self._tokenizer != null) {
             var b = BackgroundTokenizationStore.init(self);
-            if (tokenizationSupport != null and !tokenizationSupport.?.backgroundTokenizerShouldOnlyVerifyTokens) {
+            if (tokenizationSupport != null and !tokenizationSupport.?.backgroundTokenizerShouldOnlyVerifyTokens and tokenizationSupport.?.hasCreateBackgroundTokenizer()) {
                 self._backgroundTokenizer = try tokenizationSupport.?.createBackgroundTokenizer(self.super._textModel, &b.interface);
             }
             if (self._backgroundTokenizer == null and !self.super._textModel.isTooLargeForTokenization()) {
@@ -271,14 +271,14 @@ pub const TokenizerSyntaxTokenBackend = struct {
             }
 
             if (tokenizationSupport != null and tokenizationSupport.?.backgroundTokenizerShouldOnlyVerifyTokens and self._backgroundTokenizer != null) {
-                self._debugBackgroundTokens = ContiguousTokensStore.init(
-                    self.super._textModel.getAllocator(),
-                    self.super._languageIdCodec,
-                );
-                self._debugBackgroundStates = try TrackingTokenizationStateStore.init(
-                    self.super._textModel.getAllocator(),
-                    self.super._textModel.getLineCount(),
-                );
+                // self._debugBackgroundTokens = ContiguousTokensStore.init(
+                //     self.super._textModel.getAllocator(),
+                //     self.super._languageIdCodec,
+                // );
+                // self._debugBackgroundStates = try TrackingTokenizationStateStore.init(
+                //     self.super._textModel.getAllocator(),
+                //     self.super._textModel.getLineCount(),
+                // );
                 // self._debugBackgroundTokenizer.?.clear();
                 // self._debugBackgroundTokenizer = tokenizationSupport.?.createBackgroundTokenizer(self.super._textModel, .{
                 //     .setTokens = struct {

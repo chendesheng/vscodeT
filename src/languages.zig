@@ -109,6 +109,10 @@ pub const ITokenizationSupport = struct {
         }
         return null;
     }
+
+    pub fn hasCreateBackgroundTokenizer(self: *ITokenizationSupport) bool {
+        return self.vtable.createBackgroundTokenizer != null;
+    }
 };
 
 // @internal
