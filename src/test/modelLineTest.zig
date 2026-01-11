@@ -33,12 +33,10 @@ fn assertLineTokens(_expected: []const TestToken, _actual: LineTokens) !void {
     const tmp = (try TestToken.toTokens(allocator, _expected)).?;
     defer allocator.free(tmp);
     LineTokens.convertToEndOffset(tmp, @intCast(_actual.getLineContent().len));
-    const expected = try TestLineTokenFactory.inflateArr(allocator, tmp);
-    defer allocator.free(expected);
 
-    for (expected, 0..) |expectedToken, i| {
-        try std.testing.expectEqual(expectedToken.endIndex, _actual.getEndOffset(i));
-        try std.testing.expectEqual(expectedToken._metadata, _actual.getMetadata(i));
+    for (tmp, 0..) |expectedToken, i| {
+        try std.testing.expectEqual(expectedToken.endOffset, _actual.getEndOffset(i));
+        try std.testing.expectEqual(expectedToken.metadata, _actual.getMetadata(i));
     }
 }
 
@@ -95,7 +93,7 @@ const ManualTokenizationSupport = struct {
     interface: ITokenizationSupport,
     allocator: Allocator,
     tokens: AutoHashMap(usize, []TokenPacked),
-    stores: ArrayList(IBackgroundTokenizationStore),
+    stores: ArrayList(*IBackgroundTokenizationStore),
 
     pub fn init(allocator: Allocator) ManualTokenizationSupport {
         return ManualTokenizationSupport{
@@ -109,7 +107,7 @@ const ManualTokenizationSupport = struct {
             },
             .allocator = allocator,
             .tokens = AutoHashMap(usize, []TokenPacked).init(allocator),
-            .stores = ArrayList(IBackgroundTokenizationStore).init(allocator),
+            .stores = ArrayList(*IBackgroundTokenizationStore).init(allocator),
         };
     }
 
@@ -117,8 +115,8 @@ const ManualTokenizationSupport = struct {
         var b = ContiguousMultilineTokensBuilder.init(self.allocator);
         defer b.deinit();
         try b.add(lineNumber, tokens);
-        for (self.stores.items) |*s| {
-            s.setTokens(s, b.finalize().items);
+        for (self.stores.items) |s| {
+            try s.setTokens(b.finalize().items);
         }
     }
 
@@ -149,7 +147,7 @@ const ManualTokenizationSupport = struct {
     }
 
     // Can be/return undefined if default background tokenization should be used.
-    pub fn createBackgroundTokenizer(t: *ITokenizationSupport, textModel: *TextModel, store: IBackgroundTokenizationStore) !?IBackgroundTokenizer {
+    pub fn createBackgroundTokenizer(t: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) !?IBackgroundTokenizer {
         _ = textModel;
         try getSelf(t).stores.append(store);
         return null;

@@ -55,6 +55,53 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
     _attachedViewStates: AutoHashMap(AttachedView, AttachedViewHandler),
 
+    const BackgroundTokenizationStore = struct {
+        interface: IBackgroundTokenizationStore,
+        backend: *TokenizerSyntaxTokenBackend,
+
+        pub fn init(backend: *TokenizerSyntaxTokenBackend) BackgroundTokenizationStore {
+            return .{
+                .backend = backend,
+                .interface = .{
+                    .vtable = &.{
+                        .setTokens = _setTokens,
+                        .backgroundTokenizationFinished = _backgroundTokenizationFinished,
+                        .setEndState = _setEndState,
+                    },
+                },
+            };
+        }
+
+        fn getMySelf(b: *IBackgroundTokenizationStore) *BackgroundTokenizationStore {
+            return @alignCast(@fieldParentPtr("interface", b));
+        }
+
+        fn _setTokens(b: *IBackgroundTokenizationStore, tokens: []ContiguousMultilineTokens) !void {
+            const self = getMySelf(b);
+            _ = try self.backend.setTokens(tokens);
+        }
+        fn _backgroundTokenizationFinished(b: *IBackgroundTokenizationStore) void {
+            const self = getMySelf(b);
+            if (self.backend.super._backgroundTokenizationState == .Completed) {
+                return;
+            }
+            const newState = BackgroundTokenizationState.Completed;
+            self.backend.super._backgroundTokenizationState = newState;
+            self.backend.super._onDidChangeBackgroundTokenizationState.fire({});
+        }
+        fn _setEndState(b: *IBackgroundTokenizationStore, lineNumber: usize, state: IState) !void {
+            const self = getMySelf(b);
+            if (self.backend._tokenizer) |*tokenizer| {
+                if (tokenizer.super.store.getFirstInvalidEndStateLineNumber()) |firstInvalidEndStateLineNumber| {
+                    // Don't accept states for definitely valid states, the renderer is ahead of the worker!
+                    if (lineNumber >= firstInvalidEndStateLineNumber) {
+                        _ = try tokenizer.super.store.setEndState(lineNumber, state);
+                    }
+                }
+            }
+        }
+    };
+
     pub fn init(
         languageIdCodec: *const LanguageIdCodec,
         textModel: *TextModel,
@@ -213,71 +260,48 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
         self._defaultBackgroundTokenizer = null;
         if (self._tokenizer != null) {
-            // const b: IBackgroundTokenizationStore = .{
-            //     .setTokens = struct {
-            //         fn f(tokens: []ContiguousMultilineTokens) void {
-            //             self.setTokens(tokens);
-            //         }
-            //     }.f,
-            //     .backgroundTokenizationFinished = struct {
-            //         fn f() void {
-            //             if (self.super._backgroundTokenizationState == BackgroundTokenizationState.Completed) {
-            //                 // We already did a full tokenization and don't go back to progressing.
-            //                 return;
-            //             }
-            //             const newState = BackgroundTokenizationState.Completed;
-            //             self.super._backgroundTokenizationState = newState;
-            //             self.super._onDidChangeBackgroundTokenizationState.fire(.{});
-            //         }
-            //     }.f,
-            //     .setEndState = struct {
-            //         fn f(lineNumber: usize, state: IState) void {
-            //             if (self._tokenizer) |tokenizer| {
-            //                 const firstInvalidEndStateLineNumber = tokenizer.store.getFirstInvalidEndStateLineNumber();
-            //                 // Don't accept states for definitely valid states, the renderer is ahead of the worker!
-            //                 if (firstInvalidEndStateLineNumber != null and lineNumber >= firstInvalidEndStateLineNumber) {
-            //                     tokenizer.store.setEndState(lineNumber, state);
-            //                 }
-            //             }
-            //         }
-            //     }.f,
-            // };
+            var b = BackgroundTokenizationStore.init(self);
+            if (tokenizationSupport != null and !tokenizationSupport.?.backgroundTokenizerShouldOnlyVerifyTokens) {
+                self._backgroundTokenizer = try tokenizationSupport.?.createBackgroundTokenizer(self.super._textModel, &b.interface);
+            }
+            if (self._backgroundTokenizer == null and !self.super._textModel.isTooLargeForTokenization()) {
+                self._defaultBackgroundTokenizer = DefaultBackgroundTokenizer.init(self._tokenizer, &b.interface);
+                self._backgroundTokenizer = self._defaultBackgroundTokenizer.?.interface;
+                self._defaultBackgroundTokenizer.?.handleChanges();
+            }
 
-            // if (tokenizationSupport != null and tokenizationSupport.?.createBackgroundTokenizer and !tokenizationSupport.?.backgroundTokenizerShouldOnlyVerifyTokens) {
-            // self._backgroundTokenizer = tokenizationSupport.?.createBackgroundTokenizer(self.super.textModel(), b);
-            // }
-            // if (self._backgroundTokenizer == null and !self.super._textModel.isTooLargeForTokenization()) {
-            // self._defaultBackgroundTokenizer = DefaultBackgroundTokenizer.init(self._tokenizer, b);
-            // self._backgroundTokenizer = self._defaultBackgroundTokenizer;
-            // self._defaultBackgroundTokenizer.?.handleChanges();
-            // }
-
-            // if (tokenizationSupport != null and (tokenizationSupport.?.backgroundTokenizerShouldOnlyVerifyTokens orelse false) and tokenizationSupport.?.createBackgroundTokenizer != null) {
-            //     self._debugBackgroundTokens = ContiguousTokensStore.init(self.super._textModel.getAllocator(), self._languageIdCodec);
-            //     self._debugBackgroundStates = TrackingTokenizationStateStore(IState).init(self.super._textModel.getLineCount());
-            //     self._debugBackgroundTokenizer.?.clear();
-            //     self._debugBackgroundTokenizer = tokenizationSupport.?.createBackgroundTokenizer(self.super._textModel, .{
-            //         .setTokens = struct {
-            //             fn f(tokens: []ContiguousMultilineTokens) void {
-            //                 self._debugBackgroundTokens.?.setMultilineTokens(tokens, self.super._textModel);
-            //             }
-            //         }.f,
-            //         .backgroundTokenizationFinished = struct {
-            //             fn f() void {
-            //                 // NO OP
-            //             }
-            //         }.f,
-            //         .setEndState = struct {
-            //             fn f(lineNumber: usize, state: IState) void {
-            //                 self._debugBackgroundStates.?.setEndState(lineNumber, state);
-            //             }
-            //         }.f,
-            //     });
-            // } else {
-            //     self._debugBackgroundTokens = null;
-            //     self._debugBackgroundStates = null;
-            //     self._debugBackgroundTokenizer = null;
-            // }
+            if (tokenizationSupport != null and tokenizationSupport.?.backgroundTokenizerShouldOnlyVerifyTokens and self._backgroundTokenizer != null) {
+                self._debugBackgroundTokens = ContiguousTokensStore.init(
+                    self.super._textModel.getAllocator(),
+                    self.super._languageIdCodec,
+                );
+                self._debugBackgroundStates = try TrackingTokenizationStateStore.init(
+                    self.super._textModel.getAllocator(),
+                    self.super._textModel.getLineCount(),
+                );
+                // self._debugBackgroundTokenizer.?.clear();
+                // self._debugBackgroundTokenizer = tokenizationSupport.?.createBackgroundTokenizer(self.super._textModel, .{
+                //     .setTokens = struct {
+                //         fn f(tokens: []ContiguousMultilineTokens) void {
+                //             self._debugBackgroundTokens.?.setMultilineTokens(tokens, self.super._textModel);
+                //         }
+                //     }.f,
+                //     .backgroundTokenizationFinished = struct {
+                //         fn f() void {
+                //             // NO OP
+                //         }
+                //     }.f,
+                //     .setEndState = struct {
+                //         fn f(lineNumber: usize, state: IState) void {
+                //             self._debugBackgroundStates.?.setEndState(lineNumber, state);
+                //         }
+                //     }.f,
+                // });
+            } else {
+                self._debugBackgroundTokens = null;
+                self._debugBackgroundStates = null;
+                self._debugBackgroundTokenizer = null;
+            }
         }
 
         try self.refreshAllVisibleLineTokens();

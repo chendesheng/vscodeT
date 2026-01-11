@@ -91,7 +91,7 @@ pub const ITokenizationSupport = struct {
         tokenize: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) anyerror!TokenizationResult,
         tokenizeEncoded: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult,
         // Can be/return undefined if default background tokenization should be used.
-        createBackgroundTokenizer: ?*const fn (t: *ITokenizationSupport, textModel: *TextModel, store: IBackgroundTokenizationStore) anyerror!?IBackgroundTokenizer,
+        createBackgroundTokenizer: ?*const fn (t: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) anyerror!?IBackgroundTokenizer,
     };
 
     pub fn getInitialState(self: *ITokenizationSupport) !IState {
@@ -103,8 +103,11 @@ pub const ITokenizationSupport = struct {
     pub fn tokenizeEncoded(self: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
         return try self.vtable.tokenizeEncoded(self, line, hasEOL, state);
     }
-    pub fn createBackgroundTokenizer(self: *ITokenizationSupport, textModel: *TextModel, store: IBackgroundTokenizationStore) !?IBackgroundTokenizer {
-        return try self.vtable.createBackgroundTokenizer(self, textModel, store);
+    pub fn createBackgroundTokenizer(self: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) !?IBackgroundTokenizer {
+        if (self.vtable.createBackgroundTokenizer) |f| {
+            return try f(self, textModel, store);
+        }
+        return null;
     }
 };
 
@@ -116,12 +119,12 @@ pub const IBackgroundTokenizer = struct {
         // Instructs the background tokenizer to set the tokens for the given range again.
         // This might be necessary if the renderer overwrote those tokens with heuristically computed ones for some viewport,
         // when the change does not even propagate to that viewport.
-        requestTokens: *const fn (b: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) void,
+        requestTokens: *const fn (b: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) anyerror!void,
         reportMismatchingTokens: ?*const fn (b: *IBackgroundTokenizer, lineNumber: usize) void,
     };
 
-    pub fn requestTokens(self: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) void {
-        return self.vtable.requestTokens(self, startLineNumber, endLineNumberExclusive);
+    pub fn requestTokens(self: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) !void {
+        return try self.vtable.requestTokens(self, startLineNumber, endLineNumberExclusive);
     }
     pub fn reportMismatchingTokens(self: *IBackgroundTokenizer, lineNumber: usize) void {
         if (self.vtable.reportMismatchingTokens) |r| {
@@ -132,13 +135,24 @@ pub const IBackgroundTokenizer = struct {
 
 // @internal
 pub const IBackgroundTokenizationStore = struct {
-    setTokens: *const fn (b: *IBackgroundTokenizationStore, tokens: []ContiguousMultilineTokens) void,
+    vtable: *const VTable,
+    pub const VTable = struct {
+        setTokens: *const fn (b: *IBackgroundTokenizationStore, tokens: []ContiguousMultilineTokens) anyerror!void,
+        setEndState: *const fn (b: *IBackgroundTokenizationStore, lineNumber: usize, state: IState) anyerror!void,
+        // Should be called to indicate that the background tokenization has finished for now.
+        // (This triggers bracket pair colorization to re-parse the bracket pairs with token information)
+        backgroundTokenizationFinished: *const fn (b: *IBackgroundTokenizationStore) void,
+    };
 
-    setEndState: *const fn (b: *IBackgroundTokenizationStore, lineNumber: usize, state: IState) void,
-
-    // Should be called to indicate that the background tokenization has finished for now.
-    // (This triggers bracket pair colorization to re-parse the bracket pairs with token information)
-    backgroundTokenizationFinished: *const fn (b: *IBackgroundTokenizationStore) void,
+    pub fn setTokens(self: *IBackgroundTokenizationStore, tokens: []ContiguousMultilineTokens) !void {
+        return try self.vtable.setTokens(self, tokens);
+    }
+    pub fn setEndState(self: *IBackgroundTokenizationStore, lineNumber: usize, state: IState) !void {
+        return try self.vtable.setEndState(self, lineNumber, state);
+    }
+    pub fn backgroundTokenizationFinished(self: *IBackgroundTokenizationStore) void {
+        return self.vtable.backgroundTokenizationFinished(self);
+    }
 };
 
 // The state of the tokenizer between two lines.

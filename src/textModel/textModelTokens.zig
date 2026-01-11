@@ -24,6 +24,7 @@ const IBackgroundTokenizationStore = @import("../languages.zig").IBackgroundToke
 const IdleDeadline = @import("../basics/utils.zig").IdleDeadline;
 const runWhenGlobalIdle = @import("../basics/utils.zig").runWhenGlobalIdle;
 const TokenPacked = @import("../tokens/lineTokens.zig").TokenPacked;
+const IBackgroundTokenizer = @import("../languages.zig").IBackgroundTokenizer;
 
 const CHEAP_TOKENIZATION_LENGTH_LIMIT = 2048;
 
@@ -406,6 +407,8 @@ fn safeTokenize(allocator: Allocator, languageIdCodec: *const LanguageIdCodec, l
 }
 
 pub const DefaultBackgroundTokenizer = struct {
+    interface: IBackgroundTokenizer,
+
     _isDisposed: bool = false,
     _isScheduled: bool = false,
 
@@ -415,9 +418,15 @@ pub const DefaultBackgroundTokenizer = struct {
     const Self = @This();
 
     pub fn init(tokenizerWithStateStore: ?TokenizerWithStateStoreAndTextModel, backgroundTokenStore: *IBackgroundTokenizationStore) Self {
-        return Self{
+        return .{
             .tokenizerWithStateStore = tokenizerWithStateStore,
             .backgroundTokenStore = backgroundTokenStore,
+            .interface = .{
+                .vtable = &.{
+                    .requestTokens = requestTokens,
+                    .reportMismatchingTokens = null,
+                },
+            },
         };
     }
 
@@ -514,11 +523,17 @@ pub const DefaultBackgroundTokenizer = struct {
             return;
         }
         if (self.tokenizerWithStateStore.?.getStore().allStatesValid()) {
-            self.backgroundTokenStore.backgroundTokenizationFinished(self.backgroundTokenStore);
+            self.backgroundTokenStore.backgroundTokenizationFinished();
         }
     }
 
-    pub fn requestTokens(self: *Self, startLineNumber: usize, endLineNumberExclusive: usize) void {
-        self.tokenizerWithStateStore.?.getStore().invalidateEndStateRange(LineRange.init(startLineNumber, endLineNumberExclusive));
+    fn getSelf(self: *IBackgroundTokenizer) *Self {
+        return @alignCast(@fieldParentPtr("interface", self));
+    }
+
+    fn requestTokens(b: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) !void {
+        var self = getSelf(b);
+        var store = self.tokenizerWithStateStore.?.getStore();
+        try store.invalidateEndStateRange(LineRange.init(startLineNumber, endLineNumberExclusive));
     }
 };
