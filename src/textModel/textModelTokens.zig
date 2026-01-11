@@ -40,6 +40,10 @@ pub const TokenizerWithStateStore = struct {
         };
     }
 
+    pub fn deinit(self: *Self) void {
+        self.store.deinit();
+    }
+
     pub fn getStartState(self: *const Self, lineNumber: usize) ?IState {
         return self.store.getStartState(lineNumber, self.initialState);
     }
@@ -67,6 +71,10 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             ._textModel = _textModel,
             ._languageIdCodec = languageIdCodec,
         };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.super.deinit();
     }
 
     pub fn getStartState(self: *const Self, lineNumber: usize) ?IState {

@@ -84,10 +84,12 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
         try TokenizationRegistry.instance(allocator).onDidChange(&self, struct {
             fn cb(e: TokenizationSupportChangedEvent, this: *TokenizerSyntaxTokenBackend) void {
-                if (std.mem.indexOf(u8, e.changedLanguages, this._languageId) == null) {
-                    return;
+                for (e.changedLanguages) |lang| {
+                    if (std.mem.eql(u8, lang, this._languageId)) {
+                        this.todo_resetTokenization(false) catch unreachable;
+                        return;
+                    }
                 }
-                this.todo_resetTokenization(false) catch unreachable;
             }
         }.cb);
 
@@ -134,6 +136,9 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
     pub fn deinit(s: *AbstractSyntaxTokenBackend) void {
         var self = getSelf(s);
+        if (self._tokenizer) |*tokenizer| {
+            tokenizer.deinit();
+        }
         var iter = self._attachedViewStates.keyIterator();
         while (iter.next()) |view| {
             view.deinit();

@@ -216,7 +216,7 @@ pub const LineTokens = struct {
         return LineTokens.findIndexInTokensArray(self._tokens.items, offset);
     }
 
-    pub fn inflate(self: *const LineTokens) LineTokens {
+    pub fn inflate(self: *LineTokens) *LineTokens {
         return self;
     }
 

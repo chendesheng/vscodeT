@@ -43,7 +43,7 @@ pub const TokenizationRegistry = struct {
         self._onDidChange.deinit();
     }
 
-    pub fn handleChange(self: *TokenizationRegistry, languageIds: []const u8) void {
+    pub fn handleChange(self: *TokenizationRegistry, languageIds: []const []const u8) void {
         self._onDidChange.fire(.{ .changedLanguages = languageIds, .changedColorMap = false });
     }
 
@@ -53,7 +53,7 @@ pub const TokenizationRegistry = struct {
 
     pub fn register(self: *TokenizationRegistry, languageId: []const u8, support: *ITokenizationSupport) !void {
         try self._tokenizationSupports.put(languageId, support);
-        self.handleChange(&[_]u8{languageId});
+        self.handleChange(&[_][]const u8{languageId});
     }
 
     pub fn unregister(self: *TokenizationRegistry, languageId: []const u8) void {

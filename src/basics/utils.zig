@@ -225,3 +225,29 @@ pub const WordAtPosition = struct {
     // The column where the word ends.
     endColumn: usize,
 };
+
+// Returns:
+//  - -1 => the line consists of whitespace
+//  - otherwise => the indent level is returned value
+pub fn computeIndentLevel(line: []const u8, tabSize: usize) isize {
+    var indent: usize = 0;
+    var i: usize = 0;
+    const len: usize = line.len;
+
+    while (i < len) : (i += 1) {
+        const chCode = line[i];
+        if (chCode == ' ') {
+            indent += 1;
+        } else if (chCode == '\t') {
+            indent = indent - indent % tabSize + tabSize;
+        } else {
+            break;
+        }
+    }
+
+    if (i == len) {
+        return -1; // line only consists of whitespace
+    }
+
+    return @as(isize, @intCast(indent));
+}

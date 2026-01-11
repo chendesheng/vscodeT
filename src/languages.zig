@@ -32,7 +32,7 @@ pub const Token = struct {
 
 // @internal
 pub const TokenizationSupportChangedEvent = struct {
-    changedLanguages: []const u8,
+    changedLanguages: []const []const u8,
     changedColorMap: bool,
 };
 
@@ -147,14 +147,14 @@ pub const IBackgroundTokenizationStore = struct {
 pub const IState = struct {
     data: []u8,
 
-    pub fn init(comptime T: type, data: *T) IState {
+    pub fn init(comptime T: type, data: *const T) IState {
         return .{
-            .data = @as([*]u8, @ptrCast(data))[0..@sizeOf(T)],
+            .data = @as([*]u8, @ptrCast(@constCast(data)))[0..@sizeOf(T)],
         };
     }
 
     pub fn getPtr(self: IState, comptime T: type) *T {
-        return @ptrCast(self.data.ptr);
+        return @ptrCast(@alignCast(self.data.ptr));
     }
 
     pub fn clone(self: IState, allocator: Allocator) !IState {
