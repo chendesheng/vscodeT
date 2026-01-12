@@ -63,7 +63,8 @@ pub const ContiguousTokensStore = struct {
         }
 
         if (rawLineTokens != null and rawLineTokens.?.items.len > 0) {
-            return LineTokens.init(rawLineTokens.?, lineText, self._languageIdCodec);
+            // Clone the tokens so LineTokens has its own copy (avoids double-free)
+            return LineTokens.init(try rawLineTokens.?.clone(), lineText, self._languageIdCodec);
         }
 
         var lineTokens = ArrayList(TokenPacked).init(self._lineTokens.allocator);

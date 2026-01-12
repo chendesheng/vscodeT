@@ -188,7 +188,6 @@ const ManualTokenizationSupport = struct {
 
     // Can be/return undefined if default background tokenization should be used.
     pub fn createBackgroundTokenizer(t: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) !?IBackgroundTokenizer {
-        std.debug.print("createBackgroundTokenizer: {any}\n", .{store});
         _ = textModel;
         try getSelf(t).stores.append(store);
         return nullBackgroundTokenizer;
@@ -288,6 +287,49 @@ const ModelLinesTokensTests = struct {
             }},
         );
     }
+
+    test "single delete 2" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "helloworld",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 3, 1, 8), .text = "" }},
+            &[_]IBufferLineState{.{
+                .text = "herld",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(2, 2) },
+            }},
+        );
+    }
+
+    test "single delete 3" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 1, 1, 6), .text = "" }},
+            &[_]IBufferLineState{.{
+                .text = " world",
+                .tokens = &[_]TestToken{ .init(0, 2), .init(1, 3) },
+            }},
+        );
+    }
+
+    test "single delete 4" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 2, 1, 7), .text = "" }},
+            &[_]IBufferLineState{.{
+                .text = "hworld",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(1, 3) },
+            }},
+        );
+    }
+
 };
 
 test "ModelLine" {

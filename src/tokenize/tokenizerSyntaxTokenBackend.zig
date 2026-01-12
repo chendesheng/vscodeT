@@ -66,7 +66,8 @@ const BackgroundTokenizationStore = struct {
 
     fn _setTokens(b: *IBackgroundTokenizationStore, tokens: []ContiguousMultilineTokens) !void {
         const self = getSelf(b);
-        _ = try self.backend.setTokens(tokens);
+        const res = try self.backend.setTokens(tokens);
+        self.backend.super._textModel.getAllocator().free(res.changes);
     }
     fn _backgroundTokenizationFinished(b: *IBackgroundTokenizationStore) void {
         const self = getSelf(b);
@@ -113,14 +114,15 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
     _attachedViewStates: AutoHashMap(AttachedView, AttachedViewHandler),
 
-    pub fn init(
+    pub fn create(
+        allocator: Allocator,
         languageIdCodec: *const LanguageIdCodec,
         textModel: *TextModel,
         languageId: []const u8,
         attachedViews: *AttachedViews,
-    ) !TokenizerSyntaxTokenBackend {
-        const allocator = textModel.getAllocator();
-        var self: TokenizerSyntaxTokenBackend = .{
+    ) !*AbstractSyntaxTokenBackend {
+        const self = try allocator.create(TokenizerSyntaxTokenBackend);
+        self.* = .{
             .super = AbstractSyntaxTokenBackend.init(BackgroundTokenizationState.InProgress, languageIdCodec, textModel, &.{
                 .handleDidChangeAttached = handleDidChangeAttached,
                 .handleDidChangeContent = handleDidChangeContent,
@@ -140,7 +142,8 @@ pub const TokenizerSyntaxTokenBackend = struct {
             ._backgroundTokenizer = undefined,
         };
 
-        try TokenizationRegistry.instance(allocator).onDidChange(&self, struct {
+        // Register callbacks with heap-allocated self pointer (not a dangling local pointer)
+        try TokenizationRegistry.instance(allocator).onDidChange(self, struct {
             fn cb(e: TokenizationSupportChangedEvent, this: *TokenizerSyntaxTokenBackend) void {
                 for (e.changedLanguages) |lang| {
                     if (std.mem.eql(u8, lang, this._languageId)) {
@@ -153,7 +156,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
         try self.todo_resetTokenization(false);
 
-        try attachedViews.onDidChangeVisibleRanges(&self, struct {
+        try attachedViews.onDidChangeVisibleRanges(self, struct {
             fn cb(e: AttachedViewAndState, this: *TokenizerSyntaxTokenBackend) void {
                 const view = e.view;
                 if (e.state) |state| {
@@ -172,18 +175,6 @@ pub const TokenizerSyntaxTokenBackend = struct {
                 }
             }
         }.cb);
-        return self;
-    }
-
-    pub fn create(
-        allocator: Allocator,
-        languageIdCodec: *const LanguageIdCodec,
-        textModel: *TextModel,
-        languageId: []const u8,
-        attachedViews: *AttachedViews,
-    ) !*AbstractSyntaxTokenBackend {
-        const self = try allocator.create(TokenizerSyntaxTokenBackend);
-        self.* = try TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel, languageId, attachedViews);
         return &self.super;
     }
 
@@ -401,6 +392,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
             const endLineNumber1 = clamp(endLineNumber, 1, self.super._textModel.getLineCount());
 
             var builder = ContiguousMultilineTokensBuilder.init(self.super._textModel.getAllocator());
+            defer builder.deinit();
             const res = try tokenizer.tokenizeHeuristically(&builder, startLineNumber1, endLineNumber1);
             const heuristicTokens = res.heuristicTokens;
             const changedTokens = try self.setTokens(builder.finalize().items);
