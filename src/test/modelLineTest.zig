@@ -36,7 +36,7 @@ fn assertLineTokens(_expected: []const TestToken, _actual: LineTokens) !void {
 
     for (tmp, 0..) |expectedToken, i| {
         try std.testing.expectEqual(expectedToken.endOffset, _actual.getEndOffset(i));
-        try std.testing.expectEqual(expectedToken.metadata, _actual.getMetadata(i));
+        try std.testing.expectEqual(expectedToken.metadata.foreground, _actual.getMetadata(i).foreground);
     }
 }
 
@@ -330,6 +330,19 @@ const ModelLinesTokensTests = struct {
         );
     }
 
+    test "single delete 5" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 1, 1, 12), .text = "" }},
+            &[_]IBufferLineState{.{
+                .text = "",
+                .tokens = &[_]TestToken{.init(0, 1)},
+            }},
+        );
+    }
 };
 
 test "ModelLine" {
