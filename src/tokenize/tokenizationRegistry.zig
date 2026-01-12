@@ -38,6 +38,16 @@ pub const TokenizationRegistry = struct {
     }
 
     pub fn deinit(self: *TokenizationRegistry) void {
+        const allocator = self._tokenizationSupports.allocator;
+        var iter = self._tokenizationSupports.valueIterator();
+        while (true) {
+            if (iter.next()) |tokenizationSupport| {
+                var support: *ITokenizationSupport = tokenizationSupport.*;
+                support.destroy(allocator);
+            } else {
+                break;
+            }
+        }
         self._tokenizationSupports.deinit();
         self._factories.deinit();
         self._onDidChange.deinit();

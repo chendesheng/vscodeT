@@ -425,9 +425,16 @@ pub const DefaultBackgroundTokenizer = struct {
                 .vtable = &.{
                     .requestTokens = requestTokens,
                     .reportMismatchingTokens = null,
+                    .destroy = destroy,
                 },
             },
         };
+    }
+
+    fn destroy(b: *IBackgroundTokenizer, allocator: Allocator) void {
+        const self = getSelf(b);
+        // self.backgroundTokenStore.destroy(allocator);
+        allocator.destroy(self);
     }
 
     pub fn dispose(self: *Self) void {

@@ -92,6 +92,7 @@ pub const ITokenizationSupport = struct {
         tokenizeEncoded: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult,
         // Can be/return undefined if default background tokenization should be used.
         createBackgroundTokenizer: ?*const fn (t: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) anyerror!?IBackgroundTokenizer,
+        destroy: *const fn (t: *ITokenizationSupport, allocator: Allocator) void,
     };
 
     pub fn getInitialState(self: *ITokenizationSupport) !IState {
@@ -109,9 +110,11 @@ pub const ITokenizationSupport = struct {
         }
         return null;
     }
-
     pub fn hasCreateBackgroundTokenizer(self: *ITokenizationSupport) bool {
         return self.vtable.createBackgroundTokenizer != null;
+    }
+    pub fn destroy(self: *ITokenizationSupport, allocator: Allocator) void {
+        self.vtable.destroy(self, allocator);
     }
 };
 
@@ -125,6 +128,7 @@ pub const IBackgroundTokenizer = struct {
         // when the change does not even propagate to that viewport.
         requestTokens: *const fn (b: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) anyerror!void,
         reportMismatchingTokens: ?*const fn (b: *IBackgroundTokenizer, lineNumber: usize) void,
+        destroy: *const fn (b: *IBackgroundTokenizer, allocator: Allocator) void,
     };
 
     pub fn requestTokens(self: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) !void {
@@ -134,6 +138,9 @@ pub const IBackgroundTokenizer = struct {
         if (self.vtable.reportMismatchingTokens) |r| {
             return r(self, lineNumber);
         }
+    }
+    pub fn destroy(self: *IBackgroundTokenizer, allocator: Allocator) void {
+        self.vtable.destroy(self, allocator);
     }
 };
 
@@ -146,6 +153,7 @@ pub const IBackgroundTokenizationStore = struct {
         // Should be called to indicate that the background tokenization has finished for now.
         // (This triggers bracket pair colorization to re-parse the bracket pairs with token information)
         backgroundTokenizationFinished: *const fn (b: *IBackgroundTokenizationStore) void,
+        destroy: *const fn (b: *IBackgroundTokenizationStore, allocator: Allocator) void,
     };
 
     pub fn setTokens(self: *IBackgroundTokenizationStore, tokens: []ContiguousMultilineTokens) !void {
@@ -156,6 +164,9 @@ pub const IBackgroundTokenizationStore = struct {
     }
     pub fn backgroundTokenizationFinished(self: *IBackgroundTokenizationStore) void {
         return self.vtable.backgroundTokenizationFinished(self);
+    }
+    pub fn destroy(self: *IBackgroundTokenizationStore, allocator: Allocator) void {
+        self.vtable.destroy(self, allocator);
     }
 };
 

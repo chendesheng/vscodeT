@@ -34,10 +34,20 @@ pub const ContiguousTokensStore = struct {
     }
 
     pub fn deinit(self: *ContiguousTokensStore) void {
+        for (self._lineTokens.items) |item| {
+            if (item) |t| {
+                t.deinit();
+            }
+        }
         self._lineTokens.deinit();
     }
 
     pub fn flush(self: *ContiguousTokensStore) void {
+        for (self._lineTokens.items) |item| {
+            if (item) |t| {
+                t.deinit();
+            }
+        }
         self._lineTokens.clearAndFree();
         self._len = 0;
     }
@@ -92,9 +102,9 @@ pub const ContiguousTokensStore = struct {
         }
 
         // Ensure the last token covers the end of the text
-        tokens[tokens.len - 2] = TokenPacked{
+        tokens[tokens.len - 1] = TokenPacked{
             .endOffset = @intCast(lineTextLength),
-            .metadata = tokens[tokens.len - 2].metadata,
+            .metadata = tokens[tokens.len - 1].metadata,
         };
 
         return tokens;
@@ -140,10 +150,11 @@ pub const ContiguousTokensStore = struct {
         try arrTokens.appendSlice(tokens);
         try self._ensureLine(lineIndex);
         const oldTokens = self._lineTokens.items[lineIndex];
+        defer if (oldTokens) |t| t.deinit();
         self._lineTokens.items[lineIndex] = arrTokens;
 
         if (checkEquality) {
-            return !ContiguousTokensStore._equals(oldTokens.?.items, tokens);
+            return !ContiguousTokensStore._equals(if (oldTokens) |t| t.items else null, tokens);
         }
         return false;
     }
@@ -240,7 +251,7 @@ pub const ContiguousTokensStore = struct {
             var minChangedLineNumber: usize = 0;
             var maxChangedLineNumber: usize = 0;
             var hasChange = false;
-            for (element.getStartLineNumber()..element.getEndLineNumber()) |lineNumber| {
+            for (element.getStartLineNumber()..element.getEndLineNumber() + 1) |lineNumber| {
                 if (hasChange) {
                     _ = try self.setTokens(
                         textModel.getLanguageId(),

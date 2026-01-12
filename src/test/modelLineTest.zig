@@ -89,11 +89,41 @@ const TestToken = struct {
     }
 };
 
+const NullBackgroundTokenizer = struct {
+    interface: IBackgroundTokenizer,
+    pub fn init() NullBackgroundTokenizer {
+        return .{
+            .interface = .{
+                .vtable = &.{
+                    .requestTokens = requestTokens,
+                    .reportMismatchingTokens = null,
+                    .destroy = destroy,
+                },
+            },
+        };
+    }
+
+    fn requestTokens(self: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) !void {
+        _ = self;
+        _ = startLineNumber;
+        _ = endLineNumberExclusive;
+    }
+    fn destroy(b: *IBackgroundTokenizer, allocator: Allocator) void {
+        const self = getSelf(b);
+        allocator.destroy(self);
+    }
+    fn getSelf(b: *IBackgroundTokenizer) *NullBackgroundTokenizer {
+        return @alignCast(@fieldParentPtr("interface", b));
+    }
+};
+
 const ManualTokenizationSupport = struct {
     interface: ITokenizationSupport,
     allocator: Allocator,
     tokens: AutoHashMap(usize, []TokenPacked),
     stores: ArrayList(*IBackgroundTokenizationStore),
+
+    const nullBackgroundTokenizer = NullBackgroundTokenizer.init().interface;
 
     pub fn init(allocator: Allocator) ManualTokenizationSupport {
         return ManualTokenizationSupport{
@@ -103,12 +133,22 @@ const ManualTokenizationSupport = struct {
                     .tokenize = tokenize,
                     .tokenizeEncoded = tokenizeEncoded,
                     .createBackgroundTokenizer = createBackgroundTokenizer,
+                    .destroy = destroy,
                 },
             },
             .allocator = allocator,
             .tokens = AutoHashMap(usize, []TokenPacked).init(allocator),
             .stores = ArrayList(*IBackgroundTokenizationStore).init(allocator),
         };
+    }
+
+    fn destroy(t: *ITokenizationSupport, allocator: Allocator) void {
+        const self = getSelf(t);
+        self.tokens.deinit();
+        for (self.stores.items) |s| {
+            s.destroy(allocator);
+        }
+        self.stores.deinit();
     }
 
     pub fn setLineTokens(self: *ManualTokenizationSupport, lineNumber: usize, tokens: []const TokenPacked) !void {
@@ -148,9 +188,10 @@ const ManualTokenizationSupport = struct {
 
     // Can be/return undefined if default background tokenization should be used.
     pub fn createBackgroundTokenizer(t: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) !?IBackgroundTokenizer {
+        std.debug.print("createBackgroundTokenizer: {any}\n", .{store});
         _ = textModel;
         try getSelf(t).stores.append(store);
-        return null;
+        return nullBackgroundTokenizer;
     }
 
     fn getSelf(s: *ITokenizationSupport) *ManualTokenizationSupport {

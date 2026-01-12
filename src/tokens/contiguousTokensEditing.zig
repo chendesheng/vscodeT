@@ -45,9 +45,9 @@ pub const ContiguousTokensEditing = struct {
 
         if (toChIndex < fromTokenEndOffset) {
             // the delete range is inside a single token
-            const delta: u32 = @intCast(-usizeSub(toChIndex, fromChIndex));
+            const delta = usizeSub(toChIndex, fromChIndex);
             for (fromTokenIndex..tokensCount) |i| {
-                tokens[i].endOffset += delta;
+                tokens[i].endOffset = @intCast(@as(isize, @intCast(tokens[i].endOffset)) - delta);
             }
             return;
         }
