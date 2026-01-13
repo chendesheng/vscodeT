@@ -126,6 +126,11 @@ pub const ContiguousTokensStore = struct {
         if (start + deleteCount > self._len) {
             deleteCount = self._len - start;
         }
+        for (start..start + deleteCount) |i| {
+            if (self._lineTokens.items[i]) |t| {
+                t.deinit();
+            }
+        }
         try self._lineTokens.replaceRange(start, deleteCount, &[_]?ArrayList(TokenPacked){});
         self._len -= deleteCount;
     }

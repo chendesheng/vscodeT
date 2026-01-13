@@ -363,6 +363,215 @@ const ModelLinesTokensTests = struct {
             }},
         );
     }
+
+    test "multi delete 7" {
+        try testApplyEdits(
+            &[_]IBufferLineState{ .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }, .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 4), .init(5, 5), .init(6, 6) },
+            }, .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 7), .init(5, 8), .init(6, 9) },
+            } },
+            &[_]IEdit{.{ .range = .init(1, 12, 3, 12), .text = "" }},
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+        );
+    }
+
+    test "multi delete 8" {
+        try testApplyEdits(
+            &[_]IBufferLineState{ .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }, .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 4), .init(5, 5), .init(6, 6) },
+            }, .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 7), .init(5, 8), .init(6, 9) },
+            } },
+            &[_]IEdit{.{ .range = .init(1, 1, 3, 1), .text = "" }},
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 7), .init(5, 8), .init(6, 9) },
+            }},
+        );
+    }
+
+    test "multi delete 9" {
+        try testApplyEdits(
+            &[_]IBufferLineState{ .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }, .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 4), .init(5, 5), .init(6, 6) },
+            }, .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 7), .init(5, 8), .init(6, 9) },
+            } },
+            &[_]IEdit{.{ .range = .init(1, 12, 3, 1), .text = "" }},
+            &[_]IBufferLineState{.{
+                .text = "hello worldhello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3), .init(11, 7), .init(16, 8), .init(17, 9) },
+            }},
+        );
+    }
+
+    test "single insert 1" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 1, 1, 1), .text = "xx" }},
+            &[_]IBufferLineState{.{
+                .text = "xxhello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(7, 2), .init(8, 3) },
+            }},
+        );
+    }
+
+    test "single insert 2" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 2, 1, 2), .text = "xx" }},
+            &[_]IBufferLineState{.{
+                .text = "hxxello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(7, 2), .init(8, 3) },
+            }},
+        );
+    }
+
+    test "single insert 3" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 6, 1, 6), .text = "xx" }},
+            &[_]IBufferLineState{.{
+                .text = "helloxx world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(7, 2), .init(8, 3) },
+            }},
+        );
+    }
+
+    test "single insert 4" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 7, 1, 7), .text = "xx" }},
+            &[_]IBufferLineState{.{
+                .text = "hello xxworld",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(8, 3) },
+            }},
+        );
+    }
+
+    test "single insert 5" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 12, 1, 12), .text = "xx" }},
+            &[_]IBufferLineState{.{
+                .text = "hello worldxx",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+        );
+    }
+
+    test "multi insert 6" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 1, 1, 1), .text = "\n" }},
+            &[_]IBufferLineState{ .{
+                .text = "",
+                .tokens = &[_]TestToken{.init(0, 1)},
+            }, .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{.init(0, 1)},
+            } },
+        );
+    }
+
+    test "multi insert 7" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 12, 1, 12), .text = "\n" }},
+            &[_]IBufferLineState{ .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }, .{
+                .text = "",
+                .tokens = &[_]TestToken{.init(0, 1)},
+            } },
+        );
+    }
+
+    test "multi insert 8" {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }},
+            &[_]IEdit{.{ .range = .init(1, 7, 1, 7), .text = "\n" }},
+            &[_]IBufferLineState{ .{
+                .text = "hello ",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2) },
+            }, .{
+                .text = "world",
+                .tokens = &[_]TestToken{.init(0, 1)},
+            } },
+        );
+    }
+
+    test "multi insert 9" {
+        try testApplyEdits(&[_]IBufferLineState{
+            .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            },
+            .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 4), .init(5, 5), .init(6, 6) },
+            },
+        }, &[_]IEdit{
+            .{ .range = .init(1, 7, 1, 7), .text = "xx\nyy" },
+        }, &[_]IBufferLineState{
+            .{
+                .text = "hello xx",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2) },
+            },
+            .{
+                .text = "yyworld",
+                .tokens = &[_]TestToken{.init(0, 1)},
+            },
+            .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 4), .init(5, 5), .init(6, 6) },
+            },
+        });
+    }
 };
 
 test "ModelLine" {

@@ -88,7 +88,9 @@ pub const ContiguousTokensEditing = struct {
             return _lineTokens;
         }
         if (_lineTokens != null and _lineTokens.?.items.len == 0) {
-            return _otherTokens;
+            var lineTokens = _lineTokens.?;
+            try lineTokens.appendSlice(_otherTokens.?.items);
+            return lineTokens;
         }
         if (_lineTokens == null) {
             return null;
@@ -98,17 +100,16 @@ pub const ContiguousTokensEditing = struct {
             return null;
         }
 
-        const myTokens = _lineTokens.?;
+        var lineTokens = _lineTokens.?;
 
-        var result = try myTokens.clone();
-        const delta = result.getLast().endOffset;
+        const delta = lineTokens.getLast().endOffset;
         for (_otherTokens.?.items) |token| {
-            try result.append(TokenPacked{
+            try lineTokens.append(TokenPacked{
                 .endOffset = token.endOffset + delta,
                 .metadata = token.metadata,
             });
         }
-        return result;
+        return lineTokens;
     }
 
     pub fn insert(_lineTokens: ?ArrayList(TokenPacked), chIndex: usize, textLength: usize) !?ArrayList(TokenPacked) {

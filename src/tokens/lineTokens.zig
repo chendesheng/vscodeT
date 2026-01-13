@@ -111,7 +111,7 @@ pub const LineTokens = struct {
     }
 
     pub fn findIndexInTokensArray(tokens: []TokenPacked, desiredIndex: usize) usize {
-        if (tokens.len <= 2) {
+        if (tokens.len <= 1) {
             return 0;
         }
 
