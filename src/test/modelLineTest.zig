@@ -572,6 +572,770 @@ const ModelLinesTokensTests = struct {
             },
         });
     }
+
+    fn testLineEditTokens(initialText: []const u8, initialTokens: []const TestToken, lineEdits: []const LineEdit, expectedText: []const u8, expectedTokens: []const TestToken) !void {
+        var edits = ArrayList(IEdit).init(allocator);
+        defer edits.deinit();
+        for (lineEdits) |lineEdit| {
+            try edits.append(.{ .range = .init(1, lineEdit.startColumn, 1, lineEdit.endColumn), .text = lineEdit.text });
+        }
+        try testApplyEdits(
+            &[_]IBufferLineState{.{ .text = initialText, .tokens = initialTokens }},
+            edits.items,
+            &[_]IBufferLineState{.{ .text = expectedText, .tokens = expectedTokens }},
+        );
+    }
+
+    test "insertion on empty line" {
+        var s = ManualTokenizationSupport.init(allocator);
+        try TokenizationRegistry.instance(allocator).register("test", &s.interface);
+
+        const model = try createTextModel(allocator, "some text", "test", null);
+        defer disposeTextModel(model);
+        const tokens = (try TestToken.toTokens(allocator, &[_]TestToken{.init(0, 1)})).?;
+        defer allocator.free(tokens);
+        LineTokens.convertToEndOffset(tokens, @intCast(model.getLineMaxColumn(1) - 1));
+        try s.setLineTokens(1, tokens);
+
+        const editOps = try IEdit.toEditOps(&[_]IEdit{.{ .range = .init(1, 1, 1, 10), .text = "" }});
+        defer allocator.free(editOps);
+        _ = try model.applyEdits(editOps, null);
+        try s.setLineTokens(1, &[_]TokenPacked{});
+
+        const editOps2 = try IEdit.toEditOps(&[_]IEdit{.{ .range = .init(1, 1, 1, 1), .text = "a" }});
+        defer allocator.free(editOps2);
+        _ = try model.applyEdits(editOps2, null);
+
+        var actualTokens = try model.tokenization().getLineTokens(1);
+        defer actualTokens.deinit();
+        try assertLineTokens(&[_]TestToken{.init(0, 1)}, actualTokens);
+    }
+
+    test "updates tokens on insertion 1" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 1,
+                .endColumn = 1,
+                .text = "a",
+            }},
+            "aabcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(5, 2),
+                .init(6, 3),
+            },
+        );
+    }
+
+    test "updates tokens on insertion 2" {
+        try testLineEditTokens(
+            "aabcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(5, 2),
+                .init(6, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 2,
+                .endColumn = 2,
+                .text = "x",
+            }},
+            "axabcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(6, 2),
+                .init(7, 3),
+            },
+        );
+    }
+
+    test "updates tokens on insertion 3" {
+        try testLineEditTokens(
+            "axabcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(6, 2),
+                .init(7, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 3,
+                .endColumn = 3,
+                .text = "stu",
+            }},
+            "axstuabcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(9, 2),
+                .init(10, 3),
+            },
+        );
+    }
+
+    test "updates tokens on insertion 4" {
+        try testLineEditTokens(
+            "axstuabcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(9, 2),
+                .init(10, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 10,
+                .endColumn = 10,
+                .text = "\t",
+            }},
+            "axstuabcd\t efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(10, 2),
+                .init(11, 3),
+            },
+        );
+    }
+
+    test "updates tokens on insertion 5" {
+        try testLineEditTokens(
+            "axstuabcd\t efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(10, 2),
+                .init(11, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 12,
+                .endColumn = 12,
+                .text = "dd",
+            }},
+            "axstuabcd\t ddefgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(10, 2),
+                .init(13, 3),
+            },
+        );
+    }
+
+    test "updates tokens on insertion 6" {
+        try testLineEditTokens(
+            "axstuabcd\t ddefgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(10, 2),
+                .init(13, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 18,
+                .endColumn = 18,
+                .text = "xyz",
+            }},
+            "axstuabcd\t ddefghxyz",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(10, 2),
+                .init(13, 3),
+            },
+        );
+    }
+
+    test "updates tokens on insertion 7" {
+        try testLineEditTokens(
+            "axstuabcd\t ddefghxyz",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(10, 2),
+                .init(13, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 1,
+                .endColumn = 1,
+                .text = "x",
+            }},
+            "xaxstuabcd\t ddefghxyz",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(11, 2),
+                .init(14, 3),
+            },
+        );
+    }
+
+    test "updates tokens on insertion 8" {
+        try testLineEditTokens(
+            "xaxstuabcd\t ddefghxyz",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(11, 2),
+                .init(14, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 22,
+                .endColumn = 22,
+                .text = "x",
+            }},
+            "xaxstuabcd\t ddefghxyzx",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(11, 2),
+                .init(14, 3),
+            },
+        );
+    }
+
+    test "updates tokens on insertion 9" {
+        try testLineEditTokens(
+            "xaxstuabcd\t ddefghxyzx",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(11, 2),
+                .init(14, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 2,
+                .endColumn = 2,
+                .text = "",
+            }},
+            "xaxstuabcd\t ddefghxyzx",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(11, 2),
+                .init(14, 3),
+            },
+        );
+    }
+
+    test "updates tokens on insertion 10" {
+        try testLineEditTokens(
+            "",
+            &[_]TestToken{},
+            &[_]LineEdit{.{
+                .startColumn = 1,
+                .endColumn = 1,
+                .text = "a",
+            }},
+            "a",
+            &[_]TestToken{
+                .init(0, 1),
+            },
+        );
+    }
+
+    test "delete second token 2" {
+        try testLineEditTokens(
+            "abcdefghij",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(3, 2),
+                .init(6, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 4,
+                .endColumn = 7,
+                .text = "",
+            }},
+            "abcghij",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(3, 3),
+            },
+        );
+    }
+
+    test "insert right before second token" {
+        try testLineEditTokens(
+            "abcdefghij",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(3, 2),
+                .init(6, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 4,
+                .endColumn = 4,
+                .text = "hello",
+            }},
+            "abchellodefghij",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(8, 2),
+                .init(11, 3),
+            },
+        );
+    }
+
+    test "delete first char" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 1,
+                .endColumn = 2,
+                .text = "",
+            }},
+            "bcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(3, 2),
+                .init(4, 3),
+            },
+        );
+    }
+
+    test "delete 2nd and 3rd chars" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 2,
+                .endColumn = 4,
+                .text = "",
+            }},
+            "ad efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(2, 2),
+                .init(3, 3),
+            },
+        );
+    }
+
+    test "delete first token" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 1,
+                .endColumn = 5,
+                .text = "",
+            }},
+            " efgh",
+            &[_]TestToken{
+                .init(0, 2),
+                .init(1, 3),
+            },
+        );
+    }
+
+    test "delete second token" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 5,
+                .endColumn = 6,
+                .text = "",
+            }},
+            "abcdefgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 3),
+            },
+        );
+    }
+
+    test "delete second token + a bit of the third one" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 5,
+                .endColumn = 7,
+                .text = "",
+            }},
+            "abcdfgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 3),
+            },
+        );
+    }
+
+    test "delete second and third token" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 5,
+                .endColumn = 10,
+                .text = "",
+            }},
+            "abcd",
+            &[_]TestToken{
+                .init(0, 1),
+            },
+        );
+    }
+
+    test "delete everything" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 1,
+                .endColumn = 10,
+                .text = "",
+            }},
+            "",
+            &[_]TestToken{
+                .init(0, 1),
+            },
+        );
+    }
+
+    test "noop" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 1,
+                .endColumn = 1,
+                .text = "",
+            }},
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+        );
+    }
+
+    test "equivalent to deleting first two chars" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 1,
+                .endColumn = 3,
+                .text = "",
+            }},
+            "cd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(2, 2),
+                .init(3, 3),
+            },
+        );
+    }
+
+    test "equivalent to deleting from 5 to the end" {
+        try testLineEditTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 5,
+                .endColumn = 10,
+                .text = "",
+            }},
+            "abcd",
+            &[_]TestToken{
+                .init(0, 1),
+            },
+        );
+    }
+
+    test "updates tokens on replace 1" {
+        try testLineEditTokens(
+            "Hello world, ciao",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(5, 0),
+                .init(6, 2),
+                .init(11, 0),
+                .init(13, 0),
+            },
+            &[_]LineEdit{.{
+                .startColumn = 1,
+                .endColumn = 6,
+                .text = "Hi",
+            }},
+            "Hi world, ciao",
+            &[_]TestToken{
+                .init(0, 0),
+                .init(3, 2),
+                .init(8, 0),
+                .init(10, 0),
+            },
+        );
+    }
+
+    test "updates tokens on replace 2" {
+        try testLineEditTokens(
+            "Hello world, ciao",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(5, 0),
+                .init(6, 2),
+                .init(11, 0),
+                .init(13, 0),
+            },
+            &[_]LineEdit{
+                .{
+                    .startColumn = 1,
+                    .endColumn = 6,
+                    .text = "Hi",
+                },
+                .{
+                    .startColumn = 8,
+                    .endColumn = 12,
+                    .text = "my friends",
+                },
+            },
+            "Hi wmy friends, ciao",
+            &[_]TestToken{
+                .init(0, 0),
+                .init(3, 2),
+                .init(14, 0),
+                .init(16, 0),
+            },
+        );
+    }
+
+    fn testLineSplitTokens(initialText: []const u8, initialTokens: []const TestToken, splitColumn: usize, expectedText1: []const u8, expectedText2: []const u8, expectedTokens: []const TestToken) !void {
+        try testApplyEdits(
+            &[_]IBufferLineState{.{ .text = initialText, .tokens = initialTokens }},
+            &[_]IEdit{.{
+                .range = .init(1, splitColumn, 1, splitColumn),
+                .text = "\n",
+            }},
+            &[_]IBufferLineState{ .{ .text = expectedText1, .tokens = expectedTokens }, .{
+                .text = expectedText2,
+                .tokens = &[_]TestToken{.init(0, 1)},
+            } },
+        );
+    }
+
+    test "split at the beginning" {
+        try testLineSplitTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            1,
+            "",
+            "abcd efgh",
+            &[_]TestToken{.init(0, 1)},
+        );
+    }
+
+    test "split at the end" {
+        try testLineSplitTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            10,
+            "abcd efgh",
+            "",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+        );
+    }
+
+    test "split inthe middle 1" {
+        try testLineSplitTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            5,
+            "abcd",
+            " efgh",
+            &[_]TestToken{
+                .init(0, 1),
+            },
+        );
+    }
+
+    test "split inthe middle 2" {
+        try testLineSplitTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            6,
+            "abcd ",
+            "efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+            },
+        );
+    }
+
+    fn testLineAppendTokens(aText: []const u8, aTokens: []const TestToken, bText: []const u8, bTokens: []const TestToken, expectedText: []const u8, expectedTokens: []const TestToken) !void {
+        try testApplyEdits(
+            &[_]IBufferLineState{
+                .{ .text = aText, .tokens = aTokens },
+                .{ .text = bText, .tokens = bTokens },
+            },
+            &[_]IEdit{.{
+                .range = .init(1, aText.len + 1, 2, 1),
+                .text = "",
+            }},
+            &[_]IBufferLineState{.{ .text = expectedText, .tokens = expectedTokens }},
+        );
+    }
+
+    test "append empty 1" {
+        try testLineAppendTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            "",
+            &[_]TestToken{},
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+        );
+    }
+
+    test "append empty 2" {
+        try testLineAppendTokens(
+            "",
+            &[_]TestToken{},
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+        );
+    }
+
+    test "append 1" {
+        try testLineAppendTokens(
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 4),
+                .init(4, 5),
+                .init(5, 6),
+            },
+            "abcd efghabcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+                .init(9, 4),
+                .init(13, 5),
+                .init(14, 6),
+            },
+        );
+    }
+
+    test "append 2" {
+        try testLineAppendTokens(
+            "abcd ",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+            },
+            "efgh",
+            &[_]TestToken{
+                .init(0, 3),
+            },
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+        );
+    }
+
+    test "append 3" {
+        try testLineAppendTokens(
+            "abcd",
+            &[_]TestToken{
+                .init(0, 1),
+            },
+            " efgh",
+            &[_]TestToken{
+                .init(0, 2),
+                .init(1, 3),
+            },
+            "abcd efgh",
+            &[_]TestToken{
+                .init(0, 1),
+                .init(4, 2),
+                .init(5, 3),
+            },
+        );
+    }
 };
 
 test "ModelLine" {

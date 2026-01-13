@@ -890,9 +890,12 @@ pub const PieceTreeBase = struct {
 
     // returns 0-based indices, end side is exclusive
     pub fn getLineCodepointRange(self: *const PieceTreeBase, lineNumber: usize, index: usize) [2]usize {
-        const nodePos = self.nodeAt2(lineNumber, index + 1).?;
-        const range = self._getCodepointRelativeRange(nodePos);
-        return [2]usize{ usizeAdd(index, range[0]), usizeAdd(index, range[1]) };
+        if (self.nodeAt2(lineNumber, index + 1)) |nodePos| {
+            const range = self._getCodepointRelativeRange(nodePos);
+            return [2]usize{ usizeAdd(index, range[0]), usizeAdd(index, range[1]) };
+        } else {
+            return [2]usize{ index, index };
+        }
     }
 
     pub fn getLineLength(self: *const PieceTreeBase, lineNumber: usize) usize {

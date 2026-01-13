@@ -103,6 +103,10 @@ pub const LineTokens = struct {
     }
 
     pub fn convertToEndOffset(tokens: []TokenPacked, lineTextLength: u32) void {
+        if (tokens.len == 0) {
+            return;
+        }
+
         const lastTokenIndex = tokens.len - 1;
         for (0..lastTokenIndex) |tokenIndex| {
             tokens[tokenIndex].endOffset = tokens[tokenIndex + 1].endOffset;
