@@ -7,36 +7,36 @@ const TokenPacked = @import("lineTokens.zig").TokenPacked;
 
 pub const EMPTY_LINE_TOKENS: []TokenPacked = &[_]TokenPacked{};
 pub const ContiguousTokensEditing = struct {
-    pub fn deleteBeginning(_lineTokens: *?ArrayList(TokenPacked), toChIndex: usize) !void {
-        if (_lineTokens.* == null or _lineTokens.*.?.items.len == 0) {
-            return;
+    pub fn deleteBeginning(_lineTokens: ?ArrayList(TokenPacked), toChIndex: usize) !?ArrayList(TokenPacked) {
+        if (_lineTokens == null or _lineTokens.?.items.len == 0) {
+            return _lineTokens;
         }
 
-        try ContiguousTokensEditing.delete(_lineTokens, 0, toChIndex);
+        return try ContiguousTokensEditing.delete(_lineTokens, 0, toChIndex);
     }
 
-    pub fn deleteEnding(_lineTokens: *?ArrayList(TokenPacked), fromChIndex: usize) !void {
-        if (_lineTokens.* == null or _lineTokens.*.?.items.len == 0) {
-            return;
+    pub fn deleteEnding(_lineTokens: ?ArrayList(TokenPacked), fromChIndex: usize) !?ArrayList(TokenPacked) {
+        if (_lineTokens == null or _lineTokens.?.items.len == 0) {
+            return _lineTokens;
         }
 
-        const lineTextLength = _lineTokens.*.?.getLast().endOffset;
-        try ContiguousTokensEditing.delete(_lineTokens, fromChIndex, lineTextLength);
+        const lineTextLength = _lineTokens.?.getLast().endOffset;
+        return try ContiguousTokensEditing.delete(_lineTokens, fromChIndex, lineTextLength);
     }
 
-    pub fn delete(_lineTokens: *?ArrayList(TokenPacked), fromChIndex: usize, toChIndex: usize) !void {
-        if (_lineTokens.* == null or _lineTokens.*.?.items.len == 0 or fromChIndex == toChIndex) {
-            return;
+    pub fn delete(_lineTokens: ?ArrayList(TokenPacked), fromChIndex: usize, toChIndex: usize) !?ArrayList(TokenPacked) {
+        if (_lineTokens == null or _lineTokens.?.items.len == 0 or fromChIndex == toChIndex) {
+            return _lineTokens;
         }
 
-        const lineTokens = &_lineTokens.*.?;
-        var tokens: []TokenPacked = lineTokens.items;
+        var lineTokens = _lineTokens.?;
+        var tokens: []TokenPacked = _lineTokens.?.items;
         const tokensCount = tokens.len;
 
         // special case: deleting everything
         if (fromChIndex == 0 and lineTokens.getLast().endOffset == toChIndex) {
             try lineTokens.resize(0);
-            return;
+            return lineTokens;
         }
 
         const fromTokenIndex = LineTokens.findIndexInTokensArray(tokens, fromChIndex);
@@ -49,7 +49,7 @@ pub const ContiguousTokensEditing = struct {
             for (fromTokenIndex..tokensCount) |i| {
                 tokens[i].endOffset = @intCast(@as(isize, @intCast(tokens[i].endOffset)) - delta);
             }
-            return;
+            return lineTokens;
         }
 
         var dest: usize = undefined;
@@ -76,50 +76,49 @@ pub const ContiguousTokensEditing = struct {
 
         if (dest == tokens.len) {
             // nothing to trim
-            return;
+            return lineTokens;
         }
 
         try lineTokens.resize(dest);
+        return lineTokens;
     }
 
-    pub fn append(_lineTokens: *?ArrayList(TokenPacked), _otherTokens: *?ArrayList(TokenPacked)) !void {
-        if (_otherTokens.* != null and _otherTokens.*.?.items.len == 0) {
-            return;
+    pub fn append(_lineTokens: ?ArrayList(TokenPacked), _otherTokens: ?ArrayList(TokenPacked)) !?ArrayList(TokenPacked) {
+        if (_otherTokens != null and _otherTokens.?.items.len == 0) {
+            return _lineTokens;
         }
-        if (_lineTokens.* != null and _lineTokens.*.?.items.len == 0) {
-            _lineTokens.* = _otherTokens.*;
-            return;
+        if (_lineTokens != null and _lineTokens.?.items.len == 0) {
+            return _otherTokens;
         }
-        if (_lineTokens.* == null) {
-            return;
+        if (_lineTokens == null) {
+            return null;
         }
-        if (_otherTokens.* == null) {
+        if (_otherTokens == null) {
             // cannot determine combined line length...
-            _lineTokens.* = null;
-            return;
+            return null;
         }
 
-        var lineTokens = &_lineTokens.*.?;
-        const myTokens: []TokenPacked = lineTokens.items;
+        const myTokens = _lineTokens.?;
 
-        try lineTokens.appendSlice(myTokens);
-        const delta = lineTokens.getLast().endOffset;
-        for (_otherTokens.*.?.items) |token| {
-            try lineTokens.append(TokenPacked{
+        var result = try myTokens.clone();
+        const delta = result.getLast().endOffset;
+        for (_otherTokens.?.items) |token| {
+            try result.append(TokenPacked{
                 .endOffset = token.endOffset + delta,
                 .metadata = token.metadata,
             });
         }
+        return result;
     }
 
-    pub fn insert(_lineTokens: *?ArrayList(TokenPacked), chIndex: usize, textLength: usize) void {
-        if (_lineTokens.* == null or _lineTokens.*.?.items.len == 0) {
+    pub fn insert(_lineTokens: ?ArrayList(TokenPacked), chIndex: usize, textLength: usize) !?ArrayList(TokenPacked) {
+        if (_lineTokens == null or _lineTokens.?.items.len == 0) {
             // nothing to do
-            return;
+            return _lineTokens;
         }
 
-        const lineTokens = &_lineTokens.*.?;
-        const tokens = lineTokens.items;
+        const lineTokens = _lineTokens.?;
+        const tokens = _lineTokens.?.items;
 
         var fromTokenIndex = LineTokens.findIndexInTokensArray(tokens, chIndex);
         if (fromTokenIndex > 0) {
@@ -131,5 +130,6 @@ pub const ContiguousTokensEditing = struct {
         for (tokens[fromTokenIndex..]) |*token| {
             token.endOffset += @intCast(textLength);
         }
+        return lineTokens;
     }
 };

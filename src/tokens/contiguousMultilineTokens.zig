@@ -167,20 +167,20 @@ pub const ContiguousMultilineTokens = struct {
 
         if (firstLineIndex == lastLineIndex) {
             // a delete on a single line
-            try ContiguousTokensEditing.delete(firstLineTokens, range.startColumn - 1, range.endColumn - 1);
+            firstLineTokens.* = try ContiguousTokensEditing.delete(firstLineTokens.*, range.startColumn - 1, range.endColumn - 1);
             return;
         }
 
         if (firstLineIndex >= 0) {
             // The first line survives
-            try ContiguousTokensEditing.deleteEnding(firstLineTokens, range.startColumn - 1);
+            firstLineTokens.* = try ContiguousTokensEditing.deleteEnding(firstLineTokens.*, range.startColumn - 1);
 
             if (lastLineIndex < self._tokens.items.len) {
                 // The last line survives
-                try ContiguousTokensEditing.deleteBeginning(lastLineTokens, range.endColumn - 1);
+                lastLineTokens.* = try ContiguousTokensEditing.deleteBeginning(lastLineTokens.*, range.endColumn - 1);
 
                 // Take remaining text on last line and append it to remaining text on first line
-                try ContiguousTokensEditing.append(firstLineTokens, lastLineTokens);
+                firstLineTokens.* = try ContiguousTokensEditing.append(firstLineTokens.*, lastLineTokens.*);
 
                 // Delete middle lines
                 try self._tokens.replaceRange(firstLineIndex + 1, lastLineIndex - firstLineIndex, &[_]?ArrayList(TokenPacked){});
@@ -188,8 +188,7 @@ pub const ContiguousMultilineTokens = struct {
                 // The last line does not survive
 
                 // Take remaining text on last line and append it to remaining text on first line
-                var nullItem: ?ArrayList(TokenPacked) = null;
-                try ContiguousTokensEditing.append(firstLineTokens, &nullItem);
+                firstLineTokens.* = try ContiguousTokensEditing.append(firstLineTokens.*, null);
 
                 // Delete lines
                 try self._tokens.resize(firstLineIndex + 1);
@@ -201,7 +200,7 @@ pub const ContiguousMultilineTokens = struct {
             self._startLineNumber -= deletedBefore;
 
             // Remove beginning from last line
-            try ContiguousTokensEditing.deleteBeginning(lastLineTokens, range.endColumn - 1);
+            lastLineTokens.* = try ContiguousTokensEditing.deleteBeginning(lastLineTokens.*, range.endColumn - 1);
 
             // Delete lines
             try self._tokens.replaceRange(0, lastLineIndex, &[_]ArrayList(TokenPacked){});
@@ -229,12 +228,12 @@ pub const ContiguousMultilineTokens = struct {
         const lineTokens = &self._tokens.items[lineIndex];
         if (eolCount == 0) {
             // Inserting text on one line
-            ContiguousTokensEditing.insert(lineTokens, position.column - 1, firstLineLength);
+            lineTokens.* = try ContiguousTokensEditing.insert(lineTokens.*, position.column - 1, firstLineLength);
             return;
         }
 
-        try ContiguousTokensEditing.deleteEnding(lineTokens, position.column - 1);
-        ContiguousTokensEditing.insert(lineTokens, position.column - 1, firstLineLength);
+        lineTokens.* = try ContiguousTokensEditing.deleteEnding(lineTokens.*, position.column - 1);
+        lineTokens.* = try ContiguousTokensEditing.insert(lineTokens.*, position.column - 1, firstLineLength);
 
         try self._insertLines(position.lineNumber, eolCount);
     }

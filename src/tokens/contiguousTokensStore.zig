@@ -195,20 +195,20 @@ pub const ContiguousTokensStore = struct {
                 return;
             }
 
-            try ContiguousTokensEditing.delete(&self._lineTokens.items[firstLineIndex], range.startColumn - 1, range.endColumn - 1);
+            self._lineTokens.items[firstLineIndex] = try ContiguousTokensEditing.delete(self._lineTokens.items[firstLineIndex], range.startColumn - 1, range.endColumn - 1);
             return;
         }
 
-        try ContiguousTokensEditing.deleteEnding(&self._lineTokens.items[firstLineIndex], range.startColumn - 1);
+        self._lineTokens.items[firstLineIndex] = try ContiguousTokensEditing.deleteEnding(self._lineTokens.items[firstLineIndex], range.startColumn - 1);
 
         const lastLineIndex = range.endLineNumber - 1;
         const lastLineTokens = &self._lineTokens.items[lastLineIndex];
         if (lastLineIndex < self._len) {
-            try ContiguousTokensEditing.deleteBeginning(lastLineTokens, range.endColumn - 1);
+            lastLineTokens.* = try ContiguousTokensEditing.deleteBeginning(lastLineTokens.*, range.endColumn - 1);
         }
 
         // Take remaining text on last line and append it to remaining text on first line
-        try ContiguousTokensEditing.append(&self._lineTokens.items[firstLineIndex], lastLineTokens);
+        self._lineTokens.items[firstLineIndex] = try ContiguousTokensEditing.append(self._lineTokens.items[firstLineIndex], lastLineTokens.*);
 
         // Delete middle lines
         try self._deleteLines(range.startLineNumber, range.endLineNumber - range.startLineNumber);
@@ -225,15 +225,15 @@ pub const ContiguousTokensStore = struct {
             return;
         }
 
-        const lineTokens = &self._lineTokens.items[lineIndex];
+        var lineTokens = self._lineTokens.items;
         if (eolCount == 0) {
             // Inserting text on one line
-            ContiguousTokensEditing.insert(lineTokens, position.column - 1, firstLineLength);
+            lineTokens[lineIndex] = try ContiguousTokensEditing.insert(lineTokens[lineIndex], position.column - 1, firstLineLength);
             return;
         }
 
-        try ContiguousTokensEditing.deleteEnding(lineTokens, position.column - 1);
-        ContiguousTokensEditing.insert(lineTokens, position.column - 1, firstLineLength);
+        lineTokens[lineIndex] = try ContiguousTokensEditing.deleteEnding(lineTokens[lineIndex], position.column - 1);
+        lineTokens[lineIndex] = try ContiguousTokensEditing.insert(lineTokens[lineIndex], position.column - 1, firstLineLength);
 
         try self._insertLines(position.lineNumber, eolCount);
     }

@@ -343,6 +343,26 @@ const ModelLinesTokensTests = struct {
             }},
         );
     }
+
+    test "multi delete 6" {
+        try testApplyEdits(
+            &[_]IBufferLineState{ .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 2), .init(6, 3) },
+            }, .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 4), .init(5, 5), .init(6, 6) },
+            }, .{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 7), .init(5, 8), .init(6, 9) },
+            } },
+            &[_]IEdit{.{ .range = .init(1, 6, 3, 6), .text = "" }},
+            &[_]IBufferLineState{.{
+                .text = "hello world",
+                .tokens = &[_]TestToken{ .init(0, 1), .init(5, 8), .init(6, 9) },
+            }},
+        );
+    }
 };
 
 test "ModelLine" {
