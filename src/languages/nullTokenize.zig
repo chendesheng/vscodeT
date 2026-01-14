@@ -12,7 +12,7 @@ const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardToken
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const TokenPacked = @import("../tokens/lineTokens.zig").TokenPacked;
 
-const nullState = IState{ .data = &[_]u8{} };
+pub const nullState = IState{ .data = &[_]u8{} };
 
 pub fn nullTokenize(languageId: []u8, state: IState) TokenizationResult {
     return TokenizationResult.init(ArrayList(Token).init(Token.init(0, languageId, 0)), state);
