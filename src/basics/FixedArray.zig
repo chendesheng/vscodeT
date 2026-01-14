@@ -70,9 +70,9 @@ pub fn FixedArray(comptime T: type) type {
                 return;
             }
 
-            _ = try self._store.addManyAt(insertIndex, insertCount);
-            for (0..insertCount) |i| {
-                self._store.items[insertIndex + i] = self._default;
+            const newItems = try self._store.addManyAt(insertIndex, insertCount);
+            for (newItems) |*item| {
+                item.* = self._default;
             }
         }
 
