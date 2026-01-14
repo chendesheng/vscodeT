@@ -323,6 +323,82 @@ const ModelModes2Tests = struct {
         try thisModel.tokenization().forceTokenization(5);
         try assertResult(&[_][]const u8{ "Line1-", "Line2" });
     }
+
+    test "getTokensForInvalidLines two text insert" {
+        const thisModel = try setup();
+        defer teardown(thisModel);
+
+        try thisModel.tokenization().forceTokenization(5);
+        try assertResult(&[_][]const u8{ "Line1", "Line2", "Line3", "Line4", "Line5" });
+        _ = try thisModel.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = .init(1, 6, 1, 6),
+            .text = .initBorrowed("-"),
+        }}, null);
+        _ = try thisModel.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = .init(3, 6, 3, 6),
+            .text = .initBorrowed("-"),
+        }}, null);
+
+        try thisModel.tokenization().forceTokenization(5);
+        try assertResult(&[_][]const u8{ "Line1-", "Line2", "Line3-", "Line4" });
+    }
+
+    test "getTokensForInvalidLines one multi-line text insert, one small text insert" {
+        const thisModel = try setup();
+        defer teardown(thisModel);
+
+        try thisModel.tokenization().forceTokenization(5);
+        try assertResult(&[_][]const u8{ "Line1", "Line2", "Line3", "Line4", "Line5" });
+        _ = try thisModel.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = .init(1, 6, 1, 6),
+            .text = .initBorrowed("\nNew line\nAnother new line"),
+        }}, null);
+        _ = try thisModel.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = .init(5, 6, 5, 6),
+            .text = .initBorrowed("-"),
+        }}, null);
+        try thisModel.tokenization().forceTokenization(7);
+        try assertResult(&[_][]const u8{ "Line1", "New line", "Another new line", "Line2", "Line3-", "Line4" });
+    }
+
+    test "getTokensForInvalidLines one delete text" {
+        const thisModel = try setup();
+        defer teardown(thisModel);
+
+        try thisModel.tokenization().forceTokenization(5);
+        try assertResult(&[_][]const u8{ "Line1", "Line2", "Line3", "Line4", "Line5" });
+        _ = try thisModel.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = .init(1, 1, 1, 5),
+        }}, null);
+        try thisModel.tokenization().forceTokenization(5);
+        try assertResult(&[_][]const u8{ "1", "Line2" });
+    }
+
+    test "getTokensForInvalidLines one line delete text" {
+        const thisModel = try setup();
+        defer teardown(thisModel);
+
+        try thisModel.tokenization().forceTokenization(5);
+        try assertResult(&[_][]const u8{ "Line1", "Line2", "Line3", "Line4", "Line5" });
+        _ = try thisModel.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = .init(1, 1, 2, 1),
+        }}, null);
+        try thisModel.tokenization().forceTokenization(4);
+        try assertResult(&[_][]const u8{"Line2"});
+    }
+
+    test "getTokensForInvalidLines multiple lines delete text" {
+        const thisModel = try setup();
+        defer teardown(thisModel);
+
+        try thisModel.tokenization().forceTokenization(5);
+        try assertResult(&[_][]const u8{ "Line1", "Line2", "Line3", "Line4", "Line5" });
+        _ = try thisModel.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = .init(1, 1, 3, 3),
+        }}, null);
+        try thisModel.tokenization().forceTokenization(3);
+        try assertResult(&[_][]const u8{ "ne3", "Line4" });
+    }
 };
 
 test "Editor Model" {
