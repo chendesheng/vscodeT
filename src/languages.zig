@@ -176,7 +176,15 @@ pub const IBackgroundTokenizationStore = struct {
 pub const IState = struct {
     data: []u8,
 
+    pub const nullState = IState{ .data = &[_]u8{} };
+
     pub fn init(comptime T: type, data: *const T) IState {
+        comptime {
+            if (@sizeOf(T) == 0) {
+                @compileError("Use nullState instead when T is zero-sized");
+            }
+        }
+
         return .{
             .data = @as([*]u8, @ptrCast(@constCast(data)))[0..@sizeOf(T)],
         };
@@ -187,11 +195,22 @@ pub const IState = struct {
     }
 
     pub fn clone(self: IState, allocator: Allocator) !IState {
+        if (self.data.len == 0) {
+            return IState.nullState;
+        }
+
         return .{ .data = try allocator.dupe(u8, self.data) };
     }
 
     pub fn equals(self: IState, other: IState) bool {
         return std.mem.eql(u8, self.data, other.data);
+    }
+
+    pub fn free(self: IState, allocator: Allocator) void {
+        if (self.data.len == 0) {
+            return;
+        }
+        allocator.free(self.data);
     }
 };
 

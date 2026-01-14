@@ -79,6 +79,10 @@ pub fn FixedArray(comptime T: type) type {
         pub fn items(self: *const Self) []const T {
             return self._store.items;
         }
+
+        pub fn len(self: *const Self) usize {
+            return self._store.items.len;
+        }
     };
 }
 

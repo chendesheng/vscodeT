@@ -113,7 +113,9 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.second);
             try builder.add(lineToTokenize.first, r.tokens);
             var store = self.getStore();
-            _ = try store.setEndState(lineToTokenize.first, r.endState);
+            if (!(try store.setEndState(lineToTokenize.first, r.endState))) {
+                r.endState.free(allocator);
+            }
         }
     }
 
@@ -367,6 +369,12 @@ pub const TokenizationStateStore = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        const allocator = self._lineEndStates._store.allocator;
+        for (0..self._lineEndStates.items().len) |i| {
+            if (self._lineEndStates.get(i)) |state| {
+                state.free(allocator);
+            }
+        }
         self._lineEndStates.deinit();
     }
 
@@ -381,6 +389,11 @@ pub const TokenizationStateStore = struct {
             }
         }
 
+        if (lineNumber < self._lineEndStates.len()) {
+            if (self._lineEndStates.get(lineNumber)) |oldState| {
+                oldState.free(self._lineEndStates._store.allocator);
+            }
+        }
         try self._lineEndStates.set(lineNumber, state);
         return true;
     }
@@ -393,6 +406,14 @@ pub const TokenizationStateStore = struct {
             // But if the new state happens to agree with this last state, then we know we can stop tokenizing.
             len -= 1;
             newLineCount -= 1;
+        }
+
+        if (len > newLineCount) {
+            for (newLineCount..len) |i| {
+                if (self._lineEndStates.get(range.startLineNumber + i)) |state| {
+                    state.free(self._lineEndStates._store.allocator);
+                }
+            }
         }
 
         try self._lineEndStates.replace(range.startLineNumber, len, newLineCount);

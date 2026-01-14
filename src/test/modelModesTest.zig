@@ -4,7 +4,6 @@ const IdentifiedSingleEditOperation = @import("../textModel/model.zig").Identifi
 const EditOperation = @import("../textModel/model.zig").EditOperation;
 const IState = @import("../languages.zig").IState;
 const TokenizationResult = @import("../languages.zig").TokenizationResult;
-const nullState = @import("../languages/nullTokenize.zig").nullState;
 const ArrayList = std.array_list.Managed;
 const ITokenizationSupport = @import("../languages.zig").ITokenizationSupport;
 const EncodedTokenizationResult = @import("../languages.zig").EncodedTokenizationResult;
@@ -46,7 +45,7 @@ const ModelModes1Tests = struct {
         }
 
         fn getInitialState(_: *ITokenizationSupport) !IState {
-            return nullState;
+            return IState.nullState;
         }
 
         fn tokenize(_: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) !TokenizationResult {
