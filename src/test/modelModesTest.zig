@@ -224,6 +224,109 @@ const ModelModes1Tests = struct {
     }
 };
 
+const ModelModes2Tests = struct {
+    const allocator = std.testing.allocator;
+
+    const ModelState2 = struct {
+        prevLineContent: u64,
+    };
+
+    var callFor = ArrayList([]const u8).init(allocator);
+
+    fn getAndClear() ![]const []const u8 {
+        const result = try callFor.toOwnedSlice();
+        callFor.clearAndFree();
+        return result;
+    }
+
+    fn assertResult(expected: []const []const u8) !void {
+        const result = try getAndClear();
+        defer {
+            for (result) |item| {
+                allocator.free(item);
+            }
+            allocator.free(result);
+        }
+        try std.testing.expectEqualDeep(expected, result);
+    }
+
+    const TokenizationSupport = struct {
+        fn init() ITokenizationSupport {
+            return .{
+                .vtable = &.{
+                    .getInitialState = getInitialState,
+                    .tokenize = tokenize,
+                    .tokenizeEncoded = tokenizeEncoded,
+                    .createBackgroundTokenizer = null,
+                    .destroy = destroy,
+                },
+            };
+        }
+
+        fn getInitialState(_: *ITokenizationSupport) !IState {
+            return .init(ModelState2, &.{ .prevLineContent = 0 });
+        }
+
+        fn tokenize(_: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) !TokenizationResult {
+            _ = line;
+            _ = hasEOL;
+            _ = state;
+            return error.NotImplemented;
+        }
+
+        fn tokenizeEncoded(_: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
+            _ = hasEOL;
+            const lineCopy = try allocator.dupe(u8, line);
+            try callFor.append(lineCopy);
+            var hasher = std.hash.Wyhash.init(0);
+            std.hash.autoHashStrat(&hasher, lineCopy, .DeepRecursive);
+            state.getPtr(ModelState2).prevLineContent = hasher.final();
+            return EncodedTokenizationResult.init(&[_]TokenPacked{}, state);
+        }
+
+        fn destroy(self: *ITokenizationSupport, _allocator: Allocator) void {
+            _allocator.destroy(self);
+        }
+    };
+
+    fn setup() !*TextModel {
+        const text = "Line1" ++ "\r\n" ++
+            "Line2" ++ "\n" ++
+            "Line3" ++ "\n" ++
+            "Line4" ++ "\r\n" ++
+            "Line5";
+        const languageId = "modelModeTest2";
+        callFor.clearAndFree();
+        const tokenizationSupport = try allocator.create(ITokenizationSupport);
+        tokenizationSupport.* = TokenizationSupport.init();
+        try TokenizationRegistry.instance(allocator).register(languageId, tokenizationSupport);
+        return try createTextModel(allocator, text, languageId, null);
+    }
+
+    fn teardown(textModel: *TextModel) void {
+        for (callFor.items) |item| {
+            allocator.free(item);
+        }
+        callFor.clearAndFree();
+        disposeTextModel(textModel);
+    }
+
+    test "getTokensForInvalidLines one text insert" {
+        const thisModel = try setup();
+        defer teardown(thisModel);
+
+        try thisModel.tokenization().forceTokenization(5);
+        try assertResult(&[_][]const u8{ "Line1", "Line2", "Line3", "Line4", "Line5" });
+        _ = try thisModel.applyEdits(&[_]IdentifiedSingleEditOperation{.{
+            .range = .init(1, 6, 1, 6),
+            .text = .initBorrowed("-"),
+        }}, null);
+        try thisModel.tokenization().forceTokenization(5);
+        try assertResult(&[_][]const u8{ "Line1-", "Line2" });
+    }
+};
+
 test "Editor Model" {
     _ = ModelModes1Tests;
+    _ = ModelModes2Tests;
 }
