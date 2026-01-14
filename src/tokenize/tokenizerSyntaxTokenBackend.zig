@@ -101,7 +101,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     super: AbstractSyntaxTokenBackend,
 
     _defaultBackgroundTokenizer: ?DefaultBackgroundTokenizer = null,
-    _backgroundTokenizer: ?IBackgroundTokenizer = null,
+    _backgroundTokenizer: ?*IBackgroundTokenizer = null,
 
     // FIXME
     _languageId: []const u8,
@@ -139,7 +139,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
             ._tokens = ContiguousTokensStore.init(allocator, languageIdCodec),
             ._languageId = languageId,
             ._attachedViewStates = AutoHashMap(AttachedView, AttachedViewHandler).init(allocator),
-            ._backgroundTokenizer = undefined,
+            ._backgroundTokenizer = null,
         };
 
         // Register callbacks with heap-allocated self pointer (not a dangling local pointer)
@@ -185,6 +185,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
     pub fn deinit(s: *AbstractSyntaxTokenBackend) void {
         var self = getSelf(s);
+        const allocator = self.super._textModel.getAllocator();
         if (self._tokenizer) |*tokenizer| {
             tokenizer.deinit();
         }
@@ -203,9 +204,9 @@ pub const TokenizerSyntaxTokenBackend = struct {
         // if (self._debugBackgroundTokenizer) |debugBackgroundTokenizer| {
         //     debugBackgroundTokenizer.deinit();
         // }
-        // if (self._defaultBackgroundTokenizer) |defaultBackgroundTokenizer| {
-        //     defaultBackgroundTokenizer.deinit();
-        // }
+        if (self._defaultBackgroundTokenizer) |defaultBackgroundTokenizer| {
+            defaultBackgroundTokenizer.backgroundTokenStore.destroy(allocator);
+        }
         // if (self._backgroundTokenizer) |backgroundTokenizer| {
         //     backgroundTokenizer.deinit();
         // }
@@ -262,13 +263,17 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
         self._defaultBackgroundTokenizer = null;
         if (self._tokenizer != null) {
-            const b = try BackgroundTokenizationStore.create(self, allocator);
             if (tokenizationSupport != null and !tokenizationSupport.?.backgroundTokenizerShouldOnlyVerifyTokens and tokenizationSupport.?.hasCreateBackgroundTokenizer()) {
+                const b = try BackgroundTokenizationStore.create(self, allocator);
                 self._backgroundTokenizer = try tokenizationSupport.?.createBackgroundTokenizer(self.super._textModel, b);
+                if (self._backgroundTokenizer == null) {
+                    b.destroy(allocator);
+                }
             }
             if (self._backgroundTokenizer == null and !self.super._textModel.isTooLargeForTokenization()) {
+                const b = try BackgroundTokenizationStore.create(self, allocator);
                 self._defaultBackgroundTokenizer = DefaultBackgroundTokenizer.init(self._tokenizer, b);
-                self._backgroundTokenizer = self._defaultBackgroundTokenizer.?.interface;
+                self._backgroundTokenizer = &(self._defaultBackgroundTokenizer.?.interface);
                 self._defaultBackgroundTokenizer.?.handleChanges();
             }
 
@@ -315,7 +320,9 @@ pub const TokenizerSyntaxTokenBackend = struct {
 
     pub fn handleDidChangeAttached(s: *AbstractSyntaxTokenBackend) void {
         var self = getSelf(s);
-        self._defaultBackgroundTokenizer.?.handleChanges();
+        if (self._defaultBackgroundTokenizer) |*defaultBackgroundTokenizer| {
+            defaultBackgroundTokenizer.handleChanges();
+        }
     }
 
     pub fn handleDidChangeContent(s: *AbstractSyntaxTokenBackend, e: ModelContentChangedEvent) !void {
@@ -340,7 +347,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
                 try debugBackgroundStates.acceptChanges(e.changes.items);
             }
 
-            if (self._tokenizer) |tokenizer| {
+            if (self._tokenizer) |*tokenizer| {
                 var store = tokenizer.getStore();
                 try store.acceptChanges(e.changes.items);
             }
@@ -410,7 +417,9 @@ pub const TokenizerSyntaxTokenBackend = struct {
                 }
             }
 
-            self._defaultBackgroundTokenizer.?.checkFinished();
+            if (self._defaultBackgroundTokenizer) |*defaultBackgroundTokenizer| {
+                defaultBackgroundTokenizer.checkFinished();
+            }
         }
     }
 
@@ -424,7 +433,9 @@ pub const TokenizerSyntaxTokenBackend = struct {
         }
         const changedTokens = try self.setTokens(builder.finalize().items);
         defer allocator.free(changedTokens.changes);
-        self._defaultBackgroundTokenizer.?.checkFinished();
+        if (self._defaultBackgroundTokenizer) |*defaultBackgroundTokenizer| {
+            defaultBackgroundTokenizer.checkFinished();
+        }
     }
 
     pub fn hasAccurateTokensForLine(s: *AbstractSyntaxTokenBackend, lineNumber: usize) bool {
@@ -451,7 +462,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
         if (self._debugBackgroundTokens) |debugBackgroundTokens| {
             if (self._debugBackgroundStates) |debugBackgroundStates| {
                 if (self._tokenizer) |tokenizer| {
-                    if (debugBackgroundStates.getFirstInvalidEndStateLineNumberOrMax() > lineNumber and tokenizer.getStore().getFirstInvalidEndStateLineNumberOrMax() > lineNumber) {
+                    if (debugBackgroundStates.getFirstInvalidEndStateLineNumberOrMax() > lineNumber and tokenizer.getStoreConst().getFirstInvalidEndStateLineNumberOrMax() > lineNumber) {
                         const backgroundResult = try debugBackgroundTokens.getTokens(self.super._textModel.getLanguageId(), lineNumber - 1, lineText.items);
                         if (!result.equals(&backgroundResult)) {
                             if (self._debugBackgroundTokenizer) |debugBackgroundTokenizer| {

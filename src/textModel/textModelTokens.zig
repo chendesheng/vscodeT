@@ -86,8 +86,12 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         return self.super.getFirstInvalidLine();
     }
 
-    pub fn getStore(self: *const Self) TrackingTokenizationStateStore {
-        return self.super.store;
+    pub fn getStore(self: *Self) *TrackingTokenizationStateStore {
+        return &self.super.store;
+    }
+
+    pub fn getStoreConst(self: *const Self) *const TrackingTokenizationStateStore {
+        return &self.super.store;
     }
 
     pub fn getInitialState(self: *Self) IState {
@@ -105,6 +109,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             }
 
             const text = try self._textModel.getLineContent(lineToTokenize.first);
+            defer text.deinit();
             const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.second);
             try builder.add(lineToTokenize.first, r.tokens);
             var store = self.getStore();
@@ -167,12 +172,12 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
     }
 
     pub fn hasAccurateTokensForLine(self: *const Self, lineNumber: usize) bool {
-        const firstInvalidLineNumber = self.getStore().getFirstInvalidEndStateLineNumberOrMax();
+        const firstInvalidLineNumber = self.getStoreConst().getFirstInvalidEndStateLineNumberOrMax();
         return (lineNumber < firstInvalidLineNumber);
     }
 
     pub fn isCheapToTokenize(self: *const Self, lineNumber: usize) bool {
-        const firstInvalidLineNumber = self.getStore().getFirstInvalidEndStateLineNumberOrMax();
+        const firstInvalidLineNumber = self.getStoreConst().getFirstInvalidEndStateLineNumberOrMax();
         if (lineNumber < firstInvalidLineNumber) {
             return true;
         }
@@ -185,12 +190,12 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
 
     // The result is not cached.
     pub fn tokenizeHeuristically(self: *Self, builder: *ContiguousMultilineTokensBuilder, startLineNumber: usize, endLineNumber: usize) !struct { heuristicTokens: bool } {
-        if (endLineNumber <= self.getStore().getFirstInvalidEndStateLineNumberOrMax()) {
+        if (endLineNumber <= self.getStoreConst().getFirstInvalidEndStateLineNumberOrMax()) {
             // nothing to do
             return .{ .heuristicTokens = false };
         }
 
-        if (startLineNumber <= self.getStore().getFirstInvalidEndStateLineNumberOrMax()) {
+        if (startLineNumber <= self.getStoreConst().getFirstInvalidEndStateLineNumberOrMax()) {
             // tokenization has reached the viewport start...
             try self.updateTokensUntilLine(builder, endLineNumber);
             return .{ .heuristicTokens = false };
@@ -270,14 +275,15 @@ pub const TrackingTokenizationStateStore = struct {
         var queue = RangePriorityQueue.init(allocator);
         try queue.addRange(OffsetRange.init(1, @as(isize, @intCast(lineCount + 1))));
         return Self{
-            ._tokenizationStateStore = TokenizationStateStore.init(),
+            ._tokenizationStateStore = TokenizationStateStore.init(allocator),
             ._invalidEndStatesLineNumbers = queue,
             ._lineCount = lineCount,
         };
     }
 
-    pub fn deinit(self: *const TrackingTokenizationStateStore) void {
+    pub fn deinit(self: *TrackingTokenizationStateStore) void {
         self._invalidEndStatesLineNumbers.deinit();
+        self._tokenizationStateStore.deinit();
     }
 
     pub fn getEndState(self: *const Self, lineNumber: usize) ?IState {
@@ -354,10 +360,14 @@ pub const TokenizationStateStore = struct {
     const Self = @This();
     _lineEndStates: FixedArray(?IState),
 
-    pub fn init() Self {
+    pub fn init(allocator: Allocator) Self {
         return Self{
-            ._lineEndStates = FixedArray(?IState).init(std.heap.page_allocator, null),
+            ._lineEndStates = FixedArray(?IState).init(allocator, null),
         };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self._lineEndStates.deinit();
     }
 
     pub fn getEndState(self: *const Self, lineNumber: usize) ?IState {
@@ -433,7 +443,7 @@ pub const DefaultBackgroundTokenizer = struct {
 
     fn destroy(b: *IBackgroundTokenizer, allocator: Allocator) void {
         const self = getSelf(b);
-        // self.backgroundTokenStore.destroy(allocator);
+        self.backgroundTokenStore.destroy(allocator);
         allocator.destroy(self);
     }
 
@@ -511,7 +521,7 @@ pub const DefaultBackgroundTokenizer = struct {
 
     fn _hasLinesToTokenize(self: *Self) bool {
         if (self.tokenizerWithStateStore) |tokenizerWithStateStore| {
-            return !tokenizerWithStateStore.getStore().allStatesValid();
+            return !tokenizerWithStateStore.getStoreConst().allStatesValid();
         }
         return false;
     }
@@ -529,7 +539,7 @@ pub const DefaultBackgroundTokenizer = struct {
         if (self._isDisposed) {
             return;
         }
-        if (self.tokenizerWithStateStore.?.getStore().allStatesValid()) {
+        if (self.tokenizerWithStateStore.?.getStoreConst().allStatesValid()) {
             self.backgroundTokenStore.backgroundTokenizationFinished();
         }
     }

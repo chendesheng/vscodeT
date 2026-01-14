@@ -123,7 +123,7 @@ const ManualTokenizationSupport = struct {
     tokens: AutoHashMap(usize, []TokenPacked),
     stores: ArrayList(*IBackgroundTokenizationStore),
 
-    const nullBackgroundTokenizer = NullBackgroundTokenizer.init().interface;
+    var nullBackgroundTokenizer = NullBackgroundTokenizer.init();
 
     pub fn init(allocator: Allocator) ManualTokenizationSupport {
         return ManualTokenizationSupport{
@@ -187,10 +187,10 @@ const ManualTokenizationSupport = struct {
     }
 
     // Can be/return undefined if default background tokenization should be used.
-    pub fn createBackgroundTokenizer(t: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) !?IBackgroundTokenizer {
+    pub fn createBackgroundTokenizer(t: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) !?*IBackgroundTokenizer {
         _ = textModel;
         try getSelf(t).stores.append(store);
-        return nullBackgroundTokenizer;
+        return &nullBackgroundTokenizer.interface;
     }
 
     fn getSelf(s: *ITokenizationSupport) *ManualTokenizationSupport {

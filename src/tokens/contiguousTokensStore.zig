@@ -94,12 +94,12 @@ pub const ContiguousTokensStore = struct {
         }
 
         if (tokens.len == 0) {
-            var tokens2 = ArrayList(TokenPacked).init(allocator);
-            try tokens2.append(TokenPacked{
+            var tokens2 = try allocator.alloc(TokenPacked, 1);
+            tokens2[0] = TokenPacked{
                 .endOffset = @intCast(lineTextLength),
                 .metadata = getDefaultMetadata(topLevelLanguageId),
-            });
-            return tokens2.items;
+            };
+            return tokens2;
         }
 
         // Ensure the last token covers the end of the text
@@ -146,13 +146,21 @@ pub const ContiguousTokensStore = struct {
     }
 
     pub fn setTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineTextLength: usize, _tokens: ?[]TokenPacked, checkEquality: bool) !bool {
+        const allocator = self._lineTokens.allocator;
         const tokens = try ContiguousTokensStore._massageTokens(
             self._lineTokens.allocator,
             self._languageIdCodec.encodeLanguageId(topLevelLanguageId),
             lineTextLength,
             _tokens,
         );
-        var arrTokens = ArrayList(TokenPacked).init(self._lineTokens.allocator);
+        defer {
+            if (_tokens) |t| {
+                if (tokens.len > 0 and tokens.ptr != t.ptr) {
+                    allocator.free(tokens);
+                }
+            }
+        }
+        var arrTokens = ArrayList(TokenPacked).init(allocator);
         try arrTokens.appendSlice(tokens);
         try self._ensureLine(lineIndex);
         const oldTokens = self._lineTokens.items[lineIndex];

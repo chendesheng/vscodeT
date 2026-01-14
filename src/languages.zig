@@ -91,7 +91,7 @@ pub const ITokenizationSupport = struct {
         tokenize: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) anyerror!TokenizationResult,
         tokenizeEncoded: *const fn (t: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult,
         // Can be/return undefined if default background tokenization should be used.
-        createBackgroundTokenizer: ?*const fn (t: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) anyerror!?IBackgroundTokenizer,
+        createBackgroundTokenizer: ?*const fn (t: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) anyerror!?*IBackgroundTokenizer,
         destroy: *const fn (t: *ITokenizationSupport, allocator: Allocator) void,
     };
 
@@ -104,7 +104,7 @@ pub const ITokenizationSupport = struct {
     pub fn tokenizeEncoded(self: *ITokenizationSupport, line: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
         return try self.vtable.tokenizeEncoded(self, line, hasEOL, state);
     }
-    pub fn createBackgroundTokenizer(self: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) !?IBackgroundTokenizer {
+    pub fn createBackgroundTokenizer(self: *ITokenizationSupport, textModel: *TextModel, store: *IBackgroundTokenizationStore) !?*IBackgroundTokenizer {
         if (self.vtable.createBackgroundTokenizer) |f| {
             return try f(self, textModel, store);
         }
