@@ -260,18 +260,20 @@ fn concat(allocator: Allocator, node1: *Node, node2: *const Node) !Node {
 }
 
 pub const TokenStore = struct {
-    allocator: Allocator,
     root: Node,
     _textModel: *const TextModel,
 
-    pub fn init(allocator: Allocator, textModel: *const TextModel) TokenStore {
+    pub fn init(textModel: *const TextModel) TokenStore {
         var self = TokenStore{
-            .allocator = allocator,
             .root = undefined,
             ._textModel = textModel,
         };
         self.root = self.createEmptyRoot();
         return self;
+    }
+
+    fn getAllocator(self: *const TokenStore) Allocator {
+        return self._textModel.getAllocator();
     }
 
     fn createEmptyRoot(self: *TokenStore) Node {
@@ -330,13 +332,13 @@ pub const TokenStore = struct {
 
     // @param tokens tokens are in sequence in the document.
     fn replace(self: *TokenStore, length: usize, updateOffsetStart: usize, tokens: []const TokenUpdate, tokenQuality: TokenQuality) !void {
-        const allocator = self.allocator;
+        const allocator = self.getAllocator();
         const firstUnchangedOffsetAfterUpdate = updateOffsetStart + length;
         // Find the last unchanged node preceding the update
-        var precedingNodes = ArrayList(Node).init(self.allocator);
+        var precedingNodes = ArrayList(Node).init(allocator);
         // Find the first unchanged node after the update
-        var postcedingNodes = ArrayList(Node).init(self.allocator);
-        var stack = ArrayList(NodeOffset).init(self.allocator);
+        var postcedingNodes = ArrayList(Node).init(allocator);
+        var stack = ArrayList(NodeOffset).init(allocator);
         try stack.append(.{ .node = self.root, .offset = 0 });
 
         while (stack.len > 0) {
@@ -408,7 +410,7 @@ pub const TokenStore = struct {
         node: *Node,
         offset: usize,
     ) bool) void {
-        const allocator = self.allocator;
+        const allocator = self.getAllocator();
         var stack = ArrayList(NodeOffset).init(allocator);
         try stack.append(.{ .node = self.root, .offset = 0 });
 
@@ -454,7 +456,7 @@ pub const TokenStore = struct {
     }
 
     pub fn getTokensInRange(self: *TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize) ![]TokenUpdate {
-        var result = ArrayList(TokenUpdate).init(self.allocator);
+        var result = ArrayList(TokenUpdate).init(self.getAllocator());
         defer result.deinit();
 
         self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, &result, struct {
@@ -517,7 +519,7 @@ pub const TokenStore = struct {
     }
 
     pub fn getNeedsRefresh(self: *TokenStore) ![]struct { startOffset: usize, endOffset: usize } {
-        var result = ArrayList(struct { startOffset: usize, endOffset: usize }).init(self.allocator);
+        var result = ArrayList(struct { startOffset: usize, endOffset: usize }).init(self.getAllocator());
         defer result.deinit();
 
         self.traverseInOrderInRange(0, self._textModel.getValueLength(), struct {
@@ -539,12 +541,13 @@ pub const TokenStore = struct {
     }
 
     pub fn deepCopy(self: *TokenStore) !TokenStore {
-        const newStore = try TokenStore.init(self.allocator, self._textModel);
+        const newStore = try TokenStore.init(self._textModel);
         newStore.root = try self._copyNodeIterative(self.root);
         return newStore;
     }
 
     fn _copyNodeIterative(self: *TokenStore, root: *const Node) !Node {
+        const allocator = self.getAllocator();
         const newRoot = if (root.isLeaf())
             .{
                 .leaf = .{
@@ -554,9 +557,9 @@ pub const TokenStore = struct {
                 },
             }
         else
-            .{ .list = ListNode.init(self.allocator, root.height()) };
+            .{ .list = ListNode.init(allocator, root.height()) };
 
-        var stack = ArrayList([2]*Node).init(self.allocator);
+        var stack = ArrayList([2]*Node).init(allocator);
         try stack.append([2]*Node{ root, newRoot });
 
         while (stack.length > 0) {
@@ -574,7 +577,7 @@ pub const TokenStore = struct {
                             },
                         }
                     else
-                        .{ .list = ListNode.init(self.allocator, child.height()) };
+                        .{ .list = ListNode.init(allocator, child.height()) };
 
                     clonedNode.list.appendChild(childCopy);
                     try stack.append([2]*Node{ child, childCopy });
@@ -589,9 +592,10 @@ pub const TokenStore = struct {
 
     // Returns a string representation of the token tree using an iterative approach
     pub fn printTree(self: *const TokenStore, _root: ?*const Node) ArrayList(u8) {
-        const root = _root orelse self.rootk;
-        var result = ArrayList(u8).init(self.allocator);
-        var stack = ArrayList(NodeNumber).init(self.allocator);
+        const allocator = self.getAllocator();
+        const root = _root orelse self.root;
+        var result = ArrayList(u8).init(allocator);
+        var stack = ArrayList(NodeNumber).init(allocator);
         try stack.append(.{ root, 0 });
 
         while (stack.length > 0) {
@@ -619,7 +623,8 @@ pub const TokenStore = struct {
     }
 
     pub fn dispose(self: *TokenStore) void {
-        var stack = ArrayList(struct { *Node, bool }).init(self.allocator);
+        const allocator = self.getAllocator();
+        var stack = ArrayList(struct { *Node, bool }).init(allocator);
         try stack.append(.{ self.root, false });
         while (stack.length > 0) {
             const tmp = stack.pop().?;
