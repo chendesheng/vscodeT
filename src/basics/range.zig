@@ -40,6 +40,10 @@ pub const Range = struct {
         }
     }
 
+    pub fn fromPositions(start: Position, end: Position) Range {
+        return Range.init(start.lineNumber, start.column, end.lineNumber, end.column);
+    }
+
     pub fn isEmpty(self: *const Range) bool {
         return self.startLineNumber == self.endLineNumber and self.startColumn == self.endColumn;
     }
@@ -182,7 +186,7 @@ pub const Range = struct {
     }
 
     // Create a new range using this range's end position, and using startLineNumber and startColumn as the start position.
-    pub fn setStartPosition(self: *Range, startLineNumber: usize, startColumn: usize) Range {
+    pub fn setStartPosition(self: *const Range, startLineNumber: usize, startColumn: usize) Range {
         return Range{
             .startLineNumber = startLineNumber,
             .startColumn = startColumn,

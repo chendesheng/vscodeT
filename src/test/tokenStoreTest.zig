@@ -1,10 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const TokenUpdate = @import("../tokens/treeSitter/tokenStore.zig").TokenUpdate;
+const TokenUpdate = @import("../tokenize/treeSitter/tokenStore.zig").TokenUpdate;
 const TextModel = @import("../textModel/textModel.zig").TextModel;
 const createTextModel = @import("../textModel/testTextModel.zig").createTextModel;
 const disposeTextModel = @import("../textModel/testTextModel.zig").disposeTextModel;
-const TokenStore = @import("../tokens/treeSitter/tokenStore.zig").TokenStore;
+const TokenStore = @import("../tokenize/treeSitter/tokenStore.zig").TokenStore;
 
 const TokenStoreTests = struct {
     const allocator = std.testing.allocator;
