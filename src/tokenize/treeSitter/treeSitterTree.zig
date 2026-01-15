@@ -134,29 +134,30 @@ pub const TreeSitterTree = struct {
         // return [];
         // }
         const allocator = self.textModel.getAllocator();
-        const newCursor = try newTree.walk();
-        const oldCursor = try oldTree.walk();
+        const newCursor = newTree.walk();
+        const oldCursor = oldTree.walk();
 
         var nodes: []const ts.Range = undefined;
         var next = true;
 
         while (true) {
-            if (newCursor.node().hasChanges) {
+            if (newCursor.node().hasChanges()) {
                 // Check if only one of the children has changes.
                 // If it's only one, then we go to that child.
                 // If it's more then, we need to go to each child
                 // If it's none, then we've found one of our ranges
-                const newChildren = newCursor.node().children;
-                var indexChangedChildren: []const usize = undefined;
+                const newChildren = try newCursor.node().children(newCursor, allocator);
+                var indexChangedChildren = ArrayList(usize).init(allocator);
+                defer indexChangedChildren.deinit();
                 const changedChildren = ArrayList(*ts.Node).init(allocator);
                 for (newChildren, 0..) |c, index| {
-                    if (c.hasChanges || (oldCursor.node().children.len <= index)) {
+                    if (c.hasChanges || (oldCursor.node().childCount() <= @as(u32, @intCast(index)))) {
                         try indexChangedChildren.append(index);
                         try changedChildren.append(c);
                     }
                 }
                 // If we have changes and we *had* an error, the whole node should be refreshed.
-                if ((changedChildren.length == 0) || (newCursor.node().hasError != oldCursor.node().hasError)) {
+                if ((changedChildren.items.len == 0) || (newCursor.node().hasError() != oldCursor.node().hasError())) {
                     // walk up again until we get to the first one that's named as unnamed nodes can be too granular
                     while (newCursor.node().parent and next and !newCursor.node().isNamed) {
                         next = gotoParent(newCursor, oldCursor);
@@ -167,7 +168,7 @@ pub const TreeSitterTree = struct {
                     nodes.push(.{ .startIndex = closestPreviousNode.startIndex, .endIndex = newNode.endIndex, .startPosition = closestPreviousNode.startPosition, .endPosition = newNode.endPosition });
                     next = nextSiblingOrParentSibling(newCursor, oldCursor);
                 } else if (changedChildren.length >= 1) {
-                    next = gotoNthChild(newCursor, oldCursor, indexChangedChildren[0]);
+                    next = gotoNthChild(newCursor, oldCursor, indexChangedChildren.items[0]);
                 }
             } else {
                 next = nextSiblingOrParentSibling(newCursor, oldCursor);
@@ -175,8 +176,8 @@ pub const TreeSitterTree = struct {
             if (!next) break;
         }
 
-        newCursor.delete();
-        oldCursor.delete();
+        newCursor.destroy();
+        oldCursor.destroy();
         return nodes.items;
     }
 
@@ -215,7 +216,7 @@ pub const TreeSitterTree = struct {
                     cursor.gotoParent();
                     break;
                 }
-                if (cursor.node().childCount == 0) {
+                if (cursor.node().childCount() == 0) {
                     break;
                 }
             }
