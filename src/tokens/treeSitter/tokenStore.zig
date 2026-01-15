@@ -277,7 +277,7 @@ pub const TokenStore = struct {
     fn createEmptyRoot(self: *TokenStore) Node {
         return .{
             .leaf = .{
-                .length = self._textModel.getValueLength(),
+                .length = self._textModel.getValueLength(null, false),
                 .token = 0,
                 .tokenQuality = .none,
             },
