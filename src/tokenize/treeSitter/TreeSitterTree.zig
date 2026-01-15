@@ -27,6 +27,7 @@ _parser: *ts.Parser,
 // _injectionQuery: *ts.Query,
 textModel: *TextModel,
 _ranges: ?[]const ts.Range,
+languageId: []const u8,
 
 pub fn init(
     languageId: []const u8,
@@ -37,7 +38,6 @@ pub fn init(
     // private readonly _injectionQuery: TreeSitter.Query,
     textModel: *TextModel,
 ) !void {
-    _ = languageId;
     // this._tree = observableValue(this, undefined);
     // this.tree = this._tree;
 
@@ -53,6 +53,7 @@ pub fn init(
         ._parser = _parser,
         ._ranges = _ranges,
         .textModel = textModel,
+        .languageId = languageId,
     };
     try self.handleContentChange(null, _ranges);
     return self;
