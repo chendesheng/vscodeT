@@ -58,7 +58,7 @@ pub fn nextSiblingOrParentSibling(newCursor: *TreeCursor, oldCursor: *TreeCursor
     return false;
 }
 
-pub fn getClosestPreviousNodes(cursor: *TreeCursor, tree: *Tree) ?*Node {
+pub fn getClosestPreviousNodes(cursor: *TreeCursor, tree: *Tree) ?Node {
     // Go up parents until the end of the parent is before the start of the current.
     const findPrev = tree.walk();
     findPrev.resetTo(cursor);

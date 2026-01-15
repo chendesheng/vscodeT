@@ -199,7 +199,7 @@ pub const PieceTreeTextBuffer = struct {
         return self.getValueLengthInRange(range, eol);
     }
 
-    pub fn getNearestChunk(self: *const PieceTreeTextBuffer, offset: usize) ![]const u8 {
+    pub fn getNearestChunk(self: *const PieceTreeTextBuffer, offset: usize) []const u8 {
         return self._pieceTree.getNearestChunk(offset);
     }
 

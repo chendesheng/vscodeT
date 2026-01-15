@@ -1,5 +1,6 @@
 const std = @import("std");
 const fmt = std.fmt;
+const TextLength = @import("text/textLength.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 const Utf8Iterator = std.unicode.Utf8Iterator;
@@ -647,6 +648,15 @@ pub const String = union(enum) {
                 }
                 return null;
             },
+        }
+    }
+
+    pub fn toTextLength(self: *const String) TextLength {
+        switch (self.*) {
+            .empty => return TextLength.zero,
+            .owned => |list| return TextLength.ofText(list.items),
+            .borrowed1 => |s| return TextLength.ofText(s),
+            .borrowed => |list| return TextLength.sum([]const u8, list.items, TextLength.ofText),
         }
     }
 };
