@@ -14,16 +14,20 @@ pub const ListNode = struct {
         return .{
             .parent = null,
             .height = height,
-            ._children = ArrayList(*Node).initCapacity(allocator, 3),
+            ._children = ArrayList(*Node).init(allocator),
             ._length = 0,
         };
     }
 
-    pub fn create(node1: *Node, node2: *Node) ListNode {
-        const list = ListNode.init(node1.allocator, node1.height + 1);
-        list.appendChild(node1);
-        list.appendChild(node2);
-        return list;
+    pub fn children(self: *const ListNode) []*Node {
+        return self._children.items;
+    }
+
+    pub fn create(allocator: Allocator, node1: *Node, node2: *Node) !*Node {
+        const node = try Node.createListNode(allocator, node1.height() + 1);
+        try node.list.appendChild(node1);
+        try node.list.appendChild(node2);
+        return node;
     }
 
     pub fn canAppendChild(self: *const ListNode) bool {
@@ -38,7 +42,7 @@ pub const ListNode = struct {
         try self._children.append(node);
 
         self._length += node.length();
-        self._updateParentLength(node.length());
+        self._updateParentLength(@as(isize, @intCast(node.length())));
         if (!node.isLeaf()) {
             node.setParent(self);
         }
@@ -55,7 +59,7 @@ pub const ListNode = struct {
     pub fn unappendChild(self: *ListNode) !*Node {
         const child = self._children.pop().?;
         self._length -= child.length();
-        self._updateParentLength(-child.length());
+        self._updateParentLength(-@as(isize, @intCast(child.length())));
         return child;
     }
 
@@ -66,7 +70,7 @@ pub const ListNode = struct {
         try self._children.insert(0, node);
 
         self._length += node.length();
-        self._updateParentLength(node.length());
+        self._updateParentLength(@as(isize, @intCast(node.length())));
         if (!node.isLeaf()) {
             node.setParent(self);
         }
@@ -75,12 +79,27 @@ pub const ListNode = struct {
     pub fn unprependChild(self: *ListNode) !*Node {
         const child = self._children.orderedRemove(0);
         self._length -= child.length();
-        self._updateParentLength(-child.length());
+        self._updateParentLength(-@as(isize, @intCast(child.length())));
         return child;
+    }
+
+    // this will break the tree structure, so only use it when you know what you are doing
+    fn detachChild(self: *ListNode, node: *Node) !void {
+        if (std.mem.indexOfScalar(*Node, self._children.items, node)) |idx| {
+            _ = self._children.orderedRemove(idx);
+            // self._length -= node.length();
+            // self._updateParentLength(-@as(isize, @intCast(node.length())));
+        } else {
+            return error.ChildNotFound;
+        }
     }
 
     pub fn lastChild(self: *const ListNode) *Node {
         return self._children.getLast();
+    }
+
+    pub fn deinit(self: *ListNode) void {
+        self._children.deinit();
     }
 };
 
@@ -97,9 +116,27 @@ pub const LeafNode = struct {
     tokenQuality: TokenQuality,
 };
 
-pub const Node = union {
+pub const Node = union(enum) {
     list: ListNode,
     leaf: LeafNode,
+
+    pub fn createLeafNode(allocator: Allocator, _length: ?usize, _token: ?usize, _tokenQuality: ?TokenQuality) !*Node {
+        const node = try allocator.create(Node);
+        node.* = .{
+            .leaf = .{
+                .length = _length orelse 0,
+                .token = _token orelse 0,
+                .tokenQuality = _tokenQuality orelse .none,
+            },
+        };
+        return node;
+    }
+
+    pub fn createListNode(allocator: Allocator, _height: ?usize) !*Node {
+        const node = try allocator.create(Node);
+        node.* = .{ .list = ListNode.init(allocator, _height orelse 0) };
+        return node;
+    }
 
     pub fn length(self: *const Node) usize {
         return switch (self.*) {
@@ -137,7 +174,7 @@ pub const Node = union {
 
     pub fn children(self: *const Node) []*Node {
         return switch (self.*) {
-            .list => self.list._children.items,
+            .list => self.list.children(),
             .leaf => &[_]*Node{},
         };
     }
@@ -162,6 +199,13 @@ pub const Node = union {
             .leaf => self.leaf.tokenQuality = tq,
         }
     }
+
+    pub fn deinit(self: *Node) void {
+        switch (self.*) {
+            .list => self.list.deinit(),
+            .leaf => {},
+        }
+    }
 };
 
 pub const TokenUpdate = struct {
@@ -171,9 +215,10 @@ pub const TokenUpdate = struct {
 };
 
 // Heavily inspired by https://github.com/microsoft/vscode/blob/4eb2658d592cb6114a7a393655574176cc790c5b/src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/concat23Trees.ts#L108-L109
-fn append(allocator: Allocator, node: *Node, nodeToAppend: *const Node) !Node {
+fn append(allocator: Allocator, node: *Node, nodeToAppend: *Node) !*Node {
     var curNode = node;
     var parents = ArrayList(*ListNode).init(allocator);
+    defer parents.deinit();
     var _nodeToAppendOfCorrectHeight: ?*Node = null;
     while (true) {
         if (nodeToAppend.height() == curNode.height()) {
@@ -184,91 +229,109 @@ fn append(allocator: Allocator, node: *Node, nodeToAppend: *const Node) !Node {
         if (curNode.isLeaf()) {
             return error.UnexpectedLeafNode;
         }
-        try parents.append(curNode);
+        try parents.append(&curNode.list);
         curNode = curNode.lastChild().?;
     }
-    var i = parents.items.len - 1;
-    while (i >= 0) : (i -= 1) {
-        const parent = parents.items[i];
-        if (_nodeToAppendOfCorrectHeight) |nodeToAppendOfCorrectHeight| {
-            // Can we take the element?
-            if (parent.children.length >= 3) {
-                // we need to split to maintain (2,3)-tree property.
-                // Send the third element + the new element to the parent.
-                const newList = ListNode.create(parent.unappendChild(), nodeToAppendOfCorrectHeight);
-                _nodeToAppendOfCorrectHeight = .{ .list = newList };
+
+    if (parents.items.len > 0) {
+        var i = parents.items.len - 1;
+        while (i >= 0) {
+            const parent = parents.items[i];
+            if (_nodeToAppendOfCorrectHeight) |nodeToAppendOfCorrectHeight| {
+                // Can we take the element?
+                if (parent.children().len >= 3) {
+                    // we need to split to maintain (2,3)-tree property.
+                    // Send the third element + the new element to the parent.
+                    const newList = try ListNode.create(allocator, try parent.unappendChild(), nodeToAppendOfCorrectHeight);
+                    _nodeToAppendOfCorrectHeight = newList;
+                } else {
+                    try parent.appendChild(nodeToAppendOfCorrectHeight);
+                    _nodeToAppendOfCorrectHeight = null;
+                }
+            }
+
+            if (i > 0) {
+                i -= 1;
             } else {
-                parent.appendChild(nodeToAppendOfCorrectHeight);
-                _nodeToAppendOfCorrectHeight = null;
+                break;
             }
         }
     }
     if (_nodeToAppendOfCorrectHeight) |nodeToAppendOfCorrectHeight| {
-        const newList = ListNode.init(allocator, nodeToAppendOfCorrectHeight.height() + 1);
-        try newList.appendChild(node);
-        try newList.appendChild(nodeToAppendOfCorrectHeight);
-        return .{ .list = newList };
+        const newList = try Node.createListNode(allocator, nodeToAppendOfCorrectHeight.height() + 1);
+        try newList.list.appendChild(node);
+        try newList.list.appendChild(nodeToAppendOfCorrectHeight);
+        return newList;
     } else {
         return node;
     }
 }
 
-fn prepend(allocator: Allocator, list: *Node, nodeToAppend: *const Node) !Node {
+fn prepend(allocator: Allocator, list: *Node, nodeToAppend: *Node) !*Node {
     var curNode = list;
     var parents = ArrayList(*ListNode).init(allocator);
+    defer parents.deinit();
     while (nodeToAppend.height() != curNode.height()) {
         if (curNode.isLeaf()) {
             return error.UnexpectedLeafNode;
         }
-        try parents.append(curNode);
+        try parents.append(&curNode.list);
         // assert 2 <= curNode.childrenFast.length <= 3
         curNode = curNode.children()[0];
     }
     var _nodeToPrependOfCorrectHeight: ?*Node = nodeToAppend;
     // assert nodeToAppendOfCorrectHeight!.listHeight === curNode.listHeight
-    var i = parents.items.len - 1;
-    while (i >= 0) : (i -= 1) {
-        const parent = parents.items[i];
-        if (_nodeToPrependOfCorrectHeight) |nodeToPrependOfCorrectHeight| {
-            // Can we take the element?
-            if (parent.children.length >= 3) {
-                // we need to split to maintain (2,3)-tree property.
-                // Send the third element + the new element to the parent.
-                _nodeToPrependOfCorrectHeight = ListNode.create(nodeToPrependOfCorrectHeight, parent.unprependChild());
+    if (parents.items.len > 0) {
+        var i = parents.items.len - 1;
+        while (i >= 0) {
+            const parent = parents.items[i];
+            if (_nodeToPrependOfCorrectHeight) |nodeToPrependOfCorrectHeight| {
+                // Can we take the element?
+                if (parent.children().len >= 3) {
+                    // we need to split to maintain (2,3)-tree property.
+                    // Send the third element + the new element to the parent.
+                    _nodeToPrependOfCorrectHeight = try ListNode.create(allocator, nodeToPrependOfCorrectHeight, try parent.unprependChild());
+                } else {
+                    try parent.prependChild(nodeToPrependOfCorrectHeight);
+                    _nodeToPrependOfCorrectHeight = null;
+                }
+            }
+
+            if (i > 0) {
+                i -= 1;
             } else {
-                parent.prependChild(nodeToPrependOfCorrectHeight);
-                _nodeToPrependOfCorrectHeight = null;
+                break;
             }
         }
     }
     if (_nodeToPrependOfCorrectHeight) |nodeToPrependOfCorrectHeight| {
-        return ListNode.create(nodeToPrependOfCorrectHeight, list);
+        return try ListNode.create(allocator, nodeToPrependOfCorrectHeight, list);
     } else {
         return list;
     }
 }
 
-fn concat(allocator: Allocator, node1: *Node, node2: *const Node) !Node {
+fn concat(allocator: Allocator, node1: *Node, node2: *Node) !*Node {
     if (node1.height() == node2.height()) {
-        return .{ .list = ListNode.create(node1, node2) };
+        return try ListNode.create(allocator, node1, node2);
     } else if (node1.height() > node2.height()) {
         // node1 is the tree we want to insert into
-        return append(allocator, node1, node2);
+        return try append(allocator, node1, node2);
     } else {
-        return prepend(allocator, node2, node1);
+        return try prepend(allocator, node2, node1);
     }
 }
 
 pub const TokenStore = struct {
-    root: Node,
+    root: *Node,
     _textModel: *const TextModel,
 
-    pub fn init(textModel: *const TextModel) TokenStore {
+    pub fn init(textModel: *const TextModel) !TokenStore {
         var self = TokenStore{
             .root = undefined,
             ._textModel = textModel,
         };
-        self.root = self.createEmptyRoot();
+        self.root = try self.createEmptyRoot();
         return self;
     }
 
@@ -276,130 +339,157 @@ pub const TokenStore = struct {
         return self._textModel.getAllocator();
     }
 
-    fn createEmptyRoot(self: *TokenStore) Node {
-        return .{
-            .leaf = .{
-                .length = self._textModel.getValueLength(null, false),
-                .token = 0,
-                .tokenQuality = .none,
-            },
-        };
+    fn createEmptyRoot(self: *const TokenStore) !*Node {
+        const allocator = self.getAllocator();
+        return try Node.createLeafNode(allocator, self._textModel.getValueLength(null, false), 0, .none);
     }
 
     // @param update all the tokens for the document in sequence
-    fn buildStore(self: *TokenStore, tokens: []const TokenUpdate, tokenQuality: TokenQuality) void {
-        self._root = self.createFromUpdates(tokens, tokenQuality);
+    pub fn buildStore(self: *TokenStore, tokens: []const TokenUpdate, tokenQuality: TokenQuality) !void {
+        const new_root = try self.createFromUpdates(tokens, tokenQuality);
+        self.destroyNode(self.root);
+        self.root = new_root;
     }
 
-    fn createFromUpdates(self: *TokenStore, tokens: []const TokenUpdate, tokenQuality: TokenQuality) Node {
+    fn createFromUpdates(self: *TokenStore, tokens: []const TokenUpdate, tokenQuality: TokenQuality) !*Node {
         if (tokens.len == 0) {
-            return self.createEmptyRoot();
+            return try self.createEmptyRoot();
         }
-        var newRoot: Node = .{
-            .leaf = .{
-                .length = tokens[0].length,
-                .token = tokens[0].token,
-                .tokenQuality = tokenQuality,
-            },
-        };
+        const allocator = self.getAllocator();
+        var newRoot = try Node.createLeafNode(allocator, tokens[0].length, tokens[0].token, tokenQuality);
         for (1..tokens.len) |j| {
-            newRoot = append(newRoot, .{
-                .length = tokens[j].length,
-                .token = tokens[j].token,
-                .height = 0,
-                .tokenQuality = tokenQuality,
-            });
+            newRoot = try append(
+                allocator,
+                newRoot,
+                try Node.createLeafNode(
+                    allocator,
+                    tokens[j].length,
+                    tokens[j].token,
+                    tokenQuality,
+                ),
+            );
         }
         return newRoot;
     }
 
     // @param tokens tokens are in sequence in the document.
-    fn update(self: *TokenStore, length: usize, tokens: []const TokenUpdate, tokenQuality: TokenQuality) void {
+    pub fn update(self: *TokenStore, length: usize, tokens: []const TokenUpdate, tokenQuality: TokenQuality) !void {
         if (tokens.len == 0) {
             return;
         }
-        self.replace(length, tokens[0].startOffsetInclusive, tokens, tokenQuality);
+        try self.replace(length, tokens[0].startOffsetInclusive, tokens, tokenQuality);
     }
 
-    fn delete(self: *TokenStore, length: usize, startOffset: usize) void {
-        self.replace(length, startOffset, &[_]TokenUpdate{}, TokenQuality.EditGuess);
+    pub fn delete(self: *TokenStore, length: usize, startOffset: usize) !void {
+        try self.replace(length, startOffset, &[_]TokenUpdate{}, .editGuess);
     }
 
     const NodeOffset = struct {
         node: *Node,
         offset: usize,
+        parent: ?*ListNode = null,
     };
 
     // @param tokens tokens are in sequence in the document.
     fn replace(self: *TokenStore, length: usize, updateOffsetStart: usize, tokens: []const TokenUpdate, tokenQuality: TokenQuality) !void {
         const allocator = self.getAllocator();
+        const old_root = self.root;
         const firstUnchangedOffsetAfterUpdate = updateOffsetStart + length;
         // Find the last unchanged node preceding the update
-        var precedingNodes = ArrayList(Node).init(allocator);
+        var precedingNodes = ArrayList(*Node).init(allocator);
+        defer precedingNodes.deinit();
         // Find the first unchanged node after the update
-        var postcedingNodes = ArrayList(Node).init(allocator);
+        var postcedingNodes = ArrayList(*Node).init(allocator);
+        defer postcedingNodes.deinit();
+
         var stack = ArrayList(NodeOffset).init(allocator);
-        try stack.append(.{ .node = self.root, .offset = 0 });
+        defer stack.deinit();
+        try stack.append(.{ .node = self.root, .offset = 0, .parent = null });
 
-        while (stack.len > 0) {
-            const node = stack.pop().?;
-            const currentOffset = node.offset;
+        while (stack.items.len > 0) {
+            const tmp = stack.pop().?;
+            const node = tmp.node;
+            const currentOffset = tmp.offset;
+            const parent = tmp.parent;
 
-            if (currentOffset < updateOffsetStart and currentOffset + node.node.length() <= updateOffsetStart) {
-                if (!node.node.isLeaf()) {
-                    node.node.setParent(null);
+            if (currentOffset < updateOffsetStart and currentOffset + node.length() <= updateOffsetStart) {
+                if (parent) |parent_node| {
+                    try parent_node.detachChild(node);
                 }
-                precedingNodes.push(node.node);
+                node.setParent(null);
+                try precedingNodes.append(node);
                 continue;
-            } else if (node.node.isLeaf() and (currentOffset < updateOffsetStart)) {
+            } else if (node.isLeaf() and (currentOffset < updateOffsetStart)) {
                 // We have a partial preceding node
                 try precedingNodes.append(
-                    .{ .node = node.node, .length = updateOffsetStart - currentOffset, .token = node.node.token, .height = 0, .tokenQuality = node.node.tokenQuality },
+                    try Node.createLeafNode(allocator, updateOffsetStart - currentOffset, node.token(), node.tokenQuality()),
                 );
                 // Node could also be postceeding, so don't continue
             }
 
-            if ((updateOffsetStart <= currentOffset) and (currentOffset + node.node.length() <= firstUnchangedOffsetAfterUpdate)) {
+            if ((updateOffsetStart <= currentOffset) and (currentOffset + node.length() <= firstUnchangedOffsetAfterUpdate)) {
                 continue;
             }
 
             if (currentOffset >= firstUnchangedOffsetAfterUpdate) {
-                if (!node.node.isLeaf()) {
-                    node.node.setParent(null);
+                if (parent) |parent_node| {
+                    try parent_node.detachChild(node);
                 }
-                postcedingNodes.push(node.node);
+                node.setParent(null);
+                try postcedingNodes.append(node);
                 continue;
-            } else if (node.node.isLeaf() and (currentOffset + node.node.length() > firstUnchangedOffsetAfterUpdate)) {
+            } else if (node.isLeaf() and (currentOffset + node.length() > firstUnchangedOffsetAfterUpdate)) {
                 // we have a partial postceeding node
                 try postcedingNodes.append(
-                    .{ .node = node.node, .length = currentOffset + node.node.length() - firstUnchangedOffsetAfterUpdate, .token = node.node.token, .height = 0, .tokenQuality = node.node.tokenQuality },
+                    try Node.createLeafNode(
+                        allocator,
+                        currentOffset + node.length() - firstUnchangedOffsetAfterUpdate,
+                        node.token(),
+                        node.tokenQuality(),
+                    ),
                 );
                 continue;
             }
 
-            if (!node.node.isLeaf()) {
+            if (!node.isLeaf()) {
                 // Push children in reverse order to process them left-to-right when popping
-                var childOffset = currentOffset + node.node.length();
-                var i = node.node.children().len - 1;
-                while (i >= 0) : (i -= 1) {
-                    childOffset -= node.node.children()[i].length();
-                    try stack.append(.{ .node = node.node.children()[i], .offset = childOffset });
+                var childOffset = currentOffset + node.length();
+                if (node.children().len > 0) {
+                    var i = node.children().len - 1;
+                    while (i >= 0) {
+                        childOffset -= node.children()[i].length();
+                        try stack.append(.{ .node = node.children()[i], .offset = childOffset, .parent = &node.list });
+                        if (i > 0) {
+                            i -= 1;
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
         }
 
-        var allNodes = ArrayList(Node).init(allocator);
-        if (tokens.length > 0) {
-            allNodes = precedingNodes.concat(self.createFromUpdates(tokens, tokenQuality), postcedingNodes);
+        var allNodes = ArrayList(*Node).init(allocator);
+        defer allNodes.deinit();
+        if (tokens.len > 0) {
+            try allNodes.appendSlice(precedingNodes.items);
+            try allNodes.append(try self.createFromUpdates(tokens, tokenQuality));
+            try allNodes.appendSlice(postcedingNodes.items);
         } else {
-            allNodes = precedingNodes.concat(postcedingNodes);
+            try allNodes.appendSlice(precedingNodes.items);
+            try allNodes.appendSlice(postcedingNodes.items);
         }
-        var newRoot: Node = allNodes[0];
-        for (1..allNodes.len) |i| {
-            newRoot = concat(newRoot, allNodes[i]);
+        var newRoot: ?*Node = null;
+        if (allNodes.items.len > 0) {
+            newRoot = allNodes.items[0];
+            for (1..allNodes.items.len) |i| {
+                newRoot = try concat(allocator, newRoot.?, allNodes.items[i]);
+            }
         }
-
-        self.root = &newRoot orelse &self.createEmptyRoot();
+        self.root = newRoot orelse try self.createEmptyRoot();
+        if (old_root != self.root) {
+            self.destroyNode(old_root);
+        }
     }
     // @param startOffsetInclusive
     // @param endOffsetExclusive
@@ -409,9 +499,10 @@ pub const TokenStore = struct {
         ctx: @TypeOf(ctx),
         node: *Node,
         offset: usize,
-    ) bool) void {
+    ) anyerror!bool) !void {
         const allocator = self.getAllocator();
         var stack = ArrayList(NodeOffset).init(allocator);
+        defer stack.deinit();
         try stack.append(.{ .node = self.root, .offset = 0 });
 
         while (stack.items.len > 0) {
@@ -425,17 +516,24 @@ pub const TokenStore = struct {
                 continue;
             }
 
-            if (visitor(ctx, node, offset)) {
+            if (try visitor(ctx, node, offset)) {
                 return;
             }
 
             if (!node.isLeaf()) {
                 // Push children in reverse order to process them left-to-right when popping
                 var childOffset = offset + node.length();
-                var i = node.children().len - 1;
-                while (i >= 0) : (i -= 1) {
-                    childOffset -= node.children()[i].length();
-                    try stack.append(.{ .node = node.children()[i], .offset = childOffset });
+                if (node.children().len > 0) {
+                    var i = node.children().len - 1;
+                    while (i >= 0) {
+                        childOffset -= node.children()[i].length();
+                        try stack.append(.{ .node = node.children()[i], .offset = childOffset });
+                        if (i > 0) {
+                            i -= 1;
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -443,7 +541,7 @@ pub const TokenStore = struct {
 
     fn getTokenAt(self: *TokenStore, offset: usize) ?TokenUpdate {
         var result: ?TokenUpdate = null;
-        self.traverseInOrderInRange(offset, self.root.length(), &result, struct {
+        try self.traverseInOrderInRange(offset, self.root.length(), &result, struct {
             fn cb(ctx: *TokenUpdate, node: *Node, _offset: usize) bool {
                 if (node.isLeaf()) {
                     ctx.* = .{ .token = node.token, .startOffsetInclusive = _offset, .length = node.length() };
@@ -459,21 +557,24 @@ pub const TokenStore = struct {
         var result = ArrayList(TokenUpdate).init(self.getAllocator());
         defer result.deinit();
 
-        self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, &result, struct {
-            fn cb(ctx: *ArrayList(TokenUpdate), node: *Node, offset: usize) bool {
+        try self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, .{ &result, startOffsetInclusive, endOffsetExclusive }, struct {
+            fn cb(ctx: struct { *ArrayList(TokenUpdate), usize, usize }, node: *Node, offset: usize) anyerror!bool {
                 if (node.isLeaf()) {
+                    const startOffsetInclusive2 = ctx.@"1";
+                    const endOffsetExclusive2 = ctx.@"2";
+
                     var clippedLength = node.length();
                     var clippedOffset = offset;
-                    if ((offset < startOffsetInclusive) and (offset + node.length > endOffsetExclusive)) {
-                        clippedOffset = startOffsetInclusive;
-                        clippedLength = endOffsetExclusive - startOffsetInclusive;
-                    } else if (offset < startOffsetInclusive) {
-                        clippedLength -= (startOffsetInclusive - offset);
-                        clippedOffset = startOffsetInclusive;
-                    } else if (offset + node.length > endOffsetExclusive) {
-                        clippedLength -= (offset + node.length - endOffsetExclusive);
+                    if ((offset < startOffsetInclusive2) and (offset + node.length() > endOffsetExclusive2)) {
+                        clippedOffset = startOffsetInclusive2;
+                        clippedLength = endOffsetExclusive2 - startOffsetInclusive2;
+                    } else if (offset < startOffsetInclusive2) {
+                        clippedLength -= (startOffsetInclusive2 - offset);
+                        clippedOffset = startOffsetInclusive2;
+                    } else if (offset + node.length() > endOffsetExclusive2) {
+                        clippedLength -= (offset + node.length() - endOffsetExclusive2);
                     }
-                    try ctx.append(.{ .token = node.token, .startOffsetInclusive = clippedOffset, .length = clippedLength });
+                    try ctx.@"0".append(.{ .token = node.token(), .startOffsetInclusive = clippedOffset, .length = clippedLength });
                 }
                 return false;
             }
@@ -482,7 +583,7 @@ pub const TokenStore = struct {
     }
 
     pub fn markForRefresh(self: *TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize) void {
-        self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, {}, struct {
+        try self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, {}, struct {
             fn cb(_: void, node: *Node, _: usize) bool {
                 if (node.isLeaf()) {
                     node.setTokenQuality(.none);
@@ -507,7 +608,7 @@ pub const TokenStore = struct {
 
     pub fn rangeNeedsRefresh(self: *TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize) bool {
         var needsRefresh = false;
-        self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, &needsRefresh, struct {
+        try self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, &needsRefresh, struct {
             fn cb(ctx: *bool, node: *Node, _: usize) bool {
                 if (node.isLeaf() and (node.tokenQuality() != .accurate)) {
                     ctx.* = true;
@@ -522,7 +623,7 @@ pub const TokenStore = struct {
         var result = ArrayList(struct { startOffset: usize, endOffset: usize }).init(self.getAllocator());
         defer result.deinit();
 
-        self.traverseInOrderInRange(0, self._textModel.getValueLength(), struct {
+        try self.traverseInOrderInRange(0, self._textModel.getValueLength(), struct {
             fn cb(ctx: *ArrayList(struct { startOffset: usize, endOffset: usize }), node: *Node, offset: usize) bool {
                 if (node.isLeaf() and (node.tokenQuality() != .accurate)) {
                     if (ctx.items.len > 0 and ctx.items[ctx.items.len - 1].endOffset == offset) {
@@ -541,8 +642,10 @@ pub const TokenStore = struct {
     }
 
     pub fn deepCopy(self: *TokenStore) !TokenStore {
-        const newStore = try TokenStore.init(self._textModel);
-        newStore.root = try self._copyNodeIterative(self.root);
+        var newStore = try TokenStore.init(self._textModel);
+        const new_root = try self._copyNodeIterative(self.root);
+        newStore.destroyNode(newStore.root);
+        newStore.root = new_root;
         return newStore;
     }
 
@@ -588,17 +691,18 @@ pub const TokenStore = struct {
         return newRoot;
     }
 
-    const NodeNumber = struct { *Node, usize };
+    const NodeNumber = struct { *const Node, usize };
 
     // Returns a string representation of the token tree using an iterative approach
-    pub fn printTree(self: *const TokenStore, _root: ?*const Node) ArrayList(u8) {
+    pub fn printTree(self: *const TokenStore, _root: ?*const Node) !ArrayList(u8) {
         const allocator = self.getAllocator();
         const root = _root orelse self.root;
         var result = ArrayList(u8).init(allocator);
         var stack = ArrayList(NodeNumber).init(allocator);
+        defer stack.deinit();
         try stack.append(.{ root, 0 });
 
-        while (stack.length > 0) {
+        while (stack.items.len > 0) {
             const tmp = stack.pop().?;
             const node = tmp.@"0";
             const depth = tmp.@"1";
@@ -612,9 +716,16 @@ pub const TokenStore = struct {
             } else {
                 try result.print("List(length: {d})\n", .{node.length()});
                 // Push children in reverse order so they get processed left-to-right
-                var i = node.children().len - 1;
-                while (i >= 0) : (i -= 1) {
-                    try stack.append(.{ node.children()[i], depth + 1 });
+                if (node.children().len > 0) {
+                    var i = node.children().len - 1;
+                    while (i >= 0) {
+                        try stack.append(.{ node.children()[i], depth + 1 });
+                        if (i > 0) {
+                            i -= 1;
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -622,25 +733,19 @@ pub const TokenStore = struct {
         return result;
     }
 
-    pub fn dispose(self: *TokenStore) void {
-        const allocator = self.getAllocator();
-        var stack = ArrayList(struct { *Node, bool }).init(allocator);
-        try stack.append(.{ self.root, false });
-        while (stack.length > 0) {
-            const tmp = stack.pop().?;
-            const node = tmp.@"0";
-            const visited = tmp.@"1";
-            if (node.isLeaf()) {
-                // leaf node does not need to be disposed
-            } else if (!visited) {
-                try stack.append(.{ node, true });
-                for (node.children()) |child| {
-                    try stack.append(.{ child, false });
-                }
-            } else {
-                node.setParent(null);
+    fn destroyNode(self: *TokenStore, node: *Node) void {
+        if (!node.isLeaf()) {
+            defer node.deinit();
+            for (node.children()) |child| {
+                self.destroyNode(child);
             }
         }
-        self.root = undefined;
+
+        const allocator = self.getAllocator();
+        allocator.destroy(node);
+    }
+
+    pub fn deinit(self: *TokenStore) void {
+        self.destroyNode(self.root);
     }
 };
