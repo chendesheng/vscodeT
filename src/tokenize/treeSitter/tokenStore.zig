@@ -233,30 +233,24 @@ fn append(allocator: Allocator, node: *Node, nodeToAppend: *Node) !*Node {
         curNode = curNode.lastChild().?;
     }
 
-    if (parents.items.len > 0) {
-        var i = parents.items.len - 1;
-        while (i >= 0) {
-            const parent = parents.items[i];
-            if (_nodeToAppendOfCorrectHeight) |nodeToAppendOfCorrectHeight| {
-                // Can we take the element?
-                if (parent.children().len >= 3) {
-                    // we need to split to maintain (2,3)-tree property.
-                    // Send the third element + the new element to the parent.
-                    const newList = try ListNode.create(allocator, try parent.unappendChild(), nodeToAppendOfCorrectHeight);
-                    _nodeToAppendOfCorrectHeight = newList;
-                } else {
-                    try parent.appendChild(nodeToAppendOfCorrectHeight);
-                    _nodeToAppendOfCorrectHeight = null;
-                }
-            }
-
-            if (i > 0) {
-                i -= 1;
+    var i = parents.items.len;
+    while (i != 0) {
+        i -= 1;
+        const parent = parents.items[i];
+        if (_nodeToAppendOfCorrectHeight) |nodeToAppendOfCorrectHeight| {
+            // Can we take the element?
+            if (parent.children().len >= 3) {
+                // we need to split to maintain (2,3)-tree property.
+                // Send the third element + the new element to the parent.
+                const newList = try ListNode.create(allocator, try parent.unappendChild(), nodeToAppendOfCorrectHeight);
+                _nodeToAppendOfCorrectHeight = newList;
             } else {
-                break;
+                try parent.appendChild(nodeToAppendOfCorrectHeight);
+                _nodeToAppendOfCorrectHeight = null;
             }
         }
     }
+
     if (_nodeToAppendOfCorrectHeight) |nodeToAppendOfCorrectHeight| {
         const newList = try Node.createListNode(allocator, nodeToAppendOfCorrectHeight.height() + 1);
         try newList.list.appendChild(node);
@@ -281,26 +275,19 @@ fn prepend(allocator: Allocator, list: *Node, nodeToAppend: *Node) !*Node {
     }
     var _nodeToPrependOfCorrectHeight: ?*Node = nodeToAppend;
     // assert nodeToAppendOfCorrectHeight!.listHeight === curNode.listHeight
-    if (parents.items.len > 0) {
-        var i = parents.items.len - 1;
-        while (i >= 0) {
-            const parent = parents.items[i];
-            if (_nodeToPrependOfCorrectHeight) |nodeToPrependOfCorrectHeight| {
-                // Can we take the element?
-                if (parent.children().len >= 3) {
-                    // we need to split to maintain (2,3)-tree property.
-                    // Send the third element + the new element to the parent.
-                    _nodeToPrependOfCorrectHeight = try ListNode.create(allocator, nodeToPrependOfCorrectHeight, try parent.unprependChild());
-                } else {
-                    try parent.prependChild(nodeToPrependOfCorrectHeight);
-                    _nodeToPrependOfCorrectHeight = null;
-                }
-            }
-
-            if (i > 0) {
-                i -= 1;
+    var i = parents.items.len;
+    while (i != 0) {
+        i -= 1;
+        const parent = parents.items[i];
+        if (_nodeToPrependOfCorrectHeight) |nodeToPrependOfCorrectHeight| {
+            // Can we take the element?
+            if (parent.children().len >= 3) {
+                // we need to split to maintain (2,3)-tree property.
+                // Send the third element + the new element to the parent.
+                _nodeToPrependOfCorrectHeight = try ListNode.create(allocator, nodeToPrependOfCorrectHeight, try parent.unprependChild());
             } else {
-                break;
+                try parent.prependChild(nodeToPrependOfCorrectHeight);
+                _nodeToPrependOfCorrectHeight = null;
             }
         }
     }
@@ -454,17 +441,11 @@ pub const TokenStore = struct {
             if (!node.isLeaf()) {
                 // Push children in reverse order to process them left-to-right when popping
                 var childOffset = currentOffset + node.length();
-                if (node.children().len > 0) {
-                    var i = node.children().len - 1;
-                    while (i >= 0) {
-                        childOffset -= node.children()[i].length();
-                        try stack.append(.{ .node = node.children()[i], .offset = childOffset, .parent = &node.list });
-                        if (i > 0) {
-                            i -= 1;
-                        } else {
-                            break;
-                        }
-                    }
+                var i = node.children().len;
+                while (i != 0) {
+                    i -= 1;
+                    childOffset -= node.children()[i].length();
+                    try stack.append(.{ .node = node.children()[i], .offset = childOffset, .parent = &node.list });
                 }
             }
         }
@@ -523,17 +504,11 @@ pub const TokenStore = struct {
             if (!node.isLeaf()) {
                 // Push children in reverse order to process them left-to-right when popping
                 var childOffset = offset + node.length();
-                if (node.children().len > 0) {
-                    var i = node.children().len - 1;
-                    while (i >= 0) {
-                        childOffset -= node.children()[i].length();
-                        try stack.append(.{ .node = node.children()[i], .offset = childOffset });
-                        if (i > 0) {
-                            i -= 1;
-                        } else {
-                            break;
-                        }
-                    }
+                var i = node.children().len;
+                while (i != 0) {
+                    i -= 1;
+                    childOffset -= node.children()[i].length();
+                    try stack.append(.{ .node = node.children()[i], .offset = childOffset });
                 }
             }
         }
@@ -716,16 +691,10 @@ pub const TokenStore = struct {
             } else {
                 try result.print("List(length: {d})\n", .{node.length()});
                 // Push children in reverse order so they get processed left-to-right
-                if (node.children().len > 0) {
-                    var i = node.children().len - 1;
-                    while (i >= 0) {
-                        try stack.append(.{ node.children()[i], depth + 1 });
-                        if (i > 0) {
-                            i -= 1;
-                        } else {
-                            break;
-                        }
-                    }
+                var i = node.children().len;
+                while (i != 0) {
+                    i -= 1;
+                    try stack.append(.{ node.children()[i], depth + 1 });
                 }
             }
         }
