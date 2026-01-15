@@ -584,26 +584,26 @@ pub const TextModel = struct {
         return TextModelSnapshot.init(try self._buffer.createSnapshot(preserveBOM));
     }
 
-    pub fn getValueLength(self: *TextModel, eol: ?EndOfLinePreference, preserveBOM: bool) usize {
+    pub fn getValueLength(self: *const TextModel, eol: ?EndOfLinePreference, preserveBOM: bool) usize {
         const fullModelRange = self.getFullModelRange();
         const fullModelValue = self.getValueLengthInRange(fullModelRange, eol);
 
         if (preserveBOM) {
-            return self._buffer.getBOM().length + fullModelValue;
+            return self._buffer.getBOM().len + fullModelValue;
         }
 
         return fullModelValue;
     }
 
-    pub fn getValueInRange(self: *TextModel, rawRange: Range, eol: ?EndOfLinePreference) !ArrayList(u8) {
+    pub fn getValueInRange(self: *const TextModel, rawRange: Range, eol: ?EndOfLinePreference) !ArrayList(u8) {
         return try self._buffer.getValueInRange(self.validateRange(rawRange), eol orelse EndOfLinePreference.TextDefined);
     }
 
-    pub fn getValueLengthInRange(self: *TextModel, rawRange: Range, eol: ?EndOfLinePreference) usize {
+    pub fn getValueLengthInRange(self: *const TextModel, rawRange: Range, eol: ?EndOfLinePreference) usize {
         return self._buffer.getValueLengthInRange(self.validateRange(rawRange), eol orelse EndOfLinePreference.TextDefined);
     }
 
-    pub fn getCharacterCountInRange(self: *TextModel, rawRange: Range, eol: ?EndOfLinePreference) usize {
+    pub fn getCharacterCountInRange(self: *const TextModel, rawRange: Range, eol: ?EndOfLinePreference) usize {
         return self._buffer.getCharacterCountInRange(self.validateRange(rawRange), eol orelse EndOfLinePreference.TextDefined);
     }
 
@@ -722,7 +722,7 @@ pub const TextModel = struct {
         return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
     }
 
-    fn _isValidPosition(self: *TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) bool {
+    fn _isValidPosition(self: *const TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) bool {
         if (lineNumber < 1 or column < 1) {
             return false;
         }
@@ -750,7 +750,7 @@ pub const TextModel = struct {
         return true;
     }
 
-    fn _validatePosition(self: *TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) Position {
+    fn _validatePosition(self: *const TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) Position {
         const lineCount = self._buffer.getLineCount();
 
         if (lineNumber < 1) {
@@ -781,7 +781,7 @@ pub const TextModel = struct {
         return Position.init(lineNumber, column);
     }
 
-    pub fn validatePosition(self: *TextModel, position: Position) Position {
+    pub fn validatePosition(self: *const TextModel, position: Position) Position {
         const validationType = StringOffsetValidationType.Strict;
 
         // most likely case
@@ -792,11 +792,11 @@ pub const TextModel = struct {
         return self._validatePosition(position.lineNumber, position.column, validationType);
     }
 
-    pub fn isValidRange(self: *TextModel, range: Range) bool {
+    pub fn isValidRange(self: *const TextModel, range: Range) bool {
         return self._isValidRange(range, StringOffsetValidationType.Strict);
     }
 
-    fn _isValidRange(self: *TextModel, range: Range, validationType: StringOffsetValidationType) bool {
+    fn _isValidRange(self: *const TextModel, range: Range, validationType: StringOffsetValidationType) bool {
         const startLineNumber = range.startLineNumber;
         const startColumn = range.startColumn;
         const endLineNumber = range.endLineNumber;
@@ -818,7 +818,7 @@ pub const TextModel = struct {
         return true;
     }
 
-    pub fn validateRange(self: *TextModel, _range: Range) Range {
+    pub fn validateRange(self: *const TextModel, _range: Range) Range {
         const validationType = StringOffsetValidationType.Strict;
 
         // Avoid object allocation and cover most likely case
@@ -849,7 +849,7 @@ pub const TextModel = struct {
         return self.getPositionAt(@intCast(@max(0, candidate)));
     }
 
-    pub fn getFullModelRange(self: *TextModel) Range {
+    pub fn getFullModelRange(self: *const TextModel) Range {
         const lineCount = self.getLineCount();
         return Range.init(1, 1, lineCount, self.getLineMaxColumn(lineCount));
     }

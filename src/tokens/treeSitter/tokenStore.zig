@@ -261,7 +261,7 @@ fn concat(allocator: Allocator, node1: *Node, node2: *const Node) !Node {
 
 pub const TokenStore = struct {
     allocator: Allocator,
-    root: *Node,
+    root: Node,
     _textModel: *const TextModel,
 
     pub fn init(allocator: Allocator, textModel: *const TextModel) TokenStore {
