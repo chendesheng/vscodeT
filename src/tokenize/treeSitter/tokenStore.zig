@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 const TextModel = @import("../../textModel/textModel.zig").TextModel;
 const usizeAdd = @import("../../basics/utils.zig").usizeAdd;
+const TokenMetadata = @import("../../encodedTokenAttributes.zig").TokenMetadata;
 
 pub const ListNode = struct {
     parent: ?*ListNode,
@@ -112,7 +113,7 @@ pub const TokenQuality = enum(u8) {
 
 pub const LeafNode = struct {
     length: usize,
-    token: usize,
+    token: u32,
     tokenQuality: TokenQuality,
 };
 
@@ -120,7 +121,7 @@ pub const Node = union(enum) {
     list: ListNode,
     leaf: LeafNode,
 
-    pub fn createLeafNode(allocator: Allocator, _length: ?usize, _token: ?usize, _tokenQuality: ?TokenQuality) !*Node {
+    pub fn createLeafNode(allocator: Allocator, _length: ?usize, _token: ?u32, _tokenQuality: ?TokenQuality) !*Node {
         const node = try allocator.create(Node);
         node.* = .{
             .leaf = .{
@@ -179,7 +180,7 @@ pub const Node = union(enum) {
         };
     }
 
-    pub fn token(self: *const Node) usize {
+    pub fn token(self: *const Node) u32 {
         return switch (self.*) {
             .list => unreachable,
             .leaf => self.leaf.token,
@@ -211,7 +212,7 @@ pub const Node = union(enum) {
 pub const TokenUpdate = struct {
     startOffsetInclusive: usize,
     length: usize,
-    token: usize,
+    token: u32,
 };
 
 // Heavily inspired by https://github.com/microsoft/vscode/blob/4eb2658d592cb6114a7a393655574176cc790c5b/src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/concat23Trees.ts#L108-L109
@@ -328,7 +329,7 @@ pub const TokenStore = struct {
 
     fn createEmptyRoot(self: *const TokenStore) !*Node {
         const allocator = self.getAllocator();
-        return try Node.createLeafNode(allocator, self._textModel.getValueLength(null, false), 0, .none);
+        return try Node.createLeafNode(allocator, self._textModel.getValueLength(null, false), null, null);
     }
 
     // @param update all the tokens for the document in sequence

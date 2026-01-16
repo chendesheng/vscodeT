@@ -16,7 +16,7 @@ const PieceTreeTextBuffer = @import("../../pieceTreeTextBuffer/pieceTreeTextBuff
 const TreeSitterTree = @This();
 
 _tree: ?*ts.Tree = null,
-onTreeParseUpdate: Emitter(TreeParseUpdateEvent),
+onTreeChange: Emitter(TreeChangeEvent),
 
 _treeLastParsedVersion: i32 = -1,
 
@@ -120,7 +120,11 @@ pub fn handleContentChange(self: *TreeSitterTree, e: ?ModelContentChangedEvent, 
 
     const previousTree = self._tree;
     self._tree = completed_tree;
-    self.onTreeParseUpdate.fire(.{ .ranges = rgs.items, .versionId = version });
+    self.onTreeChange.fire(.{
+        .oldValue = previousTree,
+        .newValue = completed_tree,
+        .change = .{ .ranges = rgs.items, .versionId = version },
+    });
     self._treeLastParsedVersion = version;
     if (previousTree) |prevT| {
         prevT.destroy();
@@ -446,6 +450,11 @@ fn _setRanges(self: *TreeSitterTree, newRanges: []const ts.Range) ![]const ts.Ra
 //     return tree;
 // }
 
+pub const TreeChangeEvent = struct {
+    oldValue: ?*ts.Tree,
+    newValue: *ts.Tree,
+    change: ?TreeParseUpdateEvent,
+};
 pub const TreeParseUpdateEvent = struct {
     ranges: []const RangeChange,
     versionId: i32,

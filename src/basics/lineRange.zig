@@ -150,16 +150,16 @@ pub const LineRange = struct {
         return self.startLineNumber == other.startLineNumber and self.endLineNumberExclusive == other.endLineNumberExclusive;
     }
 
-    pub fn toInclusiveRange(self: *const LineRange) ?LineRange {
+    pub fn toInclusiveRange(self: *const LineRange) ?Range {
         if (self.isEmpty()) {
             return null;
         }
-        return LineRange.init(self.startLineNumber, self.endLineNumberExclusive - 1);
+        return Range.init(self.startLineNumber, 1, self.endLineNumberExclusive - 1, std.math.maxInt(usize));
     }
 
     // @deprecated Using this function is discouraged because it might lead to bugs: The end position is not guaranteed to be a valid position!
-    pub fn toExclusiveRange(self: *const LineRange) LineRange {
-        return LineRange.init(self.startLineNumber, self.endLineNumberExclusive);
+    pub fn toExclusiveRange(self: *const LineRange) Range {
+        return Range.init(self.startLineNumber, 1, self.endLineNumberExclusive, 1);
     }
 
     pub fn mapToLineArray(self: *const LineRange, comptime T: type, context: anytype, f: fn (lineNumber: usize, ctx: @TypeOf(context)) T) !ArrayList(T) {
