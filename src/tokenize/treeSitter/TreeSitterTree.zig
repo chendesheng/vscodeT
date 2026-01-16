@@ -481,11 +481,11 @@ pub fn rangesIntersect(a: ts.Range, b: ts.Range) bool {
         (b.startIndex <= a.startIndex and b.endIndex >= a.startIndex);
 }
 
-fn rangeStartToTSPoint(range: ts.Range) ts.Point {
+pub fn rangeStartToTSPoint(range: ts.Range) ts.Point {
     return .{ .row = @intCast(range.startPosition.row - 1), .column = @intCast(range.startPosition.column - 1) };
 }
 
-fn rangeEndToTSPoint(range: ts.Range) ts.Point {
+pub fn rangeEndToTSPoint(range: ts.Range) ts.Point {
     return .{ .row = @intCast(range.endPosition.row - 1), .column = @intCast(range.endPosition.column - 1) };
 }
 

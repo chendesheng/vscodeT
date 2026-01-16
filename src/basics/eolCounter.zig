@@ -11,6 +11,12 @@ pub const EOL = enum(u8) {
             .LF => 1,
         };
     }
+    pub fn toString(self: EOL) []const u8 {
+        return switch (self) {
+            .CRLF => "\r\n",
+            .LF => "\n",
+        };
+    }
 };
 
 const Unknown = 0;
