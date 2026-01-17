@@ -38,7 +38,7 @@ const Self = @This();
 _tokenStore: TokenStore,
 _accurateVersion: i64,
 _guessVersion: i64,
-onDidChangeTokens: Emitter(struct { changes: ModelTokensChangedEvent }),
+onDidChangeTokens: Emitter(ModelTokensChangedEvent),
 onDidChangeBackgroundTokenization: Emitter(void),
 onDidCompleteBackgroundTokenization: Emitter(void),
 
@@ -66,7 +66,7 @@ fn init(
         ._guessVersion = _textModel.getVersionId(),
         ._tree = _tree,
         ._languageIdCodec = _languageIdCodec,
-        .onDidChangeTokens = Emitter(struct { changes: ModelTokensChangedEvent }).init(allocator),
+        .onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
         .onDidChangeBackgroundTokenization = Emitter(void).init(allocator),
         ._encodedLanguageId = encodedLanguageId,
         ._visibleLineRanges = _visibleLineRanges,
@@ -293,13 +293,11 @@ fn _parseAndTokenizeViewPort(self: *Self, lineRanges: []const LineRange) !void {
         const oldRangeLength = lastToken.startOffsetInclusive + lastToken.length - tokenUpdates[0].startOffsetInclusive;
         self._updateTokensInStore(version, &[_]TokensUpdate{.{ .newTokens = tokenUpdates, .oldRangeLength = oldRangeLength }}, .viewportGuess);
         self.onDidChangeTokens.fire(.{
-            .changes = .{
-                .semanticTokensApplied = false,
-                .ranges = &[_]ModelTokensChangedRange{.{
-                    .fromLineNumber = range.startLineNumber,
-                    .toLineNumber = range.endLineNumber,
-                }},
-            },
+            .semanticTokensApplied = false,
+            .ranges = &[_]ModelTokensChangedRange{.{
+                .fromLineNumber = range.startLineNumber,
+                .toLineNumber = range.endLineNumber,
+            }},
         });
     }
 }
