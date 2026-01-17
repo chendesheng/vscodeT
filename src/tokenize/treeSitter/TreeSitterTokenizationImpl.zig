@@ -8,7 +8,7 @@ const ArrayList = std.array_list.Managed;
 const Emitter = @import("../../basics/event.zig").Emitter;
 const Allocator = std.mem.Allocator;
 const TextModel = @import("../../textModel/textModel.zig").TextModel;
-const TreeSitterTree = @import("treeSitterTree.zig").TreeSitterTree;
+const TreeSitterTree = @import("treeSitterTree.zig");
 const TreeSitterSyntaxTokenBackend = @import("treeSitterSyntaxTokenBackend.zig").TreeSitterSyntaxTokenBackend;
 const TokenStore = @import("tokenStore.zig").TokenStore;
 const TokenUpdate = @import("tokenStore.zig").TokenUpdate;
@@ -36,8 +36,8 @@ const SyntaxNode = @import("../../languages.zig").SyntaxNode;
 const Self = @This();
 
 _tokenStore: TokenStore,
-_accurateVersion: i64,
-_guessVersion: i64,
+_accurateVersion: u32,
+_guessVersion: u32,
 onDidChangeTokens: Emitter(ModelTokensChangedEvent),
 onDidChangeBackgroundTokenization: Emitter(void),
 onDidCompleteBackgroundTokenization: Emitter(void),
@@ -91,7 +91,7 @@ fn init(
                 if (!this.hasTokens()) {
                     this._firstTreeUpdate(changeEvent.versionId);
                 } else {
-                    this._handleTreeUpdate(changeEvent.ranges, changeEvent.versionId);
+                    this._handleTreeUpdate(changeEvent.ranges, changeEvent.versionId) catch unreachable;
                 }
             }
         }
@@ -108,7 +108,7 @@ fn init(
     return self;
 }
 
-fn textModel(self: *Self) *TextModel {
+fn textModel(self: *const Self) *TextModel {
     return self._tree.textModel;
 }
 
@@ -120,29 +120,30 @@ pub fn handleContentChanged(self: *Self, e: ModelContentChangedEvent) !void {
             // This is more likely to let the new text be the correct color as typeing is usually at the end of the token.
             const offset = if (change.rangeOffset > 0) change.rangeOffset - 1 else change.rangeOffset;
             var newToken: TokenUpdate = undefined;
-            const _oldToken = self._tokenStore.getTokenAt(offset);
+            const _oldToken = try self._tokenStore.getTokenAt(offset);
             if (_oldToken) |oldToken| {
                 // Insert. Just grow the token at this position to include the insert.
-                newToken = .{ .startOffsetInclusive = oldToken.startOffsetInclusive, .length = oldToken.length + change.text.length - change.rangeLength, .token = oldToken.token };
+                newToken = .{ .startOffsetInclusive = oldToken.startOffsetInclusive, .length = oldToken.length + change.text.len() - change.rangeLength, .token = oldToken.token };
                 // Also mark tokens that are in the range of the change as needing a refresh.
-                self._tokenStore.markForRefresh(offset, change.rangeOffset + (if (change.text.length > change.rangeLength) change.text.length else change.rangeLength));
+                try self._tokenStore.markForRefresh(offset, change.rangeOffset + (if (change.text.len() > change.rangeLength) change.text.len() else change.rangeLength));
             } else {
                 // The document got larger and the change is at the end of the document.
-                newToken = .{ .startOffsetInclusive = offset, .length = change.text.length, .token = 0 };
+                newToken = .{ .startOffsetInclusive = offset, .length = change.text.len(), .token = 0 };
             }
-            self._tokenStore.update(if (_oldToken) |oldToken| oldToken.length else 0, &[_]TokenUpdate{newToken}, .editGuess);
+            try self._tokenStore.update(if (_oldToken) |oldToken| oldToken.length else 0, &[_]TokenUpdate{newToken}, .editGuess);
         } else if (change.text.len() < change.rangeLength) {
             // Delete. Delete the tokens at the corresponding range.
             const deletedCharCount = change.rangeLength - change.text.len();
-            self._tokenStore.delete(deletedCharCount, change.rangeOffset);
+            try self._tokenStore.delete(deletedCharCount, change.rangeOffset);
         }
     }
 }
 
-pub fn getLineTokens(self: *Self, lineNumber: usize) !LineTokens {
-    const content = self.textModel().getLineContent(lineNumber);
+pub fn getLineTokens(self: *const Self, lineNumber: usize) !LineTokens {
+    var content = try self.textModel().getLineContent(lineNumber);
+    defer content.deinit();
     const rawTokens = try self.getTokens(lineNumber);
-    return LineTokens.init(rawTokens, content, self._languageIdCodec);
+    return LineTokens.init(rawTokens, try content.toOwnedSlice(), self._languageIdCodec);
 }
 
 fn _createEmptyTokens(self: *Self) ![]const TokenUpdate {
@@ -161,7 +162,11 @@ fn _emptyTokensForOffsetAndLength(offset: usize, length: usize, emptyToken: usiz
     return .{ .token = emptyToken, .length = offset + length, .startOffsetInclusive = 0 };
 }
 
-pub fn tokenizeLinesAt(self: *Self, lineNumber: usize, lines: []const []const u8) ?[]LineTokens {
+pub fn hasAccurateTokensForLine(self: *const Self, lineNumber: usize) !bool {
+    return try self.hasTokens(Range.init(lineNumber, 1, lineNumber, self.textModel().getLineMaxColumn(lineNumber)));
+}
+
+pub fn tokenizeLinesAt(self: *Self, lineNumber: usize, lines: []const []const u8) !?[]LineTokens {
     if (try self._guessTokensForLinesContent(lineNumber, lines)) |rawLineTokens| {
         const allocator = self.textModel().getAllocator();
         var lineTokens = ArrayList(LineTokens).init(allocator);
@@ -175,7 +180,7 @@ pub fn tokenizeLinesAt(self: *Self, lineNumber: usize, lines: []const []const u8
     }
 }
 
-fn _rangeHasTokens(self: *Self, range: Range, minimumTokenQuality: TokenQuality) bool {
+fn _rangeHasTokens(self: *const Self, range: Range, minimumTokenQuality: TokenQuality) bool {
     return self._tokenStore.rangeHasTokens(
         self.textModel().getOffsetAt(range.getStartPosition()),
         self.textModel().getOffsetAt(range.getEndPosition()),
@@ -183,18 +188,18 @@ fn _rangeHasTokens(self: *Self, range: Range, minimumTokenQuality: TokenQuality)
     );
 }
 
-pub fn hasTokens(self: *Self, accurateForRange: ?Range) bool {
+pub fn hasTokens(self: *const Self, accurateForRange: ?Range) !bool {
     if (accurateForRange == null or (self._guessVersion == self._accurateVersion)) {
         return true;
     }
 
-    return !self._tokenStore.rangeNeedsRefresh(
+    return !(try self._tokenStore.rangeNeedsRefresh(
         self.textModel().getOffsetAt(accurateForRange.?.getStartPosition()),
         self.textModel().getOffsetAt(accurateForRange.?.getEndPosition()),
-    );
+    ));
 }
 
-pub fn getTokens(self: *Self, line: usize) !ArrayList(TokenPacked) {
+pub fn getTokens(self: *const Self, line: usize) !ArrayList(TokenPacked) {
     const allocator = self.textModel().getAllocator();
     const lineStartOffset = self.textModel().getOffsetAt(.{ .lineNumber = line, .column = 1 });
     const lineEndOffset = self.textModel().getOffsetAt(.{ .lineNumber = line, .column = self.textModel().getLineLength(line) + 1 });
@@ -206,10 +211,10 @@ pub fn getTokens(self: *Self, line: usize) !ArrayList(TokenPacked) {
     return result;
 }
 
-pub fn getTokensInRange(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize, _captures: ?[]QueryCapture) ?[]TokenUpdate {
+pub fn getTokensInRange(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize, _captures: ?[]QueryCapture) !?[]TokenUpdate {
     const _tokens = blk: {
         if (_captures) |captures| {
-            break :blk self._tokenizeCapturesWithMetadata(captures, rangeStartOffset, rangeEndOffset);
+            break :blk try self._tokenizeCapturesWithMetadata(captures, rangeStartOffset, rangeEndOffset);
         } else {
             if (self._tokenize(range, rangeStartOffset, rangeEndOffset)) |tokens| {
                 break :blk tokens.@"0";
@@ -225,19 +230,19 @@ pub fn getTokensInRange(self: *Self, range: Range, rangeStartOffset: usize, rang
     return null;
 }
 
-fn _updateTokensInStore(self: *Self, version: u32, updates: []const TokensUpdate, tokenQuality: TokenQuality) void {
+fn _updateTokensInStore(self: *Self, version: u32, updates: []const TokensUpdate, tokenQuality: TokenQuality) !void {
     self._accurateVersion = version;
     for (updates) |update| {
         const lastToken = if (update.newTokens.len > 0) update.newTokens[update.newTokens.len - 1] else null;
         var oldRangeLength: usize = undefined;
         if (lastToken != null and (self._guessVersion >= version)) {
-            oldRangeLength = lastToken.startOffsetInclusive + lastToken.length - update.newTokens[0].startOffsetInclusive;
+            oldRangeLength = lastToken.?.startOffsetInclusive + lastToken.?.length - update.newTokens[0].startOffsetInclusive;
         } else if (update.oldRangeLength) |len| {
             oldRangeLength = len;
         } else {
             oldRangeLength = 0;
         }
-        self._tokenStore.update(oldRangeLength, update.newTokens, tokenQuality);
+        try self._tokenStore.update(oldRangeLength, update.newTokens, tokenQuality);
     }
 }
 
@@ -282,7 +287,7 @@ fn _parseAndTokenizeViewPort(self: *Self, lineRanges: []const LineRange) !void {
             continue;
         }
         const content = self.textModel().getValueInRange(range);
-        const tokenUpdates = self._forceParseAndTokenizeContent(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content, true);
+        const tokenUpdates = try self._forceParseAndTokenizeContentAsUpdate(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content);
         if (tokenUpdates == null or self._rangeHasTokens(range, .viewportGuess)) {
             continue;
         }
@@ -291,7 +296,7 @@ fn _parseAndTokenizeViewPort(self: *Self, lineRanges: []const LineRange) !void {
         }
         const lastToken = tokenUpdates[tokenUpdates.length - 1];
         const oldRangeLength = lastToken.startOffsetInclusive + lastToken.length - tokenUpdates[0].startOffsetInclusive;
-        self._updateTokensInStore(version, &[_]TokensUpdate{.{ .newTokens = tokenUpdates, .oldRangeLength = oldRangeLength }}, .viewportGuess);
+        try self._updateTokensInStore(version, &[_]TokensUpdate{.{ .newTokens = tokenUpdates, .oldRangeLength = oldRangeLength }}, .viewportGuess);
         self.onDidChangeTokens.fire(.{
             .semanticTokensApplied = false,
             .ranges = &[_]ModelTokensChangedRange{.{
@@ -303,15 +308,16 @@ fn _parseAndTokenizeViewPort(self: *Self, lineRanges: []const LineRange) !void {
 }
 
 fn _guessTokensForLinesContent(self: *Self, lineNumber: usize, lines: []const []const u8) !?ArrayList(ArrayList(TokenPacked)) {
-    if (lines.length == 0) {
+    if (lines.len == 0) {
         return undefined;
     }
 
     const allocator = self.textModel().getAllocator();
     const lineContent = try std.mem.join(allocator, "\n", lines);
-    const range = Range.init(1, 1, lineNumber + lines.length, lines[lines.length - 1].length + 1);
+    defer allocator.free(lineContent);
+    const range = Range.init(1, 1, lineNumber + lines.len, lines[lines.len - 1].len + 1);
     const startOffset = self.textModel().getOffsetAt(.{ .lineNumber = lineNumber, .column = 1 });
-    const tokens = self._forceParseAndTokenizeContent(range, startOffset, startOffset + lineContent.length, lineContent, false);
+    const tokens = try self._forceParseAndTokenizeContent(range, startOffset, startOffset + lineContent.len, lineContent);
     if (tokens == null) {
         return null;
     }
@@ -323,15 +329,15 @@ fn _guessTokensForLinesContent(self: *Self, lineNumber: usize, lines: []const []
         var tokensForLine = ArrayList(TokenPacked).init(allocator);
         var moveToNextLine = false;
         var j = tokensIndex;
-        while (!moveToNextLine and (j < tokens.len)) : (j += 1) {
-            const token = tokens[j];
+        while (!moveToNextLine and (j < tokens.?.len)) : (j += 1) {
+            const token = tokens.?[j];
             const lineAdjustedEndOffset = token.endOffset - lineStartOffset;
             const lineAdjustedStartOffset = tokenStartOffset - lineStartOffset;
-            if (lineAdjustedEndOffset <= lines[i].length) {
-                try tokensForLine.append(TokenPacked.init(lineAdjustedEndOffset, token.metadata));
+            if (lineAdjustedEndOffset <= lines[i].len) {
+                try tokensForLine.append(TokenPacked.init(@intCast(lineAdjustedEndOffset), token.metadata));
                 tokensIndex += 1;
-            } else if (lineAdjustedStartOffset < lines[i].length) {
-                const partialToken = TokenPacked.init(lines[i].length, token.metadata);
+            } else if (lineAdjustedStartOffset < lines[i].len) {
+                const partialToken = TokenPacked.init(@intCast(lines[i].len), token.metadata);
                 try tokensForLine.append(partialToken);
                 moveToNextLine = true;
             } else {
@@ -347,11 +353,11 @@ fn _guessTokensForLinesContent(self: *Self, lineNumber: usize, lines: []const []
     return tokensByLine;
 }
 
-fn _forceParseAndTokenizeContentTokens(self: *Self, range: Range, startOffsetOfRangeInDocument: usize, endOffsetOfRangeInDocument: usize, content: []const u8) ?struct { []TokenPacked, usize } {
+fn _forceParseAndTokenizeContentTokens(self: *Self, range: Range, startOffsetOfRangeInDocument: usize, endOffsetOfRangeInDocument: usize, content: []const u8) !?struct { []TokenPacked, usize } {
     const allocator = self.textModel().getAllocator();
-    const likelyRelevantLines = (try findLikelyRelevantLines(self.textModel(), range.startLineNumber)).likelyRelevantLines;
+    const likelyRelevantLines = (try findLikelyRelevantLines(self.textModel(), range.startLineNumber, null)).likelyRelevantLines;
     const eol = self.textModel().getEOL().toString();
-    const likelyRelevantPrefix = ArrayList(u8).init(allocator);
+    var likelyRelevantPrefix = ArrayList(u8).init(allocator);
     defer likelyRelevantPrefix.deinit();
     for (likelyRelevantLines.items, 0..likelyRelevantLines.items.len) |line, i| {
         try likelyRelevantPrefix.appendSlice(line.items);
@@ -367,7 +373,7 @@ fn _forceParseAndTokenizeContentTokens(self: *Self, range: Range, startOffsetOfR
         return;
     }
 
-    const treeRange = Range.init(1, 1, range.endLineNumber - range.startLineNumber + 1 + likelyRelevantLines.length, range.endColumn);
+    const treeRange = Range.init(1, 1, range.endLineNumber - range.startLineNumber + 1 + likelyRelevantLines.items.len, range.endColumn);
     const captures = self.captureAtRange(treeRange);
     const tokens = self._tokenizeCapturesWithMetadata(captures, likelyRelevantLinesLength, endOffsetOfRangeInDocument - startOffsetOfRangeInDocument + likelyRelevantLinesLength);
     tree.delete();
@@ -384,15 +390,15 @@ fn _forceParseAndTokenizeContent(
     startOffsetOfRangeInDocument: usize,
     endOffsetOfRangeInDocument: usize,
     content: []const u8,
-) ?[]TokenPacked {
-    if (self._forceParseAndTokenizeContentTokens(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content)) |res| {
+) !?[]TokenPacked {
+    if (try self._forceParseAndTokenizeContentTokens(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content)) |res| {
         return res.@"0";
     }
     return null;
 }
 
-fn _forceParseAndTokenizeContentAsUpdate(self: *Self, range: Range, startOffsetOfRangeInDocument: usize, endOffsetOfRangeInDocument: usize, content: []const u8) ?[]TokenUpdate {
-    if (self._forceParseAndTokenizeContentTokens(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content)) |res| {
+fn _forceParseAndTokenizeContentAsUpdate(self: *Self, range: Range, startOffsetOfRangeInDocument: usize, endOffsetOfRangeInDocument: usize, content: []const u8) !?[]TokenUpdate {
+    if (try self._forceParseAndTokenizeContentTokens(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content)) |res| {
         return self._rangeTokensAsUpdates(startOffsetOfRangeInDocument, res.@"0", res.@"1");
     }
     return null;
@@ -402,7 +408,7 @@ fn _firstTreeUpdate(self: *Self, versionId: i32) void {
     self._setViewPortTokens(versionId);
 }
 
-fn _setViewPortTokens(self: *Self, versionId: i64) void {
+fn _setViewPortTokens(self: *Self, versionId: u32) void {
     var rangeChanges = ArrayList(RangeChange).init(self.textModel().getAllocator());
     defer rangeChanges.deinit();
     for (self._visibleLineRanges) |lineRange| {
@@ -420,7 +426,7 @@ fn _setViewPortTokens(self: *Self, versionId: i64) void {
 }
 
 // Do not await in this method, it will cause a race
-fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: i64) void {
+fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: u32) !void {
     var rangeChanges = ArrayList(RangeWithOffsets).init(self.textModel().getAllocator());
     defer rangeChanges.deinit();
 
@@ -482,13 +488,13 @@ fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: i64) v
     //this._refreshNeedsRefresh(versionId);
     //}
     // TODO: start a thread?
-    self._updateTreeForRanges(rangeChanges, versionId, captures);
+    try self._updateTreeForRanges(rangeChanges, versionId, captures);
     if (self._tree.treeLastParsedVersion == self.textModel().getVersionId()) {
         self._refreshNeedsRefresh(versionId);
     }
 }
 
-fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId: i64, captures: []const []const QueryCapture) void {
+fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId: u32, captures: []const []const QueryCapture) !void {
     var tokenUpdate: TokensUpdate = undefined;
 
     for (0..rangeChanges.len) |i| {
@@ -499,7 +505,7 @@ fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId
         const capture = captures[i];
         const range = rangeChanges[i];
 
-        const updates = self.getTokensInRange(range.range, range.startOffset, range.endOffset, capture);
+        const updates = try self.getTokensInRange(range.range, range.startOffset, range.endOffset, capture);
         if (updates) {
             tokenUpdate = .{ .newTokens = updates };
         } else {
@@ -519,7 +525,7 @@ fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId
     self.onDidCompleteBackgroundTokenization.fire();
 }
 
-fn _refreshNeedsRefresh(self: *Self, versionId: i64) !void {
+fn _refreshNeedsRefresh(self: *Self, versionId: u32) !void {
     var rangesToRefresh = self._getNeedsRefresh();
     defer rangesToRefresh.deinit();
 
@@ -539,29 +545,29 @@ fn _refreshNeedsRefresh(self: *Self, versionId: i64) !void {
         };
     }
 
-    self._handleTreeUpdate(rangeChanges, versionId);
+    try self._handleTreeUpdate(rangeChanges, versionId);
 }
 
 fn _rangeTokensAsUpdates(self: *Self, rangeOffset: usize, endOffsetToken: []EndOffsetWithMeta, startingOffsetInArray: ?usize) ![]TokenUpdate {
     var updates = ArrayList(TokenUpdate).init(self.textModel().getAllocator());
     defer updates.deinit();
-    var lastEnd = 0;
+    var lastEnd: u32 = 0;
     for (endOffsetToken) |token| {
-        if (token.endOffset <= lastEnd or (startingOffsetInArray and (token.endOffset < startingOffsetInArray))) {
+        if (token.endOffset <= lastEnd or (startingOffsetInArray != null and (token.endOffset < @as(u32, @intCast(startingOffsetInArray.?))))) {
             continue;
         }
         var tokenUpdate: TokenUpdate = undefined;
-        if (startingOffsetInArray and (lastEnd < startingOffsetInArray)) {
+        if (startingOffsetInArray != null and (lastEnd < @as(u32, @intCast(startingOffsetInArray.?)))) {
             tokenUpdate = .{
-                .startOffsetInclusive = rangeOffset + startingOffsetInArray,
-                .length = token.endOffset - startingOffsetInArray,
-                .token = token.metadata,
+                .startOffsetInclusive = rangeOffset + @as(u32, @intCast(startingOffsetInArray.?)),
+                .length = @as(usize, @intCast(token.endOffset)) - startingOffsetInArray.?,
+                .token = @bitCast(token.metadata.?),
             };
         } else {
             tokenUpdate = .{
-                .startOffsetInclusive = rangeOffset + lastEnd,
-                .length = token.endOffset - lastEnd,
-                .token = token.metadata,
+                .startOffsetInclusive = rangeOffset + @as(usize, @intCast(lastEnd)),
+                .length = @intCast(token.endOffset - lastEnd),
+                .token = @bitCast(token.metadata.?),
             };
         }
         try updates.append(tokenUpdate);
@@ -595,7 +601,7 @@ fn captureAtRange(self: *Self, range: Range) !ArrayList(QueryCapture) {
         defer queryCursor.destroy();
 
         queryCursor.exec(self._highlightingQueries, tree.rootNode());
-        queryCursor.setPointRange(rangeStartToTSPoint(range), rangeEndToTSPoint(range));
+        try queryCursor.setPointRange(rangeStartToTSPoint(range), rangeEndToTSPoint(range));
 
         var result = ArrayList(QueryCapture).init(self.textModel().getAllocator());
         while (true) {
@@ -603,14 +609,14 @@ fn captureAtRange(self: *Self, range: Range) !ArrayList(QueryCapture) {
                 const i = c.@"0";
                 const match = c.@"1";
                 const capture = match.captures[i];
-                result.append(.{
+                try result.append(.{
                     // FIXME: ??
                     .name = "",
                     // FIXME: ??
                     .text = null,
                     .node = .{
-                        .startIndex = capture.node.startIndex,
-                        .endIndex = capture.node.endIndex,
+                        .startIndex = capture.node.startByte(),
+                        .endIndex = capture.node.endByte(),
                         .startPosition = .{ .lineNumber = capture.node.startPoint().row + 1, .column = capture.node.startPoint().column + 1 },
                         .endPosition = .{ .lineNumber = capture.node.endPoint().row + 1, .column = capture.node.endPoint().column + 1 },
                     },
@@ -628,8 +634,10 @@ fn captureAtRange(self: *Self, range: Range) !ArrayList(QueryCapture) {
 }
 
 fn captureAtRangeWithInjections(self: *Self, range: Range) ![]QueryCapture {
-    const captures = try self.captureAtRange(range);
-    for (captures.items, 0..) |capture, i| {
+    var captures = try self.captureAtRange(range);
+    var i: usize = 0;
+    while (i < captures.items.len) : (i += 1) {
+        const capture = captures.items[i];
         const capStartLine = capture.node.startPosition.lineNumber;
         const capEndLine = capture.node.endPosition.lineNumber;
         const capStartColumn = capture.node.startPosition.column;
@@ -647,13 +655,14 @@ fn captureAtRangeWithInjections(self: *Self, range: Range) ![]QueryCapture {
             (if (capEndLine > range.endLineNumber) range.endColumn else capEndColumn);
         const injectionRange = Range.init(startLine, startColumn, endLine, endColumn);
 
-        const injection = self._getInjectionCaptures(capture, injectionRange);
-        if (injection and injection.len > 0) {
-            try captures.insertSlice(i + 1, injection);
-            i += injection.len;
+        if (self._getInjectionCaptures(capture, injectionRange)) |injection| {
+            if (injection.len > 0) {
+                try captures.insertSlice(i + 1, injection);
+                i += injection.len;
+            }
         }
     }
-    return captures;
+    return try captures.toOwnedSlice();
 }
 
 // Gets the tokens for a given line.
@@ -661,14 +670,18 @@ fn captureAtRangeWithInjections(self: *Self, range: Range) ![]QueryCapture {
 //
 // @param lineNumber
 // @returns
-pub fn tokenizeEncoded(self: *Self, lineNumber: usize) void {
-    if (self._tokenizeEncoded(lineNumber)) |res| {
+pub fn tokenizeEncoded(self: *Self, lineNumber: usize) !void {
+    if (try self._tokenizeEncoded(lineNumber)) |res| {
         const tokens = res.@"0";
         const versionId = res.@"1";
 
-        const updates = try self._rangeTokensAsUpdates(self.textModel().getOffsetAt(.{ .lineNumber = lineNumber, .column = 1 }), tokens);
+        const updates = try self._rangeTokensAsUpdates(
+            self.textModel().getOffsetAt(.{ .lineNumber = lineNumber, .column = 1 }),
+            tokens,
+            null,
+        );
         if (versionId == self.textModel().getVersionId()) {
-            self._updateTokensInStore(
+            try self._updateTokensInStore(
                 versionId,
                 &[_]TokensUpdate{.{
                     .newTokens = updates,
@@ -680,30 +693,30 @@ pub fn tokenizeEncoded(self: *Self, lineNumber: usize) void {
     }
 }
 
-fn _getCaptures(self: *Self, range: Range) []QueryCapture {
-    const captures = self.captureAtRangeWithInjections(range);
+fn _getCaptures(self: *Self, range: Range) ![]QueryCapture {
+    const captures = try self.captureAtRangeWithInjections(range);
     return captures;
 }
 
-fn _tokenize(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize) ?struct { []TokenPacked, i64 } {
-    const captures = self._getCaptures(range);
-    if (self._tokenizeCapturesWithMetadata(captures, rangeStartOffset, rangeEndOffset)) |tokens| {
-        return .{ tokens, self._tree.treeLastParsedVersion };
+fn _tokenize(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize) !?struct { []EndOffsetWithMeta, u32 } {
+    const captures = try self._getCaptures(range);
+    if (try self._tokenizeCapturesWithMetadata(captures, rangeStartOffset, rangeEndOffset)) |tokens| {
+        return .{ tokens, self._tree._treeLastParsedVersion.? };
     }
     return null;
 }
 
-fn _createTokensFromCaptures(_self: *Self, _captures: []QueryCapture, _rangeStartOffset: usize, _rangeEndOffset: usize) ?[]EndOffsetWithMeta {
+fn _createTokensFromCaptures(_self: *Self, _captures: []QueryCapture, _rangeStartOffset: usize, _rangeEndOffset: usize) !?[]EndOffsetWithMeta {
     const run = struct {
         const Ctx = @This();
         const baseScope = "source.zig";
 
         tokenIndex: usize,
         allocator: Allocator,
-        endOffsetsAndScopes: []EndOffsetAndScopes,
+        endOffsetsAndScopes: ArrayList(EndOffsetWithMeta),
         encodedLanguageId: u32,
 
-        fn run(self: *Self, captures: []QueryCapture, rangeStartOffset: usize, rangeEndOffset: usize) ?[]EndOffsetWithMeta {
+        fn run(self: *Self, captures: []QueryCapture, rangeStartOffset: usize, rangeEndOffset: usize) !?[]EndOffsetWithMeta {
             var ctx: Ctx = undefined;
 
             const allocator = self.textModel().getAllocator();
@@ -713,17 +726,24 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []QueryCapture, _rangeStar
             ctx.encodedLanguageId = self._languageIdCodec.encodeLanguageId(self._tree.languageId);
 
             if (captures.len == 0) {
-                if (tree) {
-                    return &[_]EndOffsetWithMeta{
-                        .{ .endOffset = rangeLength, .scopes = &[_][]const u8{}, .encodedLanguageId = ctx.encodedLanguageId },
-                    };
+                if (tree != null) {
+                    return try allocator.dupe(EndOffsetWithMeta, &[_]EndOffsetWithMeta{
+                        .{
+                            .endOffset = @as(u32, @intCast(rangeLength)),
+                            .scopes = ArrayList([]const u8).init(allocator),
+                            .encodedLanguageId = ctx.encodedLanguageId,
+                        },
+                    });
                 }
                 return null;
             }
 
-            ctx.endOffsetsAndScopes = allocator.alloc(EndOffsetAndScopes, captures.len);
-            for (ctx.endOffsetsAndScopes) |*endOffset| {
-                endOffset.* = .{ .endOffset = 0, .scopes = &[_][]const u8{baseScope}, .encodedLanguageId = ctx.encodedLanguageId };
+            ctx.endOffsetsAndScopes = try ArrayList(EndOffsetWithMeta).initCapacity(allocator, captures.len);
+            defer ctx.endOffsetsAndScopes.deinit();
+
+            for (ctx.endOffsetsAndScopes.items) |*endOffset| {
+                endOffset.* = .{ .endOffset = 0, .scopes = ArrayList([]const u8).init(allocator), .encodedLanguageId = ctx.encodedLanguageId };
+                try endOffset.scopes.append(baseScope);
             }
 
             ctx.tokenIndex = 0;
@@ -743,17 +763,22 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []QueryCapture, _rangeStar
                 var previousEndOffset: usize = 0;
                 const currentTokenLength = tokenEndIndex - tokenStartIndex;
                 if (captureIndex > 0) {
-                    previousEndOffset = ctx.endOffsetsAndScopes[ctx.tokenIndex - 1].endOffset;
+                    previousEndOffset = ctx.endOffsetsAndScopes.items[ctx.tokenIndex - 1].endOffset;
                 } else {
                     previousEndOffset = tokenStartIndex - rangeStartOffset - 1;
                 }
                 const startOffset = endOffset - currentTokenLength;
                 if ((previousEndOffset >= 0) and (previousEndOffset < startOffset)) {
                     // Add en empty token to cover the space where there were no captures
-                    ctx.endOffsetsAndScopes[ctx.tokenIndex] = .{ .endOffset = startOffset, .scopes = &[_][]const u8{baseScope}, .encodedLanguageId = ctx.encodedLanguageId };
+                    ctx.endOffsetsAndScopes.items[ctx.tokenIndex] = .{
+                        .endOffset = @as(u32, @intCast(startOffset)),
+                        .scopes = ArrayList([]const u8).init(ctx.allocator),
+                        .encodedLanguageId = ctx.encodedLanguageId,
+                    };
+                    try ctx.endOffsetsAndScopes.items[ctx.tokenIndex].scopes.append(baseScope);
                     ctx.tokenIndex += 1;
 
-                    ctx.increaseSizeOfTokensByOneToken();
+                    try ctx.increaseSizeOfTokensByOneToken();
                 }
 
                 if (currentTokenLength < 0) {
@@ -764,116 +789,143 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []QueryCapture, _rangeStar
                 if (previousEndOffset >= endOffset) {
                     // walk back through the tokens until we find the one that contains the current token
                     var withinTokenIndex = ctx.tokenIndex - 1;
-                    var previousTokenEndOffset = ctx.endOffsetsAndScopes[withinTokenIndex].endOffset;
+                    var previousTokenEndOffset = ctx.endOffsetsAndScopes.items[withinTokenIndex].endOffset;
 
-                    var previousTokenStartOffset = if (withinTokenIndex >= 2) ctx.endOffsetsAndScopes[withinTokenIndex - 1].endOffset else 0;
+                    var previousTokenStartOffset = if (withinTokenIndex >= 2) ctx.endOffsetsAndScopes.items[withinTokenIndex - 1].endOffset else 0;
                     while (true) {
                         // Check that the current token doesn't just replace the last token
                         if ((previousTokenStartOffset + currentTokenLength) == previousTokenEndOffset) {
                             if (previousTokenStartOffset == startOffset) {
                                 // Current token and previous token span the exact same characters, add the scopes to the previous token
-                                try ctx.endOffsetsAndScopes[withinTokenIndex].scopes.append(capture.name);
-                                const oldBracket = ctx.endOffsetsAndScopes[withinTokenIndex].bracket;
-                                ctx.endOffsetsAndScopes[withinTokenIndex].bracket = if (oldBracket != null and (oldBracket.?.len > 0)) oldBracket.? else brackets(capture, startOffset);
+                                try ctx.endOffsetsAndScopes.items[withinTokenIndex].scopes.append(capture.name);
+                                const oldBracket = ctx.endOffsetsAndScopes.items[withinTokenIndex].bracket;
+                                ctx.endOffsetsAndScopes.items[withinTokenIndex].bracket = if (oldBracket != null and (oldBracket.?.len > 0))
+                                    oldBracket.?
+                                else
+                                    try ctx.brackets(capture, startOffset);
                             }
                         } else if (previousTokenStartOffset <= startOffset) {
-                            ctx.addCurrentTokenToArray(capture, startOffset, endOffset, withinTokenIndex);
+                            try ctx.addCurrentTokenToArray(capture, startOffset, endOffset, withinTokenIndex);
                             break;
                         }
                         withinTokenIndex -= 1;
-                        previousTokenStartOffset = if (withinTokenIndex >= 1) ctx.endOffsetsAndScopes[withinTokenIndex - 1].endOffset else 0;
-                        previousTokenEndOffset = if (withinTokenIndex >= 0) ctx.endOffsetsAndScopes[withinTokenIndex].endOffset else 0;
+                        previousTokenStartOffset = if (withinTokenIndex >= 1) ctx.endOffsetsAndScopes.items[withinTokenIndex - 1].endOffset else 0;
+                        previousTokenEndOffset = if (withinTokenIndex >= 0) ctx.endOffsetsAndScopes.items[withinTokenIndex].endOffset else 0;
                         if (!(previousTokenEndOffset > startOffset)) {
                             break;
                         }
                     }
                 } else {
                     // Just add the token to the array
-                    ctx.addCurrentTokenToArray(capture, startOffset, endOffset);
+                    try ctx.addCurrentTokenToArray(capture, startOffset, endOffset, null);
                 }
             }
 
             // Account for uncaptured characters at the end of the line
-            if ((ctx.endOffsetsAndScopes[ctx.tokenIndex - 1].endOffset < rangeLength)) {
-                if (rangeLength - ctx.endOffsetsAndScopes[ctx.tokenIndex - 1].endOffset > 0) {
-                    ctx.increaseSizeOfTokensByOneToken();
-                    ctx.endOffsetsAndScopes[ctx.tokenIndex] = .{ .endOffset = rangeLength, .scopes = ctx.endOffsetsAndScopes[ctx.tokenIndex].scopes, .encodedLanguageId = ctx.encodedLanguageId };
+            if ((ctx.endOffsetsAndScopes.items[ctx.tokenIndex - 1].endOffset < rangeLength)) {
+                if (rangeLength - ctx.endOffsetsAndScopes.items[ctx.tokenIndex - 1].endOffset > 0) {
+                    try ctx.increaseSizeOfTokensByOneToken();
+                    ctx.endOffsetsAndScopes.items[ctx.tokenIndex] = .{
+                        .endOffset = @as(u32, @intCast(rangeLength)),
+                        .scopes = ctx.endOffsetsAndScopes.items[ctx.tokenIndex].scopes,
+                        .encodedLanguageId = ctx.encodedLanguageId,
+                    };
                     ctx.tokenIndex += 1;
                 }
             }
-            for (0..ctx.endOffsetsAndScopes.len) |i| {
-                const token = ctx.endOffsetsAndScopes[i];
+            for (0..ctx.endOffsetsAndScopes.items.len) |i| {
+                const token = ctx.endOffsetsAndScopes.items[i];
                 if (token.endOffset == 0 and i != 0) {
-                    ctx.endOffsetsAndScopes.splice(i, ctx.endOffsetsAndScopes.len - i);
+                    ctx.endOffsetsAndScopes.replaceRangeAssumeCapacity(i, ctx.endOffsetsAndScopes.items.len - i, &[_]EndOffsetWithMeta{});
                     break;
                 }
             }
-            return ctx.endOffsetsAndScopes;
+            return try ctx.endOffsetsAndScopes.toOwnedSlice();
         }
 
-        fn brackets(ctx: *Ctx, capture: QueryCapture, startOffset: usize) ?[]usize {
-            if (std.mem.indexOf(capture.name, "punctuation") != null and capture.text) {
-                const bs = ArrayList(usize).init(ctx.allocator);
+        fn brackets(ctx: *Ctx, capture: QueryCapture, startOffset: usize) !?[]usize {
+            if (std.mem.indexOf(u8, capture.name, "punctuation") != null and capture.text != null) {
+                var bs = ArrayList(usize).init(ctx.allocator);
+                defer bs.deinit();
                 _ = startOffset;
                 // for (capture.text.matchAll(BRACKETS)) |match| {
                 //     try bs.append(startOffset + match.index);
                 // }
-                return bs;
+                return try bs.toOwnedSlice();
             } else {
                 return null;
             }
         }
 
-        fn increaseSizeOfTokensByOneToken(ctx: *Ctx) void {
-            try ctx.endOffsetsAndScopes.append(.{ .endOffset = 0, .scopes = &[_][]const u8{baseScope}, .encodedLanguageId = ctx.encodedLanguageId });
+        fn increaseSizeOfTokensByOneToken(ctx: *Ctx) !void {
+            var scopes = ArrayList([]const u8).init(ctx.allocator);
+            try scopes.append(baseScope);
+            try ctx.endOffsetsAndScopes.append(.{ .endOffset = 0, .scopes = scopes, .encodedLanguageId = ctx.encodedLanguageId });
         }
 
-        fn addCurrentTokenToArray(ctx: *Ctx, capture: QueryCapture, startOffset: usize, endOffset: usize, position: ?usize) void {
-            if (position != null) {
-                const oldScopes = ctx.endOffsetsAndScopes[position].scopes;
-                var oldBracket = ctx.endOffsetsAndScopes[position].bracket;
+        fn addCurrentTokenToArray(ctx: *Ctx, capture: QueryCapture, startOffset: usize, endOffset: usize, _position: ?usize) !void {
+            if (_position) |pos| {
+                var position = pos;
+                const oldScopes = ctx.endOffsetsAndScopes.items[position].scopes;
+                var oldBracket = ctx.endOffsetsAndScopes.items[position].bracket;
                 // Check that the previous token ends at the same point that the current token starts
-                const prevEndOffset = if (position > 0) ctx.endOffsetsAndScopes[position - 1].endOffset else 0;
+                const prevEndOffset = if (position > 0) ctx.endOffsetsAndScopes.items[position - 1].endOffset else 0;
                 if (prevEndOffset != startOffset) {
                     var preInsertBracket = ArrayList(usize).init(ctx.allocator);
-                    if (oldBracket and oldBracket.len > 0) {
+                    defer preInsertBracket.deinit();
+                    if (oldBracket != null and oldBracket.?.len > 0) {
                         var postInsertBracket = ArrayList(usize).init(ctx.allocator);
-                        for (oldBracket) |bracket| {
+                        defer postInsertBracket.deinit();
+                        for (oldBracket.?) |bracket| {
                             if (bracket < startOffset) {
                                 try preInsertBracket.append(bracket);
                             } else if (bracket > endOffset) {
                                 try postInsertBracket.append(bracket);
                             }
                         }
-                        if (preInsertBracket.items.len == 0) {
-                            preInsertBracket = undefined;
-                        }
-                        if (postInsertBracket.items.len == 0) {
-                            oldBracket = null;
-                        } else {
-                            oldBracket = postInsertBracket;
+                        if (postInsertBracket.items.len > 0) {
+                            oldBracket = try postInsertBracket.toOwnedSlice();
                         }
                     }
                     // We need to add some of the position token to cover the space
-                    try ctx.endOffsetsAndScopes.insertSlice(position, &[_]EndOffsetAndScopes{.{ .endOffset = startOffset, .scopes = oldScopes, .bracket = preInsertBracket, .encodedLanguageId = capture.encodedLanguageId }});
+                    try ctx.endOffsetsAndScopes.insertSlice(position, &[_]EndOffsetWithMeta{.{
+                        .endOffset = @as(u32, @intCast(startOffset)),
+                        .scopes = oldScopes,
+                        .bracket = if (preInsertBracket.items.len > 0) try preInsertBracket.toOwnedSlice() else null,
+                        .encodedLanguageId = capture.encodedLanguageId,
+                    }});
                     position += 1;
-                    ctx.increaseSizeOfTokensByOneToken();
+                    try ctx.increaseSizeOfTokensByOneToken();
                     ctx.tokenIndex += 1;
                 }
 
-                ctx.endOffsetsAndScopes.splice(position, 0, &[_]EndOffsetAndScopes{.{ .endOffset = endOffset, .scopes = oldScopes, .bracket = brackets(capture, startOffset), .encodedLanguageId = capture.encodedLanguageId }});
-                ctx.endOffsetsAndScopes[ctx.tokenIndex].bracket = oldBracket;
+                try ctx.endOffsetsAndScopes.insertSlice(position, &[_]EndOffsetWithMeta{.{
+                    .endOffset = @as(u32, @intCast(endOffset)),
+                    .scopes = oldScopes,
+                    .bracket = try ctx.brackets(capture, startOffset),
+                    .encodedLanguageId = capture.encodedLanguageId,
+                }});
+                ctx.endOffsetsAndScopes.items[ctx.tokenIndex].bracket = oldBracket;
             } else {
-                ctx.endOffsetsAndScopes[ctx.tokenIndex] = .{ .endOffset = endOffset, .scopes = &[_][]const u8{ baseScope, capture.name }, .bracket = ctx.brackets(capture, startOffset), .encodedLanguageId = capture.encodedLanguageId };
+                var scopes = ArrayList([]const u8).init(ctx.allocator);
+                try scopes.append(baseScope);
+                try scopes.append(capture.name);
+                ctx.endOffsetsAndScopes.items[ctx.tokenIndex] = .{
+                    .endOffset = @as(u32, @intCast(endOffset)),
+                    .scopes = scopes,
+                    .bracket = try ctx.brackets(capture, startOffset),
+                    .encodedLanguageId = capture.encodedLanguageId,
+                };
             }
             ctx.tokenIndex += 1;
         }
     }.run;
 
-    return run(_self, _captures, _rangeStartOffset, _rangeEndOffset);
+    return try run(_self, _captures, _rangeStartOffset, _rangeEndOffset);
 }
 
-fn _getInjectionCaptures(parentCapture: QueryCapture, range: Range) []QueryCapture {
+fn _getInjectionCaptures(self: *Self, parentCapture: QueryCapture, range: Range) ?[]QueryCapture {
+    _ = self;
     _ = parentCapture;
     _ = range;
     //
@@ -887,18 +939,17 @@ fn _getInjectionCaptures(parentCapture: QueryCapture, range: Range) []QueryCaptu
     // return undefined;
     // }
     // return feature.tokSupport_captureAtRangeTree(range, injection.tree, textModelTreeSitter);
-    return &[_]QueryCapture{};
+    return null;
 }
 
-fn _tokenizeCapturesWithMetadata(self: *Self, captures: []QueryCapture, rangeStartOffset: usize, rangeEndOffset: usize) ?[]TokenPacked {
+fn _tokenizeCapturesWithMetadata(self: *Self, captures: []QueryCapture, rangeStartOffset: usize, rangeEndOffset: usize) !?[]EndOffsetWithMeta {
     // const stopwatch = StopWatch.create();
-    if (self._createTokensFromCaptures(captures, rangeStartOffset, rangeEndOffset)) |endOffsetsAndScopes| {
-        for (endOffsetsAndScopes) |token| {
+    if (try self._createTokensFromCaptures(captures, rangeStartOffset, rangeEndOffset)) |endOffsetsAndScopes| {
+        for (endOffsetsAndScopes) |*token| {
             token.metadata = self._treeSitterThemeService.findMetadata(
-                token.scopes,
+                token.scopes.items,
                 token.encodedLanguageId,
                 token.bracket != null and (token.bracket.?.len > 0),
-                null,
             );
         }
         return endOffsetsAndScopes;
@@ -907,16 +958,16 @@ fn _tokenizeCapturesWithMetadata(self: *Self, captures: []QueryCapture, rangeSta
     }
 }
 
-fn _tokenizeEncoded(self: *Self, lineNumber: usize) ?struct { []TokenPacked, i64 } {
+fn _tokenizeEncoded(self: *Self, lineNumber: usize) !?struct { []EndOffsetWithMeta, u32 } {
     const lineOffset = self.textModel().getOffsetAt(.{ .lineNumber = lineNumber, .column = 1 });
     const maxLine = self.textModel().getLineCount();
     const lineEndOffset = if (lineNumber + 1 <= maxLine)
         self.textModel().getOffsetAt(.{ .lineNumber = lineNumber + 1, .column = 1 })
     else
-        self.textModel().getValueLength();
+        self.textModel().getValueLength(null, null);
 
     const lineLength = lineEndOffset - lineOffset;
-    return self._tokenize(Range.init(lineNumber, 1, lineNumber, lineLength + 1), lineOffset, lineEndOffset);
+    return try self._tokenize(Range.init(lineNumber, 1, lineNumber, lineLength + 1), lineOffset, lineEndOffset);
 }
 
 const TokensUpdate = struct {
@@ -924,17 +975,10 @@ const TokensUpdate = struct {
     newTokens: []const TokenUpdate,
 };
 
-const EndOffsetAndScopes = struct {
-    endOffset: usize,
-    scopes: []const []const u8,
-    bracket: ?[]const usize,
-    encodedLanguageId: u32,
-};
-
 const EndOffsetWithMeta = struct {
-    endOffset: usize,
-    scopes: []const []const u8,
-    bracket: ?[]const usize,
+    endOffset: u32,
+    scopes: ArrayList([]const u8),
+    bracket: ?[]const usize = null,
     encodedLanguageId: u32,
     metadata: ?TokenMetadata = null,
 };

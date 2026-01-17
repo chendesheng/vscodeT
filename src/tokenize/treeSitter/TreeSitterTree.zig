@@ -18,7 +18,7 @@ const TreeSitterTree = @This();
 _tree: ?*ts.Tree = null,
 onTreeChange: Emitter(TreeChangeEvent),
 
-_treeLastParsedVersion: i32 = -1,
+_treeLastParsedVersion: ?u32 = null,
 
 _lastFullyParsed: ?*ts.Tree = null,
 _lastFullyParsedWithEdits: ?*ts.Tree = null,
@@ -54,6 +54,7 @@ pub fn init(
         ._ranges = _ranges,
         .textModel = textModel,
         .languageId = languageId,
+        .onTreeChange = Emitter(TreeChangeEvent).init(textModel.getAllocator()),
     };
     try self.handleContentChange(null, _ranges);
     return self;
@@ -90,7 +91,7 @@ pub fn handleContentChange(self: *TreeSitterTree, e: ?ModelContentChangedEvent, 
         allocator.free(cn);
     };
     if (self._lastFullyParsedWithEdits != null and self._lastFullyParsed != null) {
-        changedNodes = try self._findChangedNodes(self._lastFullyParsedWithEdits, self._lastFullyParsed);
+        changedNodes = try self._findChangedNodes(self._lastFullyParsedWithEdits.?, self._lastFullyParsed.?);
     }
 
     const completed_tree = try self._parseAndUpdateTree(version);
@@ -149,17 +150,17 @@ fn _applyEdits(self: *TreeSitterTree, changes: []const ModelContentChange) !void
         const newTextLength = change.text.toTextLength();
         const summedTextLengths = if (change.text.isEmpty()) newTextLength else originalTextLength.add(newTextLength);
         const edit = ts.InputEdit{
-            .start_byte = change.rangeOffset,
-            .old_end_byte = @intCast(change.rangeOffset + change.rangeLength),
-            .new_end_byte = @intCast(change.rangeOffset + change.text.len()),
+            .start_byte = @as(u32, @intCast(change.rangeOffset)),
+            .old_end_byte = @as(u32, @intCast(change.rangeOffset + change.rangeLength)),
+            .new_end_byte = @as(u32, @intCast(change.rangeOffset + change.text.len())),
             .start_point = rangeStartToTSPoint(change.range),
             .old_end_point = rangeEndToTSPoint(change.range),
             .new_end_point = .{
-                .row = @intCast(change.range.startLineNumber + summedTextLengths.lineCount - 1),
+                .row = @as(u32, @intCast(change.range.startLineNumber + summedTextLengths.lineCount - 1)),
                 .column = if (summedTextLengths.lineCount > 0)
-                    @intCast(summedTextLengths.columnCount)
+                    @as(u32, @intCast(summedTextLengths.columnCount))
                 else
-                    @intCast(change.range.endColumn + summedTextLengths.columnCount),
+                    @as(u32, @intCast(change.range.endColumn + summedTextLengths.columnCount)),
             },
         };
         if (self._tree) |tree| {
@@ -192,8 +193,8 @@ fn _findChangedNodes(self: *TreeSitterTree, newTree: *ts.Tree, oldTree: *ts.Tree
         }
     }
     const allocator = self.textModel.getAllocator();
-    const newCursor = newTree.walk();
-    const oldCursor = oldTree.walk();
+    var newCursor = &newTree.walk();
+    var oldCursor = &oldTree.walk();
 
     var nodes: ArrayList(ts.Range) = ArrayList(ts.Range).init(allocator);
     defer nodes.deinit();
@@ -205,7 +206,8 @@ fn _findChangedNodes(self: *TreeSitterTree, newTree: *ts.Tree, oldTree: *ts.Tree
             // If it's only one, then we go to that child.
             // If it's more then, we need to go to each child
             // If it's none, then we've found one of our ranges
-            const newChildren = try newCursor.node().children(newCursor, allocator);
+            // FIXME: how to get children?
+            const newChildren = try newCursor.node().children(undefined, allocator);
             var indexChangedChildren = ArrayList(usize).init(allocator);
             defer indexChangedChildren.deinit();
             const changedChildren = ArrayList(*ts.Node).init(allocator);
@@ -219,7 +221,7 @@ fn _findChangedNodes(self: *TreeSitterTree, newTree: *ts.Tree, oldTree: *ts.Tree
             if ((changedChildren.items.len == 0) || (newCursor.node().hasError() != oldCursor.node().hasError())) {
                 // walk up again until we get to the first one that's named as unnamed nodes can be too granular
                 while (newCursor.node().parent and next and !newCursor.node().isNamed) {
-                    next = gotoParent(newCursor, oldCursor);
+                    next = gotoParent(&newCursor, oldCursor);
                 }
                 // Use the end position of the previous node and the start position of the current node
                 const newNode = newCursor.node();
@@ -231,7 +233,7 @@ fn _findChangedNodes(self: *TreeSitterTree, newTree: *ts.Tree, oldTree: *ts.Tree
                     .end_point = newNode.endPoint(),
                 });
                 next = nextSiblingOrParentSibling(newCursor, oldCursor);
-            } else if (changedChildren.length >= 1) {
+            } else if (changedChildren.items.len >= 1) {
                 next = gotoNthChild(newCursor, oldCursor, indexChangedChildren.items[0]);
             }
         } else {
@@ -416,12 +418,12 @@ fn _setRanges(self: *TreeSitterTree, newRanges: []const ts.Range) ![]const ts.Ra
     var unKnownRanges = ArrayList(ts.Range).init(allocator);
     defer unKnownRanges.deinit();
     // If we have existing ranges, find the parts of the new ranges that are not included in the existing ones
-    if (self._ranges) {
+    if (self._ranges) |rgs| {
         for (newRanges) |newRange| {
             var isFullyIncluded = false;
 
-            for (0..self._ranges.len) |i| {
-                const existingRange = self._ranges[i];
+            for (0..rgs.len) |i| {
+                const existingRange = rgs[i];
 
                 if (rangesEqual(existingRange, newRange) or rangesIntersect(existingRange, newRange)) {
                     isFullyIncluded = true;
@@ -473,20 +475,20 @@ pub const RangeChange = struct {
 };
 
 pub fn rangesEqual(a: ts.Range, b: ts.Range) bool {
-    return (a.startPosition.row == b.startPosition.row) and (a.startPosition.column == b.startPosition.column) and (a.endPosition.row == b.endPosition.row) and (a.endPosition.column == b.endPosition.column) and (a.startIndex == b.startIndex) and (a.endIndex == b.endIndex);
+    return (a.start_point.row == b.start_point.row) and (a.start_point.column == b.start_point.column) and (a.end_point.row == b.end_point.row) and (a.end_point.column == b.end_point.column) and (a.start_byte == b.start_byte) and (a.end_byte == b.end_byte);
 }
 
 pub fn rangesIntersect(a: ts.Range, b: ts.Range) bool {
-    return (a.startIndex <= b.startIndex and a.endIndex >= b.startIndex) or
-        (b.startIndex <= a.startIndex and b.endIndex >= a.startIndex);
+    return (a.start_byte <= b.start_byte and a.end_byte >= b.start_byte) or
+        (b.start_byte <= a.start_byte and b.end_byte >= a.start_byte);
 }
 
-pub fn rangeStartToTSPoint(range: ts.Range) ts.Point {
-    return .{ .row = @intCast(range.startPosition.row - 1), .column = @intCast(range.startPosition.column - 1) };
+pub fn rangeStartToTSPoint(range: Range) ts.Point {
+    return .{ .row = @intCast(range.startLineNumber - 1), .column = @intCast(range.startColumn - 1) };
 }
 
-pub fn rangeEndToTSPoint(range: ts.Range) ts.Point {
-    return .{ .row = @intCast(range.endPosition.row - 1), .column = @intCast(range.endPosition.column - 1) };
+pub fn rangeEndToTSPoint(range: Range) ts.Point {
+    return .{ .row = @intCast(range.endLineNumber - 1), .column = @intCast(range.endColumn - 1) };
 }
 
 fn tsRangeToRange(range: ts.Range) Range {

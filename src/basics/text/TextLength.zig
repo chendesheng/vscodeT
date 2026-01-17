@@ -38,8 +38,8 @@ pub fn ofRange(range: Range) TextLength {
 }
 
 pub fn ofText(text: []const u8) TextLength {
-    var line = 0;
-    var column = 0;
+    var line: usize = 0;
+    var column: usize = 0;
     for (text) |c| {
         if (c == '\n') {
             line += 1;

@@ -198,16 +198,17 @@ pub const AbstractSyntaxTokenBackend = struct {
     _onDidChangeTokens: Emitter(ModelTokensChangedEvent),
 
     pub const VTable = struct {
+        todo_resetTokenization: *const fn (s: *AbstractSyntaxTokenBackend, fireTokenChangeEvent: bool) anyerror!void,
         handleDidChangeAttached: *const fn (s: *AbstractSyntaxTokenBackend) void,
         handleDidChangeContent: *const fn (s: *AbstractSyntaxTokenBackend, e: ModelContentChangedEvent) anyerror!void,
         forceTokenization: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) anyerror!void,
-        hasAccurateTokensForLine: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) bool,
+        hasAccurateTokensForLine: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) anyerror!bool,
         isCheapToTokenize: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) bool,
 
         getLineTokens: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize) anyerror!LineTokens,
         getTokenTypeIfInsertingCharacter: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize, column: usize, character: []const u8) anyerror!StandardTokenType,
         tokenizeLinesAt: *const fn (s: *AbstractSyntaxTokenBackend, lineNumber: usize, lines: []const []const u8) anyerror!?[]LineTokens,
-        hasTokens: *const fn (s: *AbstractSyntaxTokenBackend) bool,
+        hasTokens: *const fn (s: *AbstractSyntaxTokenBackend) anyerror!bool,
         deinit: *const fn (s: *AbstractSyntaxTokenBackend) void,
         destroy: *const fn (s: *AbstractSyntaxTokenBackend, allocator: Allocator) void,
     };
@@ -241,8 +242,12 @@ pub const AbstractSyntaxTokenBackend = struct {
     }
 
     // //** @internal, should not be exposed by the text model! */
-    pub fn onDidChangeTokens(self: *AbstractSyntaxTokenBackend, f: fn (ModelTokensChangedEvent, void) void) void {
-        self._onDidChangeTokens.event({}, f);
+    pub fn onDidChangeTokens(self: *AbstractSyntaxTokenBackend, ctx: anytype, f: fn (ModelTokensChangedEvent, @TypeOf(ctx)) void) !void {
+        try self._onDidChangeTokens.event(ctx, f);
+    }
+
+    pub fn todo_resetTokenization(self: *AbstractSyntaxTokenBackend, fireTokenChangeEvent: ?bool) anyerror!void {
+        try self.vtable.todo_resetTokenization(self, fireTokenChangeEvent orelse true);
     }
 
     pub fn handleDidChangeAttached(self: *AbstractSyntaxTokenBackend) void {
@@ -254,8 +259,8 @@ pub const AbstractSyntaxTokenBackend = struct {
     pub fn forceTokenization(self: *AbstractSyntaxTokenBackend, lineNumber: usize) !void {
         try self.vtable.forceTokenization(self, lineNumber);
     }
-    pub fn hasAccurateTokensForLine(self: *AbstractSyntaxTokenBackend, lineNumber: usize) bool {
-        return self.vtable.hasAccurateTokensForLine(self, lineNumber);
+    pub fn hasAccurateTokensForLine(self: *AbstractSyntaxTokenBackend, lineNumber: usize) !bool {
+        return try self.vtable.hasAccurateTokensForLine(self, lineNumber);
     }
     pub fn isCheapToTokenize(self: *AbstractSyntaxTokenBackend, lineNumber: usize) bool {
         return self.vtable.isCheapToTokenize(self, lineNumber);
@@ -269,8 +274,8 @@ pub const AbstractSyntaxTokenBackend = struct {
     pub fn tokenizeLinesAt(self: *AbstractSyntaxTokenBackend, lineNumber: usize, lines: []const []const u8) !?[]LineTokens {
         return try self.vtable.tokenizeLinesAt(self, lineNumber, lines);
     }
-    pub fn hasTokens(self: *AbstractSyntaxTokenBackend) bool {
-        return self.vtable.hasTokens(self);
+    pub fn hasTokens(self: *AbstractSyntaxTokenBackend) !bool {
+        return try self.vtable.hasTokens(self);
     }
     pub fn deinit(self: *AbstractSyntaxTokenBackend) void {
         self.vtable.deinit(self);

@@ -25,6 +25,8 @@ const ResolvedLanguageConfiguration = @import("../languages/languageConfiguratio
 const ModelTokensChangedRange = @import("../textModel/textModelEvents.zig").ModelTokensChangedRange;
 const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
 const LanguageService = @import("../languages/languageService.zig").LanguageService;
+const TreeSitterLibraryService = @import("../services/TreeSitterLibraryService.zig");
+const TreeSitterSyntaxTokenBackend = @import("./treeSitter/treeSitterSyntaxTokenBackend.zig");
 
 // const derived = @import("../common/observable.zig").derived;
 // const IObservable = @import("../common/observable.zig").IObservable;
@@ -46,7 +48,7 @@ pub const TokenizationTextModelPart = struct {
     _languageService: *LanguageService,
     _languageConfigurationService: *LanguageConfigurationService,
     // _instantiationService: IInstantiationService,
-    // _treeSitterLibraryService: ITreeSitterLibraryService,
+    _treeSitterLibraryService: *TreeSitterLibraryService,
 
     pub fn create(
         textModel_: *TextModel,
@@ -68,52 +70,20 @@ pub const TokenizationTextModelPart = struct {
     }
 
     pub fn init(
-        textModel_: *TextModel,
+        _textModel: *TextModel,
         languageId: []const u8,
         attachedViews: *AttachedViews,
         languageService: *LanguageService,
         languageConfigurationService: *LanguageConfigurationService,
+        _treeSitterLibraryService: *TreeSitterLibraryService,
     ) !TokenizationTextModelPart {
-        //tokens = derived(this, reader => {
-        //   let tokens: AbstractSyntaxTokenBackend;
-        //   if (this._useTreeSitter.read(reader)) {
-        //      tokens = reader.store.add(this._instantiationService.createInstance(
-        //         TreeSitterSyntaxTokenBackend,
-        //         this._languageIdObs,
-        //         this._languageService.languageIdCodec,
-        //         this._textModel,
-        //         this._attachedViews.visibleLineRanges
-        //      ));
-        //   } else {
-        //      tokens = reader.store.add(new TokenizerSyntaxTokenBackend(this._languageService.languageIdCodec, this._textModel, () => this._languageId, this._attachedViews));
-        //   }
-
-        //   // reader.store.add(tokens.onDidChangeTokens(e => {
-        //   //    self._emitModelTokensChangedEvent(e);
-        //   // }));
-
-        //   // reader.store.add(tokens.onDidChangeBackgroundTokenizationState(e => {
-        //   //    self._bracketPairsTextModelPart.handleDidChangeBackgroundTokenizationState();
-        //   // }));
-        //   return tokens;
-        //});
-
-        // var hadTokens = false;
-        // self.tokens.recomputeInitiallyAndOnChange(this._store, value => {
-        //    if (hadTokens) {
-        //       // We need to reset the tokenization, as the new token provider otherwise won't have a chance to provide tokens until some action happens in the editor.
-        //       // TODO@hediet: Look into why this is needed.
-        //       value.todo_resetTokenization();
-        //    }
-        //    hadTokens = true;
-        // });
-
         const languageIdCodec = &languageService.languageIdCodec;
-        const allocator = textModel_.getAllocator();
+        const allocator = _textModel.getAllocator();
+        const useTreeSitter = _treeSitterLibraryService.supportsLanguage(languageId);
 
-        return TokenizationTextModelPart{
-            ._useTreeSitter = false,
-            ._textModel = textModel_,
+        var self = TokenizationTextModelPart{
+            ._useTreeSitter = useTreeSitter,
+            ._textModel = _textModel,
             ._languageId = languageId,
             ._attachedViews = attachedViews,
             ._semanticTokens = SparseTokensStore.init(allocator, languageIdCodec),
@@ -122,14 +92,40 @@ pub const TokenizationTextModelPart = struct {
             ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
             ._languageService = languageService,
             ._languageConfigurationService = languageConfigurationService,
-            .tokens = try TokenizerSyntaxTokenBackend.create(
-                allocator,
-                languageIdCodec,
-                textModel_,
-                languageId,
-                attachedViews,
-            ),
+            ._treeSitterLibraryService = _treeSitterLibraryService,
+            .tokens = undefined,
         };
+        self.tokens = blk: {
+            if (useTreeSitter) {
+                const tokens = try TreeSitterSyntaxTokenBackend.create(
+                    allocator,
+                    languageId,
+                    languageIdCodec,
+                    _textModel,
+                    attachedViews.visibleLineRanges.items,
+                    _treeSitterLibraryService,
+                );
+                try tokens.onDidChangeTokens(&self, struct {
+                    fn cb(e: ModelTokensChangedEvent, this: *TokenizationTextModelPart) void {
+                        this._emitModelTokensChangedEvent(e);
+                    }
+                }.cb);
+                break :blk tokens;
+            } else {
+                break :blk try TokenizerSyntaxTokenBackend.create(
+                    allocator,
+                    languageIdCodec,
+                    _textModel,
+                    languageId,
+                    attachedViews,
+                );
+            }
+        };
+
+        // We need to reset the tokenization, as the new token provider otherwise won't have a chance to provide tokens until some action happens in the editor.
+        // TODO@hediet: Look into why this is needed.
+        // try self.tokens.todo_resetTokenization(null);
+        return self;
     }
 
     pub fn deinit(self: *TokenizationTextModelPart) void {
@@ -234,9 +230,9 @@ pub const TokenizationTextModelPart = struct {
         try self.tokens.forceTokenization(lineNumber);
     }
 
-    pub fn hasAccurateTokensForLine(self: *const TokenizationTextModelPart, lineNumber: usize) bool {
+    pub fn hasAccurateTokensForLine(self: *const TokenizationTextModelPart, lineNumber: usize) !bool {
         self.validateLineNumber(lineNumber);
-        return self.tokens.hasAccurateTokensForLine(lineNumber);
+        return try self.tokens.hasAccurateTokensForLine(lineNumber);
     }
 
     pub fn isCheapToTokenize(self: *const TokenizationTextModelPart, lineNumber: usize) bool {

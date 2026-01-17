@@ -125,7 +125,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         // TODO@hediet: use tokenizeLineWithEdit
         const lineStartState = self.getStartState(position.lineNumber);
         if (lineStartState == null) {
-            return StandardTokenType.Other;
+            return StandardTokenType.other;
         }
 
         const languageId = self._textModel.getLanguageId();
@@ -144,7 +144,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         var lineTokens = LineTokens.init(tokens, text.items, self._languageIdCodec);
         defer lineTokens.deinit();
         if (lineTokens.getCount() == 0) {
-            return StandardTokenType.Other;
+            return StandardTokenType.other;
         }
 
         const tokenIndex = lineTokens.findTokenIndexAtOffset(position.column - 1);
@@ -173,7 +173,7 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         }
     }
 
-    pub fn hasAccurateTokensForLine(self: *const Self, lineNumber: usize) bool {
+    pub fn hasAccurateTokensForLine(self: *const Self, lineNumber: usize) !bool {
         const firstInvalidLineNumber = self.getStoreConst().getFirstInvalidEndStateLineNumberOrMax();
         return (lineNumber < firstInvalidLineNumber);
     }

@@ -477,7 +477,7 @@ pub const TokenStore = struct {
     // @param endOffsetExclusive
     // @param visitor Return true from visitor to exit early
     // @returns
-    fn traverseInOrderInRange(self: *TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize, ctx: anytype, visitor: fn (
+    fn traverseInOrderInRange(self: *const TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize, ctx: anytype, visitor: fn (
         ctx: @TypeOf(ctx),
         node: *Node,
         offset: usize,
@@ -515,12 +515,12 @@ pub const TokenStore = struct {
         }
     }
 
-    fn getTokenAt(self: *TokenStore, offset: usize) ?TokenUpdate {
+    pub fn getTokenAt(self: *TokenStore, offset: usize) !?TokenUpdate {
         var result: ?TokenUpdate = null;
         try self.traverseInOrderInRange(offset, self.root.length(), &result, struct {
-            fn cb(ctx: *TokenUpdate, node: *Node, _offset: usize) bool {
+            fn cb(ctx: *?TokenUpdate, node: *Node, _offset: usize) !bool {
                 if (node.isLeaf()) {
-                    ctx.* = .{ .token = node.token, .startOffsetInclusive = _offset, .length = node.length() };
+                    ctx.* = .{ .token = node.token(), .startOffsetInclusive = _offset, .length = node.length() };
                     return true;
                 }
                 return false;
@@ -529,7 +529,7 @@ pub const TokenStore = struct {
         return result;
     }
 
-    pub fn getTokensInRange(self: *TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize) ![]TokenUpdate {
+    pub fn getTokensInRange(self: *const TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize) ![]TokenUpdate {
         var result = ArrayList(TokenUpdate).init(self.getAllocator());
         defer result.deinit();
 
@@ -558,9 +558,9 @@ pub const TokenStore = struct {
         return try result.toOwnedSlice();
     }
 
-    pub fn markForRefresh(self: *TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize) void {
+    pub fn markForRefresh(self: *TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize) !void {
         try self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, {}, struct {
-            fn cb(_: void, node: *Node, _: usize) bool {
+            fn cb(_: void, node: *Node, _: usize) !bool {
                 if (node.isLeaf()) {
                     node.setTokenQuality(.none);
                 }
@@ -572,7 +572,7 @@ pub const TokenStore = struct {
     pub fn rangeHasTokens(self: *TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize, minimumTokenQuality: TokenQuality) bool {
         var hasAny = true;
         self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, &hasAny, struct {
-            fn cb(ctx: *bool, node: *Node, _: usize) bool {
+            fn cb(ctx: *bool, node: *Node, _: usize) !bool {
                 if (node.isLeaf() and (node.tokenQuality < minimumTokenQuality)) {
                     ctx.* = false;
                 }
@@ -582,10 +582,10 @@ pub const TokenStore = struct {
         return hasAny;
     }
 
-    pub fn rangeNeedsRefresh(self: *TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize) bool {
+    pub fn rangeNeedsRefresh(self: *const TokenStore, startOffsetInclusive: usize, endOffsetExclusive: usize) !bool {
         var needsRefresh = false;
         try self.traverseInOrderInRange(startOffsetInclusive, endOffsetExclusive, &needsRefresh, struct {
-            fn cb(ctx: *bool, node: *Node, _: usize) bool {
+            fn cb(ctx: *bool, node: *Node, _: usize) !bool {
                 if (node.isLeaf() and (node.tokenQuality() != .accurate)) {
                     ctx.* = true;
                 }
@@ -595,12 +595,12 @@ pub const TokenStore = struct {
         return needsRefresh;
     }
 
-    pub fn getNeedsRefresh(self: *TokenStore) ![]struct { startOffset: usize, endOffset: usize } {
+    pub fn getNeedsRefresh(self: *const TokenStore) ![]struct { startOffset: usize, endOffset: usize } {
         var result = ArrayList(struct { startOffset: usize, endOffset: usize }).init(self.getAllocator());
         defer result.deinit();
 
         try self.traverseInOrderInRange(0, self._textModel.getValueLength(), struct {
-            fn cb(ctx: *ArrayList(struct { startOffset: usize, endOffset: usize }), node: *Node, offset: usize) bool {
+            fn cb(ctx: *ArrayList(struct { startOffset: usize, endOffset: usize }), node: *Node, offset: usize) !bool {
                 if (node.isLeaf() and (node.tokenQuality() != .accurate)) {
                     if (ctx.items.len > 0 and ctx.items[ctx.items.len - 1].endOffset == offset) {
                         ctx.items[ctx.items.len - 1].endOffset += node.length();
@@ -617,7 +617,7 @@ pub const TokenStore = struct {
         return try result.toOwnedSlice();
     }
 
-    pub fn deepCopy(self: *TokenStore) !TokenStore {
+    pub fn deepCopy(self: *const TokenStore) !TokenStore {
         var newStore = try TokenStore.init(self._textModel);
         const new_root = try self._copyNodeIterative(self.root);
         newStore.destroyNode(newStore.root);

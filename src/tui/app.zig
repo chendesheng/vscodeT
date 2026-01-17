@@ -57,7 +57,7 @@ fn loadFile(allocator: Allocator, path: []const u8, undoRedoService: *UndoRedoSe
             .enabled = false,
             .independentColorPoolPerBracketType = false,
         },
-    }, null, undoRedoService, undefined, undefined);
+    }, null, undoRedoService, undefined, undefined, undefined);
 }
 
 pub fn testTreeSitterZig() !void {

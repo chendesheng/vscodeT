@@ -6,8 +6,8 @@ const Uri = std.uri;
 const StringHashMap = std.StringHashMap;
 const ts_zig = @import("tree-sitter-zig");
 
-export const EDITOR_EXPERIMENTAL_PREFER_TREESITTER = "editor.experimental.preferTreeSitter";
-export const TREESITTER_ALLOWED_SUPPORT = [_][]const u8{ "css", "typescript", "ini", "regex" };
+pub const EDITOR_EXPERIMENTAL_PREFER_TREESITTER = "editor.experimental.preferTreeSitter";
+pub const TREESITTER_ALLOWED_SUPPORT = [_][]const u8{ "css", "typescript", "ini", "regex" };
 const TreeSitterLibraryService = @This();
 
 const isTest: bool = false;
@@ -16,14 +16,19 @@ _languagesCache: StringHashMap(*const ts.Language),
 
 fn _supportsLanguage(self: *TreeSitterLibraryService, languageId: []const u8) bool {
     _ = self;
-    _ = languageId;
-    return true;
+
+    if (std.mem.eql(u8, languageId, "zig")) {
+        return true;
+    }
+    return false;
 }
 
-fn _injectionQueries(self: *TreeSitterLibraryService, languageId: []const u8, kind: []const u8) ?ts.Query {
+fn _injectionQueries(self: *TreeSitterLibraryService, languageId: []const u8, kind: []const u8) ?*ts.Query {
     const allocator = self._languagesCache.allocator;
-    const buf: [1024]u8 = undefined;
-    const path = std.fmt.bufPrint(&buf, "treesitter/{s}/{s}", languageId, kind);
+    var buf: [1024]u8 = undefined;
+    const path = std.fmt.bufPrint(&buf, "treesitter/{s}/{s}", .{ languageId, kind }) catch {
+        return null;
+    };
     const file = fs.cwd().openFile(path, .{ .mode = .read_only }) catch {
         return null;
     };
@@ -33,7 +38,7 @@ fn _injectionQueries(self: *TreeSitterLibraryService, languageId: []const u8, ki
     };
     defer allocator.free(source);
 
-    if (self._getLanguage(languageId)) |language| {
+    if (self._getLanguage(languageId) catch null) |language| {
         return createQuery(language, source) catch {
             return null;
         };
@@ -52,24 +57,24 @@ pub fn supportsLanguage(self: *TreeSitterLibraryService, languageId: []const u8)
     return self._supportsLanguage(languageId);
 }
 
-fn _getLanguage(self: *TreeSitterLibraryService, languageId: []const u8) ?*const ts.Language {
+fn _getLanguage(self: *TreeSitterLibraryService, languageId: []const u8) !?*const ts.Language {
     const res = try self._languagesCache.getOrPut(languageId);
     if (!res.found_existing) {
-        if (std.mem.eql(languageId, "zig")) {
+        if (std.mem.eql(u8, languageId, "zig")) {
             res.value_ptr.* = @ptrCast(ts_zig.language());
         }
     }
     return res.value_ptr.*;
 }
 
-pub fn getLanguage(self: *TreeSitterLibraryService, languageId: []const u8, ignoreSupportsCheck: bool) ?*const ts.Language {
+pub fn getLanguage(self: *TreeSitterLibraryService, languageId: []const u8, ignoreSupportsCheck: bool) !?*const ts.Language {
     if (!ignoreSupportsCheck and !self.supportsLanguage(languageId)) {
-        return undefined;
+        return null;
     }
-    return self._getLanguage(languageId);
+    return try self._getLanguage(languageId);
 }
 
-pub fn getInjectionQueries(self: *TreeSitterLibraryService, languageId: []const u8) ?ts.Query {
+pub fn getInjectionQueries(self: *TreeSitterLibraryService, languageId: []const u8) ?*ts.Query {
     if (!self.supportsLanguage(languageId)) {
         return undefined;
     }
@@ -77,7 +82,7 @@ pub fn getInjectionQueries(self: *TreeSitterLibraryService, languageId: []const 
     return query;
 }
 
-pub fn getHighlightingQueries(self: TreeSitterLibraryService, languageId: []const u8) ?ts.Query {
+pub fn getHighlightingQueries(self: TreeSitterLibraryService, languageId: []const u8) ?*ts.Query {
     if (!self.supportsLanguage(languageId)) {
         return undefined;
     }
@@ -85,7 +90,7 @@ pub fn getHighlightingQueries(self: TreeSitterLibraryService, languageId: []cons
     return query;
 }
 
-fn createQuery(language: *const ts.Language, querySource: []const u8) !ts.Query {
+fn createQuery(language: *const ts.Language, querySource: []const u8) !*ts.Query {
     var error_offset: u32 = undefined;
     return try ts.Query.create(language, querySource, &error_offset);
 }

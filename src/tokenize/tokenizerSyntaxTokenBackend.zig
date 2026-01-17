@@ -124,6 +124,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
         const self = try allocator.create(TokenizerSyntaxTokenBackend);
         self.* = .{
             .super = AbstractSyntaxTokenBackend.init(BackgroundTokenizationState.InProgress, languageIdCodec, textModel, &.{
+                .todo_resetTokenization = todo_resetTokenization,
                 .handleDidChangeAttached = handleDidChangeAttached,
                 .handleDidChangeContent = handleDidChangeContent,
                 .forceTokenization = forceTokenization,
@@ -147,14 +148,14 @@ pub const TokenizerSyntaxTokenBackend = struct {
             fn cb(e: TokenizationSupportChangedEvent, this: *TokenizerSyntaxTokenBackend) void {
                 for (e.changedLanguages) |lang| {
                     if (std.mem.eql(u8, lang, this._languageId)) {
-                        this.todo_resetTokenization(false) catch unreachable;
+                        this.super.todo_resetTokenization(false) catch unreachable;
                         return;
                     }
                 }
             }
         }.cb);
 
-        try self.todo_resetTokenization(false);
+        try self.super.todo_resetTokenization(false);
 
         try attachedViews.onDidChangeVisibleRanges(self, struct {
             fn cb(e: AttachedViewAndState, this: *TokenizerSyntaxTokenBackend) void {
@@ -212,7 +213,8 @@ pub const TokenizerSyntaxTokenBackend = struct {
         // }
     }
 
-    pub fn todo_resetTokenization(self: *TokenizerSyntaxTokenBackend, fireTokenChangeEvent: bool) !void {
+    pub fn todo_resetTokenization(s: *AbstractSyntaxTokenBackend, fireTokenChangeEvent: bool) !void {
+        const self = getSelf(s);
         const allocator = self.super._textModel.getAllocator();
         self._tokens.flush();
         // self._debugBackgroundTokens.?.flush();
@@ -329,7 +331,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
         var self = getSelf(s);
         if (e.isFlush) {
             // Don't fire the event, as the view might not have got the text change event yet
-            try self.todo_resetTokenization(false);
+            try self.super.todo_resetTokenization(false);
         } else if (!e.isEolChange) { // We don't have to do anything on an EOL change
             for (e.changes.items) |c| {
                 var reader = c.text.reader();
@@ -438,10 +440,10 @@ pub const TokenizerSyntaxTokenBackend = struct {
         }
     }
 
-    pub fn hasAccurateTokensForLine(s: *AbstractSyntaxTokenBackend, lineNumber: usize) bool {
+    pub fn hasAccurateTokensForLine(s: *AbstractSyntaxTokenBackend, lineNumber: usize) !bool {
         const self = getSelf(s);
         if (self._tokenizer) |tokenizer| {
-            return tokenizer.hasAccurateTokensForLine(lineNumber);
+            return try tokenizer.hasAccurateTokensForLine(lineNumber);
         }
         return true;
     }
@@ -483,7 +485,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
             try self.super.forceTokenization(position.lineNumber);
             return tokenizer.getTokenTypeIfInsertingCharacter(position, character);
         } else {
-            return StandardTokenType.Other;
+            return StandardTokenType.other;
         }
     }
 

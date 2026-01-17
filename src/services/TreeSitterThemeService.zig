@@ -14,7 +14,7 @@ pub fn init(allocator: Allocator) Self {
     };
 }
 
-pub fn findMetadata(self: *const Self, captureNames: []const u8, languageId: u8, bracket: bool) TokenMetadata {
+pub fn findMetadata(self: *const Self, captureNames: []const []const u8, languageId: u32, bracket: bool) TokenMetadata {
     _ = self;
     _ = captureNames;
     _ = languageId;

@@ -81,6 +81,7 @@ const LanguageService = @import("../languages/languageService.zig").LanguageServ
 const AttachedViews = @import("../tokenize/abstractSyntaxTokenBackend.zig").AttachedViews;
 const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const WordAtPosition = @import("../basics/utils.zig").WordAtPosition;
+const TreeSitterLibraryService = @import("../services/TreeSitterLibraryService.zig");
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -305,6 +306,7 @@ pub const TextModel = struct {
         undoRedoService: *UndoRedoService,
         languageService: *LanguageService,
         languageConfigurationService: *LanguageConfigurationService,
+        treeSitterLibraryService: *TreeSitterLibraryService,
     ) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
@@ -375,7 +377,14 @@ pub const TextModel = struct {
         model._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator);
         model._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator);
         model._eventEmitter = DidChangeContentEmitter.init(allocator);
-        model._tokenizationTextModelPart = try TokenizationTextModelPart.init(model, languageIdOrSelection, &model._attachedViews, languageService, languageConfigurationService);
+        model._tokenizationTextModelPart = try TokenizationTextModelPart.init(
+            model,
+            languageIdOrSelection,
+            &model._attachedViews,
+            languageService,
+            languageConfigurationService,
+            treeSitterLibraryService,
+        );
         return model;
     }
 
@@ -584,7 +593,8 @@ pub const TextModel = struct {
         return TextModelSnapshot.init(try self._buffer.createSnapshot(preserveBOM));
     }
 
-    pub fn getValueLength(self: *const TextModel, eol: ?EndOfLinePreference, preserveBOM: bool) usize {
+    pub fn getValueLength(self: *const TextModel, eol: ?EndOfLinePreference, _preserveBOM: ?bool) usize {
+        const preserveBOM = _preserveBOM orelse false;
         const fullModelRange = self.getFullModelRange();
         const fullModelValue = self.getValueLengthInRange(fullModelRange, eol);
 

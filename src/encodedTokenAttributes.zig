@@ -81,7 +81,7 @@ pub const ColorId = struct {
 };
 
 // A standard token type.
-pub const StandardTokenType = enum(u2) { Other = 0, Comment = 1, String = 2, RegEx = 3 };
+pub const StandardTokenType = enum(u2) { other = 0, comment = 1, string = 2, regex = 3 };
 
 // Helpers to manage the "collapsed" metadata of an entire StackElement stack.
 // The following assumptions have been made:
@@ -211,7 +211,7 @@ pub const SemanticMetadata = packed struct(u8) {
 
 pub const TokenMetadata = packed struct(u32) {
     languageId: u8 = 0,
-    tokenType: StandardTokenType = .Other,
+    tokenType: StandardTokenType = .other,
     balancedBrackets: bool = false,
     fontStyle: FontStyle = .{ .italic = false, .bold = false, .underline = false, .strikethrough = false },
     foreground: u9 = 0,

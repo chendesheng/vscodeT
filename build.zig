@@ -1,4 +1,5 @@
 const std = @import("std");
+const Module = std.Build.Module;
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -72,28 +73,29 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    setupTests(b, target, optimize);
+    setupTests(b, target, optimize, &exe.root_module.import_table);
 }
 
-fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, deps: *std.StringArrayHashMapUnmanaged(*Module)) void {
     const test_step = b.step("test", "Run all tests");
 
-    const files = [_][]const u8{
-        "src/tests.zig",
-    };
-
-    for (files) |file| {
-        const t = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path(file),
+    const t = b.addTest(
+        .{ .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests.zig"),
             .target = target,
             .optimize = optimize,
-        }) });
+        }) },
+    );
 
-        linkOnig(t);
-
-        const run_t = b.addRunArtifact(t);
-        test_step.dependOn(&run_t.step);
+    var iter = deps.iterator();
+    while (iter.next()) |entry| {
+        t.root_module.addImport(entry.key_ptr.*, entry.value_ptr.*);
     }
+
+    linkOnig(t);
+
+    const run_t = b.addRunArtifact(t);
+    test_step.dependOn(&run_t.step);
 }
 
 fn linkOnig(t: *std.Build.Step.Compile) void {

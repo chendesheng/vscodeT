@@ -26,7 +26,7 @@ pub const ModelContentChangedEvent = struct {
     // The (new) end-of-line character.
     eol: EOL,
     // The new version id the model has transitioned to.
-    versionId: i64,
+    versionId: u32,
     // Flag that indicates that this event was generated while undoing.
     isUndoing: bool,
     // Flag that indicates that this event was generated while redoing.
@@ -299,7 +299,7 @@ pub const ModelRawChange = union(RawContentChangedType) {
 pub const ModelRawContentChangedEvent = struct {
     changes: ArrayList(ModelRawChange),
     // The new version id the model has transitioned to.
-    versionId: i64,
+    versionId: u32,
     // Flag that indicates that this event was generated while undoing.
     isUndoing: bool,
     // Flag that indicates that this event was generated while redoing.
@@ -307,7 +307,7 @@ pub const ModelRawContentChangedEvent = struct {
 
     resultingSelection: ?[]Selection,
 
-    pub fn init(changes: ArrayList(ModelRawChange), versionId: i64, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
+    pub fn init(changes: ArrayList(ModelRawChange), versionId: u32, isUndoing: bool, isRedoing: bool) ModelRawContentChangedEvent {
         return ModelRawContentChangedEvent{
             .changes = changes,
             .versionId = versionId,
