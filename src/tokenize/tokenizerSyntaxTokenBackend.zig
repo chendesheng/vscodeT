@@ -503,7 +503,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
         }
     }
 
-    pub fn getHasTokens(s: *AbstractSyntaxTokenBackend) bool {
+    pub fn getHasTokens(s: *AbstractSyntaxTokenBackend) anyerror!bool {
         const self = getSelf(s);
         return self._tokens.hasTokens();
     }

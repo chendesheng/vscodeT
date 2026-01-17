@@ -296,7 +296,7 @@ pub const TokenPresentation = struct {
 test "TokenMetadata" {
     const metadata = TokenMetadata{
         .languageId = 1,
-        .tokenType = .Comment,
+        .tokenType = .comment,
         .balancedBrackets = true,
         .fontStyle = .{ .italic = true, .bold = true, .underline = true, .strikethrough = true },
         .foreground = ColorId.DefaultForeground,

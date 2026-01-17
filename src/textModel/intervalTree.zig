@@ -121,7 +121,7 @@ pub const IntervalNode = struct {
     ownerId: usize,
     options: *const ModelDecorationOptions,
 
-    cachedVersionId: u32,
+    cachedVersionId: i32,
     cachedAbsoluteStart: usize,
     cachedAbsoluteEnd: usize,
     range: ?Range,
@@ -160,7 +160,7 @@ pub const IntervalNode = struct {
         };
     }
 
-    pub fn reset(self: *IntervalNode, versionId: u32, start: usize, end: usize, range: ?Range) void {
+    pub fn reset(self: *IntervalNode, versionId: i32, start: usize, end: usize, range: ?Range) void {
         self.start = start;
         self.end = end;
         self.maxEnd = end;
@@ -181,7 +181,7 @@ pub const IntervalNode = struct {
         setCollapseOnReplaceEdit(self, self.options.collapseOnReplaceEdit orelse false);
     }
 
-    pub fn setCachedOffsets(self: *IntervalNode, absoluteStart: usize, absoluteEnd: usize, cachedVersionId: u32) void {
+    pub fn setCachedOffsets(self: *IntervalNode, absoluteStart: usize, absoluteEnd: usize, cachedVersionId: i32) void {
         if (self.cachedVersionId != cachedVersionId) {
             self.range = null;
         }
@@ -237,14 +237,14 @@ pub const IntervalTree = struct {
         }
     }
 
-    pub fn intervalSearch(self: *IntervalTree, allocator: Allocator, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    pub fn intervalSearch(self: *IntervalTree, allocator: Allocator, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: i32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         if (self.root == SENTINEL) {
             return ArrayList(*IntervalNode).init(allocator);
         }
         return try _intervalSearch(self, allocator, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
     }
 
-    pub fn search(self: *IntervalTree, allocator: Allocator, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    pub fn search(self: *IntervalTree, allocator: Allocator, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: i32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         if (self.root == SENTINEL) {
             return ArrayList(*IntervalNode).init(allocator);
         }
@@ -271,7 +271,7 @@ pub const IntervalTree = struct {
         self._normalizeDeltaIfNecessary();
     }
 
-    pub fn resolveNode(self: *IntervalTree, node: *IntervalNode, cachedVersionId: u32) void {
+    pub fn resolveNode(self: *IntervalTree, node: *IntervalNode, cachedVersionId: i32) void {
         var initialNode = node;
         var delta: isize = 0;
         var current = node;
@@ -727,7 +727,7 @@ fn _collectNodesPostOrder(T: *IntervalTree, allocator: Allocator) !ArrayList(*In
     return result;
 }
 
-fn _search(T: *IntervalTree, allocator: Allocator, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+fn _search(T: *IntervalTree, allocator: Allocator, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: i32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
     var node = T.root;
     var delta: isize = 0;
     var nodeStart: usize = 0;
@@ -787,7 +787,7 @@ fn _search(T: *IntervalTree, allocator: Allocator, filterOwnerId: usize, filterO
     return result;
 }
 
-fn _intervalSearch(T: *IntervalTree, allocator: Allocator, intervalStart: usize, intervalEnd: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+fn _intervalSearch(T: *IntervalTree, allocator: Allocator, intervalStart: usize, intervalEnd: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: i32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
     // https://en.wikipedia.org/wiki/Interval_tree#Augmented_tree
     // Now, it is known that two intervals A and B overlap only when both
     // A.low <= B.high and A.high >= B.low. When searching the trees for

@@ -18,7 +18,7 @@ const TreeSitterTree = @This();
 _tree: ?*ts.Tree = null,
 onTreeChange: Emitter(TreeChangeEvent),
 
-_treeLastParsedVersion: ?u32 = null,
+_treeLastParsedVersion: i32 = -1,
 
 _lastFullyParsed: ?*ts.Tree = null,
 _lastFullyParsedWithEdits: ?*ts.Tree = null,
@@ -37,7 +37,7 @@ pub fn init(
     // /** Must have the language set! */
     // private readonly _injectionQuery: TreeSitter.Query,
     textModel: *TextModel,
-) !void {
+) !TreeSitterTree {
     // this._tree = observableValue(this, undefined);
     // this.tree = this._tree;
 
@@ -101,15 +101,16 @@ pub fn handleContentChange(self: *TreeSitterTree, e: ?ModelContentChangedEvent, 
         if (self._ranges) |seflRanges| {
             for (seflRanges) |r| {
                 try rgs.append(.{
-                    .newRange = Range.init(r.startPosition.row + 1, r.startPosition.column + 1, r.endPosition.row + 1, r.endPosition.column + 1),
+                    .newRange = Range.init(r.start_point.row + 1, r.start_point.column + 1, r.end_point.row + 1, r.end_point.column + 1),
                     // .oldRangeLength = r.endIndex - r.startIndex,
-                    .newRangeStartOffset = r.startIndex,
-                    .newRangeEndOffset = r.endIndex,
+                    .newRangeStartOffset = r.start_byte,
+                    .newRangeEndOffset = r.end_byte,
                 });
             }
         }
     } else if (oldTree != null and changedNodes != null) {
-        rgs = self._findTreeChanges(completed_tree, changedNodes, newRanges);
+        try rgs.resize(0);
+        try rgs.appendSlice(try self._findTreeChanges(completed_tree.?, changedNodes.?, newRanges));
     }
     if (rgs.items.len == 0) {
         try rgs.append(.{
@@ -123,7 +124,7 @@ pub fn handleContentChange(self: *TreeSitterTree, e: ?ModelContentChangedEvent, 
     self._tree = completed_tree;
     self.onTreeChange.fire(.{
         .oldValue = previousTree,
-        .newValue = completed_tree,
+        .newValue = completed_tree.?,
         .change = .{ .ranges = rgs.items, .versionId = version },
     });
     self._treeLastParsedVersion = version;
@@ -193,8 +194,8 @@ fn _findChangedNodes(self: *TreeSitterTree, newTree: *ts.Tree, oldTree: *ts.Tree
         }
     }
     const allocator = self.textModel.getAllocator();
-    var newCursor = &newTree.walk();
-    var oldCursor = &oldTree.walk();
+    var newCursor = newTree.walk();
+    var oldCursor = oldTree.walk();
 
     var nodes: ArrayList(ts.Range) = ArrayList(ts.Range).init(allocator);
     defer nodes.deinit();
@@ -210,34 +211,34 @@ fn _findChangedNodes(self: *TreeSitterTree, newTree: *ts.Tree, oldTree: *ts.Tree
             const newChildren = try newCursor.node().children(undefined, allocator);
             var indexChangedChildren = ArrayList(usize).init(allocator);
             defer indexChangedChildren.deinit();
-            const changedChildren = ArrayList(*ts.Node).init(allocator);
+            var changedChildren = ArrayList(ts.Node).init(allocator);
             for (newChildren, 0..) |c, index| {
-                if (c.hasChanges || (oldCursor.node().childCount() <= @as(u32, @intCast(index)))) {
+                if (c.hasChanges() or (oldCursor.node().childCount() <= @as(u32, @intCast(index)))) {
                     try indexChangedChildren.append(index);
                     try changedChildren.append(c);
                 }
             }
             // If we have changes and we *had* an error, the whole node should be refreshed.
-            if ((changedChildren.items.len == 0) || (newCursor.node().hasError() != oldCursor.node().hasError())) {
+            if ((changedChildren.items.len == 0) or (newCursor.node().hasError() != oldCursor.node().hasError())) {
                 // walk up again until we get to the first one that's named as unnamed nodes can be too granular
-                while (newCursor.node().parent and next and !newCursor.node().isNamed) {
-                    next = gotoParent(&newCursor, oldCursor);
+                while (newCursor.node().parent() != null and next and !newCursor.node().isNamed()) {
+                    next = gotoParent(&newCursor, &oldCursor);
                 }
                 // Use the end position of the previous node and the start position of the current node
                 const newNode = newCursor.node();
-                const closestPreviousNode = getClosestPreviousNodes(newCursor, newTree) orelse newNode;
+                const closestPreviousNode = getClosestPreviousNodes(&newCursor, newTree) orelse newNode;
                 try nodes.append(.{
                     .start_byte = closestPreviousNode.startByte(),
                     .end_byte = newNode.endByte(),
                     .start_point = closestPreviousNode.startPoint(),
                     .end_point = newNode.endPoint(),
                 });
-                next = nextSiblingOrParentSibling(newCursor, oldCursor);
+                next = nextSiblingOrParentSibling(&newCursor, &oldCursor);
             } else if (changedChildren.items.len >= 1) {
-                next = gotoNthChild(newCursor, oldCursor, indexChangedChildren.items[0]);
+                next = gotoNthChild(&newCursor, &oldCursor, indexChangedChildren.items[0]);
             }
         } else {
-            next = nextSiblingOrParentSibling(newCursor, oldCursor);
+            next = nextSiblingOrParentSibling(&newCursor, &oldCursor);
         }
         if (!next) break;
     }
@@ -257,18 +258,18 @@ fn _findTreeChanges(self: *TreeSitterTree, newTree: *ts.Tree, changedNodes: []co
     for (0..changedNodes.len) |nodeIndex| {
         const node = changedNodes[nodeIndex];
 
-        if (mergedChanges.len > 0) {
-            if ((node.startIndex >= mergedChanges.getLast().newRangeStartOffset) and (node.endIndex <= mergedChanges.getLast().newRangeEndOffset)) {
+        if (mergedChanges.items.len > 0) {
+            if ((@as(usize, @intCast(node.start_byte)) >= mergedChanges.getLast().newRangeStartOffset) and (@as(usize, @intCast(node.end_byte)) <= mergedChanges.getLast().newRangeEndOffset)) {
                 // This node is within the previous range, skip it
                 continue;
             }
         }
 
-        const cursor = newTree.walk();
+        var cursor = newTree.walk();
 
         while (cursor.node().startByte() < node.start_byte and cursor.node().endByte() > node.end_byte) {
             // See if we can go to a child
-            const child = cursor.gotoFirstChild();
+            var child = cursor.gotoFirstChild();
             var foundChild = false;
             while (child) {
                 if (cursor.node().startByte() < node.start_byte and cursor.node().endByte() > node.end_byte and cursor.node().isNamed()) {
@@ -292,7 +293,7 @@ fn _findTreeChanges(self: *TreeSitterTree, newTree: *ts.Tree, changedNodes: []co
         const startIndex = cursor.node().startByte();
         const endIndex = cursor.node().endByte();
 
-        const newChange = RangeChange{
+        var newChange = RangeChange{
             .newRange = Range.init(
                 @intCast(startPosition.row + 1),
                 @intCast(startPosition.column + 1),
@@ -310,27 +311,27 @@ fn _findTreeChanges(self: *TreeSitterTree, newTree: *ts.Tree, changedNodes: []co
         })) {
             // combine the new change with the range
             if (newRanges[newRangeIndex].start_byte < newChange.newRangeStartOffset) {
-                newChange.newRange = newChange.newRange.setStartPosition(newRanges[newRangeIndex].start_point.row + 1, newRanges[newRangeIndex].start_point.column + 1);
+                newChange.newRange = newChange.newRange.setStartPosition(@intCast(newRanges[newRangeIndex].start_point.row + 1), @intCast(newRanges[newRangeIndex].start_point.column + 1));
                 newChange.newRangeStartOffset = newRanges[newRangeIndex].start_byte;
             }
             if (newRanges[newRangeIndex].end_byte > newChange.newRangeEndOffset) {
-                newChange.newRange = newChange.newRange.setEndPosition(newRanges[newRangeIndex].endPosition.row + 1, newRanges[newRangeIndex].endPosition.column + 1);
+                newChange.newRange = newChange.newRange.setEndPosition(@intCast(newRanges[newRangeIndex].end_point.row + 1), @intCast(newRanges[newRangeIndex].end_point.column + 1));
                 newChange.newRangeEndOffset = newRanges[newRangeIndex].end_byte;
             }
             newRangeIndex += 1;
         } else if (newRangeIndex < newRanges.len and newRanges[newRangeIndex].end_byte < newChange.newRangeStartOffset) {
             // add the full range to the merged changes
-            mergedChanges.append(.{
+            try mergedChanges.append(.{
                 .newRange = tsRangeToRange(newRanges[newRangeIndex]),
                 .newRangeStartOffset = newRanges[newRangeIndex].start_byte,
                 .newRangeEndOffset = newRanges[newRangeIndex].end_byte,
             });
         }
 
-        if ((mergedChanges.len > 0) and (mergedChanges.getLast().newRangeEndOffset >= newChange.newRangeStartOffset)) {
+        if ((mergedChanges.items.len > 0) and (mergedChanges.getLast().newRangeEndOffset >= newChange.newRangeStartOffset)) {
             // Merge the changes
-            mergedChanges.getLast().newRange = Range.fromPositions(mergedChanges.getLast().newRange.getStartPosition(), newChange.newRange.getEndPosition());
-            mergedChanges.getLast().newRangeEndOffset = newChange.newRangeEndOffset;
+            mergedChanges.items[mergedChanges.items.len - 1].newRange = Range.fromPositions(mergedChanges.getLast().newRange.getStartPosition(), newChange.newRange.getEndPosition());
+            mergedChanges.items[mergedChanges.items.len - 1].newRangeEndOffset = newChange.newRangeEndOffset;
         } else {
             try mergedChanges.append(newChange);
         }
@@ -350,7 +351,7 @@ fn _constrainRanges(self: *TreeSitterTree, changes: []const RangeChange) ![]cons
     var changesIndex: usize = 0;
     var rangesIndex: usize = 0;
     while (changesIndex < changes.len and rangesIndex < _rgs.len) {
-        const change = changes[changesIndex];
+        var change = changes[changesIndex];
         const range = _rgs[rangesIndex];
         if (change.newRangeEndOffset < range.start_byte) {
             // Change is before the range, move to the next change
@@ -362,7 +363,7 @@ fn _constrainRanges(self: *TreeSitterTree, changes: []const RangeChange) ![]cons
             // Change is within the range, constrain it
             const newRangeStartOffset: usize = @max(change.newRangeStartOffset, @as(usize, @intCast(range.start_byte)));
             const newRangeEndOffset: usize = @min(change.newRangeEndOffset, @as(usize, @intCast(range.end_byte)));
-            const newRange = change.newRange.intersectRanges(tsRangeToRange(range)).?;
+            const newRange = change.newRange.intersectRanges(&tsRangeToRange(range)).?;
             try constrainedChanges.append(.{
                 .newRange = newRange,
                 .newRangeEndOffset = newRangeEndOffset,
@@ -384,33 +385,36 @@ fn _constrainRanges(self: *TreeSitterTree, changes: []const RangeChange) ![]cons
 
 fn _parseAndUpdateTree(self: *TreeSitterTree, version: i32) !?*ts.Tree {
     _ = version;
-    const tree = try self._parse();
-    if (self._lastFullyParsed) |lastFullyParsed| {
-        lastFullyParsed.destroy();
-    }
-    self._lastFullyParsed = tree.dupe();
-    if (self._lastFullyParsedWithEdits) |lastFullyParsedWithEdits| {
-        lastFullyParsedWithEdits.destroy();
-    }
-    self._lastFullyParsedWithEdits = tree.dupe();
+    if (self._parse()) |tree| {
+        if (self._lastFullyParsed) |lastFullyParsed| {
+            lastFullyParsed.destroy();
+        }
+        self._lastFullyParsed = tree.dupe();
+        if (self._lastFullyParsedWithEdits) |lastFullyParsedWithEdits| {
+            lastFullyParsedWithEdits.destroy();
+        }
+        self._lastFullyParsedWithEdits = tree.dupe();
 
-    return tree;
+        return tree;
+    } else {
+        return null;
+    }
 }
 
-fn _parse(self: *TreeSitterTree) *ts.Tree {
+fn _parse(self: *TreeSitterTree) ?*ts.Tree {
     return self._parser.parse(ts.Input{
-        .payload = &self.textModel.getTextBuffer(),
+        .payload = @ptrCast(@alignCast(&self.textModel._buffer)),
         .read = struct {
-            fn read(payload: *anyopaque, byte_index: u32, position: ts.Point, bytes_read: *u32) [*c]const u8 {
+            fn read(payload: ?*anyopaque, byte_index: u32, position: ts.Point, bytes_read: *u32) callconv(.c) [*c]const u8 {
                 _ = position;
 
-                const textBuffer: *PieceTreeTextBuffer = @ptrCast(payload);
+                const textBuffer: *PieceTreeTextBuffer = @ptrCast(@alignCast(payload));
                 const chunk = textBuffer.getNearestChunk(@intCast(byte_index));
                 bytes_read.* = @intCast(chunk.len);
                 return @ptrCast(chunk.ptr);
             }
         }.read,
-    }, self._tree);
+    }, self._tree.?);
 }
 
 fn _setRanges(self: *TreeSitterTree, newRanges: []const ts.Range) ![]const ts.Range {
@@ -444,13 +448,23 @@ fn _setRanges(self: *TreeSitterTree, newRanges: []const ts.Range) ![]const ts.Ra
     return try unKnownRanges.toOwnedSlice();
 }
 
-// pub fn createParsedTreeSync(self: *TreeSitterTree, src: []const u8) !?*ts.Tree {
-//     const parser = try ts.Parser.new();
-//     parser.setLanguage(try self._parser.language());
-//     const tree = try parser.parse(src);
-//     parser.delete();
-//     return tree;
-// }
+pub fn createParsedTreeSync(self: *TreeSitterTree, src: []const u8) !?*ts.Tree {
+    var parser = ts.Parser.create();
+    defer parser.destroy();
+    try parser.setLanguage(self._parser.getLanguage());
+    return parser.parse(ts.Input{
+        .payload = @ptrCast(@alignCast(@constCast(&src))),
+        .read = struct {
+            fn read(payload: ?*anyopaque, byte_index: u32, position: ts.Point, bytes_read: *u32) callconv(.c) [*c]const u8 {
+                _ = position;
+
+                const source: *[]const u8 = @ptrCast(@alignCast(payload.?));
+                bytes_read.* = @as(u32, @intCast(source.*.len)) - byte_index;
+                return source.*[byte_index..].ptr;
+            }
+        }.read,
+    }, self._tree);
+}
 
 pub const TreeChangeEvent = struct {
     oldValue: ?*ts.Tree,
@@ -493,9 +507,9 @@ pub fn rangeEndToTSPoint(range: Range) ts.Point {
 
 fn tsRangeToRange(range: ts.Range) Range {
     return Range.init(
-        range.start_point.row + 1,
-        range.start_point.column + 1,
-        range.end_point.row + 1,
-        range.end_point.column + 1,
+        @intCast(range.start_point.row + 1),
+        @intCast(range.start_point.column + 1),
+        @intCast(range.end_point.row + 1),
+        @intCast(range.end_point.column + 1),
     );
 }

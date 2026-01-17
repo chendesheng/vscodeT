@@ -82,6 +82,7 @@ const AttachedViews = @import("../tokenize/abstractSyntaxTokenBackend.zig").Atta
 const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const WordAtPosition = @import("../basics/utils.zig").WordAtPosition;
 const TreeSitterLibraryService = @import("../services/TreeSitterLibraryService.zig");
+const TreeSitterThemeService = @import("../services/TreeSitterThemeService.zig");
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -170,8 +171,8 @@ pub const TextModel = struct {
     // languageSelectionListener: MutableDisposable(IDisposable),
 
     __isDisposing: bool,
-    _versionId: u32,
-    _alternativeVersionId: u32,
+    _versionId: i32,
+    _alternativeVersionId: i32,
     _initialUndoRedoSnapshot: ?ResourceEditStackSnapshot,
     _isTooLargeForSyncing: bool,
     _isTooLargeForTokenization: bool,
@@ -307,6 +308,7 @@ pub const TextModel = struct {
         languageService: *LanguageService,
         languageConfigurationService: *LanguageConfigurationService,
         treeSitterLibraryService: *TreeSitterLibraryService,
+        treeSitterThemeService: *TreeSitterThemeService,
     ) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
@@ -384,6 +386,7 @@ pub const TextModel = struct {
             languageService,
             languageConfigurationService,
             treeSitterLibraryService,
+            treeSitterThemeService,
         );
         return model;
     }
@@ -510,7 +513,7 @@ pub const TextModel = struct {
         return self._associatedResource;
     }
 
-    pub fn getVersionId(self: *const TextModel) u32 {
+    pub fn getVersionId(self: *const TextModel) i32 {
         return self._versionId;
     }
 
@@ -540,7 +543,7 @@ pub const TextModel = struct {
         return self._buffer.getMightContainNonBasicASCII();
     }
 
-    pub fn getAlternativeVersionId(self: *const TextModel) u32 {
+    pub fn getAlternativeVersionId(self: *const TextModel) i32 {
         return self._alternativeVersionId;
     }
 
@@ -566,7 +569,7 @@ pub const TextModel = struct {
         self._versionId = versionId;
     }
 
-    pub fn _overwriteAlternativeVersionId(self: *TextModel, versionId: u32) void {
+    pub fn _overwriteAlternativeVersionId(self: *TextModel, versionId: i32) void {
         self._alternativeVersionId = versionId;
     }
 
@@ -1118,7 +1121,7 @@ pub const TextModel = struct {
         return try self._commandManager.pushEditOperation(beforeCursorState, editOperations.items, cursorStateComputer, group);
     }
 
-    pub fn _applyUndo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]const Selection) !void {
+    pub fn _applyUndo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: i32, resultingSelection: ?[]const Selection) !void {
         var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
         defer edits.deinit();
         for (changes.items) |change| {
@@ -1154,7 +1157,7 @@ pub const TextModel = struct {
         try self._applyUndoRedoEdits(edits, eol, false, true, resultingAlternativeVersionId, resultingSelection);
     }
 
-    fn _applyUndoRedoEdits(self: *TextModel, edits: ArrayList(IdentifiedSingleEditOperation), eol: EOL, isUndoing: bool, isRedoing: bool, resultingAlternativeVersionId: u32, resultingSelection: ?[]const Selection) !void {
+    fn _applyUndoRedoEdits(self: *TextModel, edits: ArrayList(IdentifiedSingleEditOperation), eol: EOL, isUndoing: bool, isRedoing: bool, resultingAlternativeVersionId: i32, resultingSelection: ?[]const Selection) !void {
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
 
@@ -1870,7 +1873,7 @@ pub const TextModel = struct {
                 const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
 
                 node_.ownerId = ownerId;
-                node_.reset(versionId, startOffset, endOffset, range);
+                node_.reset(@intCast(versionId), startOffset, endOffset, range);
                 node_.setOptions(options);
 
                 if (node_.options.after != null) {
@@ -2189,7 +2192,7 @@ pub const DecorationsTrees = struct {
         return try _ensureNodesHaveRanges(host, result);
     }
 
-    fn _intervalSearch(self: *DecorationsTrees, allocator: Allocator, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    fn _intervalSearch(self: *DecorationsTrees, allocator: Allocator, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: i32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         const r0 = try self._decorationsTree0.intervalSearch(allocator, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         defer r0.deinit();
         const r1 = try self._decorationsTree1.intervalSearch(allocator, start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
@@ -2253,7 +2256,7 @@ pub const DecorationsTrees = struct {
         return try _ensureNodesHaveRanges(host, result);
     }
 
-    fn _search(self: *DecorationsTrees, allocator: Allocator, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, cachedVersionId: u32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    fn _search(self: *DecorationsTrees, allocator: Allocator, filterOwnerId: usize, filterOutValidation: bool, overviewRulerOnly: bool, cachedVersionId: i32, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
         if (overviewRulerOnly) {
             return try self._decorationsTree1.search(allocator, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
         } else {
@@ -2333,7 +2336,7 @@ pub const DecorationsTrees = struct {
         return node.range.?;
     }
 
-    fn _resolveNode(self: *DecorationsTrees, node: *IntervalNode, cachedVersionId: u32) void {
+    fn _resolveNode(self: *DecorationsTrees, node: *IntervalNode, cachedVersionId: i32) void {
         if (isNodeInjectedText(node)) {
             self._injectedTextDecorationsTree.resolveNode(node, cachedVersionId);
         } else if (isNodeInOverviewRuler(node)) {

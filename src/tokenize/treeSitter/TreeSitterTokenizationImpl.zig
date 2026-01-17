@@ -8,7 +8,7 @@ const ArrayList = std.array_list.Managed;
 const Emitter = @import("../../basics/event.zig").Emitter;
 const Allocator = std.mem.Allocator;
 const TextModel = @import("../../textModel/textModel.zig").TextModel;
-const TreeSitterTree = @import("treeSitterTree.zig");
+const TreeSitterTree = @import("TreeSitterTree.zig");
 const TreeSitterSyntaxTokenBackend = @import("treeSitterSyntaxTokenBackend.zig").TreeSitterSyntaxTokenBackend;
 const TokenStore = @import("tokenStore.zig").TokenStore;
 const TokenUpdate = @import("tokenStore.zig").TokenUpdate;
@@ -21,23 +21,23 @@ const LanguageIdCodec = @import("../../services/languageRegistry.zig").LanguageI
 const LineRange = @import("../../basics/lineRange.zig").LineRange;
 const ModelTokensChangedEvent = @import("../../textModel/textModelEvents.zig").ModelTokensChangedEvent;
 const Range = @import("../../basics/range.zig").Range;
-const TreeChangeEvent = @import("treeSitterTree.zig").TreeChangeEvent;
+const TreeChangeEvent = @import("TreeSitterTree.zig").TreeChangeEvent;
 const ModelContentChangedEvent = @import("../../textModel/textModelEvents.zig").ModelContentChangedEvent;
 const LineTokens = @import("../../tokens/lineTokens.zig").LineTokens;
 const TokenPacked = @import("../../tokens/lineTokens.zig").TokenPacked;
-const RangeChange = @import("treeSitterTree.zig").RangeChange;
-const RangeWithOffsets = @import("treeSitterTree.zig").RangeWithOffsets;
+const RangeChange = @import("TreeSitterTree.zig").RangeChange;
+const RangeWithOffsets = @import("TreeSitterTree.zig").RangeWithOffsets;
 const Position = @import("../../basics/position.zig").Position;
-const rangeStartToTSPoint = @import("treeSitterTree.zig").rangeStartToTSPoint;
-const rangeEndToTSPoint = @import("treeSitterTree.zig").rangeEndToTSPoint;
+const rangeStartToTSPoint = @import("TreeSitterTree.zig").rangeStartToTSPoint;
+const rangeEndToTSPoint = @import("TreeSitterTree.zig").rangeEndToTSPoint;
 const QueryCapture = @import("../../languages.zig").QueryCapture;
 const SyntaxNode = @import("../../languages.zig").SyntaxNode;
 
 const Self = @This();
 
 _tokenStore: TokenStore,
-_accurateVersion: u32,
-_guessVersion: u32,
+_accurateVersion: i32,
+_guessVersion: i32,
 onDidChangeTokens: Emitter(ModelTokensChangedEvent),
 onDidChangeBackgroundTokenization: Emitter(void),
 onDidCompleteBackgroundTokenization: Emitter(void),
@@ -45,20 +45,20 @@ onDidCompleteBackgroundTokenization: Emitter(void),
 _tree: TreeSitterTree,
 _encodedLanguageId: u8,
 _languageIdCodec: *const LanguageIdCodec,
-_treeSitterThemeService: *const TreeSitterThemeService,
+_treeSitterThemeService: *TreeSitterThemeService,
 _visibleLineRanges: []const LineRange,
 _highlightingQueries: *ts.Query,
 
-fn init(
+pub fn init(
     _tree: TreeSitterTree,
     _languageIdCodec: *const LanguageIdCodec,
     _highlightingQueries: *ts.Query,
     _visibleLineRanges: []const LineRange,
-    _treeSitterThemeService: *const TreeSitterThemeService,
+    _treeSitterThemeService: *TreeSitterThemeService,
 ) !Self {
     const _textModel = _tree.textModel;
     const allocator = _textModel.getAllocator();
-    const encodedLanguageId = try _languageIdCodec.encode(_tree.languageId);
+    const encodedLanguageId = _languageIdCodec.encodeLanguageId(_tree.languageId);
 
     var self = Self{
         ._tokenStore = try TokenStore.init(_textModel),
@@ -72,24 +72,25 @@ fn init(
         ._visibleLineRanges = _visibleLineRanges,
         ._treeSitterThemeService = _treeSitterThemeService,
         ._highlightingQueries = _highlightingQueries,
+        .onDidCompleteBackgroundTokenization = Emitter(void).init(allocator),
     };
 
-    self._tree.onTreeParseUpdate.event(&self, struct {
+    try self._tree.onTreeChange.event(&self, struct {
         fn cb(e: TreeChangeEvent, this: *Self) void {
             if (e.change == null) {
-                this._firstTreeUpdate(this._tree._treeLastParsedVersion);
+                this._firstTreeUpdate(this._tree._treeLastParsedVersion) catch unreachable;
             } else if (e.change) |changeEvent| {
-                if (this.hasTokens(null)) {
+                if (this.hasTokens(null) catch unreachable) {
                     // Mark the range for refresh immediately
 
                     for (changeEvent.ranges) |range| {
-                        this._markForRefresh(range.newRange);
+                        this._markForRefresh(range.newRange) catch unreachable;
                     }
                 }
 
                 // First time we see a tree we need to build a token store.
-                if (!this.hasTokens()) {
-                    this._firstTreeUpdate(changeEvent.versionId);
+                if (!(this.hasTokens(null) catch unreachable)) {
+                    this._firstTreeUpdate(changeEvent.versionId) catch unreachable;
                 } else {
                     this._handleTreeUpdate(changeEvent.ranges, changeEvent.versionId) catch unreachable;
                 }
@@ -97,11 +98,11 @@ fn init(
         }
     }.cb);
 
-    self._tokenStore.buildStore(try self._createEmptyTokens(), .none);
+    try self._tokenStore.buildStore(try self._createEmptyTokens(), .none);
 
-    try _treeSitterThemeService.onChange.event(&self, struct {
+    try self._treeSitterThemeService.onChange.event(&self, struct {
         fn cb(_: void, this: *Self) void {
-            this._updateTheme();
+            this._updateTheme() catch unreachable;
         }
     }.cb);
 
@@ -149,17 +150,17 @@ pub fn getLineTokens(self: *const Self, lineNumber: usize) !LineTokens {
 fn _createEmptyTokens(self: *Self) ![]const TokenUpdate {
     const allocator = self.textModel().getAllocator();
     const emptyToken = self._emptyToken();
-    const modelEndOffset = self.textModel().getValueLength();
+    const modelEndOffset = self.textModel().getValueLength(null, null);
     const emptyTokens = [_]TokenUpdate{_emptyTokensForOffsetAndLength(0, modelEndOffset, emptyToken)};
     return try allocator.dupe(TokenUpdate, &emptyTokens);
 }
 
-fn _emptyToken(self: *Self) usize {
-    return self._treeSitterThemeService.findMetadata(&[_]u8{}, self._encodedLanguageId, false, null);
+fn _emptyToken(self: *Self) TokenMetadata {
+    return self._treeSitterThemeService.findMetadata(&[_][]const u8{}, self._encodedLanguageId, false);
 }
 
-fn _emptyTokensForOffsetAndLength(offset: usize, length: usize, emptyToken: usize) TokenUpdate {
-    return .{ .token = emptyToken, .length = offset + length, .startOffsetInclusive = 0 };
+fn _emptyTokensForOffsetAndLength(offset: usize, length: usize, emptyToken: TokenMetadata) TokenUpdate {
+    return .{ .token = @bitCast(emptyToken), .length = offset + length, .startOffsetInclusive = 0 };
 }
 
 pub fn hasAccurateTokensForLine(self: *const Self, lineNumber: usize) !bool {
@@ -180,8 +181,8 @@ pub fn tokenizeLinesAt(self: *Self, lineNumber: usize, lines: []const []const u8
     }
 }
 
-fn _rangeHasTokens(self: *const Self, range: Range, minimumTokenQuality: TokenQuality) bool {
-    return self._tokenStore.rangeHasTokens(
+fn _rangeHasTokens(self: *const Self, range: Range, minimumTokenQuality: TokenQuality) !bool {
+    return try self._tokenStore.rangeHasTokens(
         self.textModel().getOffsetAt(range.getStartPosition()),
         self.textModel().getOffsetAt(range.getEndPosition()),
         minimumTokenQuality,
@@ -211,12 +212,12 @@ pub fn getTokens(self: *const Self, line: usize) !ArrayList(TokenPacked) {
     return result;
 }
 
-pub fn getTokensInRange(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize, _captures: ?[]QueryCapture) !?[]TokenUpdate {
+pub fn getTokensInRange(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize, _captures: ?[]const QueryCapture) !?[]TokenUpdate {
     const _tokens = blk: {
         if (_captures) |captures| {
             break :blk try self._tokenizeCapturesWithMetadata(captures, rangeStartOffset, rangeEndOffset);
         } else {
-            if (self._tokenize(range, rangeStartOffset, rangeEndOffset)) |tokens| {
+            if (try self._tokenize(range, rangeStartOffset, rangeEndOffset)) |tokens| {
                 break :blk tokens.@"0";
             } else {
                 break :blk null;
@@ -225,12 +226,12 @@ pub fn getTokensInRange(self: *Self, range: Range, rangeStartOffset: usize, rang
     };
 
     if (_tokens) |tokens| {
-        return self._rangeTokensAsUpdates(rangeStartOffset, tokens);
+        return try self._rangeTokensAsUpdates(rangeStartOffset, tokens, null);
     }
     return null;
 }
 
-fn _updateTokensInStore(self: *Self, version: u32, updates: []const TokensUpdate, tokenQuality: TokenQuality) !void {
+fn _updateTokensInStore(self: *Self, version: i32, updates: []const TokensUpdate, tokenQuality: TokenQuality) !void {
     self._accurateVersion = version;
     for (updates) |update| {
         const lastToken = if (update.newTokens.len > 0) update.newTokens[update.newTokens.len - 1] else null;
@@ -246,8 +247,11 @@ fn _updateTokensInStore(self: *Self, version: u32, updates: []const TokensUpdate
     }
 }
 
-fn _markForRefresh(self: *Self, range: Range) void {
-    self._tokenStore.markForRefresh(self.textModel().getOffsetAt(range.getStartPosition()), self.textModel().getOffsetAt(range.getEndPosition()));
+fn _markForRefresh(self: *Self, range: Range) !void {
+    try self._tokenStore.markForRefresh(
+        self.textModel().getOffsetAt(range.getStartPosition()),
+        self.textModel().getOffsetAt(range.getEndPosition()),
+    );
 }
 
 const NeedsRefreshOffsetRange = struct {
@@ -256,14 +260,16 @@ const NeedsRefreshOffsetRange = struct {
     endOffset: usize,
 };
 
-fn _getNeedsRefresh(self: *Self) ArrayList(NeedsRefreshOffsetRange) {
+fn _getNeedsRefresh(self: *const Self) !ArrayList(NeedsRefreshOffsetRange) {
     const needsRefreshOffsetRanges = try self._tokenStore.getNeedsRefresh();
     var result = ArrayList(NeedsRefreshOffsetRange).init(self.textModel().getAllocator());
     for (needsRefreshOffsetRanges) |range| {
+        const startOffset = range.@"0";
+        const endOffset = range.@"1";
         try result.append(.{
-            .range = Range.fromPositions(self.textModel().getPositionAt(range.startOffset), self.textModel().getPositionAt(range.endOffset)),
-            .startOffset = range.startOffset,
-            .endOffset = range.endOffset,
+            .range = Range.fromPositions(self.textModel().getPositionAt(startOffset), self.textModel().getPositionAt(endOffset)),
+            .startOffset = startOffset,
+            .endOffset = endOffset,
         });
     }
     return result;
@@ -271,7 +277,7 @@ fn _getNeedsRefresh(self: *Self) ArrayList(NeedsRefreshOffsetRange) {
 
 fn _parseAndTokenizeViewPort(self: *Self, lineRanges: []const LineRange) !void {
     const allocator = self.textModel().getAllocator();
-    const viewportRanges = ArrayList(Range).init(allocator);
+    var viewportRanges = ArrayList(Range).init(allocator);
     for (lineRanges) |lineRange| {
         if (lineRange.toInclusiveRange()) |range| {
             try viewportRanges.append(range);
@@ -283,20 +289,20 @@ fn _parseAndTokenizeViewPort(self: *Self, lineRanges: []const LineRange) !void {
         const startOffsetOfRangeInDocument = self.textModel().getOffsetAt(range.getStartPosition());
         const endOffsetOfRangeInDocument = self.textModel().getOffsetAt(range.getEndPosition());
         const version = self.textModel().getVersionId();
-        if (self._rangeHasTokens(range, .viewportGuess)) {
+        if (try self._rangeHasTokens(range, .viewportGuess)) {
             continue;
         }
-        const content = self.textModel().getValueInRange(range);
-        const tokenUpdates = try self._forceParseAndTokenizeContentAsUpdate(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content);
-        if (tokenUpdates == null or self._rangeHasTokens(range, .viewportGuess)) {
+        const content = try self.textModel().getValueInRange(range, null);
+        const tokenUpdates = try self._forceParseAndTokenizeContentAsUpdate(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content.items);
+        if (tokenUpdates == null or try self._rangeHasTokens(range, .viewportGuess)) {
             continue;
         }
-        if (tokenUpdates.len == 0) {
+        if (tokenUpdates.?.len == 0) {
             continue;
         }
-        const lastToken = tokenUpdates[tokenUpdates.length - 1];
-        const oldRangeLength = lastToken.startOffsetInclusive + lastToken.length - tokenUpdates[0].startOffsetInclusive;
-        try self._updateTokensInStore(version, &[_]TokensUpdate{.{ .newTokens = tokenUpdates, .oldRangeLength = oldRangeLength }}, .viewportGuess);
+        const lastToken = tokenUpdates.?[tokenUpdates.?.len - 1];
+        const oldRangeLength = lastToken.startOffsetInclusive + lastToken.length - tokenUpdates.?[0].startOffsetInclusive;
+        try self._updateTokensInStore(version, &[_]TokensUpdate{.{ .newTokens = tokenUpdates.?, .oldRangeLength = oldRangeLength }}, .viewportGuess);
         self.onDidChangeTokens.fire(.{
             .semanticTokensApplied = false,
             .ranges = &[_]ModelTokensChangedRange{.{
@@ -334,10 +340,10 @@ fn _guessTokensForLinesContent(self: *Self, lineNumber: usize, lines: []const []
             const lineAdjustedEndOffset = token.endOffset - lineStartOffset;
             const lineAdjustedStartOffset = tokenStartOffset - lineStartOffset;
             if (lineAdjustedEndOffset <= lines[i].len) {
-                try tokensForLine.append(TokenPacked.init(@intCast(lineAdjustedEndOffset), token.metadata));
+                try tokensForLine.append(TokenPacked.init(@intCast(lineAdjustedEndOffset), token.metadata.?));
                 tokensIndex += 1;
             } else if (lineAdjustedStartOffset < lines[i].len) {
-                const partialToken = TokenPacked.init(@intCast(lines[i].len), token.metadata);
+                const partialToken = TokenPacked.init(@intCast(lines[i].len), token.metadata.?);
                 try tokensForLine.append(partialToken);
                 moveToNextLine = true;
             } else {
@@ -353,7 +359,7 @@ fn _guessTokensForLinesContent(self: *Self, lineNumber: usize, lines: []const []
     return tokensByLine;
 }
 
-fn _forceParseAndTokenizeContentTokens(self: *Self, range: Range, startOffsetOfRangeInDocument: usize, endOffsetOfRangeInDocument: usize, content: []const u8) !?struct { []TokenPacked, usize } {
+fn _forceParseAndTokenizeContentTokens(self: *Self, range: Range, startOffsetOfRangeInDocument: usize, endOffsetOfRangeInDocument: usize, content: []const u8) !?struct { []EndOffsetWithMeta, usize } {
     const allocator = self.textModel().getAllocator();
     const likelyRelevantLines = (try findLikelyRelevantLines(self.textModel(), range.startLineNumber, null)).likelyRelevantLines;
     const eol = self.textModel().getEOL().toString();
@@ -368,20 +374,20 @@ fn _forceParseAndTokenizeContentTokens(self: *Self, range: Range, startOffsetOfR
     const likelyRelevantLinesLength = likelyRelevantPrefix.items.len;
 
     try likelyRelevantPrefix.appendSlice(content);
-    const tree = self._tree.createParsedTreeSync(likelyRelevantPrefix.items);
-    if (!tree) {
-        return;
+    const tree = try self._tree.createParsedTreeSync(likelyRelevantPrefix.items);
+    if (tree == null) {
+        return null;
     }
 
     const treeRange = Range.init(1, 1, range.endLineNumber - range.startLineNumber + 1 + likelyRelevantLines.items.len, range.endColumn);
-    const captures = self.captureAtRange(treeRange);
-    const tokens = self._tokenizeCapturesWithMetadata(captures, likelyRelevantLinesLength, endOffsetOfRangeInDocument - startOffsetOfRangeInDocument + likelyRelevantLinesLength);
-    tree.delete();
+    const captures = try self.captureAtRange(treeRange);
+    const tokens = try self._tokenizeCapturesWithMetadata(captures.items, likelyRelevantLinesLength, endOffsetOfRangeInDocument - startOffsetOfRangeInDocument + likelyRelevantLinesLength);
+    tree.?.destroy();
 
-    if (!tokens) {
+    if (tokens == null) {
         return null;
     }
-    return .{ tokens, likelyRelevantLinesLength };
+    return .{ tokens.?, likelyRelevantLinesLength };
 }
 
 fn _forceParseAndTokenizeContent(
@@ -390,7 +396,7 @@ fn _forceParseAndTokenizeContent(
     startOffsetOfRangeInDocument: usize,
     endOffsetOfRangeInDocument: usize,
     content: []const u8,
-) !?[]TokenPacked {
+) !?[]EndOffsetWithMeta {
     if (try self._forceParseAndTokenizeContentTokens(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content)) |res| {
         return res.@"0";
     }
@@ -399,16 +405,16 @@ fn _forceParseAndTokenizeContent(
 
 fn _forceParseAndTokenizeContentAsUpdate(self: *Self, range: Range, startOffsetOfRangeInDocument: usize, endOffsetOfRangeInDocument: usize, content: []const u8) !?[]TokenUpdate {
     if (try self._forceParseAndTokenizeContentTokens(range, startOffsetOfRangeInDocument, endOffsetOfRangeInDocument, content)) |res| {
-        return self._rangeTokensAsUpdates(startOffsetOfRangeInDocument, res.@"0", res.@"1");
+        return try self._rangeTokensAsUpdates(startOffsetOfRangeInDocument, res.@"0", res.@"1");
     }
     return null;
 }
 
-fn _firstTreeUpdate(self: *Self, versionId: i32) void {
-    self._setViewPortTokens(versionId);
+fn _firstTreeUpdate(self: *Self, versionId: i32) !void {
+    try self._setViewPortTokens(versionId);
 }
 
-fn _setViewPortTokens(self: *Self, versionId: u32) void {
+fn _setViewPortTokens(self: *Self, versionId: i32) !void {
     var rangeChanges = ArrayList(RangeChange).init(self.textModel().getAllocator());
     defer rangeChanges.deinit();
     for (self._visibleLineRanges) |lineRange| {
@@ -422,11 +428,11 @@ fn _setViewPortTokens(self: *Self, versionId: u32) void {
             });
         }
     }
-    return self._handleTreeUpdate(rangeChanges.items, versionId);
+    return try self._handleTreeUpdate(rangeChanges.items, versionId);
 }
 
 // Do not await in this method, it will cause a race
-fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: u32) !void {
+fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: i32) !void {
     var rangeChanges = ArrayList(RangeWithOffsets).init(self.textModel().getAllocator());
     defer rangeChanges.deinit();
 
@@ -449,7 +455,7 @@ fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: u32) !
                 const chunkEndPosition = Position.init(chunkLineEnd, chunkEndColumn);
                 const chunkRange = Range.fromPositions(chunkStartingPosition, chunkEndPosition);
 
-                rangeChanges.append(.{ .range = chunkRange, .startOffset = self.textModel().getOffsetAt(chunkRange.getStartPosition()), .endOffset = self.textModel().getOffsetAt(chunkRange.getEndPosition()) });
+                try rangeChanges.append(.{ .range = chunkRange, .startOffset = self.textModel().getOffsetAt(chunkRange.getStartPosition()), .endOffset = self.textModel().getOffsetAt(chunkRange.getEndPosition()) });
 
                 chunkLineStart = chunkLineEnd + 1;
                 chunkColumnStart = 1;
@@ -465,22 +471,22 @@ fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: u32) !
             }
         } else {
             // Check that the previous range doesn't overlap
-            if ((i == 0) or (rangeChanges[i - 1].endOffset < ranges[i].newRangeStartOffset)) {
-                rangeChanges.append(.{ .range = ranges[i].newRange, .startOffset = ranges[i].newRangeStartOffset, .endOffset = ranges[i].newRangeEndOffset });
-            } else if (rangeChanges[i - 1].endOffset < ranges[i].newRangeEndOffset) {
+            if ((i == 0) or (rangeChanges.items[i - 1].endOffset < ranges[i].newRangeStartOffset)) {
+                try rangeChanges.append(.{ .range = ranges[i].newRange, .startOffset = ranges[i].newRangeStartOffset, .endOffset = ranges[i].newRangeEndOffset });
+            } else if (rangeChanges.items[i - 1].endOffset < ranges[i].newRangeEndOffset) {
                 // clip the range to the previous range
-                const startPosition = self.textModel().getPositionAt(rangeChanges[i - 1].endOffset + 1);
+                const startPosition = self.textModel().getPositionAt(rangeChanges.items[i - 1].endOffset + 1);
                 const range = Range.init(startPosition.lineNumber, startPosition.column, ranges[i].newRange.endLineNumber, ranges[i].newRange.endColumn);
-                try rangeChanges.append(.{ .range = range, .startOffset = rangeChanges[i - 1].endOffset + 1, .endOffset = ranges[i].newRangeEndOffset });
+                try rangeChanges.append(.{ .range = range, .startOffset = rangeChanges.items[i - 1].endOffset + 1, .endOffset = ranges[i].newRangeEndOffset });
             }
         }
     }
 
     // Get the captures immediately while the text model is correct
-    var captures = ArrayList(QueryCapture).init(self.textModel().getAllocator());
+    var captures = ArrayList([]QueryCapture).init(self.textModel().getAllocator());
     defer captures.deinit();
     for (rangeChanges.items) |range| {
-        try captures.append(self._getCaptures(range.range));
+        try captures.append(try self._getCaptures(range.range));
     }
     // Don't block
     // return self._updateTreeForRanges(rangeChanges, versionId, captures).then(() => {
@@ -488,17 +494,17 @@ fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: u32) !
     //this._refreshNeedsRefresh(versionId);
     //}
     // TODO: start a thread?
-    try self._updateTreeForRanges(rangeChanges, versionId, captures);
-    if (self._tree.treeLastParsedVersion == self.textModel().getVersionId()) {
-        self._refreshNeedsRefresh(versionId);
+    try self._updateTreeForRanges(rangeChanges.items, versionId, captures.items);
+    if (self._tree._treeLastParsedVersion == self.textModel().getVersionId()) {
+        // try self._refreshNeedsRefresh(versionId);
     }
 }
 
-fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId: u32, captures: []const []const QueryCapture) !void {
+fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId: i32, captures: [][]QueryCapture) !void {
     var tokenUpdate: TokensUpdate = undefined;
 
     for (0..rangeChanges.len) |i| {
-        if (!self.textModel().isDisposed() and versionId != self.textModel().getVersionId()) {
+        if (versionId != self.textModel().getVersionId()) {
             // Our captures have become invalid and we need to re-capture
             break;
         }
@@ -506,27 +512,27 @@ fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId
         const range = rangeChanges[i];
 
         const updates = try self.getTokensInRange(range.range, range.startOffset, range.endOffset, capture);
-        if (updates) {
-            tokenUpdate = .{ .newTokens = updates };
+        if (updates != null) {
+            tokenUpdate = .{ .newTokens = updates.? };
         } else {
             tokenUpdate = .{ .newTokens = &[_]TokenUpdate{} };
         }
-        self._updateTokensInStore(versionId, &[_]TokensUpdate{tokenUpdate}, .accurate);
-        self.onDidChangeTokens.fire(.{
-            .changes = .{
+        try self._updateTokensInStore(versionId, &[_]TokensUpdate{tokenUpdate}, .accurate);
+        self.onDidChangeTokens.fire(
+            .{
                 .semanticTokensApplied = false,
                 .ranges = &[_]ModelTokensChangedRange{.{
                     .fromLineNumber = range.range.getStartPosition().lineNumber,
                     .toLineNumber = range.range.getEndPosition().lineNumber,
                 }},
             },
-        });
+        );
     }
-    self.onDidCompleteBackgroundTokenization.fire();
+    self.onDidCompleteBackgroundTokenization.fire({});
 }
 
-fn _refreshNeedsRefresh(self: *Self, versionId: u32) !void {
-    var rangesToRefresh = self._getNeedsRefresh();
+fn _refreshNeedsRefresh(self: *Self, versionId: i32) !void {
+    var rangesToRefresh = try self._getNeedsRefresh();
     defer rangesToRefresh.deinit();
 
     if (rangesToRefresh.items.len == 0) {
@@ -576,10 +582,10 @@ fn _rangeTokensAsUpdates(self: *Self, rangeOffset: usize, endOffsetToken: []EndO
     return try updates.toOwnedSlice();
 }
 
-fn _updateTheme(self: *Self) void {
+fn _updateTheme(self: *Self) !void {
     const modelRange = self.textModel().getFullModelRange();
-    self._markForRefresh(modelRange);
-    self._parseAndTokenizeViewPort(self._visibleLineRanges);
+    try self._markForRefresh(modelRange);
+    try self._parseAndTokenizeViewPort(self._visibleLineRanges);
 }
 
 // Was used for inspect editor tokens command
@@ -698,15 +704,15 @@ fn _getCaptures(self: *Self, range: Range) ![]QueryCapture {
     return captures;
 }
 
-fn _tokenize(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize) !?struct { []EndOffsetWithMeta, u32 } {
+fn _tokenize(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize) !?struct { []EndOffsetWithMeta, i32 } {
     const captures = try self._getCaptures(range);
     if (try self._tokenizeCapturesWithMetadata(captures, rangeStartOffset, rangeEndOffset)) |tokens| {
-        return .{ tokens, self._tree._treeLastParsedVersion.? };
+        return .{ tokens, self._tree._treeLastParsedVersion };
     }
     return null;
 }
 
-fn _createTokensFromCaptures(_self: *Self, _captures: []QueryCapture, _rangeStartOffset: usize, _rangeEndOffset: usize) !?[]EndOffsetWithMeta {
+fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _rangeStartOffset: usize, _rangeEndOffset: usize) !?[]EndOffsetWithMeta {
     const run = struct {
         const Ctx = @This();
         const baseScope = "source.zig";
@@ -716,7 +722,7 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []QueryCapture, _rangeStar
         endOffsetsAndScopes: ArrayList(EndOffsetWithMeta),
         encodedLanguageId: u32,
 
-        fn run(self: *Self, captures: []QueryCapture, rangeStartOffset: usize, rangeEndOffset: usize) !?[]EndOffsetWithMeta {
+        fn run(self: *Self, captures: []const QueryCapture, rangeStartOffset: usize, rangeEndOffset: usize) !?[]EndOffsetWithMeta {
             var ctx: Ctx = undefined;
 
             const allocator = self.textModel().getAllocator();
@@ -942,7 +948,7 @@ fn _getInjectionCaptures(self: *Self, parentCapture: QueryCapture, range: Range)
     return null;
 }
 
-fn _tokenizeCapturesWithMetadata(self: *Self, captures: []QueryCapture, rangeStartOffset: usize, rangeEndOffset: usize) !?[]EndOffsetWithMeta {
+fn _tokenizeCapturesWithMetadata(self: *Self, captures: []const QueryCapture, rangeStartOffset: usize, rangeEndOffset: usize) !?[]EndOffsetWithMeta {
     // const stopwatch = StopWatch.create();
     if (try self._createTokensFromCaptures(captures, rangeStartOffset, rangeEndOffset)) |endOffsetsAndScopes| {
         for (endOffsetsAndScopes) |*token| {
@@ -958,7 +964,7 @@ fn _tokenizeCapturesWithMetadata(self: *Self, captures: []QueryCapture, rangeSta
     }
 }
 
-fn _tokenizeEncoded(self: *Self, lineNumber: usize) !?struct { []EndOffsetWithMeta, u32 } {
+fn _tokenizeEncoded(self: *Self, lineNumber: usize) !?struct { []EndOffsetWithMeta, i32 } {
     const lineOffset = self.textModel().getOffsetAt(.{ .lineNumber = lineNumber, .column = 1 });
     const maxLine = self.textModel().getLineCount();
     const lineEndOffset = if (lineNumber + 1 <= maxLine)

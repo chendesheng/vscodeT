@@ -13,6 +13,8 @@ const LanguageConfigurationService = @import("../languages/languageConfiguration
 const PLAINTEXT_LANGUAGE_ID = @import("../services/languageRegistry.zig").PLAINTEXT_LANGUAGE_ID;
 const TestConfigurationService = @import("../test/testConfigurationService.zig").TestConfigurationService;
 const TokenizationRegistry = @import("../tokenize/tokenizationRegistry.zig").TokenizationRegistry;
+const TreeSitterLibraryService = @import("../services/TreeSitterLibraryService.zig");
+const TreeSitterThemeService = @import("../services/TreeSitterThemeService.zig");
 
 pub const RelaxedTextModelCreationOptions = struct {
     tabSize: ?usize = null,
@@ -53,6 +55,11 @@ pub fn createTextModel(allocator: Allocator, text: []const u8, _languageId: ?[]c
     // configurationService.* = TestConfigurationService.init(allocator, null);
     const languageConfigurationService = try allocator.create(LanguageConfigurationService);
     languageConfigurationService.* = try LanguageConfigurationService.init(allocator, undefined, languageService);
+
+    const treeSitterLibraryService = try allocator.create(TreeSitterLibraryService);
+    treeSitterLibraryService.* = TreeSitterLibraryService.init(allocator);
+    const treeSitterThemeService = try allocator.create(TreeSitterThemeService);
+    treeSitterThemeService.* = TreeSitterThemeService.init(allocator);
     return try TextModel.init(
         allocator,
         &source,
@@ -62,6 +69,8 @@ pub fn createTextModel(allocator: Allocator, text: []const u8, _languageId: ?[]c
         undoRedoService,
         languageService,
         languageConfigurationService,
+        treeSitterLibraryService,
+        treeSitterThemeService,
     );
 }
 
@@ -74,6 +83,8 @@ pub fn disposeTextModel(textModel: *TextModel) void {
     allocator.destroy(textModel.tokenization()._languageService);
     allocator.destroy(textModel.tokenization()._languageConfigurationService);
     textModel.deinit();
+    allocator.destroy(textModel.tokenization()._treeSitterLibraryService);
+    allocator.destroy(textModel.tokenization()._treeSitterThemeService);
     allocator.destroy(textModel);
 
     TokenizationRegistry.deinitInstance();

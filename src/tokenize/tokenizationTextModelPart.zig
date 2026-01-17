@@ -27,6 +27,7 @@ const LanguageConfigurationServiceChangeEvent = @import("../languages/languageCo
 const LanguageService = @import("../languages/languageService.zig").LanguageService;
 const TreeSitterLibraryService = @import("../services/TreeSitterLibraryService.zig");
 const TreeSitterSyntaxTokenBackend = @import("./treeSitter/treeSitterSyntaxTokenBackend.zig");
+const TreeSitterThemeService = @import("../services/TreeSitterThemeService.zig");
 
 // const derived = @import("../common/observable.zig").derived;
 // const IObservable = @import("../common/observable.zig").IObservable;
@@ -49,6 +50,7 @@ pub const TokenizationTextModelPart = struct {
     _languageConfigurationService: *LanguageConfigurationService,
     // _instantiationService: IInstantiationService,
     _treeSitterLibraryService: *TreeSitterLibraryService,
+    _treeSitterThemeService: *TreeSitterThemeService,
 
     pub fn create(
         textModel_: *TextModel,
@@ -76,6 +78,7 @@ pub const TokenizationTextModelPart = struct {
         languageService: *LanguageService,
         languageConfigurationService: *LanguageConfigurationService,
         _treeSitterLibraryService: *TreeSitterLibraryService,
+        _treeSitterThemeService: *TreeSitterThemeService,
     ) !TokenizationTextModelPart {
         const languageIdCodec = &languageService.languageIdCodec;
         const allocator = _textModel.getAllocator();
@@ -93,6 +96,7 @@ pub const TokenizationTextModelPart = struct {
             ._languageService = languageService,
             ._languageConfigurationService = languageConfigurationService,
             ._treeSitterLibraryService = _treeSitterLibraryService,
+            ._treeSitterThemeService = _treeSitterThemeService,
             .tokens = undefined,
         };
         self.tokens = blk: {
@@ -104,6 +108,7 @@ pub const TokenizationTextModelPart = struct {
                     _textModel,
                     attachedViews.visibleLineRanges.items,
                     _treeSitterLibraryService,
+                    _treeSitterThemeService,
                 );
                 try tokens.onDidChangeTokens(&self, struct {
                     fn cb(e: ModelTokensChangedEvent, this: *TokenizationTextModelPart) void {

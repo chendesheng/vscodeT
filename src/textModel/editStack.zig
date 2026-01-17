@@ -65,7 +65,7 @@ pub const EditStackElement = union(enum) {
         }
     }
 
-    pub fn append(self: *EditStackElement, model: *TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *EditStackElement, model: *TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: i32, afterCursorState: ?[]Selection) !void {
         switch (self.*) {
             .singleModel => |*singleModel| {
                 try singleModel.append(textChanges, afterEOL, afterVersionId, afterCursorState);
@@ -183,8 +183,8 @@ pub const SingleModelEditStackDataOrSerialized = union(enum) {
 };
 
 pub const SingleModelEditStackData = struct {
-    beforeVersionId: u32,
-    afterVersionId: u32,
+    beforeVersionId: i32,
+    afterVersionId: i32,
     beforeEOL: EOL,
     afterEOL: EOL,
     // FIXME: always own the cursor states??
@@ -194,7 +194,7 @@ pub const SingleModelEditStackData = struct {
     _ownBeforeCursorState: bool, // Whether the beforeCursorState is freed when deinit is called
     _ownAfterCursorState: bool, // Whether the afterCursorState is freed when deinit is called
 
-    pub fn init(allocator: Allocator, beforeVersionId: u32, afterVersionId: u32, beforeEOL: EOL, afterEOL: EOL, beforeCursorState: ?[]const Selection, afterCursorState: ?[]const Selection, changes: []const TextChange) !SingleModelEditStackData {
+    pub fn init(allocator: Allocator, beforeVersionId: i32, afterVersionId: i32, beforeEOL: EOL, afterEOL: EOL, beforeCursorState: ?[]const Selection, afterCursorState: ?[]const Selection, changes: []const TextChange) !SingleModelEditStackData {
         var changesList = ArrayList(TextChange).init(allocator);
         try changesList.appendSlice(changes);
         return .{
@@ -210,7 +210,7 @@ pub const SingleModelEditStackData = struct {
         };
     }
 
-    pub fn create(allocator: Allocator, alternativeVersionId: u32, eol: EOL, beforeCursorState: ?[]const Selection) SingleModelEditStackData {
+    pub fn create(allocator: Allocator, alternativeVersionId: i32, eol: EOL, beforeCursorState: ?[]const Selection) SingleModelEditStackData {
         return SingleModelEditStackData{
             .beforeVersionId = alternativeVersionId,
             .afterVersionId = alternativeVersionId,
@@ -249,7 +249,7 @@ pub const SingleModelEditStackData = struct {
         self.changes.deinit();
     }
 
-    pub fn append(self: *SingleModelEditStackData, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]const Selection) !void {
+    pub fn append(self: *SingleModelEditStackData, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: i32, afterCursorState: ?[]const Selection) !void {
         if (textChanges.len > 0) {
             var changes = self.changes;
             defer changes.deinit();
@@ -317,8 +317,8 @@ pub const SingleModelEditStackData = struct {
         const result = try allocator.alloc(u8, necessarySize);
         var writer = std.Io.Writer.fixed(result);
 
-        try writer.writeInt(u32, self.beforeVersionId, .big);
-        try writer.writeInt(u32, self.afterVersionId, .big);
+        try writer.writeInt(i32, self.beforeVersionId, .big);
+        try writer.writeInt(i32, self.afterVersionId, .big);
         try writer.writeInt(u8, @intFromEnum(self.beforeEOL), .big);
         try writer.writeInt(u8, @intFromEnum(self.afterEOL), .big);
         try _writeSelections(&writer, self.beforeCursorState);
@@ -333,8 +333,8 @@ pub const SingleModelEditStackData = struct {
     pub fn deserialize(allocator: Allocator, source: []const u8) !SingleModelEditStackData {
         var reader = std.Io.Reader.fixed(source);
 
-        const beforeVersionId = try utils.readInt(&reader, u32, .big);
-        const afterVersionId = try utils.readInt(&reader, u32, .big);
+        const beforeVersionId = try utils.readInt(&reader, i32, .big);
+        const afterVersionId = try utils.readInt(&reader, i32, .big);
         const beforeEOL: EOL = @enumFromInt(try utils.readInt(&reader, u8, .big));
         const afterEOL: EOL = @enumFromInt(try utils.readInt(&reader, u8, .big));
         const beforeCursorState = try _readSelections(&reader, allocator);
@@ -480,7 +480,7 @@ pub const SingleModelEditStackElement = struct {
         };
     }
 
-    pub fn append(self: *SingleModelEditStackElement, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *SingleModelEditStackElement, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: i32, afterCursorState: ?[]Selection) !void {
         switch (self._data) {
             .unserialized => |*dat| {
                 try dat.append(textChanges, afterEOL, afterVersionId, afterCursorState);
@@ -692,7 +692,7 @@ pub const MultiModelEditStackElement = struct {
         return false;
     }
 
-    pub fn append(self: *MultiModelEditStackElement, model: *TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
+    pub fn append(self: *MultiModelEditStackElement, model: *TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: i32, afterCursorState: ?[]Selection) !void {
         if (self._editStackElementsMap.getPtr(model.uri())) |editStackElement| {
             try editStackElement.append(textChanges, afterEOL, afterVersionId, afterCursorState);
         }

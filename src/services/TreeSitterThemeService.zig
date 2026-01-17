@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const TreeSitterTree = @import("../tokenize/treeSitter/treeSitterTree.zig").TreeSitterTree;
+const TreeSitterTree = @import("../tokenize/treeSitter/TreeSitterTree.zig").TreeSitterTree;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const Emitter = @import("../basics/event.zig").Emitter;
 

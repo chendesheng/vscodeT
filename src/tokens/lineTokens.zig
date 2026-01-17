@@ -79,8 +79,8 @@ pub const LineTokens = struct {
     }
 
     pub fn createEmpty(allocator: Allocator, lineContent: []const u8, decoder: *const LanguageIdCodec) !LineTokens {
-        const tokens = ArrayList(TokenPacked).init(allocator);
-        try tokens.append(initTokenPacked(lineContent.items.len, TokenMetadata.default));
+        var tokens = ArrayList(TokenPacked).init(allocator);
+        try tokens.append(initTokenPacked(@intCast(lineContent.len), TokenMetadata.default));
         return LineTokens.init(tokens, lineContent, decoder);
     }
 

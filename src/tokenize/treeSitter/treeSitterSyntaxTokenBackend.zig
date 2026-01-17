@@ -14,6 +14,7 @@ const LineRange = @import("../../basics/lineRange.zig").LineRange;
 const TreeSitterTokenizationImpl = @import("./TreeSitterTokenizationImpl.zig");
 const TreeSitterLibraryService = @import("../../services/TreeSitterLibraryService.zig");
 const ModelTokensChangedEvent = @import("../../textModel/textModelEvents.zig").ModelTokensChangedEvent;
+const TreeSitterThemeService = @import("../../services/TreeSitterThemeService.zig");
 
 const TreeSitterSyntaxTokenBackend = @This();
 
@@ -30,6 +31,7 @@ pub fn init(
     textModel: *TextModel,
     visibleLineRanges: []const LineRange,
     _treeSitterLibraryService: *TreeSitterLibraryService,
+    _treeSitterThemeService: *TreeSitterThemeService,
 ) !TreeSitterSyntaxTokenBackend {
     var self = TreeSitterSyntaxTokenBackend{
         .super = AbstractSyntaxTokenBackend.init(.Completed, languageIdCodec, textModel, &.{
@@ -64,23 +66,30 @@ pub fn init(
 
     if (self._tree) |treeModel| {
         if (self._treeSitterLibraryService.getHighlightingQueries(_languageId)) |queries| {
-            self._tokenizationImpl = TreeSitterTokenizationImpl.init(treeModel, queries, languageIdCodec, visibleLineRanges);
+            self._tokenizationImpl = try TreeSitterTokenizationImpl.init(
+                treeModel,
+                languageIdCodec,
+                queries,
+                visibleLineRanges,
+                _treeSitterThemeService,
+            );
         }
     }
 
-    if (self._tokenizationImpl) |tokenizationImpl| {
-        tokenizationImpl.onDidChangeTokens(&self, struct {
-            fn cb(this: *TreeSitterSyntaxTokenBackend, e: ModelTokensChangedEvent) void {
+    if (self._tokenizationImpl) |*tokenizationImpl| {
+        try tokenizationImpl.onDidChangeTokens.event(&self, struct {
+            fn cb(e: ModelTokensChangedEvent, this: *TreeSitterSyntaxTokenBackend) void {
                 this.super._onDidChangeTokens.fire(e);
             }
         }.cb);
-        tokenizationImpl.onDidChangeBackgroundTokenization(&self, struct {
-            fn cb(this: *TreeSitterSyntaxTokenBackend, _: void) void {
+        try tokenizationImpl.onDidChangeBackgroundTokenization.event(&self, struct {
+            fn cb(_: void, this: *TreeSitterSyntaxTokenBackend) void {
                 this.super._backgroundTokenizationState = .Completed;
                 this.super._onDidChangeBackgroundTokenizationState.fire({});
             }
         }.cb);
     }
+    return self;
 }
 
 pub fn create(
@@ -90,18 +99,19 @@ pub fn create(
     textModel: *TextModel,
     visibleLineRanges: []const LineRange,
     _treeSitterLibraryService: *TreeSitterLibraryService,
+    _treeSitterThemeService: *TreeSitterThemeService,
 ) !*AbstractSyntaxTokenBackend {
     var self = try allocator.create(TreeSitterSyntaxTokenBackend);
-    self.* = try init(_languageId, languageIdCodec, textModel, visibleLineRanges, _treeSitterLibraryService);
+    self.* = try init(_languageId, languageIdCodec, textModel, visibleLineRanges, _treeSitterLibraryService, _treeSitterThemeService);
     return &self.super;
 }
 
 pub fn deinit(s: *AbstractSyntaxTokenBackend) void {
     const self = getSelf(s);
-    if (self._tokenizationImpl) |tokenizationImpl| {
-        tokenizationImpl.deinit();
-    }
-    if (self._tree) |tree| {
+    // if (self._tokenizationImpl) |tokenizationImpl| {
+    //     tokenizationImpl.deinit();
+    // }
+    if (self._tree) |*tree| {
         tree.deinit();
     }
 }
@@ -131,10 +141,10 @@ pub fn todo_resetTokenization(s: *AbstractSyntaxTokenBackend, fireTokenChangeEve
     if (fireTokenChangeEvent) {
         self.super._onDidChangeTokens.fire(.{
             .semanticTokensApplied = false,
-            .ranges = .{
+            .ranges = &.{
                 .{
                     .fromLineNumber = 1,
-                    .toLineNumber = try self.super._textModel.getLineCount(),
+                    .toLineNumber = self.super._textModel.getLineCount(),
                 },
             },
         });

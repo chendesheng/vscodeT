@@ -45,11 +45,11 @@ pub fn gotoNthChild(newCursor: *TreeCursor, oldCursor: *TreeCursor, index: usize
 
 pub fn nextSiblingOrParentSibling(newCursor: *TreeCursor, oldCursor: *TreeCursor) bool {
     while (true) {
-        if (newCursor.node().nextSibling()) {
+        if (newCursor.node().nextSibling() != null) {
             return gotoNextSibling(newCursor, oldCursor);
         }
-        if (newCursor.node().parent()) {
-            gotoParent(newCursor, oldCursor);
+        if (newCursor.node().parent() != null) {
+            _ = gotoParent(newCursor, oldCursor);
         }
         if (newCursor.node().nextSibling() == null and newCursor.node().parent() == null) {
             break;
@@ -60,18 +60,18 @@ pub fn nextSiblingOrParentSibling(newCursor: *TreeCursor, oldCursor: *TreeCursor
 
 pub fn getClosestPreviousNodes(cursor: *TreeCursor, tree: *Tree) ?Node {
     // Go up parents until the end of the parent is before the start of the current.
-    const findPrev = tree.walk();
+    var findPrev = tree.walk();
     findPrev.resetTo(cursor);
 
     const startingNode = cursor.node();
     while (true) {
-        if (findPrev.node().previousSibling() and ((findPrev.node().endByte() - findPrev.node().startByte()) != 0)) {
-            findPrev.gotoPreviousSibling();
+        if (findPrev.node().prevSibling() != null and ((findPrev.node().endByte() - findPrev.node().startByte()) != 0)) {
+            _ = findPrev.gotoPreviousSibling();
         } else {
-            while (!findPrev.node().previousSibling() and findPrev.node().parent()) {
-                findPrev.gotoParent();
+            while (findPrev.node().prevSibling() == null and findPrev.node().parent() != null) {
+                _ = findPrev.gotoParent();
             }
-            findPrev.gotoPreviousSibling();
+            _ = findPrev.gotoPreviousSibling();
         }
         if (!((findPrev.node().endByte() > startingNode.startByte()) //
             and (findPrev.node().parent() != null or findPrev.node().prevSibling() != null) //

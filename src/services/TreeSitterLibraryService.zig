@@ -14,7 +14,7 @@ const isTest: bool = false;
 
 _languagesCache: StringHashMap(*const ts.Language),
 
-fn _supportsLanguage(self: *TreeSitterLibraryService, languageId: []const u8) bool {
+fn _supportsLanguage(self: *const TreeSitterLibraryService, languageId: []const u8) bool {
     _ = self;
 
     if (std.mem.eql(u8, languageId, "zig")) {
@@ -53,7 +53,7 @@ pub fn init(allocator: Allocator) TreeSitterLibraryService {
     };
 }
 
-pub fn supportsLanguage(self: *TreeSitterLibraryService, languageId: []const u8) bool {
+pub fn supportsLanguage(self: *const TreeSitterLibraryService, languageId: []const u8) bool {
     return self._supportsLanguage(languageId);
 }
 
@@ -82,7 +82,7 @@ pub fn getInjectionQueries(self: *TreeSitterLibraryService, languageId: []const 
     return query;
 }
 
-pub fn getHighlightingQueries(self: TreeSitterLibraryService, languageId: []const u8) ?*ts.Query {
+pub fn getHighlightingQueries(self: *TreeSitterLibraryService, languageId: []const u8) ?*ts.Query {
     if (!self.supportsLanguage(languageId)) {
         return undefined;
     }
