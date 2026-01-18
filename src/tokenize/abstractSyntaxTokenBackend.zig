@@ -284,4 +284,7 @@ pub const AbstractSyntaxTokenBackend = struct {
         self.vtable.deinit(self);
         self.vtable.destroy(self, allocator);
     }
+    pub fn as(self: *AbstractSyntaxTokenBackend, comptime T: type) *T {
+        return @fieldParentPtr("super", self);
+    }
 };

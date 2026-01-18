@@ -27,11 +27,11 @@ const TreeSitterTokenizationFeatureTests = struct {
 
     fn getModelAndPrepTree(content: []const u8) !struct { *TextModel, *TreeSitterTree, *TreeSitterTokenizationImpl } {
         const model = try createTextModel(allocator, content, "typescript", null);
-        const treeSitterSyntaxTokenBackend = @as(*TreeSitterSyntaxTokenBackend, @fieldParentPtr("super", model.tokenization().tokens));
-        var treeSitterTree = treeSitterSyntaxTokenBackend._tree.?;
-        var tokenizationImpl = treeSitterSyntaxTokenBackend._tokenizationImpl.?;
+        var treeSitterSyntaxTokenBackend = model.tokenization().tokens.as(TreeSitterSyntaxTokenBackend);
+        const treeSitterTree = &treeSitterSyntaxTokenBackend._tree.?;
+        const tokenizationImpl = &treeSitterSyntaxTokenBackend._tokenizationImpl.?;
 
-        return .{ model, &treeSitterTree, &tokenizationImpl };
+        return .{ model, treeSitterTree, tokenizationImpl };
     }
 
     test "Three changes come back to back " {
@@ -52,13 +52,20 @@ const TreeSitterTokenizationFeatureTests = struct {
         const treeSitterTree = res.@"1";
         defer disposeTextModel(model);
 
-        var change: TreeParseUpdateEvent = undefined;
-        defer allocator.free(change.ranges);
+        var changes = ArrayList(TreeParseUpdateEvent).init(allocator);
+        defer changes.deinit();
+        defer {
+            for (changes.items) |item| {
+                allocator.free(item.ranges);
+            }
+        }
 
-        try treeSitterTree.onTreeChange.event(&change, struct {
-            fn cb(e: TreeChangeEvent, _change: *TreeParseUpdateEvent) void {
-                _change.* = e.change.?;
-                _change.ranges = allocator.dupe(RangeChange, _change.ranges) catch unreachable;
+        try treeSitterTree.onTreeChange(&changes, struct {
+            fn cb(e: TreeChangeEvent, chs: *ArrayList(TreeParseUpdateEvent)) !void {
+                try chs.append(.{
+                    .ranges = try allocator.dupe(RangeChange, e.change.?.ranges),
+                    .versionId = e.change.?.versionId,
+                });
             }
         }.cb);
 
@@ -66,6 +73,7 @@ const TreeSitterTokenizationFeatureTests = struct {
         _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{.{ .range = .init(6, 1, 7, 1), .text = .empty }}, null);
         _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{.{ .range = .init(5, 1, 6, 1), .text = .empty }}, null);
 
+        const change = changes.getLast();
         try std.testing.expectEqual(4, change.versionId);
         try std.testing.expectEqual(0, change.ranges[0].newRangeStartOffset);
         try std.testing.expectEqual(32, change.ranges[0].newRangeEndOffset);

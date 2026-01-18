@@ -333,7 +333,7 @@ pub const TokenStore = struct {
 
     fn createEmptyRoot(self: *const TokenStore) !*Node {
         const allocator = self.getAllocator();
-        return try Node.createLeafNode(allocator, self._textModel.getValueLength(null, false), null, null);
+        return try Node.createLeafNode(allocator, self._textModel.getValueLength(null, null), null, null);
     }
 
     // @param update all the tokens for the document in sequence

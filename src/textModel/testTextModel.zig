@@ -83,7 +83,9 @@ pub fn disposeTextModel(textModel: *TextModel) void {
     allocator.destroy(textModel.tokenization()._languageService);
     allocator.destroy(textModel.tokenization()._languageConfigurationService);
     textModel.deinit();
+    textModel.tokenization()._treeSitterLibraryService.deinit();
     allocator.destroy(textModel.tokenization()._treeSitterLibraryService);
+    textModel.tokenization()._treeSitterThemeService.deinit();
     allocator.destroy(textModel.tokenization()._treeSitterThemeService);
     allocator.destroy(textModel);
 

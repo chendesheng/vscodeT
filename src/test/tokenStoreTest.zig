@@ -20,7 +20,7 @@ const TokenStoreTests = struct {
 
         var store = try TokenStore.init(textModel);
         defer store.deinit();
-        try std.testing.expectEqual(textModel.getValueLength(null, false), store.root.length());
+        try std.testing.expectEqual(textModel.getValueLength(null, null), store.root.length());
     }
 
     test "builds store with single token" {

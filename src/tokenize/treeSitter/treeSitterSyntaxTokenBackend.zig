@@ -26,14 +26,15 @@ _tokenizationImpl: ?TreeSitterTokenizationImpl,
 _languageId: []const u8,
 
 pub fn init(
+    self: *TreeSitterSyntaxTokenBackend,
     _languageId: []const u8,
     languageIdCodec: *const LanguageIdCodec,
     textModel: *TextModel,
     visibleLineRanges: []const LineRange,
     _treeSitterLibraryService: *TreeSitterLibraryService,
     _treeSitterThemeService: *TreeSitterThemeService,
-) !TreeSitterSyntaxTokenBackend {
-    var self = TreeSitterSyntaxTokenBackend{
+) !void {
+    self.* = TreeSitterSyntaxTokenBackend{
         .super = AbstractSyntaxTokenBackend.init(.Completed, languageIdCodec, textModel, &.{
             .todo_resetTokenization = todo_resetTokenization,
             .handleDidChangeAttached = handleDidChangeAttached,
@@ -64,9 +65,11 @@ pub fn init(
         }
     }
 
-    if (self._tree) |treeModel| {
+    if (self._tree) |*treeModel| {
         if (self._treeSitterLibraryService.getHighlightingQueries(_languageId)) |queries| {
-            self._tokenizationImpl = try TreeSitterTokenizationImpl.init(
+            self._tokenizationImpl = undefined;
+            try TreeSitterTokenizationImpl.init(
+                &(self._tokenizationImpl.?),
                 treeModel,
                 languageIdCodec,
                 queries,
@@ -77,19 +80,18 @@ pub fn init(
     }
 
     if (self._tokenizationImpl) |*tokenizationImpl| {
-        try tokenizationImpl.onDidChangeTokens.event(&self, struct {
+        try tokenizationImpl.onDidChangeTokens(self, struct {
             fn cb(e: ModelTokensChangedEvent, this: *TreeSitterSyntaxTokenBackend) void {
                 this.super._onDidChangeTokens.fire(e);
             }
         }.cb);
-        try tokenizationImpl.onDidChangeBackgroundTokenization.event(&self, struct {
-            fn cb(_: void, this: *TreeSitterSyntaxTokenBackend) void {
+        try tokenizationImpl.onDidChangeBackgroundTokenization(self, struct {
+            fn cb(this: *TreeSitterSyntaxTokenBackend) void {
                 this.super._backgroundTokenizationState = .Completed;
                 this.super._onDidChangeBackgroundTokenizationState.fire({});
             }
         }.cb);
     }
-    return self;
 }
 
 pub fn create(
@@ -102,15 +104,18 @@ pub fn create(
     _treeSitterThemeService: *TreeSitterThemeService,
 ) !*AbstractSyntaxTokenBackend {
     var self = try allocator.create(TreeSitterSyntaxTokenBackend);
-    self.* = try init(_languageId, languageIdCodec, textModel, visibleLineRanges, _treeSitterLibraryService, _treeSitterThemeService);
+    try init(self, _languageId, languageIdCodec, textModel, visibleLineRanges, _treeSitterLibraryService, _treeSitterThemeService);
     return &self.super;
 }
 
 pub fn deinit(s: *AbstractSyntaxTokenBackend) void {
+    s._onDidChangeTokens.deinit();
+    s._onDidChangeBackgroundTokenizationState.deinit();
+
     const self = getSelf(s);
-    // if (self._tokenizationImpl) |tokenizationImpl| {
-    //     tokenizationImpl.deinit();
-    // }
+    if (self._tokenizationImpl) |*tokenizationImpl| {
+        tokenizationImpl.deinit();
+    }
     if (self._tree) |*tree| {
         tree.deinit();
     }

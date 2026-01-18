@@ -6,12 +6,16 @@ const Emitter = @import("../basics/event.zig").Emitter;
 
 const Self = @This();
 
-onChange: Emitter(void),
+_onChange: Emitter(void),
 
 pub fn init(allocator: Allocator) Self {
     return Self{
-        .onChange = Emitter(void).init(allocator),
+        ._onChange = Emitter(void).init(allocator),
     };
+}
+
+pub fn deinit(self: *Self) void {
+    self._onChange.deinit();
 }
 
 pub fn findMetadata(self: *const Self, captureNames: []const []const u8, languageId: u32, bracket: bool) TokenMetadata {
@@ -20,4 +24,12 @@ pub fn findMetadata(self: *const Self, captureNames: []const []const u8, languag
     _ = languageId;
     _ = bracket;
     return .default;
+}
+
+pub fn onChange(self: *Self, ctx: anytype, callback: fn (ctx: @TypeOf(ctx)) anyerror!void) !void {
+    try self._onChange.event(ctx, struct {
+        fn cb(_: void, ctx_: @TypeOf(ctx)) void {
+            callback(ctx_) catch unreachable;
+        }
+    }.cb);
 }

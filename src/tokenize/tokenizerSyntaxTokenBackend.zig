@@ -185,6 +185,9 @@ pub const TokenizerSyntaxTokenBackend = struct {
     }
 
     pub fn deinit(s: *AbstractSyntaxTokenBackend) void {
+        s._onDidChangeTokens.deinit();
+        s._onDidChangeBackgroundTokenizationState.deinit();
+
         var self = getSelf(s);
         const allocator = self.super._textModel.getAllocator();
         if (self._tokenizer) |*tokenizer| {

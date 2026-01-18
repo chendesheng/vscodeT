@@ -1,4 +1,6 @@
 const std = @import("std");
+const usizeSub = @import("../../basics/utils.zig").usizeSub;
+const usizeAdd = @import("../../basics/utils.zig").usizeAdd;
 const findLikelyRelevantLines = @import("../../textModel/textModelTokens.zig").findLikelyRelevantLines;
 const TokenMetadata = @import("../../encodedTokenAttributes.zig").TokenMetadata;
 const ts = @import("tree-sitter");
@@ -38,11 +40,11 @@ const Self = @This();
 _tokenStore: TokenStore,
 _accurateVersion: i32,
 _guessVersion: i32,
-onDidChangeTokens: Emitter(ModelTokensChangedEvent),
-onDidChangeBackgroundTokenization: Emitter(void),
-onDidCompleteBackgroundTokenization: Emitter(void),
+_onDidChangeTokens: Emitter(ModelTokensChangedEvent),
+_onDidChangeBackgroundTokenization: Emitter(void),
+_onDidCompleteBackgroundTokenization: Emitter(void),
 
-_tree: TreeSitterTree,
+_tree: *TreeSitterTree,
 _encodedLanguageId: u8,
 _languageIdCodec: *const LanguageIdCodec,
 _treeSitterThemeService: *TreeSitterThemeService,
@@ -50,63 +52,91 @@ _visibleLineRanges: []const LineRange,
 _highlightingQueries: *ts.Query,
 
 pub fn init(
-    _tree: TreeSitterTree,
+    self: *Self,
+    _tree: *TreeSitterTree,
     _languageIdCodec: *const LanguageIdCodec,
     _highlightingQueries: *ts.Query,
     _visibleLineRanges: []const LineRange,
     _treeSitterThemeService: *TreeSitterThemeService,
-) !Self {
+) !void {
     const _textModel = _tree.textModel;
     const allocator = _textModel.getAllocator();
     const encodedLanguageId = _languageIdCodec.encodeLanguageId(_tree.languageId);
 
-    var self = Self{
+    self.* = Self{
         ._tokenStore = try TokenStore.init(_textModel),
         ._accurateVersion = _textModel.getVersionId(),
         ._guessVersion = _textModel.getVersionId(),
         ._tree = _tree,
         ._languageIdCodec = _languageIdCodec,
-        .onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
-        .onDidChangeBackgroundTokenization = Emitter(void).init(allocator),
+        ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
+        ._onDidChangeBackgroundTokenization = Emitter(void).init(allocator),
         ._encodedLanguageId = encodedLanguageId,
         ._visibleLineRanges = _visibleLineRanges,
         ._treeSitterThemeService = _treeSitterThemeService,
         ._highlightingQueries = _highlightingQueries,
-        .onDidCompleteBackgroundTokenization = Emitter(void).init(allocator),
+        ._onDidCompleteBackgroundTokenization = Emitter(void).init(allocator),
     };
 
-    try self._tree.onTreeChange.event(&self, struct {
-        fn cb(e: TreeChangeEvent, this: *Self) void {
+    try self._tree.onTreeChange(self, struct {
+        fn cb(e: TreeChangeEvent, this: *Self) !void {
             if (e.change == null) {
-                this._firstTreeUpdate(this._tree._treeLastParsedVersion) catch unreachable;
+                try this._firstTreeUpdate(this._tree._treeLastParsedVersion);
             } else if (e.change) |changeEvent| {
-                if (this.hasTokens(null) catch unreachable) {
+                if (try this.hasTokens(null)) {
                     // Mark the range for refresh immediately
 
                     for (changeEvent.ranges) |range| {
-                        this._markForRefresh(range.newRange) catch unreachable;
+                        try this._markForRefresh(range.newRange);
                     }
                 }
 
                 // First time we see a tree we need to build a token store.
-                if (!(this.hasTokens(null) catch unreachable)) {
-                    this._firstTreeUpdate(changeEvent.versionId) catch unreachable;
+                if (!(try this.hasTokens(null))) {
+                    try this._firstTreeUpdate(changeEvent.versionId);
                 } else {
-                    this._handleTreeUpdate(changeEvent.ranges, changeEvent.versionId) catch unreachable;
+                    try this._handleTreeUpdate(changeEvent.ranges, changeEvent.versionId);
                 }
             }
         }
     }.cb);
 
-    try self._tokenStore.buildStore(try self._createEmptyTokens(), .none);
+    const emptyTokens = try self._createEmptyTokens();
+    defer allocator.free(emptyTokens);
+    try self._tokenStore.buildStore(emptyTokens, .none);
 
-    try self._treeSitterThemeService.onChange.event(&self, struct {
-        fn cb(_: void, this: *Self) void {
-            this._updateTheme() catch unreachable;
+    try self._treeSitterThemeService.onChange(self, struct {
+        fn cb(this: *Self) !void {
+            try this._updateTheme();
         }
     }.cb);
+}
 
-    return self;
+pub fn deinit(self: *Self) void {
+    self._tokenStore.deinit();
+    self._onDidChangeBackgroundTokenization.deinit();
+    self._onDidCompleteBackgroundTokenization.deinit();
+    self._onDidChangeTokens.deinit();
+}
+
+pub fn onDidChangeTokens(self: *Self, ctx: anytype, callback: fn (ModelTokensChangedEvent, ctx: @TypeOf(ctx)) void) !void {
+    try self._onDidChangeTokens.event(ctx, callback);
+}
+
+pub fn onDidChangeBackgroundTokenization(self: *Self, ctx: anytype, callback: fn (ctx: @TypeOf(ctx)) void) !void {
+    try self._onDidChangeBackgroundTokenization.event(ctx, struct {
+        fn cb(_: void, ctx_: @TypeOf(ctx)) void {
+            callback(ctx_);
+        }
+    }.cb);
+}
+
+pub fn onDidCompleteBackgroundTokenization(self: *Self, ctx: anytype, callback: fn (ctx: @TypeOf(ctx)) void) !void {
+    try self._onDidCompleteBackgroundTokenization.event(ctx, struct {
+        fn cb(_: void, ctx_: @TypeOf(ctx)) void {
+            callback(ctx_);
+        }
+    }.cb);
 }
 
 fn textModel(self: *const Self) *TextModel {
@@ -213,6 +243,7 @@ pub fn getTokens(self: *const Self, line: usize) !ArrayList(TokenPacked) {
 }
 
 pub fn getTokensInRange(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize, _captures: ?[]const QueryCapture) !?[]TokenUpdate {
+    const allocator = self.textModel().getAllocator();
     const _tokens = blk: {
         if (_captures) |captures| {
             break :blk try self._tokenizeCapturesWithMetadata(captures, rangeStartOffset, rangeEndOffset);
@@ -224,6 +255,14 @@ pub fn getTokensInRange(self: *Self, range: Range, rangeStartOffset: usize, rang
             }
         }
     };
+    defer {
+        if (_tokens) |tokens| {
+            for (tokens) |token| {
+                token.scopes.deinit();
+            }
+            allocator.free(tokens);
+        }
+    }
 
     if (_tokens) |tokens| {
         return try self._rangeTokensAsUpdates(rangeStartOffset, tokens, null);
@@ -303,7 +342,7 @@ fn _parseAndTokenizeViewPort(self: *Self, lineRanges: []const LineRange) !void {
         const lastToken = tokenUpdates.?[tokenUpdates.?.len - 1];
         const oldRangeLength = lastToken.startOffsetInclusive + lastToken.length - tokenUpdates.?[0].startOffsetInclusive;
         try self._updateTokensInStore(version, &[_]TokensUpdate{.{ .newTokens = tokenUpdates.?, .oldRangeLength = oldRangeLength }}, .viewportGuess);
-        self.onDidChangeTokens.fire(.{
+        self._onDidChangeTokens.fire(.{
             .semanticTokensApplied = false,
             .ranges = &[_]ModelTokensChangedRange{.{
                 .fromLineNumber = range.startLineNumber,
@@ -381,6 +420,7 @@ fn _forceParseAndTokenizeContentTokens(self: *Self, range: Range, startOffsetOfR
 
     const treeRange = Range.init(1, 1, range.endLineNumber - range.startLineNumber + 1 + likelyRelevantLines.items.len, range.endColumn);
     const captures = try self.captureAtRange(treeRange);
+    defer captures.deinit();
     const tokens = try self._tokenizeCapturesWithMetadata(captures.items, likelyRelevantLinesLength, endOffsetOfRangeInDocument - startOffsetOfRangeInDocument + likelyRelevantLinesLength);
     tree.?.destroy();
 
@@ -483,10 +523,18 @@ fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: i32) !
     }
 
     // Get the captures immediately while the text model is correct
-    var captures = ArrayList([]QueryCapture).init(self.textModel().getAllocator());
-    defer captures.deinit();
+    const allocator = self.textModel().getAllocator();
+    var captures = ArrayList([]QueryCapture).init(allocator);
+    defer {
+        for (captures.items) |item| {
+            allocator.free(item);
+        }
+        captures.deinit();
+    }
     for (rangeChanges.items) |range| {
-        try captures.append(try self._getCaptures(range.range));
+        var list = try self._getCaptures(range.range);
+        defer list.deinit();
+        try captures.append(try list.toOwnedSlice());
     }
     // Don't block
     // return self._updateTreeForRanges(rangeChanges, versionId, captures).then(() => {
@@ -501,6 +549,7 @@ fn _handleTreeUpdate(self: *Self, ranges: []const RangeChange, versionId: i32) !
 }
 
 fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId: i32, captures: [][]QueryCapture) !void {
+    const allocator = self.textModel().getAllocator();
     var tokenUpdate: TokensUpdate = undefined;
 
     for (0..rangeChanges.len) |i| {
@@ -512,13 +561,19 @@ fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId
         const range = rangeChanges[i];
 
         const updates = try self.getTokensInRange(range.range, range.startOffset, range.endOffset, capture);
+        defer {
+            if (updates) |_updates| {
+                allocator.free(_updates);
+            }
+        }
+
         if (updates != null) {
             tokenUpdate = .{ .newTokens = updates.? };
         } else {
             tokenUpdate = .{ .newTokens = &[_]TokenUpdate{} };
         }
         try self._updateTokensInStore(versionId, &[_]TokensUpdate{tokenUpdate}, .accurate);
-        self.onDidChangeTokens.fire(
+        self._onDidChangeTokens.fire(
             .{
                 .semanticTokensApplied = false,
                 .ranges = &[_]ModelTokensChangedRange{.{
@@ -528,7 +583,7 @@ fn _updateTreeForRanges(self: *Self, rangeChanges: []RangeWithOffsets, versionId
             },
         );
     }
-    self.onDidCompleteBackgroundTokenization.fire({});
+    self._onDidCompleteBackgroundTokenization.fire({});
 }
 
 fn _refreshNeedsRefresh(self: *Self, versionId: i32) !void {
@@ -589,15 +644,13 @@ fn _updateTheme(self: *Self) !void {
 }
 
 // Was used for inspect editor tokens command
-pub fn captureAtPosition(self: *Self, lineNumber: usize, column: usize) []QueryCapture {
-    const captures = self.captureAtRangeWithInjections(Range.init(lineNumber, column, lineNumber, column + 1));
-    return captures;
+pub fn captureAtPosition(self: *Self, lineNumber: usize, column: usize) !ArrayList(QueryCapture) {
+    return try self.captureAtRangeWithInjections(Range.init(lineNumber, column, lineNumber, column + 1));
 }
 
 // Was used for the colorization tests
-pub fn captureAtRangeTree(self: *Self, range: Range) []QueryCapture {
-    const captures = self.captureAtRangeWithInjections(range);
-    return captures;
+pub fn captureAtRangeTree(self: *Self, range: Range) !ArrayList(QueryCapture) {
+    return try self.captureAtRangeWithInjections(range);
 }
 
 fn captureAtRange(self: *Self, range: Range) !ArrayList(QueryCapture) {
@@ -639,7 +692,7 @@ fn captureAtRange(self: *Self, range: Range) !ArrayList(QueryCapture) {
     }
 }
 
-fn captureAtRangeWithInjections(self: *Self, range: Range) ![]QueryCapture {
+fn captureAtRangeWithInjections(self: *Self, range: Range) !ArrayList(QueryCapture) {
     var captures = try self.captureAtRange(range);
     var i: usize = 0;
     while (i < captures.items.len) : (i += 1) {
@@ -668,7 +721,7 @@ fn captureAtRangeWithInjections(self: *Self, range: Range) ![]QueryCapture {
             }
         }
     }
-    return try captures.toOwnedSlice();
+    return captures;
 }
 
 // Gets the tokens for a given line.
@@ -699,14 +752,14 @@ pub fn tokenizeEncoded(self: *Self, lineNumber: usize) !void {
     }
 }
 
-fn _getCaptures(self: *Self, range: Range) ![]QueryCapture {
-    const captures = try self.captureAtRangeWithInjections(range);
-    return captures;
+fn _getCaptures(self: *Self, range: Range) !ArrayList(QueryCapture) {
+    return try self.captureAtRangeWithInjections(range);
 }
 
 fn _tokenize(self: *Self, range: Range, rangeStartOffset: usize, rangeEndOffset: usize) !?struct { []EndOffsetWithMeta, i32 } {
     const captures = try self._getCaptures(range);
-    if (try self._tokenizeCapturesWithMetadata(captures, rangeStartOffset, rangeEndOffset)) |tokens| {
+    defer captures.deinit();
+    if (try self._tokenizeCapturesWithMetadata(captures.items, rangeStartOffset, rangeEndOffset)) |tokens| {
         return .{ tokens, self._tree._treeLastParsedVersion };
     }
     return null;
@@ -747,9 +800,10 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
             ctx.endOffsetsAndScopes = try ArrayList(EndOffsetWithMeta).initCapacity(allocator, captures.len);
             defer ctx.endOffsetsAndScopes.deinit();
 
-            for (ctx.endOffsetsAndScopes.items) |*endOffset| {
-                endOffset.* = .{ .endOffset = 0, .scopes = ArrayList([]const u8).init(allocator), .encodedLanguageId = ctx.encodedLanguageId };
-                try endOffset.scopes.append(baseScope);
+            for (0..captures.len) |_| {
+                var item = EndOffsetWithMeta{ .endOffset = 0, .scopes = ArrayList([]const u8).init(allocator), .encodedLanguageId = ctx.encodedLanguageId };
+                try item.scopes.append(baseScope);
+                try ctx.endOffsetsAndScopes.append(item);
             }
 
             ctx.tokenIndex = 0;
@@ -766,16 +820,17 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
 
                 // Not every character will get captured, so we need to make sure that our current capture doesn't bleed toward the start of the line and cover characters that it doesn't apply to.
                 // We do this by creating a new token in the array if the previous token ends before the current token starts.
-                var previousEndOffset: usize = 0;
-                const currentTokenLength = tokenEndIndex - tokenStartIndex;
+                var previousEndOffset: isize = 0;
+                const currentTokenLength = usizeSub(tokenEndIndex, tokenStartIndex);
                 if (captureIndex > 0) {
                     previousEndOffset = ctx.endOffsetsAndScopes.items[ctx.tokenIndex - 1].endOffset;
                 } else {
-                    previousEndOffset = tokenStartIndex - rangeStartOffset - 1;
+                    previousEndOffset = usizeSub(tokenStartIndex, rangeStartOffset) - 1;
                 }
-                const startOffset = endOffset - currentTokenLength;
-                if ((previousEndOffset >= 0) and (previousEndOffset < startOffset)) {
+                const startOffset = usizeAdd(endOffset, -currentTokenLength);
+                if ((previousEndOffset >= 0) and (previousEndOffset < @as(isize, @intCast(startOffset)))) {
                     // Add en empty token to cover the space where there were no captures
+                    ctx.endOffsetsAndScopes.items[ctx.tokenIndex].scopes.deinit();
                     ctx.endOffsetsAndScopes.items[ctx.tokenIndex] = .{
                         .endOffset = @as(u32, @intCast(startOffset)),
                         .scopes = ArrayList([]const u8).init(ctx.allocator),
@@ -792,7 +847,7 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
                     continue;
                 }
 
-                if (previousEndOffset >= endOffset) {
+                if (previousEndOffset >= @as(isize, @intCast(endOffset))) {
                     // walk back through the tokens until we find the one that contains the current token
                     var withinTokenIndex = ctx.tokenIndex - 1;
                     var previousTokenEndOffset = ctx.endOffsetsAndScopes.items[withinTokenIndex].endOffset;
@@ -831,6 +886,7 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
             if ((ctx.endOffsetsAndScopes.items[ctx.tokenIndex - 1].endOffset < rangeLength)) {
                 if (rangeLength - ctx.endOffsetsAndScopes.items[ctx.tokenIndex - 1].endOffset > 0) {
                     try ctx.increaseSizeOfTokensByOneToken();
+                    ctx.endOffsetsAndScopes.items[ctx.tokenIndex].scopes.deinit();
                     ctx.endOffsetsAndScopes.items[ctx.tokenIndex] = .{
                         .endOffset = @as(u32, @intCast(rangeLength)),
                         .scopes = ctx.endOffsetsAndScopes.items[ctx.tokenIndex].scopes,
@@ -842,6 +898,9 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
             for (0..ctx.endOffsetsAndScopes.items.len) |i| {
                 const token = ctx.endOffsetsAndScopes.items[i];
                 if (token.endOffset == 0 and i != 0) {
+                    for (i..ctx.endOffsetsAndScopes.items.len) |j| {
+                        ctx.endOffsetsAndScopes.items[j].scopes.deinit();
+                    }
                     ctx.endOffsetsAndScopes.replaceRangeAssumeCapacity(i, ctx.endOffsetsAndScopes.items.len - i, &[_]EndOffsetWithMeta{});
                     break;
                 }
@@ -916,6 +975,7 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
                 var scopes = ArrayList([]const u8).init(ctx.allocator);
                 try scopes.append(baseScope);
                 try scopes.append(capture.name);
+                ctx.endOffsetsAndScopes.items[ctx.tokenIndex].scopes.deinit();
                 ctx.endOffsetsAndScopes.items[ctx.tokenIndex] = .{
                     .endOffset = @as(u32, @intCast(endOffset)),
                     .scopes = scopes,

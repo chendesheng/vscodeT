@@ -56,6 +56,10 @@ pub fn init(allocator: Allocator) TreeSitterLibraryService {
     };
 }
 
+pub fn deinit(self: *TreeSitterLibraryService) void {
+    self._languagesCache.deinit();
+}
+
 pub fn supportsLanguage(self: *const TreeSitterLibraryService, languageId: []const u8) bool {
     return self._supportsLanguage(languageId);
 }

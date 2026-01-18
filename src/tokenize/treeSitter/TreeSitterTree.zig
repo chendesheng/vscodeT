@@ -16,7 +16,7 @@ const PieceTreeTextBuffer = @import("../../pieceTreeTextBuffer/pieceTreeTextBuff
 const TreeSitterTree = @This();
 
 _tree: ?*ts.Tree = null,
-onTreeChange: Emitter(TreeChangeEvent),
+_onTreeChange: Emitter(TreeChangeEvent),
 
 _treeLastParsedVersion: i32 = -1,
 
@@ -54,13 +54,22 @@ pub fn init(
         ._ranges = _ranges,
         .textModel = textModel,
         .languageId = languageId,
-        .onTreeChange = Emitter(TreeChangeEvent).init(textModel.getAllocator()),
+        ._onTreeChange = Emitter(TreeChangeEvent).init(textModel.getAllocator()),
     };
     try self.handleContentChange(null, _ranges);
     return self;
 }
 
+pub fn onTreeChange(self: *TreeSitterTree, ctx: anytype, callback: fn (TreeChangeEvent, ctx: @TypeOf(ctx)) anyerror!void) !void {
+    try self._onTreeChange.event(ctx, struct {
+        fn cb(e: TreeChangeEvent, ctx_: @TypeOf(ctx)) void {
+            callback(e, ctx_) catch unreachable;
+        }
+    }.cb);
+}
+
 pub fn deinit(self: *TreeSitterTree) void {
+    self._onTreeChange.deinit();
     if (self._tree) |tree| {
         tree.destroy();
     }
@@ -77,12 +86,12 @@ pub fn deinit(self: *TreeSitterTree) void {
 pub fn handleContentChange(self: *TreeSitterTree, e: ?ModelContentChangedEvent, _ranges: ?[]const ts.Range) !void {
     const allocator = self.textModel.getAllocator();
     const version = self.textModel.getVersionId();
-    var newRanges: []const ts.Range = undefined;
+    var newRanges: []const ts.Range = &[_]ts.Range{};
     if (_ranges) |rgs| {
         newRanges = try self._setRanges(rgs);
     }
-    if (e != null) {
-        try self._applyEdits(e.?.changes.items);
+    if (e) |_e| {
+        try self._applyEdits(_e.changes.items);
     }
 
     const oldTree = self._lastFullyParsed;
@@ -90,18 +99,20 @@ pub fn handleContentChange(self: *TreeSitterTree, e: ?ModelContentChangedEvent, 
     defer if (changedNodes) |cn| {
         allocator.free(cn);
     };
-    if (self._lastFullyParsedWithEdits != null and self._lastFullyParsed != null) {
-        changedNodes = try self._findChangedNodes(self._lastFullyParsedWithEdits.?, self._lastFullyParsed.?);
+    if (self._lastFullyParsedWithEdits) |lastFullyParsedWithEdits| {
+        if (self._lastFullyParsed) |lastFullyParsed| {
+            changedNodes = try self._findChangedNodes(lastFullyParsedWithEdits, lastFullyParsed);
+        }
     }
 
     const completed_tree = try self._parseAndUpdateTree(version);
-    var rgs = ArrayList(RangeChange).init(self.textModel.getAllocator());
+    var rgs = ArrayList(RangeChange).init(allocator);
     defer rgs.deinit();
     if (changedNodes == null) {
-        if (self._ranges) |seflRanges| {
-            for (seflRanges) |r| {
+        if (self._ranges) |selfRanges| {
+            for (selfRanges) |r| {
                 try rgs.append(.{
-                    .newRange = Range.init(r.start_point.row + 1, r.start_point.column + 1, r.end_point.row + 1, r.end_point.column + 1),
+                    .newRange = tsRangeToRange(r),
                     // .oldRangeLength = r.endIndex - r.startIndex,
                     .newRangeStartOffset = r.start_byte,
                     .newRangeEndOffset = r.end_byte,
@@ -109,25 +120,26 @@ pub fn handleContentChange(self: *TreeSitterTree, e: ?ModelContentChangedEvent, 
             }
         }
     } else if (oldTree != null and changedNodes != null) {
-        try rgs.resize(0);
-        try rgs.appendSlice(try self._findTreeChanges(completed_tree.?, changedNodes.?, newRanges));
+        const tmp = try self._findTreeChanges(completed_tree.?, changedNodes.?, newRanges);
+        defer allocator.free(tmp);
+        try rgs.appendSlice(tmp);
     }
     if (rgs.items.len == 0) {
         try rgs.append(.{
             .newRange = self.textModel.getFullModelRange(),
             .newRangeStartOffset = 0,
-            .newRangeEndOffset = self.textModel.getValueLength(null, false),
+            .newRangeEndOffset = self.textModel.getValueLength(null, null),
         });
     }
 
     const previousTree = self._tree;
     self._tree = completed_tree;
-    self.onTreeChange.fire(.{
+    self._treeLastParsedVersion = version;
+    self._onTreeChange.fire(.{
         .oldValue = previousTree,
         .newValue = completed_tree.?,
         .change = .{ .ranges = rgs.items, .versionId = version },
     });
-    self._treeLastParsedVersion = version;
     if (previousTree) |prevT| {
         prevT.destroy();
     }
@@ -174,17 +186,14 @@ fn _applyEdits(self: *TreeSitterTree, changes: []const ModelContentChange) !void
 }
 
 fn _findChangedNodes(self: *TreeSitterTree, newTree: *ts.Tree, oldTree: *ts.Tree) ![]const ts.Range {
+    const empty = &[_]ts.Range{};
+
+    const newTreeStartRow = newTree.rootNode().startPoint().row;
     if (self._ranges) |rgs| {
-        const empty = &[_]ts.Range{};
-
-        if (newTree.rootNode().startPoint().row != 0) {
-            return empty;
-        }
-
-        var b = false;
+        var b = true;
         for (rgs) |r| {
-            if (r.start_point.row != newTree.rootNode().startPoint().row) {
-                b = true;
+            if (r.start_point.row == newTreeStartRow) {
+                b = false;
                 break;
             }
         }
@@ -193,29 +202,45 @@ fn _findChangedNodes(self: *TreeSitterTree, newTree: *ts.Tree, oldTree: *ts.Tree
             return empty;
         }
     }
+
+    if (newTreeStartRow != 0) {
+        return empty;
+    }
+
     const allocator = self.textModel.getAllocator();
     var newCursor = newTree.walk();
+    defer newCursor.destroy();
     var oldCursor = oldTree.walk();
+    defer oldCursor.destroy();
 
-    var nodes: ArrayList(ts.Range) = ArrayList(ts.Range).init(allocator);
+    var nodes: ArrayList(ts.Range) = .init(allocator);
     defer nodes.deinit();
     var next = true;
 
-    while (true) {
+    while (next) {
         if (newCursor.node().hasChanges()) {
             // Check if only one of the children has changes.
             // If it's only one, then we go to that child.
             // If it's more then, we need to go to each child
             // If it's none, then we've found one of our ranges
-            // FIXME: how to get children?
-            const newChildren = try newCursor.node().children(undefined, allocator);
             var indexChangedChildren = ArrayList(usize).init(allocator);
             defer indexChangedChildren.deinit();
             var changedChildren = ArrayList(ts.Node).init(allocator);
-            for (newChildren, 0..) |c, index| {
-                if (c.hasChanges() or (oldCursor.node().childCount() <= @as(u32, @intCast(index)))) {
-                    try indexChangedChildren.append(index);
-                    try changedChildren.append(c);
+            defer changedChildren.deinit();
+            var tmpCursor = newCursor.dupe();
+            defer tmpCursor.destroy();
+            if (tmpCursor.gotoFirstChild()) {
+                var index: usize = 0;
+                while (true) : (index += 1) {
+                    const c = tmpCursor.node();
+                    if (c.hasChanges() or (oldCursor.node().childCount() <= @as(u32, @intCast(index)))) {
+                        try indexChangedChildren.append(index);
+                        try changedChildren.append(c);
+                    }
+
+                    if (!tmpCursor.gotoNextSibling()) {
+                        break;
+                    }
                 }
             }
             // If we have changes and we *had* an error, the whole node should be refreshed.
@@ -240,11 +265,8 @@ fn _findChangedNodes(self: *TreeSitterTree, newTree: *ts.Tree, oldTree: *ts.Tree
         } else {
             next = nextSiblingOrParentSibling(&newCursor, &oldCursor);
         }
-        if (!next) break;
     }
 
-    newCursor.destroy();
-    oldCursor.destroy();
     return try nodes.toOwnedSlice();
 }
 
@@ -336,17 +358,19 @@ fn _findTreeChanges(self: *TreeSitterTree, newTree: *ts.Tree, changedNodes: []co
             try mergedChanges.append(newChange);
         }
     }
+
     return try self._constrainRanges(mergedChanges.items);
 }
 
 fn _constrainRanges(self: *TreeSitterTree, changes: []const RangeChange) ![]const RangeChange {
+    const allocator = self.textModel.getAllocator();
     if (self._ranges == null) {
-        return changes;
+        return try allocator.dupe(RangeChange, changes);
     }
 
     const _rgs = self._ranges.?;
 
-    var constrainedChanges = ArrayList(RangeChange).init(self.textModel.getAllocator());
+    var constrainedChanges = ArrayList(RangeChange).init(allocator);
     defer constrainedChanges.deinit();
     var changesIndex: usize = 0;
     var rangesIndex: usize = 0;
