@@ -1139,7 +1139,7 @@ pub const TextModel = struct {
         try self._applyUndoRedoEdits(edits, eol, true, false, resultingAlternativeVersionId, resultingSelection);
     }
 
-    pub fn _applyRedo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]const Selection) !void {
+    pub fn _applyRedo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: i32, resultingSelection: ?[]const Selection) !void {
         var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
         defer edits.deinit();
         for (changes.items) |change| {

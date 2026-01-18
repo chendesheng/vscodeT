@@ -73,6 +73,10 @@
         //    // actually used.
         //    .lazy = false,
         //},
+        .tree_sitter_typescript = .{
+            .url = "git+https://github.com/chendesheng/tree-sitter-typescript.git#21174eddec700186bac7a0ba9fdd97b29c61ef46",
+            .hash = "tree_sitter_typescript-1.1.2-VlD8ecutGAGQUGKCMXScu4U8WaGEvs_I_Bcf2QsWDZrN",
+        },
     },
 
     // Specifies the set of files and directories that are included in this package.

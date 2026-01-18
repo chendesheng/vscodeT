@@ -40,6 +40,12 @@ pub fn build(b: *std.Build) void {
     // exe.linkLibrary(tree_sitter_zig.artifact("tree-sitter-zig"));
     exe.root_module.addImport("tree-sitter-zig", tree_sitter_zig.module("tree-sitter-zig"));
 
+    const tree_sitter_typescript = b.dependency("tree_sitter_typescript", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("tree-sitter-typescript", tree_sitter_typescript.module("tree-sitter-typescript"));
+
     linkOnig(exe);
 
     // This declares intent for the executable to be installed into the
