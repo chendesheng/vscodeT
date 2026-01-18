@@ -849,29 +849,36 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
 
                 if (previousEndOffset >= @as(isize, @intCast(endOffset))) {
                     // walk back through the tokens until we find the one that contains the current token
-                    var withinTokenIndex = ctx.tokenIndex - 1;
-                    var previousTokenEndOffset = ctx.endOffsetsAndScopes.items[withinTokenIndex].endOffset;
+                    var withinTokenIndex: isize = usizeSub(ctx.tokenIndex, 1);
+                    var previousTokenEndOffset: u32 = ctx.endOffsetsAndScopes.items[@as(usize, @intCast(withinTokenIndex))].endOffset;
 
-                    var previousTokenStartOffset = if (withinTokenIndex >= 2) ctx.endOffsetsAndScopes.items[withinTokenIndex - 1].endOffset else 0;
+                    var previousTokenStartOffset: u32 = if (withinTokenIndex >= 2) ctx.endOffsetsAndScopes.items[@as(usize, @intCast(withinTokenIndex - 1))].endOffset else 0;
                     while (true) {
                         // Check that the current token doesn't just replace the last token
-                        if ((previousTokenStartOffset + currentTokenLength) == previousTokenEndOffset) {
-                            if (previousTokenStartOffset == startOffset) {
+                        if ((@as(isize, @intCast(previousTokenStartOffset)) + currentTokenLength) == @as(isize, @intCast(previousTokenEndOffset))) {
+                            if (previousTokenStartOffset == @as(u32, @intCast(startOffset))) {
                                 // Current token and previous token span the exact same characters, add the scopes to the previous token
-                                try ctx.endOffsetsAndScopes.items[withinTokenIndex].scopes.append(capture.name);
-                                const oldBracket = ctx.endOffsetsAndScopes.items[withinTokenIndex].bracket;
-                                ctx.endOffsetsAndScopes.items[withinTokenIndex].bracket = if (oldBracket != null and (oldBracket.?.len > 0))
+                                const i = @as(usize, @intCast(withinTokenIndex));
+                                try ctx.endOffsetsAndScopes.items[i].scopes.append(capture.name);
+                                const oldBracket = ctx.endOffsetsAndScopes.items[i].bracket;
+                                ctx.endOffsetsAndScopes.items[i].bracket = if (oldBracket != null and (oldBracket.?.len > 0))
                                     oldBracket.?
                                 else
                                     try ctx.brackets(capture, startOffset);
                             }
-                        } else if (previousTokenStartOffset <= startOffset) {
+                        } else if (previousTokenStartOffset <= @as(u32, @intCast(startOffset))) {
                             try ctx.addCurrentTokenToArray(capture, startOffset, endOffset, withinTokenIndex);
                             break;
                         }
                         withinTokenIndex -= 1;
-                        previousTokenStartOffset = if (withinTokenIndex >= 1) ctx.endOffsetsAndScopes.items[withinTokenIndex - 1].endOffset else 0;
-                        previousTokenEndOffset = if (withinTokenIndex >= 0) ctx.endOffsetsAndScopes.items[withinTokenIndex].endOffset else 0;
+                        previousTokenStartOffset = if (withinTokenIndex >= 1)
+                            ctx.endOffsetsAndScopes.items[@as(usize, @intCast(withinTokenIndex - 1))].endOffset
+                        else
+                            0;
+                        previousTokenEndOffset = if (withinTokenIndex >= 0)
+                            ctx.endOffsetsAndScopes.items[@as(usize, @intCast(withinTokenIndex))].endOffset
+                        else
+                            0;
                         if (!(previousTokenEndOffset > startOffset)) {
                             break;
                         }
@@ -928,9 +935,9 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
             try ctx.endOffsetsAndScopes.append(.{ .endOffset = 0, .scopes = scopes, .encodedLanguageId = ctx.encodedLanguageId });
         }
 
-        fn addCurrentTokenToArray(ctx: *Ctx, capture: QueryCapture, startOffset: usize, endOffset: usize, _position: ?usize) !void {
+        fn addCurrentTokenToArray(ctx: *Ctx, capture: QueryCapture, startOffset: usize, endOffset: usize, _position: ?isize) !void {
             if (_position) |pos| {
-                var position = pos;
+                var position = @as(usize, @intCast(pos));
                 const oldScopes = ctx.endOffsetsAndScopes.items[position].scopes;
                 var oldBracket = ctx.endOffsetsAndScopes.items[position].bracket;
                 // Check that the previous token ends at the same point that the current token starts
@@ -953,7 +960,7 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
                         }
                     }
                     // We need to add some of the position token to cover the space
-                    try ctx.endOffsetsAndScopes.insertSlice(position, &[_]EndOffsetWithMeta{.{
+                    try ctx.endOffsetsAndScopes.insertSlice(@as(usize, @intCast(position)), &[_]EndOffsetWithMeta{.{
                         .endOffset = @as(u32, @intCast(startOffset)),
                         .scopes = oldScopes,
                         .bracket = if (preInsertBracket.items.len > 0) try preInsertBracket.toOwnedSlice() else null,

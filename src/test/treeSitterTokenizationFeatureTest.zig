@@ -13,6 +13,7 @@ const String = @import("../basics/strings.zig").String;
 const TreeParseUpdateEvent = @import("../tokenize/treeSitter/TreeSitterTree.zig").TreeParseUpdateEvent;
 const RangeChange = @import("../tokenize/treeSitter/TreeSitterTree.zig").RangeChange;
 const IdentifiedSingleEditOperation = @import("../textModel/model.zig").IdentifiedSingleEditOperation;
+const TokenUpdate = @import("../tokenize/treeSitter/tokenStore.zig").TokenUpdate;
 
 const TreeSitterTokenizationFeatureTests = struct {
     const allocator = std.testing.allocator;
@@ -32,6 +33,18 @@ const TreeSitterTokenizationFeatureTests = struct {
         const tokenizationImpl = &treeSitterSyntaxTokenBackend._tokenizationImpl.?;
 
         return .{ model, treeSitterTree, tokenizationImpl };
+    }
+
+    fn verifyTokens(tokens: ?[]const TokenUpdate) !void {
+        try std.testing.expect(tokens != null);
+        for (tokens.?, 1..) |token, i| {
+            const previousToken = tokens.?[i - 1];
+            try std.testing.expectEqual(previousToken.startOffsetInclusive + previousToken.length, token.startOffsetInclusive);
+        }
+    }
+
+    fn tokensContentSize(tokens: []const TokenUpdate) usize {
+        return tokens[tokens.len - 1].startOffsetInclusive + tokens[tokens.len - 1].length;
     }
 
     test "Three changes come back to back " {
@@ -79,6 +92,18 @@ const TreeSitterTokenizationFeatureTests = struct {
         try std.testing.expectEqual(32, change.ranges[0].newRangeEndOffset);
         try std.testing.expectEqual(1, change.ranges[0].newRange.startLineNumber);
         try std.testing.expectEqual(7, change.ranges[0].newRange.endLineNumber);
+    }
+
+    test "File single line file" {
+        const content = "console.log('x');";
+        const res = try getModelAndPrepTree(content);
+        const model = res.@"0";
+        defer disposeTextModel(model);
+        const tokenizationImpl = res.@"2";
+        const tokens = try tokenizationImpl.getTokensInRange(.init(1, 1, 1, 18), 0, 17, null);
+        try verifyTokens(tokens);
+        try std.testing.expectEqual(9, tokens.?.len);
+        try std.testing.expectEqual(content.len, tokensContentSize(tokens.?));
     }
 };
 
