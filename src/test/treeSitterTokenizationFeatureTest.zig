@@ -5,13 +5,14 @@ const createTextModel = @import("../textModel/testTextModel.zig").createTextMode
 const disposeTextModel = @import("../textModel/testTextModel.zig").disposeTextModel;
 const TreeSitterTree = @import("../tokenize/treeSitter/TreeSitterTree.zig");
 const TreeSitterTokenizationImpl = @import("../tokenize/treeSitter/TreeSitterTokenizationImpl.zig");
-const TreeSitterSyntaxTokenBackend = @import("../tokenize/treeSitter/treeSitterSyntaxTokenBackend.zig").TreeSitterSyntaxTokenBackend;
+const TreeSitterSyntaxTokenBackend = @import("../tokenize/treeSitter/treeSitterSyntaxTokenBackend.zig");
 const TreeChangeEvent = @import("../tokenize/treeSitter/TreeSitterTree.zig").TreeChangeEvent;
 const Range = @import("../basics/range.zig").Range;
 const ModelContentChange = @import("../textModel/textModelEvents.zig").ModelContentChange;
 const String = @import("../basics/strings.zig").String;
 const TreeParseUpdateEvent = @import("../tokenize/treeSitter/TreeSitterTree.zig").TreeParseUpdateEvent;
 const RangeChange = @import("../tokenize/treeSitter/TreeSitterTree.zig").RangeChange;
+const IdentifiedSingleEditOperation = @import("../textModel/model.zig").IdentifiedSingleEditOperation;
 
 const TreeSitterTokenizationFeatureTests = struct {
     const allocator = std.testing.allocator;
@@ -24,13 +25,13 @@ const TreeSitterTokenizationFeatureTests = struct {
         disposeTextModel(textModel);
     }
 
-    fn getModelAndPrepTree(content: []const u8) !struct { TextModel, TreeSitterTree, TreeSitterTokenizationImpl } {
+    fn getModelAndPrepTree(content: []const u8) !struct { *TextModel, *TreeSitterTree, *TreeSitterTokenizationImpl } {
         const model = try createTextModel(allocator, content, "typescript", null);
         const treeSitterSyntaxTokenBackend = @as(*TreeSitterSyntaxTokenBackend, @fieldParentPtr("super", model.tokenization().tokens));
-        const treeSitterTree = treeSitterSyntaxTokenBackend._tree.?;
-        const tokenizationImpl = treeSitterSyntaxTokenBackend._tokenizationImpl.?;
+        var treeSitterTree = treeSitterSyntaxTokenBackend._tree.?;
+        var tokenizationImpl = treeSitterSyntaxTokenBackend._tokenizationImpl.?;
 
-        return struct { model, treeSitterTree, tokenizationImpl };
+        return .{ model, &treeSitterTree, &tokenizationImpl };
     }
 
     test "Three changes come back to back " {
@@ -61,9 +62,9 @@ const TreeSitterTokenizationFeatureTests = struct {
             }
         }.cb);
 
-        _ = try model.applyEdits(.{.{ .range = .init(7, 1, 8, 1), .text = .empty }}, null);
-        _ = try model.applyEdits(.{.{ .range = .init(6, 1, 7, 1), .text = .empty }}, null);
-        _ = try model.applyEdits(.{.{ .range = .init(5, 1, 6, 1), .text = .empty }}, null);
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{.{ .range = .init(7, 1, 8, 1), .text = .empty }}, null);
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{.{ .range = .init(6, 1, 7, 1), .text = .empty }}, null);
+        _ = try model.applyEdits(&[_]IdentifiedSingleEditOperation{.{ .range = .init(5, 1, 6, 1), .text = .empty }}, null);
 
         try std.testing.expectEqual(4, change.versionId);
         try std.testing.expectEqual(0, change.ranges[0].newRangeStartOffset);
@@ -74,5 +75,5 @@ const TreeSitterTokenizationFeatureTests = struct {
 };
 
 test "treeSitterTokenizationFeatureTests" {
-    TreeSitterTokenizationFeatureTests{};
+    _ = TreeSitterTokenizationFeatureTests{};
 }

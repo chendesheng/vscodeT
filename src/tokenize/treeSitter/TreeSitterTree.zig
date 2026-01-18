@@ -414,7 +414,7 @@ fn _parse(self: *TreeSitterTree) ?*ts.Tree {
                 return @ptrCast(chunk.ptr);
             }
         }.read,
-    }, self._tree.?);
+    }, self._tree);
 }
 
 fn _setRanges(self: *TreeSitterTree, newRanges: []const ts.Range) ![]const ts.Range {
