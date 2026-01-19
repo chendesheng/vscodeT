@@ -60,6 +60,10 @@ pub fn init(allocator: Allocator) TreeSitterLibraryService {
 
 pub fn deinit(self: *TreeSitterLibraryService) void {
     self._languagesCache.deinit();
+    var iter = self._injectionQueriesCache.valueIterator();
+    while (iter.next()) |value| {
+        value.*.destroy();
+    }
     self._injectionQueriesCache.deinit();
 }
 
