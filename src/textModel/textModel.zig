@@ -379,7 +379,8 @@ pub const TextModel = struct {
         model._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator);
         model._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator);
         model._eventEmitter = DidChangeContentEmitter.init(allocator);
-        model._tokenizationTextModelPart = try TokenizationTextModelPart.init(
+        try TokenizationTextModelPart.init(
+            &model._tokenizationTextModelPart,
             model,
             languageIdOrSelection,
             &model._attachedViews,

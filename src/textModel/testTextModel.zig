@@ -53,13 +53,9 @@ pub fn createTextModel(allocator: Allocator, text: []const u8, _languageId: ?[]c
     languageService.* = try LanguageService.init(allocator);
     // const configurationService = try allocator.create(TestConfigurationService);
     // configurationService.* = TestConfigurationService.init(allocator, null);
-    const languageConfigurationService = try allocator.create(LanguageConfigurationService);
-    languageConfigurationService.* = try LanguageConfigurationService.init(allocator, undefined, languageService);
-
-    const treeSitterLibraryService = try allocator.create(TreeSitterLibraryService);
-    treeSitterLibraryService.* = TreeSitterLibraryService.init(allocator);
-    const treeSitterThemeService = try allocator.create(TreeSitterThemeService);
-    treeSitterThemeService.* = TreeSitterThemeService.init(allocator);
+    const languageConfigurationService = try LanguageConfigurationService.create(allocator, undefined, languageService);
+    const treeSitterLibraryService = try TreeSitterLibraryService.create(allocator);
+    const treeSitterThemeService = try TreeSitterThemeService.create(allocator);
     return try TextModel.init(
         allocator,
         &source,

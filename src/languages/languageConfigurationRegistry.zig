@@ -59,10 +59,10 @@ pub const LanguageConfigurationService = struct {
     onDidChangeEmitter: Emitter(LanguageConfigurationServiceChangeEvent),
 
     configurations: StringHashMap(ResolvedLanguageConfiguration), // = new Map<string, ResolvedLanguageConfiguration>();
-    configurationService: IConfigurationService,
+    configurationService: *IConfigurationService,
     languageService: *LanguageService,
 
-    pub fn init(allocator: Allocator, configurationService: IConfigurationService, languageService: *LanguageService) !LanguageConfigurationService {
+    pub fn init(allocator: Allocator, configurationService: *IConfigurationService, languageService: *LanguageService) !LanguageConfigurationService {
         // const languageConfigKeys = Set.init(Object.values(customizedLanguageConfigKeys));
 
         // self._register(self.configurationService.onDidChangeConfiguration((e) => {
@@ -102,6 +102,16 @@ pub const LanguageConfigurationService = struct {
         };
     }
 
+    pub fn create(
+        allocator: Allocator,
+        configurationService: *IConfigurationService,
+        languageService: *LanguageService,
+    ) !*LanguageConfigurationService {
+        const self = try allocator.create(LanguageConfigurationService);
+        self.* = LanguageConfigurationService.init(allocator, configurationService, languageService);
+        return self;
+    }
+
     pub fn deinit(self: *LanguageConfigurationService) void {
         self._registry.deinit();
         self.onDidChangeEmitter.deinit();
@@ -125,7 +135,7 @@ pub const LanguageConfigurationService = struct {
 fn computeConfig(
     languageId: []const u8,
     registry: LanguageConfigurationRegistry,
-    configurationService: IConfigurationService,
+    configurationService: *IConfigurationService,
     languageService: *LanguageService,
 ) !ResolvedLanguageConfiguration {
     var languageConfig = try registry.getLanguageConfiguration(languageId);
@@ -149,7 +159,7 @@ const customizedLanguageConfigKeys = struct {
     const colorizedBracketPairs = "editor.language.colorizedBracketPairs";
 };
 
-fn getCustomizedLanguageConfig(languageId: []const u8, configurationService: IConfigurationService) LanguageConfiguration {
+fn getCustomizedLanguageConfig(languageId: []const u8, configurationService: *IConfigurationService) LanguageConfiguration {
     _ = languageId;
     _ = configurationService;
     // const brackets = configurationService.getValue(customizedLanguageConfigKeys.brackets, {

@@ -26,6 +26,10 @@ const View = @import("View.zig");
 const ts = @import("tree-sitter");
 const ts_languages = @import("../treeSitter/languages.zig");
 const PLAINTEXT_LANGUAGE_ID = @import("../services/languageRegistry.zig").PLAINTEXT_LANGUAGE_ID;
+const LanguageService = @import("../languages/languageService.zig").LanguageService;
+const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
+const TreeSitterLibraryService = @import("../services/TreeSitterLibraryService.zig");
+const TreeSitterThemeService = @import("../services/TreeSitterThemeService.zig");
 
 fn getFirstArg() !ArrayList(u8) {
     const allocator = std.heap.page_allocator;
@@ -39,25 +43,43 @@ fn getFirstArg() !ArrayList(u8) {
     return firstArg;
 }
 
-fn loadFile(allocator: Allocator, path: []const u8, undoRedoService: *UndoRedoService) !*TextModel {
+fn loadFile(
+    allocator: Allocator,
+    path: []const u8,
+    undoRedoService: *UndoRedoService,
+    languageConfigurationService: *LanguageConfigurationService,
+    treeSitterLibraryService: *TreeSitterLibraryService,
+    treeSitterThemeService: *TreeSitterThemeService,
+) !*TextModel {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
     var buf: [1024]u8 = undefined;
     var reader = file.readerStreaming(&buf);
-    return try TextModel.init(allocator, &reader.interface, PLAINTEXT_LANGUAGE_ID, TextModelCreationOptions{
-        .tabSize = 4,
-        .indentSize = .{ .number = 4 },
-        .insertSpaces = true,
-        .detectIndentation = false,
-        .trimAutoWhitespace = true,
-        .defaultEOL = .LF,
-        .isForSimpleWidget = false,
-        .largeFileOptimizations = false,
-        .bracketPairColorizationOptions = .{
-            .enabled = false,
-            .independentColorPoolPerBracketType = false,
+    return try TextModel.init(
+        allocator,
+        &reader.interface,
+        PLAINTEXT_LANGUAGE_ID,
+        TextModelCreationOptions{
+            .tabSize = 4,
+            .indentSize = .{ .number = 4 },
+            .insertSpaces = true,
+            .detectIndentation = false,
+            .trimAutoWhitespace = true,
+            .defaultEOL = .LF,
+            .isForSimpleWidget = false,
+            .largeFileOptimizations = false,
+            .bracketPairColorizationOptions = .{
+                .enabled = false,
+                .independentColorPoolPerBracketType = false,
+            },
         },
-    }, null, undoRedoService, undefined, undefined, undefined, undefined);
+        null,
+        undoRedoService,
+        undefined,
+        languageConfigurationService,
+        treeSitterLibraryService,
+        treeSitterThemeService,
+    );
 }
 
 pub fn testTreeSitterZig() !void {
@@ -125,7 +147,22 @@ pub fn main() !void {
 
     var undoRedoService = UndoRedoService.init(allocator);
     defer undoRedoService.deinit();
-    var textModel = try loadFile(allocator, pathArg.items, &undoRedoService);
+    var languageService = try LanguageService.init(allocator);
+    defer languageService.deinit();
+    var languageConfigurationService = try LanguageConfigurationService.init(allocator, undefined, &languageService);
+    defer languageConfigurationService.deinit();
+    var treeSitterLibraryService = TreeSitterLibraryService.init(allocator);
+    defer treeSitterLibraryService.deinit();
+    var treeSitterThemeService = TreeSitterThemeService.init(allocator);
+    defer treeSitterThemeService.deinit();
+    var textModel = try loadFile(
+        allocator,
+        pathArg.items,
+        &undoRedoService,
+        &languageConfigurationService,
+        &treeSitterLibraryService,
+        &treeSitterThemeService,
+    );
     defer textModel.deinit();
 
     var screen = try Screen.init(stdin, stdout, allocator);

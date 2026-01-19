@@ -58,6 +58,12 @@ pub fn init(allocator: Allocator) TreeSitterLibraryService {
     };
 }
 
+pub fn create(allocator: Allocator) !*TreeSitterLibraryService {
+    const self = try allocator.create(TreeSitterLibraryService);
+    self.* = TreeSitterLibraryService.init(allocator);
+    return self;
+}
+
 pub fn deinit(self: *TreeSitterLibraryService) void {
     self._languagesCache.deinit();
     var iter = self._injectionQueriesCache.valueIterator();

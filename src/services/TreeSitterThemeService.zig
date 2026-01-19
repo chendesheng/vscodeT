@@ -14,6 +14,12 @@ pub fn init(allocator: Allocator) Self {
     };
 }
 
+pub fn create(allocator: Allocator) !*Self {
+    const self = try allocator.create(Self);
+    self.* = Self.init(allocator);
+    return self;
+}
+
 pub fn deinit(self: *Self) void {
     self._onChange.deinit();
 }

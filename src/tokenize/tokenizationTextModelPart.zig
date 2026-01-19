@@ -72,6 +72,7 @@ pub const TokenizationTextModelPart = struct {
     }
 
     pub fn init(
+        self: *TokenizationTextModelPart,
         _textModel: *TextModel,
         languageId: []const u8,
         attachedViews: *AttachedViews,
@@ -79,12 +80,12 @@ pub const TokenizationTextModelPart = struct {
         languageConfigurationService: *LanguageConfigurationService,
         _treeSitterLibraryService: *TreeSitterLibraryService,
         _treeSitterThemeService: *TreeSitterThemeService,
-    ) !TokenizationTextModelPart {
+    ) !void {
         const languageIdCodec = &languageService.languageIdCodec;
         const allocator = _textModel.getAllocator();
         const useTreeSitter = _treeSitterLibraryService.supportsLanguage(languageId);
 
-        var self = TokenizationTextModelPart{
+        self.* = TokenizationTextModelPart{
             ._useTreeSitter = useTreeSitter,
             ._textModel = _textModel,
             ._languageId = languageId,
@@ -110,7 +111,7 @@ pub const TokenizationTextModelPart = struct {
                     _treeSitterLibraryService,
                     _treeSitterThemeService,
                 );
-                try tokens.onDidChangeTokens(&self, struct {
+                try tokens.onDidChangeTokens(self, struct {
                     fn cb(e: ModelTokensChangedEvent, this: *TokenizationTextModelPart) void {
                         this._emitModelTokensChangedEvent(e);
                     }
@@ -130,7 +131,6 @@ pub const TokenizationTextModelPart = struct {
         // We need to reset the tokenization, as the new token provider otherwise won't have a chance to provide tokens until some action happens in the editor.
         // TODO@hediet: Look into why this is needed.
         // try self.tokens.todo_resetTokenization(null);
-        return self;
     }
 
     pub fn deinit(self: *TokenizationTextModelPart) void {
