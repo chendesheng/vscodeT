@@ -43,7 +43,6 @@ const MoveAction = enum {
 
 const Self = @This();
 
-log: *std.Io.Writer,
 size: Size = .{ .width = 0, .height = 0 },
 scrollPosition: Position = .init(1, 1),
 cursorPosition: Position = .init(1, 1),
@@ -52,9 +51,8 @@ textModel: *TextModel,
 mode: Mode = .Normal,
 undoRedoGroup: UndoRedoGroup,
 
-pub fn init(textModel: *TextModel, log: *std.Io.Writer) Self {
+pub fn init(textModel: *TextModel) Self {
     return Self{
-        .log = log,
         .textModel = textModel,
         .undoRedoGroup = UndoRedoGroup.init(),
     };
@@ -110,9 +108,7 @@ fn drawVisibleLines(self: *const Self, screen: *Screen) !void {
             try screen.resetSGRAttributes();
         }
 
-        if (i < to) {
-            try screen.moveCursorNextLine();
-        }
+        try screen.moveCursorNextLine();
     }
 
     try screen.eraseToEnd();
@@ -172,9 +168,11 @@ fn moveCursor(self: *Self, action: MoveAction) !void {
         },
         .Left => {
             self.cursorPosition.column = @max(1, column - 1);
+            self.cursorColumn = self.cursorPosition.column;
         },
         .Right => {
             self.cursorPosition.column = utils.clamp(column + 1, 1, self.textModel.getLineLength(self.cursorPosition.lineNumber));
+            self.cursorColumn = self.cursorPosition.column;
         },
         .LineStart => {
             self.cursorPosition.column = 1;
@@ -191,6 +189,7 @@ fn moveCursor(self: *Self, action: MoveAction) !void {
         .BufferStart => {
             self.cursorPosition.lineNumber = 1;
             self.cursorPosition.column = @max(1, try self.textModel.getLineFirstNonWhitespaceColumn(1));
+            self.cursorColumn = self.cursorPosition.column;
         },
         .BufferEnd => {
             self.cursorPosition.lineNumber = self.textModel.getLineCount();
@@ -248,6 +247,7 @@ fn updateCursorPosition(self: *Self, offset: usize) !void {
     }
     self.cursorPosition.lineNumber = pos.lineNumber;
     self.cursorPosition.column = pos.column;
+    self.cursorColumn = self.cursorPosition.column;
 }
 
 fn insertAt(self: *Self, text: []const u8, position: Position) !void {
@@ -315,6 +315,20 @@ fn endInsert(self: *Self) !void {
     self.moveCursor(.Left) catch unreachable;
 }
 
+fn clampCursorPosition(self: *Self) void {
+    self.cursorPosition.lineNumber = utils.clamp(self.cursorPosition.lineNumber, 1, self.textModel.getLineCount());
+}
+
+fn undo(self: *Self) !void {
+    try self.textModel.undo();
+    self.clampCursorPosition();
+}
+
+fn redo(self: *Self) !void {
+    try self.textModel.redo();
+    self.clampCursorPosition();
+}
+
 pub fn handleKeyPress(self: *Self, key: *const tui.KeyPress) !void {
     if (self.mode == .Normal) {
         if (key.noModifiers()) {
@@ -340,7 +354,7 @@ pub fn handleKeyPress(self: *Self, key: *const tui.KeyPress) !void {
                         'H' => try self.moveCursor(.PageTop),
                         'M' => try self.moveCursor(.PageMiddle),
                         'L' => try self.moveCursor(.PageBottom),
-                        'u' => try self.textModel.undo(),
+                        'u' => try self.undo(),
                         'q' => return error.Quit,
                         else => return,
                     }
@@ -353,21 +367,25 @@ pub fn handleKeyPress(self: *Self, key: *const tui.KeyPress) !void {
                     switch (c) {
                         'u' => try self.moveCursor(.HalfPageUp),
                         'd' => try self.moveCursor(.HalfPageDown),
-                        'r' => try self.textModel.redo(),
-                        else => return,
+                        'r' => try self.redo(),
+                        else => {
+                            return;
+                        },
                     }
                 },
                 else => return,
             }
         }
     } else if (self.mode == .Insert) {
-        switch (key.keycode) {
-            .backspace => try self.deleteLeftOfCursor(),
-            .enter => try self.insertAtCursor("\n"),
-            .tab => try self.insertAtCursor("\t"),
-            .escape => try self.endInsert(),
-            .character => |c| try self.insertAtCursor(&[1]u8{c}),
-            else => return,
+        if (key.noModifiers()) {
+            switch (key.keycode) {
+                .backspace => try self.deleteLeftOfCursor(),
+                .enter => try self.insertAtCursor("\n"),
+                .tab => try self.insertAtCursor("\t"),
+                .escape => try self.endInsert(),
+                .character => |c| try self.insertAtCursor(&[1]u8{c}),
+                else => return,
+            }
         }
     }
 }

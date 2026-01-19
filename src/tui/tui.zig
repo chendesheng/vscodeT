@@ -245,7 +245,14 @@ pub const Screen = struct {
                     if (token.string.len == 1) {
                         const c = token.string[0];
                         if (0 < c and c < 27) {
-                            try events.append(.{ .key = .init(.{ .character = 'a' + c - 1 }, .{ .ctrl = true }) });
+                            const char = 'a' + c - 1;
+                            if (char == 'i') {
+                                try events.append(.{ .key = .init(.tab, .{}) });
+                            } else if (char == 'm') {
+                                try events.append(.{ .key = .init(.enter, .{}) });
+                            } else {
+                                try events.append(.{ .key = .init(.{ .character = char }, .{ .ctrl = true }) });
+                            }
                         } else if (c == 32) {
                             try events.append(.{ .key = .init(.{ .character = ' ' }, .{}) });
                         } else if (c == 0x7f) {

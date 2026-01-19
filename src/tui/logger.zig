@@ -7,14 +7,16 @@ var loggerFile: ?fs.File = null;
 pub fn format(comptime fmt: []const u8, args: anytype) void {
     if (loggerFile) |file| {
         var buf: [1024]u8 = undefined;
-        var w = file.writer(&buf);
-        w.interface.print("[{d}] ", .{std.time.milliTimestamp()}) catch {};
-        w.interface.print(fmt, args) catch {};
-        w.interface.flush() catch {};
+        var writer = file.writer(&buf);
+        writer.seekTo(file.getEndPos() catch 0) catch {};
+        var w = &writer.interface;
+        w.print("[{d}] ", .{@divFloor(std.time.milliTimestamp(), 1000)}) catch {};
+        w.print(fmt, args) catch {};
+        w.flush() catch {};
     }
 }
 
-pub fn openLoggerFile(filepath: []const u8) !fs.File {
+fn openLoggerFile(filepath: []const u8) !fs.File {
     const file = std.fs.cwd().openFile(filepath, .{
         .mode = .write_only,
     }) catch blk: {

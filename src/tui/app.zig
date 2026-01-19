@@ -117,11 +117,8 @@ pub fn testTreeSitterZig() !void {
 pub fn main() !void {
     try testTreeSitterZig();
 
-    var loggerFile = try logger.openLoggerFile("debug.log");
-    var buf: [1024]u8 = undefined;
-    var loggerWriter = loggerFile.writer(&buf);
-    var logWriter = &loggerWriter.interface;
-    defer loggerFile.close();
+    try logger.init("debug.log");
+    defer logger.deinit();
 
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();
@@ -167,7 +164,7 @@ pub fn main() !void {
 
     var screen = try Screen.init(stdin, stdout, allocator);
     defer screen.deinit();
-    var view = View.init(textModel, logWriter);
+    var view = View.init(textModel);
     try view.resize(try screen.getSize());
     try view.draw(&screen);
 
@@ -176,9 +173,6 @@ pub fn main() !void {
         defer events.deinit();
 
         for (events.items) |event| {
-            logWriter.print("{any}\n", .{event}) catch {};
-            logWriter.flush() catch {};
-
             switch (event) {
                 .key => |*key| {
                     try view.handleKeyPress(key);
