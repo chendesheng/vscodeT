@@ -896,7 +896,7 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
                     ctx.endOffsetsAndScopes.items[ctx.tokenIndex].scopes.deinit();
                     ctx.endOffsetsAndScopes.items[ctx.tokenIndex] = .{
                         .endOffset = @as(u32, @intCast(rangeLength)),
-                        .scopes = ctx.endOffsetsAndScopes.items[ctx.tokenIndex].scopes,
+                        .scopes = try ctx.endOffsetsAndScopes.items[ctx.tokenIndex].scopes.clone(),
                         .encodedLanguageId = ctx.encodedLanguageId,
                     };
                     ctx.tokenIndex += 1;
@@ -962,7 +962,7 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
                     // We need to add some of the position token to cover the space
                     try ctx.endOffsetsAndScopes.insertSlice(@as(usize, @intCast(position)), &[_]EndOffsetWithMeta{.{
                         .endOffset = @as(u32, @intCast(startOffset)),
-                        .scopes = oldScopes,
+                        .scopes = try oldScopes.clone(),
                         .bracket = if (preInsertBracket.items.len > 0) try preInsertBracket.toOwnedSlice() else null,
                         .encodedLanguageId = capture.encodedLanguageId,
                     }});
@@ -973,7 +973,7 @@ fn _createTokensFromCaptures(_self: *Self, _captures: []const QueryCapture, _ran
 
                 try ctx.endOffsetsAndScopes.insertSlice(position, &[_]EndOffsetWithMeta{.{
                     .endOffset = @as(u32, @intCast(endOffset)),
-                    .scopes = oldScopes,
+                    .scopes = try oldScopes.clone(),
                     .bracket = try ctx.brackets(capture, startOffset),
                     .encodedLanguageId = capture.encodedLanguageId,
                 }});

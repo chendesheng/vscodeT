@@ -14,6 +14,7 @@ const TreeSitterLibraryService = @This();
 const isTest: bool = false;
 
 _languagesCache: StringHashMap(*const ts.Language),
+_injectionQueriesCache: StringHashMap(*ts.Query),
 
 fn _supportsLanguage(self: *const TreeSitterLibraryService, languageId: []const u8) bool {
     _ = self;
@@ -26,38 +27,40 @@ fn _supportsLanguage(self: *const TreeSitterLibraryService, languageId: []const 
     return false;
 }
 
-fn _injectionQueries(self: *TreeSitterLibraryService, languageId: []const u8, kind: []const u8) ?*ts.Query {
+fn _injectionQueries(self: *TreeSitterLibraryService, languageId: []const u8, kind: []const u8) !*ts.Query {
     const allocator = self._languagesCache.allocator;
     var buf: [1024]u8 = undefined;
-    const path = std.fmt.bufPrint(&buf, "languages/{s}/{s}.scm", .{ kind, languageId }) catch {
-        return null;
-    };
-    const file = fs.cwd().openFile(path, .{ .mode = .read_only }) catch {
-        return null;
-    };
+    const path = try std.fmt.bufPrint(&buf, "languages/{s}/{s}.scm", .{ kind, languageId });
+
+    const res = try self._injectionQueriesCache.getOrPut(path);
+    if (res.found_existing) {
+        return res.value_ptr.*;
+    }
+
+    const file = try fs.cwd().openFile(path, .{ .mode = .read_only });
     defer fs.File.close(file);
-    const source = fs.File.readToEndAlloc(file, allocator, 1024 * 1024) catch {
-        return null;
-    };
+    const source = try fs.File.readToEndAlloc(file, allocator, 1024 * 1024);
     defer allocator.free(source);
 
-    if (self._getLanguage(languageId) catch null) |language| {
-        return createQuery(language, source) catch {
-            return null;
-        };
+    if (try self._getLanguage(languageId)) |language| {
+        const query = try createQuery(language, source);
+        res.value_ptr.* = query;
+        return query;
     } else {
-        return null;
+        return error.LanguageNotFound;
     }
 }
 
 pub fn init(allocator: Allocator) TreeSitterLibraryService {
     return .{
         ._languagesCache = StringHashMap(*const ts.Language).init(allocator),
+        ._injectionQueriesCache = StringHashMap(*ts.Query).init(allocator),
     };
 }
 
 pub fn deinit(self: *TreeSitterLibraryService) void {
     self._languagesCache.deinit();
+    self._injectionQueriesCache.deinit();
 }
 
 pub fn supportsLanguage(self: *const TreeSitterLibraryService, languageId: []const u8) bool {
@@ -87,17 +90,21 @@ pub fn getLanguage(self: *TreeSitterLibraryService, languageId: []const u8, igno
 
 pub fn getInjectionQueries(self: *TreeSitterLibraryService, languageId: []const u8) ?*ts.Query {
     if (!self.supportsLanguage(languageId)) {
-        return undefined;
+        return null;
     }
-    const query = self._injectionQueries(languageId, "injections");
+    const query = self._injectionQueries(languageId, "injections") catch {
+        return null;
+    };
     return query;
 }
 
 pub fn getHighlightingQueries(self: *TreeSitterLibraryService, languageId: []const u8) ?*ts.Query {
     if (!self.supportsLanguage(languageId)) {
-        return undefined;
+        return null;
     }
-    const query = self._injectionQueries(languageId, "highlights");
+    const query = self._injectionQueries(languageId, "highlights") catch {
+        return null;
+    };
     return query;
 }
 
