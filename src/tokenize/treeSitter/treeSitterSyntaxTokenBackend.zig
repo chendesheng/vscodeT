@@ -127,7 +127,7 @@ pub fn destroy(s: *AbstractSyntaxTokenBackend, allocator: Allocator) void {
 }
 
 fn getSelf(s: *AbstractSyntaxTokenBackend) *TreeSitterSyntaxTokenBackend {
-    return @fieldParentPtr("super", s);
+    return s.as(TreeSitterSyntaxTokenBackend);
 }
 
 fn getLineTokens(s: *AbstractSyntaxTokenBackend, lineNumber: usize) !LineTokens {

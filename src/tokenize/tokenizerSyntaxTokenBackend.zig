@@ -61,7 +61,7 @@ const BackgroundTokenizationStore = struct {
     }
 
     fn getSelf(b: *IBackgroundTokenizationStore) *BackgroundTokenizationStore {
-        return @alignCast(@fieldParentPtr("interface", b));
+        return b.as(BackgroundTokenizationStore);
     }
 
     fn _setTokens(b: *IBackgroundTokenizationStore, tokens: []ContiguousMultilineTokens) !void {
@@ -320,7 +320,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     }
 
     fn getSelf(s: *AbstractSyntaxTokenBackend) *TokenizerSyntaxTokenBackend {
-        return @alignCast(@fieldParentPtr("super", s));
+        return s.as(TokenizerSyntaxTokenBackend);
     }
 
     pub fn handleDidChangeAttached(s: *AbstractSyntaxTokenBackend) void {

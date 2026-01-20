@@ -566,7 +566,7 @@ pub const DefaultBackgroundTokenizer = struct {
     }
 
     fn getSelf(self: *IBackgroundTokenizer) *Self {
-        return @alignCast(@fieldParentPtr("interface", self));
+        return self.as(Self);
     }
 
     fn requestTokens(b: *IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) !void {

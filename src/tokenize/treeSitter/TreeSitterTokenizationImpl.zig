@@ -174,6 +174,7 @@ pub fn getLineTokens(self: *const Self, lineNumber: usize) !LineTokens {
     var content = try self.textModel().getLineContent(lineNumber);
     defer content.deinit();
     const rawTokens = try self.getTokens(lineNumber);
+    // FIXME: text leaked
     return LineTokens.init(rawTokens, try content.toOwnedSlice(), self._languageIdCodec);
 }
 

@@ -113,7 +113,7 @@ const NullBackgroundTokenizer = struct {
         allocator.destroy(self);
     }
     fn getSelf(b: *IBackgroundTokenizer) *NullBackgroundTokenizer {
-        return @alignCast(@fieldParentPtr("interface", b));
+        return b.as(NullBackgroundTokenizer);
     }
 };
 
@@ -194,7 +194,7 @@ const ManualTokenizationSupport = struct {
     }
 
     fn getSelf(s: *ITokenizationSupport) *ManualTokenizationSupport {
-        return @alignCast(@fieldParentPtr("interface", s));
+        return s.as(ManualTokenizationSupport);
     }
 };
 

@@ -116,6 +116,10 @@ pub const ITokenizationSupport = struct {
     pub fn destroy(self: *ITokenizationSupport, allocator: Allocator) void {
         self.vtable.destroy(self, allocator);
     }
+
+    pub fn as(self: *ITokenizationSupport, comptime T: type) *T {
+        return @alignCast(@fieldParentPtr("interface", self));
+    }
 };
 
 // @internal
@@ -142,6 +146,10 @@ pub const IBackgroundTokenizer = struct {
     pub fn destroy(self: *IBackgroundTokenizer, allocator: Allocator) void {
         self.vtable.destroy(self, allocator);
     }
+
+    pub fn as(self: *IBackgroundTokenizer, comptime T: type) *T {
+        return @alignCast(@fieldParentPtr("interface", self));
+    }
 };
 
 // @internal
@@ -167,6 +175,10 @@ pub const IBackgroundTokenizationStore = struct {
     }
     pub fn destroy(self: *IBackgroundTokenizationStore, allocator: Allocator) void {
         self.vtable.destroy(self, allocator);
+    }
+
+    pub fn as(self: *IBackgroundTokenizationStore, comptime T: type) *T {
+        return @alignCast(@fieldParentPtr("interface", self));
     }
 };
 
