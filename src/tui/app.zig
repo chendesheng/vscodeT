@@ -30,6 +30,7 @@ const LanguageService = @import("../languages/languageService.zig").LanguageServ
 const LanguageConfigurationService = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationService;
 const TreeSitterLibraryService = @import("../services/TreeSitterLibraryService.zig");
 const TreeSitterThemeService = @import("../services/TreeSitterThemeService.zig");
+const GlobalServices = @import("../services/GlobalServices.zig");
 
 fn getFirstArg() !ArrayList(u8) {
     const allocator = std.heap.page_allocator;
@@ -46,10 +47,7 @@ fn getFirstArg() !ArrayList(u8) {
 fn loadFile(
     allocator: Allocator,
     path: []const u8,
-    undoRedoService: *UndoRedoService,
-    languageConfigurationService: *LanguageConfigurationService,
-    treeSitterLibraryService: *TreeSitterLibraryService,
-    treeSitterThemeService: *TreeSitterThemeService,
+    globalServices: *GlobalServices,
 ) !*TextModel {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
@@ -74,11 +72,11 @@ fn loadFile(
             },
         },
         null,
-        undoRedoService,
-        undefined,
-        languageConfigurationService,
-        treeSitterLibraryService,
-        treeSitterThemeService,
+        globalServices.undoRedoService(),
+        globalServices.languageService(),
+        globalServices.languageConfigurationService(),
+        globalServices.treeSitterLibraryService(),
+        globalServices.treeSitterThemeService(),
     );
 }
 
@@ -142,23 +140,12 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var undoRedoService = UndoRedoService.init(allocator);
-    defer undoRedoService.deinit();
-    var languageService = try LanguageService.init(allocator);
-    defer languageService.deinit();
-    var languageConfigurationService = try LanguageConfigurationService.init(allocator, undefined, &languageService);
-    defer languageConfigurationService.deinit();
-    var treeSitterLibraryService = TreeSitterLibraryService.init(allocator);
-    defer treeSitterLibraryService.deinit();
-    var treeSitterThemeService = TreeSitterThemeService.init(allocator);
-    defer treeSitterThemeService.deinit();
+    var globalServices: GlobalServices = undefined;
+    try GlobalServices.init(&globalServices, allocator);
     var textModel = try loadFile(
         allocator,
         pathArg.items,
-        &undoRedoService,
-        &languageConfigurationService,
-        &treeSitterLibraryService,
-        &treeSitterThemeService,
+        &globalServices,
     );
     defer textModel.deinit();
 

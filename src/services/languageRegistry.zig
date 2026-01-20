@@ -21,6 +21,12 @@ pub const LanguageIdCodec = struct {
         return self;
     }
 
+    pub fn create(allocator: Allocator) !*LanguageIdCodec {
+        const self = try allocator.create(LanguageIdCodec);
+        self.* = try LanguageIdCodec.init(allocator);
+        return self;
+    }
+
     pub fn deinit(self: *LanguageIdCodec) void {
         self._languageIdToLanguage.deinit();
         self._languageToLanguageId.deinit();

@@ -137,6 +137,12 @@ pub const LanguageService = struct {
         };
     }
 
+    pub fn create(allocator: Allocator) !*LanguageService {
+        const self = try allocator.create(LanguageService);
+        self.* = try LanguageService.init(allocator);
+        return self;
+    }
+
     pub fn deinit(self: *LanguageService) void {
         self.languageIdCodec.deinit();
         self.onDidRequestBasicLanguageFeatures.deinit();

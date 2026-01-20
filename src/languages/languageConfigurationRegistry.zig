@@ -108,7 +108,7 @@ pub const LanguageConfigurationService = struct {
         languageService: *LanguageService,
     ) !*LanguageConfigurationService {
         const self = try allocator.create(LanguageConfigurationService);
-        self.* = LanguageConfigurationService.init(allocator, configurationService, languageService);
+        self.* = try LanguageConfigurationService.init(allocator, configurationService, languageService);
         return self;
     }
 

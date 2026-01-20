@@ -49,8 +49,7 @@ pub fn createTextModel(allocator: Allocator, text: []const u8, _languageId: ?[]c
     const languageId = _languageId orelse PLAINTEXT_LANGUAGE_ID;
     const undoRedoService = try UndoRedoService.create(allocator);
     var source = std.Io.Reader.fixed(text);
-    const languageService = try allocator.create(LanguageService);
-    languageService.* = try LanguageService.init(allocator);
+    const languageService = try LanguageService.create(allocator);
     // const configurationService = try allocator.create(TestConfigurationService);
     // configurationService.* = TestConfigurationService.init(allocator, null);
     const languageConfigurationService = try LanguageConfigurationService.create(allocator, undefined, languageService);
