@@ -1,6 +1,6 @@
 const std = @import("std");
-const io = std.io;
-const ArrayList = std.ArrayList;
+const Io = std.Io;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const Range = @import("../basics/range.zig").Range;
 const LineRange = @import("../basics/lineRange.zig").LineRange;
@@ -41,19 +41,19 @@ pub const ContiguousMultilineTokens = struct {
     }
 
     // TODO: avoid copy when deserializing
-    pub fn deserialize(buff: io.AnyReader, result: *ArrayList(ContiguousMultilineTokens)) !void {
+    pub fn deserialize(buff: *Io.Reader, result: *ArrayList(ContiguousMultilineTokens)) !void {
         const allocator = result.allocator;
-        const startLineNumber = try buff.readInt(u32, .big);
-        const count = try buff.readInt(u32, .big);
+        const startLineNumber = try buff.takeInt(u32, .big);
+        const count = try buff.takeInt(u32, .big);
 
         var multilineTokens = ArrayList(?ArrayList(TokenPacked)).init(allocator);
         for (0..count) |_| {
-            const byteCount = try buff.readInt(i32, .big);
+            const byteCount = try buff.takeInt(i32, .big);
             const tokensCount: usize = @intCast(@divFloor(byteCount, @sizeOf(TokenPacked)));
             var tokens = ArrayList(TokenPacked).init(allocator);
             for (0..tokensCount) |_| {
-                const offset = try buff.readInt(u32, .big);
-                const metadata = try buff.readInt(u32, .big);
+                const offset = try buff.takeInt(u32, .big);
+                const metadata = try buff.takeInt(u32, .big);
                 try tokens.append(LineTokens.initTokenPacked(@intCast(offset), @bitCast(metadata)));
             }
             try multilineTokens.append(tokens);
@@ -83,8 +83,9 @@ pub const ContiguousMultilineTokens = struct {
         return null;
     }
 
-    pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: ArrayList(TokenPacked)) !void {
-        try self._tokens.append(lineTokens);
+    pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: []const TokenPacked) !void {
+        const allocator = self._tokens.allocator;
+        try self._tokens.append(ArrayList(TokenPacked).fromOwnedSlice(allocator, try allocator.dupe(TokenPacked, lineTokens)));
     }
 
     pub fn serializeSize(self: *const ContiguousMultilineTokens) !usize {
@@ -103,7 +104,7 @@ pub const ContiguousMultilineTokens = struct {
         return result;
     }
 
-    pub fn serialize(self: *const ContiguousMultilineTokens, destination: io.AnyWriter) !void {
+    pub fn serialize(self: *const ContiguousMultilineTokens, destination: *Io.Writer) !void {
         try destination.writeInt(u32, @intCast(self._startLineNumber), .big);
         try destination.writeInt(u32, @intCast(self._tokens.items.len), .big);
         for (self._tokens.items) |_lineTokens| {
@@ -255,12 +256,14 @@ test "ContiguousMultilineTokens/serialize empty" {
 
     var destination = ArrayList(u8).init(allocator);
     defer destination.deinit();
-    try tokens.serialize(destination.writer().any());
-    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, destination.items);
-    var stream = io.fixedBufferStream(destination.items);
+    try destination.resize(try tokens.serializeSize());
+    var destination_writer = Io.Writer.fixed(destination.items);
+    try tokens.serialize(&destination_writer);
+    try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(0)), destination.items);
+    var reader = Io.Reader.fixed(destination.items);
     var result = ArrayList(ContiguousMultilineTokens).init(allocator);
     defer result.deinit();
-    try ContiguousMultilineTokens.deserialize(stream.reader().any(), &result);
+    try ContiguousMultilineTokens.deserialize(&reader, &result);
     try std.testing.expectEqualDeep(tokens, result.items[0]);
 }
 
@@ -270,20 +273,24 @@ test "ContiguousMultilineTokens/serialize nonempty" {
     defer multilineTokens.deinit();
 
     var tokens1 = ArrayList(TokenPacked).init(allocator);
+    defer tokens1.deinit();
     try tokens1.append(TokenPacked{ .endOffset = 0, .metadata = .default });
-    try multilineTokens.appendLineTokens(tokens1);
+    try multilineTokens.appendLineTokens(tokens1.items);
 
     var tokens2 = ArrayList(TokenPacked).init(allocator);
+    defer tokens2.deinit();
     try tokens2.append(TokenPacked{ .endOffset = 10, .metadata = .default });
-    try multilineTokens.appendLineTokens(tokens2);
+    try multilineTokens.appendLineTokens(tokens2.items);
 
     try std.testing.expectEqual(32, try multilineTokens.serializeSize());
 
     var destination = ArrayList(u8).init(allocator);
     defer destination.deinit();
-    try multilineTokens.serialize(destination.writer().any());
+    try destination.resize(try multilineTokens.serializeSize());
+    var destination_writer = Io.Writer.fixed(destination.items);
+    try multilineTokens.serialize(&destination_writer);
 
-    var stream = io.fixedBufferStream(destination.items);
+    var reader = Io.Reader.fixed(destination.items);
     var result = ArrayList(ContiguousMultilineTokens).init(allocator);
     defer result.deinit();
     defer {
@@ -291,9 +298,14 @@ test "ContiguousMultilineTokens/serialize nonempty" {
             item.deinit();
         }
     }
-    try ContiguousMultilineTokens.deserialize(stream.reader().any(), &result);
+    try ContiguousMultilineTokens.deserialize(&reader, &result);
     for (multilineTokens._tokens.items, result.items[0]._tokens.items) |token1, token2| {
-        try std.testing.expectEqualDeep(token1, token2);
+        if (token1) |t1| {
+            try std.testing.expect(token2 != null);
+            try std.testing.expectEqualDeep(t1.items, token2.?.items);
+        } else {
+            try std.testing.expect(token2 == null);
+        }
     }
 }
 
@@ -303,8 +315,9 @@ test "ContiguousMultilineTokens/applyEdit" {
     defer multilineTokens.deinit();
 
     var tokens1 = ArrayList(TokenPacked).init(allocator);
+    defer tokens1.deinit();
     try tokens1.append(TokenPacked{ .endOffset = 5, .metadata = .default });
-    try multilineTokens.appendLineTokens(tokens1);
+    try multilineTokens.appendLineTokens(tokens1.items);
 
     try multilineTokens.applyEdit(Range.init(1, 1, 1, 1), "hello");
 }

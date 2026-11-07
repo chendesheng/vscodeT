@@ -1,4 +1,5 @@
 const std = @import("std");
+const time = @import("../basics/timeCompat.zig");
 
 pub const RateLimiter = struct {
     _lastRun: i64,
@@ -14,7 +15,7 @@ pub const RateLimiter = struct {
     }
 
     pub fn runIfNotLimited(self: *RateLimiter, context: anytype, callback: fn (@TypeOf(context)) void) void {
-        const now = std.time.milliTimestamp();
+        const now = time.milliTimestamp();
         if (now - self._lastRun >= self._minimumTimeBetweenRuns) {
             self._lastRun = now;
             callback(context);
@@ -31,7 +32,7 @@ test "RateLimiter" {
                 n.* += 1;
             }
         }.run);
-        std.time.sleep(std.time.ns_per_ms);
+        time.sleepMillis(1);
     }
     try std.testing.expectEqual(3, count);
 }

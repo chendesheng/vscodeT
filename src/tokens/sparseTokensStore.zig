@@ -1,5 +1,5 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const Range = @import("../basics/range.zig").Range;
 const LineTokens = @import("lineTokens.zig").LineTokens;
 const SparseMultilineTokens = @import("sparseMultilineTokens.zig").SparseMultilineTokens;
@@ -258,7 +258,7 @@ pub const SparseTokensStore = struct {
     }
 
     pub fn acceptEdit(self: *SparseTokensStore, range: Range, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: u21) void {
-        for (self._pieces.items) |piece| {
+        for (self._pieces.items) |*piece| {
             piece.acceptEdit(range, eolCount, firstLineLength, lastLineLength, firstCharCode);
         }
     }
@@ -274,25 +274,22 @@ fn createTMMetadata(foreground: u9, fontStyle: FontStyle, languageId: u8) TokenM
 
 test "issue #95949: Identifiers are colored in bold when targetting keywords" {
     const allocator = std.testing.allocator;
-    const codec = try LanguageIdCodec.init(allocator);
+    var codec = try LanguageIdCodec.init(allocator);
+    defer codec.deinit();
     var store = SparseTokensStore.init(allocator, codec);
     defer store.deinit();
 
     var sparseTokens = ArrayList(SparseToken).init(allocator);
-    defer sparseTokens.deinit();
     var metadata = TokenMetadata.default;
     metadata.languageId = @bitCast(SemanticMetadata.UseForeground);
     metadata.foreground = ColorId.DefaultForeground;
     try sparseTokens.append(SparseToken.init(0, 6, 11, metadata));
 
-    var storage = SparseMultilineTokensStorage.init(sparseTokens);
-    defer storage.deinit();
+    const storage = SparseMultilineTokensStorage.init(sparseTokens);
 
-    var multilineTokens = SparseMultilineTokens.init(1, storage);
-    defer multilineTokens.deinit();
+    const multilineTokens = SparseMultilineTokens.init(1, storage);
 
     var multilineTokensList = ArrayList(SparseMultilineTokens).init(allocator);
-    defer multilineTokensList.deinit();
     try multilineTokensList.append(multilineTokens);
 
     try store.set(multilineTokensList, true, null);
@@ -306,9 +303,9 @@ test "issue #95949: Identifiers are colored in bold when targetting keywords" {
         .init(18, createTMMetadata(1, FontStyle.None, 53)),
     });
     var arrText = ArrayList(u8).init(allocator);
-    defer arrText.deinit();
     try arrText.appendSlice("const hello = 123;");
-    const lineTokens = try store.addSparseTokens(1, LineTokens.init(arrTokens, arrText, codec));
+    var lineTokens = try store.addSparseTokens(1, LineTokens.init(arrTokens, arrText, codec));
+    defer lineTokens.deinit();
 
     var actual = ArrayList(TokenPacked).init(allocator);
     defer actual.deinit();

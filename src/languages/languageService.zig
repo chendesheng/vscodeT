@@ -17,6 +17,9 @@ pub const ILanguageExtensionPoint = struct {
     icon: ?LanguageIcon,
 };
 
+fn defaultRequestBasicLanguageFeatures(_: []const u8) void {}
+fn defaultRequestRichLanguageFeatures(_: []const u8) void {}
+
 pub const LanguageSelection = struct {
     languageId: []const u8,
     onDidChange: Emitter(void),
@@ -132,8 +135,8 @@ pub const LanguageService = struct {
             .createById = undefined,
             .createByMimeType = undefined,
             .createByFilepathOrFirstLine = undefined,
-            .requestBasicLanguageFeatures = undefined,
-            .requestRichLanguageFeatures = undefined,
+            .requestBasicLanguageFeatures = defaultRequestBasicLanguageFeatures,
+            .requestRichLanguageFeatures = defaultRequestRichLanguageFeatures,
         };
     }
 };

@@ -1,6 +1,6 @@
 const std = @import("std");
 const StringHashMap = std.StringHashMap;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 
 pub fn usizeSub(a: usize, b: usize) isize {

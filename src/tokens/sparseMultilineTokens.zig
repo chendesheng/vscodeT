@@ -1,6 +1,6 @@
 const std = @import("std");
-const io = std.io;
-const ArrayList = std.ArrayList;
+const Io = std.Io;
+const ArrayList = std.array_list.Managed;
 const Range = @import("../basics/range.zig").Range;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const TextModel = @import("../textModel.zig").TextModel;
@@ -212,7 +212,7 @@ pub const SparseMultilineTokensStorage = struct {
         self._tokens.deinit();
     }
 
-    pub fn toString(self: *const SparseMultilineTokensStorage, writer: io.AnyWriter, startLineNumber: usize) !void {
+    pub fn toString(self: *const SparseMultilineTokensStorage, writer: *Io.Writer, startLineNumber: usize) !void {
         try writer.writeAll("[");
         for (0..self._tokens.len) |i| {
             try writer.print("({d},{d}-{d})", .{
@@ -449,19 +449,19 @@ pub const SparseMultilineTokensStorage = struct {
                 if (tokenDeltaLine == endDeltaLine and tokenEndCharacter > endCharacter) {
                     // 1d. The token starts before, the deletion range is inside the token
                     // => the token shrinks by the deletion character count
-                    tokenEndCharacter -= (endCharacter - startCharacter);
+                    tokenEndCharacter -= @intCast(endCharacter - startCharacter);
                 } else {
                     // 1b. The token starts before, the deletion range ends after the token
                     // 1c. The token starts before, the deletion range ends precisely with the token
                     // => the token shrinks its ending to the deletion start
-                    tokenEndCharacter = startCharacter;
+                    tokenEndCharacter = @intCast(startCharacter);
                 }
             } else if (tokenDeltaLine == startDeltaLine and tokenStartCharacter == startCharacter) {
                 // 2a, 2b, 2c
                 if (tokenDeltaLine == endDeltaLine and tokenEndCharacter > endCharacter) {
                     // 2c. The token starts at the same position, and ends after the deletion range
                     // => the token shrinks by the deletion character count
-                    tokenEndCharacter -= (endCharacter - startCharacter);
+                    tokenEndCharacter -= @intCast(endCharacter - startCharacter);
                 } else {
                     // 2a. The token starts at the same position, and ends inside the deletion range
                     // 2b. The token starts at the same position, and ends at the same position as the deletion range
@@ -474,9 +474,9 @@ pub const SparseMultilineTokensStorage = struct {
                 if (tokenDeltaLine == endDeltaLine and tokenEndCharacter > endCharacter) {
                     // 3c. The token starts inside the deletion range, and ends after the deletion range
                     // => the token moves to continue right after the deletion
-                    tokenDeltaLine = startDeltaLine;
-                    tokenStartCharacter = startCharacter;
-                    tokenEndCharacter = tokenStartCharacter + (tokenEndCharacter - endCharacter);
+                    tokenDeltaLine = @intCast(startDeltaLine);
+                    tokenStartCharacter = @intCast(startCharacter);
+                    tokenEndCharacter = tokenStartCharacter + @as(u32, @intCast(tokenEndCharacter - endCharacter));
                 } else {
                     // 3a. The token is inside the deletion range
                     // 3b. The token starts inside the deletion range, and ends at the same position as the deletion range
@@ -491,16 +491,16 @@ pub const SparseMultilineTokensStorage = struct {
                     newTokenCount = tokenCount;
                     break;
                 }
-                tokenDeltaLine -= deletedLineCount;
+                tokenDeltaLine -= @intCast(deletedLineCount);
             } else if (tokenDeltaLine == endDeltaLine and tokenStartCharacter >= endCharacter) {
                 // 4. (continued) The token starts after the deletion range, on the last line where a deletion occurs
-                if (horizontalShiftForFirstLineTokens and tokenDeltaLine == 0) {
-                    tokenStartCharacter += horizontalShiftForFirstLineTokens;
-                    tokenEndCharacter += horizontalShiftForFirstLineTokens;
+                if (horizontalShiftForFirstLineTokens != 0 and tokenDeltaLine == 0) {
+                    tokenStartCharacter += @intCast(horizontalShiftForFirstLineTokens);
+                    tokenEndCharacter += @intCast(horizontalShiftForFirstLineTokens);
                 }
-                tokenDeltaLine -= deletedLineCount;
-                tokenStartCharacter -= (endCharacter - startCharacter);
-                tokenEndCharacter -= (endCharacter - startCharacter);
+                tokenDeltaLine -= @intCast(deletedLineCount);
+                tokenStartCharacter -= @intCast(endCharacter - startCharacter);
+                tokenEndCharacter -= @intCast(endCharacter - startCharacter);
             } else {
                 unreachable;
             }
@@ -550,10 +550,10 @@ pub const SparseMultilineTokensStorage = struct {
                 // 3. The token contains the insertion point
                 if (eolCount == 0) {
                     // => just expand the end character
-                    tokenEndCharacter += firstLineLength;
+                    tokenEndCharacter += @intCast(firstLineLength);
                 } else {
                     // => cut off the token
-                    tokenEndCharacter = character;
+                    tokenEndCharacter = @intCast(character);
                 }
             } else {
                 // 4. or 5.
@@ -567,18 +567,18 @@ pub const SparseMultilineTokensStorage = struct {
                 }
                 // => the token must move and keep its size constant
                 if (tokenDeltaLine == deltaLine) {
-                    tokenDeltaLine += eolCount;
+                    tokenDeltaLine += @intCast(eolCount);
                     // this token is on the line where the insertion is taking place
                     if (eolCount == 0) {
-                        tokenStartCharacter += firstLineLength;
-                        tokenEndCharacter += firstLineLength;
+                        tokenStartCharacter += @intCast(firstLineLength);
+                        tokenEndCharacter += @intCast(firstLineLength);
                     } else {
                         const tokenLength = tokenEndCharacter - tokenStartCharacter;
-                        tokenStartCharacter = lastLineLength + (tokenStartCharacter - character);
+                        tokenStartCharacter = @as(u32, @intCast(lastLineLength)) + (tokenStartCharacter - @as(u32, @intCast(character)));
                         tokenEndCharacter = tokenStartCharacter + tokenLength;
                     }
                 } else {
-                    tokenDeltaLine += eolCount;
+                    tokenDeltaLine += @intCast(eolCount);
                 }
             }
 

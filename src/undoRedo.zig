@@ -1,5 +1,5 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const Uri = std.Uri;
 const EditStackElement = @import("editStack.zig").EditStackElement;
 

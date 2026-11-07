@@ -1,6 +1,6 @@
 const std = @import("std");
-const io = std.io;
-const ArrayList = std.ArrayList;
+const Io = std.Io;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const Position = @import("./basics/position.zig").Position;
 const ContiguousMultilineTokens = @import("./tokens/contiguousMultilineTokens.zig").ContiguousMultilineTokens;
@@ -43,11 +43,11 @@ pub const LanguageIdCodec = struct {
         try self._register(language, languageId);
     }
 
-    pub fn encodeLanguageId(self: *LanguageIdCodec, language: []const u8) !u8 {
+    pub fn encodeLanguageId(self: *const LanguageIdCodec, language: []const u8) !u8 {
         if (self._languageToLanguageId.get(language)) |languageId| {
             return languageId;
         }
-        return LanguageId.Null;
+        return @backingInt(LanguageId.Null);
     }
 
     pub fn decodeLanguageId(self: *LanguageIdCodec, languageId: u8) []const u8 {
@@ -75,7 +75,7 @@ pub const Token = struct {
         };
     }
 
-    pub fn toString(self: *Token, writer: io.AnyWriter) !void {
+    pub fn toString(self: *Token, writer: *Io.Writer) !void {
         try writer.print("({d}, {s})", .{ self.offset, self.type_ });
     }
 };
@@ -137,12 +137,12 @@ pub const ITokenizationSupport = struct {
 
     getInitialState: *const fn () IState,
 
-    tokenize: *const fn (line: []u8, hasEOL: bool, state: IState) TokenizationResult,
+    tokenize: *const fn (line: []const u8, hasEOL: bool, state: IState) TokenizationResult,
 
-    tokenizeEncoded: *const fn (line: []u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
+    tokenizeEncoded: *const fn (line: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
 
     // Can be/return undefined if default background tokenization should be used.
-    createBackgroundTokenizer: ?*const fn (textModel: TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
+    createBackgroundTokenizer: ?*const fn (textModel: *TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
 };
 
 // @internal
@@ -157,13 +157,14 @@ pub const IBackgroundTokenizer = struct {
 
 // @internal
 pub const IBackgroundTokenizationStore = struct {
-    setTokens: *const fn (tokens: []ContiguousMultilineTokens) void,
+    context: *anyopaque,
+    setTokens: *const fn (context: *anyopaque, tokens: []ContiguousMultilineTokens) void,
 
-    setEndState: *const fn (lineNumber: usize, state: IState) void,
+    setEndState: *const fn (context: *anyopaque, lineNumber: usize, state: IState) void,
 
     // Should be called to indicate that the background tokenization has finished for now.
     // (This triggers bracket pair colorization to re-parse the bracket pairs with token information)
-    backgroundTokenizationFinished: *const fn () void,
+    backgroundTokenizationFinished: *const fn (context: *anyopaque) void,
 };
 
 // The state of the tokenizer between two lines.

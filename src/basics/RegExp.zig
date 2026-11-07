@@ -2,13 +2,11 @@ const std = @import("std");
 const StringHashMap = std.StringHashMap;
 const Allocator = std.mem.Allocator;
 const unicode = std.unicode;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const BUILD_MODE = @import("builtin").mode;
 
-// oniguruma.zig
-const c = @cImport({
-    @cInclude("oniguruma.h");
-});
+// Translated from `oniguruma.h` by the build system (see build.zig).
+const c = @import("oniguruma");
 
 pub const Error = error{
     ValueIsNotSet,
@@ -280,7 +278,7 @@ pub var OnigSyntaxPython: OnigSyntax = &c.OnigSyntaxPython;
 pub var OnigSyntaxOniguruma: OnigSyntax = &c.OnigSyntaxOniguruma;
 
 fn printError(res: c_int, errorInfos: ?*const c.OnigErrorInfo) void {
-    if (BUILD_MODE != .Debug and BUILD_MODE != .DebugSafe) {
+    if (BUILD_MODE != .debug) {
         return;
     }
 
@@ -376,8 +374,8 @@ pub const RegExp = struct {
         return @intCast(c.onig_number_of_names(self.regex));
     }
 
-    fn nameToGroupNumbers(self: *const RegExp, name: []const u8) ![]const u32 {
-        var nums: [*c]u32 = undefined;
+    fn nameToGroupNumbers(self: *const RegExp, name: []const u8) ![]const c_int {
+        var nums: [*c]c_int = undefined;
         const res = c.onig_name_to_group_numbers(self.regex, name.ptr, name.ptr + name.len, &nums);
         if (res < 0) {
             return errorCodeToError(res);

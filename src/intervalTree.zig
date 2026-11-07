@@ -4,7 +4,7 @@ const ModelDecorationOptions = @import("model.zig").ModelDecorationOptions;
 const Range = @import("./basics/range.zig").Range;
 const TrackedRangeStickiness = @import("model.zig").TrackedRangeStickiness;
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const usizeSub = @import("./basics/utils.zig").usizeSub;
 const usizeAdd = @import("./basics/utils.zig").usizeAdd;
 

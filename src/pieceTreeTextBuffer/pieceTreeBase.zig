@@ -1,13 +1,12 @@
 const std = @import("std");
-const io = std.io;
-const fs = std.fs;
+const Io = std.Io;
 const rbt = @import("rbTreeBase.zig");
 const Position = @import("../basics/position.zig").Position;
 const Range = @import("../basics/range.zig").Range;
 const SENTINEL = rbt.SENTINEL;
 const TreeNode = rbt.TreeNode;
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const safeUtf8Prefix = @import("../tui/utf8Helper.zig").safeUtf8Prefix;
 const safeUtf8Range = @import("../tui/utf8Helper.zig").safeUtf8Range;
 const EOL = @import("../basics/eolCounter.zig").EOL;
@@ -187,12 +186,12 @@ pub const StringBuffer = struct {
         try self.buffer.appendSlice(value);
     }
 
-    pub fn logInit(self: *const StringBuffer, logger: fs.File.Writer) !void {
+    pub fn logInit(self: *const StringBuffer, logger: *Io.Writer) !void {
         // json stringify string
-        var content = std.ArrayList(u8).init(self.buffer.allocator);
+        var content: std.Io.Writer.Allocating = .init(self.buffer.allocator);
         defer content.deinit();
-        try std.json.stringify(self.buffer.items, .{}, content.writer());
-        try logger.print("StringBuffer.init(allocator, {s})", .{content.items});
+        try std.json.Stringify.value(self.buffer.items, .{}, &content.writer);
+        try logger.print("StringBuffer.init(allocator, {s})", .{content.writer.buffered()});
     }
 };
 
@@ -315,22 +314,19 @@ const PieceTreeSearchCache = struct {
     }
 
     fn validate(self: *PieceTreeSearchCache, offset: usize) void {
-        var tmp = self._cache;
-
-        var i: usize = tmp.items.len;
+        var i: usize = self._cache.items.len;
         while (i > 0) {
             i -= 1;
 
-            const nodePos = tmp.items[i];
+            const nodePos = self._cache.items[i];
             if (nodePos.node == SENTINEL or nodePos.nodeStartOffset >= offset) {
-                _ = tmp.orderedRemove(i);
+                _ = self._cache.orderedRemove(i);
             }
         }
     }
 
     fn reset(self: *PieceTreeSearchCache) !void {
-        self._limit = 0;
-        try self._cache.resize(0);
+        self._cache.clearRetainingCapacity();
     }
 };
 
@@ -374,9 +370,9 @@ pub const PieceTreeBase = struct {
     _searchCache: PieceTreeSearchCache,
     _lastVisitedLine: LastVisitedLine,
 
-    _logger: ?fs.File.Writer,
+    _logger: ?*Io.Writer,
 
-    pub fn init(allocator: Allocator, logger: ?fs.File.Writer, chunks: []const StringBuffer, eol: EOL, eolNormalized: bool) !PieceTreeBase {
+    pub fn init(allocator: Allocator, logger: ?*Io.Writer, chunks: []const StringBuffer, eol: EOL, eolNormalized: bool) !PieceTreeBase {
         var tree = PieceTreeBase{
             .allocator = allocator,
             .root = SENTINEL,
@@ -1107,6 +1103,7 @@ pub const PieceTreeBase = struct {
             const remainder = n.remainder;
             const nodeStartOffset = n.nodeStartOffset;
             const piece = node.piece.?;
+
             const bufferIndex = piece.bufferIndex;
             const insertPosInBuffer = self.positionInBuffer(node, remainder);
             if (piece.bufferIndex == 0 and

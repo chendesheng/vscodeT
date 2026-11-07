@@ -1,15 +1,15 @@
 const std = @import("std");
-const io = std.io;
+const Io = std.Io;
 const Uri = std.Uri;
 const Allocator = std.mem.Allocator;
 const Range = @import("./basics/range.zig").Range;
 const TextChange = @import("textChange.zig").TextChange;
-const ArrayList = @import("std").ArrayList;
+const ArrayList = @import("std").array_list.Managed;
 const default_max_load_percentage = @import("std").hash_map.default_max_load_percentage;
 const strings = @import("./basics/strings.zig");
 const RegExp = @import("./basics/RegExp.zig").RegExp;
 const WordCharacterClassifier = @import("./basics/wordCharacterClassifier.zig").WordCharacterClassifier;
-const ModelContentChange = @import("textModelEvents.zig").ModelContentChange;
+pub const ModelContentChange = @import("textModelEvents.zig").ModelContentChange;
 const String = @import("./basics/strings.zig").String;
 const EOL = @import("./basics/eolCounter.zig").EOL;
 
@@ -285,8 +285,9 @@ pub const TrackedRangeStickiness = enum(u2) {
 };
 
 pub fn uriToString(uri: Uri, allocator: Allocator) !ArrayList(u8) {
-    var list = std.ArrayList(u8).init(allocator);
-    const writer = list.writer();
+    var list: Io.Writer.Allocating = .init(allocator);
+    errdefer list.deinit();
+    const writer = &list.writer;
 
     try writer.print("{s}://", .{uri.scheme});
 
@@ -364,7 +365,7 @@ pub fn uriToString(uri: Uri, allocator: Allocator) !ArrayList(u8) {
         }
     }
 
-    return list;
+    return ArrayList(u8).fromOwnedSlice(allocator, try list.toOwnedSlice());
 }
 
 test "uriToString" {
@@ -430,7 +431,7 @@ pub fn uriEql(a: Uri, b: Uri) bool {
 }
 
 pub const UriContext = struct {
-    fn hashComponent(writer: *io.AnyWriter, component: ?Uri.Component) void {
+    fn hashComponent(writer: *Io.Writer, component: ?Uri.Component) void {
         if (component) |comp| {
             switch (comp) {
                 .raw => |raw| {
@@ -445,9 +446,8 @@ pub const UriContext = struct {
 
     pub fn hash(self: @This(), s: Uri) u64 {
         _ = self;
-        var buf: [64]u8 = .{0} ** 64;
-        var stream = std.io.fixedBufferStream(&buf);
-        var writer = stream.writer().any();
+        var buf: [64]u8 = @splat(0);
+        var writer = Io.Writer.fixed(&buf);
         hashComponent(&writer, s.user);
         hashComponent(&writer, s.password);
         hashComponent(&writer, s.host);

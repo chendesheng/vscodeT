@@ -1,5 +1,5 @@
 const std = @import("std");
-const time = std.time;
+const time = @import("./timeCompat.zig");
 
 pub const StopWatch = struct {
     _startTime: i64,

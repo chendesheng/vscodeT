@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
@@ -65,7 +65,7 @@ pub const LineTokens = struct {
         for (0..lastTokenIndex) |tokenIndex| {
             tokens[tokenIndex].endOffset = tokens[tokenIndex + 1].endOffset;
         }
-        tokens[lastTokenIndex].endOffset = lineTextLength;
+        tokens[lastTokenIndex].endOffset = @intCast(lineTextLength);
     }
 
     pub fn findIndexInTokensArray(tokens: []TokenPacked, desiredIndex: usize) usize {
@@ -93,7 +93,7 @@ pub const LineTokens = struct {
     }
 
     pub fn init(tokens: ArrayList(TokenPacked), text: ArrayList(u8), decoder: LanguageIdCodec) LineTokens {
-        const tokensLength = if (tokens.items.len > 1) tokens.items[tokens.items.len - 2].endOffset else 0;
+        const tokensLength = if (tokens.items.len > 0) tokens.items[tokens.items.len - 1].endOffset else 0;
         // Token length and text length do not match!
         std.debug.assert(tokensLength == text.items.len);
 

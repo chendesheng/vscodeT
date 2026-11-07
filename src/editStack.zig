@@ -1,6 +1,6 @@
 const std = @import("std");
-const io = std.io;
-const ArrayList = std.ArrayList;
+const Io = std.Io;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const Uri = std.Uri;
 const UriHashMap = @import("model.zig").UriHashMap;
@@ -15,6 +15,8 @@ const ValidEditOperation = @import("model.zig").ValidEditOperation;
 const Disposable = @import("undoRedo.zig").Disposable;
 const uriToString = @import("model.zig").uriToString;
 const TextModelCreationOptions = @import("model.zig").TextModelCreationOptions;
+const LanguageIdCodec = @import("languages.zig").LanguageIdCodec;
+const LanguageService = @import("languages/languageService.zig").LanguageService;
 const ValidAnnotatedEditOperation = @import("model.zig").ValidAnnotatedEditOperation;
 const utils = @import("./basics/utils.zig");
 const Pair = utils.Pair;
@@ -225,7 +227,7 @@ pub const SingleModelEditStackDataUnserialized = struct {
         return 4 + 4 * 4 * (if (selections) |s| s.len else 0);
     }
 
-    pub fn _writeSelections(b: io.AnyWriter, selections: ?[]Selection) !void {
+    pub fn _writeSelections(b: *Io.Writer, selections: ?[]Selection) !void {
         try b.writeInt(u32, if (selections) |s| @intCast(s.len) else 0, .big);
         if (selections) |s| {
             for (s) |selection| {
@@ -237,13 +239,13 @@ pub const SingleModelEditStackDataUnserialized = struct {
         }
     }
 
-    pub fn _readSelections(b: io.AnyReader, dest: *ArrayList(Selection)) !void {
-        const count = try b.readInt(u32, .big);
+    pub fn _readSelections(b: *Io.Reader, dest: *ArrayList(Selection)) !void {
+        const count = try b.takeInt(u32, .big);
         for (0..count) |_| {
-            const selectionStartLineNumber = try b.readInt(u32, .big);
-            const selectionStartColumn = try b.readInt(u32, .big);
-            const positionLineNumber = try b.readInt(u32, .big);
-            const positionColumn = try b.readInt(u32, .big);
+            const selectionStartLineNumber = try b.takeInt(u32, .big);
+            const selectionStartColumn = try b.takeInt(u32, .big);
+            const positionLineNumber = try b.takeInt(u32, .big);
+            const positionColumn = try b.takeInt(u32, .big);
             try dest.append(Selection{
                 .startLineNumber = 0,
                 .startColumn = 0,
@@ -273,38 +275,36 @@ pub const SingleModelEditStackDataUnserialized = struct {
 
         var b = try ArrayList(u8).initCapacity(self.changes.allocator, necessarySize);
         try b.resize(necessarySize);
-        var stream = io.fixedBufferStream(b.items);
-        var writer = stream.writer().any();
+        var writer = Io.Writer.fixed(b.items);
 
         try writer.writeInt(u32, self.beforeVersionId, .big);
         try writer.writeInt(u32, self.afterVersionId, .big);
-        try writer.writeInt(u8, @intFromEnum(self.beforeEOL), .big);
-        try writer.writeInt(u8, @intFromEnum(self.afterEOL), .big);
-        try _writeSelections(writer, self.beforeCursorState);
-        try _writeSelections(writer, self.afterCursorState);
+        try writer.writeInt(u8, @backingInt(self.beforeEOL), .big);
+        try writer.writeInt(u8, @backingInt(self.afterEOL), .big);
+        try _writeSelections(&writer, self.beforeCursorState);
+        try _writeSelections(&writer, self.afterCursorState);
         try writer.writeInt(u32, @intCast(self.changes.items.len), .big);
         for (self.changes.items) |change| {
-            try change.write(writer);
+            try change.write(&writer);
         }
         return b;
     }
 
     pub fn deserialize(allocator: Allocator, source: []const u8) !SingleModelEditStackDataUnserialized {
-        var stream = io.fixedBufferStream(source);
-        const reader = stream.reader().any();
+        var reader = Io.Reader.fixed(source);
 
-        const beforeVersionId = try reader.readInt(u32, .big);
-        const afterVersionId = try reader.readInt(u32, .big);
-        const beforeEOL: EOL = @enumFromInt(try reader.readInt(u8, .big));
-        const afterEOL: EOL = @enumFromInt(try reader.readInt(u8, .big));
+        const beforeVersionId = try reader.takeInt(u32, .big);
+        const afterVersionId = try reader.takeInt(u32, .big);
+        const beforeEOL: EOL = @fromBackingInt(@intCast(try reader.takeInt(u8, .big)));
+        const afterEOL: EOL = @fromBackingInt(@intCast(try reader.takeInt(u8, .big)));
         var beforeCursorState = ArrayList(Selection).init(allocator);
-        try _readSelections(reader, &beforeCursorState);
+        try _readSelections(&reader, &beforeCursorState);
         var afterCursorState = ArrayList(Selection).init(allocator);
-        try _readSelections(reader, &afterCursorState);
-        const changeCount = try reader.readInt(u32, .big);
+        try _readSelections(&reader, &afterCursorState);
+        const changeCount = try reader.takeInt(u32, .big);
         var changes = ArrayList(TextChange).init(allocator);
         for (0..changeCount) |_| {
-            try TextChange.read(reader, allocator, &changes);
+            try TextChange.read(&reader, allocator, &changes);
         }
         return SingleModelEditStackDataUnserialized{
             .beforeVersionId = beforeVersionId,
@@ -400,7 +400,7 @@ pub const SingleModelEditStackElement = struct {
             }
         }
 
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         for (data.changes.items, 0..) |change, index| {
             const str = try change.toString(allocator);
             defer allocator.free(str);
@@ -527,13 +527,16 @@ pub const SingleModelEditStackElement = struct {
 test "SingleModelEditStackElement" {
     const allocator = std.testing.allocator;
     const text = "Hello, world!";
-    var source = io.fixedBufferStream(text);
-    const reader = source.reader().any();
+    var reader = Io.Reader.fixed(text);
 
     var undoRedoService = UndoRedoService.init(allocator);
     defer undoRedoService.deinit();
 
-    var textModel = try TextModel.init(allocator, reader, TextModelCreationOptions{
+    var codec = try LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var languageService = LanguageService.init(allocator, codec);
+
+    var textModel = try TextModel.init(allocator, &reader, "test", TextModelCreationOptions{
         .tabSize = 4,
         .indentSize = .{ .number = 4 },
         .insertSpaces = true,
@@ -546,7 +549,7 @@ test "SingleModelEditStackElement" {
             .enabled = false,
             .independentColorPoolPerBracketType = false,
         },
-    }, null, &undoRedoService);
+    }, null, &undoRedoService, &languageService);
     defer allocator.destroy(textModel);
     defer textModel.deinit();
 
@@ -726,7 +729,7 @@ pub const EditStack = struct {
     }
 
     pub fn textModel(self: *EditStack) *TextModel {
-        return @ptrCast(self._model);
+        return @ptrCast(@alignCast(self._model));
     }
 
     pub fn pushStackElement(self: *EditStack) void {

@@ -19,7 +19,7 @@ pub fn CharacterClassifier(comptime T: type) type {
         pub fn init(allocator: Allocator, defaultValue: T) Self {
             const self = Self{
                 ._defaultValue = defaultValue,
-                ._asciiMap = .{defaultValue} ** ASCII_MAP_SIZE,
+                ._asciiMap = @splat(defaultValue),
                 ._map = HashMap(u21, T).init(allocator),
             };
 
@@ -47,7 +47,7 @@ pub fn CharacterClassifier(comptime T: type) type {
         }
 
         pub fn clear(self: *Self) void {
-            self._asciiMap = .{self._defaultValue} ** ASCII_MAP_SIZE;
+            self._asciiMap = @splat(self._defaultValue);
             self._map.clearRetainingCapacity();
         }
     };

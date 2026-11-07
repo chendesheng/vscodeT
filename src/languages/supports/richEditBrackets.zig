@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const RegExp = @import("../../basics/RegExp.zig").RegExp;
 const RegExpOptions = @import("../../basics/regExp.zig").Options;
 const escapeRegExp = @import("../../basics/RegExp.zig").escapeRegExp;

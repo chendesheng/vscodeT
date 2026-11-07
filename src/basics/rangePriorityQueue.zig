@@ -1,6 +1,6 @@
 const std = @import("std");
-const io = std.io;
-const ArrayList = std.ArrayList;
+const Io = std.Io;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const OffsetRange = @import("offsetRange.zig").OffsetRange;
 const OffsetRangeSet = @import("offsetRange.zig").OffsetRangeSet;
@@ -101,7 +101,7 @@ pub fn addRangeAndResize(self: *Self, range: OffsetRange, newLength: usize) !voi
     }
 }
 
-pub fn toString(self: *Self, writer: io.AnyWriter) !void {
+pub fn toString(self: *Self, writer: *Io.Writer) !void {
     for (self._ranges.items, 0..) |range, i| {
         try range.toString(writer);
         if (i < self._ranges.items.len - 1) try writer.writeAll(" + ");
@@ -145,10 +145,10 @@ test "RangePriorityQueue/toString" {
     defer queue.deinit();
     try queue.addRange(OffsetRange.init(8, 10));
     try queue.addRange(OffsetRange.init(11, 12));
-    var str = std.ArrayList(u8).init(std.testing.allocator);
+    var str: Io.Writer.Allocating = .init(std.testing.allocator);
     defer str.deinit();
-    try queue.toString(str.writer().any());
-    try std.testing.expectEqualStrings("[8, 10) + [11, 12)", str.items);
+    try queue.toString(&str.writer);
+    try std.testing.expectEqualStrings("[8, 10) + [11, 12)", str.writer.buffered());
 }
 
 test "RangePriorityQueue/addRangeAndResize" {

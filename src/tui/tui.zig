@@ -1,6 +1,7 @@
 // https://viewsourcecode.org/snaptoken/kilo/index.html
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const Io = std.Io;
+const ArrayList = std.array_list.Managed;
 const posix = std.posix;
 const termios = posix.system.termios;
 const Allocator = std.mem.Allocator;
@@ -22,8 +23,8 @@ pub fn enableRawMode() !termios {
     // Disable post‑processing of output
     raw.oflag.OPOST = false;
 
-    raw.cc[@intFromEnum(posix.system.V.MIN)] = 0;
-    raw.cc[@intFromEnum(posix.system.V.TIME)] = 0;
+    raw.cc[@backingInt(posix.system.V.MIN)] = 0;
+    raw.cc[@backingInt(posix.system.V.TIME)] = 0;
 
     try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.FLUSH, raw);
 
@@ -97,21 +98,22 @@ pub fn clearToEndOfScreen(out: anytype) !void {
     try writeAll(out, "\x1b[J");
 }
 
-pub fn getCursorPosition() !Point {
-    const stdout = std.io.getStdOut();
-    const stdin = std.io.getStdIn();
-
+pub fn getCursorPosition(io: Io) !Point {
     // Step 1: Ask for cursor position
-    try stdout.writer().writeAll("\x1b[6n");
+    var out_buffer: [64]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &out_buffer);
+    try stdout_writer.interface.writeAll("\x1b[6n");
+    try stdout_writer.interface.flush();
 
     // Step 2: Read the response
-    var buf: [32]u8 = undefined;
-    const n = try stdin.reader().readUntilDelimiterOrEof(&buf, 'R');
-
-    if (n == null) return error.CursorResponseTimeout;
+    var in_buffer: [64]u8 = undefined;
+    var stdin_reader = Io.File.stdin().reader(io, &in_buffer);
+    const response = stdin_reader.interface.takeDelimiterInclusive('R') catch |err| switch (err) {
+        error.EndOfStream => return error.CursorResponseTimeout,
+        else => return err,
+    };
 
     // Example response: ESC [ 12 ; 40 R
-    const response = n.?;
 
     // Strip prefix: "\x1b["
     if (response.len < 2 or response[0] != 0x1B or response[1] != '[') {
@@ -161,11 +163,8 @@ pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
         _ = std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, t) catch {};
     }
 
-    const stdout = std.io.getStdOut();
-    const out = stdout.writer();
-
-    exitAltScreen(out) catch {};
-    enableLineWrap(out) catch {};
+    const io = Io.Threaded.global_single_threaded.io();
+    Io.File.stdout().writeStreamingAll(io, "\x1b[?1049l\x1b[?7h") catch {};
 
     std.debug.defaultPanic(msg, first_trace_addr);
 
@@ -174,7 +173,7 @@ pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
 
 var resized = std.atomic.Value(bool).init(false);
 
-fn handleSigWinch(_: i32) callconv(.C) void {
+fn handleSigWinch(_: posix.SIG) callconv(.c) void {
     resized.store(true, .seq_cst);
 }
 
@@ -189,7 +188,7 @@ pub fn resizedSize() !?Size {
 pub fn installSigWinch() !void {
     var sa: posix.Sigaction = .{
         .handler = .{ .handler = handleSigWinch },
-        .mask = posix.empty_sigset,
+        .mask = posix.sigemptyset(),
         .flags = 0,
     };
     posix.sigaction(posix.SIG.WINCH, &sa, null);

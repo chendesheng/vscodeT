@@ -26,11 +26,11 @@ pub fn Emitter(comptime T: type) type {
             }
         };
 
-        _listeners: std.ArrayList(Listener),
+        _listeners: std.array_list.Managed(Listener),
 
         pub fn init(allocator: Allocator) Self {
             return Self{
-                ._listeners = std.ArrayList(Listener).init(allocator),
+                ._listeners = std.array_list.Managed(Listener).init(allocator),
             };
         }
 
@@ -59,7 +59,7 @@ pub fn Emitter(comptime T: type) type {
                                 try callback(e, typed_ctx);
                             }
                         }.wrapped,
-                        .context = @constCast(@ptrCast(@alignCast(ctx))),
+                        .context = @ptrCast(@alignCast(@constCast(ctx))),
                     },
                 },
             };

@@ -1,5 +1,5 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const TextModel = @import("../textModel.zig").TextModel;
 const Position = @import("../basics/position.zig").Position;
 const Range = @import("../basics/range.zig").Range;
@@ -41,19 +41,17 @@ pub const TokenizationTextModelPart = struct {
     _useTreeSitter: bool,
     _languageId: []const u8,
     _textModel: *anyopaque,
-    _attachedViews: AttachedViews,
     // _bracketPairsTextModelPart: BracketPairsTextModelPart,
     _languageService: *LanguageService,
-    _languageConfigurationService: *ILanguageConfigurationService,
+    _languageConfigurationService: ?*ILanguageConfigurationService,
     // _instantiationService: IInstantiationService,
     // _treeSitterLibraryService: ITreeSitterLibraryService,
 
     pub fn init(
         textModel_: *TextModel,
         languageId: []const u8,
-        attachedViews: AttachedViews,
         languageService: *LanguageService,
-        languageConfigurationService: *ILanguageConfigurationService,
+        languageConfigurationService: ?*ILanguageConfigurationService,
     ) TokenizationTextModelPart {
         //tokens = derived(this, reader => {
         //   let tokens: AbstractSyntaxTokenBackend;
@@ -96,14 +94,13 @@ pub const TokenizationTextModelPart = struct {
             ._useTreeSitter = false,
             ._textModel = textModel_,
             ._languageId = languageId,
-            ._attachedViews = attachedViews,
             ._semanticTokens = SparseTokensStore.init(allocator, languageIdCodec),
             ._onDidChangeLanguage = Emitter(ModelLanguageChangedEvent).init(allocator),
             ._onDidChangeLanguageConfiguration = Emitter(ModelLanguageConfigurationChangedEvent).init(allocator),
             ._onDidChangeTokens = Emitter(ModelTokensChangedEvent).init(allocator),
             ._languageService = languageService,
             ._languageConfigurationService = languageConfigurationService,
-            .tokens = TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel_, languageId, attachedViews),
+            .tokens = TokenizerSyntaxTokenBackend.init(languageIdCodec, textModel_, languageId),
         };
     }
 
@@ -149,7 +146,7 @@ pub const TokenizationTextModelPart = struct {
                 const firstLineLength = res.firstLineLength;
                 const lastLineLength = res.lastLineLength;
 
-                self._semanticTokens.acceptEdit(c.range, eolCount, firstLineLength, lastLineLength, if (c.text.len > 0) c.text.items()[0] else 0);
+                self._semanticTokens.acceptEdit(c.range, eolCount, firstLineLength, lastLineLength, if (c.text.len() > 0) c.text.items()[0] else 0);
             }
         }
 
@@ -303,7 +300,7 @@ pub const TokenizationTextModelPart = struct {
     }
 
     fn getLanguageConfiguration(self: *TokenizationTextModelPart, languageId: []const u8) ResolvedLanguageConfiguration {
-        return self._languageConfigurationService.getLanguageConfiguration(languageId);
+        return self._languageConfigurationService.?.getLanguageConfiguration(languageId);
     }
 
     fn _findLanguageBoundaries(lineTokens: LineTokens, tokenIndex: usize) [2]usize {

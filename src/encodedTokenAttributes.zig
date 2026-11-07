@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 
 // Open ended enum at runtime
 pub const LanguageId = enum(u8) { Null = 0, PlainText = 1 };
@@ -280,7 +280,7 @@ pub const TokenMetadata = packed struct(u32) {
 };
 
 pub const TokenPresentation = struct {
-    foreground: ColorId,
+    foreground: u9,
     italic: bool,
     bold: bool,
     underline: bool,
@@ -293,9 +293,9 @@ test "TokenMetadata" {
         .tokenType = .Comment,
         .balancedBrackets = true,
         .fontStyle = .{ .italic = true, .bold = true, .underline = true, .strikethrough = true },
-        .foreground = .DefaultForeground,
+        .foreground = ColorId.DefaultForeground,
         .background = 0,
     };
     const presentation = metadata.getPresentationFromMetadata();
-    try std.testing.expectEqual(presentation.foreground, .DefaultForeground);
+    try std.testing.expectEqual(presentation.foreground, ColorId.DefaultForeground);
 }

@@ -1,5 +1,5 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const Range = @import("../basics/range.zig").Range;
 const Position = @import("../basics/position.zig").Position;
@@ -33,6 +33,13 @@ pub const ContiguousTokensStore = struct {
         };
     }
 
+    pub fn deinit(self: *ContiguousTokensStore) void {
+        for (self._lineTokens.items) |*lineTokens| {
+            if (lineTokens.*) |*tokens| tokens.deinit();
+        }
+        self._lineTokens.deinit();
+    }
+
     pub fn flush(self: *ContiguousTokensStore) void {
         self._lineTokens.clearAndFree();
         self._len = 0;
@@ -57,38 +64,32 @@ pub const ContiguousTokensStore = struct {
         return LineTokens.init(lineTokens, lineText, self._languageIdCodec);
     }
 
-    fn _massageTokens(allocator: Allocator, topLevelLanguageId: LanguageId, lineTextLength: usize, _tokens: ?[]TokenPacked) []TokenPacked {
-        const tokens = _tokens orelse null;
-
-        if (tokens == null) {
-            return EMPTY_LINE_TOKENS;
-        }
+    fn _massageTokens(allocator: Allocator, topLevelLanguageId: LanguageId, lineTextLength: usize, _tokens: ?[]TokenPacked) ?ArrayList(TokenPacked) {
+        const tokens = _tokens orelse return null;
 
         if (lineTextLength == 0) {
             var hasDifferentLanguageId = false;
             if (tokens.len > 1) {
-                hasDifferentLanguageId = (TokenMetadata.getLanguageId(tokens[1]) != topLevelLanguageId);
+                hasDifferentLanguageId = tokens[1].metadata.languageId != @backingInt(topLevelLanguageId);
             }
 
             if (!hasDifferentLanguageId) {
-                return EMPTY_LINE_TOKENS;
+                return null;
             }
         }
 
-        if (tokens.len == 0) {
-            var tokens2 = ArrayList(TokenPacked).init(allocator);
-            try tokens2.append(TokenPacked{ .endOffset = lineTextLength, .metadata = getDefaultMetadata(topLevelLanguageId) });
-            return tokens2.items;
+        var result = ArrayList(TokenPacked).init(allocator);
+        result.appendSlice(tokens) catch return null;
+
+        if (result.items.len >= 2) {
+            // Ensure the last token covers the end of the text.
+            result.items[result.items.len - 2] = TokenPacked{
+                .endOffset = @intCast(lineTextLength),
+                .metadata = result.items[result.items.len - 2].metadata,
+            };
         }
 
-        // Ensure the last token covers the end of the text
-        tokens[tokens.len - 2] = TokenPacked{ .endOffset = lineTextLength, .metadata = tokens[tokens.len - 2].metadata };
-
-        if (tokens.items.byteOffset == 0 and tokens.items.byteLength == tokens.items.buffer.byteLength) {
-            // Store directly the ArrayBuffer pointer to save an object
-            return tokens.items.buffer;
-        }
-        return tokens.items;
+        return result;
     }
 
     fn _ensureLine(self: *ContiguousTokensStore, lineIndex: usize) !void {
@@ -98,14 +99,15 @@ pub const ContiguousTokensStore = struct {
         }
     }
 
-    fn _deleteLines(self: *ContiguousTokensStore, start: usize, deleteCount: usize) void {
+    fn _deleteLines(self: *ContiguousTokensStore, start: usize, deleteCount_: usize) void {
+        var deleteCount = deleteCount_;
         if (deleteCount == 0) {
             return;
         }
         if (start + deleteCount > self._len) {
             deleteCount = self._len - start;
         }
-        self._lineTokens.replaceRange(start, deleteCount, &[_]?TokenPacked{});
+        self._lineTokens.replaceRange(start, deleteCount, &[_]?ArrayList(TokenPacked){}) catch {};
         self._len -= deleteCount;
     }
 
@@ -113,22 +115,23 @@ pub const ContiguousTokensStore = struct {
         if (insertCount == 0) {
             return;
         }
-        var lineTokens = ArrayList(?TokenPacked).init(self._lineTokens.allocator);
+        var lineTokens = ArrayList(?ArrayList(TokenPacked)).init(self._lineTokens.allocator);
+        defer lineTokens.deinit();
         for (0..insertCount) |_| {
             try lineTokens.append(null);
         }
-        self._lineTokens = try self._lineTokens.insertSlice(insertIndex, lineTokens.items);
+        try self._lineTokens.insertSlice(insertIndex, lineTokens.items);
         self._len += insertCount;
     }
 
     pub fn setTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineTextLength: usize, _tokens: ?[]TokenPacked, checkEquality: bool) bool {
-        const tokens = ContiguousTokensStore._massageTokens(self._lineTokens.allocator, self._languageIdCodec.encodeLanguageId(topLevelLanguageId), lineTextLength, _tokens);
-        self._ensureLine(lineIndex);
-        const oldTokens = self._lineTokens[lineIndex];
-        self._lineTokens[lineIndex] = tokens;
+        const tokens = ContiguousTokensStore._massageTokens(self._lineTokens.allocator, @fromBackingInt(@intCast(self._languageIdCodec.encodeLanguageId(topLevelLanguageId) catch 0)), lineTextLength, _tokens);
+        self._ensureLine(lineIndex) catch return false;
+        const oldTokens = self._lineTokens.items[lineIndex];
+        self._lineTokens.items[lineIndex] = tokens;
 
         if (checkEquality) {
-            return !ContiguousTokensStore._equals(oldTokens.?, tokens);
+            return !ContiguousTokensStore._equals(if (oldTokens) |t| t.items else null, if (tokens) |t| t.items else null);
         }
         return false;
     }
@@ -138,11 +141,13 @@ pub const ContiguousTokensStore = struct {
             return a == null and b == null;
         }
 
-        if (a.len != b.len) {
+        const a_slice = a.?;
+        const b_slice = b.?;
+        if (a_slice.len != b_slice.len) {
             return false;
         }
-        for (0..a.len) |i| {
-            if (a[i] != b[i]) {
+        for (0..a_slice.len) |i| {
+            if (a_slice[i] != b_slice[i]) {
                 return false;
             }
         }
@@ -168,20 +173,20 @@ pub const ContiguousTokensStore = struct {
                 return;
             }
 
-            ContiguousTokensEditing.delete(&self._lineTokens[firstLineIndex], range.startColumn - 1, range.endColumn - 1);
+            ContiguousTokensEditing.delete(&self._lineTokens.items[firstLineIndex], range.startColumn - 1, range.endColumn - 1) catch {};
             return;
         }
 
-        ContiguousTokensEditing.deleteEnding(&self._lineTokens[firstLineIndex], range.startColumn - 1);
+        ContiguousTokensEditing.deleteEnding(&self._lineTokens.items[firstLineIndex], range.startColumn - 1) catch {};
 
         const lastLineIndex = range.endLineNumber - 1;
-        const lastLineTokens = &self._lineTokens[lastLineIndex];
+        const lastLineTokens = &self._lineTokens.items[lastLineIndex];
         if (lastLineIndex < self._len) {
-            ContiguousTokensEditing.deleteBeginning(lastLineTokens, range.endColumn - 1);
+            ContiguousTokensEditing.deleteBeginning(lastLineTokens, range.endColumn - 1) catch {};
         }
 
         // Take remaining text on last line and append it to remaining text on first line
-        ContiguousTokensEditing.append(&self._lineTokens[firstLineIndex], lastLineTokens);
+        ContiguousTokensEditing.append(&self._lineTokens.items[firstLineIndex], lastLineTokens) catch {};
 
         // Delete middle lines
         self._deleteLines(range.startLineNumber, range.endLineNumber - range.startLineNumber);
@@ -198,22 +203,22 @@ pub const ContiguousTokensStore = struct {
             return;
         }
 
-        const lineTokens = &self._lineTokens[lineIndex];
+        const lineTokens = &self._lineTokens.items[lineIndex];
         if (eolCount == 0) {
             // Inserting text on one line
             ContiguousTokensEditing.insert(lineTokens, position.column - 1, firstLineLength);
             return;
         }
 
-        ContiguousTokensEditing.deleteEnding(lineTokens, position.column - 1);
+        ContiguousTokensEditing.deleteEnding(lineTokens, position.column - 1) catch {};
         ContiguousTokensEditing.insert(lineTokens, position.column - 1, firstLineLength);
 
-        self._insertLines(position.lineNumber, eolCount);
+        self._insertLines(position.lineNumber, eolCount) catch {};
     }
 
     //#endregion
 
-    pub fn setMultilineTokens(self: *ContiguousTokensStore, tokens: []ContiguousMultilineTokens, textModel: TextModel) struct { changes: []ModelTokensChangedRange } {
+    pub fn setMultilineTokens(self: *ContiguousTokensStore, tokens: []ContiguousMultilineTokens, textModel: *TextModel) struct { changes: []ModelTokensChangedRange } {
         if (tokens.len == 0) {
             return .{ .changes = &.{} };
         }
@@ -221,12 +226,12 @@ pub const ContiguousTokensStore = struct {
         var ranges: ArrayList(ModelTokensChangedRange) = ArrayList(ModelTokensChangedRange).init(std.heap.page_allocator);
 
         for (tokens) |element| {
-            var minChangedLineNumber = 0;
-            var maxChangedLineNumber = 0;
+            var minChangedLineNumber: usize = 0;
+            var maxChangedLineNumber: usize = 0;
             var hasChange = false;
-            for (element.startLineNumber..element.endLineNumber) |lineNumber| {
+            for (element.getStartLineNumber()..element.getEndLineNumber()) |lineNumber| {
                 if (hasChange) {
-                    self.setTokens(textModel.getLanguageId(), lineNumber - 1, textModel.getLineLength(lineNumber), element.getLineTokens(lineNumber), false);
+                    _ = self.setTokens(textModel.getLanguageId(), lineNumber - 1, textModel.getLineLength(lineNumber), element.getLineTokens(lineNumber), false);
                     maxChangedLineNumber = lineNumber;
                 } else {
                     const lineHasChange = self.setTokens(textModel.getLanguageId(), lineNumber - 1, textModel.getLineLength(lineNumber), element.getLineTokens(lineNumber), true);
@@ -238,7 +243,7 @@ pub const ContiguousTokensStore = struct {
                 }
             }
             if (hasChange) {
-                ranges.append(.{ .fromLineNumber = minChangedLineNumber, .toLineNumber = maxChangedLineNumber });
+                ranges.append(.{ .fromLineNumber = minChangedLineNumber, .toLineNumber = maxChangedLineNumber }) catch {};
             }
         }
 

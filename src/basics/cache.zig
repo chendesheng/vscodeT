@@ -14,6 +14,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
             _fn: *const fn (arg: TArg, ctx: TCtx) TComputed,
             _computeKey: *const fn (allocator: Allocator, arg: TArg) []const u8,
             _ctx: TCtx,
+            _owns_keys: bool,
 
             fn init(allocator: Allocator, ctx: TCtx, f: *const fn (arg: TArg, ctx: TCtx) TComputed, computeKey: ?*const fn (allocator: Allocator, arg: TArg) []const u8) Self {
                 if (computeKey == null) {
@@ -27,6 +28,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
                             }
                         }.compute,
                         ._ctx = ctx,
+                        ._owns_keys = false,
                     };
                 }
 
@@ -36,6 +38,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
                     ._fn = f,
                     ._computeKey = computeKey.?,
                     ._ctx = ctx,
+                    ._owns_keys = true,
                 };
             }
 
@@ -45,7 +48,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
                 while (keysIterator.next()) |k| {
                     const key = k.*;
                     _ = self._map2.remove(key);
-                    self._map2.allocator.free(key);
+                    if (self._owns_keys) self._map2.allocator.free(key);
                 }
                 self._map2.deinit();
             }
@@ -77,6 +80,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
         _fn: *const fn (arg: TArg, ctx: TCtx) TComputed,
         _computeKey: *const fn (allocator: Allocator, arg: TArg) []const u8,
         _ctx: TCtx,
+        _owns_keys: bool,
 
         fn init(allocator: Allocator, ctx: TCtx, f: *const fn (arg: TArg, ctx: TCtx) TComputed, computeKey: ?*const fn (allocator: Allocator, arg: TArg) []const u8) Self {
             if (TArg == []const u8 and computeKey == null) {
@@ -90,6 +94,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
                         }
                     }.compute,
                     ._ctx = ctx,
+                    ._owns_keys = false,
                 };
             }
 
@@ -99,6 +104,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
                 ._fn = f,
                 ._computeKey = computeKey.?,
                 ._ctx = ctx,
+                ._owns_keys = true,
             };
         }
 

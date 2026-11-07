@@ -1,5 +1,5 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
 const LineTokens = @import("lineTokens.zig").LineTokens;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;

@@ -32,11 +32,12 @@ pub const TreeNode = struct {
 
         var h: usize = 0;
         var current: ?*const TreeNode = self;
-        while (current != null) {
-            if (current.?.color == .black) {
+        while (current) |node| {
+            if (node == SENTINEL) break;
+            if (node.color == .black) {
                 h += 1;
             }
-            current = current.?.parent;
+            current = node.parent;
         }
         return h;
     }
@@ -152,7 +153,7 @@ const NodeColor = enum {
 };
 
 var sentinelValue: TreeNode = .{
-    .parent = undefined,
+    .parent = &sentinelValue,
     .left = &sentinelValue,
     .right = &sentinelValue,
     .color = .black,

@@ -1,7 +1,7 @@
 const std = @import("std");
-const io = std.io;
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const TokenPacked = @import("lineTokens.zig").TokenPacked;
 
 const ContiguousMultilineTokens = @import("./contiguousMultilineTokens.zig").ContiguousMultilineTokens;
@@ -9,11 +9,11 @@ const ContiguousMultilineTokens = @import("./contiguousMultilineTokens.zig").Con
 pub const ContiguousMultilineTokensBuilder = struct {
     _tokens: ArrayList(ContiguousMultilineTokens),
 
-    pub fn deserialize(allocator: Allocator, buff: io.AnyReader) !ArrayList(ContiguousMultilineTokens) {
-        const count = try buff.readInt(u32, .big);
+    pub fn deserialize(allocator: Allocator, buff: *Io.Reader) !ArrayList(ContiguousMultilineTokens) {
+        const count = try buff.takeInt(u32, .big);
         var result = ArrayList(ContiguousMultilineTokens).init(allocator);
         for (0..count) |_| {
-            try ContiguousMultilineTokens.deserialize(allocator, buff, &result);
+            try ContiguousMultilineTokens.deserialize(buff, &result);
         }
         return result;
     }
@@ -31,7 +31,7 @@ pub const ContiguousMultilineTokensBuilder = struct {
         self._tokens.deinit();
     }
 
-    pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: ArrayList(TokenPacked)) !void {
+    pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: []const TokenPacked) !void {
         if (self._tokens.items.len > 0) {
             var last = &self._tokens.items[self._tokens.items.len - 1];
             if (last.getEndLineNumber() + 1 == lineNumber) {
@@ -41,7 +41,7 @@ pub const ContiguousMultilineTokensBuilder = struct {
             }
         }
         var multilineTokens = ArrayList(?ArrayList(TokenPacked)).init(self._tokens.allocator);
-        try multilineTokens.append(lineTokens);
+        try multilineTokens.append(ArrayList(TokenPacked).fromOwnedSlice(self._tokens.allocator, try self._tokens.allocator.dupe(TokenPacked, lineTokens)));
         try self._tokens.append(ContiguousMultilineTokens.init(lineNumber, multilineTokens));
     }
 
@@ -67,10 +67,10 @@ pub const ContiguousMultilineTokensBuilder = struct {
     }
 
     fn _serialize(self: *ContiguousMultilineTokensBuilder, destination: []u8) !void {
-        var w = io.fixedBufferStream(destination).writer();
+        var w = Io.Writer.fixed(destination);
         try w.writeInt(u32, self._tokens.items.len, .big);
         for (self._tokens.items) |item| {
-            try item.serialize(w);
+            try item.serialize(&w);
         }
     }
 };
@@ -79,7 +79,7 @@ test "ContiguousMultilineTokensBuilder/add" {
     const allocator = std.testing.allocator;
     var builder = ContiguousMultilineTokensBuilder.init(allocator);
     defer builder.deinit();
-    try builder.add(1, ArrayList(TokenPacked).init(allocator));
+    try builder.add(1, &.{});
     const result = builder.finalize();
     try std.testing.expectEqual(1, result.items.len);
 }

@@ -1,18 +1,18 @@
 const std = @import("std");
-const io = std.io;
-const fs = std.fs;
+const Io = std.Io;
 const posix = std.posix;
 const tui = @import("tui.zig");
 const Size = tui.Size;
 const Point = tui.Point;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const logger = @import("logger.zig");
-const PieceTreeBufferBuilder = @import("../pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
-const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
+const PieceTreeBufferBuilder = @import("../pieceTreeTextBuffer/pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
+const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOperation;
-const Range = @import("../range.zig").Range;
+const Range = @import("../basics/range.zig").Range;
 const Utf8StreamIterator = @import("utf8Helper.zig").Utf8StreamIterator;
 const ansi = @import("ansi.zig");
+const String = @import("../basics/strings.zig").String;
 
 const MoveAction = enum {
     Up,
@@ -22,15 +22,16 @@ const MoveAction = enum {
 };
 
 var readerBuffer: [65535]u8 = undefined;
+var fileReaderBuffer: [65535]u8 = undefined;
 
-fn readFile(allocator: std.mem.Allocator, path: []const u8) !PieceTreeTextBuffer {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+fn readFile(io: Io, allocator: std.mem.Allocator, path: []const u8) !PieceTreeTextBuffer {
+    const file = try Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
     var builder = PieceTreeBufferBuilder.init(allocator);
-    const reader = file.reader();
+    var reader = file.readerStreaming(io, &fileReaderBuffer);
     while (true) {
-        const len = try reader.readAll(&readerBuffer);
+        const len = try reader.interface.readSliceShort(&readerBuffer);
         if (len == 0) {
             break;
         }
@@ -46,16 +47,10 @@ fn clamp(value: usize, min: usize, max: usize) usize {
     return @max(min, @min(value, max));
 }
 
-fn getFirstArg() !ArrayList(u8) {
-    const allocator = std.heap.page_allocator;
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-    if (args.len < 2) {
-        return error.NoPathProvided;
-    }
-    var firstArg = ArrayList(u8).init(allocator);
-    try firstArg.appendSlice(args[1]);
-    return firstArg;
+fn getFirstArg(args: std.process.Args) ![]const u8 {
+    var it = args.iterate();
+    _ = it.next(); // executable name
+    return it.next() orelse error.NoPathProvided;
 }
 
 fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
@@ -65,7 +60,7 @@ fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
 }
 
 const View = struct {
-    writer: io.AnyWriter,
+    writer: *Io.Writer,
     size: Size,
     scrollPosition: Point,
     cursorPosition: Point,
@@ -98,17 +93,18 @@ const View = struct {
 
         for (from..to + 1) |i| {
             const line = try tree.getLineContent(i);
+            defer line.deinit();
 
             try self.drawLineNumberGutter(lineNumberGutterWidth, i);
 
-            try tui.writeAll(out, line);
+            try tui.writeAll(out, line.items);
 
             if (i < to) {
                 try tui.writeAll(out, "⏎");
             }
 
-            if (line.len <= width) {
-                for (line.len..width) |_| {
+            if (line.items.len <= width) {
+                for (line.items.len..width) |_| {
                     try tui.writeAll(out, " ");
                 }
             }
@@ -119,6 +115,7 @@ const View = struct {
         }
 
         try tui.clearToEndOfScreen(out);
+        try out.flush();
     }
 
     fn drawCursor(self: *const View, tree: *const PieceTreeTextBuffer) !void {
@@ -127,6 +124,7 @@ const View = struct {
         const row = self.cursorPosition.row - self.scrollPosition.row + 1;
         const col = lineNumberGutterWidth + clamp(self.cursorPosition.col, 1, tree.getLineLength(self.cursorPosition.row) + 1);
         try tui.moveCursor(out, .{ .row = row, .col = col });
+        try out.flush();
     }
 
     fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeTextBuffer) !void {
@@ -173,12 +171,13 @@ const View = struct {
 
     fn insertAtCursor(self: *View, tree: *PieceTreeTextBuffer, text: []const u8) !void {
         const offset = tree.getOffsetAt(self.cursorPosition.row, self.cursorPosition.col);
-        _ = try tree.applyEdits(&[_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRangeAndText(Range{
+        var ops = [_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRangeAndText(Range{
             .startLineNumber = self.cursorPosition.row,
             .startColumn = self.cursorPosition.col,
             .endLineNumber = self.cursorPosition.row,
             .endColumn = self.cursorPosition.col,
-        }, text)}, false, false);
+        }, String.initBorrowed(text))};
+        _ = try tree.applyEdits(&ops, false, false);
         try self.updateCursorPosition(tree, offset + text.len);
     }
 
@@ -189,12 +188,13 @@ const View = struct {
             return;
         }
         try self.updateCursorPosition(tree, offset - 1);
-        _ = try tree.applyEdits(&[_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRange(Range{
+        var ops = [_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRange(Range{
             .startLineNumber = self.cursorPosition.row,
             .startColumn = self.cursorPosition.col,
             .endLineNumber = startPos.row,
             .endColumn = startPos.col,
-        })}, false, false);
+        })};
+        _ = try tree.applyEdits(&ops, false, false);
     }
 
     fn resize(self: *View, newSize: Size, tree: *const PieceTreeTextBuffer) !void {
@@ -208,17 +208,17 @@ const View = struct {
     }
 };
 
-fn initUtf8StreamIterator(fd: posix.fd_t) Utf8StreamIterator(16) {
-    const file = std.fs.File{ .handle = fd };
-    return Utf8StreamIterator(16).init(file.reader().any());
-}
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
-pub fn main() !void {
-    try logger.init("debug.log");
+    try logger.init(io, "debug.log");
     defer logger.deinit();
 
-    const stdout = std.io.getStdOut();
-    const out = stdout.writer();
+    var out_buffer: [4096]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &out_buffer);
+    const out = &stdout_writer.interface;
+    defer out.flush() catch {};
 
     const orig_termios = try tui.enableRawMode();
     tui.rememberOrigTermios(orig_termios);
@@ -235,19 +235,15 @@ pub fn main() !void {
 
     try tui.installSigWinch();
 
-    const pathArg = try getFirstArg();
-    defer pathArg.deinit();
+    const pathArg = try getFirstArg(init.minimal.args);
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
-    var tree = try readFile(allocator, pathArg.items);
+    var tree = try readFile(io, allocator, pathArg);
     defer tree.deinit();
 
     const size = try tui.getTerminalSize();
 
     var view = View{
-        .writer = out.any(),
+        .writer = out,
         .size = size,
         .scrollPosition = .{ .col = 1, .row = 1 },
         .cursorPosition = .{ .col = 1, .row = 1 },

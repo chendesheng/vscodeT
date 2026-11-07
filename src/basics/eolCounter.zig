@@ -1,5 +1,5 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 
 pub const EOL = enum(u8) {
     CRLF,
@@ -69,7 +69,7 @@ pub fn countEOL(text: []const u8) CountEOLResult {
         .eolCount = eolCount,
         .firstLineLength = firstLineLength,
         .lastLineLength = len - lastLineStart,
-        .eol = @enumFromInt(eol),
+        .eol = @fromBackingInt(@intCast(eol)),
     };
 }
 

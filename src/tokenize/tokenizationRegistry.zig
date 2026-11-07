@@ -112,8 +112,8 @@ pub const TokenizationRegistry = struct {
     }
 
     pub fn getDefaultBackground(self: *TokenizationRegistry) ?Color {
-        if (self._colorMap != null and self._colorMap.?.len > @intFromEnum(ColorId.DefaultBackground)) {
-            return self._colorMap.?[@intFromEnum(ColorId.DefaultBackground)];
+        if (self._colorMap != null and self._colorMap.?.len > @backingInt(ColorId.DefaultBackground)) {
+            return self._colorMap.?[@backingInt(ColorId.DefaultBackground)];
         }
         return null;
     }

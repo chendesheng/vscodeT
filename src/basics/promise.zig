@@ -1,5 +1,7 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const Io = std.Io;
+const io = Io.Threaded.global_single_threaded.io();
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const pair = @import("./utils.zig").pair;
 const Pair = @import("./utils.zig").Pair;
@@ -78,7 +80,7 @@ pub fn Promise(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        _lock: std.Thread.Mutex,
+        _lock: Io.Mutex,
         _state: PromiseState(T),
         _events: Emitter(*Self),
         _allocator: Allocator,
@@ -86,7 +88,7 @@ pub fn Promise(comptime T: type) type {
         pub fn init(allocator: Allocator, callback: fn (PromiseResolver(T)) anyerror!void) !*Self {
             const self = try allocator.create(Self);
             self.* = Self{
-                ._lock = std.Thread.Mutex{},
+                ._lock = Io.Mutex.init,
                 ._state = .{ .pending = {} },
                 ._events = Emitter(*Self).init(allocator),
                 ._allocator = allocator,
@@ -99,68 +101,70 @@ pub fn Promise(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self._lock.lock();
-            defer self._lock.unlock();
+            self._lock.lockUncancelable(io);
 
             self._events.deinit();
             remove(@ptrCast(self));
-            self._allocator.destroy(self);
+
+            const allocator = self._allocator;
+            self._lock.unlock(io);
+            allocator.destroy(self);
         }
 
         pub fn isPending(self: *Self) bool {
-            self._lock.lock();
-            defer self._lock.unlock();
+            self._lock.lockUncancelable(io);
+            defer self._lock.unlock(io);
 
             return self._state == .pending;
         }
 
         pub fn isResolved(self: *Self) bool {
-            self._lock.lock();
-            defer self._lock.unlock();
+            self._lock.lockUncancelable(io);
+            defer self._lock.unlock(io);
 
             return self._state != .pending;
         }
 
         fn callOnFulfilled(self: *Self, ctx: anytype, comptime onFulfilled: fn (value: T, ctx: @TypeOf(ctx)) anyerror!void) !void {
-            self._lock.lock();
+            self._lock.lockUncancelable(io);
 
             switch (self._state) {
                 .fulfilled => {
                     const value = self._state.fulfilled;
-                    self._lock.unlock();
+                    self._lock.unlock(io);
                     try onFulfilled(value, ctx);
                 },
                 else => {
-                    self._lock.unlock();
+                    self._lock.unlock(io);
                 },
             }
         }
 
         fn callOnRejected(self: *Self, ctx: anytype, comptime onRejected: fn (reason: anyerror, ctx: @TypeOf(ctx)) anyerror!void) !void {
-            self._lock.lock();
+            self._lock.lockUncancelable(io);
 
             switch (self._state) {
                 .rejected => {
                     const reason = self._state.rejected;
-                    self._lock.unlock();
+                    self._lock.unlock(io);
                     try onRejected(reason, ctx);
                 },
                 else => {
-                    self._lock.unlock();
+                    self._lock.unlock(io);
                 },
             }
         }
 
         fn callOnFinally(self: *Self, ctx: anytype, comptime onFinally: fn (promise: *Self, ctx: @TypeOf(ctx)) anyerror!void) !void {
-            self._lock.lock();
+            self._lock.lockUncancelable(io);
 
             switch (self._state) {
                 .fulfilled, .rejected => {
-                    self._lock.unlock();
+                    self._lock.unlock(io);
                     try onFinally(self, ctx);
                 },
                 else => {
-                    self._lock.unlock();
+                    self._lock.unlock(io);
                 },
             }
         }
@@ -212,8 +216,8 @@ pub fn PromiseResolver(comptime T: type) type {
         promise: *Promise(T),
 
         pub fn resolve(self: *Self, value: T) void {
-            self.promise._lock.lock();
-            defer self.promise._lock.unlock();
+            self.promise._lock.lockUncancelable(io);
+            defer self.promise._lock.unlock(io);
 
             if (self.promise._state == .pending) {
                 self.promise._state = .{ .fulfilled = value };
@@ -221,8 +225,8 @@ pub fn PromiseResolver(comptime T: type) type {
         }
 
         pub fn reject(self: *Self, reason: anyerror) void {
-            self.promise._lock.lock();
-            defer self.promise._lock.unlock();
+            self.promise._lock.lockUncancelable(io);
+            defer self.promise._lock.unlock(io);
 
             if (self.promise._state == .pending) {
                 self.promise._state = .{ .rejected = reason };
@@ -244,7 +248,7 @@ test "Promise/resolve" {
         fn callback(resolver: PromiseResolver(*const []const u8)) !void {
             _ = try std.Thread.spawn(.{}, struct {
                 fn run(res: @TypeOf(resolver)) void {
-                    std.Thread.sleep(10 * std.time.ns_per_ms);
+                    io.sleep(.fromMilliseconds(10), .awake) catch {};
                     var r = res;
                     r.resolve(&"I'm awake");
                 }
@@ -281,7 +285,7 @@ test "Promise/resolve" {
 
     // "event loop"
     for (0..3) |_| {
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        io.sleep(.fromMilliseconds(10), .awake) catch {};
         try tick();
     }
     try std.testing.expect(fulfilled);
@@ -298,7 +302,7 @@ test "Promise/catch" {
         fn callback(resolver: PromiseResolver(*const []const u8)) !void {
             _ = try std.Thread.spawn(.{}, struct {
                 fn run(res: @TypeOf(resolver)) void {
-                    std.Thread.sleep(10 * std.time.ns_per_ms);
+                    io.sleep(.fromMilliseconds(10), .awake) catch {};
                     var r = res;
                     r.reject(error.TestError);
                 }
@@ -335,7 +339,7 @@ test "Promise/catch" {
 
     // "event loop"
     for (0..3) |_| {
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        io.sleep(.fromMilliseconds(10), .awake) catch {};
         try tick();
     }
     try std.testing.expect(!fulfilled);

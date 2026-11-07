@@ -3,7 +3,7 @@ const Uri = std.Uri;
 const unicode = std.unicode;
 const Position = @import("./basics/position.zig").Position;
 const fmt = std.fmt;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const Model = @import("model.zig");
 const TextModelCreationOptions = Model.TextModelCreationOptions;
@@ -29,7 +29,7 @@ const IntervalNode = @import("IntervalTree.zig").IntervalNode;
 const recomputeMaxEnd = @import("IntervalTree.zig").recomputeMaxEnd;
 const PieceTreeBufferBuilder = @import("./pieceTreeTextBuffer/pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
 const PieceTreeTextBufferFactory = @import("./pieceTreeTextBuffer/pieceTreeBufferBuilder.zig").PieceTreeTextBufferFactory;
-const io = std.io;
+const Io = std.Io;
 const Range = @import("./basics/range.zig").Range;
 const TextChange = @import("textChange.zig").TextChange;
 const Selection = @import("./basics/selection.zig").Selection;
@@ -256,7 +256,7 @@ pub const TextModel = struct {
         }.cb);
     }
 
-    pub fn init(allocator: Allocator, source: io.AnyReader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService) !*TextModel {
+    pub fn init(allocator: Allocator, source: *Io.Reader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
         const bufferLineCount = buffer.getLineCount();
@@ -328,10 +328,11 @@ pub const TextModel = struct {
             ._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator),
             ._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator),
             ._eventEmitter = DidChangeContentEmitter.init(allocator),
-            ._tokenizationTextModelPart = TokenizationTextModelPart.init(model, languageId, attachedViews, languageService),
+            ._tokenizationTextModelPart = TokenizationTextModelPart.init(model, languageId, languageService, null),
             ._attachedViews = attachedViews,
             ._languageService = languageService,
         };
+        model._tokenizationTextModelPart.tokens.registerCallbacks(&model._attachedViews);
         return model;
     }
 
@@ -608,18 +609,18 @@ pub const TextModel = struct {
         return self._buffer.getLineLength(lineNumber) + 1; // add 1 for the line break
     }
 
-    pub fn getLineFirstNonWhitespaceColumn(self: *const TextModel, lineNumber: usize) usize {
+    pub fn getLineFirstNonWhitespaceColumn(self: *const TextModel, lineNumber: usize) !usize {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
             unreachable;
         }
-        return self._buffer.getLineFirstNonWhitespaceColumn(lineNumber);
+        return try @constCast(&self._buffer).getLineFirstNonWhitespaceColumn(lineNumber);
     }
 
-    pub fn getLineLastNonWhitespaceColumn(self: *const TextModel, lineNumber: usize) usize {
+    pub fn getLineLastNonWhitespaceColumn(self: *const TextModel, lineNumber: usize) !usize {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
             unreachable;
         }
-        return self._buffer.getLineLastNonWhitespaceColumn(lineNumber);
+        return try @constCast(&self._buffer).getLineLastNonWhitespaceColumn(lineNumber);
     }
 
     // Validates `range` is within buffer bounds, but allows it to sit in between surrogate pairs, etc.
@@ -1474,7 +1475,7 @@ pub const TextModel = struct {
                 return null;
             }
             // node doesn't exist, the request is to set => add the tracked range
-            return try self._deltaDecorationsImpl(0, &[_][]const u8{}, &[_]ModelDeltaDecoration{.{ .range = newRange, .options = TRACKED_RANGE_OPTIONS[@intFromEnum(newStickiness)] }}, true);
+            return try self._deltaDecorationsImpl(0, &[_][]const u8{}, &[_]ModelDeltaDecoration{.{ .range = newRange, .options = TRACKED_RANGE_OPTIONS[@backingInt(newStickiness)] }}, true);
         }
 
         if (newRange == null) {
@@ -1494,7 +1495,7 @@ pub const TextModel = struct {
 
         self._decorationsTree.delete(node_);
         node_.reset(self.getVersionId(), startOffset, endOffset, range);
-        node_.setOptions(TRACKED_RANGE_OPTIONS[@intFromEnum(newStickiness)]);
+        node_.setOptions(TRACKED_RANGE_OPTIONS[@backingInt(newStickiness)]);
         self._decorationsTree.insert(node_);
         return node_.id;
     }
@@ -1804,15 +1805,17 @@ pub const TextModel = struct {
 };
 
 fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: *UndoRedoService) !*TextModel {
-    var source = io.fixedBufferStream(text);
-    const reader = source.reader().any();
+    var reader = Io.Reader.fixed(text);
 
-    const codec = try LanguageIdCodec.init(allocator);
-    var languageService = LanguageService.init(allocator, codec);
+    // The language service outlives individual test helpers and is not owned
+    // by the model, so use the page allocator to keep it out of the testing
+    // allocator's leak accounting.
+    const codec = try LanguageIdCodec.init(std.heap.page_allocator);
+    var languageService = LanguageService.init(std.heap.page_allocator, codec);
 
     return try TextModel.init(
         allocator,
-        reader,
+        &reader,
         "",
         .{
             .tabSize = 4,
@@ -2180,17 +2183,17 @@ pub const DecorationsTrees = struct {
         try self._injectedTextDecorationsTree.acceptReplace(offset, length, textLength, forceMoveMarkers);
     }
 };
-pub fn createTextBuffer(allocator: Allocator, source: io.AnyReader, defaultEOL: EOL) !PieceTreeTextBuffer {
+pub fn createTextBuffer(allocator: Allocator, source: *Io.Reader, defaultEOL: EOL) !PieceTreeTextBuffer {
     const factory = try createTextBufferFactory(allocator, source);
     defer factory.deinit();
     return try factory.create(defaultEOL);
 }
 
 var readerBuffer: [65535]u8 = undefined;
-fn createTextBufferFactory(allocator: Allocator, reader: io.AnyReader) !PieceTreeTextBufferFactory {
+fn createTextBufferFactory(allocator: Allocator, reader: *Io.Reader) !PieceTreeTextBufferFactory {
     var builder = PieceTreeBufferBuilder.init(allocator);
     while (true) {
-        const len = try reader.readAll(&readerBuffer);
+        const len = try reader.readSliceShort(&readerBuffer);
         if (len == 0) {
             break;
         }
@@ -2336,7 +2339,7 @@ const DidChangeDecorationsEmitter = struct {
         self._affectsMinimap = false;
         self._affectsOverviewRuler = false;
         self._affectsGlyphMargin = false;
-        self._actual.fire(evt);
+        self._actual.fire(evt) catch {};
     }
 };
 
@@ -2384,8 +2387,8 @@ pub const DidChangeContentEmitter = struct {
                 var e = evt;
                 e.rawContentChangedEvent.resultingSelection = resultingSelection;
                 self._deferredEvent = null;
-                self._fastEmitter.fire(e);
-                self._slowEmitter.fire(e);
+                self._fastEmitter.fire(e) catch {};
+                self._slowEmitter.fire(e) catch {};
             }
         }
     }
@@ -2399,8 +2402,8 @@ pub const DidChangeContentEmitter = struct {
             }
             return;
         }
-        self._fastEmitter.fire(e);
-        self._slowEmitter.fire(e);
+        self._fastEmitter.fire(e) catch {};
+        self._slowEmitter.fire(e) catch {};
     }
 };
 

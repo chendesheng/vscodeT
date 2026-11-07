@@ -1,8 +1,7 @@
 const std = @import("std");
-const io = std.io;
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
-const fs = std.fs;
+const ArrayList = std.array_list.Managed;
 const strings = @import("./basics/strings.zig");
 const Pair = @import("./basics/utils.zig").Pair;
 const pair = @import("./basics/utils.zig").pair;
@@ -77,16 +76,16 @@ pub const TextChange = struct {
         + _wriateStringSize(self.newText.items());
     }
 
-    pub fn write(self: *const TextChange, writer: io.AnyWriter) !void {
+    pub fn write(self: *const TextChange, writer: *Io.Writer) !void {
         try writer.writeInt(u32, @intCast(self.oldPosition), .big);
         try writer.writeInt(u32, @intCast(self.newPosition), .big);
         try _writeString(writer, self.oldText.items());
         try _writeString(writer, self.newText.items());
     }
 
-    pub fn read(reader: io.AnyReader, allocator: Allocator, dest: *ArrayList(TextChange)) !void {
-        const oldPosition = try reader.readInt(u32, .big);
-        const newPosition = try reader.readInt(u32, .big);
+    pub fn read(reader: *Io.Reader, allocator: Allocator, dest: *ArrayList(TextChange)) !void {
+        const oldPosition = try reader.takeInt(u32, .big);
+        const newPosition = try reader.takeInt(u32, .big);
         const oldText = String.initOwned(try _readString(reader, allocator));
         const newText = String.initOwned(try _readString(reader, allocator));
         try dest.append(TextChange.init(oldPosition, oldText, newPosition, newText));
@@ -352,17 +351,17 @@ fn _wriateStringSize(str: []const u8) usize {
     return 4 + str.len;
 }
 
-fn _writeString(writer: io.AnyWriter, str: []const u8) !void {
+fn _writeString(writer: *Io.Writer, str: []const u8) !void {
     const len: u32 = @intCast(str.len);
     try writer.writeInt(u32, len, .big);
     try writer.writeAll(str);
 }
 
-fn _readString(reader: io.AnyReader, allocator: Allocator) !ArrayList(u8) {
-    const len: usize = @intCast(try reader.readInt(u32, .big));
+fn _readString(reader: *Io.Reader, allocator: Allocator) !ArrayList(u8) {
+    const len: usize = @intCast(try reader.takeInt(u32, .big));
     var str = try ArrayList(u8).initCapacity(allocator, len);
     try str.resize(len);
-    const readLen = try reader.readAll(str.items);
+    const readLen = try reader.readSliceShort(str.items);
     std.debug.assert(readLen == len);
     return str;
 }
@@ -383,12 +382,10 @@ test "textChange read/write" {
     defer change.deinit();
 
     var buf: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const writer = stream.writer().any();
-    try change.write(writer);
+    var writer = Io.Writer.fixed(&buf);
+    try change.write(&writer);
 
-    stream.reset();
-    const reader = stream.reader().any();
+    var reader = Io.Reader.fixed(writer.buffered());
     var readChanges = ArrayList(TextChange).init(allocator);
     defer readChanges.deinit();
     defer {
@@ -396,7 +393,7 @@ test "textChange read/write" {
             item.deinit();
         }
     }
-    try TextChange.read(reader, allocator, &readChanges);
+    try TextChange.read(&reader, allocator, &readChanges);
 
     try std.testing.expectEqual(change.newPosition, readChanges.items[0].newPosition);
     try std.testing.expectEqualStrings(change.newText.items(), readChanges.items[0].newText.items());

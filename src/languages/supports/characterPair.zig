@@ -1,5 +1,5 @@
 const std = @import("std");
-const BoundedArray = std.BoundedArray;
+const BoundedArray = @import("../../basics/boundedArray.zig").BoundedArray;
 const IAutoClosingPair = @import("../languageConfiguration.zig").IAutoClosingPair;
 const StandardAutoClosingPairConditional = @import("../languageConfiguration.zig").StandardAutoClosingPairConditional;
 const LanguageConfiguration = @import("../languageConfiguration.zig").LanguageConfiguration;

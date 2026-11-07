@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const unicode = std.unicode;
 const WordCharacterClassifier = @import("./basics/wordCharacterClassifier.zig").WordCharacterClassifier;
 const WordCharacterClass = @import("./basics/wordCharacterClassifier.zig").WordCharacterClass;

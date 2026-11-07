@@ -15,17 +15,22 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const onig = onigModule(b, target, optimize);
+
     // We will also create a module for our other entry point, 'main.zig'.
     const exe = b.addExecutable(.{
         .name = "zig",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
-    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-    exe.linkSystemLibrary("onig");
+    exe.root_module.addImport("oniguruma", onig);
+    exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    exe.root_module.linkSystemLibrary("onig", .{});
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
@@ -36,9 +41,6 @@ pub fn build(b: *std.Build) void {
     // step is evaluated that depends on it. The next line below will establish
     // such a dependency.
     const run_cmd = b.addRunArtifact(exe);
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
 
     // By making the run step depend on the install step, it will be run from the
     // installation directory rather than directly from within the cache directory.
@@ -46,32 +48,48 @@ pub fn build(b: *std.Build) void {
     // files, this ensures they will be present and in the expected location.
     // run_cmd.step.dependOn(b.getInstallStep());
 
-    // This allows the user to pass arguments to the application in the build
-    // command itself, like this: `zig build run -- arg1 arg2 etc`
-    // if (b.args) |args| {
-    // run_cmd.addArgs(args);
-    // }
-
     // This creates a build step. It will be visible in the `zig build --help` menu,
     // and can be selected like this: `zig build run`
     // This will evaluate the `run` step rather than the default, which is "install".
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    setupTests(b);
+    setupTests(b, target, optimize, onig);
 }
 
-fn setupTests(b: *std.Build) void {
+/// Translates the oniguruma C header into a Zig module. Zig 0.17 removed
+/// `@cImport`, so C headers must be translated by the build system instead.
+fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) *std.Build.Module {
+    const translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/basics/oniguruma.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translate.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+
+    const module = translate.createModule();
+    module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    module.linkSystemLibrary("onig", .{});
+    return module;
+}
+
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module) void {
     const test_step = b.step("test", "Run all tests");
 
-    const files = [_][]const u8{
-        "src/pieceTreeBase.zig",
-        "src/rbTreeBase.zig",
-    };
+    const tests = b.addTest(.{
+        .name = "tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    tests.root_module.addImport("oniguruma", onig);
+    tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    tests.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    tests.root_module.linkSystemLibrary("onig", .{});
 
-    for (files) |file| {
-        const t = b.addTest(.{ .root_source_file = b.path(file) });
-        const run_t = b.addRunArtifact(t);
-        test_step.dependOn(&run_t.step);
-    }
+    const run_tests = b.addRunArtifact(tests);
+    test_step.dependOn(&run_tests.step);
 }

@@ -1,5 +1,5 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const Range = @import("./basics/range.zig").Range;
 const Selection = @import("./basics/selection.zig").Selection;

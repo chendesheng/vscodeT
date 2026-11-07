@@ -1,45 +1,59 @@
 const std = @import("std");
-const io = std.io;
-const fs = std.fs;
+const Io = std.Io;
 
-var loggerFile: ?fs.File = null;
+var io_instance: ?Io = null;
+var loggerFile: ?Io.File = null;
+var loggerWriter: ?Io.File.Writer = null;
+var writer_buffer: [4096]u8 = undefined;
 
 pub fn format(comptime fmt: []const u8, args: anytype) void {
-    if (loggerFile) |file| {
-        std.fmt.format(file.writer(), fmt, args) catch {};
+    if (loggerWriter) |*w| {
+        w.interface.print(fmt, args) catch {};
     }
 }
 
-pub fn writer() ?fs.File.Writer {
-    if (loggerFile) |file| {
-        return file.writer();
+pub fn print(comptime fmt: []const u8, args: anytype) void {
+    format(fmt, args);
+}
+
+pub fn writer() ?*Io.Writer {
+    if (loggerWriter) |*w| {
+        return &w.interface;
     }
     return null;
 }
 
 pub fn write(text: []const u8) void {
-    if (loggerFile) |file| {
-        _ = file.write(text) catch {};
+    if (loggerWriter) |*w| {
+        w.interface.writeAll(text) catch {};
     }
 }
 
-pub fn openLoggerFile(filepath: []const u8) !fs.File {
-    const file = std.fs.cwd().openFile(filepath, .{
+pub fn openLoggerFile(io: Io, filepath: []const u8) !Io.File {
+    const dir = Io.Dir.cwd();
+    return dir.openFile(io, filepath, .{
         .mode = .write_only,
-    }) catch blk: {
-        // If file doesn't exist, create it
-        break :blk try std.fs.cwd().createFile(filepath, .{});
-    };
-    try file.seekFromEnd(0);
-    return file;
+    }) catch dir.createFile(io, filepath, .{});
 }
 
-pub fn init(filepath: []const u8) !void {
-    loggerFile = try openLoggerFile(filepath);
+pub fn init(io: Io, filepath: []const u8) !void {
+    const file = try openLoggerFile(io, filepath);
+
+    io_instance = io;
+    loggerFile = file;
+    loggerWriter = .init(file, io, &writer_buffer);
+    try loggerWriter.?.end();
 }
 
 pub fn deinit() void {
-    if (loggerFile) |file| {
-        file.close();
+    if (loggerWriter) |*w| {
+        w.interface.flush() catch {};
     }
+    loggerWriter = null;
+
+    if (io_instance) |io| {
+        if (loggerFile) |file| file.close(io);
+    }
+    loggerFile = null;
+    io_instance = null;
 }

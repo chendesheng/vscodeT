@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const TextModel = @import("../textModel.zig").TextModel;
 const LineTokens = @import("../tokens/lineTokens.zig").LineTokens;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
@@ -49,7 +49,7 @@ pub const AttachedViews = struct {
 
         for (self._views.values()) |view| {
             if (view._state) |state| {
-                for (state.visibleLineRanges) |lineRange| {
+                for (state.visibleLineRanges.items) |lineRange| {
                     try set.addRange(lineRange);
                 }
             }
@@ -59,8 +59,8 @@ pub const AttachedViews = struct {
         try self.visibleLineRanges.appendSlice(set.ranges());
     }
 
-    pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: *const fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) void) !void {
-        self._onDidChangeVisibleRanges.event(ctx, callback);
+    pub fn onDidChangeVisibleRanges(self: *AttachedViews, ctx: anytype, callback: fn (e: AttachedViewAndState, ctx: @TypeOf(ctx)) anyerror!void) !void {
+        try self._onDidChangeVisibleRanges.event(ctx, callback);
         try self.triggerViewChanged();
     }
 
@@ -158,13 +158,15 @@ pub const AttachedView = struct {
 pub const AttachedViewHandler = struct {
     _computedLineRanges: []LineRange,
     _lineRanges: []LineRange,
-    refreshTokens: *const fn (AttachedViewHandler) void,
+    refreshTokens: *const fn (ctx: *anyopaque, handler: AttachedViewHandler) void,
+    _ctx: *anyopaque,
 
-    pub fn init(refreshTokens: *const fn (AttachedViewHandler) void) AttachedViewHandler {
+    pub fn init(ctx: *anyopaque, refreshTokens: *const fn (ctx: *anyopaque, handler: AttachedViewHandler) void) AttachedViewHandler {
         return AttachedViewHandler{
             ._computedLineRanges = &[_]LineRange{},
             ._lineRanges = &[_]LineRange{},
             .refreshTokens = refreshTokens,
+            ._ctx = ctx,
         };
     }
 
@@ -173,7 +175,7 @@ pub const AttachedViewHandler = struct {
             return;
         }
         self._computedLineRanges = self._lineRanges;
-        self.refreshTokens(self);
+        self.refreshTokens(self._ctx, self.*);
     }
 
     pub fn handleStateChange(self: *AttachedViewHandler, state: AttachedViewState) void {
@@ -225,7 +227,7 @@ pub const AbstractSyntaxTokenBackend = struct {
     }
 
     pub fn textModel(self: *AbstractSyntaxTokenBackend) *TextModel {
-        return @alignCast(@ptrCast(self._textModel));
+        return @ptrCast(@alignCast(self._textModel));
     }
 
     pub fn tokenizeIfCheap(self: *AbstractSyntaxTokenBackend, lineNumber: usize) void {

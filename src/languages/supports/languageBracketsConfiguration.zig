@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const StringHashMap = std.StringHashMap;
 const Set = @import("../../basics/set.zig").Set;
 const CachedFunction = @import("../../basics/cache.zig").CachedFunction;
@@ -143,7 +143,7 @@ pub const LanguageBracketsConfiguration = struct {
 
     pub fn getBracketRegExp(self: *const Self, options: ?RegExpOptions) !RegExp {
         const allocator = self._openingBrackets.allocator;
-        const brackets = std.ArrayList(Pair(OpeningBracketKind, ClosingBracketKind)).init(allocator);
+        const brackets = std.array_list.Managed(Pair(OpeningBracketKind, ClosingBracketKind)).init(allocator);
         for (self._openingBrackets.keys()) |key| {
             brackets.append(pair(self._openingBrackets.get(key).?, self._closingBrackets.get(key).?));
         }

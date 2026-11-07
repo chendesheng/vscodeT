@@ -1,5 +1,5 @@
 const std = @import("std");
-const ArrayList = std.ArrayList;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const countEOL = @import("../basics/eolCounter.zig").countEOL;
 const StringEOL = @import("../basics/eolCounter.zig").StringEOL;
@@ -243,15 +243,17 @@ pub const PieceTreeTextBuffer = struct {
         return self._pieceTree.getLineLength(lineNumber) + 1;
     }
 
-    pub fn getLineFirstNonWhitespaceColumn(self: *const PieceTreeTextBuffer, lineNumber: usize) usize {
-        const lineContent = self.getLineContent(lineNumber);
-        const result = strings.firstNonWhitespaceIndex(lineContent);
+    pub fn getLineFirstNonWhitespaceColumn(self: *PieceTreeTextBuffer, lineNumber: usize) !usize {
+        const line_content = try self.getLineContent(lineNumber);
+        defer line_content.deinit();
+        const result = strings.firstNonWhitespaceIndex(line_content.items);
         return if (result) |i| i + 1 else 0;
     }
 
-    pub fn getLineLastNonWhitespaceColumn(self: *const PieceTreeTextBuffer, lineNumber: usize) usize {
-        const lineContent = self.getLineContent(lineNumber);
-        const result = strings.lastNonWhitespaceIndex(lineContent);
+    pub fn getLineLastNonWhitespaceColumn(self: *PieceTreeTextBuffer, lineNumber: usize) !usize {
+        const line_content = try self.getLineContent(lineNumber);
+        defer line_content.deinit();
+        const result = strings.lastNonWhitespaceIndex(line_content.items);
         return if (result) |i| i + 2 else 0;
     }
 
@@ -316,7 +318,7 @@ pub const PieceTreeTextBuffer = struct {
                 if (strEOL != .Unknown or strEOL == expectedStrEOL) {
                     validText = text.move();
                 } else {
-                    var temp = std.ArrayList(u8).init(allocator);
+                    var temp = std.array_list.Managed(u8).init(allocator);
                     try temp.appendSlice(text.items());
                     try replaceEOL(&temp, bufferEOL);
                     validText = String.initOwned(temp);
@@ -532,6 +534,7 @@ pub const PieceTreeTextBuffer = struct {
             .allocator = allocator,
             .capacity = result.items.len,
             .items = try std.mem.join(allocator, "", result.items),
+            .pointer_stability = .{},
         });
         const eolResult = countEOL(text.items());
         return ValidatedEditOperation{
@@ -607,7 +610,7 @@ pub const PieceTreeTextBuffer = struct {
 
 // Assumes `operations` are validated and sorted ascending
 fn _getInverseEditRanges(allocator: Allocator, operators: []ValidatedEditOperation) !ArrayList(Range) {
-    var result = std.ArrayList(Range).init(allocator);
+    var result = std.array_list.Managed(Range).init(allocator);
 
     var prevOpEndLineNumber: usize = 0;
     var prevOpEndColumn: usize = 0;

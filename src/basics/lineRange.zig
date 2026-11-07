@@ -1,7 +1,7 @@
 const std = @import("std");
-const io = std.io;
-const BoundedArray = std.BoundedArray;
-const ArrayList = std.ArrayList;
+const Io = std.Io;
+const BoundedArray = @import("./boundedArray.zig").BoundedArray;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const findFirstIdxMonotonousOrArrLen = @import("./utils.zig").findFirstIdxMonotonousOrArrLen;
 const findLastIdxMonotonous = @import("./utils.zig").findLastIdxMonotonous;
@@ -124,7 +124,7 @@ pub const LineRange = struct {
         return LineRange.init(@min(self.startLineNumber, other.startLineNumber), @max(self.endLineNumberExclusive, other.endLineNumberExclusive));
     }
 
-    pub fn toString(self: *const LineRange, writer: io.AnyWriter) !void {
+    pub fn toString(self: *const LineRange, writer: *Io.Writer) !void {
         try writer.print("[{d},{d})", .{ self.startLineNumber, self.endLineNumberExclusive });
     }
 
@@ -411,7 +411,7 @@ pub const LineRangeSet = struct {
         return LineRangeSet.init(result);
     }
 
-    pub fn toString(self: *const LineRangeSet, writer: io.AnyWriter) !void {
+    pub fn toString(self: *const LineRangeSet, writer: *Io.Writer) !void {
         for (self._normalizedRanges.items, 0..) |r, i| {
             try r.toString(writer);
             if (i < self._normalizedRanges.items.len - 1) {
@@ -526,9 +526,9 @@ test "LineRangeSet/toString" {
     try set.addRange(.init(100, 200));
 
     var buf: [1024]u8 = undefined;
-    var stream = io.fixedBufferStream(&buf);
-    try set.toString(stream.writer().any());
-    try std.testing.expectEqualStrings("[1,10), [100,200)", stream.getWritten());
+    var writer = Io.Writer.fixed(&buf);
+    try set.toString(&writer);
+    try std.testing.expectEqualStrings("[1,10), [100,200)", writer.buffered());
 }
 
 test "LineRangeSet/getIntersection" {

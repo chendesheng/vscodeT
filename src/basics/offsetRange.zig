@@ -1,6 +1,6 @@
 const std = @import("std");
-const io = std.io;
-const ArrayList = std.ArrayList;
+const Io = std.Io;
+const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const usizeAdd = @import("utils.zig").usizeAdd;
 const clamp = @import("utils.zig").clamp;
@@ -71,7 +71,7 @@ pub const OffsetRange = struct {
         return self.endExclusive - self.start;
     }
 
-    pub fn toString(self: *const OffsetRange, writer: io.AnyWriter) !void {
+    pub fn toString(self: *const OffsetRange, writer: *Io.Writer) !void {
         try writer.print("[{d}, {d})", .{ self.start, self.endExclusive });
     }
 
@@ -197,10 +197,10 @@ test "OffsetRange" {
     try std.testing.expectEqual(9, range.endExclusive);
     try std.testing.expectEqual(4, range.length());
     try std.testing.expectEqual(true, range.contains(6));
-    var str = std.ArrayList(u8).init(allocator);
+    var str: Io.Writer.Allocating = .init(allocator);
     defer str.deinit();
-    try range.toString(str.writer().any());
-    try std.testing.expectEqualStrings("[5, 9)", str.items);
+    try range.toString(&str.writer);
+    try std.testing.expectEqualStrings("[5, 9)", str.writer.buffered());
     try std.testing.expect(range.containsRange(OffsetRange.init(5, 8)));
     try std.testing.expectEqualDeep(OffsetRange.init(5, 10), range.join(OffsetRange.init(6, 10)));
     try std.testing.expectEqualDeep(OffsetRange.init(5, 8), range.intersect(OffsetRange.init(4, 8)));
@@ -249,7 +249,7 @@ pub const OffsetRangeSet = struct {
 
     pub fn toString(self: OffsetRangeSet) !ArrayList(u8) {
         const allocator = self.sortedRanges.allocator;
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         for (self.sortedRanges.items, 0..) |range, i| {
             const part = try range.toString(allocator);
             defer allocator.free(part);
