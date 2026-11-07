@@ -10,6 +10,7 @@ const strings = @import("./basics/strings.zig");
 const RegExp = @import("./basics/RegExp.zig").RegExp;
 const WordCharacterClassifier = @import("./basics/wordCharacterClassifier.zig").WordCharacterClassifier;
 pub const ModelContentChange = @import("textModelEvents.zig").ModelContentChange;
+const ModelOptionsChangedEvent = @import("textModelEvents.zig").ModelOptionsChangedEvent;
 const String = @import("./basics/strings.zig").String;
 const EOL = @import("./basics/eolCounter.zig").EOL;
 
@@ -243,17 +244,8 @@ pub const TextModelResolvedOptions = struct {
             .indentSize = self.indentSize != newOpts.indentSize,
             .insertSpaces = self.insertSpaces != newOpts.insertSpaces,
             .trimAutoWhitespace = self.trimAutoWhitespace != newOpts.trimAutoWhitespace,
-            .bracketPairColorizationOptions = self.bracketPairColorizationOptions,
         };
     }
-};
-
-const ModelOptionsChangedEvent = struct {
-    tabSize: bool,
-    indentSize: bool,
-    insertSpaces: bool,
-    trimAutoWhitespace: bool,
-    bracketPairColorizationOptions: bool,
 };
 
 pub const FindMatch = struct {

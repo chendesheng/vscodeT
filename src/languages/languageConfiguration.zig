@@ -296,3 +296,18 @@ fn appendEntry(target: *StringHashMap([]StandardAutoClosingPairConditional), key
         target.put(key, &[_]StandardAutoClosingPairConditional{value}) catch unreachable;
     }
 }
+
+pub fn empty() LanguageConfiguration {
+    return .{
+        .comments = null,
+        .brackets = null,
+        .wordPattern = null,
+        .indentationRules = null,
+        .onEnterRules = null,
+        .autoClosingPairs = null,
+        .surroundingPairs = null,
+        .colorizedBracketPairs = null,
+        .autoCloseBefore = null,
+        .folding = null,
+    };
+}

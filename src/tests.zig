@@ -40,6 +40,8 @@ comptime {
     _ = @import("tokenizer/integrationTests.zig");
     _ = @import("tokenizer/wordTests.zig");
     _ = @import("tokenizer/tokenPrimitivesTests.zig");
+    _ = @import("tokenizer/bracketPairsTests.zig");
+    _ = @import("tokenizer/astTests.zig");
     _ = @import("basics/wordHelper.zig");
     _ = @import("tokens/contiguousMultilineTokens.zig");
     _ = @import("tokens/contiguousMultilineTokensBuilder.zig");

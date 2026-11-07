@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const Emitter = @import("../basics/event.zig").Emitter;
 const Uri = std.Uri;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
+const LanguageConfiguration = @import("./languageConfiguration.zig").LanguageConfiguration;
 
 pub const ILanguageExtensionPoint = struct {
     id: []const u8,
@@ -38,6 +39,8 @@ pub const LanguageIcon = struct {
 pub const LanguageService = struct {
     // A codec which can encode and decode a string `languageId` as a number.
     languageIdCodec: *LanguageIdCodec,
+
+    _languageConfigurations: std.StringHashMap(LanguageConfiguration),
 
     // An event emitted when basic language features are requested for the first time.
     // This event is emitted when embedded languages are encountered (e.g. JS code block inside Markdown)
@@ -116,6 +119,7 @@ pub const LanguageService = struct {
     pub fn init(allocator: Allocator, languageIdCodec: *LanguageIdCodec) LanguageService {
         return LanguageService{
             .languageIdCodec = languageIdCodec,
+            ._languageConfigurations = std.StringHashMap(LanguageConfiguration).init(allocator),
             .onDidRequestBasicLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidRequestRichLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidChange = Emitter(void).init(allocator),
@@ -140,7 +144,24 @@ pub const LanguageService = struct {
         };
     }
 
+    pub fn registerLanguageConfiguration(self: *LanguageService, languageId: []const u8, configuration: LanguageConfiguration) !void {
+        if (self._languageConfigurations.getEntry(languageId)) |entry| {
+            entry.value_ptr.* = configuration;
+            return;
+        }
+        const key = try self._languageConfigurations.allocator.dupe(u8, languageId);
+        errdefer self._languageConfigurations.allocator.free(key);
+        try self._languageConfigurations.put(key, configuration);
+    }
+
+    pub fn getLanguageConfiguration(self: *LanguageService, languageId: []const u8) ?LanguageConfiguration {
+        return self._languageConfigurations.get(languageId);
+    }
+
     pub fn deinit(self: *LanguageService) void {
+        var keyIter = self._languageConfigurations.keyIterator();
+        while (keyIter.next()) |key| self._languageConfigurations.allocator.free(key.*);
+        self._languageConfigurations.deinit();
         self.onDidRequestBasicLanguageFeatures.deinit();
         self.onDidRequestRichLanguageFeatures.deinit();
         self.onDidChange.deinit();

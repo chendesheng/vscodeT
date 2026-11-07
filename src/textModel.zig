@@ -72,6 +72,10 @@ const SearchParams = @import("textModelSearch.zig").SearchParams;
 const TextModelSearch = @import("textModelSearch.zig").TextModelSearch;
 const String = @import("./basics/strings.zig").String;
 const TokenizationTextModelPart = @import("./tokenize/tokenizationTextModelPart.zig").TokenizationTextModelPart;
+const BracketPairsTextModelPart = @import("bracketPairsTextModelPart.zig").BracketPairsTextModelPart;
+const BracketInfo = @import("bracketPairsTextModelPart.zig").BracketInfo;
+const BracketPairInfo = @import("bracketPairsTextModelPart.zig").BracketPairInfo;
+const ColorizedBracketPairsDecorationProvider = @import("colorizedBracketPairsDecorationProvider.zig").ColorizedBracketPairsDecorationProvider;
 const WordAtPosition = @import("./basics/utils.zig").WordAtPosition;
 const ModelTokensChangedEvent = @import("./textModelEvents.zig").ModelTokensChangedEvent;
 const AttachedViews = @import("./tokenize/abstractSyntaxTokenBackend.zig").AttachedViews;
@@ -182,7 +186,8 @@ pub const TextModel = struct {
     _lastDecorationId: u32,
     _decorations: std.AutoHashMap(u64, *IntervalNode),
     _decorationsTree: DecorationsTrees,
-    // _decorationProvider: ColorizedBracketPairsDecorationProvider,
+    _decorationProvider: ColorizedBracketPairsDecorationProvider,
+    _bracketPairs: BracketPairsTextModelPart,
     //#endregion
 
     _languageService: *LanguageService,
@@ -226,14 +231,17 @@ pub const TextModel = struct {
 
     pub fn resetTokenization(self: *TextModel) void {
         self._tokenizationTextModelPart.resetTokenization();
+        self._bracketPairs.markDirty();
     }
 
     pub fn forceTokenization(self: *TextModel, lineNumber: usize) void {
         self._tokenizationTextModelPart.forceTokenization(lineNumber);
+        self._bracketPairs.markDirty();
     }
 
     pub fn tokenizeIfCheap(self: *TextModel, lineNumber: usize) void {
         self._tokenizationTextModelPart.tokenizeIfCheap(lineNumber);
+        self._bracketPairs.markDirty();
     }
 
     pub fn hasAccurateTokensForLine(self: *TextModel, lineNumber: usize) bool {
@@ -393,6 +401,8 @@ pub const TextModel = struct {
             ._deltaDecorationCallCnt = 0,
             ._decorations = std.AutoHashMap(u64, *IntervalNode).init(allocator),
             ._decorationsTree = DecorationsTrees.init(allocator),
+            ._decorationProvider = ColorizedBracketPairsDecorationProvider.init(allocator, model),
+            ._bracketPairs = BracketPairsTextModelPart.init(allocator, model, languageService),
             ._commandManager = EditStack.init(model, undoRedoService),
             ._isUndoing = false,
             ._isRedoing = false,
@@ -417,6 +427,11 @@ pub const TextModel = struct {
             ._languageService = languageService,
         };
         model._tokenizationTextModelPart.registerCallbacks(&model._attachedViews);
+        model._tokenizationTextModelPart.onDidChangeTokensWithContext(&model._bracketPairs, struct {
+            fn cb(_: ModelTokensChangedEvent, pairs: *BracketPairsTextModelPart) !void {
+                pairs.markDirty();
+            }
+        }.cb) catch {};
         return model;
     }
 
@@ -439,6 +454,8 @@ pub const TextModel = struct {
         self._onDidChangeLineHeight.deinit();
         self._eventEmitter.deinit();
         self._tokenizationTextModelPart.deinit();
+        self._bracketPairs.deinit();
+        self._decorationProvider.deinit();
         self._attachedViews.deinit();
     }
 
@@ -454,13 +471,21 @@ pub const TextModel = struct {
         return self._buffer;
     }
 
+    pub fn getOptions(self: *const TextModel) TextModelResolvedOptions {
+        return self._options;
+    }
+
     pub fn updateOptions(self: *TextModel, _newOpts: TextModelUpdateOptions) void {
-        const newOpts = self._options;
+        var newOpts = self._options;
         if (_newOpts.tabSize) |tabSize| {
             newOpts.tabSize = tabSize;
         }
         if (_newOpts.indentSize) |indentSize| {
-            newOpts.indentSize = indentSize;
+            newOpts._indentSizeIsTabSize = indentSize == .tabSize;
+            newOpts.indentSize = switch (indentSize) {
+                .number => |n| n,
+                .tabSize => newOpts.tabSize,
+            };
         }
         if (_newOpts.insertSpaces) |insertSpaces| {
             newOpts.insertSpaces = insertSpaces;
@@ -479,9 +504,8 @@ pub const TextModel = struct {
         const e = self._options.createChangeEvent(newOpts);
         self._options = newOpts;
 
-        // this._bracketPairs.handleDidChangeOptions(e);
-        // this._decorationProvider.handleDidChangeOptions(e);
-        self._onDidChangeOptions.fire(e);
+        self._bracketPairs.handleDidChangeOptions();
+        self._onDidChangeOptions.fire(e) catch {};
     }
 
     pub fn detectIndentation(self: *TextModel, defaultInsertSpaces: bool, defaultTabSize: usize) void {
@@ -1207,7 +1231,7 @@ pub const TextModel = struct {
             return;
         }
         self._tokenizationTextModelPart.handleDidChangeContent(change);
-        // self._bracketPairs.handleDidChangeContent(change);
+        self._bracketPairs.handleDidChangeContent(change);
         self._eventEmitter.fire(InternalModelContentChangeEvent.init(rawChange, change));
     }
 
@@ -1629,7 +1653,9 @@ pub const TextModel = struct {
         const range = Range.init(startLineNumber_, 1, endLineNumber_, endColumn);
 
         var decorations = try self._getDecorationsInRange(range, ownerId, filterOutValidation, onlyMarginDecorations);
-        try decorations.appendSlice(try self._decorationProvider.getDecorationsInRange(range, ownerId, filterOutValidation));
+        var providerDecorations = try self._decorationProvider.getDecorationsInRange(range, ownerId, filterOutValidation, false);
+        defer providerDecorations.deinit();
+        try decorations.appendSlice(providerDecorations.items);
         return decorations.toOwnedSlice();
     }
 
@@ -1637,7 +1663,9 @@ pub const TextModel = struct {
         const validatedRange = self.validateRange(range);
 
         var decorations = try self._getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMarginDecorations);
-        try decorations.appendSlice(try self._decorationProvider.getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMinimapDecorations));
+        var providerDecorations = try self._decorationProvider.getDecorationsInRange(validatedRange, ownerId, filterOutValidation, onlyMinimapDecorations);
+        defer providerDecorations.deinit();
+        try decorations.appendSlice(providerDecorations.items);
         return decorations.toOwnedSlice();
     }
 
@@ -1668,7 +1696,9 @@ pub const TextModel = struct {
 
     pub fn getAllDecorations(self: *TextModel, ownerId: usize, filterOutValidation: bool) ![]ModelDecoration {
         var result = try self._decorationsTree.getAll(self, ownerId, filterOutValidation, false, false);
-        try result.appendSlice(try self._decorationProvider.getAllDecorations(ownerId, filterOutValidation));
+        var providerDecorations = try self._decorationProvider.getAllDecorations(ownerId, filterOutValidation);
+        defer providerDecorations.deinit();
+        try result.appendSlice(providerDecorations.items);
         return result.toOwnedSlice();
     }
 
@@ -1677,7 +1707,7 @@ pub const TextModel = struct {
         return result.toOwnedSlice();
     }
 
-    fn _getDecorationsInRange(self: *TextModel, filterRange: Range, filterOwnerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
+    fn _getDecorationsInRange(self: *TextModel, filterRange: Range, filterOwnerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) !ArrayList(ModelDecoration) {
         const startOffset = self._buffer.getOffsetAt(filterRange.startLineNumber, filterRange.startColumn);
         const endOffset = self._buffer.getOffsetAt(filterRange.endLineNumber, filterRange.endColumn);
         return try self._decorationsTree.getAllInInterval(self, startOffset, endOffset, filterOwnerId, filterOutValidation, onlyMarginDecorations);
@@ -1873,7 +1903,24 @@ pub const TextModel = struct {
 
     fn _setLanguage(self: *TextModel, languageId: []const u8) void {
         self._tokenizationTextModelPart.setLanguageId(languageId, "TextModel.setLanguage");
+        self._bracketPairs.handleDidChangeLanguage();
         self._languageService.requestRichLanguageFeatures(languageId);
+    }
+
+    pub fn bracketPairs(self: *TextModel) *BracketPairsTextModelPart {
+        return &self._bracketPairs;
+    }
+
+    pub fn getBracketPairsInRange(self: *TextModel, range: Range) !ArrayList(BracketPairInfo) {
+        return self._bracketPairs.getBracketPairsInRange(range);
+    }
+
+    pub fn getBracketsInRange(self: *TextModel, range: Range, onlyColorized: bool) !ArrayList(BracketInfo) {
+        return self._bracketPairs.getBracketsInRange(range, onlyColorized);
+    }
+
+    pub fn hasUnmatchedClosingBracketAfter(self: *TextModel, position: Position, openingBracket: []const u8) bool {
+        return self._bracketPairs.hasUnmatchedClosingBracketAfter(position, openingBracket);
     }
 
     pub fn getLanguageIdAtPosition(self: *TextModel, lineNumber: usize, column: usize) []const u8 {
@@ -2112,11 +2159,11 @@ pub const DecorationsTrees = struct {
     }
 
     fn _intervalSearch(self: *DecorationsTrees, start: usize, end: usize, filterOwnerId: usize, filterOutValidation: bool, cachedVersionId: usize, onlyMarginDecorations: bool) !ArrayList(*IntervalNode) {
-        const r0 = self._decorationsTree0.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        const r0 = try self._decorationsTree0.intervalSearch(start, end, filterOwnerId, filterOutValidation, @intCast(cachedVersionId), onlyMarginDecorations);
         defer r0.deinit();
-        const r1 = self._decorationsTree1.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        const r1 = try self._decorationsTree1.intervalSearch(start, end, filterOwnerId, filterOutValidation, @intCast(cachedVersionId), onlyMarginDecorations);
         defer r1.deinit();
-        const r2 = self._injectedTextDecorationsTree.intervalSearch(start, end, filterOwnerId, filterOutValidation, cachedVersionId, onlyMarginDecorations);
+        const r2 = try self._injectedTextDecorationsTree.intervalSearch(start, end, filterOwnerId, filterOutValidation, @intCast(cachedVersionId), onlyMarginDecorations);
         defer r2.deinit();
 
         var result = ArrayList(*IntervalNode).init(self.allocator);

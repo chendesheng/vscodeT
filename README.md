@@ -28,7 +28,27 @@ Tokenizer status:
   and `getWordAtPosition`/`getWordUntilPosition`.
 - Ported tests: upstream `lineTokens.test.ts`, `tokensStore.test.ts`,
   `model.modes.test.ts`, and the default-word cases from `model.test.ts`.
-- Not ported: tree-sitter tokenization, font-token annotations, bracket-pair
-  colorization, and custom `wordPattern` language configurations.
+
+Bracket-pair colorization:
+
+- Bracket pairs are parsed by the ported 2-3 tree AST
+  (`src/bracketPairs/bracketPairsTree.zig`): compact lengths, dense immutable
+  bracket-id sets, bracket tokenizer, parser, and text/bracket/pair/invalid/list
+  nodes.
+- Edits are mapped through `beforeEditPositionMapper`, combined across queued
+  changes, and parsed incrementally using `nodeReader` subtree reuse. The
+  parser falls back to a full rebuild when no reusable node is available.
+- `TextModel.bracketPairs()` exposes `getBracketPairsInRange`,
+  `getBracketsInRange`, matching/enclosing/navigation helpers, and
+  unmatched-closing detection.
+- `ColorizedBracketPairsDecorationProvider` turns colorized brackets into
+  `bracket-highlighting-N` / `unexpected-closing-bracket` decorations, honoring
+  `bracketPairColorizationOptions`.
+- Language configurations are registered on `LanguageService` with
+  `registerLanguageConfiguration`.
+- Colorization is model-level only for now; the TUI renderer does not paint
+  inline decoration classes yet.
+- Not ported: tree-sitter tokenization, font-token annotations, and custom
+  `wordPattern` language configurations.
 - Background tokenization is synchronous (1 ms chunks) because this port has
   no browser idle loop; behavior is otherwise equivalent.

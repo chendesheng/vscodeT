@@ -13,6 +13,14 @@ pub const Range = struct {
     // Column on which the range ends in line `endLineNumber`.
     endColumn: usize,
 
+    pub fn startPosition(self: *const Range) Position {
+        return Position.init(self.startLineNumber, self.startColumn);
+    }
+
+    pub fn endPosition(self: *const Range) Position {
+        return Position.init(self.endLineNumber, self.endColumn);
+    }
+
     pub fn init(startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColumn: usize) Range {
         if ((startLineNumber > endLineNumber) or (startLineNumber == endLineNumber and startColumn > endColumn)) {
             return .{

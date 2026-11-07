@@ -83,6 +83,10 @@ pub const TokenizationTextModelPart = struct {
         try self._onDidChangeTokens.eventVoid(f);
     }
 
+    pub fn onDidChangeTokensWithContext(self: *TokenizationTextModelPart, ctx: anytype, callback: fn (ModelTokensChangedEvent, @TypeOf(ctx)) anyerror!void) !void {
+        try self._onDidChangeTokens.event(ctx, callback);
+    }
+
     pub fn onDidChangeLanguage(self: *TokenizationTextModelPart, ctx: anytype, f: fn (ModelLanguageChangedEvent, @TypeOf(ctx)) anyerror!void) !void {
         try self._onDidChangeLanguage.event(ctx, f);
     }

@@ -49,7 +49,7 @@ pub const TestModel = struct {
             .isForSimpleWidget = false,
             .largeFileOptimizations = false,
             .bracketPairColorizationOptions = .{
-                .enabled = false,
+                .enabled = true,
                 .independentColorPoolPerBracketType = false,
             },
         }, null, undoRedoService, languageService);
