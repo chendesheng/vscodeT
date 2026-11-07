@@ -249,6 +249,7 @@ pub const ModelRawLinesInserted = struct {
     }
 
     pub fn deinit(self: *const ModelRawLinesInserted) void {
+        for (self.detail.items) |*line| line.deinit();
         self.detail.deinit();
         self.injectedTexts.deinit();
     }

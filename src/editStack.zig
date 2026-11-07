@@ -534,7 +534,7 @@ test "SingleModelEditStackElement" {
 
     var codec = try LanguageIdCodec.init(allocator);
     defer codec.deinit();
-    var languageService = LanguageService.init(allocator, codec);
+    var languageService = LanguageService.init(allocator, &codec);
 
     var textModel = try TextModel.init(allocator, &reader, "test", TextModelCreationOptions{
         .tabSize = 4,

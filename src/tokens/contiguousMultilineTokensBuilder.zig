@@ -12,66 +12,68 @@ pub const ContiguousMultilineTokensBuilder = struct {
     pub fn deserialize(allocator: Allocator, buff: *Io.Reader) !ArrayList(ContiguousMultilineTokens) {
         const count = try buff.takeInt(u32, .big);
         var result = ArrayList(ContiguousMultilineTokens).init(allocator);
-        for (0..count) |_| {
+        errdefer {
+            for (result.items) |*item| item.deinit();
+            result.deinit();
+        }
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
             try ContiguousMultilineTokens.deserialize(buff, &result);
         }
         return result;
     }
 
     pub fn init(allocator: Allocator) ContiguousMultilineTokensBuilder {
-        return ContiguousMultilineTokensBuilder{
-            ._tokens = ArrayList(ContiguousMultilineTokens).init(allocator),
-        };
+        return .{ ._tokens = ArrayList(ContiguousMultilineTokens).init(allocator) };
     }
 
     pub fn deinit(self: *ContiguousMultilineTokensBuilder) void {
-        for (self._tokens.items) |item| {
-            item.deinit();
-        }
+        for (self._tokens.items) |*item| item.deinit();
         self._tokens.deinit();
     }
 
     pub fn add(self: *ContiguousMultilineTokensBuilder, lineNumber: usize, lineTokens: []const TokenPacked) !void {
         if (self._tokens.items.len > 0) {
-            var last = &self._tokens.items[self._tokens.items.len - 1];
+            const last = &self._tokens.items[self._tokens.items.len - 1];
             if (last.getEndLineNumber() + 1 == lineNumber) {
-                // append
                 try last.appendLineTokens(lineTokens);
                 return;
             }
         }
-        var multilineTokens = ArrayList(?ArrayList(TokenPacked)).init(self._tokens.allocator);
-        try multilineTokens.append(ArrayList(TokenPacked).fromOwnedSlice(self._tokens.allocator, try self._tokens.allocator.dupe(TokenPacked, lineTokens)));
-        try self._tokens.append(ContiguousMultilineTokens.init(lineNumber, multilineTokens));
+        var first = ArrayList(?ArrayList(TokenPacked)).init(self._tokens.allocator);
+        errdefer first.deinit();
+        try first.append(ArrayList(TokenPacked).fromOwnedSlice(self._tokens.allocator, try self._tokens.allocator.dupe(TokenPacked, lineTokens)));
+        try self._tokens.append(ContiguousMultilineTokens.init(lineNumber, first));
     }
 
-    pub fn finalize(self: *ContiguousMultilineTokensBuilder) ArrayList(ContiguousMultilineTokens) {
-        return self._tokens;
+    /// Borrowed view; the builder remains the owner and must outlive use.
+    pub fn finalize(self: *ContiguousMultilineTokensBuilder) []ContiguousMultilineTokens {
+        return self._tokens.items;
     }
 
-    pub fn serialize(self: *ContiguousMultilineTokensBuilder) !ArrayList(u8) {
+    pub fn deinitTokens(tokens: []ContiguousMultilineTokens) void {
+        for (tokens) |*item| item.deinit();
+    }
+
+    pub fn serialize(self: *const ContiguousMultilineTokensBuilder) !ArrayList(u8) {
         const size = try self._serializeSize();
         var result = ArrayList(u8).init(self._tokens.allocator);
+        errdefer result.deinit();
         try result.resize(size);
         try self._serialize(result.items);
         return result;
     }
 
-    fn _serializeSize(self: *ContiguousMultilineTokensBuilder) !usize {
-        var result: usize = 0;
-        result += 4; // 4 bytes for the count
-        for (self._tokens.items) |item| {
-            result += try item.serializeSize();
-        }
+    fn _serializeSize(self: *const ContiguousMultilineTokensBuilder) !usize {
+        var result: usize = 4;
+        for (self._tokens.items) |*item| result += try item.serializeSize();
         return result;
     }
 
-    fn _serialize(self: *ContiguousMultilineTokensBuilder, destination: []u8) !void {
+    fn _serialize(self: *const ContiguousMultilineTokensBuilder, destination: []u8) !void {
         var w = Io.Writer.fixed(destination);
-        try w.writeInt(u32, self._tokens.items.len, .big);
-        for (self._tokens.items) |item| {
-            try item.serialize(&w);
-        }
+        try w.writeInt(u32, @intCast(self._tokens.items.len), .big);
+        for (self._tokens.items) |*item| try item.serialize(&w);
     }
 };
 
@@ -81,5 +83,5 @@ test "ContiguousMultilineTokensBuilder/add" {
     defer builder.deinit();
     try builder.add(1, &.{});
     const result = builder.finalize();
-    try std.testing.expectEqual(1, result.items.len);
+    try std.testing.expectEqual(1, result.len);
 }

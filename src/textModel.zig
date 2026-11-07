@@ -77,6 +77,13 @@ const ModelTokensChangedEvent = @import("./textModelEvents.zig").ModelTokensChan
 const AttachedViews = @import("./tokenize/abstractSyntaxTokenBackend.zig").AttachedViews;
 const LanguageService = @import("./languages/languageService.zig").LanguageService;
 const LanguageIdCodec = @import("./languages.zig").LanguageIdCodec;
+const ModelLanguageChangedEvent = @import("textModelEvents.zig").ModelLanguageChangedEvent;
+const ModelLanguageConfigurationChangedEvent = @import("textModelEvents.zig").ModelLanguageConfigurationChangedEvent;
+const BackgroundTokenizationState = @import("./tokenize/abstractSyntaxTokenBackend.zig").BackgroundTokenizationState;
+const AttachedView = @import("./tokenize/abstractSyntaxTokenBackend.zig").AttachedView;
+const LineTokens = @import("./tokens/lineTokens.zig").LineTokens;
+const SparseMultilineTokens = @import("./tokens/sparseMultilineTokens.zig").SparseMultilineTokens;
+const StandardTokenType = @import("./encodedTokenAttributes.zig").StandardTokenType;
 
 const LIMIT_FIND_COUNT = 999;
 const LONG_LINE_BOUNDARY = 10000;
@@ -193,12 +200,86 @@ pub const TextModel = struct {
     _eventEmitter: DidChangeContentEmitter,
     //#endregion
 
-    pub fn tokenization(self: *const TextModel) TokenizationTextModelPart {
-        return self._tokenizationTextModelPart;
+    pub fn tokenization(self: *TextModel) *TokenizationTextModelPart {
+        return &self._tokenizationTextModelPart;
     }
 
     pub fn onDidChangeTokens(self: *TextModel, callback: fn (ModelTokensChangedEvent) void) !void {
         try self._tokenizationTextModelPart.onDidChangeTokens(callback);
+    }
+
+    pub fn onDidChangeLanguage(self: *TextModel, ctx: anytype, callback: fn (ModelLanguageChangedEvent, @TypeOf(ctx)) anyerror!void) !void {
+        try self._tokenizationTextModelPart.onDidChangeLanguage(ctx, callback);
+    }
+
+    pub fn onDidChangeLanguageConfiguration(self: *TextModel, ctx: anytype, callback: fn (ModelLanguageConfigurationChangedEvent, @TypeOf(ctx)) anyerror!void) !void {
+        try self._tokenizationTextModelPart.onDidChangeLanguageConfiguration(ctx, callback);
+    }
+
+    pub fn getBackgroundTokenizationState(self: *TextModel) BackgroundTokenizationState {
+        return self._tokenizationTextModelPart.getBackgroundTokenizationState();
+    }
+
+    pub fn hasTokens(self: *TextModel) bool {
+        return self._tokenizationTextModelPart.getHasTokens();
+    }
+
+    pub fn resetTokenization(self: *TextModel) void {
+        self._tokenizationTextModelPart.resetTokenization();
+    }
+
+    pub fn forceTokenization(self: *TextModel, lineNumber: usize) void {
+        self._tokenizationTextModelPart.forceTokenization(lineNumber);
+    }
+
+    pub fn tokenizeIfCheap(self: *TextModel, lineNumber: usize) void {
+        self._tokenizationTextModelPart.tokenizeIfCheap(lineNumber);
+    }
+
+    pub fn hasAccurateTokensForLine(self: *TextModel, lineNumber: usize) bool {
+        return self._tokenizationTextModelPart.hasAccurateTokensForLine(lineNumber);
+    }
+
+    pub fn isCheapToTokenize(self: *TextModel, lineNumber: usize) bool {
+        return self._tokenizationTextModelPart.isCheapToTokenize(lineNumber);
+    }
+
+    pub fn getTokenTypeIfInsertingCharacter(self: *TextModel, lineNumber: usize, column: usize, character: []const u8) !StandardTokenType {
+        return try self._tokenizationTextModelPart.getTokenTypeIfInsertingCharacter(lineNumber, column, character);
+    }
+
+    pub fn tokenizeLinesAt(self: *TextModel, lineNumber: usize, lines: []const []const u8) !?std.array_list.Managed(LineTokens) {
+        return try self._tokenizationTextModelPart.tokenizeLinesAt(lineNumber, lines);
+    }
+
+    pub fn setSemanticTokens(self: *TextModel, tokens: ?[]SparseMultilineTokens, isComplete: bool) !void {
+        try self._tokenizationTextModelPart.setSemanticTokens(tokens, isComplete);
+    }
+
+    pub fn setPartialSemanticTokens(self: *TextModel, range: Range, tokens: []SparseMultilineTokens) !void {
+        try self._tokenizationTextModelPart.setPartialSemanticTokens(range, tokens);
+    }
+
+    pub fn _isDisposing(self: *const TextModel) bool {
+        return self.__isDisposing;
+    }
+
+    pub fn onBeforeAttached(self: *TextModel) !*AttachedView {
+        self._attachedEditorCount += 1;
+        if (self._attachedEditorCount == 1) {
+            self._tokenizationTextModelPart.handleDidChangeAttached();
+            self._onDidChangeAttached.fire({}) catch {};
+        }
+        return try self._attachedViews.attachView();
+    }
+
+    pub fn onBeforeDetached(self: *TextModel, view: *AttachedView) !void {
+        self._attachedEditorCount -|= 1;
+        if (self._attachedEditorCount == 0) {
+            self._tokenizationTextModelPart.handleDidChangeAttached();
+            self._onDidChangeAttached.fire({}) catch {};
+        }
+        try self._attachedViews.detachView(view);
     }
 
     pub fn resolveOptions(textBuffer: *PieceTreeTextBuffer, options: TextModelCreationOptions) TextModelResolvedOptions {
@@ -280,6 +361,9 @@ pub const TextModel = struct {
         const attachedViews = AttachedViews.init(allocator);
 
         const model = try allocator.create(TextModel);
+        // `TokenizationTextModelPart.init` needs a usable buffer allocator, and
+        // struct literal field evaluation order is not source order.
+        model._buffer = buffer;
         model.* = TextModel{
             .id = try fmt.allocPrint(allocator, "$model{d}", .{MODEL_ID}),
             .isForSimpleWidget = creationOptions.isForSimpleWidget,
@@ -332,11 +416,12 @@ pub const TextModel = struct {
             ._attachedViews = attachedViews,
             ._languageService = languageService,
         };
-        model._tokenizationTextModelPart.tokens.registerCallbacks(&model._attachedViews);
+        model._tokenizationTextModelPart.registerCallbacks(&model._attachedViews);
         return model;
     }
 
     pub fn deinit(self: *TextModel) void {
+        self.__isDisposing = true;
         const allocator = self._buffer.getAllocator();
         self._buffer.deinit();
         self._decorations.deinit();
@@ -1264,7 +1349,8 @@ pub const TextModel = struct {
 
             self._increaseVersionId();
 
-            var lineCount = oldLineCount;
+            const newLineCountI: isize = @intCast(newLineCount);
+            var lineCount: isize = @intCast(oldLineCount);
             for (contentChanges) |change| {
                 const res = countEOL(change.modelContentChange.text.items());
                 const eolCount = res.eolCount;
@@ -1277,9 +1363,9 @@ pub const TextModel = struct {
                 const insertingLinesCnt = eolCount;
                 const editingLinesCnt: usize = @min(deletingLinesCnt, insertingLinesCnt);
 
-                const changeLineCountDelta: usize = (insertingLinesCnt - deletingLinesCnt);
+                const changeLineCountDelta: isize = @as(isize, @intCast(insertingLinesCnt)) - @as(isize, @intCast(deletingLinesCnt));
 
-                const currentEditStartLineNumber: usize = newLineCount - lineCount - changeLineCountDelta + startLineNumber;
+                const currentEditStartLineNumber: usize = @intCast(newLineCountI - lineCount - changeLineCountDelta + @as(isize, @intCast(startLineNumber)));
                 const firstEditLineNumber: usize = currentEditStartLineNumber;
                 const lastInsertedLineNumber: usize = currentEditStartLineNumber + insertingLinesCnt;
 
@@ -1331,7 +1417,7 @@ pub const TextModel = struct {
                     // Must insert some lines
                     const spliceLineNumber = startLineNumber + editingLinesCnt;
                     const cnt = insertingLinesCnt - editingLinesCnt;
-                    const fromLineNumber = newLineCount - lineCount - cnt + spliceLineNumber + 1;
+                    const fromLineNumber: usize = @intCast(newLineCountI - lineCount - @as(isize, @intCast(cnt)) + @as(isize, @intCast(spliceLineNumber)) + 1);
                     var injectedTexts = ArrayList(?[]const LineInjectedText).init(allocator);
                     var newLines = ArrayList(ArrayList(u8)).init(allocator);
                     var i: usize = 0;
@@ -1798,7 +1884,7 @@ pub const TextModel = struct {
         return self._tokenizationTextModelPart.getWordAtPosition(position);
     }
 
-    pub fn getWordUntilPosition(self: *TextModel, position: Position) ?WordAtPosition {
+    pub fn getWordUntilPosition(self: *TextModel, position: Position) WordAtPosition {
         return self._tokenizationTextModelPart.getWordUntilPosition(position);
     }
     //#endregion
@@ -1810,7 +1896,8 @@ fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: 
     // The language service outlives individual test helpers and is not owned
     // by the model, so use the page allocator to keep it out of the testing
     // allocator's leak accounting.
-    const codec = try LanguageIdCodec.init(std.heap.page_allocator);
+    const codec = try std.heap.page_allocator.create(LanguageIdCodec);
+    codec.* = try LanguageIdCodec.init(std.heap.page_allocator);
     var languageService = LanguageService.init(std.heap.page_allocator, codec);
 
     return try TextModel.init(

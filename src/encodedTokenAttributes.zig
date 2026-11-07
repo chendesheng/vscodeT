@@ -213,59 +213,40 @@ pub const TokenMetadata = packed struct(u32) {
     };
 
     pub fn getClassNameFromMetadata(self: TokenMetadata, allocator: Allocator) !ArrayList(u8) {
-        const foreground = self.foreground;
-        var className = ArrayList(u8).init(allocator);
-        var classNameWriter = className.writer();
-        try classNameWriter.writeAll("mtk");
-
-        try classNameWriter.print("{d}", .{foreground});
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        try out.writer.writeAll("mtk");
+        try out.writer.print("{d}", .{self.foreground});
 
         const fontStyle = self.fontStyle;
-        if (fontStyle.italic) {
-            try classNameWriter.writeAll(" mtki");
-        }
-        if (fontStyle.bold) {
-            try classNameWriter.writeAll(" mtkb");
-        }
-        if (fontStyle.underline) {
-            try classNameWriter.writeAll(" mtku");
-        }
-        if (fontStyle.strikethrough) {
-            try classNameWriter.writeAll(" mtks");
-        }
+        if (fontStyle.italic) try out.writer.writeAll(" mtki");
+        if (fontStyle.bold) try out.writer.writeAll(" mtkb");
+        if (fontStyle.underline) try out.writer.writeAll(" mtku");
+        if (fontStyle.strikethrough) try out.writer.writeAll(" mtks");
 
-        return className;
+        return ArrayList(u8).fromOwnedSlice(allocator, try out.toOwnedSlice());
     }
 
     pub fn getInlineStyleFromMetadata(self: TokenMetadata, allocator: Allocator, colorMap: []const []const u8) !ArrayList(u8) {
-        const foreground = self.foreground;
-        const fontStyle = self.fontStyle;
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        try out.writer.writeAll("color: ");
+        try out.writer.writeAll(colorMap[@as(usize, @intCast(self.foreground))]);
+        try out.writer.writeAll(";");
+        if (self.fontStyle.italic) try out.writer.writeAll("font-style: italic;");
+        if (self.fontStyle.bold) try out.writer.writeAll("font-weight: bold;");
 
-        var result = ArrayList(u8).init(allocator);
-        result.appendSlice("color: ");
-        result.appendSlice(colorMap[@as(usize, @intCast(foreground))]);
-        result.appendSlice(";");
-        if (fontStyle.italic) {
-            result.appendSlice("font-style: italic;");
+        var hasDecoration = false;
+        if (self.fontStyle.underline) {
+            try out.writer.writeAll(if (hasDecoration) " underline" else "text-decoration: underline");
+            hasDecoration = true;
         }
-        if (fontStyle.bold) {
-            result.appendSlice("font-weight: bold;");
+        if (self.fontStyle.strikethrough) {
+            try out.writer.writeAll(if (hasDecoration) " line-through" else "text-decoration: line-through");
+            hasDecoration = true;
         }
-
-        var textDecoration = ArrayList(u8).init(allocator);
-        defer textDecoration.deinit();
-        if (fontStyle.underline) {
-            textDecoration.appendSlice(" underline");
-        }
-        if (fontStyle.strikethrough) {
-            textDecoration.appendSlice(" line-through");
-        }
-        if (textDecoration.items.len > 0) {
-            result.appendSlice("text-decoration: ");
-            result.appendSlice(textDecoration.items);
-            result.appendSlice(";");
-        }
-        return result;
+        if (hasDecoration) try out.writer.writeAll(";");
+        return ArrayList(u8).fromOwnedSlice(allocator, try out.toOwnedSlice());
     }
 
     pub fn getPresentationFromMetadata(self: TokenMetadata) TokenPresentation {

@@ -220,14 +220,18 @@ test "findFirstIdxMonotonousOrArrLen" {
     try std.testing.expectEqual(10, findFirstIdxMonotonousOrArrLen(i32, &items, {}, greaterThanOrEqual(12), 0, items.len));
 }
 
-// Word inside a model.
+// Word inside a model. Owns its text.
 pub const WordAtPosition = struct {
     // The word.
-    word: []const u8,
+    word: ArrayList(u8),
     // The column where the word starts.
     startColumn: usize,
     // The column where the word ends.
     endColumn: usize,
+
+    pub fn deinit(self: *WordAtPosition) void {
+        self.word.deinit();
+    }
 };
 
 pub const IdleDeadline = struct {

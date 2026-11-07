@@ -45,9 +45,9 @@ pub const ContiguousTokensEditing = struct {
 
         if (toChIndex < fromTokenEndOffset) {
             // the delete range is inside a single token
-            const delta: u32 = @intCast(-usizeSub(toChIndex, fromChIndex));
+            const delta: u32 = @intCast(toChIndex - fromChIndex);
             for (fromTokenIndex..tokensCount) |i| {
-                tokens[i].endOffset += delta;
+                tokens[i].endOffset -= delta;
             }
             return;
         }
@@ -83,33 +83,34 @@ pub const ContiguousTokensEditing = struct {
     }
 
     pub fn append(_lineTokens: *?ArrayList(TokenPacked), _otherTokens: *?ArrayList(TokenPacked)) !void {
-        if (_otherTokens.* != null and _otherTokens.*.?.items.len == 0) {
-            return;
-        }
-        if (_lineTokens.* != null and _lineTokens.*.?.items.len == 0) {
-            _lineTokens.* = _otherTokens.*;
-            return;
-        }
-        if (_lineTokens.* == null) {
-            return;
-        }
-        if (_otherTokens.* == null) {
+        const other = _otherTokens.* orelse {
             // cannot determine combined line length...
             _lineTokens.* = null;
             return;
+        };
+        if (other.items.len == 0) return;
+
+        if (_lineTokens.* == null) return;
+        const lineTokens = &_lineTokens.*.?;
+        if (lineTokens.items.len == 0) {
+            // Move the other list into this slot when possible; otherwise copy.
+            if (lineTokens.allocator.ptr == other.allocator.ptr) {
+                _lineTokens.* = other;
+                _otherTokens.* = null;
+                return;
+            }
+            try lineTokens.appendSlice(other.items);
+            return;
         }
 
-        var lineTokens = &_lineTokens.*.?;
-        const myTokens: []TokenPacked = lineTokens.items;
-
-        try lineTokens.appendSlice(myTokens);
-        const delta = lineTokens.getLast().endOffset;
-        for (_otherTokens.*.?.items) |token| {
-            try lineTokens.append(TokenPacked{
-                .endOffset = token.endOffset + delta,
-                .metadata = token.metadata,
-            });
+        const delta = lineTokens.items[lineTokens.items.len - 1].endOffset;
+        // Copy first because appending may reallocate `lineTokens`.
+        const copied = try other.allocator.dupe(TokenPacked, other.items);
+        defer other.allocator.free(copied);
+        for (copied) |*token| {
+            token.endOffset += delta;
         }
+        try lineTokens.appendSlice(copied);
     }
 
     pub fn insert(_lineTokens: *?ArrayList(TokenPacked), chIndex: usize, textLength: usize) void {

@@ -37,7 +37,7 @@ pub const LanguageIcon = struct {
 
 pub const LanguageService = struct {
     // A codec which can encode and decode a string `languageId` as a number.
-    languageIdCodec: LanguageIdCodec,
+    languageIdCodec: *LanguageIdCodec,
 
     // An event emitted when basic language features are requested for the first time.
     // This event is emitted when embedded languages are encountered (e.g. JS code block inside Markdown)
@@ -113,7 +113,7 @@ pub const LanguageService = struct {
     // Request rich language features for a language.
     requestRichLanguageFeatures: *const fn (languageId: []const u8) void,
 
-    pub fn init(allocator: Allocator, languageIdCodec: LanguageIdCodec) LanguageService {
+    pub fn init(allocator: Allocator, languageIdCodec: *LanguageIdCodec) LanguageService {
         return LanguageService{
             .languageIdCodec = languageIdCodec,
             .onDidRequestBasicLanguageFeatures = Emitter([]const u8).init(allocator),
@@ -138,5 +138,11 @@ pub const LanguageService = struct {
             .requestBasicLanguageFeatures = defaultRequestBasicLanguageFeatures,
             .requestRichLanguageFeatures = defaultRequestRichLanguageFeatures,
         };
+    }
+
+    pub fn deinit(self: *LanguageService) void {
+        self.onDidRequestBasicLanguageFeatures.deinit();
+        self.onDidRequestRichLanguageFeatures.deinit();
+        self.onDidChange.deinit();
     }
 };

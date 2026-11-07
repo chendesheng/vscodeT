@@ -1,23 +1,21 @@
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
+const Allocator = std.mem.Allocator;
 const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
 const LineTokens = @import("lineTokens.zig").LineTokens;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 
-// This class represents a sequence of tokens.
-// Conceptually, each token has a length and a metadata number.
-// A token array might be used to annotate a string with metadata.
-// Use {@link TokenWithTextArrayBuilder} to efficiently create a token array.
-//
-// TODO: Make this class more efficient (e.g. by using a Int32Array).
+/// This class represents a sequence of tokens, where each token carries its
+/// own text. The text slices are borrowed and must outlive this array.
 pub const TokenWithTextArray = struct {
     _tokenInfo: ArrayList(TokenWithTextInfo),
 
-    pub fn fromLineTokens(lineTokens: LineTokens) !TokenWithTextArray {
+    pub fn fromLineTokens(lineTokens: *const LineTokens) !TokenWithTextArray {
         var tokenInfo = ArrayList(TokenWithTextInfo).init(lineTokens._tokens.allocator);
+        errdefer tokenInfo.deinit();
         for (0..lineTokens.getCount()) |i| {
-            try tokenInfo.append(TokenWithTextInfo{
+            try tokenInfo.append(.{
                 .text = lineTokens.getTokenText(i),
                 .metadata = lineTokens.getMetadata(i),
             });
@@ -26,33 +24,30 @@ pub const TokenWithTextArray = struct {
     }
 
     pub fn init(tokenInfo: ArrayList(TokenWithTextInfo)) TokenWithTextArray {
-        return TokenWithTextArray{ ._tokenInfo = tokenInfo };
+        return .{ ._tokenInfo = tokenInfo };
     }
 
     pub fn deinit(self: *TokenWithTextArray) void {
         self._tokenInfo.deinit();
     }
 
-    pub fn toLineTokens(self: *TokenWithTextArray, decoder: LanguageIdCodec) LineTokens {
-        return LineTokens.createFromTextAndMetadata(self._tokenInfo.allocator, self.map(struct {
-            fn cb(_: void, t: TokenWithTextInfo) TokenWithTextInfo {
-                return TokenWithTextInfo{ .text = t.text, .metadata = t.metadata };
-            }
-        }.cb, decoder));
+    pub fn toLineTokens(self: *const TokenWithTextArray, allocator: Allocator, decoder: *LanguageIdCodec) !LineTokens {
+        return try LineTokens.createFromTextAndMetadata(allocator, self._tokenInfo.items, decoder);
     }
 
-    pub fn forEach(self: *TokenWithTextArray, cb: fn (range: OffsetRange, tokenInfo: TokenWithTextInfo) void) void {
-        var lengthSum = 0;
+    pub fn forEach(self: *const TokenWithTextArray, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenWithTextInfo, ctx: @TypeOf(context)) void) void {
+        var lengthSum: usize = 0;
         for (self._tokenInfo.items) |tokenInfo| {
             const range = OffsetRange.init(lengthSum, lengthSum + tokenInfo.text.len);
-            cb(range, tokenInfo);
+            cb(range, tokenInfo, context);
             lengthSum += tokenInfo.text.len;
         }
     }
 
-    pub fn map(self: *TokenWithTextArray, comptime T: type, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenWithTextInfo, ctx: @TypeOf(context)) T) !ArrayList(T) {
+    pub fn map(self: *const TokenWithTextArray, comptime T: type, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenWithTextInfo, ctx: @TypeOf(context)) T) !ArrayList(T) {
         var result = ArrayList(T).init(self._tokenInfo.allocator);
-        var lengthSum = 0;
+        errdefer result.deinit();
+        var lengthSum: usize = 0;
         for (self._tokenInfo.items) |tokenInfo| {
             const range = OffsetRange.init(lengthSum, lengthSum + tokenInfo.text.len);
             try result.append(cb(range, tokenInfo, context));
@@ -61,53 +56,50 @@ pub const TokenWithTextArray = struct {
         return result;
     }
 
-    pub fn slice(self: *TokenWithTextArray, range: OffsetRange) TokenWithTextArray {
+    pub fn slice(self: *const TokenWithTextArray, range: OffsetRange) !TokenWithTextArray {
         var result = ArrayList(TokenWithTextInfo).init(self._tokenInfo.allocator);
-        var lengthSum = 0;
+        var lengthSum: usize = 0;
         for (self._tokenInfo.items) |tokenInfo| {
             const tokenStart = lengthSum;
             const tokenEndEx = tokenStart + tokenInfo.text.len;
             if (tokenEndEx > range.start) {
-                if (tokenStart >= range.endExclusive) {
-                    break;
-                }
-
-                const deltaBefore = @max(0, range.start - tokenStart);
-                const deltaAfter = @max(0, tokenEndEx - range.endExclusive);
-
-                try result.append(TokenWithTextInfo{
-                    .text = tokenInfo.text.slice(deltaBefore, tokenInfo.text.len - deltaAfter),
+                if (tokenStart >= range.endExclusive) break;
+                const deltaBefore = range.start -| tokenStart;
+                const deltaAfter = tokenEndEx -| range.endExclusive;
+                try result.append(.{
+                    .text = tokenInfo.text[deltaBefore .. tokenInfo.text.len - deltaAfter],
                     .metadata = tokenInfo.metadata,
                 });
             }
-
-            lengthSum += tokenInfo.text.len;
+            lengthSum = tokenEndEx;
         }
         return TokenWithTextArray.init(result);
     }
 
-    pub fn append(self: *TokenWithTextArray, other: TokenWithTextArray) !TokenWithTextArray {
+    pub fn append(self: *const TokenWithTextArray, other: *const TokenWithTextArray) !TokenWithTextArray {
         var result = ArrayList(TokenWithTextInfo).init(self._tokenInfo.allocator);
+        errdefer result.deinit();
         try result.appendSlice(self._tokenInfo.items);
         try result.appendSlice(other._tokenInfo.items);
         return TokenWithTextArray.init(result);
     }
 };
 
-pub const TokenWithTextInfo = struct {
-    text: []u8,
-    metadata: TokenMetadata,
-};
+pub const TokenWithTextInfo = @import("lineTokens.zig").TokenTextMetadata;
 
-// TODO: Make this class more efficient (e.g. by using a Int32Array).
 pub const TokenWithTextArrayBuilder = struct {
     _tokens: ArrayList(TokenWithTextInfo),
 
-    pub fn add(self: *TokenWithTextArrayBuilder, text: []u8, metadata: TokenMetadata) void {
-        try self._tokens.append(TokenWithTextInfo{
-            .text = text,
-            .metadata = metadata,
-        });
+    pub fn init(allocator: Allocator) TokenWithTextArrayBuilder {
+        return .{ ._tokens = ArrayList(TokenWithTextInfo).init(allocator) };
+    }
+
+    pub fn deinit(self: *TokenWithTextArrayBuilder) void {
+        self._tokens.deinit();
+    }
+
+    pub fn add(self: *TokenWithTextArrayBuilder, text: []const u8, metadata: TokenMetadata) !void {
+        try self._tokens.append(.{ .text = text, .metadata = metadata });
     }
 
     pub fn build(self: *TokenWithTextArrayBuilder) TokenWithTextArray {

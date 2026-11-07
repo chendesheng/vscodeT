@@ -39,7 +39,8 @@ pub const LanguageIdCodec = struct {
         if (self._languageToLanguageId.get(language)) |_| {
             return;
         }
-        const languageId = self._languageIdToLanguage.items.len;
+        if (self._languageIdToLanguage.items.len > std.math.maxInt(u8)) return error.TooManyLanguages;
+        const languageId: u8 = @intCast(self._languageIdToLanguage.items.len);
         try self._register(language, languageId);
     }
 
@@ -82,16 +83,25 @@ pub const Token = struct {
 
 // @internal
 pub const TokenizationSupportChangedEvent = struct {
-    changedLanguages: []const u8,
+    changedLanguages: []const []const u8,
     changedColorMap: bool,
+
+    pub fn affects(self: *const TokenizationSupportChangedEvent, languageId: []const u8) bool {
+        for (self.changedLanguages) |changedLanguage| {
+            if (std.mem.eql(u8, changedLanguage, languageId)) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 // @internal
 pub const TokenizationResult = struct {
-    tokens: ArrayList(Token),
+    tokens: []Token,
     endState: IState,
 
-    pub fn init(tokens: ArrayList(Token), endState: IState) TokenizationResult {
+    pub fn init(tokens: []Token, endState: IState) TokenizationResult {
         return TokenizationResult{
             .tokens = tokens,
             .endState = endState,
@@ -104,9 +114,6 @@ pub const EncodedTokenizationResult = struct {
     tokens: []TokenPacked,
     endState: IState,
 
-    // The tokens in binary format. Each token occupies two array indices. For token i:
-    //  - at offset 2*i => startIndex
-    //  - at offset 2*i + 1 => metadata
     pub fn init(tokens: []TokenPacked, endState: IState) EncodedTokenizationResult {
         return EncodedTokenizationResult{
             .tokens = tokens,
@@ -129,30 +136,90 @@ pub const QueryCapture = struct {
     encodedLanguageId: u32,
 };
 
+// The state of a tokenizer between two lines.
+//
+// States are interface objects: `context` points at the concrete state data and
+// `vtable` provides the operations. Clones must be allocated with the supplied
+// allocator.
+pub const IState = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        clone: *const fn (context: *anyopaque, allocator: Allocator) anyerror!IState,
+        equals: *const fn (context: *anyopaque, other: IState) bool,
+    };
+
+    pub fn clone(self: IState, allocator: Allocator) anyerror!IState {
+        return self.vtable.clone(self.context, allocator);
+    }
+
+    pub fn equals(self: IState, other: IState) bool {
+        return self.vtable.equals(self.context, other);
+    }
+};
+
 // @internal
 pub const ITokenizationSupport = struct {
-    // If true, the background tokenizer will only be used to verify tokens against the default background tokenizer.
-    // Used for debugging.
-    backgroundTokenizerShouldOnlyVerifyTokens: ?bool,
+    context: *anyopaque,
+    vtable: *const VTable,
 
-    getInitialState: *const fn () IState,
+    pub const VTable = struct {
+        // If true, the background tokenizer will only be used to verify tokens
+        // against the default background tokenizer. Used for debugging.
+        backgroundTokenizerShouldOnlyVerifyTokens: ?bool = null,
+        getInitialState: *const fn (context: *anyopaque, allocator: Allocator) anyerror!IState,
+        tokenize: ?*const fn (context: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!TokenizationResult = null,
+        tokenizeEncoded: *const fn (context: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult,
+        // Can be null if default background tokenization should be used.
+        createBackgroundTokenizer: ?*const fn (context: *anyopaque, textModel: *TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer = null,
+        dispose: ?*const fn (context: *anyopaque) void = null,
+    };
 
-    tokenize: *const fn (line: []const u8, hasEOL: bool, state: IState) TokenizationResult,
+    pub fn getInitialState(self: ITokenizationSupport, allocator: Allocator) anyerror!IState {
+        return self.vtable.getInitialState(self.context, allocator);
+    }
 
-    tokenizeEncoded: *const fn (line: []const u8, hasEOL: bool, state: IState) EncodedTokenizationResult,
+    pub fn tokenizeEncoded(self: ITokenizationSupport, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
+        return self.vtable.tokenizeEncoded(self.context, allocator, line, hasEOL, state);
+    }
 
-    // Can be/return undefined if default background tokenization should be used.
-    createBackgroundTokenizer: ?*const fn (textModel: *TextModel, store: IBackgroundTokenizationStore) IBackgroundTokenizer,
+    pub fn createBackgroundTokenizer(self: ITokenizationSupport, textModel: *TextModel, store: IBackgroundTokenizationStore) ?IBackgroundTokenizer {
+        const create = self.vtable.createBackgroundTokenizer orelse return null;
+        return create(self.context, textModel, store);
+    }
+
+    pub fn dispose(self: ITokenizationSupport) void {
+        if (self.vtable.dispose) |disposeFn| disposeFn(self.context);
+    }
 };
 
 // @internal
 pub const IBackgroundTokenizer = struct {
-    // Instructs the background tokenizer to set the tokens for the given range again.
-    // This might be necessary if the renderer overwrote those tokens with heuristically computed ones for some viewport,
-    // when the change does not even propagate to that viewport.
-    requestTokens: *const fn (startLineNumber: usize, endLineNumberExclusive: usize) void,
+    context: *anyopaque,
+    vtable: *const VTable,
 
-    reportMismatchingTokens: ?*const fn (lineNumber: usize) void,
+    pub const VTable = struct {
+        // Instructs the background tokenizer to set the tokens for the given
+        // range again. This might be necessary if the renderer overwrote those
+        // tokens with heuristically computed ones for some viewport, when the
+        // change does not even propagate to that viewport.
+        requestTokens: *const fn (context: *anyopaque, startLineNumber: usize, endLineNumberExclusive: usize) void,
+        reportMismatchingTokens: ?*const fn (context: *anyopaque, lineNumber: usize) void = null,
+        dispose: ?*const fn (context: *anyopaque) void = null,
+    };
+
+    pub fn requestTokens(self: IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) void {
+        self.vtable.requestTokens(self.context, startLineNumber, endLineNumberExclusive);
+    }
+
+    pub fn reportMismatchingTokens(self: IBackgroundTokenizer, lineNumber: usize) void {
+        if (self.vtable.reportMismatchingTokens) |report| report(self.context, lineNumber);
+    }
+
+    pub fn dispose(self: IBackgroundTokenizer) void {
+        if (self.vtable.dispose) |disposeFn| disposeFn(self.context);
+    }
 };
 
 // @internal
@@ -163,42 +230,28 @@ pub const IBackgroundTokenizationStore = struct {
     setEndState: *const fn (context: *anyopaque, lineNumber: usize, state: IState) void,
 
     // Should be called to indicate that the background tokenization has finished for now.
-    // (This triggers bracket pair colorization to re-parse the bracket pairs with token information)
     backgroundTokenizationFinished: *const fn (context: *anyopaque) void,
-};
-
-// The state of the tokenizer between two lines.
-// It is useful to store flags such as in multiline comment, etc.
-// The model will clone the previous line's state and pass it in to tokenize the next line.
-pub const IState = struct {
-    clone: *const fn () IState,
-    equals: *const fn (other: IState) bool,
 };
 
 // @internal
 pub const LazyTokenizationSupport = struct {
-    _tokenizationSupport: ?ITokenizationSupport,
+    context: *anyopaque,
+    createSupport: *const fn (context: *anyopaque) ?ITokenizationSupport,
+    _tokenizationSupport: ?ITokenizationSupport = null,
 
-    createSupport: *const fn () ?ITokenizationSupport,
-
-    pub fn init(createSupport: *const fn () ?ITokenizationSupport) LazyTokenizationSupport {
+    pub fn init(context: *anyopaque, createSupport: *const fn (context: *anyopaque) ?ITokenizationSupport) LazyTokenizationSupport {
         return LazyTokenizationSupport{
-            ._tokenizationSupport = null,
+            .context = context,
             .createSupport = createSupport,
+            ._tokenizationSupport = null,
         };
     }
-
-    // pub fn dispose(self: *LazyTokenizationSupport) void {
-    //     if (self._tokenizationSupport) |tokenizationSupport| {
-    //         tokenizationSupport.dispose();
-    //     }
-    // }
 
     pub fn getTokenizationSupport(self: *LazyTokenizationSupport) ?ITokenizationSupport {
         if (self._tokenizationSupport) |tokenizationSupport| {
             return tokenizationSupport;
         }
-        self._tokenizationSupport = self.createSupport();
+        self._tokenizationSupport = self.createSupport(self.context);
         return self._tokenizationSupport;
     }
 };

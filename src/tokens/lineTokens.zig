@@ -1,10 +1,9 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
-const ColorId = @import("../encodedTokenAttributes.zig").ColorId;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
 const TokenPresentation = @import("../encodedTokenAttributes.zig").TokenPresentation;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
@@ -12,33 +11,30 @@ const OffsetRange = @import("../basics/offsetRange.zig").OffsetRange;
 const Position = @import("../basics/position.zig").Position;
 const TextModel = @import("../textModel.zig").TextModel;
 
+pub const TokenTextMetadata = struct { text: []const u8, metadata: TokenMetadata };
+
 pub const TokenPacked = packed struct(u64) {
     endOffset: u32,
     metadata: TokenMetadata,
+
     pub fn init(endOffset: u32, metadata: TokenMetadata) TokenPacked {
-        return TokenPacked{
-            .endOffset = endOffset,
-            .metadata = metadata,
-        };
+        return .{ .endOffset = endOffset, .metadata = metadata };
     }
 };
 
 pub const LineTokens = struct {
     _tokens: ArrayList(TokenPacked),
     _text: ArrayList(u8),
-    languageIdCodec: LanguageIdCodec,
+    languageIdCodec: *LanguageIdCodec,
 
     pub fn initTokenPacked(offset: usize, metadata: TokenMetadata) TokenPacked {
-        return TokenPacked{
-            .endOffset = @intCast(offset),
-            .metadata = metadata,
-        };
+        return .{ .endOffset = @intCast(offset), .metadata = metadata };
     }
 
-    pub fn createEmpty(allocator: Allocator, lineContent: ArrayList(u8), decoder: LanguageIdCodec) !LineTokens {
-        const tokens = ArrayList(TokenPacked).init(allocator);
-        try tokens.append(initTokenPacked(lineContent.items.len, TokenMetadata.default));
-        return LineTokens.init(tokens, lineContent, decoder);
+    /// Takes ownership of both `tokens` and `text`.
+    pub fn init(tokens: ArrayList(TokenPacked), text: ArrayList(u8), decoder: *LanguageIdCodec) LineTokens {
+        std.debug.assert(if (tokens.items.len > 0) tokens.items[tokens.items.len - 1].endOffset == text.items.len else text.items.len == 0);
+        return .{ ._tokens = tokens, ._text = text, .languageIdCodec = decoder };
     }
 
     pub fn deinit(self: *LineTokens) void {
@@ -46,21 +42,30 @@ pub const LineTokens = struct {
         self._text.deinit();
     }
 
-    pub fn createFromTextAndMetadata(allocator: Allocator, data: []struct { text: []const u8, metadata: TokenMetadata }, decoder: LanguageIdCodec) !LineTokens {
-        var offset: usize = 0;
-        var fullText = ArrayList(u8).init(allocator);
+    pub fn createEmpty(allocator: Allocator, lineContent: ArrayList(u8), decoder: *LanguageIdCodec) !LineTokens {
         var tokens = ArrayList(TokenPacked).init(allocator);
+        errdefer tokens.deinit();
+        try tokens.append(initTokenPacked(lineContent.items.len, TokenMetadata.default));
+        return LineTokens.init(tokens, lineContent, decoder);
+    }
+
+    pub fn createFromTextAndMetadata(allocator: Allocator, data: []const TokenTextMetadata, decoder: *LanguageIdCodec) !LineTokens {
+        var fullText = ArrayList(u8).init(allocator);
+        errdefer fullText.deinit();
+        var tokens = ArrayList(TokenPacked).init(allocator);
+        errdefer tokens.deinit();
+
+        var offset: usize = 0;
         for (data) |item| {
-            const text = item.text;
-            const metadata = item.metadata;
-            try tokens.append(initTokenPacked(offset + text.len, metadata));
-            offset += text.len;
-            try fullText.appendSlice(text);
+            offset += item.text.len;
+            try tokens.append(initTokenPacked(offset, item.metadata));
+            try fullText.appendSlice(item.text);
         }
         return LineTokens.init(tokens, fullText, decoder);
     }
 
     pub fn convertToEndOffset(tokens: []TokenPacked, lineTextLength: usize) void {
+        if (tokens.len == 0) return;
         const lastTokenIndex = tokens.len - 1;
         for (0..lastTokenIndex) |tokenIndex| {
             tokens[tokenIndex].endOffset = tokens[tokenIndex + 1].endOffset;
@@ -68,77 +73,55 @@ pub const LineTokens = struct {
         tokens[lastTokenIndex].endOffset = @intCast(lineTextLength);
     }
 
-    pub fn findIndexInTokensArray(tokens: []TokenPacked, desiredIndex: usize) usize {
-        if (tokens.len <= 2) {
-            return 0;
-        }
+    pub fn findIndexInTokensArray(tokens: []const TokenPacked, desiredIndex: usize) usize {
+        if (tokens.len <= 1) return 0;
 
         var low: usize = 0;
-        var high: usize = (tokens.len >> 1) - 1;
-
+        var high: usize = tokens.len - 1;
         while (low < high) {
             const mid = low + @divFloor(high - low, 2);
             const endOffset = tokens[mid].endOffset;
-
             if (endOffset == desiredIndex) {
                 return mid + 1;
             } else if (endOffset < desiredIndex) {
                 low = mid + 1;
-            } else if (endOffset > desiredIndex) {
+            } else {
                 high = mid;
             }
         }
-
         return low;
-    }
-
-    pub fn init(tokens: ArrayList(TokenPacked), text: ArrayList(u8), decoder: LanguageIdCodec) LineTokens {
-        const tokensLength = if (tokens.items.len > 0) tokens.items[tokens.items.len - 1].endOffset else 0;
-        // Token length and text length do not match!
-        std.debug.assert(tokensLength == text.items.len);
-
-        return LineTokens{
-            ._tokens = tokens,
-            ._text = text,
-            .languageIdCodec = decoder,
-        };
     }
 
     pub fn getTextLength(self: *const LineTokens) usize {
         return self._text.items.len;
     }
 
-    pub fn equals(self: *LineTokens, other: *LineTokens) bool {
+    pub fn equals(self: *const LineTokens, other: *const LineTokens) bool {
         return self.slicedEquals(other, 0, self._tokens.items.len);
     }
 
-    pub fn slicedEquals(self: *LineTokens, other: *LineTokens, sliceFromTokenIndex: usize, sliceTokenCount: usize) bool {
-        if (self._text.items.len != other._text.items.len) {
-            return false;
-        }
-        if (self._tokens.items.len != other._tokens.items.len) {
-            return false;
-        }
-        for (sliceFromTokenIndex..sliceFromTokenIndex + sliceTokenCount) |i| {
-            if (self._tokens.items[i] != other._tokens.items[i]) {
+    pub fn slicedEquals(self: *const LineTokens, other: *const LineTokens, sliceFromTokenIndex: usize, sliceTokenCount: usize) bool {
+        if (!std.mem.eql(u8, self._text.items, other._text.items)) return false;
+        if (sliceFromTokenIndex > self._tokens.items.len) return false;
+        if (sliceFromTokenIndex + sliceTokenCount > other._tokens.items.len) return false;
+        for (0..sliceTokenCount) |i| {
+            if (self._tokens.items[sliceFromTokenIndex + i] != other._tokens.items[sliceFromTokenIndex + i]) {
                 return false;
             }
         }
         return true;
     }
 
-    pub fn getLineContent(self: *const LineTokens) ArrayList(u8) {
-        return self._text;
+    pub fn getLineContent(self: *const LineTokens) []const u8 {
+        return self._text.items;
     }
 
     pub fn getCount(self: *const LineTokens) usize {
         return self._tokens.items.len;
     }
 
-    pub fn getStartOffset(self: *const LineTokens, tokenIndex: usize) u32 {
-        if (tokenIndex > 0) {
-            return self._tokens.items[tokenIndex - 1].endOffset;
-        }
+    pub fn getStartOffset(self: *const LineTokens, tokenIndex: usize) usize {
+        if (tokenIndex > 0) return self._tokens.items[tokenIndex - 1].endOffset;
         return 0;
     }
 
@@ -147,15 +130,14 @@ pub const LineTokens = struct {
     }
 
     pub fn getLanguageId(self: *const LineTokens, tokenIndex: usize) []const u8 {
-        const languageId = self.getMetadata(tokenIndex).languageId;
-        return self.languageIdCodec.decodeLanguageId(languageId);
+        return self.languageIdCodec.decodeLanguageId(self.getMetadata(tokenIndex).languageId);
     }
 
     pub fn getStandardTokenType(self: *const LineTokens, tokenIndex: usize) StandardTokenType {
         return self.getMetadata(tokenIndex).tokenType;
     }
 
-    pub fn getForeground(self: *const LineTokens, tokenIndex: usize) ColorId {
+    pub fn getForeground(self: *const LineTokens, tokenIndex: usize) u9 {
         return self.getMetadata(tokenIndex).foreground;
     }
 
@@ -171,18 +153,15 @@ pub const LineTokens = struct {
         return self.getMetadata(tokenIndex).getPresentationFromMetadata();
     }
 
-    pub fn getEndOffset(self: *const LineTokens, tokenIndex: usize) u32 {
+    pub fn getEndOffset(self: *const LineTokens, tokenIndex: usize) usize {
         return self._tokens.items[tokenIndex].endOffset;
     }
 
-    // Find the token containing offset `offset`.
-    // @param offset The search offset
-    // @return The index of the token containing the offset.
     pub fn findTokenIndexAtOffset(self: *const LineTokens, offset: usize) usize {
         return LineTokens.findIndexInTokensArray(self._tokens.items, offset);
     }
 
-    pub fn inflate(self: *LineTokens) LineTokens {
+    pub fn inflate(self: *const LineTokens) *const LineTokens {
         return self;
     }
 
@@ -194,41 +173,42 @@ pub const LineTokens = struct {
         return self.sliceAndInflate(range.start, range.endExclusive, 0);
     }
 
-    // @pure
-    // @param insertTokens Must be sorted by offset.
-    pub fn withInserted(self: *LineTokens, insertTokens: []const struct { offset: u32, text: []const u8, tokenMetadata: TokenMetadata }) !LineTokens {
+    pub fn withInserted(self: *const LineTokens, insertTokens: []const struct { offset: usize, text: []const u8, tokenMetadata: TokenMetadata }) !LineTokens {
         if (insertTokens.len == 0) {
-            return self;
+            return .{
+                ._tokens = try self._tokens.clone(),
+                ._text = try self._text.clone(),
+                .languageIdCodec = self.languageIdCodec,
+            };
         }
 
         var nextOriginalTokenIdx: usize = 0;
         var nextInsertTokenIdx: usize = 0;
         var text = ArrayList(u8).init(self._text.allocator);
+        errdefer text.deinit();
         var newTokens = ArrayList(TokenPacked).init(self._tokens.allocator);
+        errdefer newTokens.deinit();
 
-        var originalEndOffset = 0;
+        var originalEndOffset: usize = 0;
         while (true) {
-            const nextOriginalTokenEndOffset = if (nextOriginalTokenIdx < self._tokens.items.len) self._tokens.items[nextOriginalTokenIdx].endOffset else null;
-            const nextInsertToken = if (nextInsertTokenIdx < insertTokens.len) insertTokens[nextInsertTokenIdx] else null;
+            const nextOriginalTokenEndOffset: ?usize = if (nextOriginalTokenIdx < self._tokens.items.len) self._tokens.items[nextOriginalTokenIdx].endOffset else null;
+            const nextInsertToken: ?@TypeOf(insertTokens[0]) = if (nextInsertTokenIdx < insertTokens.len) insertTokens[nextInsertTokenIdx] else null;
 
-            if (nextOriginalTokenEndOffset != null and (nextInsertToken == null or nextOriginalTokenEndOffset.? <= nextInsertToken.offset)) {
-                // original token ends before next insert token
+            if (nextOriginalTokenEndOffset != null and (nextInsertToken == null or nextOriginalTokenEndOffset.? <= nextInsertToken.?.offset)) {
                 try text.appendSlice(self._text.items[originalEndOffset..nextOriginalTokenEndOffset.?]);
                 const metadata = self.getMetadata(nextOriginalTokenIdx);
-                try newTokens.append(initTokenPacked(text.len, metadata));
+                try newTokens.append(initTokenPacked(text.items.len, metadata));
                 nextOriginalTokenIdx += 1;
                 originalEndOffset = nextOriginalTokenEndOffset.?;
-            } else if (nextInsertToken) |_nextInsertToken| {
-                if (_nextInsertToken.offset > originalEndOffset) {
-                    // insert token is in the middle of the next token.
-                    try text.appendSlice(self._text.items[originalEndOffset.._nextInsertToken.offset]);
+            } else if (nextInsertToken) |insertToken| {
+                if (insertToken.offset > originalEndOffset) {
+                    try text.appendSlice(self._text.items[originalEndOffset..insertToken.offset]);
                     const metadata = self.getMetadata(nextOriginalTokenIdx);
-                    try newTokens.append(initTokenPacked(text.len, metadata));
-                    originalEndOffset = _nextInsertToken.offset;
+                    try newTokens.append(initTokenPacked(text.items.len, metadata));
+                    originalEndOffset = insertToken.offset;
                 }
-
-                try text.appendSlice(_nextInsertToken.text);
-                try newTokens.append(initTokenPacked(text.len, _nextInsertToken.tokenMetadata));
+                try text.appendSlice(insertToken.text);
+                try newTokens.append(initTokenPacked(text.items.len, insertToken.tokenMetadata));
                 nextInsertTokenIdx += 1;
             } else {
                 break;
@@ -238,13 +218,14 @@ pub const LineTokens = struct {
         return LineTokens.init(newTokens, text, self.languageIdCodec);
     }
 
-    pub fn getTokensInRange(self: *LineTokens, range: OffsetRange) TokenArray {
+    pub fn getTokensInRange(self: *const LineTokens, range: OffsetRange) !TokenArray {
         var builder = TokenArrayBuilder.init(self._tokens.allocator);
 
         const startTokenIndex = self.findTokenIndexAtOffset(range.start);
         const endTokenIndex = self.findTokenIndexAtOffset(range.endExclusive);
 
-        for (startTokenIndex..endTokenIndex) |tokenIndex| {
+        var tokenIndex = startTokenIndex;
+        while (tokenIndex <= endTokenIndex and tokenIndex < self.getCount()) : (tokenIndex += 1) {
             const tokenRange = OffsetRange.init(self.getStartOffset(tokenIndex), self.getEndOffset(tokenIndex));
             const length = tokenRange.intersectionLength(range);
             if (length > 0) {
@@ -256,152 +237,134 @@ pub const LineTokens = struct {
     }
 
     pub fn getTokenText(self: *const LineTokens, tokenIndex: usize) []const u8 {
-        const startOffset = self.getStartOffset(tokenIndex);
-        const endOffset = self.getEndOffset(tokenIndex);
-        return self._text.items[startOffset..endOffset];
+        return self._text.items[self.getStartOffset(tokenIndex)..self.getEndOffset(tokenIndex)];
     }
 
-    pub fn forEach(self: *LineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
-        const tokenCount = self.getCount();
-        for (0..tokenCount) |tokenIndex| {
-            callback(tokenIndex, context);
-        }
+    pub fn forEach(self: *const LineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
+        for (0..self.getCount()) |tokenIndex| callback(tokenIndex, context);
     }
 
-    pub fn toString(self: *LineTokens) !ArrayList(u8) {
-        var result = ArrayList(u8).init(self._text.allocator);
-        var writer = result.writer();
-        const tokenCount = self.getCount();
-        for (0..tokenCount) |tokenIndex| {
+    pub fn toString(self: *const LineTokens) !ArrayList(u8) {
+        var result: Io.Writer.Allocating = .init(self._text.allocator);
+        errdefer result.deinit();
+        for (0..self.getCount()) |tokenIndex| {
             const className = try self.getClassName(tokenIndex);
             defer className.deinit();
-            try writer.print("[{s}]{{{s}}}", .{ self.getTokenText(tokenIndex), className.items });
+            try result.writer.print("[{s}]{{{s}}}", .{ self.getTokenText(tokenIndex), className.items });
         }
-        return result;
+        return ArrayList(u8).fromOwnedSlice(self._text.allocator, try result.toOwnedSlice());
     }
 };
 
 pub const SliceLineTokens = struct {
-    _source: LineTokens,
+    _source: *const LineTokens,
     _startOffset: usize,
     _endOffset: usize,
     _deltaOffset: usize,
-
     _firstTokenIndex: usize,
     _tokensCount: usize,
+    languageIdCodec: *LanguageIdCodec,
 
-    languageIdCodec: LanguageIdCodec,
-
-    pub fn init(source: LineTokens, startOffset: usize, endOffset: usize, deltaOffset: usize) SliceLineTokens {
+    pub fn init(source: *const LineTokens, startOffset: usize, endOffset: usize, deltaOffset: usize) SliceLineTokens {
+        const firstTokenIndex = source.findTokenIndexAtOffset(startOffset);
         var tokensCount: usize = 0;
-        for (0..source.getCount()) |i| {
-            const tokenStartOffset = source.getStartOffset(i);
-            if (tokenStartOffset >= endOffset) {
-                break;
-            }
+        var i = firstTokenIndex;
+        while (i < source.getCount()) : (i += 1) {
+            if (source.getStartOffset(i) >= endOffset) break;
             tokensCount += 1;
         }
-        return SliceLineTokens{
-            .source = source,
-            .startOffset = startOffset,
-            .endOffset = endOffset,
-            .deltaOffset = deltaOffset,
-            .firstTokenIndex = source.findTokenIndexAtOffset(startOffset),
-            .tokensCount = tokensCount,
+        return .{
+            ._source = source,
+            ._startOffset = startOffset,
+            ._endOffset = endOffset,
+            ._deltaOffset = deltaOffset,
+            ._firstTokenIndex = firstTokenIndex,
+            ._tokensCount = tokensCount,
             .languageIdCodec = source.languageIdCodec,
         };
     }
 
-    pub fn getMetadata(self: *SliceLineTokens, tokenIndex: usize) TokenMetadata {
+    pub fn getMetadata(self: *const SliceLineTokens, tokenIndex: usize) TokenMetadata {
         return self._source.getMetadata(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getLanguageId(self: *SliceLineTokens, tokenIndex: usize) []const u8 {
+    pub fn getLanguageId(self: *const SliceLineTokens, tokenIndex: usize) []const u8 {
         return self._source.getLanguageId(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getLineContent(self: *SliceLineTokens) []const u8 {
+    pub fn getLineContent(self: *const SliceLineTokens) []const u8 {
         return self._source.getLineContent()[self._startOffset..self._endOffset];
     }
 
-    pub fn equals(self: *SliceLineTokens, other: *SliceLineTokens) bool {
-        if (other == SliceLineTokens) {
-            return (self._startOffset == other._startOffset and self._endOffset == other._endOffset and self._deltaOffset == other._deltaOffset and self._source.slicedEquals(other._source, self._firstTokenIndex, self._tokensCount));
-        }
-        return false;
+    pub fn equals(self: *const SliceLineTokens, other: *const SliceLineTokens) bool {
+        return self._startOffset == other._startOffset and
+            self._endOffset == other._endOffset and
+            self._deltaOffset == other._deltaOffset and
+            self._source.slicedEquals(other._source, self._firstTokenIndex, self._tokensCount);
     }
 
-    pub fn getCount(self: *SliceLineTokens) usize {
+    pub fn getCount(self: *const SliceLineTokens) usize {
         return self._tokensCount;
     }
 
-    pub fn getStandardTokenType(self: *SliceLineTokens, tokenIndex: usize) StandardTokenType {
+    pub fn getStandardTokenType(self: *const SliceLineTokens, tokenIndex: usize) StandardTokenType {
         return self._source.getStandardTokenType(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getForeground(self: *SliceLineTokens, tokenIndex: usize) ColorId {
+    pub fn getForeground(self: *const SliceLineTokens, tokenIndex: usize) u9 {
         return self._source.getForeground(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getEndOffset(self: *SliceLineTokens, tokenIndex: usize) usize {
+    pub fn getEndOffset(self: *const SliceLineTokens, tokenIndex: usize) usize {
         const tokenEndOffset = self._source.getEndOffset(self._firstTokenIndex + tokenIndex);
         return @min(self._endOffset, tokenEndOffset) - self._startOffset + self._deltaOffset;
     }
 
-    pub fn getClassName(self: *SliceLineTokens, tokenIndex: usize) !ArrayList(u8) {
+    pub fn getClassName(self: *const SliceLineTokens, tokenIndex: usize) !ArrayList(u8) {
         return try self._source.getClassName(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn getInlineStyle(self: *SliceLineTokens, tokenIndex: usize, colorMap: []const []const u8) !ArrayList(u8) {
+    pub fn getInlineStyle(self: *const SliceLineTokens, tokenIndex: usize, colorMap: []const []const u8) !ArrayList(u8) {
         return try self._source.getInlineStyle(self._firstTokenIndex + tokenIndex, colorMap);
     }
 
-    pub fn getPresentation(self: *SliceLineTokens, tokenIndex: usize) TokenPresentation {
+    pub fn getPresentation(self: *const SliceLineTokens, tokenIndex: usize) TokenPresentation {
         return self._source.getPresentation(self._firstTokenIndex + tokenIndex);
     }
 
-    pub fn findTokenIndexAtOffset(self: *SliceLineTokens, offset: usize) usize {
+    pub fn findTokenIndexAtOffset(self: *const SliceLineTokens, offset: usize) usize {
         return self._source.findTokenIndexAtOffset(offset + self._startOffset - self._deltaOffset) - self._firstTokenIndex;
     }
 
-    pub fn getTokenText(self: *SliceLineTokens, tokenIndex: usize) []const u8 {
+    pub fn getTokenText(self: *const SliceLineTokens, tokenIndex: usize) []const u8 {
         const adjustedTokenIndex = self._firstTokenIndex + tokenIndex;
         const tokenStartOffset = self._source.getStartOffset(adjustedTokenIndex);
         const tokenEndOffset = self._source.getEndOffset(adjustedTokenIndex);
-        var text = self._source.getTokenText(adjustedTokenIndex).toOwnedSlice();
-        if (tokenStartOffset < self._startOffset) {
-            text = text ++ self._text[self._startOffset - tokenStartOffset ..];
-        }
-        if (tokenEndOffset > self._endOffset) {
-            text = text ++ self._text[0 .. text.len - (tokenEndOffset - self._endOffset)];
-        }
-        return text;
+
+        var start = tokenStartOffset;
+        var end = tokenEndOffset;
+        if (start < self._startOffset) start = self._startOffset;
+        if (end > self._endOffset) end = self._endOffset;
+        return self._source.getLineContent()[start..end];
     }
 
-    pub fn forEach(self: *SliceLineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
-        for (0..self.getCount()) |tokenIndex| {
-            callback(tokenIndex, context);
-        }
+    pub fn forEach(self: *const SliceLineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
+        for (0..self.getCount()) |tokenIndex| callback(tokenIndex, context);
     }
 };
 
-pub fn getStandardTokenTypeAtPosition(model: TextModel, position: Position) ?StandardTokenType {
-    const lineNumber = position.lineNumber - 1;
-    if (!model.tokenization().isCheapToTokenize(lineNumber)) {
-        return null;
-    }
+pub fn getStandardTokenTypeAtPosition(model: *TextModel, position: Position) !?StandardTokenType {
+    const lineNumber = position.lineNumber;
+    if (!model.tokenization().isCheapToTokenize(lineNumber)) return null;
     model.tokenization().forceTokenization(lineNumber);
-    const lineTokens: LineTokens = model.tokenization().getLineTokens(lineNumber);
-    const tokenIndex = lineTokens.findTokenIndexAtOffset(position.column - 1) - 1;
-    const tokenType = lineTokens.getStandardTokenType(tokenIndex);
-    return tokenType;
+    var lineTokens = try model.tokenization().getLineTokens(lineNumber);
+    defer lineTokens.deinit();
+    const tokenIndex = lineTokens.findTokenIndexAtOffset(position.column - 1);
+    return lineTokens.getStandardTokenType(tokenIndex);
 }
 
 // This class represents a sequence of tokens.
 // Conceptually, each token has a length and a metadata number.
-// A token array might be used to annotate a string with metadata.
-// Use {@link TokenArrayBuilder} to efficiently create a token array.
-//
 pub const TokenArray = struct {
     _tokenInfo: ArrayList(TokenInfo),
 
@@ -413,27 +376,36 @@ pub const TokenArray = struct {
         self._tokenInfo.deinit();
     }
 
-    pub fn fromLineTokens(lineTokens: LineTokens) TokenArray {
+    pub fn fromLineTokens(lineTokens: *const LineTokens) !TokenArray {
         var tokenInfo = ArrayList(TokenInfo).init(lineTokens._tokens.allocator);
+        errdefer tokenInfo.deinit();
         for (0..lineTokens.getCount()) |i| {
             try tokenInfo.append(TokenInfo{
-                .length = @intCast(lineTokens.getEndOffset(i) - lineTokens.getStartOffset(i)),
+                .length = lineTokens.getEndOffset(i) - lineTokens.getStartOffset(i),
                 .metadata = lineTokens.getMetadata(i),
             });
         }
         return TokenArray.init(tokenInfo);
     }
 
-    pub fn toLineTokens(self: *TokenArray, lineContent: []const u8, decoder: LanguageIdCodec) LineTokens {
-        return LineTokens.createFromTextAndMetadata(self.map(struct { text: []const u8, metadata: TokenMetadata }, {}, struct {
-            fn cb(_: void, r: OffsetRange, t: TokenInfo) struct { text: []const u8, metadata: TokenMetadata } {
-                return .{ .text = r.substring(lineContent), .metadata = t.metadata };
-            }
-        }.cb), decoder);
+    pub fn toLineTokens(self: *const TokenArray, allocator: Allocator, lineContent: []const u8, decoder: *LanguageIdCodec) !LineTokens {
+        var tokens = ArrayList(TokenPacked).init(allocator);
+        errdefer tokens.deinit();
+        var text = ArrayList(u8).init(allocator);
+        errdefer text.deinit();
+
+        var offset: usize = 0;
+        for (self._tokenInfo.items) |tokenInfo| {
+            const end = offset + tokenInfo.length;
+            try text.appendSlice(lineContent[offset..end]);
+            try tokens.append(LineTokens.initTokenPacked(text.items.len, tokenInfo.metadata));
+            offset = end;
+        }
+        return LineTokens.init(tokens, text, decoder);
     }
 
-    pub fn forEach(self: *TokenArray, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenPacked, ctx: @TypeOf(context)) void) void {
-        var lengthSum = 0;
+    pub fn forEach(self: *const TokenArray, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenInfo, ctx: @TypeOf(context)) void) void {
+        var lengthSum: usize = 0;
         for (self._tokenInfo.items) |tokenInfo| {
             const range = OffsetRange.init(lengthSum, lengthSum + tokenInfo.length);
             cb(range, tokenInfo, context);
@@ -441,9 +413,10 @@ pub const TokenArray = struct {
         }
     }
 
-    pub fn map(self: *TokenArray, comptime T: type, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenPacked, ctx: @TypeOf(context)) T) ArrayList(T) {
+    pub fn map(self: *const TokenArray, comptime T: type, context: anytype, cb: fn (range: OffsetRange, tokenInfo: TokenInfo, ctx: @TypeOf(context)) T) !ArrayList(T) {
         var result = ArrayList(T).init(self._tokenInfo.allocator);
-        var lengthSum = 0;
+        errdefer result.deinit();
+        var lengthSum: usize = 0;
         for (self._tokenInfo.items) |tokenInfo| {
             const range = OffsetRange.init(lengthSum, lengthSum + tokenInfo.length);
             try result.append(cb(range, tokenInfo, context));
@@ -452,68 +425,54 @@ pub const TokenArray = struct {
         return result;
     }
 
-    pub fn slice(self: *TokenArray, range: OffsetRange) TokenArray {
+    pub fn slice(self: *const TokenArray, range: OffsetRange) !TokenArray {
         var result = ArrayList(TokenInfo).init(self._tokenInfo.allocator);
-        var lengthSum: i32 = 0;
+        errdefer result.deinit();
+        var lengthSum: usize = 0;
         for (self._tokenInfo.items) |tokenInfo| {
-            const tokenInfoLen: i32 = @intCast(tokenInfo.length);
-            const tokenStart: i32 = lengthSum;
-            const tokenEndEx: i32 = tokenStart + tokenInfoLen;
-            const rangeStart: i32 = @intCast(range.start);
-            const rangeEndExclusive: i32 = @intCast(range.endExclusive);
-            if (tokenEndEx > rangeStart) {
-                if (tokenStart >= rangeEndExclusive) {
-                    break;
-                }
-
-                const deltaBefore: i32 = @max(0, rangeStart - tokenStart);
-                const deltaAfter: i32 = @max(0, tokenEndEx - rangeEndExclusive);
-
+            const tokenStart = lengthSum;
+            const tokenEndEx = tokenStart + tokenInfo.length;
+            if (tokenEndEx > range.start) {
+                if (tokenStart >= range.endExclusive) break;
+                const deltaBefore = range.start -| tokenStart;
+                const deltaAfter = tokenEndEx -| range.endExclusive;
                 try result.append(TokenInfo{
-                    .length = @intCast(tokenInfoLen - deltaBefore - deltaAfter),
+                    .length = tokenInfo.length - deltaBefore - deltaAfter,
                     .metadata = tokenInfo.metadata,
                 });
             }
-
-            lengthSum += tokenInfoLen;
+            lengthSum = tokenEndEx;
         }
         return TokenArray.init(result);
     }
 
-    pub fn append(self: *TokenArray, other: TokenArray) TokenArray {
-        const result = ArrayList(TokenInfo).init(self._tokenInfo.allocator);
+    pub fn append(self: *const TokenArray, other: *const TokenArray) !TokenArray {
+        var result = ArrayList(TokenInfo).init(self._tokenInfo.allocator);
+        errdefer result.deinit();
         try result.appendSlice(self._tokenInfo.items);
         try result.appendSlice(other._tokenInfo.items);
         return TokenArray.init(result);
     }
 };
 
-const TokenInfoBigEndian = packed struct(u64) {
-    length: u32,
+pub const TokenInfo = struct {
+    length: usize,
     metadata: TokenMetadata,
 };
-
-const TokenInfoLittleEndian = packed struct(u64) {
-    metadata: TokenMetadata,
-    length: u32,
-};
-
-const TokenInfo = if (builtin.target.cpu.arch.endian() == .big) TokenInfoBigEndian else TokenInfoLittleEndian;
 
 pub const TokenArrayBuilder = struct {
     _tokens: ArrayList(TokenInfo),
 
     pub fn init(allocator: Allocator) TokenArrayBuilder {
-        return TokenArrayBuilder{
-            ._tokens = ArrayList(TokenInfo).init(allocator),
-        };
+        return .{ ._tokens = ArrayList(TokenInfo).init(allocator) };
+    }
+
+    pub fn deinit(self: *TokenArrayBuilder) void {
+        self._tokens.deinit();
     }
 
     pub fn add(self: *TokenArrayBuilder, length: usize, metadata: TokenMetadata) !void {
-        try self._tokens.append(TokenInfo{
-            .length = @intCast(length),
-            .metadata = metadata,
-        });
+        try self._tokens.append(.{ .length = length, .metadata = metadata });
     }
 
     pub fn build(self: *TokenArrayBuilder) TokenArray {
