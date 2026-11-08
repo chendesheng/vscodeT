@@ -1,6 +1,6 @@
 const std = @import("std");
-const app = @import("tui/app.zig");
-const tui = @import("tui/tui.zig");
+const app = @import("./tui/app.zig");
+const tui = @import("./tui/tui.zig");
 
 pub const panic = tui.panic;
 

@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) void {
 /// `@cImport`, so C headers must be translated by the build system instead.
 fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) *std.Build.Module {
     const translate = b.addTranslateC(.{
-        .root_source_file = b.path("src/basics/oniguruma.h"),
+        .root_source_file = b.path("src/support/oniguruma.h"),
         .target = target,
         .optimize = optimize,
     });

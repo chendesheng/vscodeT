@@ -1,18 +1,18 @@
 const std = @import("std");
 const Io = std.Io;
 const posix = std.posix;
-const tui = @import("tui.zig");
+const tui = @import("./tui.zig");
 const Size = tui.Size;
 const Point = tui.Point;
 const ArrayList = std.array_list.Managed;
-const logger = @import("logger.zig");
-const PieceTreeBufferBuilder = @import("../pieceTreeTextBuffer/pieceTreeBufferBuilder.zig").PieceTreeBufferBuilder;
-const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
-const ValidAnnotatedEditOperation = @import("../model.zig").ValidAnnotatedEditOperation;
-const Range = @import("../basics/range.zig").Range;
-const Utf8StreamIterator = @import("utf8Helper.zig").Utf8StreamIterator;
-const ansi = @import("ansi.zig");
-const String = @import("../basics/strings.zig").String;
+const logger = @import("./logger.zig");
+const PieceTreeBufferBuilder = @import("../vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBufferBuilder.zig").PieceTreeBufferBuilder;
+const PieceTreeTextBuffer = @import("../vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
+const ValidAnnotatedEditOperation = @import("../vs/editor/common/model.zig").ValidAnnotatedEditOperation;
+const Range = @import("../vs/editor/common/core/range.zig").Range;
+const Utf8StreamIterator = @import("./utf8Helper.zig").Utf8StreamIterator;
+const ansi = @import("./ansi.zig");
+const String = @import("../vs/base/common/strings.zig").String;
 
 const MoveAction = enum {
     Up,
@@ -59,9 +59,9 @@ fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
     return maxLineNumberWidth + 2;
 }
 
-const Highlighter = @import("highlighter.zig").Highlighter;
+const Highlighter = @import("./highlighter.zig").Highlighter;
 
-fn colorForToken(token: @import("../tokens/lineTokens.zig").TokenPacked) ?[3]u8 {
+fn colorForToken(token: @import("../vs/editor/common/tokens/lineTokens.zig").TokenPacked) ?[3]u8 {
     return switch (token.metadata.foreground) {
         5 => .{ 106, 153, 85 },
         6 => .{ 206, 145, 120 },
@@ -136,7 +136,7 @@ const View = struct {
         try out.flush();
     }
 
-    fn drawHighlightedLine(self: *const View, text: []const u8, tokens: []const @import("../tokens/lineTokens.zig").TokenPacked) !void {
+    fn drawHighlightedLine(self: *const View, text: []const u8, tokens: []const @import("../vs/editor/common/tokens/lineTokens.zig").TokenPacked) !void {
         const out = self.writer;
         var pos: usize = 0;
         for (tokens) |token| {

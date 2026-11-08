@@ -32,7 +32,7 @@ Tokenizer status:
 Bracket-pair colorization:
 
 - Bracket pairs are parsed by the ported 2-3 tree AST
-  (`src/bracketPairs/bracketPairsTree.zig`): compact lengths, dense immutable
+  (`src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/bracketPairsTree.zig`): compact lengths, dense immutable
   bracket-id sets, bracket tokenizer, parser, and text/bracket/pair/invalid/list
   nodes.
 - Edits are mapped through `beforeEditPositionMapper`, combined across queued

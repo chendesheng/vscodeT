@@ -1,10 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
-const PieceTreeTextBuffer = @import("../pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
-const textMate = @import("../tokenize/textMateTokenizer.zig");
-const TokenPacked = @import("../tokens/lineTokens.zig").TokenPacked;
-const ITokenizationSupport = @import("../languages.zig").ITokenizationSupport;
+const PieceTreeTextBuffer = @import("../vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
+const textMate = @import("../vs/editor/common/model/tokens/textMateTokenizer.zig");
+const TokenPacked = @import("../vs/editor/common/tokens/lineTokens.zig").TokenPacked;
+const ITokenizationSupport = @import("../vs/editor/common/languages.zig").ITokenizationSupport;
 
 /// TUI-local stand-in for vscode's language association registry. Upstream
 /// resolves this through `ILanguageService.guessLanguageIdByFilepathOrFirstLine`
