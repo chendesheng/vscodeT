@@ -16,6 +16,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const onig = onigModule(b, target, optimize);
+    const textmate_dep = b.dependency("textmate", .{ .target = target, .optimize = optimize });
+    const textmate = textmate_dep.module("textmate");
 
     // We will also create a module for our other entry point, 'main.zig'.
     const exe = b.addExecutable(.{
@@ -28,6 +30,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.root_module.addImport("oniguruma", onig);
+    exe.root_module.addImport("textmate", textmate);
     exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
     exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
     exe.root_module.linkSystemLibrary("onig", .{});
@@ -41,6 +44,7 @@ pub fn build(b: *std.Build) void {
     // step is evaluated that depends on it. The next line below will establish
     // such a dependency.
     const run_cmd = b.addRunArtifact(exe);
+    run_cmd.addPassthruArgs();
 
     // By making the run step depend on the install step, it will be run from the
     // installation directory rather than directly from within the cache directory.
@@ -54,7 +58,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    setupTests(b, target, optimize, onig);
+    setupTests(b, target, optimize, onig, textmate);
 }
 
 /// Translates the oniguruma C header into a Zig module. Zig 0.17 removed
@@ -74,7 +78,7 @@ fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     return module;
 }
 
-fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, textmate: *std.Build.Module) void {
     const test_step = b.step("test", "Run all tests");
 
     const tests = b.addTest(.{
@@ -86,6 +90,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         }),
     });
     tests.root_module.addImport("oniguruma", onig);
+    tests.root_module.addImport("textmate", textmate);
     tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
     tests.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
     tests.root_module.linkSystemLibrary("onig", .{});

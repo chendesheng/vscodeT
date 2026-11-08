@@ -52,3 +52,14 @@ Bracket-pair colorization:
   `wordPattern` language configurations.
 - Background tokenization is synchronous (1 ms chunks) because this port has
   no browser idle loop; behavior is otherwise equivalent.
+
+TextMate tokenization:
+
+- The `textmate.zig` fork (`chendesheng/textmate.zig`, commit `55ea72f`) is
+  used for language tokenization as a pinned Zig package dependency.
+- Supported language IDs include `zig`, `json`, `javascript`,
+  `typescript`, `python`, `rust`, `go`, `c`, `cpp`, `java`, `html`, `css`,
+  `scss`, `markdown`, `yaml`, `toml`, and `shellscript`/`bash`.
+- TextMate scopes are mapped to token types (`comment`, `string`, `regexp`)
+  and foreground color IDs.
+- Languages without a TextMate mapping continue to use the null tokenizer.

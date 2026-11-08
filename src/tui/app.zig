@@ -69,8 +69,10 @@ const View = struct {
         const out = self.writer;
 
         const lineNumberWidth = std.fmt.count("{d}", .{lineNumber});
-        for (lineNumberWidth..lineNumberGutterWidth - 1) |_| {
-            try tui.writeAll(out, " ");
+        if (lineNumberGutterWidth > lineNumberWidth + 1) {
+            for (lineNumberWidth..lineNumberGutterWidth - 1) |_| {
+                try tui.writeAll(out, " ");
+            }
         }
 
         var buf: [64]u8 = undefined;
@@ -86,10 +88,11 @@ const View = struct {
 
         const lineCount = tree.getLineCount();
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
-        const from = self.scrollPosition.row;
-        const to: usize = @min(self.scrollPosition.row + self.size.height - 1, lineCount);
+        const from = @min(self.scrollPosition.row, lineCount);
+        const visibleHeight = @max(self.size.height, 1);
+        const to: usize = @min(from + visibleHeight - 1, lineCount);
 
-        const width = self.size.width - lineNumberGutterWidth;
+        const width = self.size.width -| lineNumberGutterWidth;
 
         for (from..to + 1) |i| {
             const line = try tree.getLineContent(i);
@@ -121,7 +124,7 @@ const View = struct {
     fn drawCursor(self: *const View, tree: *const PieceTreeTextBuffer) !void {
         const out = self.writer;
         const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
-        const row = self.cursorPosition.row - self.scrollPosition.row + 1;
+        const row = self.cursorPosition.row -| self.scrollPosition.row + 1;
         const col = lineNumberGutterWidth + clamp(self.cursorPosition.col, 1, tree.getLineLength(self.cursorPosition.row) + 1);
         try tui.moveCursor(out, .{ .row = row, .col = col });
         try out.flush();

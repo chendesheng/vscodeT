@@ -36,6 +36,10 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
+        .textmate = .{
+            .url = "https://github.com/chendesheng/textmate.zig/archive/55ea72f.tar.gz",
+            .hash = "textmate-0.0.0-dDtH-5PkygDB_gq-1fIDZQ9sTK7jGyMbYWXezOhRLRKg",
+        },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding

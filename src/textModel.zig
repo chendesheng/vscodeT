@@ -366,6 +366,7 @@ pub const TextModel = struct {
         }
 
         languageService.requestRichLanguageFeatures(languageId);
+        @import("tokenize/textMateTokenizer.zig").ensureTokenizer(languageId);
         const attachedViews = AttachedViews.init(allocator);
 
         const model = try allocator.create(TextModel);

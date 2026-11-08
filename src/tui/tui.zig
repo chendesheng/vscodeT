@@ -82,11 +82,11 @@ pub const Size = struct {
 };
 
 pub fn getTerminalSize() !Size {
-    var size: posix.winsize = undefined;
+    var size: posix.winsize = std.mem.zeroes(posix.winsize);
     _ = posix.system.ioctl(posix.STDOUT_FILENO, posix.T.IOCGWINSZ, @intFromPtr(&size));
     return .{
-        .width = size.col,
-        .height = size.row,
+        .width = if (size.col == 0) 80 else size.col,
+        .height = if (size.row == 0) 24 else size.row,
     };
 }
 
