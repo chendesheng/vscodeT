@@ -46,7 +46,8 @@ Bracket-pair colorization:
   `bracketPairColorizationOptions`.
 - Language configurations are registered on `LanguageService` with
   `registerLanguageConfiguration`.
-- Colorization is model-level only for now; the TUI renderer does not paint
+- The TUI paints TextMate syntax colors for supported file extensions.
+- Bracket-pair decorations remain model-level only; the TUI does not paint
   inline decoration classes yet.
 - Not ported: tree-sitter tokenization, font-token annotations, and custom
   `wordPattern` language configurations.

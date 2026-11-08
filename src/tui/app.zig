@@ -59,6 +59,22 @@ fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
     return maxLineNumberWidth + 2;
 }
 
+const Highlighter = @import("highlighter.zig").Highlighter;
+
+fn colorForToken(token: @import("../tokens/lineTokens.zig").TokenPacked) ?[3]u8 {
+    return switch (token.metadata.foreground) {
+        5 => .{ 106, 153, 85 },
+        6 => .{ 206, 145, 120 },
+        7 => .{ 209, 105, 105 },
+        8 => .{ 197, 134, 192 },
+        9 => .{ 181, 206, 168 },
+        10 => .{ 220, 220, 170 },
+        11 => .{ 78, 201, 176 },
+        12 => .{ 156, 220, 254 },
+        else => null,
+    };
+}
+
 const View = struct {
     writer: *Io.Writer,
     size: Size,
@@ -79,7 +95,7 @@ const View = struct {
         try tui.writeAll(out, try std.fmt.bufPrint(&buf, "{d} ", .{lineNumber}));
     }
 
-    fn drawVisibleLines(self: *const View, tree: *PieceTreeTextBuffer) !void {
+    fn drawVisibleLines(self: *const View, tree: *PieceTreeTextBuffer, highlighter: *const Highlighter) !void {
         const out = self.writer;
         try tui.moveCursor(out, .{ .col = 1, .row = 1 });
         defer self.drawCursor(tree) catch {};
@@ -99,8 +115,7 @@ const View = struct {
             defer line.deinit();
 
             try self.drawLineNumberGutter(lineNumberGutterWidth, i);
-
-            try tui.writeAll(out, line.items);
+            try self.drawHighlightedLine(line.items, highlighter.tokensForLine(i));
 
             if (i < to) {
                 try tui.writeAll(out, "⏎");
@@ -119,6 +134,26 @@ const View = struct {
 
         try tui.clearToEndOfScreen(out);
         try out.flush();
+    }
+
+    fn drawHighlightedLine(self: *const View, text: []const u8, tokens: []const @import("../tokens/lineTokens.zig").TokenPacked) !void {
+        const out = self.writer;
+        var pos: usize = 0;
+        for (tokens) |token| {
+            const end = @min(@as(usize, token.endOffset), text.len);
+            if (end <= pos) continue;
+            if (colorForToken(token)) |color| {
+                var buf: [32]u8 = undefined;
+                const prefix = try std.fmt.bufPrint(&buf, "\x1b[38;2;{d};{d};{d}m", .{ color[0], color[1], color[2] });
+                try tui.writeAll(out, prefix);
+                try tui.writeAll(out, text[pos..end]);
+                try tui.writeAll(out, "\x1b[0m");
+            } else {
+                try tui.writeAll(out, text[pos..end]);
+            }
+            pos = end;
+        }
+        if (pos < text.len) try tui.writeAll(out, text[pos..]);
     }
 
     fn drawCursor(self: *const View, tree: *const PieceTreeTextBuffer) !void {
@@ -251,6 +286,10 @@ pub fn main(init: std.process.Init) !void {
     var tree = try readFile(io, allocator, pathArg);
     defer tree.deinit();
 
+    var highlighter = try Highlighter.init(allocator, pathArg);
+    defer highlighter.deinit();
+    try highlighter.rehighlight(&tree);
+
     const size = try tui.getTerminalSize();
 
     var view = View{
@@ -259,7 +298,7 @@ pub fn main(init: std.process.Init) !void {
         .scrollPosition = .{ .col = 1, .row = 1 },
         .cursorPosition = .{ .col = 1, .row = 1 },
     };
-    try view.drawVisibleLines(&tree);
+    try view.drawVisibleLines(&tree, &highlighter);
 
     var contentChanged = false;
     var scrollChanged = false;
@@ -322,7 +361,8 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (scrollChanged) {
-            try view.drawVisibleLines(&tree);
+            try view.drawVisibleLines(&tree, &highlighter);
+            scrollChanged = false;
         }
 
         if (!oldView.cursorPosition.equals(view.cursorPosition)) {
@@ -330,7 +370,10 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (contentChanged) {
-            try view.drawVisibleLines(&tree);
+            // Tokens are derived from the old buffer contents, so they must be
+            // regenerated before the next paint.
+            try highlighter.rehighlight(&tree);
+            try view.drawVisibleLines(&tree, &highlighter);
             contentChanged = false;
         }
     }
