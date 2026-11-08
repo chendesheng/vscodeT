@@ -42,7 +42,7 @@ const ValidatedEditOperation = struct {
     forceMoveMarkers: bool,
     isAutoWhitespaceEdit: bool,
 
-    pub fn deinit(self: *const ValidatedEditOperation) void {
+    pub fn deinit(self: *ValidatedEditOperation) void {
         self.text.deinit();
     }
 };
@@ -279,7 +279,10 @@ pub const PieceTreeTextBuffer = struct {
         var canReduceOperations = true;
 
         var operations = ArrayList(ValidatedEditOperation).init(allocator);
-        defer operations.deinit();
+        defer {
+            for (operations.items) |*op| op.deinit();
+            operations.deinit();
+        }
         for (rawOperations, 0..) |*op, i| {
             if (canReduceOperations and op._isTracked) {
                 canReduceOperations = false;
@@ -319,6 +322,7 @@ pub const PieceTreeTextBuffer = struct {
                     validText = text.move();
                 } else {
                     var temp = std.array_list.Managed(u8).init(allocator);
+                    errdefer temp.deinit();
                     try temp.appendSlice(text.items());
                     try replaceEOL(&temp, bufferEOL);
                     validText = String.initOwned(temp);

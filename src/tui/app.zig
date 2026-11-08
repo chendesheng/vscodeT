@@ -180,7 +180,11 @@ const View = struct {
             .endLineNumber = self.cursorPosition.row,
             .endColumn = self.cursorPosition.col,
         }, String.initBorrowed(text))};
-        _ = try tree.applyEdits(&ops, false, false);
+        var result = try tree.applyEdits(&ops, false, false);
+        defer {
+            for (result.changes.items) |*change| change.modelContentChange.deinit();
+            result.deinit();
+        }
         try self.updateCursorPosition(tree, offset + text.len);
     }
 
@@ -197,7 +201,11 @@ const View = struct {
             .endLineNumber = startPos.row,
             .endColumn = startPos.col,
         })};
-        _ = try tree.applyEdits(&ops, false, false);
+        var result = try tree.applyEdits(&ops, false, false);
+        defer {
+            for (result.changes.items) |*change| change.modelContentChange.deinit();
+            result.deinit();
+        }
     }
 
     fn resize(self: *View, newSize: Size, tree: *const PieceTreeTextBuffer) !void {
