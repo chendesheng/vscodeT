@@ -32,23 +32,14 @@ pub const Selection = struct {
     positionColumn: usize,
 
     pub fn init(selectionStartLineNumber: usize, selectionStartColumn: usize, positionLineNumber: usize, positionColumn: usize) Selection {
-        var startLineNumber = selectionStartLineNumber;
-        var startColumn = selectionStartColumn;
-        var endLineNumber = positionLineNumber;
-        var endColumn = positionColumn;
-
-        if ((startLineNumber > endLineNumber) or (startLineNumber == endLineNumber and startColumn > endColumn)) {
-            startLineNumber = endLineNumber;
-            startColumn = endColumn;
-            endLineNumber = startLineNumber;
-            endColumn = startColumn;
-        }
+        const reversed = (selectionStartLineNumber > positionLineNumber) or
+            (selectionStartLineNumber == positionLineNumber and selectionStartColumn > positionColumn);
 
         return Selection{
-            .startLineNumber = startLineNumber,
-            .startColumn = startColumn,
-            .endLineNumber = endLineNumber,
-            .endColumn = endColumn,
+            .startLineNumber = if (reversed) positionLineNumber else selectionStartLineNumber,
+            .startColumn = if (reversed) positionColumn else selectionStartColumn,
+            .endLineNumber = if (reversed) selectionStartLineNumber else positionLineNumber,
+            .endColumn = if (reversed) selectionStartColumn else positionColumn,
             .selectionStartLineNumber = selectionStartLineNumber,
             .selectionStartColumn = selectionStartColumn,
             .positionLineNumber = positionLineNumber,
@@ -90,6 +81,24 @@ pub const Selection = struct {
             .lineNumber = self.positionLineNumber,
             .column = self.positionColumn,
         };
+    }
+
+    pub fn isEmpty(self: *const Selection) bool {
+        return self.startLineNumber == self.endLineNumber and self.startColumn == self.endColumn;
+    }
+
+    pub fn getStartPosition(self: *const Selection) Position {
+        return Position{ .lineNumber = self.startLineNumber, .column = self.startColumn };
+    }
+
+    pub fn getEndPosition(self: *const Selection) Position {
+        return Position{ .lineNumber = self.endLineNumber, .column = self.endColumn };
+    }
+
+    pub fn plusRange(self: *const Selection, other: *const Selection) Range {
+        const a = Range.init(self.startLineNumber, self.startColumn, self.endLineNumber, self.endColumn);
+        const b = Range.init(other.startLineNumber, other.startColumn, other.endLineNumber, other.endColumn);
+        return a.plusRange(&b);
     }
 
     // Get the position at the start of the selection.

@@ -311,32 +311,11 @@ pub fn areOnlyIntersecting(a: *const Range, b: *const Range) bool {
 // A function that compares ranges, useful for sorting ranges
 // It will first compare ranges on the startPosition and then on the endPosition
 pub fn compareRangesUsingStarts(a: *const Range, b: *const Range) isize {
-    if (a != null and b != null) {
-        const aStartLineNumber = a.startLineNumber | 0;
-        const bStartLineNumber = b.startLineNumber | 0;
-
-        if (aStartLineNumber == bStartLineNumber) {
-            const aStartColumn = a.startColumn | 0;
-            const bStartColumn = b.startColumn | 0;
-
-            if (aStartColumn == bStartColumn) {
-                const aEndLineNumber = a.endLineNumber | 0;
-                const bEndLineNumber = b.endLineNumber | 0;
-
-                if (aEndLineNumber == bEndLineNumber) {
-                    const aEndColumn = a.endColumn | 0;
-                    const bEndColumn = b.endColumn | 0;
-                    return aEndColumn - bEndColumn;
-                }
-                return aEndLineNumber - bEndLineNumber;
-            }
-            return aStartColumn - bStartColumn;
-        }
-        return aStartLineNumber - bStartLineNumber;
-    }
-    const aExists = if (a != null) 1 else 0;
-    const bExists = if (b != null) 1 else 0;
-    return aExists - bExists;
+    if (a.startLineNumber != b.startLineNumber) return if (a.startLineNumber < b.startLineNumber) -1 else 1;
+    if (a.startColumn != b.startColumn) return if (a.startColumn < b.startColumn) -1 else 1;
+    if (a.endLineNumber != b.endLineNumber) return if (a.endLineNumber < b.endLineNumber) -1 else 1;
+    if (a.endColumn != b.endColumn) return if (a.endColumn < b.endColumn) -1 else 1;
+    return 0;
 }
 
 // A function that compares ranges, useful for sorting ranges
