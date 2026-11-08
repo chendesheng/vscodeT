@@ -235,6 +235,38 @@ pub const ILineHeightChangeAccessor = struct {
     }
 };
 
+/// The subset of upstream `IViewModel` that the modules ported so far need. It
+/// grows as more consumers are ported; the full interface is much larger.
+pub const IViewModel = struct {
+    context: *anyopaque,
+    getLineMinColumn: *const fn (context: *anyopaque, lineNumber: usize) usize,
+    getLineMaxColumn: *const fn (context: *anyopaque, lineNumber: usize) usize,
+    getViewportViewLineRenderingData: *const fn (context: *anyopaque, visibleRange: Range, lineNumber: usize) anyerror!ViewLineRenderingData,
+    getViewLineContinuesWithWrappedLine: *const fn (context: *anyopaque, lineNumber: usize) bool,
+    /// Returns an array owned by the caller.
+    getDecorationsInViewport: *const fn (context: *anyopaque, visibleRange: Range) anyerror![]ViewModelDecoration,
+
+    pub fn lineMinColumn(self: IViewModel, line_number: usize) usize {
+        return self.getLineMinColumn(self.context, line_number);
+    }
+
+    pub fn lineMaxColumn(self: IViewModel, line_number: usize) usize {
+        return self.getLineMaxColumn(self.context, line_number);
+    }
+
+    pub fn viewportViewLineRenderingData(self: IViewModel, visible_range: Range, line_number: usize) !ViewLineRenderingData {
+        return self.getViewportViewLineRenderingData(self.context, visible_range, line_number);
+    }
+
+    pub fn viewLineContinuesWithWrappedLine(self: IViewModel, line_number: usize) bool {
+        return self.getViewLineContinuesWithWrappedLine(self.context, line_number);
+    }
+
+    pub fn decorationsInViewport(self: IViewModel, visible_range: Range) ![]ViewModelDecoration {
+        return self.getDecorationsInViewport(self.context, visible_range);
+    }
+};
+
 pub const IPartialViewLinesViewportData = struct {
     /// Value to be subtracted from `scrollTop` (in order to keep vertical
     /// offset numbers below one million, so they stay exact as f64).
