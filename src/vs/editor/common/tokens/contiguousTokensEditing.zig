@@ -21,11 +21,12 @@ pub const ContiguousTokensEditing = struct {
         }
 
         const lineTextLength = _lineTokens.*.?.getLast().endOffset;
+        if (fromChIndex >= lineTextLength) return;
         try ContiguousTokensEditing.delete(_lineTokens, fromChIndex, lineTextLength);
     }
 
     pub fn delete(_lineTokens: *?ArrayList(TokenPacked), fromChIndex: usize, toChIndex: usize) !void {
-        if (_lineTokens.* == null or _lineTokens.*.?.items.len == 0 or fromChIndex == toChIndex) {
+        if (_lineTokens.* == null or _lineTokens.*.?.items.len == 0 or fromChIndex >= toChIndex) {
             return;
         }
 
@@ -65,12 +66,16 @@ pub const ContiguousTokensEditing = struct {
 
         const delta: u32 = @intCast(usizeSub(toChIndex, fromChIndex));
         for (fromTokenIndex + 1..tokensCount) |tokenIndex| {
-            const tokenEndOffset = tokens[tokenIndex].endOffset - delta;
-            if (tokenEndOffset > lastEnd) {
-                tokens[dest].endOffset = tokenEndOffset;
+            // Upstream uses JS numbers here and may produce a negative
+            // intermediate value. Only the tokens that end after the deleted
+            // range are kept.
+            const tokenEndOffset = @as(isize, @intCast(tokens[tokenIndex].endOffset)) - @as(isize, @intCast(delta));
+            if (tokenEndOffset > @as(isize, @intCast(lastEnd))) {
+                const end: usize = @intCast(tokenEndOffset);
+                tokens[dest].endOffset = @intCast(end);
                 tokens[dest].metadata = tokens[tokenIndex].metadata;
                 dest += 1;
-                lastEnd = tokenEndOffset;
+                lastEnd = end;
             }
         }
 
@@ -85,6 +90,7 @@ pub const ContiguousTokensEditing = struct {
     pub fn append(_lineTokens: *?ArrayList(TokenPacked), _otherTokens: *?ArrayList(TokenPacked)) !void {
         const other = _otherTokens.* orelse {
             // cannot determine combined line length...
+            if (_lineTokens.*) |*tokens| tokens.deinit();
             _lineTokens.* = null;
             return;
         };
@@ -95,6 +101,7 @@ pub const ContiguousTokensEditing = struct {
         if (lineTokens.items.len == 0) {
             // Move the other list into this slot when possible; otherwise copy.
             if (lineTokens.allocator.ptr == other.allocator.ptr) {
+                lineTokens.deinit();
                 _lineTokens.* = other;
                 _otherTokens.* = null;
                 return;
@@ -134,3 +141,47 @@ pub const ContiguousTokensEditing = struct {
         }
     }
 };
+
+
+test "ContiguousTokensEditing.delete skips tokens before the deleted range" {
+    const allocator = std.testing.allocator;
+    var tokens = ArrayList(TokenPacked).init(allocator);
+    try tokens.append(.{ .endOffset = 2, .metadata = .default });
+    try tokens.append(.{ .endOffset = 4, .metadata = .default });
+    try tokens.append(.{ .endOffset = 10, .metadata = .default });
+
+    var optional: ?ArrayList(TokenPacked) = tokens;
+    defer if (optional) |*value| value.deinit();
+    try ContiguousTokensEditing.delete(&optional, 0, 8);
+    const result = optional.?;
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqual(@as(u32, 2), result.items[0].endOffset);
+}
+
+
+test "ContiguousTokensEditing.append releases an empty destination buffer" {
+    const allocator = std.testing.allocator;
+    var first: ?ArrayList(TokenPacked) = ArrayList(TokenPacked).init(allocator);
+    try first.?.append(.{ .endOffset = 4, .metadata = .default });
+    try ContiguousTokensEditing.delete(&first, 0, 4);
+    try std.testing.expectEqual(@as(usize, 0), first.?.items.len);
+
+    var second: ?ArrayList(TokenPacked) = ArrayList(TokenPacked).init(allocator);
+    try second.?.append(.{ .endOffset = 4, .metadata = .default });
+
+    try ContiguousTokensEditing.append(&first, &second);
+    var result = first.?;
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+}
+
+
+test "ContiguousTokensEditing.append frees the destination when other is null" {
+    const allocator = std.testing.allocator;
+    var first: ?ArrayList(TokenPacked) = ArrayList(TokenPacked).init(allocator);
+    try first.?.append(.{ .endOffset = 4, .metadata = .default });
+
+    var none: ?ArrayList(TokenPacked) = null;
+    try ContiguousTokensEditing.append(&first, &none);
+    try std.testing.expect(first == null);
+}

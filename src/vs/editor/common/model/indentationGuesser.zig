@@ -72,7 +72,7 @@ fn spacesDiff(a: []const u8, aLength: usize, b: []const u8, bLength: usize, resu
         // sometime folks like to align their code, but this should not be used as a hint
         result.spacesDiff = spacesDiff_;
 
-        if (spacesDiff_ > 0 and 0 <= bSpacesCnt - 1 and bSpacesCnt - 1 < a.len and bSpacesCnt < b.len) {
+        if (spacesDiff_ > 0 and bSpacesCnt > 0 and bSpacesCnt - 1 < a.len and bSpacesCnt < b.len) {
             if (b[bSpacesCnt] != ' ' and a[bSpacesCnt - 1] == ' ') {
                 if (a[a.len - 1] == ',') {
                     // This looks like an alignment desire: e.g.
@@ -102,6 +102,8 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
     var linesIndentedWithTabsCount: usize = 0; // number of lines that contain at least one tab in indentation
     var linesIndentedWithSpacesCount: usize = 0; // number of lines that contain only spaces in indentation
 
+    var previousLineStorage = std.array_list.Managed(u8).init(source.getAllocator());
+    defer previousLineStorage.deinit();
     var previousLineText: []const u8 = ""; // content of latest line that contained non-whitespace chars
     var previousLineIndentation: usize = 0; // index at which latest line contained the first non-whitespace char
 
@@ -111,7 +113,7 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
     var spacesDiffCount = [_]usize{ 0, 0, 0, 0, 0, 0, 0, 0, 0 }; // `tabSize` scores
     var tmp = SpacesDiffResult.init();
 
-    for (1..linesCount) |lineNumber| {
+    for (1..linesCount + 1) |lineNumber| {
         const currentLineLength = source.getLineLength(lineNumber);
         const currentLineText = try source.getLineContent(lineNumber);
         defer currentLineText.deinit();
@@ -174,7 +176,9 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
             spacesDiffCount[currentSpacesDiff] += 1;
         }
 
-        previousLineText = currentLineText.items;
+        previousLineStorage.clearRetainingCapacity();
+        try previousLineStorage.appendSlice(currentLineText.items);
+        previousLineText = previousLineStorage.items;
         previousLineIndentation = currentLineIndentation;
     }
 
@@ -231,4 +235,15 @@ test "guessIndentation" {
         .insertSpaces = true,
         .tabSize = 4,
     }, guessedIndentation);
+}
+
+test "guessIndentation handles lines without indentation after an indented line" {
+    const allocator = std.testing.allocator;
+    var source = try PieceTreeTextBuffer.init(allocator, &[_]StringBuffer{
+        try .init(allocator, "if (x) {\n    foo();\nbar();\n  baz();\n}"),
+    }, "", .LF, false, false, false, false);
+    defer source.deinit();
+
+    const guessed = try guessIndentation(&source, 4, true);
+    try std.testing.expect(guessed.tabSize >= 2 and guessed.tabSize <= 8);
 }

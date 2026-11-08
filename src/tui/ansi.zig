@@ -139,7 +139,7 @@ pub fn tokenize(allocator: Allocator, input: []const u8) !ArrayList(AnsiToken) {
                 }
             },
             .bracketedPaste => {
-                if (std.mem.eql(u8, input[pos .. pos + 6], "\x1b[201~")) {
+                if (pos + 6 <= input.len and std.mem.eql(u8, input[pos .. pos + 6], "\x1b[201~")) {
                     if (lastpos < pos) {
                         try result.append(AnsiToken{ .string = input[lastpos..pos] });
                     }

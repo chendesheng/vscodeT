@@ -156,6 +156,15 @@ pub const TokenizationTextModelPart = struct {
         self.tokens.forceTokenization(lineNumber);
     }
 
+    pub fn refreshRange(self: *TokenizationTextModelPart, startLineNumber: usize, endLineNumber: usize) void {
+        self.tokens.refreshRange(startLineNumber, endLineNumber);
+    }
+
+    /// Re-tokenizes the range regardless of the state store's validity flags.
+    pub fn forceRefreshRange(self: *TokenizationTextModelPart, startLineNumber: usize, endLineNumber: usize) void {
+        self.tokens.forceRefreshRange(startLineNumber, endLineNumber);
+    }
+
     pub fn hasAccurateTokensForLine(self: *TokenizationTextModelPart, lineNumber: usize) bool {
         self.validateLineNumber(lineNumber);
         return self.tokens.hasAccurateTokensForLine(lineNumber);

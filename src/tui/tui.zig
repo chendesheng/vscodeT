@@ -206,3 +206,13 @@ pub fn readFd(fd: posix.fd_t, buffer: *ArrayList(u8)) ![]const u8 {
     }
     return buffer.items;
 }
+
+pub fn pollInput(timeout_ms: i32) !bool {
+    var fds = [_]posix.pollfd{.{
+        .fd = posix.STDIN_FILENO,
+        .events = posix.POLL.IN,
+        .revents = 0,
+    }};
+    const result = try posix.poll(&fds, timeout_ms);
+    return result > 0;
+}

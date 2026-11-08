@@ -436,6 +436,8 @@ pub const PieceTreeBase = struct {
                 };
                 try self._buffers.append(chunk);
                 lastNode = try self.rbInsertRight(lastNode, piece);
+            } else {
+                chunk.deinit();
             }
         }
 
@@ -775,26 +777,19 @@ pub const PieceTreeBase = struct {
     pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) !ArrayList(u8) {
         self.log("getLineContent({d})\n", .{lineNumber});
 
-        if (self._lastVisitedLine.lineNumber == lineNumber) {
-            return try self._lastVisitedLine.copyValue();
-        }
-
-        try self._lastVisitedLine.reset();
-        self._lastVisitedLine.lineNumber = lineNumber;
-
-        var ret: ArrayList(u8) = undefined;
+        // The upstream cache is only safe while the tree is immutable. Edits
+        // and undo/redo can shift lines between calls, so always read the
+        // current tree here.
         if (lineNumber == self._lineCnt) {
-            ret = try self.getLineRawContent(lineNumber, 0);
+            return try self.getLineRawContent(lineNumber, 0);
         } else if (self._EOLNormalized) {
-            ret = try self.getLineRawContent(lineNumber, self._EOLLength);
-        } else {
-            ret = try self.getLineRawContent(lineNumber, 0);
-            for (0..getEOLLength(ret.items)) |_| {
-                _ = ret.pop();
-            }
+            return try self.getLineRawContent(lineNumber, self._EOLLength);
         }
 
-        try self._lastVisitedLine.value.appendSlice(ret.items);
+        var ret = try self.getLineRawContent(lineNumber, 0);
+        for (0..getEOLLength(ret.items)) |_| {
+            _ = ret.pop();
+        }
         return ret;
     }
 
@@ -867,6 +862,12 @@ pub const PieceTreeBase = struct {
     }
 
     pub fn getLineCodepointRange(self: *const PieceTreeBase, lineNumber: usize, index: usize) [2]usize {
+        // At or past the end of the line there is no codepoint to expand.
+        // Returning [index, index + 1] here used to turn a valid line-end
+        // position into an invalid column one past the end.
+        if (index >= self.getLineLength(lineNumber)) {
+            return [2]usize{ index, index };
+        }
         const nodePos = self.nodeAtPosition(lineNumber, index + 1).?;
         const range = self._getCodepointRelativeRange(nodePos);
         return [2]usize{ usizeAdd(index, range[0]), usizeAdd(index, range[1]) };
@@ -1096,6 +1097,11 @@ pub const PieceTreeBase = struct {
 
         self._EOLNormalized = self._EOLNormalized and eolNormalized;
         try self._lastVisitedLine.reset();
+        // Search-cache entries hold raw node pointers. Unlike the upstream
+        // garbage-collected port, deleting a node frees it, so invalidate the
+        // cache around every structural edit.
+        try self._searchCache.reset();
+        defer self._searchCache.reset() catch {};
 
         if (self.root != SENTINEL) {
             const n = self.nodeAt(offset);
@@ -1210,6 +1216,7 @@ pub const PieceTreeBase = struct {
         } else {
             // insert new node
             const pieces = try self.createNewPieces(value);
+            defer pieces.deinit();
             var node = try self.rbInsertLeft(null, pieces.items[0]);
 
             for (1..pieces.items.len) |k| {
@@ -1225,6 +1232,8 @@ pub const PieceTreeBase = struct {
         self.log("delete({d}, {d})\n", .{ offset, cnt });
 
         try self._lastVisitedLine.reset();
+        try self._searchCache.reset();
+        defer self._searchCache.reset() catch {};
 
         if (cnt <= 0 or self.root == SENTINEL) {
             return;
@@ -2127,11 +2136,11 @@ pub const PieceTreeBase = struct {
 };
 
 fn strStartWithLF(val: []const u8) bool {
-    return val[0] == '\n';
+    return val.len > 0 and val[0] == '\n';
 }
 
 fn strEndWithCR(val: []const u8) bool {
-    return val[val.len - 1] == '\r';
+    return val.len > 0 and val[val.len - 1] == '\r';
 }
 
 fn toEOL(eol: []const u8) EOL {
@@ -2677,4 +2686,87 @@ test "createLineStarts unicode" {
 
     try std.testing.expectEqualSlices(usize, &[_]usize{ 0, 7, 14, 21 }, lineStarts.lineStarts.items);
     try std.testing.expect(!lineStarts.isBasicASCII);
+}
+
+test "search cache is invalidated by structural edits" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "aaa\nbbb\nccc\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+
+    // Populate the node/line search cache.
+    const cached = try tree.getLineContent(2);
+    defer cached.deinit();
+    try std.testing.expectEqualStrings("bbb", cached.items);
+
+    // Delete the first node, then insert at the same offset. A stale cached
+    // node pointer would be freed and reused here.
+    try tree.delete(0, 4);
+    try tree.insert(0, "xxx\n", false);
+
+    const line1 = try tree.getLineContent(1);
+    defer line1.deinit();
+    try std.testing.expectEqualStrings("xxx", line1.items);
+    const line2 = try tree.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("bbb", line2.items);
+    const line3 = try tree.getLineContent(3);
+    defer line3.deinit();
+    try std.testing.expectEqualStrings("ccc", line3.items);
+}
+
+test "random insert/delete keeps piece tree content consistent" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "hello\nworld\n"),
+    };
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+
+    var expected = std.array_list.Managed(u8).init(allocator);
+    defer expected.deinit();
+    try expected.appendSlice("hello\nworld\n");
+
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const random = prng.random();
+    var step: usize = 0;
+    while (step < 3000) : (step += 1) {
+        if (expected.items.len == 0 or random.boolean()) {
+            const offset = random.uintLessThan(usize, expected.items.len + 1);
+            var bytes: [8]u8 = undefined;
+            const len = random.uintLessThan(usize, bytes.len + 1);
+            for (bytes[0..len]) |*b| {
+                b.* = if (random.boolean()) '\n' else 'a' + random.uintLessThan(u8, 26);
+            }
+            try tree.insert(offset, bytes[0..len], false);
+            try expected.insertSlice(offset, bytes[0..len]);
+        } else {
+            const offset = random.uintLessThan(usize, expected.items.len);
+            const cnt = @min(random.uintLessThan(usize, 8), expected.items.len - offset);
+            try tree.delete(offset, cnt);
+            expected.replaceRange(offset, cnt, "") catch unreachable;
+        }
+
+        if (step % 10 == 0) {
+            const raw = try tree.getLinesRawContent();
+            defer raw.deinit();
+            try std.testing.expectEqualSlices(u8, expected.items, raw.items);
+        }
+    }
+}
+
+test "getLineCodepointRange at the end of an empty line" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "a\n\nb"),
+    };
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+
+    const empty = tree.getLineCodepointRange(2, 0);
+    try std.testing.expectEqual([2]usize{ 0, 0 }, empty);
+    const end = tree.getLineCodepointRange(1, 1);
+    try std.testing.expectEqual([2]usize{ 1, 1 }, end);
 }

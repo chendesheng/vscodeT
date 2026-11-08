@@ -90,6 +90,7 @@ pub fn eolToString(eol: EOL) []const u8 {
 }
 
 pub fn replaceEOL(target: *ArrayList(u8), eol: EOL) !void {
+    if (target.items.len == 0) return;
     var i = target.items.len - 1;
 
     while (true) {

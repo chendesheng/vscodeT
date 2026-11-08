@@ -4,7 +4,7 @@ const std = @import("std");
 /// helpers work with a "visible column": a rough approximation of the screen
 /// position of a column.
 pub const CursorColumns = struct {
-    fn nextVisibleColumn(codePoint: u21, visibleColumn: usize, tabSize: usize) usize {
+    pub fn nextVisibleColumn(codePoint: u21, visibleColumn: usize, tabSize: usize) usize {
         if (codePoint == '\t') return nextRenderTabStop(visibleColumn, tabSize);
         if (isFullWidthCharacter(codePoint) or isEmojiImprecise(codePoint)) return visibleColumn + 2;
         return visibleColumn + 1;

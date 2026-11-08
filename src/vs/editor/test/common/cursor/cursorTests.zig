@@ -1,76 +1,21 @@
 const std = @import("std");
-const ArrayList = std.array_list.Managed;
 const Position = @import("../../../common/core/position.zig").Position;
 const Range = @import("../../../common/core/range.zig").Range;
-const PositionAffinity = @import("../../../common/model.zig").PositionAffinity;
 const TestModel = @import("../port/testSupport.zig").TestModel;
 const IdentityCoordinatesConverter = @import("../../../common/coordinatesConverter.zig").IdentityCoordinatesConverter;
 const cursorCommon = @import("../../../common/cursorCommon.zig");
 const CursorConfiguration = cursorCommon.CursorConfiguration;
-const ICursorSimpleModel = cursorCommon.ICursorSimpleModel;
 const SingleCursorState = cursorCommon.SingleCursorState;
 const CursorContext = @import("../../../common/cursor/cursorContext.zig").CursorContext;
 const Cursor = @import("../../../common/cursor/oneCursor.zig").Cursor;
-
-const ModelAdapter = struct {
-    model: *@import("../../../common/model/textModel.zig").TextModel,
-    line_buffer: ArrayList(u8),
-
-    fn getLineCount(context: *anyopaque) usize {
-        const self: *ModelAdapter = @ptrCast(@alignCast(context));
-        return self.model.getLineCount();
-    }
-    fn getLineContent(context: *anyopaque, lineNumber: usize) []const u8 {
-        const self: *ModelAdapter = @ptrCast(@alignCast(context));
-        self.line_buffer.clearRetainingCapacity();
-        const line = self.model.getLineContent(lineNumber) catch unreachable;
-        defer line.deinit();
-        self.line_buffer.appendSlice(line.items) catch unreachable;
-        return self.line_buffer.items;
-    }
-    fn getLineMinColumn(_: *anyopaque, _: usize) usize {
-        return 1;
-    }
-    fn getLineMaxColumn(context: *anyopaque, lineNumber: usize) usize {
-        const self: *ModelAdapter = @ptrCast(@alignCast(context));
-        return self.model.getLineMaxColumn(lineNumber);
-    }
-    fn getLineFirstNonWhitespaceColumn(context: *anyopaque, lineNumber: usize) usize {
-        const self: *ModelAdapter = @ptrCast(@alignCast(context));
-        return self.model.getLineFirstNonWhitespaceColumn(lineNumber) catch 0;
-    }
-    fn getLineLastNonWhitespaceColumn(context: *anyopaque, lineNumber: usize) usize {
-        const self: *ModelAdapter = @ptrCast(@alignCast(context));
-        return self.model.getLineLastNonWhitespaceColumn(lineNumber) catch 0;
-    }
-    fn normalizePosition(context: *anyopaque, position: Position, _: PositionAffinity) Position {
-        const self: *ModelAdapter = @ptrCast(@alignCast(context));
-        return self.model.validatePosition(position);
-    }
-    fn getLineIndentColumn(context: *anyopaque, lineNumber: usize) usize {
-        return getLineFirstNonWhitespaceColumn(context, lineNumber);
-    }
-    fn interface(self: *ModelAdapter) ICursorSimpleModel {
-        return .{
-            .context = self,
-            .getLineCount = getLineCount,
-            .getLineContent = getLineContent,
-            .getLineMinColumn = getLineMinColumn,
-            .getLineMaxColumn = getLineMaxColumn,
-            .getLineFirstNonWhitespaceColumn = getLineFirstNonWhitespaceColumn,
-            .getLineLastNonWhitespaceColumn = getLineLastNonWhitespaceColumn,
-            .normalizePosition = normalizePosition,
-            .getLineIndentColumn = getLineIndentColumn,
-        };
-    }
-};
+const TextModelCursorSimpleModel = @import("../../../common/cursor/textModelCursorSimpleModel.zig").TextModelCursorSimpleModel;
 
 test "oneCursor: initializes and updates model/view state" {
     const allocator = std.testing.allocator;
     var test_model = try TestModel.init(allocator, "abc\ndef", "nullLanguage");
     defer test_model.deinit();
-    var adapter = ModelAdapter{ .model = test_model.model, .line_buffer = ArrayList(u8).init(allocator) };
-    defer adapter.line_buffer.deinit();
+    var adapter = TextModelCursorSimpleModel.init(allocator, test_model.model);
+    defer adapter.deinit();
 
     var converter = IdentityCoordinatesConverter.init(test_model.model);
     const config = CursorConfiguration{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = 1 };
@@ -95,8 +40,8 @@ test "cursorCollection: adds, replaces, and normalizes cursors" {
     const allocator = std.testing.allocator;
     var test_model = try TestModel.init(allocator, "abc\ndef\nghi", "nullLanguage");
     defer test_model.deinit();
-    var adapter = ModelAdapter{ .model = test_model.model, .line_buffer = ArrayList(u8).init(allocator) };
-    defer adapter.line_buffer.deinit();
+    var adapter = TextModelCursorSimpleModel.init(allocator, test_model.model);
+    defer adapter.deinit();
 
     var converter = IdentityCoordinatesConverter.init(test_model.model);
     const config = CursorConfiguration{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = 1 };
@@ -137,8 +82,8 @@ test "cursorMoveCommands: select all, expand line, and buffer boundaries" {
     const allocator = std.testing.allocator;
     var test_model = try TestModel.init(allocator, "abc\ndef", "nullLanguage");
     defer test_model.deinit();
-    var adapter = ModelAdapter{ .model = test_model.model, .line_buffer = ArrayList(u8).init(allocator) };
-    defer adapter.line_buffer.deinit();
+    var adapter = TextModelCursorSimpleModel.init(allocator, test_model.model);
+    defer adapter.deinit();
     const model = adapter.interface();
     const config = CursorConfiguration{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = 1 };
 

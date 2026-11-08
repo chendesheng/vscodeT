@@ -295,6 +295,14 @@ pub const TokenizerSyntaxTokenBackend = struct {
         for (ranges) |range| self.refreshRange(range.startLineNumber, range.endLineNumberExclusive - 1);
     }
 
+    pub fn forceRefreshRange(self: *TokenizerSyntaxTokenBackend, startLineNumber: usize, endLineNumber: usize) void {
+        const tokenizer = self._tokenizer orelse return;
+        var builder = ContiguousMultilineTokensBuilder.init(self._allocator);
+        defer builder.deinit();
+        tokenizer.forceTokenizeRange(&builder, startLineNumber, endLineNumber) catch return;
+        self.setTokensAndFire(builder.finalize());
+    }
+
     pub fn refreshRange(self: *TokenizerSyntaxTokenBackend, startLineNumber: usize, endLineNumber: usize) void {
         const tokenizer = self._tokenizer orelse return;
 

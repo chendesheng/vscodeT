@@ -318,7 +318,7 @@ pub const PieceTreeTextBuffer = struct {
 
                 const bufferEOL = self.getEOL();
                 const expectedStrEOL = if (bufferEOL == .CRLF) StringEOL.CRLF else StringEOL.LF;
-                if (strEOL != .Unknown or strEOL == expectedStrEOL) {
+                if (strEOL == .Unknown or strEOL == expectedStrEOL) {
                     validText = text.move();
                 } else {
                     var temp = std.array_list.Managed(u8).init(allocator);
@@ -326,6 +326,7 @@ pub const PieceTreeTextBuffer = struct {
                     try temp.appendSlice(text.items());
                     try replaceEOL(&temp, bufferEOL);
                     validText = String.initOwned(temp);
+                    text.deinit();
                 }
             }
 

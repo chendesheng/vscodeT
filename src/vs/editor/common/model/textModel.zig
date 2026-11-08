@@ -24,9 +24,9 @@ const ModelRawContentChangedEvent = @import("../textModelEvents.zig").ModelRawCo
 const PieceTreeTextBuffer = @import("./pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const EditStack = @import("./editStack.zig").EditStack;
 const CursorStateComputer = @import("./editStack.zig").CursorStateComputer;
-const IntervalTree = @import("IntervalTree.zig").IntervalTree;
-const IntervalNode = @import("IntervalTree.zig").IntervalNode;
-const recomputeMaxEnd = @import("IntervalTree.zig").recomputeMaxEnd;
+const IntervalTree = @import("intervalTree.zig").IntervalTree;
+const IntervalNode = @import("intervalTree.zig").IntervalNode;
+const recomputeMaxEnd = @import("intervalTree.zig").recomputeMaxEnd;
 const PieceTreeBufferBuilder = @import("./pieceTreeTextBuffer/pieceTreeTextBufferBuilder.zig").PieceTreeBufferBuilder;
 const PieceTreeTextBufferFactory = @import("./pieceTreeTextBuffer/pieceTreeTextBufferBuilder.zig").PieceTreeTextBufferFactory;
 const Io = std.Io;
@@ -202,6 +202,9 @@ pub const TextModel = struct {
     _onDidChangeInjectedText: Emitter(ModelInjectedTextChangedEvent),
     _onDidChangeLineHeight: Emitter(ModelLineHeightChangedEvent),
     _eventEmitter: DidChangeContentEmitter,
+    // Keeps the raw changes of the most recent edit alive until the next edit.
+    // Deferred content events may otherwise observe freed detail buffers.
+    _last_raw_changes: ?ArrayList(ModelRawChange),
     //#endregion
 
     pub fn tokenization(self: *TextModel) *TokenizationTextModelPart {
@@ -337,11 +340,15 @@ pub const TextModel = struct {
 
     pub fn onDidChangeContent(self: *TextModel, callback: fn (ModelContentChangedEvent) void) !void {
         try self._eventEmitter.slowEvent({}, struct {
-            fn cb(evt: InternalModelContentChangeEvent, ctx: void) void {
+            fn cb(evt: InternalModelContentChangeEvent, ctx: void) anyerror!void {
                 _ = ctx;
                 callback(evt.contentChangedEvent);
             }
         }.cb);
+    }
+
+    pub fn onDidChangeContentWithContext(self: *TextModel, context: anytype, callback: fn (InternalModelContentChangeEvent, @TypeOf(context)) anyerror!void) !void {
+        try self._eventEmitter.slowEvent(context, callback);
     }
 
     pub fn init(allocator: Allocator, source: *Io.Reader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService) !*TextModel {
@@ -425,6 +432,7 @@ pub const TextModel = struct {
             ._onDidChangeInjectedText = Emitter(ModelInjectedTextChangedEvent).init(allocator),
             ._onDidChangeLineHeight = Emitter(ModelLineHeightChangedEvent).init(allocator),
             ._eventEmitter = DidChangeContentEmitter.init(allocator),
+            ._last_raw_changes = null,
             ._tokenizationTextModelPart = TokenizationTextModelPart.init(model, languageId, languageService, null),
             ._attachedViews = attachedViews,
             ._languageService = languageService,
@@ -456,6 +464,11 @@ pub const TextModel = struct {
         self._onDidChangeInjectedText.deinit();
         self._onDidChangeLineHeight.deinit();
         self._eventEmitter.deinit();
+        if (self._last_raw_changes) |*changes| {
+            for (changes.items) |*change| change.deinit();
+            changes.deinit();
+            self._last_raw_changes = null;
+        }
         self._tokenizationTextModelPart.deinit();
         self._bracketPairs.deinit();
         self._decorationProvider.deinit();
@@ -1169,15 +1182,27 @@ pub const TextModel = struct {
         return try self._commandManager.pushEditOperation(beforeCursorState, editOperations.items, cursorStateComputer, group);
     }
 
+    fn cloneTextForEdit(allocator: Allocator, text: String) !String {
+        var buffer = ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+        try buffer.appendSlice(text.items());
+        return String.initOwned(buffer);
+    }
+
     pub fn _applyUndo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) !void {
         var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
-        defer edits.deinit();
-        for (changes.items) |change| {
+        defer {
+            for (edits.items) |*edit| {
+                if (edit.text) |*text| text.deinit();
+            }
+            edits.deinit();
+        }
+        for (changes.items) |*change| {
             const rangeStart = self.getPositionAt(change.newPosition);
             const rangeEnd = self.getPositionAt(change.newEnd());
             try edits.append(.{
                 .range = Range.init(rangeStart.lineNumber, rangeStart.column, rangeEnd.lineNumber, rangeEnd.column),
-                .text = change.oldText,
+                .text = try cloneTextForEdit(self.getAllocator(), change.oldText),
                 .forceMoveMarkers = false,
                 .identifier = null,
                 .isAutoWhitespaceEdit = null,
@@ -1189,13 +1214,18 @@ pub const TextModel = struct {
 
     pub fn _applyRedo(self: *TextModel, changes: ArrayList(TextChange), eol: EOL, resultingAlternativeVersionId: u32, resultingSelection: ?[]Selection) !void {
         var edits = ArrayList(IdentifiedSingleEditOperation).init(self.getAllocator());
-        defer edits.deinit();
-        for (changes.items) |change| {
+        defer {
+            for (edits.items) |*edit| {
+                if (edit.text) |*text| text.deinit();
+            }
+            edits.deinit();
+        }
+        for (changes.items) |*change| {
             const rangeStart = self.getPositionAt(change.oldPosition);
             const rangeEnd = self.getPositionAt(change.oldEnd());
             try edits.append(.{
                 .range = Range.init(rangeStart.lineNumber, rangeStart.column, rangeEnd.lineNumber, rangeEnd.column),
-                .text = change.newText,
+                .text = try cloneTextForEdit(self.getAllocator(), change.newText),
                 .forceMoveMarkers = false,
                 .identifier = null,
                 .isAutoWhitespaceEdit = null,
@@ -1210,7 +1240,7 @@ pub const TextModel = struct {
         defer self._onDidChangeDecorations.endDeferredEmit();
 
         self._eventEmitter.beginDeferredEmit();
-        defer self._eventEmitter.endDeferredEmit(null);
+        defer self._eventEmitter.endDeferredEmit(resultingSelection);
 
         self._isUndoing = isUndoing;
         defer self._isUndoing = false;
@@ -1221,7 +1251,6 @@ pub const TextModel = struct {
         _ = try self.applyEdits(edits.items, false);
         try self.setEOL(eol);
         self._overwriteAlternativeVersionId(resultingAlternativeVersionId);
-        _ = resultingSelection;
     }
 
     pub fn getAllocator(self: *const TextModel) Allocator {
@@ -1366,13 +1395,18 @@ pub const TextModel = struct {
                 try self._decorationsTree.acceptReplace(change.modelContentChange.rangeOffset, change.modelContentChange.rangeLength, change.modelContentChange.text.len(), change.forceMoveMarkers);
             }
 
-            var rawContentChanges = ArrayList(ModelRawChange).init(allocator);
-            defer rawContentChanges.deinit();
-            defer {
-                for (rawContentChanges.items) |change| {
-                    change.deinit();
-                }
+            if (self._last_raw_changes) |*previous| {
+                for (previous.items) |*change| change.deinit();
+                previous.deinit();
+                self._last_raw_changes = null;
             }
+
+            var rawContentChanges = ArrayList(ModelRawChange).init(allocator);
+            var raw_changes_owned = true;
+            defer if (raw_changes_owned) {
+                for (rawContentChanges.items) |*change| change.deinit();
+                rawContentChanges.deinit();
+            };
 
             self._increaseVersionId();
 
@@ -1395,8 +1429,11 @@ pub const TextModel = struct {
                 const currentEditStartLineNumber: usize = @intCast(newLineCountI - lineCount - changeLineCountDelta + @as(isize, @intCast(startLineNumber)));
                 const firstEditLineNumber: usize = currentEditStartLineNumber;
                 const lastInsertedLineNumber: usize = currentEditStartLineNumber + insertingLinesCnt;
+                const line_count_now = self.getLineCount();
+                const first_valid_line = @max(@as(usize, 1), @min(firstEditLineNumber, line_count_now));
+                const last_valid_line = @max(@as(usize, 1), @min(lastInsertedLineNumber, line_count_now));
 
-                const decorationsWithInjectedTextInEditedRange = try self._decorationsTree.getInjectedTextInInterval(self, self.getOffsetAt(Position.init(firstEditLineNumber, 1)), self.getOffsetAt(Position.init(lastInsertedLineNumber, self.getLineMaxColumn(lastInsertedLineNumber))), 0);
+                const decorationsWithInjectedTextInEditedRange = try self._decorationsTree.getInjectedTextInInterval(self, self.getOffsetAt(Position.init(first_valid_line, 1)), self.getOffsetAt(Position.init(last_valid_line, self.getLineMaxColumn(last_valid_line))), 0);
 
                 const injectedTextInEditedRange = try LineInjectedText.fromDecorations(allocator, decorationsWithInjectedTextInEditedRange.items);
                 defer injectedTextInEditedRange.deinit();
@@ -1471,11 +1508,16 @@ pub const TextModel = struct {
             }
 
             var changes = ArrayList(ModelContentChange).init(allocator);
-            for (contentChanges) |change| {
-                try changes.append(change.modelContentChange);
+            for (contentChanges) |*change| {
+                var copy = change.modelContentChange;
+                // The event is emitted synchronously. Its text is borrowed
+                // while the owning ApplyEditsResult lives; tokenization runs
+                // inside the emit call before the result is released.
+                copy.text = String.initBorrowed(change.modelContentChange.text.items());
+                try changes.append(copy);
             }
 
-            var changedEvent = ModelContentChangedEvent{
+            const changedEvent = ModelContentChangedEvent{
                 .changes = changes,
                 .eol = self._buffer.getEOL(),
                 .isEolChange = false,
@@ -1489,6 +1531,8 @@ pub const TextModel = struct {
                 ModelRawContentChangedEvent.init(rawContentChanges, self.getVersionId(), self._isUndoing, self._isRedoing),
                 changedEvent,
             );
+            self._last_raw_changes = rawContentChanges;
+            raw_changes_owned = false;
         }
 
         const reverseEdits = result.reverseEdits;
@@ -2502,10 +2546,10 @@ pub const DidChangeContentEmitter = struct {
         self._slowEmitter.deinit();
     }
 
-    pub fn fastEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent) void) !void {
+    pub fn fastEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent, @TypeOf(context)) anyerror!void) !void {
         try self._fastEmitter.event(context, callback);
     }
-    pub fn slowEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent) void) !void {
+    pub fn slowEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent, @TypeOf(context)) anyerror!void) !void {
         try self._slowEmitter.event(context, callback);
     }
 

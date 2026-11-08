@@ -2,50 +2,11 @@ const std = @import("std");
 const Io = std.Io;
 const posix = std.posix;
 const tui = @import("./tui.zig");
-const Size = tui.Size;
-const Point = tui.Point;
+const input = @import("./input.zig");
+const Editor = @import("./editor.zig").Editor;
+const Screen = @import("./screen.zig").Screen;
+const renderer = @import("./render.zig");
 const ArrayList = std.array_list.Managed;
-const logger = @import("./logger.zig");
-const PieceTreeBufferBuilder = @import("../vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBufferBuilder.zig").PieceTreeBufferBuilder;
-const PieceTreeTextBuffer = @import("../vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
-const ValidAnnotatedEditOperation = @import("../vs/editor/common/model.zig").ValidAnnotatedEditOperation;
-const Range = @import("../vs/editor/common/core/range.zig").Range;
-const Utf8StreamIterator = @import("./utf8Helper.zig").Utf8StreamIterator;
-const ansi = @import("./ansi.zig");
-const String = @import("../vs/base/common/strings.zig").String;
-
-const MoveAction = enum {
-    Up,
-    Down,
-    Left,
-    Right,
-};
-
-var readerBuffer: [65535]u8 = undefined;
-var fileReaderBuffer: [65535]u8 = undefined;
-
-fn readFile(io: Io, allocator: std.mem.Allocator, path: []const u8) !PieceTreeTextBuffer {
-    const file = try Io.Dir.cwd().openFile(io, path, .{});
-    defer file.close(io);
-
-    var builder = PieceTreeBufferBuilder.init(allocator);
-    var reader = file.readerStreaming(io, &fileReaderBuffer);
-    while (true) {
-        const len = try reader.interface.readSliceShort(&readerBuffer);
-        if (len == 0) {
-            break;
-        }
-        try builder.acceptChunk(readerBuffer[0..len]);
-    }
-
-    const factory = try builder.finish(false);
-    defer factory.deinit();
-    return try factory.create(.LF);
-}
-
-fn clamp(value: usize, min: usize, max: usize) usize {
-    return @max(min, @min(value, max));
-}
 
 fn getFirstArg(args: std.process.Args) ![]const u8 {
     var it = args.iterate();
@@ -53,222 +14,23 @@ fn getFirstArg(args: std.process.Args) ![]const u8 {
     return it.next() orelse error.NoPathProvided;
 }
 
-fn getLineNumberGutterWidth(tree: *const PieceTreeTextBuffer) usize {
-    const lineCount = tree.getLineCount();
-    const maxLineNumberWidth = std.fmt.count("{d}", .{lineCount});
-    return maxLineNumberWidth + 2;
-}
-
-const Highlighter = @import("./highlighter.zig").Highlighter;
-
-fn colorForToken(token: @import("../vs/editor/common/tokens/lineTokens.zig").TokenPacked) ?[3]u8 {
-    return switch (token.metadata.foreground) {
-        5 => .{ 106, 153, 85 },
-        6 => .{ 206, 145, 120 },
-        7 => .{ 209, 105, 105 },
-        8 => .{ 197, 134, 192 },
-        9 => .{ 181, 206, 168 },
-        10 => .{ 220, 220, 170 },
-        11 => .{ 78, 201, 176 },
-        12 => .{ 156, 220, 254 },
-        else => null,
-    };
-}
-
-const View = struct {
-    writer: *Io.Writer,
-    size: Size,
-    scrollPosition: Point,
-    cursorPosition: Point,
-
-    fn drawLineNumberGutter(self: *const View, lineNumberGutterWidth: usize, lineNumber: usize) !void {
-        const out = self.writer;
-
-        const lineNumberWidth = std.fmt.count("{d}", .{lineNumber});
-        if (lineNumberGutterWidth > lineNumberWidth + 1) {
-            for (lineNumberWidth..lineNumberGutterWidth - 1) |_| {
-                try tui.writeAll(out, " ");
-            }
-        }
-
-        var buf: [64]u8 = undefined;
-        try tui.writeAll(out, try std.fmt.bufPrint(&buf, "{d} ", .{lineNumber}));
-    }
-
-    fn drawVisibleLines(self: *const View, tree: *PieceTreeTextBuffer, highlighter: *const Highlighter) !void {
-        const out = self.writer;
-        try tui.moveCursor(out, .{ .col = 1, .row = 1 });
-        defer self.drawCursor(tree) catch {};
-        try tui.hideCursor(out);
-        defer tui.showCursor(out) catch {};
-
-        const lineCount = tree.getLineCount();
-        const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
-        const from = @min(self.scrollPosition.row, lineCount);
-        const visibleHeight = @max(self.size.height, 1);
-        const to: usize = @min(from + visibleHeight - 1, lineCount);
-
-        const width = self.size.width -| lineNumberGutterWidth;
-
-        for (from..to + 1) |i| {
-            const line = try tree.getLineContent(i);
-            defer line.deinit();
-
-            try self.drawLineNumberGutter(lineNumberGutterWidth, i);
-            try self.drawHighlightedLine(line.items, highlighter.tokensForLine(i));
-
-            if (i < to) {
-                try tui.writeAll(out, "⏎");
-            }
-
-            if (line.items.len <= width) {
-                for (line.items.len..width) |_| {
-                    try tui.writeAll(out, " ");
-                }
-            }
-
-            if (i < to) {
-                try tui.writeAll(out, "\r\n");
-            }
-        }
-
-        try tui.clearToEndOfScreen(out);
-        try out.flush();
-    }
-
-    fn drawHighlightedLine(self: *const View, text: []const u8, tokens: []const @import("../vs/editor/common/tokens/lineTokens.zig").TokenPacked) !void {
-        const out = self.writer;
-        var pos: usize = 0;
-        for (tokens) |token| {
-            const end = @min(@as(usize, token.endOffset), text.len);
-            if (end <= pos) continue;
-            if (colorForToken(token)) |color| {
-                var buf: [32]u8 = undefined;
-                const prefix = try std.fmt.bufPrint(&buf, "\x1b[38;2;{d};{d};{d}m", .{ color[0], color[1], color[2] });
-                try tui.writeAll(out, prefix);
-                try tui.writeAll(out, text[pos..end]);
-                try tui.writeAll(out, "\x1b[0m");
-            } else {
-                try tui.writeAll(out, text[pos..end]);
-            }
-            pos = end;
-        }
-        if (pos < text.len) try tui.writeAll(out, text[pos..]);
-    }
-
-    fn drawCursor(self: *const View, tree: *const PieceTreeTextBuffer) !void {
-        const out = self.writer;
-        const lineNumberGutterWidth = getLineNumberGutterWidth(tree);
-        const row = self.cursorPosition.row -| self.scrollPosition.row + 1;
-        const col = lineNumberGutterWidth + clamp(self.cursorPosition.col, 1, tree.getLineLength(self.cursorPosition.row) + 1);
-        try tui.moveCursor(out, .{ .row = row, .col = col });
-        try out.flush();
-    }
-
-    fn moveCursor(self: *View, action: MoveAction, tree: *const PieceTreeTextBuffer) !void {
-        var newCol = self.cursorPosition.col;
-        var newRow = self.cursorPosition.row;
-        switch (action) {
-            .Up => {
-                newRow -= 1;
-                newRow = clamp(newRow, 1, tree.getLineCount());
-            },
-            .Down => {
-                newRow += 1;
-                newRow = clamp(newRow, 1, tree.getLineCount());
-            },
-            .Left => {
-                newCol -= 1;
-            },
-            .Right => {
-                newCol += 1;
-            },
-        }
-
-        self.cursorPosition.row = newRow;
-        self.cursorPosition.col = clamp(newCol, 1, tree.getLineLength(newRow) + 1);
-
-        if (newRow < self.scrollPosition.row) {
-            self.scrollPosition.row = newRow;
-        } else if (newRow >= self.scrollPosition.row + self.size.height) {
-            self.scrollPosition.row = newRow - self.size.height + 1;
-        }
-    }
-
-    fn updateCursorPosition(self: *View, tree: *const PieceTreeTextBuffer, offset: usize) !void {
-        const pos = tree.getPositionAt(offset);
-
-        if (pos.lineNumber < self.scrollPosition.row) {
-            self.scrollPosition.row = pos.lineNumber;
-        } else if (pos.lineNumber >= self.scrollPosition.row + self.size.height) {
-            self.scrollPosition.row = pos.lineNumber - self.size.height + 1;
-        }
-        self.cursorPosition.row = pos.lineNumber;
-        self.cursorPosition.col = pos.column;
-    }
-
-    fn insertAtCursor(self: *View, tree: *PieceTreeTextBuffer, text: []const u8) !void {
-        const offset = tree.getOffsetAt(self.cursorPosition.row, self.cursorPosition.col);
-        var ops = [_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRangeAndText(Range{
-            .startLineNumber = self.cursorPosition.row,
-            .startColumn = self.cursorPosition.col,
-            .endLineNumber = self.cursorPosition.row,
-            .endColumn = self.cursorPosition.col,
-        }, String.initBorrowed(text))};
-        var result = try tree.applyEdits(&ops, false, false);
-        defer {
-            for (result.changes.items) |*change| change.modelContentChange.deinit();
-            result.deinit();
-        }
-        try self.updateCursorPosition(tree, offset + text.len);
-    }
-
-    fn deleteLeftOfCursor(self: *View, tree: *PieceTreeTextBuffer) !void {
-        const startPos = self.cursorPosition;
-        const offset = tree.getOffsetAt(startPos.row, startPos.col);
-        if (offset == 0) {
-            return;
-        }
-        try self.updateCursorPosition(tree, offset - 1);
-        var ops = [_]ValidAnnotatedEditOperation{ValidAnnotatedEditOperation.fromRange(Range{
-            .startLineNumber = self.cursorPosition.row,
-            .startColumn = self.cursorPosition.col,
-            .endLineNumber = startPos.row,
-            .endColumn = startPos.col,
-        })};
-        var result = try tree.applyEdits(&ops, false, false);
-        defer {
-            for (result.changes.items) |*change| change.modelContentChange.deinit();
-            result.deinit();
-        }
-    }
-
-    fn resize(self: *View, newSize: Size, tree: *const PieceTreeTextBuffer) !void {
-        self.size = newSize;
-
-        const lineCount = tree.getLineCount();
-
-        if (self.scrollPosition.row + self.size.height > lineCount and lineCount + 1 > self.size.height) {
-            self.scrollPosition.row = lineCount + 1 - self.size.height;
-        }
-    }
-};
-
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
 
-    try logger.init(io, "debug.log");
-    defer logger.deinit();
+    const path = getFirstArg(init.minimal.args) catch {
+        std.debug.print("usage: zig <file>\n", .{});
+        return;
+    };
 
-    var out_buffer: [4096]u8 = undefined;
+    var out_buffer: [65536]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &out_buffer);
     const out = &stdout_writer.interface;
     defer out.flush() catch {};
 
     const orig_termios = try tui.enableRawMode();
     tui.rememberOrigTermios(orig_termios);
-    defer tui.disableRawMode(orig_termios) catch unreachable;
+    defer tui.disableRawMode(orig_termios) catch {};
 
     try tui.enableBracketedPaste(out);
     defer tui.disableBracketedPaste(out) catch {};
@@ -281,100 +43,168 @@ pub fn main(init: std.process.Init) !void {
 
     try tui.installSigWinch();
 
-    const pathArg = try getFirstArg(init.minimal.args);
+    var size = try tui.getTerminalSize();
+    var editor = try Editor.create(allocator, io, path, size.width, size.height);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
 
-    var tree = try readFile(io, allocator, pathArg);
-    defer tree.deinit();
+    var screen = try Screen.init(allocator, size.width, size.height);
+    defer screen.deinit();
 
-    var highlighter = try Highlighter.init(allocator, pathArg);
-    defer highlighter.deinit();
-    try highlighter.rehighlight(&tree);
+    var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
+    defer input_buffer.deinit();
 
-    const size = try tui.getTerminalSize();
-
-    var view = View{
-        .writer = out,
-        .size = size,
-        .scrollPosition = .{ .col = 1, .row = 1 },
-        .cursorPosition = .{ .col = 1, .row = 1 },
-    };
-    try view.drawVisibleLines(&tree, &highlighter);
-
-    var contentChanged = false;
-    var scrollChanged = false;
-
-    var inputBuffer = try ArrayList(u8).initCapacity(allocator, 1024);
-    defer inputBuffer.deinit();
+    var is_pasting = false;
+    try renderer.render(editor, &screen, out);
 
     while (true) {
-        inputBuffer.clearRetainingCapacity();
-        const input = try tui.readFd(posix.STDIN_FILENO, &inputBuffer);
-        const tokens = try ansi.tokenize(allocator, input);
-        defer tokens.deinit();
-
-        var oldView = view;
-        var isPasting = false;
-
-        for (tokens.items) |token| {
-            switch (token) {
-                .string => {
-                    if (token.string[0] == 'q') {
-                        return;
-                    } else if (token.string[0] == 0x7f) {
-                        try view.deleteLeftOfCursor(&tree);
-                        contentChanged = true;
-                    } else if (token.string[0] == '\r') {
-                        try view.insertAtCursor(&tree, "\n");
-                        contentChanged = true;
-                    } else if (isPasting) {
-                        try view.insertAtCursor(&tree, token.string);
-                        contentChanged = true;
-                    } else {
-                        try view.insertAtCursor(&tree, token.string);
-                        contentChanged = true;
-                    }
-                },
-                .csi => {
-                    switch (token.csi.final) {
-                        'A' => try view.moveCursor(.Up, &tree),
-                        'B' => try view.moveCursor(.Down, &tree),
-                        'C' => try view.moveCursor(.Right, &tree),
-                        'D' => try view.moveCursor(.Left, &tree),
-                        '~' => {
-                            if (token.isBracketedPasteStart()) {
-                                isPasting = true;
-                            } else if (token.isBracketedPasteEnd()) {
-                                isPasting = false;
-                            }
-                        },
-                        else => unreachable,
-                    }
-                },
-            }
+        const ready = try tui.pollInput(250);
+        var resized = false;
+        if (try tui.resizedSize()) |new_size| {
+            size = new_size;
+            editor.setViewport(size.width, size.height);
+            screen.deinit();
+            screen = try Screen.init(allocator, size.width, size.height);
+            resized = true;
         }
 
-        if (try tui.resizedSize()) |newSize| {
-            scrollChanged = true;
-            try view.resize(newSize, &tree);
-        } else {
-            scrollChanged = !oldView.scrollPosition.equals(view.scrollPosition);
+        if (!ready) {
+            if (resized) try renderer.render(editor, &screen, out);
+            continue;
         }
 
-        if (scrollChanged) {
-            try view.drawVisibleLines(&tree, &highlighter);
-            scrollChanged = false;
+        input_buffer.clearRetainingCapacity();
+        const bytes = try tui.readFd(posix.STDIN_FILENO, &input_buffer);
+
+        const events = try input.decode(allocator, bytes);
+        defer events.deinit();
+
+        for (events.items) |event| {
+            if (dispatch(editor, event, &is_pasting)) return;
         }
 
-        if (!oldView.cursorPosition.equals(view.cursorPosition)) {
-            try view.drawCursor(&tree);
-        }
+        try renderer.render(editor, &screen, out);
+    }
+}
 
-        if (contentChanged) {
-            // Tokens are derived from the old buffer contents, so they must be
-            // regenerated before the next paint.
-            try highlighter.rehighlight(&tree);
-            try view.drawVisibleLines(&tree, &highlighter);
-            contentChanged = false;
+fn isCtrlQ(event: input.Event) bool {
+    if (!event.mods.ctrl) return false;
+    return switch (event.key) {
+        .char => |ch| ch == 'q',
+        else => false,
+    };
+}
+
+fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
+    if (!isCtrlQ(event)) editor.clearQuitArmed();
+
+    if (is_pasting.*) {
+        switch (event.key) {
+            .paste_end => {
+                is_pasting.* = false;
+                return false;
+            },
+            .text => |text| {
+                editor.insertText(text) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
+                return false;
+            },
+            else => return false,
         }
     }
+
+    switch (event.key) {
+        .paste_start => {
+            is_pasting.* = true;
+            return false;
+        },
+        .paste_end => return false,
+        .text => |text| {
+            editor.insertText(text) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
+            return false;
+        },
+        .char => |ch| {
+            if (event.mods.ctrl) {
+                switch (ch) {
+                    'q' => return editor.requestQuit(),
+                    's' => editor.save() catch |err| editor.setMessage("save failed: {s}", .{@errorName(err)}),
+                    'z' => editor.undo() catch |err| editor.setMessage("undo failed: {s}", .{@errorName(err)}),
+                    'y' => editor.redo() catch |err| editor.setMessage("redo failed: {s}", .{@errorName(err)}),
+                    'a' => editor.selectAll() catch |err| editor.setMessage("select all failed: {s}", .{@errorName(err)}),
+                    'c' => {},
+                    'l' => editor.clearMessage(),
+                    else => {},
+                }
+                return false;
+            }
+            var buffer: [4]u8 = undefined;
+            const encoded = std.unicode.utf8Encode(ch, &buffer) catch return false;
+            editor.insertText(buffer[0..encoded]) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
+            return false;
+        },
+        .enter => editor.newline() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
+        .tab => editor.insertTab() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
+        .backtab => editor.outdent() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
+        .backspace => editor.deleteLeft() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
+        .delete => editor.deleteRight() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
+        .escape => editor.cancelSelection() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
+        .left => {
+            if (event.mods.ctrl) {
+                editor.moveWordLeft(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            } else {
+                editor.moveLeft(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            }
+        },
+        .right => {
+            if (event.mods.ctrl) {
+                editor.moveWordRight(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            } else {
+                editor.moveRight(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            }
+        },
+        .up => editor.moveUp(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)}),
+        .down => editor.moveDown(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)}),
+        .home => {
+            if (event.mods.ctrl) {
+                editor.moveDocStart(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            } else {
+                editor.moveLineStart(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            }
+        },
+        .end => {
+            if (event.mods.ctrl) {
+                editor.moveDocEnd(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            } else {
+                editor.moveLineEnd(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            }
+        },
+        .page_up => editor.movePageUp(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)}),
+        .page_down => editor.movePageDown(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)}),
+        .insert => {},
+    }
+    return false;
+}
+
+test "app: q inserts text and Ctrl-Q is the quit key" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var pasting = false;
+    const q_event = input.Event{ .key = .{ .text = "q" } };
+    try std.testing.expect(!dispatch(editor, q_event, &pasting));
+    const line = try editor.model.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("qhello", line.items);
+    try std.testing.expect(editor.isDirty());
+
+    const ctrl_q = input.Event{ .key = .{ .char = 'q' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(!dispatch(editor, ctrl_q, &pasting));
+    try std.testing.expect(editor.quit_armed);
+    try std.testing.expect(dispatch(editor, ctrl_q, &pasting));
 }

@@ -55,7 +55,9 @@ pub const ContiguousTokensStore = struct {
 
         if (lineIndex < self._len) {
             if (self._lineTokens.items[lineIndex]) |cached| {
-                if (cached.items.len > 0) {
+                // A cached entry can be stale if a model edit did not reach the
+                // token store. Do not hand mismatched offsets to LineTokens.
+                if (cached.items.len > 0 and cached.items[cached.items.len - 1].endOffset == lineText.items.len) {
                     try tokens.appendSlice(cached.items);
                     return LineTokens.init(tokens, lineText, self._languageIdCodec);
                 }

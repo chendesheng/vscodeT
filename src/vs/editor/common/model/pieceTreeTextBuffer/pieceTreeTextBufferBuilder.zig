@@ -102,29 +102,32 @@ pub const PieceTreeBufferBuilder = struct {
             return;
         }
 
+        var content = chunk;
         if (self.chunks.items.len == 0) {
-            if (strings.startsWithUTF8BOM(chunk)) {
+            if (strings.startsWithUTF8BOM(content)) {
                 self.BOM = strings.UTF8_BOM_CHARACTER;
+                content = content[strings.UTF8_BOM_CHARACTER.len..];
             } else {
                 self.BOM = "";
             }
         }
+        if (content.len == 0) return;
 
-        const lastChar = chunk[chunk.len - 1];
+        const lastChar = content[content.len - 1];
         if (lastChar == '\r') {
-            try self._acceptChunk1(chunk[0 .. chunk.len - 1], false);
+            try self._acceptChunk1(content[0 .. content.len - 1], false);
             self._previousCharLen = 1;
             self._previousChar[0] = lastChar;
         } else {
-            const chunk2 = safeUtf8Prefix(chunk, chunk.len);
+            const chunk2 = safeUtf8Prefix(content, content.len);
             try self._acceptChunk1(chunk2, false);
-            if (chunk2.len < chunk.len) {
-                std.debug.assert(chunk.len - chunk2.len < 4);
+            if (chunk2.len < content.len) {
+                std.debug.assert(content.len - chunk2.len < 4);
 
-                self._previousCharLen = @intCast(chunk.len - chunk2.len);
+                self._previousCharLen = @intCast(content.len - chunk2.len);
 
-                for (chunk2.len..chunk.len) |i| {
-                    self._previousChar[i - chunk2.len] = chunk[i];
+                for (chunk2.len..content.len) |i| {
+                    self._previousChar[i - chunk2.len] = content[i];
                 }
             } else {
                 self._previousCharLen = 0;

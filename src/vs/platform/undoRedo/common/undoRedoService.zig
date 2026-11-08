@@ -19,7 +19,7 @@ const Selection = @import("../../../editor/common/core/selection.zig").Selection
 const String = @import("../../../base/common/strings.zig").String;
 const NotificationService = @import("../../../workbench/services/notification/common/notificationService.zig").NotificationService;
 
-const DEBUG = true;
+const DEBUG = false;
 
 fn getResourceLabel(resource: Uri) []const u8 {
     switch (resource.path) {
@@ -363,6 +363,9 @@ const ResourceEditStack = struct {
             element.deinit();
         }
         self._future.deinit();
+        // The map key points at this owned copy; the value owns it until the
+        // stack is removed from the map.
+        self.strResource.deinit();
     }
 
     fn getAllocator(self: *const ResourceEditStack) Allocator {
@@ -476,6 +479,7 @@ const ResourceEditStack = struct {
                 },
                 .resourceStackElement => {},
             }
+            futureElement.deinit();
         }
         self._future.clearAndFree();
         try self._past.append(element);
@@ -784,7 +788,13 @@ pub const UndoRedoService = struct {
 
             const res = try self._editStacks.getOrPut(strResource.items());
             if (!res.found_existing) {
-                res.value_ptr.* = ResourceEditStack.init(resourceLabel, strResource, allocator);
+                const owned_bytes = allocator.dupe(u8, strResource.items()) catch |err| {
+                    _ = self._editStacks.remove(strResource.items());
+                    return err;
+                };
+                const owned = String.initOwned(ArrayList(u8).fromOwnedSlice(allocator, owned_bytes));
+                res.key_ptr.* = owned.items();
+                res.value_ptr.* = ResourceEditStack.init(resourceLabel, owned, allocator);
             }
             try res.value_ptr.pushElement(element);
         }
@@ -849,9 +859,10 @@ pub const UndoRedoService = struct {
     }
 
     pub fn removeElementsStr(self: *UndoRedoService, strResource: []const u8) !void {
-        if (self._editStacks.getPtr(strResource)) |editStack| {
+        if (self._editStacks.fetchRemove(strResource)) |removed| {
+            var editStack = removed.value;
             try editStack.dispose();
-            _ = self._editStacks.remove(strResource);
+            editStack.deinit();
         }
         if (DEBUG) {
             self._print("removeElements");
@@ -902,7 +913,10 @@ pub const UndoRedoService = struct {
             if (!editStack.hasPastElements() and !editStack.hasFutureElements()) {
                 // the edit stack is now empty, just remove it entirely
                 editStack.dispose();
-                self._editStacks.remove(strResource);
+                if (self._editStacks.fetchRemove(strResource.items())) |removed| {
+                    var empty = removed.value;
+                    empty.deinit();
+                }
             }
         }
         if (DEBUG) {

@@ -144,6 +144,7 @@ pub const ApplyEditsResult = struct {
             }
             edits.deinit();
         }
+        for (self.changes.items) |*change| change.modelContentChange.deinit();
         self.changes.deinit();
         if (self.trimAutoWhitespaceLineNumbers) |lines| {
             lines.deinit();

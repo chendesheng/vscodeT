@@ -229,13 +229,15 @@ fn tokensFromCaptures(allocator: Allocator, captures: []const tm.ParseCapture, l
         for (captures) |cap| {
             if (cap.start <= start and end <= cap.end) metadata = metadataForScope(metadata, cap.scope);
         }
+        // The tokenization pipeline converts start offsets to end offsets
+        // (`LineTokens.convertToEndOffset`), so emit the segment start here.
         if (tokens.items.len > 0 and tokens.items[tokens.items.len - 1].metadata == metadata) {
-            tokens.items[tokens.items.len - 1].endOffset = @intCast(end);
+            // Keep the previous token's start offset; conversion extends it.
         } else {
-            try tokens.append(.{ .endOffset = @intCast(end), .metadata = metadata });
+            try tokens.append(.{ .endOffset = @intCast(start), .metadata = metadata });
         }
     }
-    if (tokens.items.len == 0) try tokens.append(.{ .endOffset = @intCast(lineLen), .metadata = defaultMetadata() });
+    if (tokens.items.len == 0) try tokens.append(.{ .endOffset = 0, .metadata = defaultMetadata() });
     return try tokens.toOwnedSlice();
 }
 
@@ -250,13 +252,22 @@ fn metadataForScope(metadata_: TokenMetadata, scope: []const u8) TokenMetadata {
     } else if (std.mem.indexOf(u8, scope, "regexp") != null) {
         metadata.tokenType = .RegEx;
         metadata.foreground = 7;
+    } else if (std.mem.startsWith(u8, scope, "invalid")) {
+        metadata.foreground = 7;
     } else if (std.mem.startsWith(u8, scope, "keyword") or std.mem.startsWith(u8, scope, "storage")) {
         metadata.foreground = 8;
     } else if (std.mem.startsWith(u8, scope, "constant")) {
         metadata.foreground = 9;
-    } else if (std.mem.startsWith(u8, scope, "entity.name.function")) {
+    } else if (std.mem.startsWith(u8, scope, "support.function") or
+        std.mem.startsWith(u8, scope, "entity.name.function") or
+        std.mem.startsWith(u8, scope, "entity.name.section"))
+    {
         metadata.foreground = 10;
-    } else if (std.mem.startsWith(u8, scope, "entity.name.type")) {
+    } else if (std.mem.startsWith(u8, scope, "support.type") or
+        std.mem.startsWith(u8, scope, "support.class") or
+        std.mem.startsWith(u8, scope, "entity.name.type") or
+        std.mem.startsWith(u8, scope, "entity.name.tag"))
+    {
         metadata.foreground = 11;
     } else if (std.mem.startsWith(u8, scope, "variable")) {
         metadata.foreground = 12;
@@ -278,4 +289,57 @@ test "textmate tokenizer: state survives lines" {
     defer line2.deinit();
     try std.testing.expectEqual(StandardTokenType.Comment, line2.getStandardTokenType(0));
     try std.testing.expect(line2.getCount() > 1);
+}
+
+
+test "textmate tokenizer: token text and foreground stay aligned" {
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
+    var ctx = try TestModel.init(std.testing.allocator, "const std = @import(\"std\");", "zig");
+    defer ctx.deinit();
+    ctx.model.forceTokenization(1);
+
+    var tokens = try ctx.model.tokenization().getLineTokens(1);
+    defer tokens.deinit();
+
+    var saw_const = false;
+    var saw_std_variable = false;
+    var saw_string = false;
+    var saw_import = false;
+    for (0..tokens.getCount()) |i| {
+        const text = tokens.getTokenText(i);
+        const fg = tokens.getForeground(i);
+        if (std.mem.eql(u8, text, "const")) {
+            saw_const = true;
+            try std.testing.expectEqual(@as(u9, 8), fg);
+        } else if (std.mem.eql(u8, text, "std")) {
+            saw_std_variable = true;
+            try std.testing.expectEqual(@as(u9, 12), fg);
+        } else if (std.mem.eql(u8, text, "\"std\"")) {
+            saw_string = true;
+            try std.testing.expectEqual(@as(u9, 6), fg);
+        } else if (std.mem.eql(u8, text, "@import")) {
+            saw_import = true;
+            try std.testing.expectEqual(@as(u9, 10), fg);
+        }
+    }
+    try std.testing.expect(saw_const and saw_std_variable and saw_string and saw_import);
+}
+
+test "textmate tokenizer: token cache shifts after inserting a line above" {
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
+    const Range = @import("../../core/range.zig").Range;
+
+    var ctx = try TestModel.init(std.testing.allocator, "const a = 1;\n/// comment\npub fn f() void {}\n", "zig");
+    defer ctx.deinit();
+    ctx.model.forceTokenization(3);
+
+    try ctx.applyEdit(Range.init(1, 1, 1, 1), "\n\n");
+
+    var tokens = try ctx.model.tokenization().getLineTokens(4);
+    defer tokens.deinit();
+    var found_comment = false;
+    for (0..tokens.getCount()) |i| {
+        if (tokens.getStandardTokenType(i) == .Comment) found_comment = true;
+    }
+    try std.testing.expect(found_comment);
 }

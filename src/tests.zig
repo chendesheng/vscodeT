@@ -89,6 +89,9 @@ comptime {
     _ = @import("./vs/editor/common/cursor/cursorTypeOperations.zig");
     _ = @import("./vs/editor/common/cursor/cursorTypeEditOperations.zig");
     _ = @import("./vs/editor/test/common/cursor/cursorTests.zig");
+    _ = @import("./vs/editor/common/viewModel/monospaceLineBreaksComputer.zig");
+    _ = @import("./vs/editor/common/viewModel/modelLineProjection.zig");
+    _ = @import("./vs/editor/common/viewModel/viewModelLines.zig");
     _ = @import("./vs/editor/common/viewModel/glyphLanesModel.zig");
     _ = @import("./vs/editor/common/viewModel.zig");
     _ = @import("./vs/editor/common/viewLayout/lineHeights.zig");
@@ -98,7 +101,13 @@ comptime {
     _ = @import("./vs/editor/common/viewModel/minimapTokensColorTracker.zig");
     _ = @import("./vs/editor/common/viewModel/viewModelDecorations.zig");
     _ = @import("./vs/editor/test/common/viewModel/viewModelTests.zig");
-    _ = @import("./tui/highlighter.zig");
+    _ = @import("./tui/app.zig");
+    _ = @import("./tui/editor.zig");
+    _ = @import("./tui/input.zig");
+    _ = @import("./tui/screen.zig");
+    _ = @import("./tui/render.zig");
+    _ = @import("./tui/theme.zig");
+    _ = @import("./tui/language.zig");
     _ = @import("./vs/editor/common/core/wordHelper.zig");
     _ = @import("./vs/editor/common/tokens/contiguousMultilineTokens.zig");
     _ = @import("./vs/editor/common/tokens/contiguousMultilineTokensBuilder.zig");

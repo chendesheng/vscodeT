@@ -9,7 +9,7 @@ const UndoRedoService = @import("../../../platform/undoRedo/common/undoRedoServi
 const Selection = @import("../core/selection.zig").Selection;
 const EOL = @import("../core/misc/eolCounter.zig").EOL;
 const TextChange = @import("../core/textChange.zig").TextChange;
-const compressConsecutiveTextChanges = @import("../core/textChange.zig").compressConsecutiveTextChanges;
+const String = @import("../../../base/common/strings.zig").String;
 const UndoRedoGroup = @import("../../../platform/undoRedo/common/undoRedo.zig").UndoRedoGroup;
 const ValidEditOperation = @import("../model.zig").ValidEditOperation;
 const Disposable = @import("../../../platform/undoRedo/common/undoRedo.zig").Disposable;
@@ -183,6 +183,35 @@ pub const SingleModelEditStackData = union(enum) {
     }
 };
 
+fn dupeSelections(allocator: Allocator, selections: ?[]const Selection) !?[]Selection {
+    const source = selections orelse return null;
+    if (source.len == 0) return null;
+    return try allocator.dupe(Selection, source);
+}
+
+fn freeSelections(allocator: Allocator, selections: ?[]Selection) void {
+    if (selections) |s| {
+        if (s.len > 0) allocator.free(s);
+    }
+}
+
+fn cloneTextChange(allocator: Allocator, change: TextChange) !TextChange {
+    var old_text = ArrayList(u8).init(allocator);
+    errdefer old_text.deinit();
+    try old_text.appendSlice(change.oldText.items());
+
+    var new_text = ArrayList(u8).init(allocator);
+    errdefer new_text.deinit();
+    try new_text.appendSlice(change.newText.items());
+
+    return TextChange.init(
+        change.oldPosition,
+        String.initOwned(old_text),
+        change.newPosition,
+        String.initOwned(new_text),
+    );
+}
+
 pub const SingleModelEditStackDataUnserialized = struct {
     beforeVersionId: u32,
     afterVersionId: u32,
@@ -192,35 +221,45 @@ pub const SingleModelEditStackDataUnserialized = struct {
     afterCursorState: ?[]Selection,
     changes: ArrayList(TextChange),
 
-    pub fn create(allocator: Allocator, alternativeVersionId: u32, eol: EOL, beforeCursorState: ?[]Selection) SingleModelEditStackDataUnserialized {
+    pub fn create(allocator: Allocator, alternativeVersionId: u32, eol: EOL, beforeCursorState: ?[]Selection) !SingleModelEditStackDataUnserialized {
+        const before = try dupeSelections(allocator, beforeCursorState);
+        errdefer freeSelections(allocator, before);
+        const after = try dupeSelections(allocator, beforeCursorState);
+        errdefer freeSelections(allocator, after);
         return SingleModelEditStackDataUnserialized{
             .beforeVersionId = alternativeVersionId,
             .afterVersionId = alternativeVersionId,
             .beforeEOL = eol,
             .afterEOL = eol,
-            .beforeCursorState = beforeCursorState,
-            .afterCursorState = beforeCursorState,
+            .beforeCursorState = before,
+            .afterCursorState = after,
             .changes = ArrayList(TextChange).init(allocator),
         };
     }
 
     pub fn deinit(self: *SingleModelEditStackDataUnserialized) void {
+        const allocator = self.changes.allocator;
         for (self.changes.items) |*change| {
             change.deinit();
         }
         self.changes.deinit();
+        freeSelections(allocator, self.beforeCursorState);
+        freeSelections(allocator, self.afterCursorState);
+        self.beforeCursorState = null;
+        self.afterCursorState = null;
     }
 
     pub fn append(self: *SingleModelEditStackDataUnserialized, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
-        if (textChanges.len > 0) {
-            var changes = self.changes;
-            defer changes.deinit();
-
-            self.changes = try compressConsecutiveTextChanges(self.changes.allocator, changes, textChanges);
+        for (textChanges) |change| {
+            var cloned = try cloneTextChange(self.changes.allocator, change);
+            errdefer cloned.deinit();
+            try self.changes.append(cloned);
         }
+        const newAfter = try dupeSelections(self.changes.allocator, afterCursorState);
+        freeSelections(self.changes.allocator, self.afterCursorState);
         self.afterEOL = afterEOL;
         self.afterVersionId = afterVersionId;
-        self.afterCursorState = afterCursorState;
+        self.afterCursorState = newAfter;
     }
 
     pub fn _writeSelectionsSize(selections: ?[]const Selection) usize {
@@ -298,21 +337,28 @@ pub const SingleModelEditStackDataUnserialized = struct {
         const beforeEOL: EOL = @fromBackingInt(@intCast(try reader.takeInt(u8, .big)));
         const afterEOL: EOL = @fromBackingInt(@intCast(try reader.takeInt(u8, .big)));
         var beforeCursorState = ArrayList(Selection).init(allocator);
+        errdefer beforeCursorState.deinit();
         try _readSelections(&reader, &beforeCursorState);
         var afterCursorState = ArrayList(Selection).init(allocator);
+        errdefer afterCursorState.deinit();
         try _readSelections(&reader, &afterCursorState);
         const changeCount = try reader.takeInt(u32, .big);
         var changes = ArrayList(TextChange).init(allocator);
+        errdefer changes.deinit();
         for (0..changeCount) |_| {
             try TextChange.read(&reader, allocator, &changes);
         }
+        const before = try beforeCursorState.toOwnedSlice();
+        errdefer allocator.free(before);
+        const after = try afterCursorState.toOwnedSlice();
+        errdefer allocator.free(after);
         return SingleModelEditStackDataUnserialized{
             .beforeVersionId = beforeVersionId,
             .afterVersionId = afterVersionId,
             .beforeEOL = beforeEOL,
             .afterEOL = afterEOL,
-            .beforeCursorState = beforeCursorState.items,
-            .afterCursorState = afterCursorState.items,
+            .beforeCursorState = before,
+            .afterCursorState = after,
             .changes = changes,
         };
     }
@@ -320,18 +366,13 @@ pub const SingleModelEditStackDataUnserialized = struct {
 
 test "SingleModelEditStackDataUnserialized" {
     const allocator = std.testing.allocator;
-    var data = SingleModelEditStackDataUnserialized.create(allocator, 1, .LF, null);
+    var data = try SingleModelEditStackDataUnserialized.create(allocator, 1, .LF, null);
     defer data.deinit();
     try data.append(&[_]TextChange{TextChange.init(0, .initBorrowed("a"), 0, .initBorrowed("b"))}, .LF, 2, null);
     const serialized = try data.serialize();
     defer serialized.deinit();
     var deserialized = try SingleModelEditStackDataUnserialized.deserialize(allocator, serialized.items);
     defer deserialized.deinit();
-    defer {
-        for (deserialized.changes.items) |*ch| {
-            ch.deinit();
-        }
-    }
     try std.testing.expectEqualStrings("a", deserialized.changes.items[0].oldText.items());
     try std.testing.expectEqualStrings("b", deserialized.changes.items[0].newText.items());
 }
@@ -365,12 +406,12 @@ pub const SingleModelEditStackElement = struct {
     confirmBeforeUndo: ?bool,
     allocator: Allocator,
 
-    pub fn init(allocator: Allocator, label: []const u8, code: []const u8, model: *TextModel, beforeCursorState: ?[]Selection) SingleModelEditStackElement {
+    pub fn init(allocator: Allocator, label: []const u8, code: []const u8, model: *TextModel, beforeCursorState: ?[]Selection) !SingleModelEditStackElement {
         return SingleModelEditStackElement{
             .allocator = allocator,
             .model = .{ .model = model },
             ._data = SingleModelEditStackData{
-                .unserialized = SingleModelEditStackDataUnserialized.create(
+                .unserialized = try SingleModelEditStackDataUnserialized.create(
                     allocator,
                     model.getAlternativeVersionId(),
                     model.getEOL(),
@@ -435,8 +476,8 @@ pub const SingleModelEditStackElement = struct {
 
     pub fn canAppend(self: *const SingleModelEditStackElement, model: *const TextModel) bool {
         return self.model.eqlModel(model) and switch (self._data) {
-            .serialized => true,
-            .unserialized => false,
+            .unserialized => true,
+            .serialized => false,
         };
     }
 
@@ -450,10 +491,13 @@ pub const SingleModelEditStackElement = struct {
     }
 
     pub fn close(self: *SingleModelEditStackElement) !void {
-        switch (self._data) {
+        var data = self._data;
+        switch (data) {
             .unserialized => |*dat| {
-                defer dat.deinit();
-                self._data = .{ .unserialized = try dat.serialize() };
+                errdefer dat.deinit();
+                const serialized = try dat.serialize();
+                dat.deinit();
+                self._data = .{ .serialized = serialized };
             },
             .serialized => {},
         }
@@ -553,7 +597,7 @@ test "SingleModelEditStackElement" {
     defer allocator.destroy(textModel);
     defer textModel.deinit();
 
-    var element = SingleModelEditStackElement.init(allocator, "test", "test", textModel, &[_]Selection{});
+    var element = try SingleModelEditStackElement.init(allocator, "test", "test", textModel, &[_]Selection{});
     defer element.deinit();
     try std.testing.expectEqualStrings("test", element.label);
     try std.testing.expectEqualStrings("test", element.code);
@@ -733,13 +777,13 @@ pub const EditStack = struct {
     }
 
     pub fn pushStackElement(self: *EditStack) void {
-        if (self._undoRedoService.getLastElement(self.textModel().uri())) |lastElement| {
-            lastElement.close();
+        if (self._undoRedoService.getLastElement(self.textModel().uri()) catch null) |lastElement| {
+            lastElement.close() catch {};
         }
     }
 
-    pub fn popStackElement(self: *EditStack) EditStackElement {
-        if (self._undoRedoService.getLastElement(self.textModel().uri())) |lastElement| {
+    pub fn popStackElement(self: *EditStack) void {
+        if (self._undoRedoService.getLastElement(self.textModel().uri()) catch null) |lastElement| {
             lastElement.open();
         }
     }
@@ -755,7 +799,7 @@ pub const EditStack = struct {
             }
         }
         const allocator = self.textModel().getAllocator();
-        const newElement = SingleModelEditStackElement.init(allocator, "Typing", "undoredo.textBufferEdit", self.textModel(), beforeCursorState);
+        const newElement = try SingleModelEditStackElement.init(allocator, "Typing", "undoredo.textBufferEdit", self.textModel(), beforeCursorState);
         const newEditStackElement = try allocator.create(EditStackElement);
         newEditStackElement.* = EditStackElement{ .singleModel = newElement };
         try self._undoRedoService.pushElement(newEditStackElement, group, null);
@@ -770,8 +814,11 @@ pub const EditStack = struct {
 
     pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []ValidAnnotatedEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
         var editStackElement = try self._getOrCreateEditStackElement(beforeCursorState, group);
-        const inverseEditOperations = (try self.textModel().applyValidatedEdits(editOperations, true)).?;
-        defer inverseEditOperations.deinit();
+        var inverseEditOperations = (try self.textModel().applyValidatedEdits(editOperations, true)).?;
+        defer {
+            for (inverseEditOperations.items) |*op| op.deinit();
+            inverseEditOperations.deinit();
+        }
         const afterCursorState = EditStack._computeCursorState(cursorStateComputer, inverseEditOperations.items);
 
         var textChangesWithIndex = ArrayList(Pair(*TextChange, usize)).init(self.textModel().getAllocator());
@@ -789,7 +836,7 @@ pub const EditStack = struct {
 
     fn _computeCursorState(cursorStateComputer: ?CursorStateComputer, inverseEditOperations: []ValidEditOperation) ?[]Selection {
         if (cursorStateComputer) |computer| {
-            return computer(inverseEditOperations);
+            return computer.compute(computer.context, inverseEditOperations);
         }
         return null;
     }
@@ -797,7 +844,10 @@ pub const EditStack = struct {
 
 // A callback that can compute the cursor state after applying a series of edit operations.
 // A callback that can compute the resulting cursors state after some edit operations have been executed.
-pub const CursorStateComputer = fn (inverseEditOperations: []ValidEditOperation) ?[]Selection;
+pub const CursorStateComputer = struct {
+    context: *anyopaque,
+    compute: *const fn (context: *anyopaque, inverseEditOperations: []ValidEditOperation) ?[]Selection,
+};
 
 const UndoRedoDelegate = struct {
     prepareUndoRedo: *const fn (self: *UndoRedoDelegate, element: *const MultiModelEditStackElement) ?Disposable,

@@ -110,6 +110,25 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         return @ptrCast(@alignCast(self._textModel));
     }
 
+    pub fn forceTokenizeRange(self: *Self, builder: *ContiguousMultilineTokensBuilder, startLineNumber: usize, endLineNumber: usize) !void {
+        const line_count = self.textModel().getLineCount();
+        const start = @max(@as(usize, 1), @min(startLineNumber, line_count));
+        const end = @max(@as(usize, 1), @min(endLineNumber, line_count));
+        var state = self.getStartState(start) orelse try self.guessStartState(start);
+        const languageId = self.textModel().getLanguageId();
+        const allocator = self.super.stateAllocator();
+
+        var lineNumber = start;
+        while (lineNumber <= end) : (lineNumber += 1) {
+            var text = try self.textModel().getLineContent(lineNumber);
+            defer text.deinit();
+            const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
+            try builder.add(lineNumber, r.tokens);
+            _ = try self.getStore().setEndState(lineNumber, r.endState);
+            state = r.endState;
+        }
+    }
+
     pub fn updateTokensUntilLine(self: *Self, builder: *ContiguousMultilineTokensBuilder, lineNumber: usize) !void {
         const languageId = self.textModel().getLanguageId();
         const allocator = self.super.stateAllocator();

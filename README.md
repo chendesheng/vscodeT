@@ -5,7 +5,7 @@ Requires Zig 0.17 or newer.
 ```
 brew install oniguruma
 zig build        # build the TUI editor
-zig build run    # run it
+zig build run -- <file>   # run the TUI editor on a file
 zig build test   # run the test suite
 ```
 
@@ -64,8 +64,10 @@ View model:
   assignment, the coordinates-converter interface with its identity
   implementation, model-decoration visibility filtering, and the inline /
   injected-text decoration computers.
-- The full browser-facing `viewModelImpl` / `viewModelLines` wrapping and
-  layout stack is not ported; the TUI still renders from `PieceTreeTextBuffer`.
+- The TUI uses a reduced port of `viewModelLines`: wrapped model-line projections,
+  view-line prefix sums, view/model conversion, and incremental line mapping.
+  Folding, view zones, decorations, guides, and the browser-facing
+  `viewModelImpl` rendering stack are not ported.
 
 TextMate tokenization:
 
@@ -77,3 +79,18 @@ TextMate tokenization:
 - TextMate scopes are mapped to token types (`comment`, `string`, `regexp`)
   and foreground color IDs.
 - Languages without a TextMate mapping continue to use the null tokenizer.
+
+
+TUI editor:
+
+- The app edits through `TextModel` (not `PieceTreeTextBuffer` directly) and uses
+  the ported wrapping stack.
+- Text soft-wraps at the terminal width. Wrapped continuation lines are indented
+  (`WrappingIndent.Same`) and marked with an arrow in the gutter.
+- `q` is ordinary text. Quit with `Ctrl-Q` (press twice if there are unsaved
+  changes); save with `Ctrl-S`; undo/redo with `Ctrl-Z`/`Ctrl-Y`.
+- Navigation: arrows, `Shift`+arrows for selection, `Ctrl`+left/right for words,
+  `Home`/`End`, `Ctrl`+`Home`/`End` for buffer edges, `PageUp`/`PageDown`.
+- Editing: `Enter`, `Tab`/`Shift-Tab`, `Backspace`, `Delete`, bracketed paste.
+- `Ctrl-A` selects all; `Escape` clears the selection.
+- Syntax colors come from the `TextModel` tokenization stack.
