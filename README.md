@@ -58,6 +58,15 @@ Bracket-pair colorization:
 - Background tokenization is synchronous (1 ms chunks) because this port has
   no browser idle loop; behavior is otherwise equivalent.
 
+View model:
+
+- Ported the portable view-model decoration core: glyph-margin lane
+  assignment, the coordinates-converter interface with its identity
+  implementation, model-decoration visibility filtering, and the inline /
+  injected-text decoration computers.
+- The full browser-facing `viewModelImpl` / `viewModelLines` wrapping and
+  layout stack is not ported; the TUI still renders from `PieceTreeTextBuffer`.
+
 TextMate tokenization:
 
 - The `textmate.zig` fork (`chendesheng/textmate.zig`, commit `55ea72f`) is

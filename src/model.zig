@@ -495,6 +495,10 @@ pub const InjectedTextOptions = struct {
     // Configures cursor stops around injected text.
     // Defaults to {@link InjectedTextCursorStops.Both}.
     cursorStops: ?InjectedTextCursorStops,
+
+    // Sets the width used to wrap this injected text in editor-font em units.
+    // @internal
+    widthInEm: ?f64 = null,
 };
 
 pub const InjectedTextCursorStops = enum {
@@ -517,6 +521,20 @@ pub const GlyphMarginLane = enum(u2) {
     Left = 1,
     Center = 2,
     Right = 3,
+};
+
+// The affinity of a position, used when converting between model and view positions.
+pub const PositionAffinity = enum(u3) {
+    // Prefers the left most position.
+    Left = 0,
+    // Prefers the right most position.
+    Right = 1,
+    // No preference.
+    None = 2,
+    // If the given position is on injected text, prefers the position left of it.
+    LeftOfInjectedText = 3,
+    // If the given position is on injected text, prefers the position right of it.
+    RightOfInjectedText = 4,
 };
 
 // Position in the minimap to render the decoration.
@@ -626,6 +644,9 @@ pub const ModelDecorationOptions = struct {
     after: ?InjectedTextOptions,
     // If set, text will be injected in the view before the range.
     before: ?InjectedTextOptions,
+    // Whether the decoration affects the font.
+    // @internal
+    affectsFont: ?bool,
     // If set, this decoration will not be rendered for comment tokens.
     // @internal
     hideInCommentTokens: ?bool,
@@ -666,6 +687,7 @@ pub const ModelDecorationOptions = struct {
             .afterContentClassName = null,
             .after = null,
             .before = null,
+            .affectsFont = null,
             .hideInCommentTokens = null,
             .hideInStringTokens = null,
         };

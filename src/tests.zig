@@ -44,6 +44,9 @@ comptime {
     _ = @import("tokenizer/astTests.zig");
     _ = @import("tokenize/textMateTokenizer.zig");
     _ = @import("languages/languageSupportTests.zig");
+    _ = @import("modelUtils.zig");
+    _ = @import("viewModel/glyphLanesModel.zig");
+    _ = @import("viewModel/viewModelTests.zig");
     _ = @import("tui/highlighter.zig");
     _ = @import("basics/wordHelper.zig");
     _ = @import("tokens/contiguousMultilineTokens.zig");
