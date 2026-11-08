@@ -573,3 +573,41 @@ test "splitLinesIncludeSeparators" {
     try std.testing.expectEqualStrings("c\r", lines.items[2]);
     try std.testing.expectEqualStrings("d", lines.items[3]);
 }
+
+/// Returns the length of the common prefix of the two strings.
+pub fn commonPrefixLength(a: []const u8, b: []const u8) usize {
+    const len = @min(a.len, b.len);
+    var i: usize = 0;
+    while (i < len) : (i += 1) {
+        if (a[i] != b[i]) {
+            return i;
+        }
+    }
+    return len;
+}
+
+test "commonPrefixLength" {
+    try std.testing.expectEqual(@as(usize, 2), commonPrefixLength("abc", "abd"));
+    try std.testing.expectEqual(@as(usize, 3), commonPrefixLength("abc", "abc"));
+    try std.testing.expectEqual(@as(usize, 0), commonPrefixLength("", "abc"));
+    try std.testing.expectEqual(@as(usize, 2), commonPrefixLength("ab", "abc"));
+}
+
+/// Returns the length of the common suffix of the two strings.
+pub fn commonSuffixLength(a: []const u8, b: []const u8) usize {
+    const len = @min(a.len, b.len);
+    var i: usize = 0;
+    while (i < len) : (i += 1) {
+        if (a[a.len - 1 - i] != b[b.len - 1 - i]) {
+            return i;
+        }
+    }
+    return len;
+}
+
+test "commonSuffixLength" {
+    try std.testing.expectEqual(@as(usize, 2), commonSuffixLength("abc", "xbc"));
+    try std.testing.expectEqual(@as(usize, 3), commonSuffixLength("abc", "abc"));
+    try std.testing.expectEqual(@as(usize, 0), commonSuffixLength("", "abc"));
+    try std.testing.expectEqual(@as(usize, 2), commonSuffixLength("abc", "bc"));
+}

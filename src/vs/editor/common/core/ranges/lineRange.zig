@@ -110,6 +110,15 @@ pub const LineRange = struct {
         return LineRange.init(self.startLineNumber + offset, self.endLineNumberExclusive + offset);
     }
 
+    // Moves this line range by the given signed offset of line numbers.
+    pub fn deltaSigned(self: LineRange, offset: isize) LineRange {
+        if (offset >= 0) {
+            return self.delta(@intCast(offset));
+        }
+        const shift: usize = @intCast(-offset);
+        return LineRange.init(self.startLineNumber - shift, self.endLineNumberExclusive - shift);
+    }
+
     pub fn deltaLength(self: LineRange, offset: usize) LineRange {
         return LineRange.init(self.startLineNumber, self.endLineNumberExclusive + offset);
     }
@@ -451,6 +460,15 @@ pub const LineRangeSet = struct {
         var result = ArrayList(LineRange).init(allocator);
         for (self._normalizedRanges.items) |r| {
             try result.append(r.delta(value));
+        }
+        return LineRangeSet.init(result);
+    }
+
+    pub fn getWithDeltaSigned(self: *const LineRangeSet, value: isize) !LineRangeSet {
+        const allocator = self._normalizedRanges.allocator;
+        var result = ArrayList(LineRange).init(allocator);
+        for (self._normalizedRanges.items) |r| {
+            try result.append(r.deltaSigned(value));
         }
         return LineRangeSet.init(result);
     }

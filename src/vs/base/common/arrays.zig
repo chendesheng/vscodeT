@@ -91,6 +91,21 @@ pub fn ArrayQueue(comptime T: type) type {
     };
 }
 
+/// Calls `callback` for every element, passing the previous and next element
+/// (undefined at the boundaries).
+pub fn forEachWithNeighbors(
+    comptime T: type,
+    array: []const T,
+    context: anytype,
+    callback: fn (@TypeOf(context), ?T, T, ?T) void,
+) void {
+    for (array, 0..) |current, i| {
+        const previous: ?T = if (i > 0) array[i - 1] else null;
+        const next: ?T = if (i + 1 < array.len) array[i + 1] else null;
+        callback(context, previous, current, next);
+    }
+}
+
 test "ArrayQueue.length" {
     var queue = ArrayQueue(i32).init(&[_]i32{ 1, 2, 3, 4, 5 });
     try std.testing.expectEqual(5, queue.length());
@@ -175,4 +190,41 @@ test "ArrayQueue.peekLast" {
 test "ArrayQueue.peekLast empty" {
     var queue = ArrayQueue(i32).init(&[_]i32{});
     try std.testing.expectEqual(null, queue.peekLast());
+}
+
+/// Performs a binary search over `0..length`. The callback returns a negative
+/// number if the key at `index` is less than the searched key, a positive
+/// number if it is greater, and zero on a match. Returns the found index, or
+/// `-(low + 1)` if no exact match exists.
+pub fn binarySearch2(length: usize, context: anytype, compareToKey: fn (@TypeOf(context), usize) isize) isize {
+    var low: isize = 0;
+    var high: isize = @as(isize, @intCast(length)) - 1;
+
+    while (low <= high) {
+        const mid = @divFloor(low + high, 2);
+        const comp = compareToKey(context, @intCast(mid));
+        if (comp < 0) {
+            low = mid + 1;
+        } else if (comp > 0) {
+            high = mid - 1;
+        } else {
+            return mid;
+        }
+    }
+    return -(low + 1);
+}
+
+test "binarySearch2" {
+    const items = [_]isize{ 1, 3, 5, 7 };
+    const Ctx = struct {
+        items: []const isize,
+        key: isize,
+
+        fn compare(ctx: @This(), index: usize) isize {
+            return ctx.items[index] - ctx.key;
+        }
+    };
+
+    try std.testing.expectEqual(@as(isize, 1), binarySearch2(items.len, Ctx{ .items = &items, .key = 3 }, Ctx.compare));
+    try std.testing.expectEqual(@as(isize, -3), binarySearch2(items.len, Ctx{ .items = &items, .key = 4 }, Ctx.compare));
 }

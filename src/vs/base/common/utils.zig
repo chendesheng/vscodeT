@@ -180,6 +180,16 @@ test "findLastIdxMonotonous" {
 // Finds the first item where predicate is true using binary search.
 // `predicate` must be monotonous, i.e. `arr.map(predicate)` must be like `[false, ..., false, true, ..., true]`!
 // @returns `endIdxEx` if predicate is false for all items, otherwise the index of the first item that matches the predicate.
+/// Finds the first item where `predicate` is true using binary search.
+/// `predicate` must be monotonous: `[false, ..., false, true, ..., true]`.
+pub fn findFirstMonotonous(comptime T: type, array: []const T, context: anytype, predicate: fn (T, @TypeOf(context)) bool) ?T {
+    const idx = findFirstIdxMonotonousOrArrLen(T, array, context, predicate, 0, array.len);
+    if (idx == array.len) {
+        return null;
+    }
+    return array[idx];
+}
+
 pub fn findFirstIdxMonotonousOrArrLen(comptime T: type, array: []const T, context: anytype, predicate: fn (T, @TypeOf(context)) bool, startIdx: usize, endIdxEx: usize) usize {
     var i = startIdx;
     var j = endIdxEx;

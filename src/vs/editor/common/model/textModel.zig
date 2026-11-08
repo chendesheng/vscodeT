@@ -348,6 +348,9 @@ pub const TextModel = struct {
     pub fn init(allocator: Allocator, source: *Io.Reader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService) !*TextModel {
         MODEL_ID += 1;
         var buffer = try createTextBuffer(allocator, source, creationOptions.defaultEOL);
+        // Resolve the options (which may scan the buffer for indentation and
+        // populate its caches) before the buffer is copied into the model.
+        const resolvedOptions = resolveOptions(&buffer, creationOptions);
         const bufferLineCount = buffer.getLineCount();
         const bufferTextLength = buffer.getValueLengthInRange(Range.init(1, 1, bufferLineCount, buffer.getLineLength(bufferLineCount) + 1), .TextDefined);
 
@@ -388,7 +391,7 @@ pub const TextModel = struct {
             },
             ._attachedEditorCount = 0,
             ._buffer = buffer,
-            ._options = resolveOptions(&buffer, creationOptions),
+            ._options = resolvedOptions,
             ._isTooLargeForSyncing = bufferTextLength > MODEL_SYNC_LIMIT,
             ._isTooLargeForTokenization = tooLargeForTokenization,
             ._isTooLargeForHeapOperation = tooLargeForHeapOperation,
