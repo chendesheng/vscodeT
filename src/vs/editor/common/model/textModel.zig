@@ -60,7 +60,6 @@ const SetWithKey = @import("../../../base/common/collections.zig").SetWithKey;
 const Emitter = @import("../../../base/common/event.zig").Emitter;
 const IndentSize = Model.IndentSize;
 const TrackedRangeStickiness = Model.TrackedRangeStickiness;
-const cleanClassName = Model.cleanClassName;
 const ModelDecorationOverviewRulerOptions = Model.ModelDecorationOverviewRulerOptions;
 const ModelDecorationMinimapOptions = Model.ModelDecorationMinimapOptions;
 const ModelDecorationGlyphMarginOptions = Model.ModelDecorationGlyphMarginOptions;

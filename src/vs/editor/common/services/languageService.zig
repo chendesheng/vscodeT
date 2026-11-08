@@ -5,36 +5,17 @@ const Uri = std.Uri;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const LanguageConfiguration = @import("../languages/languageConfiguration.zig").LanguageConfiguration;
 
-pub const ILanguageExtensionPoint = struct {
-    id: []const u8,
-    extensions: ?[]const []const u8,
-    filenames: ?[]const []const u8,
-    filenamePatterns: ?[]const []const u8,
-    firstLine: ?[]const u8,
-    aliases: ?[]const []const u8,
-    mimetypes: ?[]const []const u8,
-    configuration: ?Uri,
-    // @internal
-    icon: ?LanguageIcon,
-};
+const language = @import("../languages/language.zig");
+
+// The payload types are declared by the interface module (`language.zig`);
+// they are re-exported here so existing callers keep their import path.
+pub const ILanguageExtensionPoint = language.ILanguageExtensionPoint;
+pub const LanguageSelection = language.ILanguageSelection;
+pub const LanguageNameIdPair = language.ILanguageNameIdPair;
+pub const LanguageIcon = language.ILanguageIcon;
 
 fn defaultRequestBasicLanguageFeatures(_: []const u8) void {}
 fn defaultRequestRichLanguageFeatures(_: []const u8) void {}
-
-pub const LanguageSelection = struct {
-    languageId: []const u8,
-    onDidChange: Emitter(void),
-};
-
-pub const LanguageNameIdPair = struct {
-    languageName: []const u8,
-    languageId: []const u8,
-};
-
-pub const LanguageIcon = struct {
-    light: Uri,
-    dark: Uri,
-};
 
 pub const LanguageService = struct {
     // A codec which can encode and decode a string `languageId` as a number.

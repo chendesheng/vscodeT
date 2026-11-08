@@ -696,19 +696,10 @@ pub const ModelDecorationOptions = struct {
     fn initModelDecorationOptionsDefaults(options: *ModelDecorationOptions) void {
         options.stickiness = options.stickiness orelse TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges;
         options.zIndex = options.zIndex orelse 0;
-        options.className = if (options.className) |className| cleanClassName(className) else null;
         options.overviewRuler = if (options.overviewRuler) |overviewRuler| ModelDecorationOverviewRulerOptions.init(overviewRuler) else null;
         options.minimap = if (options.minimap) |minimap| ModelDecorationMinimapOptions.init(minimap) else null;
         options.glyphMargin = if (options.glyphMargin) |glyphMargin| ModelDecorationGlyphMarginOptions.init(glyphMargin) else null;
-        options.glyphMarginClassName = if (options.glyphMarginClassName) |className| cleanClassName(className) else null;
-        options.linesDecorationsClassName = if (options.linesDecorationsClassName) |className| cleanClassName(className) else null;
-        options.lineNumberClassName = if (options.lineNumberClassName) |className| cleanClassName(className) else null;
         options.linesDecorationsTooltip = if (options.linesDecorationsTooltip) |tooltip| strings.htmlAttributeEncodeValue(tooltip) else null;
-        options.firstLineDecorationClassName = if (options.firstLineDecorationClassName) |className| cleanClassName(className) else null;
-        options.marginClassName = if (options.marginClassName) |className| cleanClassName(className) else null;
-        options.inlineClassName = if (options.inlineClassName) |className| cleanClassName(className) else null;
-        options.beforeContentClassName = if (options.beforeContentClassName) |className| cleanClassName(className) else null;
-        options.afterContentClassName = if (options.afterContentClassName) |className| cleanClassName(className) else null;
     }
 };
 
@@ -731,14 +722,3 @@ pub const ModelDeltaDecoration = struct {
     // Options associated with this decoration.
     options: *ModelDecorationOptions,
 };
-
-pub fn cleanClassName(className: []const u8) []const u8 {
-    var write_index = 0;
-    for (className) |c| {
-        if ('a' <= c and c <= 'z' or '0' <= c and c <= '9' or c == '-' or c == '_') {
-            className[write_index] = c;
-            write_index += 1;
-        }
-    }
-    return className[0..write_index];
-}

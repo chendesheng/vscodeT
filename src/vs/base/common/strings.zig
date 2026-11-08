@@ -122,6 +122,52 @@ test "htmlAttributeEncodeValue" {
     try std.testing.expectEqualStrings("&lt;Hello&gt;", result);
 }
 
+/// Escapes `<`, `>` and `&` for HTML content.
+pub fn escape(allocator: Allocator, html: []const u8) ![]u8 {
+    var result = ArrayList(u8).init(allocator);
+    errdefer result.deinit();
+    for (html) |ch| {
+        switch (ch) {
+            '<' => try result.appendSlice("&lt;"),
+            '>' => try result.appendSlice("&gt;"),
+            '&' => try result.appendSlice("&amp;"),
+            else => try result.append(ch),
+        }
+    }
+    return result.toOwnedSlice();
+}
+
+test "escape" {
+    const allocator = std.testing.allocator;
+
+    const result = try escape(allocator, "a < b > c & d");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("a &lt; b &gt; c &amp; d", result);
+
+    const unchanged = try escape(allocator, "plain");
+    defer allocator.free(unchanged);
+    try std.testing.expectEqualStrings("plain", unchanged);
+}
+
+/// Do a cheap trick to better support wrapping of wide characters, treat them
+/// as 2 columns. See the ranges documented in `isFullWidthCharacter` of
+/// `base/common/strings.ts`.
+pub fn isFullWidthCharacter(char_code: u21) bool {
+    return (char_code >= 0x2E80 and char_code <= 0xD7AF) or
+        (char_code >= 0xF900 and char_code <= 0xFAFF) or
+        (char_code >= 0xFF01 and char_code <= 0xFF5E) or
+        (char_code >= 0xFFE0 and char_code <= 0xFFE6);
+}
+
+test "isFullWidthCharacter" {
+    try std.testing.expect(isFullWidthCharacter(0x4E00)); // CJK Unified Ideographs
+    try std.testing.expect(isFullWidthCharacter(0xAC00)); // Hangul Syllables
+    try std.testing.expect(isFullWidthCharacter(0xFF01)); // Fullwidth '!'
+    try std.testing.expect(!isFullWidthCharacter('a'));
+    try std.testing.expect(!isFullWidthCharacter(0xE000)); // Private Use Area
+    try std.testing.expect(!isFullWidthCharacter(0xFF00)); // Halfwidth and Fullwidth Forms (the prefix)
+}
+
 pub fn isNullOrEmpty(str: ?[]const u8) bool {
     return str == null or str.?.len == 0;
 }

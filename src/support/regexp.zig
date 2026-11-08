@@ -418,6 +418,13 @@ pub const SearchResult = struct {
         return self._input[rg[0]..rg[1]];
     }
 
+    /// Like `groupN`, but returns `null` when the group did not participate in
+    /// the match.
+    pub fn groupNOrNull(self: *const SearchResult, n: usize) ?[]const u8 {
+        const rg = self._region.rangeOrNull(n) orelse return null;
+        return self._input[rg[0]..rg[1]];
+    }
+
     // FIXME: group name is not unique
     pub fn group(self: *const SearchResult, name: []const u8) ![]const u8 {
         const num = try self._regex.nameToGroupNumber(name);
@@ -493,12 +500,21 @@ pub const Region = struct {
     }
 
     pub fn range(self: *const Region, n: usize) [2]usize {
+        return self.rangeOrNull(n) orelse unreachable;
+    }
+
+    /// Like `range`, but returns `null` for a group that did not participate in
+    /// the match (Oniguruma reports `-1` for those).
+    pub fn rangeOrNull(self: *const Region, n: usize) ?[2]usize {
         if (n >= self.count()) {
-            unreachable;
+            return null;
         }
-        const beg: usize = @intCast(self._region.beg[n]);
-        const end: usize = @intCast(self._region.end[n]);
-        return [2]usize{ beg, end };
+        const beg = self._region.beg[n];
+        const end = self._region.end[n];
+        if (beg < 0 or end < 0) {
+            return null;
+        }
+        return [2]usize{ @intCast(beg), @intCast(end) };
     }
 };
 

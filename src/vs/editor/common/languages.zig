@@ -57,7 +57,52 @@ pub const LanguageIdCodec = struct {
         }
         return NULL_LANGUAGE_ID;
     }
+
+    /// Erases the concrete codec behind `ILanguageIdCodec`.
+    pub fn asILanguageIdCodec(self: *LanguageIdCodec) ILanguageIdCodec {
+        return .{
+            .context = self,
+            .encodeLanguageId = struct {
+                fn call(context: *anyopaque, languageId: []const u8) !u8 {
+                    const codec: *LanguageIdCodec = @ptrCast(@alignCast(context));
+                    return codec.encodeLanguageId(languageId);
+                }
+            }.call,
+            .decodeLanguageId = struct {
+                fn call(context: *anyopaque, languageId: u8) []const u8 {
+                    const codec: *LanguageIdCodec = @ptrCast(@alignCast(context));
+                    return codec.decodeLanguageId(languageId);
+                }
+            }.call,
+        };
+    }
 };
+
+/// A codec which can encode and decode a string `languageId` as a number.
+pub const ILanguageIdCodec = struct {
+    context: *anyopaque,
+    encodeLanguageId: *const fn (context: *anyopaque, languageId: []const u8) anyerror!u8,
+    decodeLanguageId: *const fn (context: *anyopaque, languageId: u8) []const u8,
+
+    pub fn encode(self: ILanguageIdCodec, language_id: []const u8) !u8 {
+        return self.encodeLanguageId(self.context, language_id);
+    }
+
+    pub fn decode(self: ILanguageIdCodec, language_id: u8) []const u8 {
+        return self.decodeLanguageId(self.context, language_id);
+    }
+};
+
+test "ILanguageIdCodec: adapts the concrete codec" {
+    var codec = try LanguageIdCodec.init(std.testing.allocator);
+    defer codec.deinit();
+    try codec.register("zig");
+
+    const codec_iface = codec.asILanguageIdCodec();
+    const zig_id = try codec_iface.encode("zig");
+    try std.testing.expectEqualStrings("zig", codec_iface.decode(zig_id));
+    try std.testing.expectEqualStrings(NULL_LANGUAGE_ID, codec_iface.decode(@backingInt(LanguageId.Null)));
+}
 
 pub const Token = struct {
     offset: usize,
@@ -255,3 +300,28 @@ pub const LazyTokenizationSupport = struct {
         return self._tokenizationSupport;
     }
 };
+
+/// A color in the document, with components normalized to [0, 1].
+pub const IColor = struct {
+    red: f32,
+    green: f32,
+    blue: f32,
+    alpha: f32,
+};
+
+/// A color and the range of the document it was found at.
+pub const IColorInformation = struct {
+    range: @import("./core/range.zig").Range,
+    color: IColor,
+};
+
+test "IColorInformation: holds a range and a color" {
+    const Range = @import("./core/range.zig").Range;
+
+    const information = IColorInformation{
+        .range = Range.init(1, 1, 1, 7),
+        .color = .{ .red = 1, .green = 0.5, .blue = 0, .alpha = 1 },
+    };
+    try std.testing.expectEqual(@as(usize, 6), information.range.endColumn - information.range.startColumn);
+    try std.testing.expectEqual(@as(f32, 0.5), information.color.green);
+}
