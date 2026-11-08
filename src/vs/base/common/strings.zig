@@ -483,3 +483,93 @@ test "containsLF" {
     try std.testing.expect(containsLF("Hello\nWorld"));
     try std.testing.expect(!containsLF("HelloWorld"));
 }
+
+/// Splits `str` on `\r\n`, `\r`, and `\n` boundaries. The returned slices
+/// point into `str`; the returned list must be deinitialized by the caller.
+pub fn splitLines(allocator: Allocator, str: []const u8) !ArrayList([]const u8) {
+    var result = ArrayList([]const u8).init(allocator);
+    errdefer result.deinit();
+
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < str.len) : (i += 1) {
+        if (str[i] == '\n') {
+            try result.append(str[start..i]);
+            start = i + 1;
+        } else if (str[i] == '\r') {
+            try result.append(str[start..i]);
+            if (i + 1 < str.len and str[i + 1] == '\n') {
+                i += 1;
+            }
+            start = i + 1;
+        }
+    }
+    try result.append(str[start..]);
+    return result;
+}
+
+test "splitLines" {
+    const allocator = std.testing.allocator;
+
+    var lines = try splitLines(allocator, "a\nb\r\nc\rd");
+    defer lines.deinit();
+    try std.testing.expectEqual(@as(usize, 4), lines.items.len);
+    try std.testing.expectEqualStrings("a", lines.items[0]);
+    try std.testing.expectEqualStrings("b", lines.items[1]);
+    try std.testing.expectEqualStrings("c", lines.items[2]);
+    try std.testing.expectEqualStrings("d", lines.items[3]);
+
+    var empty = try splitLines(allocator, "");
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 1), empty.items.len);
+    try std.testing.expectEqualStrings("", empty.items[0]);
+
+    var trailing = try splitLines(allocator, "a\n");
+    defer trailing.deinit();
+    try std.testing.expectEqual(@as(usize, 2), trailing.items.len);
+    try std.testing.expectEqualStrings("", trailing.items[1]);
+}
+
+/// Like `splitLines`, but each returned line keeps its trailing separator.
+/// The returned strings are owned by the caller.
+pub fn splitLinesIncludeSeparators(allocator: Allocator, str: []const u8) !ArrayList([]u8) {
+    var result = ArrayList([]u8).init(allocator);
+    errdefer {
+        for (result.items) |line| allocator.free(line);
+        result.deinit();
+    }
+
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < str.len) : (i += 1) {
+        if (str[i] == '\n') {
+            try result.append(try allocator.dupe(u8, str[start .. i + 1]));
+            start = i + 1;
+        } else if (str[i] == '\r') {
+            var end = i + 1;
+            if (i + 1 < str.len and str[i + 1] == '\n') {
+                i += 1;
+                end += 1;
+            }
+            try result.append(try allocator.dupe(u8, str[start..end]));
+            start = i + 1;
+        }
+    }
+    try result.append(try allocator.dupe(u8, str[start..]));
+    return result;
+}
+
+test "splitLinesIncludeSeparators" {
+    const allocator = std.testing.allocator;
+    var lines = try splitLinesIncludeSeparators(allocator, "a\nb\r\nc\rd");
+    defer {
+        for (lines.items) |line| allocator.free(line);
+        lines.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), lines.items.len);
+    try std.testing.expectEqualStrings("a\n", lines.items[0]);
+    try std.testing.expectEqualStrings("b\r\n", lines.items[1]);
+    try std.testing.expectEqualStrings("c\r", lines.items[2]);
+    try std.testing.expectEqualStrings("d", lines.items[3]);
+}

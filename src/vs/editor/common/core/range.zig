@@ -252,11 +252,19 @@ pub const Range = struct {
 
 // Create a new range from two positions.
 pub fn fromPositions(start: Position, end: ?Position) Range {
+    if (end) |end_position| {
+        return Range{
+            .startLineNumber = start.lineNumber,
+            .startColumn = start.column,
+            .endLineNumber = end_position.lineNumber,
+            .endColumn = end_position.column,
+        };
+    }
     return Range{
         .startLineNumber = start.lineNumber,
         .startColumn = start.column,
-        .endLineNumber = end.lineNumber,
-        .endColumn = end.column,
+        .endLineNumber = start.lineNumber,
+        .endColumn = start.column,
     };
 }
 
@@ -452,4 +460,16 @@ test "areIntersecting" {
     try std.testing.expect(areIntersecting(&Range.init(2, 2, 2, 7), &Range.init(2, 4, 2, 6)));
     try std.testing.expect(areIntersecting(&Range.init(2, 2, 2, 7), &Range.init(2, 4, 2, 9)));
     try std.testing.expect(areIntersecting(&Range.init(2, 4, 2, 9), &Range.init(2, 2, 2, 7)));
+}
+
+test "fromPositions" {
+    const with_end = fromPositions(.{ .lineNumber = 1, .column = 2 }, .{ .lineNumber = 3, .column = 4 });
+    try std.testing.expectEqual(@as(usize, 1), with_end.startLineNumber);
+    try std.testing.expectEqual(@as(usize, 3), with_end.endLineNumber);
+    try std.testing.expectEqual(@as(usize, 4), with_end.endColumn);
+
+    const single = fromPositions(.{ .lineNumber = 5, .column = 6 }, null);
+    try std.testing.expectEqual(@as(usize, 5), single.startLineNumber);
+    try std.testing.expectEqual(@as(usize, 5), single.endLineNumber);
+    try std.testing.expectEqual(@as(usize, 6), single.endColumn);
 }

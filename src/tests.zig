@@ -20,6 +20,9 @@ comptime {
     _ = @import("./vs/editor/common/core/text/textLength.zig");
     _ = @import("./vs/editor/common/core/text/positionToOffset.zig");
     _ = @import("./vs/editor/common/core/misc/rgba.zig");
+    _ = @import("./vs/editor/common/inputMode.zig");
+    _ = @import("./vs/editor/common/viewLayout/linePart.zig");
+    _ = @import("./vs/editor/common/core/stringBuilder.zig");
     _ = @import("./vs/editor/common/core/2d/point.zig");
     _ = @import("./vs/editor/common/core/2d/size.zig");
     _ = @import("./vs/editor/common/core/2d/rect.zig");
@@ -84,4 +87,18 @@ comptime {
     _ = @import("./vs/editor/common/tokens/sparseTokensStore.zig");
     _ = @import("./vs/platform/undoRedo/common/undoRedo.zig");
     _ = @import("./vs/platform/undoRedo/common/undoRedoService.zig");
+    _ = @import("./vs/base/common/scrollable.zig");
+    _ = @import("./vs/platform/theme/common/theme.zig");
+    _ = @import("./vs/platform/theme/common/themeService.zig");
+    _ = @import("./vs/editor/common/editorCommon.zig");
+    _ = @import("./vs/editor/common/viewEvents.zig");
+    _ = @import("./vs/editor/common/viewEventHandler.zig");
+    _ = @import("./vs/editor/common/config/editorZoom.zig");
+    _ = @import("./vs/editor/common/config/fontInfo.zig");
+    _ = @import("./vs/editor/common/editorTheme.zig");
+    _ = @import("./vs/editor/common/textModelGuides.zig");
+    _ = @import("./vs/editor/common/modelLineProjectionData.zig");
+    _ = @import("./vs/editor/common/model/mirrorTextModel.zig");
+    _ = @import("./vs/editor/common/viewLayout/lineDecorations.zig");
+    _ = @import("./vs/editor/common/core/text/abstractText.zig");
 }
