@@ -36,6 +36,13 @@ pub fn stringHashU32(s: []const u8) u32 {
     return @bitCast(stringHash(s, 0));
 }
 
+/// `doHash` for numbers, i.e. the `number` branch of the TypeScript switch.
+pub fn doHashNumber(obj: u64, hash_val: i32) i32 {
+    // JS numbers are doubles, but every value fed to this helper upstream is an
+    // integer identity hash, so truncating to 32 bits matches.
+    return numberHashU(@truncate(obj), hash_val);
+}
+
 /// Returns whether a string belongs to a stable percentage sample.
 pub fn isStringInSample(value: []const u8, sample_percentage: u32) bool {
     std.debug.assert(sample_percentage <= 100);

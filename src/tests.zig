@@ -9,6 +9,7 @@ comptime {
     _ = @import("./vs/editor/common/services/findSectionHeaders.zig");
     _ = @import("./vs/editor/common/model/bracketPairsTextModelPart/fixBrackets.zig");
     _ = @import("./vs/editor/common/services/completionsEnablement.zig");
+    _ = @import("./vs/editor/common/services/languageFeatureDebounce.zig");
     _ = @import("./vs/base/common/map.zig");
     _ = @import("./vs/base/common/numbers.zig");
     _ = @import("./vs/editor/common/standalone/standaloneEnums.zig");

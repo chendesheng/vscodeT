@@ -39,6 +39,9 @@ pub fn LinkedMap(comptime K: type, comptime V: type) type {
         };
 
         allocator: Allocator,
+        /// Optional destructor for owned values; called whenever an entry is
+        /// removed, evicted or cleared.
+        value_deinit: ?*const fn (allocator: Allocator, value: V) void,
         _map: std.HashMap(K, *Item, KeyContext(K), std.hash_map.default_max_load_percentage),
         _head: ?*Item,
         _tail: ?*Item,
@@ -48,6 +51,7 @@ pub fn LinkedMap(comptime K: type, comptime V: type) type {
         pub fn init(allocator: Allocator) Self {
             return .{
                 .allocator = allocator,
+                .value_deinit = null,
                 ._map = std.HashMap(K, *Item, KeyContext(K), std.hash_map.default_max_load_percentage).init(allocator),
                 ._head = null,
                 ._tail = null,
@@ -65,7 +69,7 @@ pub fn LinkedMap(comptime K: type, comptime V: type) type {
             var current = self._head;
             while (current) |item| {
                 const next = item.next;
-                self.allocator.destroy(item);
+                self.destroyItem(item);
                 current = next;
             }
             self._map.clearRetainingCapacity();
@@ -129,7 +133,7 @@ pub fn LinkedMap(comptime K: type, comptime V: type) type {
             const item = entry.value;
             const value = item.value;
             self.removeItem(item);
-            self.allocator.destroy(item);
+            self.destroyItem(item);
             self._size -= 1;
             return value;
         }
@@ -143,7 +147,7 @@ pub fn LinkedMap(comptime K: type, comptime V: type) type {
             const value = item.value;
             _ = self._map.remove(item.key);
             self.removeItem(item);
-            self.allocator.destroy(item);
+            self.destroyItem(item);
             self._size -= 1;
             return value;
         }
@@ -161,7 +165,7 @@ pub fn LinkedMap(comptime K: type, comptime V: type) type {
                 const item = current.?;
                 current = item.next;
                 _ = self._map.remove(item.key);
-                self.allocator.destroy(item);
+                self.destroyItem(item);
                 current_size -= 1;
             }
             self._head = current;
@@ -183,13 +187,18 @@ pub fn LinkedMap(comptime K: type, comptime V: type) type {
                 const item = current.?;
                 current = item.previous;
                 _ = self._map.remove(item.key);
-                self.allocator.destroy(item);
+                self.destroyItem(item);
                 current_size -= 1;
             }
             self._tail = current;
             self._size = current_size;
             if (current) |tail| tail.next = null;
             self._state += 1;
+        }
+
+        fn destroyItem(self: *Self, item: *Item) void {
+            if (self.value_deinit) |deinit_value| deinit_value(self.allocator, item.value);
+            self.allocator.destroy(item);
         }
 
         fn addItemFirst(self: *Self, item: *Item) void {
