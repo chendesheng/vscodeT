@@ -43,6 +43,7 @@ comptime {
     _ = @import("tokenizer/bracketPairsTests.zig");
     _ = @import("tokenizer/astTests.zig");
     _ = @import("tokenize/textMateTokenizer.zig");
+    _ = @import("languages/languageSupportTests.zig");
     _ = @import("tui/highlighter.zig");
     _ = @import("basics/wordHelper.zig");
     _ = @import("tokens/contiguousMultilineTokens.zig");

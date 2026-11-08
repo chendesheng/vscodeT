@@ -2,7 +2,7 @@ const std = @import("std");
 const StringHashMap = std.StringHashMap;
 const Allocator = std.mem.Allocator;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
-const RegExp = @import("../basics/regexp.zig").RegExp;
+const RegExp = @import("../basics/RegExp.zig").RegExp;
 
 pub const LineCommentConfig = struct {
     // The line comment token, like `//`
