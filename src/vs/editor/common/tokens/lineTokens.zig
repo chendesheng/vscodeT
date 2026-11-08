@@ -366,6 +366,126 @@ pub const SliceLineTokens = struct {
     }
 };
 
+/// A read-only view over a line's tokens. Upstream declares this as the
+/// `IViewLineTokens` interface, which both `LineTokens` and `SliceLineTokens`
+/// implement; here it is modelled as a tagged union over the two.
+pub const IViewLineTokens = union(enum) {
+    tokens: *const LineTokens,
+    slice: SliceLineTokens,
+
+    pub fn init(tokens: *const LineTokens) IViewLineTokens {
+        return .{ .tokens = tokens };
+    }
+
+    pub fn initSlice(slice: SliceLineTokens) IViewLineTokens {
+        return .{ .slice = slice };
+    }
+
+    pub fn equals(self: IViewLineTokens, other: IViewLineTokens) bool {
+        return switch (self) {
+            .tokens => |a| switch (other) {
+                .tokens => |b| a.equals(b),
+                .slice => false,
+            },
+            .slice => |a| switch (other) {
+                .slice => |b| a.equals(&b),
+                .tokens => false,
+            },
+        };
+    }
+
+    pub fn getCount(self: IViewLineTokens) usize {
+        return switch (self) {
+            .tokens => |t| t.getCount(),
+            .slice => |s| s.getCount(),
+        };
+    }
+
+    pub fn getStandardTokenType(self: IViewLineTokens, tokenIndex: usize) StandardTokenType {
+        return switch (self) {
+            .tokens => |t| t.getStandardTokenType(tokenIndex),
+            .slice => |s| s.getStandardTokenType(tokenIndex),
+        };
+    }
+
+    pub fn getForeground(self: IViewLineTokens, tokenIndex: usize) u9 {
+        return switch (self) {
+            .tokens => |t| t.getForeground(tokenIndex),
+            .slice => |s| s.getForeground(tokenIndex),
+        };
+    }
+
+    pub fn getEndOffset(self: IViewLineTokens, tokenIndex: usize) usize {
+        return switch (self) {
+            .tokens => |t| t.getEndOffset(tokenIndex),
+            .slice => |s| s.getEndOffset(tokenIndex),
+        };
+    }
+
+    pub fn getClassName(self: IViewLineTokens, tokenIndex: usize) !ArrayList(u8) {
+        return switch (self) {
+            .tokens => |t| t.getClassName(tokenIndex),
+            .slice => |s| s.getClassName(tokenIndex),
+        };
+    }
+
+    pub fn getInlineStyle(self: IViewLineTokens, tokenIndex: usize, colorMap: []const []const u8) !ArrayList(u8) {
+        return switch (self) {
+            .tokens => |t| t.getInlineStyle(tokenIndex, colorMap),
+            .slice => |s| s.getInlineStyle(tokenIndex, colorMap),
+        };
+    }
+
+    pub fn getPresentation(self: IViewLineTokens, tokenIndex: usize) TokenPresentation {
+        return switch (self) {
+            .tokens => |t| t.getPresentation(tokenIndex),
+            .slice => |s| s.getPresentation(tokenIndex),
+        };
+    }
+
+    pub fn getLineContent(self: IViewLineTokens) []const u8 {
+        return switch (self) {
+            .tokens => |t| t.getLineContent(),
+            .slice => |s| s.getLineContent(),
+        };
+    }
+
+    pub fn getMetadata(self: IViewLineTokens, tokenIndex: usize) TokenMetadata {
+        return switch (self) {
+            .tokens => |t| t.getMetadata(tokenIndex),
+            .slice => |s| s.getMetadata(tokenIndex),
+        };
+    }
+
+    pub fn getLanguageId(self: IViewLineTokens, tokenIndex: usize) []const u8 {
+        return switch (self) {
+            .tokens => |t| t.getLanguageId(tokenIndex),
+            .slice => |s| s.getLanguageId(tokenIndex),
+        };
+    }
+
+    pub fn findTokenIndexAtOffset(self: IViewLineTokens, offset: usize) usize {
+        return switch (self) {
+            .tokens => |t| t.findTokenIndexAtOffset(offset),
+            .slice => |s| s.findTokenIndexAtOffset(offset),
+        };
+    }
+
+    pub fn getTokenText(self: IViewLineTokens, tokenIndex: usize) []const u8 {
+        return switch (self) {
+            .tokens => |t| t.getTokenText(tokenIndex),
+            .slice => |s| s.getTokenText(tokenIndex),
+        };
+    }
+
+    pub fn forEach(self: IViewLineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {
+        switch (self) {
+            .tokens => |t| t.forEach(context, callback),
+            .slice => |s| s.forEach(context, callback),
+        }
+    }
+};
+
 pub fn getStandardTokenTypeAtPosition(model: *TextModel, position: Position) !?StandardTokenType {
     const lineNumber = position.lineNumber;
     if (!model.tokenization().isCheapToTokenize(lineNumber)) return null;
