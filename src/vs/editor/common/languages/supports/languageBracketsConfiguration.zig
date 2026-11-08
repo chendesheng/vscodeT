@@ -114,14 +114,34 @@ pub const LanguageBracketsConfiguration = struct {
         return self;
     }
 
-    // No two brackets have the same bracket text.
-    pub fn openingBrackets(self: *const Self) []const OpeningBracketKind {
-        return self._openingBrackets.values();
+    pub fn openingBracketCount(self: *const Self) usize {
+        return self._openingBrackets.count();
+    }
+
+    pub fn closingBracketCount(self: *const Self) usize {
+        return self._closingBrackets.count();
     }
 
     // No two brackets have the same bracket text.
-    pub fn closingBrackets(self: *const Self) []const ClosingBracketKind {
-        return self._closingBrackets.values();
+    pub fn openingBrackets(self: *const Self, allocator: Allocator) !ArrayList(OpeningBracketKind) {
+        var result = ArrayList(OpeningBracketKind).init(allocator);
+        errdefer result.deinit();
+        var iterator = self._openingBrackets.valueIterator();
+        while (iterator.next()) |value| {
+            try result.append(value.*);
+        }
+        return result;
+    }
+
+    // No two brackets have the same bracket text.
+    pub fn closingBrackets(self: *const Self, allocator: Allocator) !ArrayList(ClosingBracketKind) {
+        var result = ArrayList(ClosingBracketKind).init(allocator);
+        errdefer result.deinit();
+        var iterator = self._closingBrackets.valueIterator();
+        while (iterator.next()) |value| {
+            try result.append(value.*);
+        }
+        return result;
     }
 
     pub fn getOpeningBracketInfo(self: *const Self, bracketText: []const u8) ?OpeningBracketKind {
@@ -143,11 +163,19 @@ pub const LanguageBracketsConfiguration = struct {
 
     pub fn getBracketRegExp(self: *const Self, options: ?RegExpOptions) !RegExp {
         const allocator = self._openingBrackets.allocator;
-        const brackets = std.array_list.Managed(Pair(OpeningBracketKind, ClosingBracketKind)).init(allocator);
-        for (self._openingBrackets.keys()) |key| {
-            brackets.append(pair(self._openingBrackets.get(key).?, self._closingBrackets.get(key).?));
+        var brackets = ArrayList([]const u8).init(allocator);
+        defer brackets.deinit();
+
+        var opening_iterator = self._openingBrackets.valueIterator();
+        while (opening_iterator.next()) |opening| {
+            try brackets.append(opening.bracketText);
         }
-        return try createBracketOrRegExp(allocator, brackets.items(), options);
+        var closing_iterator = self._closingBrackets.valueIterator();
+        while (closing_iterator.next()) |closing| {
+            try brackets.append(closing.bracketText);
+        }
+
+        return try createBracketOrRegExp(allocator, brackets.items, options orelse .{});
     }
 };
 

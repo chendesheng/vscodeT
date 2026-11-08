@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const RegExp = @import("../../../../support/regexp.zig").RegExp;
 const LanguageConfiguration = @import("./languageConfiguration.zig").LanguageConfiguration;
 const CharacterPairSupport = @import("./supports/characterPair.zig");
@@ -15,10 +16,10 @@ const IAutoClosingPair = @import("./languageConfiguration.zig").IAutoClosingPair
 
 // Interface used to support insertion of mode specific comments.
 pub const ICommentsConfiguration = struct {
-    lineCommentToken: ?[]const u8,
-    lineCommentNoIndent: ?bool,
-    blockCommentStartToken: ?[]const u8,
-    blockCommentEndToken: ?[]const u8,
+    lineCommentToken: ?[]const u8 = null,
+    lineCommentNoIndent: ?bool = null,
+    blockCommentStartToken: ?[]const u8 = null,
+    blockCommentEndToken: ?[]const u8 = null,
 };
 
 pub const ILanguageConfigurationService = struct {
@@ -54,7 +55,7 @@ pub const ResolvedLanguageConfiguration = struct {
     languageId: []const u8,
     underlyingConfig: LanguageConfiguration,
 
-    pub fn init(languageId: []const u8, underlyingConfig: LanguageConfiguration) ResolvedLanguageConfiguration {
+    pub fn init(allocator: Allocator, languageId: []const u8, underlyingConfig: LanguageConfiguration) !ResolvedLanguageConfiguration {
         //this._onEnterSupport =
         //    underlyingConfig.brackets or
         //    underlyingConfig.indentationRules or
@@ -63,16 +64,13 @@ pub const ResolvedLanguageConfiguration = struct {
         return .{
             .languageId = languageId,
             .underlyingConfig = underlyingConfig,
-            ._brackets = null,
-            ._electricCharacter = null,
-            ._onEnterSupport = null,
             .comments = ResolvedLanguageConfiguration._handleComments(underlyingConfig),
-            .characterPair = CharacterPairSupport.init(underlyingConfig),
+            .characterPair = try CharacterPairSupport.init(underlyingConfig),
             .wordDefinition = underlyingConfig.wordPattern orelse defaultWordRegExp(),
             .indentationRules = underlyingConfig.indentationRules,
-            .indentRulesSupport = if (underlyingConfig.indentationRules) IndentRulesSupport.init(underlyingConfig.indentationRules) else null,
-            .foldingRules = underlyingConfig.folding orelse .{},
-            .bracketsNew = LanguageBracketsConfiguration.init(languageId, underlyingConfig),
+            .indentRulesSupport = if (underlyingConfig.indentationRules) |rules| IndentRulesSupport.init(rules) else null,
+            .foldingRules = underlyingConfig.folding orelse .{ .offSide = null, .markers = null },
+            .bracketsNew = try LanguageBracketsConfiguration.init(allocator, languageId, underlyingConfig),
         };
     }
 
@@ -120,28 +118,34 @@ pub const ResolvedLanguageConfiguration = struct {
         return self.characterPair.getSurroundingPairs();
     }
 
-    pub fn _handleComments(self: *ResolvedLanguageConfiguration) ?ICommentsConfiguration {
-        if (self.underlyingConfig.comments) |commentRule| {
+    pub fn _handleComments(config: LanguageConfiguration) ?ICommentsConfiguration {
+        const comment_rule = config.comments orelse return null;
 
-            // comment configuration
-            const comments: ICommentsConfiguration = {};
-
-            if (commentRule.lineComment) |lineComment| {
-                if (std.mem.eql(u8, lineComment, "string")) {
-                    comments.lineCommentToken = lineComment;
-                } else {
-                    comments.lineCommentToken = lineComment.comment;
-                    comments.lineCommentNoIndent = lineComment.noIndent;
-                }
-            }
-            if (commentRule.blockComment) |comment| {
-                comments.blockCommentStartToken = comment[0];
-                comments.blockCommentEndToken = comment[1];
-            }
-
-            return comments;
-        } else {
-            return null;
+        var comments: ICommentsConfiguration = .{};
+        if (comment_rule.lineComment) |line_comment| {
+            comments.lineCommentToken = line_comment.comment;
+            comments.lineCommentNoIndent = line_comment.noIndent;
         }
+        if (comment_rule.blockComment) |block_comment| {
+            comments.blockCommentStartToken = block_comment[0];
+            comments.blockCommentEndToken = block_comment[1];
+        }
+        return comments;
     }
 };
+
+/// Returns the indentation that precedes the given position.
+pub fn getIndentationAtPosition(allocator: Allocator, model: *@import("../model/textModel.zig").TextModel, lineNumber: usize, column: usize) ![]u8 {
+    const line_text = try model.getLineContent(lineNumber);
+    defer line_text.deinit();
+    return getIndentationAtColumn(allocator, line_text.items, column);
+}
+
+fn getIndentationAtColumn(allocator: Allocator, lineText: []const u8, column: usize) ![]u8 {
+    const end = @min(column -| 1, lineText.len);
+    var start = end;
+    while (start > 0 and (lineText[start - 1] == ' ' or lineText[start - 1] == '\t')) {
+        start -= 1;
+    }
+    return allocator.dupe(u8, lineText[start..end]);
+}

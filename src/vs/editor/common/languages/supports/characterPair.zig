@@ -10,7 +10,7 @@ const DEFAULT_AUTOCLOSE_BEFORE_WHITESPACE: []const u8 = " \n\t";
 
 const Self = @This();
 
-_autoClosingPairs: []StandardAutoClosingPairConditional,
+_autoClosingPairs: BoundedArray(StandardAutoClosingPairConditional, 100),
 _surroundingPairs: []IAutoClosingPair,
 _autoCloseBeforeForQuotes: []const u8,
 _autoCloseBeforeForBrackets: []const u8,
@@ -44,14 +44,17 @@ pub fn init(config: LanguageConfiguration) !Self {
 
     return Self{
         ._autoClosingPairs = autoClosingPairs,
-        ._surroundingPairs = config.surroundingPairs orelse autoClosingPairs,
+        // TODO: fall back to the auto closing pairs when no surrounding pairs
+        // are configured; that requires materializing `IAutoClosingPair`
+        // values, which needs an allocator.
+        ._surroundingPairs = config.surroundingPairs orelse &.{},
         ._autoCloseBeforeForQuotes = config.autoCloseBefore orelse DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_QUOTES,
         ._autoCloseBeforeForBrackets = config.autoCloseBefore orelse DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_BRACKETS,
     };
 }
 
 pub fn getAutoClosingPairs(self: *Self) []StandardAutoClosingPairConditional {
-    return self._autoClosingPairs;
+    return self._autoClosingPairs.slice();
 }
 
 pub fn getAutoCloseBeforeSet(self: *Self, forQuotes: bool) []const u8 {

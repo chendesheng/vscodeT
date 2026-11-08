@@ -118,14 +118,27 @@ comptime {
     _ = @import("./vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.zig");
     _ = @import("./vs/editor/common/diff/rangeMapping.zig");
     _ = @import("./vs/editor/common/diff/verifyLinesDiff.zig");
+    _ = @import("./vs/editor/common/diff/legacyLinesDiffComputer.zig");
+    _ = @import("./vs/editor/common/diff/documentDiffProvider.zig");
+    _ = @import("./vs/editor/common/diff/linesDiffComputers.zig");
+    _ = @import("./vs/editor/common/diff/linesDiffWithFallback.zig");
     _ = @import("./vs/editor/common/viewModel/screenReaderSimpleModel.zig");
     _ = @import("./vs/editor/common/core/2d/dimension.zig");
     _ = @import("./vs/editor/common/config/diffEditor.zig");
     _ = @import("./vs/editor/common/languages/linkComputer.zig");
+    _ = @import("./vs/editor/common/languages/supports/indentationLineProcessor.zig");
+    _ = @import("./vs/editor/common/languages/autoIndent.zig");
+    _ = @import("./vs/editor/common/languages/enterAction.zig");
     _ = @import("./vs/editor/common/languages/supports/inplaceReplaceSupport.zig");
     _ = @import("./vs/editor/common/model/textModelStringEdit.zig");
     _ = @import("./vs/editor/common/model/textModelText.zig");
     _ = @import("./vs/editor/common/model/tokens/annotations.zig");
     _ = @import("./vs/editor/common/core/text/getPositionOffsetTransformerFromTextModel.zig");
     _ = @import("./vs/base/common/charCode.zig");
+    _ = @import("./vs/base/common/errors.zig");
+    _ = @import("./vs/base/common/lifecycle.zig");
+    _ = @import("./vs/base/common/cancellation.zig");
+    _ = @import("./vs/base/common/hash.zig");
+    _ = @import("./vs/base/common/diff/diffChange.zig");
+    _ = @import("./vs/base/common/diff/diff.zig");
 }

@@ -187,13 +187,15 @@ pub const StandardAutoClosingPairConditional = struct {
             .neutralCharacterSearched = false,
         };
 
-        for (source.notIn) |notIn| {
-            if (std.mem.eql(u8, notIn, "string")) {
-                self._inString = false;
-            } else if (std.mem.eql(u8, notIn, "comment")) {
-                self._inComment = false;
-            } else if (std.mem.eql(u8, notIn, "regex")) {
-                self._inRegEx = false;
+        if (source.notIn) |not_in| {
+            for (not_in) |notIn| {
+                if (std.mem.eql(u8, notIn, "string")) {
+                    self._inString = false;
+                } else if (std.mem.eql(u8, notIn, "comment")) {
+                    self._inComment = false;
+                } else if (std.mem.eql(u8, notIn, "regex")) {
+                    self._inRegEx = false;
+                }
             }
         }
         return self;

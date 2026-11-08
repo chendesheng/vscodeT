@@ -42,6 +42,19 @@ pub const LineTokens = struct {
         self._text.deinit();
     }
 
+    /// Deep copy of the tokens and the text, allocated with `allocator`.
+    pub fn clone(self: *const LineTokens, allocator: Allocator) !LineTokens {
+        var tokens = ArrayList(TokenPacked).init(allocator);
+        errdefer tokens.deinit();
+        try tokens.appendSlice(self._tokens.items);
+
+        var text = ArrayList(u8).init(allocator);
+        errdefer text.deinit();
+        try text.appendSlice(self._text.items);
+
+        return LineTokens.init(tokens, text, self.languageIdCodec);
+    }
+
     pub fn createEmpty(allocator: Allocator, lineContent: ArrayList(u8), decoder: *LanguageIdCodec) !LineTokens {
         var tokens = ArrayList(TokenPacked).init(allocator);
         errdefer tokens.deinit();

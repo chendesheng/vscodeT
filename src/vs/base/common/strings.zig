@@ -25,6 +25,13 @@ test "firstNonWhitespaceIndex" {
     try std.testing.expectEqual(0, firstNonWhitespaceIndex("Hello "));
 }
 
+/// Returns the leading whitespace of the given string, i.e. the longest
+/// prefix consisting of spaces and tabs.
+pub fn getLeadingWhitespace(str: []const u8) []const u8 {
+    const index = firstNonWhitespaceIndex(str);
+    return str[0 .. index orelse str.len];
+}
+
 pub fn lastNonWhitespaceIndex(str: []const u8) ?usize {
     if (str.len == 0) {
         return null;
@@ -610,4 +617,12 @@ test "commonSuffixLength" {
     try std.testing.expectEqual(@as(usize, 3), commonSuffixLength("abc", "abc"));
     try std.testing.expectEqual(@as(usize, 0), commonSuffixLength("", "abc"));
     try std.testing.expectEqual(@as(usize, 2), commonSuffixLength("abc", "bc"));
+}
+
+test "getLeadingWhitespace" {
+    try std.testing.expectEqualStrings("", getLeadingWhitespace(""));
+    try std.testing.expectEqualStrings("", getLeadingWhitespace("abc"));
+    try std.testing.expectEqualStrings("  ", getLeadingWhitespace("  abc"));
+    try std.testing.expectEqualStrings("\t \t", getLeadingWhitespace("\t \tabc"));
+    try std.testing.expectEqualStrings("   ", getLeadingWhitespace("   "));
 }

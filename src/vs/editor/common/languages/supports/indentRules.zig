@@ -1,7 +1,7 @@
 const IndentationRule = @import("../languageConfiguration.zig").IndentationRule;
 const RegExp = @import("../../../../../support/regexp.zig").RegExp;
 
-const IndentMetadata = packed struct(u8) {
+pub const IndentMetadata = packed struct(u4) {
     increase: bool,
     decrease: bool,
     indentNextLine: bool,
@@ -17,7 +17,7 @@ pub const IndentRulesSupport = struct {
         };
     }
 
-    pub fn shouldIncrease(self: *IndentRulesSupport, text: []const u8) bool {
+    pub fn shouldIncrease(self: *const IndentRulesSupport, text: []const u8) bool {
         if (self._indentationRules) |rules| {
             if (rules.increaseIndentPattern) |pattern| {
                 if (pattern.isMatch(text)) {
@@ -31,7 +31,7 @@ pub const IndentRulesSupport = struct {
         return false;
     }
 
-    pub fn shouldDecrease(self: *IndentRulesSupport, text: []const u8) bool {
+    pub fn shouldDecrease(self: *const IndentRulesSupport, text: []const u8) bool {
         if (self._indentationRules) |rules| {
             if (rules.decreaseIndentPattern) |pattern| {
                 if (pattern.isMatch(text)) {
@@ -42,7 +42,7 @@ pub const IndentRulesSupport = struct {
         return false;
     }
 
-    pub fn shouldIndentNextLine(self: *IndentRulesSupport, text: []const u8) bool {
+    pub fn shouldIndentNextLine(self: *const IndentRulesSupport, text: []const u8) bool {
         if (self._indentationRules) |rules| {
             if (rules.indentNextLinePattern) |pattern| {
                 if (pattern.isMatch(text)) {
@@ -54,7 +54,7 @@ pub const IndentRulesSupport = struct {
         return false;
     }
 
-    pub fn shouldIgnore(self: *IndentRulesSupport, text: []const u8) bool {
+    pub fn shouldIgnore(self: *const IndentRulesSupport, text: []const u8) bool {
         // the text matches `unIndentedLinePattern`
         if (self._indentationRules) |rules| {
             if (rules.unIndentedLinePattern) |pattern| {
@@ -67,8 +67,8 @@ pub const IndentRulesSupport = struct {
         return false;
     }
 
-    pub fn getIndentMetadata(self: *IndentRulesSupport, text: []const u8) IndentMetadata {
-        var ret: IndentMetadata = @bitCast(0);
+    pub fn getIndentMetadata(self: *const IndentRulesSupport, text: []const u8) IndentMetadata {
+        var ret: IndentMetadata = @bitCast(@as(u4, 0));
         if (self.shouldIncrease(text)) {
             ret.increase = true;
         }
