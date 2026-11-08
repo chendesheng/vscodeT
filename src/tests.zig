@@ -4,6 +4,13 @@ comptime {
     _ = @import("./vs/editor/common/core/ranges/lineRange.zig");
     _ = @import("./vs/base/common/promise.zig");
     _ = @import("./vs/editor/common/model/fixedArray.zig");
+    _ = @import("./vs/editor/common/services/semanticTokensDto.zig");
+    _ = @import("./vs/editor/common/services/textModelSync/textModelSync.protocol.zig");
+    _ = @import("./vs/editor/common/services/findSectionHeaders.zig");
+    _ = @import("./vs/editor/common/model/bracketPairsTextModelPart/fixBrackets.zig");
+    _ = @import("./vs/editor/common/services/completionsEnablement.zig");
+    _ = @import("./vs/base/common/numbers.zig");
+    _ = @import("./vs/editor/common/standalone/standaloneEnums.zig");
     _ = @import("./vs/editor/common/core/ranges/offsetRange.zig");
     _ = @import("./vs/editor/common/core/ranges/rangePriorityQueue.zig");
     _ = @import("./vs/base/common/utils.zig");

@@ -28,6 +28,12 @@ pub fn lengthLineCount(length: Length) usize {
     return @intCast(length >> 32);
 }
 
+/// Returns the amount of columns of the given length, assuming that it does not
+/// span any line.
+pub fn lengthGetColumnCountIfZeroLineCount(length: Length) usize {
+    return @intCast(length);
+}
+
 pub fn lengthColumnCount(length: Length) usize {
     return @intCast(length & 0xFFFF_FFFF);
 }
@@ -270,22 +276,22 @@ pub const ParsedDocument = struct {
     }
 };
 
-const StringIdProvider = struct {
+pub const StringIdProvider = struct {
     allocator: Allocator,
     ids: std.StringHashMap(usize),
     next_id: usize = 0,
 
-    fn init(allocator: Allocator) StringIdProvider {
+    pub fn init(allocator: Allocator) StringIdProvider {
         return .{ .allocator = allocator, .ids = std.StringHashMap(usize).init(allocator) };
     }
 
-    fn deinit(self: *StringIdProvider) void {
+    pub fn deinit(self: *StringIdProvider) void {
         var it = self.ids.keyIterator();
         while (it.next()) |key| self.allocator.free(key.*);
         self.ids.deinit();
     }
 
-    fn get(self: *StringIdProvider, value: []const u8) !usize {
+    pub fn get(self: *StringIdProvider, value: []const u8) !usize {
         if (self.ids.get(value)) |id| return id;
         const key = try self.allocator.dupe(u8, value);
         errdefer self.allocator.free(key);
@@ -302,12 +308,12 @@ const BracketDef = struct {
     colorized: bool,
 };
 
-const LanguageBrackets = struct {
+pub const LanguageBrackets = struct {
     defs: ArrayList(BracketDef),
     all: ArrayList([]const u8),
 };
 
-fn buildLanguageBrackets(allocator: Allocator, config: LanguageConfiguration) !LanguageBrackets {
+pub fn buildLanguageBrackets(allocator: Allocator, config: LanguageConfiguration) !LanguageBrackets {
     var defs = ArrayList(BracketDef).init(allocator);
     errdefer defs.deinit();
     var all = ArrayList([]const u8).init(allocator);
@@ -365,6 +371,22 @@ const Tokenizer = struct {
 
     fn deinit(self: *Tokenizer) void {
         self.tokens.deinit();
+    }
+
+    /// A tokenizer over an already tokenized stream, without a text model.
+    /// Only `peek`/`read`/`skip` may be used afterwards: every field that refers
+    /// to the model is left undefined on purpose.
+    fn initFromTokens(allocator: Allocator, tokens: ArrayList(Token)) Tokenizer {
+        return .{
+            .allocator = allocator,
+            .model = undefined,
+            .languageService = undefined,
+            .fallbackLanguage = "",
+            .ids = undefined,
+            .brackets = undefined,
+            .tokens = tokens,
+            .cursor = Position.init(1, 1),
+        };
     }
 
     fn remaining(self: *Tokenizer) ?Token {
@@ -527,7 +549,7 @@ const Tokenizer = struct {
     }
 };
 
-fn matchAt(text: []const u8, pos: usize, brackets: *LanguageBrackets, opening: bool) ?[]const u8 {
+pub fn matchAt(text: []const u8, pos: usize, brackets: *LanguageBrackets, opening: bool) ?[]const u8 {
     var best: ?[]const u8 = null;
     for (brackets.defs.items) |def| {
         const candidate = if (opening) def.open else def.close;
@@ -545,6 +567,17 @@ fn utf8Len(text: []const u8) usize {
 
 pub fn parseDocument(allocator: Allocator, model: *TextModel, languageService: *LanguageService) !ParsedDocument {
     return parseDocumentIncremental(allocator, model, languageService, &.{}, null);
+}
+
+/// Parses an already tokenized stream. Takes ownership of `tokens`.
+pub fn parseTokens(allocator: Allocator, tokens: ArrayList(Token)) !ParsedDocument {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    var tokenizer = Tokenizer.initFromTokens(allocator, tokens);
+    defer tokenizer.deinit();
+    var parser = Parser{ .allocator = arena.allocator(), .tokenizer = &tokenizer };
+    const root = try parser.parseList(SmallImmutableSet.empty(), 0);
+    return .{ .arena = arena, .root = root };
 }
 
 pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languageService: *LanguageService, edits: []const TextEditInfo, oldRoot: ?*AstNode) !ParsedDocument {

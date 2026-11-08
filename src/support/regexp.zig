@@ -358,6 +358,24 @@ pub const RegExp = struct {
         return SearchResultIterator.init(self, input, start);
     }
 
+    /// Whether the regular expression matches the empty string at offset `0`.
+    /// Mirrors the check JavaScript code performs with `regexp.exec('')`.
+    pub fn matchesEmptyString(self: *const RegExp) bool {
+        const empty: [0]u8 = .{};
+        const region = Region.init();
+        defer region.deinit();
+        const r = c.onig_search(
+            self.regex,
+            empty[0..].ptr,
+            empty[0..].ptr,
+            empty[0..].ptr,
+            empty[0..].ptr,
+            region._region,
+            c.ONIG_OPTION_DEFAULT,
+        );
+        return r >= 0;
+    }
+
     pub fn encoding(self: *const RegExp) Encoding {
         return c.onig_get_encoding(self.regex);
     }
@@ -429,6 +447,13 @@ pub const SearchResult = struct {
     pub fn group(self: *const SearchResult, name: []const u8) ![]const u8 {
         const num = try self._regex.nameToGroupNumber(name);
         return self.groupN(num);
+    }
+
+    /// The byte offset range of a named capture group, or `null` when the group
+    /// did not participate in the match or the name is not known to the pattern.
+    pub fn groupRangeNamed(self: *const SearchResult, name: []const u8) ?[2]usize {
+        const num = self._regex.nameToGroupNumber(name) catch return null;
+        return self._region.rangeOrNull(num);
     }
 };
 

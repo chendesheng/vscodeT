@@ -172,6 +172,62 @@ pub fn isNullOrEmpty(str: ?[]const u8) bool {
     return str == null or str.?.len == 0;
 }
 
+pub fn isHighSurrogate(char_code: u16) bool {
+    return 0xD800 <= char_code and char_code <= 0xDBFF;
+}
+
+pub fn isLowSurrogate(char_code: u16) bool {
+    return 0xDC00 <= char_code and char_code <= 0xDFFF;
+}
+
+test "surrogates" {
+    try std.testing.expect(isHighSurrogate(0xD800));
+    try std.testing.expect(isHighSurrogate(0xDBFF));
+    try std.testing.expect(!isHighSurrogate(0xDC00));
+    try std.testing.expect(isLowSurrogate(0xDC00));
+    try std.testing.expect(isLowSurrogate(0xDFFF));
+    try std.testing.expect(!isLowSurrogate(0xD800));
+}
+
+/// Escapes every character that has a special meaning in a regular expression.
+pub const escapeRegExpCharacters = re.escapeRegExp;
+
+/// Whether iterating over the matches of the regular expression could loop
+/// forever, because it can match the empty string.
+///
+/// The pattern source is needed because JavaScript's `RegExp.source` has no
+/// equivalent here, and a few patterns are known to match the empty string on
+/// purpose.
+pub fn regExpLeadsToEndlessLoop(regexp: *const RegExp, source: []const u8) bool {
+    // Exit early if it's one of these special cases which are meant to match
+    // against an empty string
+    if (std.mem.eql(u8, source, "^") or
+        std.mem.eql(u8, source, "^$") or
+        std.mem.eql(u8, source, "$") or
+        std.mem.eql(u8, source, "^\\s*$"))
+    {
+        return false;
+    }
+
+    // We check against an empty string. If the regular expression doesn't advance
+    // (e.g. ends in an endless loop) it will match an empty string.
+    return regexp.matchesEmptyString();
+}
+
+test "regExpLeadsToEndlessLoop" {
+    var re_star = try RegExp.init("a*", .{});
+    defer re_star.deinit();
+    try std.testing.expect(regExpLeadsToEndlessLoop(&re_star, "a*"));
+
+    var re_dollar = try RegExp.init("^$", .{});
+    defer re_dollar.deinit();
+    try std.testing.expect(!regExpLeadsToEndlessLoop(&re_dollar, "^$"));
+
+    var re_letter = try RegExp.init("a", .{});
+    defer re_letter.deinit();
+    try std.testing.expect(!regExpLeadsToEndlessLoop(&re_letter, "a"));
+}
+
 pub const UTF8_BOM_CHARACTER: []const u8 = "\xef\xbb\xbf";
 
 pub fn startsWithUTF8BOM(str: []const u8) bool {
