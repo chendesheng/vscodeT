@@ -91,6 +91,8 @@ comptime {
     _ = @import("./vs/editor/common/viewLayout/linesLayout.zig");
     _ = @import("./vs/editor/common/viewLayout/viewLinesViewportData.zig");
     _ = @import("./vs/editor/common/viewModel/overviewZoneManager.zig");
+    _ = @import("./vs/editor/common/viewModel/minimapTokensColorTracker.zig");
+    _ = @import("./vs/editor/common/viewModel/viewModelDecorations.zig");
     _ = @import("./vs/editor/test/common/viewModel/viewModelTests.zig");
     _ = @import("./tui/highlighter.zig");
     _ = @import("./vs/editor/common/core/wordHelper.zig");

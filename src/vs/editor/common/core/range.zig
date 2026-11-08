@@ -138,14 +138,16 @@ pub const Range = struct {
         };
     }
 
-    // Test if range `a` equals `b`.
-    pub fn equalsRange(self: *const ?Range, other: *const ?Range) bool {
-        return (self != null and
-            other != null and
-            self.startLineNumber == other.startLineNumber and
-            self.startColumn == other.startColumn and
-            self.endLineNumber == other.endLineNumber and
-            self.endColumn == other.endColumn);
+    // Test if range `a` equals `b`. Upstream models this as a free function so
+    // that either side may be missing.
+    pub fn equalsRange(a: ?Range, b: ?Range) bool {
+        if (a == null or b == null) return false;
+        const left = a.?;
+        const right = b.?;
+        return left.startLineNumber == right.startLineNumber and
+            left.startColumn == right.startColumn and
+            left.endLineNumber == right.endLineNumber and
+            left.endColumn == right.endColumn;
     }
 
     // Return the end position (which will be after or equal to the start position)

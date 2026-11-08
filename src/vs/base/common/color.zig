@@ -66,6 +66,20 @@ pub const Color = struct {
         const alpha: u8 = @intFromFloat(@round(self.a * 255.0));
         return std.fmt.allocPrint(allocator, "#{X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ self.r, self.g, self.b, alpha });
     }
+
+    /// Returns the WCAG relative luminance of the opaque part of the color, in
+    /// `[0, 1]`.
+    pub fn getRelativeLuminance(self: Color) f64 {
+        const r = relativeLuminanceForComponent(self.r);
+        const g = relativeLuminanceForComponent(self.g);
+        const b = relativeLuminanceForComponent(self.b);
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+
+    fn relativeLuminanceForComponent(color: u8) f64 {
+        const c = @as(f64, @floatFromInt(color)) / 255.0;
+        return if (c <= 0.03928) c / 12.92 else std.math.pow(f64, (c + 0.055) / 1.055, 2.4);
+    }
 };
 
 fn parseHexTriplet(digits: []const u8) ![3]u8 {

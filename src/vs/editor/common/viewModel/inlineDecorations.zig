@@ -94,6 +94,14 @@ pub const InlineModelDecorationsComputer = struct {
         self._decorationsCache.clearRetainingCapacity();
     }
 
+    pub fn onModelDecorationsChanged(self: *InlineModelDecorationsComputer) void {
+        self._decorationsCache.clearRetainingCapacity();
+    }
+
+    pub fn onLineMappingChanged(self: *InlineModelDecorationsComputer) void {
+        self._decorationsCache.clearRetainingCapacity();
+    }
+
     pub fn getInlineDecorations(self: *InlineModelDecorationsComputer, modelLineNumber: usize) !InlineDecorations {
         const modelRange = Range.init(modelLineNumber, 1, modelLineNumber, self.model.getLineMaxColumn(modelLineNumber));
         const viewRange = self.coordinates_converter.convertModelRangeToViewRange(self.coordinates_converter.context, modelRange, .None);
