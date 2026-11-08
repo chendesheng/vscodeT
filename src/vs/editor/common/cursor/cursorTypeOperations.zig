@@ -63,33 +63,7 @@ fn shiftUnshift(allocator: Allocator, config: *const CursorConfiguration, indent
 
 /// Normalize the leading whitespace of `str` to the configured indentation.
 pub fn normalizeIndentation(allocator: Allocator, str: []const u8, indentSize: usize, insertSpaces: bool) ![]const u8 {
-    var first_non_whitespace: usize = str.len;
-    for (str, 0..) |ch, i| {
-        if (ch != ' ' and ch != '\t' and ch != '\r' and ch != '\n') {
-            first_non_whitespace = i;
-            break;
-        }
-    }
-
-    var spaces_count: usize = 0;
-    for (str[0..first_non_whitespace]) |ch| {
-        if (ch == '\t') {
-            spaces_count = CursorColumns.nextIndentTabStop(spaces_count, indentSize);
-        } else {
-            spaces_count += 1;
-        }
-    }
-
-    var result = ArrayList(u8).init(allocator);
-    errdefer result.deinit();
-    if (!insertSpaces) {
-        const tabs_count = spaces_count / indentSize;
-        spaces_count = spaces_count % indentSize;
-        for (0..tabs_count) |_| try result.append('\t');
-    }
-    try result.appendNTimes(' ', spaces_count);
-    try result.appendSlice(str[first_non_whitespace..]);
-    return try result.toOwnedSlice();
+    return @import("../core/misc/indentation.zig").normalizeIndentation(allocator, str, indentSize, insertSpaces);
 }
 
 test "cursor type operations: shift and unshift indentation" {
