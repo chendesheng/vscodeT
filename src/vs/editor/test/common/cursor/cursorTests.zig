@@ -115,3 +115,59 @@ test "cursorMoveCommands: select all, expand line, and buffer boundaries" {
     try std.testing.expectEqual(@as(usize, 2), end[0].modelState.?.position.lineNumber);
     try std.testing.expectEqual(@as(usize, 4), end[0].modelState.?.position.column);
 }
+
+test "cursorMoveCommands: viewport moves and argument parsing" {
+    const allocator = std.testing.allocator;
+    var test_model = try TestModel.init(allocator, "a\nb\nc", "nullLanguage");
+    defer test_model.deinit();
+    var adapter = TextModelCursorSimpleModel.init(allocator, test_model.model);
+    defer adapter.deinit();
+    const model = adapter.interface();
+    const config = CursorConfiguration{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = 1 };
+
+    var cursor = CursorState{
+        .modelState = SingleCursorState.init(Range.init(1, 1, 1, 1), .Simple, 0, Position.init(1, 1), 0),
+        .viewState = SingleCursorState.init(Range.init(1, 1, 1, 1), .Simple, 0, Position.init(1, 1), 0),
+    };
+    const visible_view = Range.init(1, 1, 3, 2);
+    const visible_model = Range.init(1, 1, 3, 2);
+
+    const bottom = try CursorMoveCommands.viewportMove(
+        allocator,
+        &config,
+        model,
+        model,
+        &[_]CursorState{cursor},
+        visible_view,
+        visible_model,
+        .viewport_bottom,
+        false,
+        1,
+    );
+    defer allocator.free(bottom);
+    try std.testing.expectEqual(@as(usize, 3), bottom[0].modelState.?.position.lineNumber);
+
+    cursor.modelState = SingleCursorState.init(Range.init(2, 2, 2, 2), .Simple, 0, Position.init(2, 2), 0);
+    cursor.viewState = cursor.modelState;
+    const top = try CursorMoveCommands.viewportMove(
+        allocator,
+        &config,
+        model,
+        model,
+        &[_]CursorState{cursor},
+        visible_view,
+        visible_model,
+        .viewport_top,
+        false,
+        1,
+    );
+    defer allocator.free(top);
+    try std.testing.expectEqual(@as(usize, 1), top[0].modelState.?.position.lineNumber);
+
+    const parsed = CursorMoveCommands.parse("left", "character", true, 3, false).?;
+    try std.testing.expectEqual(@import("../../../common/cursor/cursorMoveCommands.zig").Direction.left, parsed.direction);
+    try std.testing.expectEqual(@import("../../../common/cursor/cursorMoveCommands.zig").Unit.character, parsed.unit);
+    try std.testing.expect(parsed.select);
+    try std.testing.expectEqual(@as(usize, 3), parsed.value);
+    try std.testing.expect(CursorMoveCommands.parse("not-a-direction", null, false, null, false) == null);
+}
