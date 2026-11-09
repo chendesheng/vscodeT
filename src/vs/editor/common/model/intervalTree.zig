@@ -176,9 +176,13 @@ pub const IntervalNode = struct {
     pub fn setOptions(self: *IntervalNode, options: *ModelDecorationOptions) void {
         self.options = options;
         const className = self.options.className;
-        setNodeIsForValidation(self, (className == ClassName.EditorErrorDecoration or
-            className == ClassName.EditorWarningDecoration or
-            className == ClassName.EditorInfoDecoration));
+        const is_for_validation = if (className) |name|
+            std.mem.eql(u8, name, @tagName(ClassName.EditorErrorDecoration)) or
+                std.mem.eql(u8, name, @tagName(ClassName.EditorWarningDecoration)) or
+                std.mem.eql(u8, name, @tagName(ClassName.EditorInfoDecoration))
+        else
+            false;
+        setNodeIsForValidation(self, is_for_validation);
         setNodeIsInGlyphMargin(self, self.options.glyphMarginClassName != null);
         if (self.options.stickiness) |stickiness| {
             setNodeStickiness(self, stickiness);

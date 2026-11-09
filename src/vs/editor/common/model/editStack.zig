@@ -882,7 +882,7 @@ const UndoRedoDelegate = struct {
 
 fn lessThanTextChangeWithIndex(_: void, a: Pair(*TextChange, usize), b: Pair(*TextChange, usize)) bool {
     if (a.first.oldPosition == b.first.oldPosition) {
-        return a.second - b.second < 0;
+        return a.second < b.second;
     }
-    return a.first.oldPosition - b.first.oldPosition < 0;
+    return a.first.oldPosition < b.first.oldPosition;
 }

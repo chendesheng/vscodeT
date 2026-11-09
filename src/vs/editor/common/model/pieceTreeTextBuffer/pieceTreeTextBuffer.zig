@@ -627,7 +627,7 @@ fn _getInverseEditRanges(allocator: Allocator, operators: []ValidatedEditOperati
         if (prevOp) |prev| {
             if (prev.range.endLineNumber == op.range.startLineNumber) {
                 startLineNumber = prevOpEndLineNumber;
-                startColumn = prevOpEndColumn + (op.range.startLineNumber - prev.range.endLineNumber);
+                startColumn = prevOpEndColumn + (op.range.startColumn - prev.range.endColumn);
             } else {
                 startLineNumber = prevOpEndLineNumber + (op.range.startLineNumber - prev.range.endLineNumber);
                 startColumn = op.range.startColumn;
@@ -656,7 +656,7 @@ fn _getInverseEditRanges(allocator: Allocator, operators: []ValidatedEditOperati
                     .startLineNumber = startLineNumber,
                     .startColumn = startColumn,
                     .endLineNumber = startLineNumber + lineCount - 1,
-                    .endColumn = startColumn + op.lastLineLength,
+                    .endColumn = op.lastLineLength + 1,
                 };
             }
         } else {

@@ -89,6 +89,16 @@ pub fn tokenize(allocator: Allocator, input: []const u8) !ArrayList(AnsiToken) {
                 if (chr == '[') {
                     state = .escParameter;
                     lastpos = pos + 1;
+                } else if (chr == '/') {
+                    // `/` is in the ANSI intermediate range, but terminals send
+                    // `ESC /` for Alt+/. Treat it as a one-character ESC
+                    // sequence so the input decoder can report Alt+/.
+                    currentData.csi.parameters = "";
+                    currentData.csi.intermediate = "";
+                    currentData.csi.final = chr;
+                    try result.append(currentData);
+                    state = .normal;
+                    lastpos = pos + 1;
                 } else if (isIntermediateChar(chr)) {
                     state = .escIntermediate;
                     lastpos = pos;

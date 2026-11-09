@@ -525,11 +525,13 @@ pub const TextModel = struct {
     }
 
     pub fn detectIndentation(self: *TextModel, defaultInsertSpaces: bool, defaultTabSize: usize) void {
-        const indentation = guessIndentation(self._buffer, defaultTabSize, defaultInsertSpaces);
+        const indentation = guessIndentation(&self._buffer, defaultTabSize, defaultInsertSpaces) catch return;
         self.updateOptions(TextModelUpdateOptions{
             .insertSpaces = indentation.insertSpaces,
             .tabSize = indentation.tabSize,
-            .indentSize = indentation.tabSize, // TODO@Alex: guess indentSize independent of tabSize
+            .indentSize = .{ .number = @intCast(indentation.tabSize) }, // TODO@Alex: guess indentSize independent of tabSize
+            .trimAutoWhitespace = null,
+            .bracketColorizationOptions = null,
         });
     }
 
@@ -755,8 +757,8 @@ pub const TextModel = struct {
 
         const initialStartLineNumber = range.startLineNumber;
         const initialStartColumn = range.startColumn;
-        var startLineNumber = @floor((if (initialStartLineNumber > 0) initialStartLineNumber else 1));
-        var startColumn = @floor((if (initialStartColumn > 0) initialStartColumn else 1));
+        var startLineNumber = if (initialStartLineNumber > 0) initialStartLineNumber else 1;
+        var startColumn = if (initialStartColumn > 0) initialStartColumn else 1;
 
         if (startLineNumber < 1) {
             startLineNumber = 1;
@@ -777,8 +779,8 @@ pub const TextModel = struct {
 
         const initialEndLineNumber = range.endLineNumber;
         const initialEndColumn = range.endColumn;
-        var endLineNumber = @floor((if (initialEndLineNumber > 0) initialEndLineNumber else 1));
-        var endColumn = @floor((if (initialEndColumn > 0) initialEndColumn else 1));
+        var endLineNumber = if (initialEndLineNumber > 0) initialEndLineNumber else 1;
+        var endColumn = if (initialEndColumn > 0) initialEndColumn else 1;
 
         if (endLineNumber < 1) {
             endLineNumber = 1;
@@ -797,7 +799,7 @@ pub const TextModel = struct {
             }
         }
 
-        if (initialStartLineNumber == startLineNumber and initialStartColumn == startColumn and initialEndLineNumber == endLineNumber and initialEndColumn == endColumn and range.startLineNumber == startLineNumber and range.startColumn == startColumn and range.endLineNumber == endLineNumber and range.endColumn == endColumn and !Selection.isSelection(range)) {
+        if (initialStartLineNumber == startLineNumber and initialStartColumn == startColumn and initialEndLineNumber == endLineNumber and initialEndColumn == endColumn and range.startLineNumber == startLineNumber and range.startColumn == startColumn and range.endLineNumber == endLineNumber and range.endColumn == endColumn) {
             return range;
         }
 
@@ -949,13 +951,13 @@ pub const TextModel = struct {
             try searchRanges.append(self.getFullModelRange());
         }
 
-        std.sort.heap(Range, searchRanges.items, struct {
-            fn lessThan(d1: Range, d2: Range) bool {
+        std.sort.heap(Range, searchRanges.items, {}, struct {
+            fn lessThan(_: void, d1: Range, d2: Range) bool {
                 return d1.lessThan(&d2);
             }
         }.lessThan);
 
-        const uniqueSearchRanges = ArrayList(Range).init(allocator);
+        var uniqueSearchRanges = ArrayList(Range).init(allocator);
         defer uniqueSearchRanges.deinit();
 
         for (searchRanges.items) |searchRange| {
@@ -973,16 +975,13 @@ pub const TextModel = struct {
         var result = ArrayList(FindMatch).init(allocator);
         if (!isRegex and !strings.containsLF(searchString)) {
             // not regex, not multi line
-            const searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
-            const searchData = try searchParams.parseSearchRequest(allocator);
-
-            if (!searchData) {
-                return result;
-            }
+            var searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
+            const search_data = (try searchParams.parseSearchRequest(allocator)) orelse return result;
+            defer search_data.regex.deinit();
 
             for (uniqueSearchRanges.items) |searchRange| {
                 // FIXME: limitResultCount seems wrong here
-                const tmp = try self.findMatchesLineByLine(searchRange, searchData, captureMatches, limitResultCount);
+                const tmp = try self.findMatchesLineByLine(searchRange, search_data, captureMatches, limitResultCount);
                 defer tmp.deinit();
                 try result.appendSlice(tmp.items);
             }
@@ -1003,7 +1002,7 @@ pub const TextModel = struct {
         const searchStart = self.validatePosition(rawSearchStart);
 
         if (!isRegex and !strings.containsLF(searchString)) {
-            const searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
+            var searchParams = SearchParams.init(searchString, isRegex, matchCase, wordSeparators);
             if (try searchParams.parseSearchRequest(self.getAllocator())) |searchData| {
                 defer searchData.regex.deinit();
 
@@ -2143,7 +2142,7 @@ pub fn indentOfLine(line: []const u8) usize {
 }
 
 fn isNodeInOverviewRuler(node: *IntervalNode) bool {
-    return (node.options.overviewRuler != null and node.options.overviewRuler.?.color != null);
+    return node.options.overviewRuler != null;
 }
 
 fn isOptionsInjectedText(options: *const ModelDecorationOptions) bool {
@@ -2345,10 +2344,10 @@ pub const DecorationsTrees = struct {
         if (node.range == null) {
             node.range = host.getRangeAt(node.cachedAbsoluteStart, node.cachedAbsoluteEnd);
         }
-        return node.range;
+        return node.range.?;
     }
 
-    fn _resolveNode(self: *DecorationsTrees, node: *IntervalNode, cachedVersionId: usize) void {
+    fn _resolveNode(self: *DecorationsTrees, node: *IntervalNode, cachedVersionId: u32) void {
         if (isNodeInjectedText(node)) {
             self._injectedTextDecorationsTree.resolveNode(node, cachedVersionId);
         } else if (isNodeInOverviewRuler(node)) {

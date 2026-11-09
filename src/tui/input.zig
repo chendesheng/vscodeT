@@ -73,6 +73,10 @@ fn decodeString(result: *ArrayList(Event), text: []const u8) !void {
             0x01 => try result.append(.{ .key = .{ .char = 'a' }, .mods = .{ .ctrl = true } }),
             0x03 => try result.append(.{ .key = .{ .char = 'c' }, .mods = .{ .ctrl = true } }),
             0x0c => try result.append(.{ .key = .{ .char = 'l' }, .mods = .{ .ctrl = true } }),
+            0x04 => try result.append(.{ .key = .{ .char = 'd' }, .mods = .{ .ctrl = true } }),
+            0x1c => try result.append(.{ .key = .{ .char = '\\' }, .mods = .{ .ctrl = true } }),
+            0x1d => try result.append(.{ .key = .{ .char = ']' }, .mods = .{ .ctrl = true } }),
+            0x1f => try result.append(.{ .key = .{ .char = '/' }, .mods = .{ .ctrl = true } }),
             0x08, 0x7f => try result.append(.{ .key = .backspace }),
             '\r', '\n' => try result.append(.{ .key = .enter }),
             '\t' => try result.append(.{ .key = .tab }),
@@ -137,7 +141,11 @@ fn decodeCsi(result: *ArrayList(Event), csi: ansi.AnsiToken.Csi) !void {
                 else => {},
             }
         },
-        else => {},
+        else => {
+            if (csi.parameters.len == 0 and csi.intermediate.len == 0 and csi.final >= 0x20 and csi.final <= 0x7e) {
+                try result.append(.{ .key = .{ .char = csi.final }, .mods = .{ .alt = true } });
+            }
+        },
     }
 }
 
@@ -166,6 +174,38 @@ test "input: named keys and modifiers" {
     try std.testing.expect(events.items[2].mods.ctrl);
     try std.testing.expect(events.items[3].key == .page_up);
     try std.testing.expect(events.items[4].key == .backtab);
+}
+
+test "input: comment shortcuts and alt characters" {
+    const allocator = std.testing.allocator;
+    var ctrl_slash = try decode(allocator, "\x1f");
+    defer ctrl_slash.deinit();
+    try std.testing.expectEqual(@as(usize, 1), ctrl_slash.items.len);
+    try std.testing.expectEqual(@as(u21, '/'), ctrl_slash.items[0].key.char);
+    try std.testing.expect(ctrl_slash.items[0].mods.ctrl);
+
+    var alt_slash = try decode(allocator, "\x1b/");
+    defer alt_slash.deinit();
+    try std.testing.expectEqual(@as(usize, 1), alt_slash.items.len);
+    try std.testing.expectEqual(@as(u21, '/'), alt_slash.items[0].key.char);
+    try std.testing.expect(alt_slash.items[0].mods.alt);
+
+    var ctrl_d = try decode(allocator, "\x04");
+    defer ctrl_d.deinit();
+    try std.testing.expectEqual(@as(u21, 'd'), ctrl_d.items[0].key.char);
+    try std.testing.expect(ctrl_d.items[0].mods.ctrl);
+
+    var ctrl_bracket = try decode(allocator, "\x1d");
+    defer ctrl_bracket.deinit();
+    try std.testing.expectEqual(@as(usize, 1), ctrl_bracket.items.len);
+    try std.testing.expectEqual(@as(u21, ']'), ctrl_bracket.items[0].key.char);
+    try std.testing.expect(ctrl_bracket.items[0].mods.ctrl);
+
+    var ctrl_backslash = try decode(allocator, "\x1c");
+    defer ctrl_backslash.deinit();
+    try std.testing.expectEqual(@as(usize, 1), ctrl_backslash.items.len);
+    try std.testing.expectEqual(@as(u21, '\\'), ctrl_backslash.items[0].key.char);
+    try std.testing.expect(ctrl_backslash.items[0].mods.ctrl);
 }
 
 test "input: bracketed paste" {

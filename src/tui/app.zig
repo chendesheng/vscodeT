@@ -98,7 +98,10 @@ fn isCtrlQ(event: input.Event) bool {
 }
 
 fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
-    if (!isCtrlQ(event)) editor.clearQuitArmed();
+    if (!isCtrlQ(event)) {
+        editor.clearQuitArmed();
+        editor.clearMessage();
+    }
 
     if (is_pasting.*) {
         switch (event.key) {
@@ -125,6 +128,18 @@ fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
             return false;
         },
         .char => |ch| {
+            if (event.mods.alt) {
+                switch (ch) {
+                    '/' => editor.toggleBlockComment() catch |err| editor.setMessage("comment failed: {s}", .{@errorName(err)}),
+                    'b' => editor.selectToBracket(true) catch |err| editor.setMessage("select bracket failed: {s}", .{@errorName(err)}),
+                    'B' => editor.removeBrackets() catch |err| editor.setMessage("remove brackets failed: {s}", .{@errorName(err)}),
+                    'd' => editor.selectAllOccurrences() catch |err| editor.setMessage("select occurrences failed: {s}", .{@errorName(err)}),
+                    'r' => editor.reindentSelectedLines() catch |err| editor.setMessage("reindent failed: {s}", .{@errorName(err)}),
+                    'R' => editor.reindentLines() catch |err| editor.setMessage("reindent failed: {s}", .{@errorName(err)}),
+                    else => {},
+                }
+                return false;
+            }
             if (event.mods.ctrl) {
                 switch (ch) {
                     'q' => return editor.requestQuit(),
@@ -133,7 +148,11 @@ fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
                     'y' => editor.redo() catch |err| editor.setMessage("redo failed: {s}", .{@errorName(err)}),
                     'a' => editor.selectAll() catch |err| editor.setMessage("select all failed: {s}", .{@errorName(err)}),
                     'c' => {},
-                    'l' => editor.clearMessage(),
+                    'l' => editor.expandLineSelection() catch |err| editor.setMessage("select line failed: {s}", .{@errorName(err)}),
+                    '/' => editor.toggleLineComment() catch |err| editor.setMessage("comment failed: {s}", .{@errorName(err)}),
+                    '\\' => editor.jumpToBracket() catch |err| editor.setMessage("jump failed: {s}", .{@errorName(err)}),
+                    ']' => editor.indentLines() catch |err| editor.setMessage("indent failed: {s}", .{@errorName(err)}),
+                    'd' => editor.selectNextOccurrence() catch |err| editor.setMessage("select occurrence failed: {s}", .{@errorName(err)}),
                     else => {},
                 }
                 return false;
@@ -148,7 +167,13 @@ fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
         .backtab => editor.outdent() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
         .backspace => editor.deleteLeft() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
         .delete => editor.deleteRight() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
-        .escape => editor.cancelSelection() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
+        .escape => {
+            if (editor.cursorCount() > 1) {
+                editor.removeSecondaryCursors() catch |err| editor.setMessage("remove cursors failed: {s}", .{@errorName(err)});
+            } else {
+                editor.cancelSelection() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
+            }
+        },
         .left => {
             if (event.mods.ctrl) {
                 editor.moveWordLeft(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
@@ -163,8 +188,32 @@ fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
                 editor.moveRight(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
             }
         },
-        .up => editor.moveUp(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)}),
-        .down => editor.moveDown(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)}),
+        .up => {
+            if (event.mods.ctrl and event.mods.alt) {
+                editor.addCursorAbove() catch |err| editor.setMessage("add cursor failed: {s}", .{@errorName(err)});
+            } else if (event.mods.alt) {
+                if (event.mods.shift) {
+                    editor.copyLines(false) catch |err| editor.setMessage("copy lines failed: {s}", .{@errorName(err)});
+                } else {
+                    editor.moveLines(false) catch |err| editor.setMessage("move lines failed: {s}", .{@errorName(err)});
+                }
+            } else {
+                editor.moveUp(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            }
+        },
+        .down => {
+            if (event.mods.ctrl and event.mods.alt) {
+                editor.addCursorBelow() catch |err| editor.setMessage("add cursor failed: {s}", .{@errorName(err)});
+            } else if (event.mods.alt) {
+                if (event.mods.shift) {
+                    editor.copyLines(true) catch |err| editor.setMessage("copy lines failed: {s}", .{@errorName(err)});
+                } else {
+                    editor.moveLines(true) catch |err| editor.setMessage("move lines failed: {s}", .{@errorName(err)});
+                }
+            } else {
+                editor.moveDown(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
+            }
+        },
         .home => {
             if (event.mods.ctrl) {
                 editor.moveDocStart(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
@@ -207,4 +256,63 @@ test "app: q inserts text and Ctrl-Q is the quit key" {
     try std.testing.expect(!dispatch(editor, ctrl_q, &pasting));
     try std.testing.expect(editor.quit_armed);
     try std.testing.expect(dispatch(editor, ctrl_q, &pasting));
+}
+
+test "app: move lines and line comment shortcuts" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "a\nb", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var pasting = false;
+    const alt_down = input.Event{ .key = .down, .mods = .{ .alt = true } };
+    try std.testing.expect(!dispatch(editor, alt_down, &pasting));
+    const first = try editor.model.getLineContent(1);
+    defer first.deinit();
+    try std.testing.expectEqualStrings("b", first.items);
+
+    const ctrl_slash = input.Event{ .key = .{ .char = '/' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(!dispatch(editor, ctrl_slash, &pasting));
+    const second = try editor.model.getLineContent(2);
+    defer second.deinit();
+    try std.testing.expectEqualStrings("// a", second.items);
+
+    const ctrl_l = input.Event{ .key = .{ .char = 'l' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(!dispatch(editor, ctrl_l, &pasting));
+    try std.testing.expectEqual(@as(usize, 2), editor.modelSelection().endLineNumber);
+}
+
+test "app: jump to bracket shortcut" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var pasting = false;
+    const ctrl_backslash = input.Event{ .key = .{ .char = '\\' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(!dispatch(editor, ctrl_backslash, &pasting));
+    try std.testing.expectEqual(@as(usize, 3), editor.modelCursorPosition().column);
+}
+
+test "app: indent lines shortcut" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "a", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var pasting = false;
+    const ctrl_bracket = input.Event{ .key = .{ .char = ']' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(!dispatch(editor, ctrl_bracket, &pasting));
+    const line = try editor.model.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("    a", line.items);
 }

@@ -93,4 +93,54 @@ TUI editor:
   `Home`/`End`, `Ctrl`+`Home`/`End` for buffer edges, `PageUp`/`PageDown`.
 - Editing: `Enter`, `Tab`/`Shift-Tab`, `Backspace`, `Delete`, bracketed paste.
 - `Ctrl-A` selects all; `Escape` clears the selection.
+- Line operations: `Alt-Up`/`Alt-Down` move the current line or selection,
+  `Shift-Alt-Up`/`Shift-Alt-Down` copy it, and `Ctrl-L` expands the selection
+  line by line.
+- Comments: `Ctrl-/` toggles line comments and `Alt-/` toggles block comments
+  for the languages the TUI recognizes. Unsupported languages report a status
+  message.
+- Bracket matching: `Ctrl-\` jumps to the matching/enclosing/next bracket,
+  `Alt-B` selects to the bracket pair, and `Alt-Shift-B` removes the bracket
+  pair around the cursor.
+- Indentation: `Tab`/`Shift-Tab` indent or outdent the selected lines;
+  `Ctrl-]` indents lines; `Alt-R` reindents the selected line block and
+  `Alt-Shift-R` reindents the whole buffer.
+- Multi-cursor: `Ctrl-Alt-Up`/`Ctrl-Alt-Down` add a cursor above/below,
+  `Ctrl-D` adds the next occurrence of the selection, and `Alt-D` selects all
+  occurrences. `Escape` removes secondary cursors before clearing a selection.
+- Status messages clear on the next key press.
 - Syntax colors come from the `TextModel` tokenization stack.
+
+Editor contributions:
+
+- `src/vs/editor/contrib/linesOperations` ports `CopyLinesCommand`,
+  `MoveLinesCommand`, and `SortLinesCommand`, plus command-producing helpers for
+  duplicate selection and trailing-whitespace trimming.
+- `src/vs/editor/contrib/comment` ports `LineCommentCommand` and
+  `BlockCommentCommand`. Comment rules for the TUI's languages live in
+  `src/tui/language.zig`.
+- `src/vs/editor/contrib/bracketMatching` ports the controller logic: jump to
+  bracket, select to bracket, remove brackets, and the cached bracket-match
+  data used for visual highlighting. The TUI does not paint decoration classes
+  yet, so the cached match data is available but not rendered inline.
+- `src/vs/editor/contrib/multicursor` ports cursor insertion above/below,
+  cursors at line ends/top/bottom, occurrence search sessions, and
+  add/move/select-all occurrence actions. The TUI renders secondary cursors and
+  selections. Find-widget option integration, the selection highlighter
+  contribution, and its decorations are not ported; navigation moves the
+  primary cursor while preserving secondary cursors.
+- `src/vs/editor/contrib/indentation` ports the reindent edit generator,
+  indent-utils, tab/space conversion commands, selected-line reindentation,
+  detect-indentation, and indentation option changes. The quick-pick actions
+  and the auto-indent-on-paste contribution are UI/paste-path specific and not
+  ported yet.
+- `src/vs/editor/contrib/lineSelection` and
+  `src/vs/editor/contrib/insertFinalNewLine` are ported.
+- `src/vs/editor/common/commands/commandRunner.zig` executes a batch of
+  `ICommand`s, including multi-selection commands, and maps their resulting
+  selections.
+- Known limitations: `MoveLinesCommand` does not yet implement VS Code's
+  `Full` auto-indent branch (plain line moves only); line sorting is bytewise
+  rather than locale-aware; and the browser-facing editor controllers,
+  keybinding registry, menus, and context keys are not part of this port.
+  Bracket matching also does not paint its inline/overview-ruler decorations.

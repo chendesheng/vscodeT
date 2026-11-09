@@ -4,7 +4,8 @@ const ArrayList = std.array_list.Managed;
 const TextModel = @import("../textModel.zig").TextModel;
 const LanguageService = @import("../../services/languageService.zig").LanguageService;
 const LanguageConfiguration = @import("../../languages/languageConfiguration.zig").LanguageConfiguration;
-const Range = @import("../../core/range.zig").Range;
+const range_module = @import("../../core/range.zig");
+const Range = range_module.Range;
 const Position = @import("../../core/position.zig").Position;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const tree = @import("./bracketPairsTree/bracketPairsTree.zig");
@@ -319,17 +320,33 @@ pub const BracketPairsTextModelPart = struct {
     pub fn matchBracket(self: *Self, position: Position, maxDuration: ?i64) ?[2]Range {
         _ = maxDuration;
         self.ensureUpToDate() catch return null;
-        const offset = self.textModel.getOffsetAt(position);
-        for (self._brackets.items) |bracket| {
-            if (bracket._startOffset <= offset and bracket._endOffset >= offset) {
-                for (self._pairs.items) |pair| {
-                    if (pair._startOffset == bracket._startOffset) {
-                        if (pair.closingBracketRange) |closeRange| return .{ pair.openingBracketRange, closeRange };
-                    } else if (pair.closingBracketRange) |closeRange| {
-                        const closeStart = self.textModel.getOffsetAt(closeRange.startPosition());
-                        if (closeStart == bracket._startOffset) return .{ pair.openingBracketRange, closeRange };
-                    }
-                }
+
+        // Upstream picks the rightmost bracket range containing the position.
+        // This matters when two adjacent bracket ranges share a boundary, e.g.
+        // `(())` at the column between `)` and `)`: the closing bracket starts
+        // where the inner one ends.
+        var best: ?BracketPairInfo = null;
+        var best_range: ?Range = null;
+        for (self._pairs.items) |pair| {
+            const close_range = pair.closingBracketRange orelse continue;
+            const bracket_range = if (pair.openingBracketRange.containsPosition(&position))
+                pair.openingBracketRange
+            else if (close_range.containsPosition(&position))
+                close_range
+            else
+                continue;
+
+            if (best_range == null or
+                range_module.compareRangesUsingStarts(&bracket_range, &best_range.?) > 0)
+            {
+                best = pair;
+                best_range = bracket_range;
+            }
+        }
+
+        if (best) |pair| {
+            if (pair.closingBracketRange) |close_range| {
+                return .{ pair.openingBracketRange, close_range };
             }
         }
         return null;

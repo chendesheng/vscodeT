@@ -16,7 +16,9 @@ pub fn render(editor: *Editor, screen: *Screen, writer: *Io.Writer) !void {
     const text_height = editor.textHeight();
     const gutter = editor.gutterWidth();
     const top = editor.topViewLine();
-    const cursor = editor.viewCursorPosition();
+    const cursor_states = try editor.viewCursorStates();
+    defer editor.allocator.free(cursor_states);
+    const cursor = cursor_states[0].viewState.position;
     const tab_size = editor.tabSize();
 
     var cursor_row: usize = 1;
@@ -45,8 +47,6 @@ pub fn render(editor: *Editor, screen: *Screen, writer: *Io.Writer) !void {
         }
 
         const data = try editor.viewLineData(view_line);
-        const selection = editor.viewSelection();
-        const selected_range = selectionColumns(selection, view_line, data.content.len);
 
         var col = gutter;
         var byte_offset: usize = 0;
@@ -63,11 +63,14 @@ pub fn render(editor: *Editor, screen: *Screen, writer: *Io.Writer) !void {
                 token_end = data.tokens.getEndOffset(token_index);
             }
 
-            const selected = selected_range != null and
-                byte_offset >= selected_range.?.start and byte_offset < selected_range.?.end;
+            const selected = isSelected(cursor_states, view_line, byte_offset, data.content.len);
             var style = Style{ .fg = theme.colorForToken(data.tokens.getForeground(token_index)) };
             if (view_line == cursor.lineNumber) style.bg = .{ 32, 32, 36 };
             if (selected) style.reverse = true;
+            if (isSecondaryCursor(cursor_states, view_line, byte_offset)) {
+                style.bg = .{ 110, 90, 30 };
+                style.reverse = true;
+            }
 
             if (cp == '\t') {
                 const next = gutter + CursorColumns.nextRenderTabStop(col - gutter, tab_size);
@@ -105,6 +108,22 @@ pub fn render(editor: *Editor, screen: *Screen, writer: *Io.Writer) !void {
     try tui.moveCursor(writer, .{ .row = cursor_row, .col = cursor_col });
     try tui.showCursor(writer);
     try writer.flush();
+}
+
+fn isSelected(cursor_states: []const @import("../vs/editor/common/cursorCommon.zig").CursorState, view_line: usize, offset: usize, line_length: usize) bool {
+    for (cursor_states) |state| {
+        if (selectionColumns(state.viewState.selection, view_line, line_length)) |range| {
+            if (offset >= range.start and offset < range.end) return true;
+        }
+    }
+    return false;
+}
+
+fn isSecondaryCursor(cursor_states: []const @import("../vs/editor/common/cursorCommon.zig").CursorState, view_line: usize, offset: usize) bool {
+    for (cursor_states[1..]) |state| {
+        if (state.viewState.position.lineNumber == view_line and state.viewState.position.column - 1 == offset) return true;
+    }
+    return false;
 }
 
 fn selectionColumns(selection: Selection, view_line: usize, line_length: usize) ?struct { start: usize, end: usize } {

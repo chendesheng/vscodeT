@@ -43,6 +43,26 @@ const String = @import("../vs/base/common/strings.zig").String;
 const strings = @import("../vs/base/common/strings.zig");
 const eolToString = @import("../vs/editor/common/core/misc/eolCounter.zig").eolToString;
 const language = @import("./language.zig");
+const language_configuration = @import("../vs/editor/common/languages/languageConfiguration.zig");
+const editor_common = @import("../vs/editor/common/editorCommon.zig");
+const ICommand = editor_common.ICommand;
+const commandOf = editor_common.commandOf;
+const command_runner = @import("../vs/editor/common/commands/commandRunner.zig");
+const lines_ops = @import("../vs/editor/contrib/linesOperations/browser/linesOperations.zig");
+const line_selection = @import("../vs/editor/contrib/lineSelection/browser/lineSelection.zig");
+const LineCommentCommand = @import("../vs/editor/contrib/comment/browser/lineCommentCommand.zig").LineCommentCommand;
+const CommentType = @import("../vs/editor/contrib/comment/browser/lineCommentCommand.zig").Type;
+const BlockCommentCommand = @import("../vs/editor/contrib/comment/browser/blockCommentCommand.zig").BlockCommentCommand;
+const InsertFinalNewLineCommand = @import("../vs/editor/contrib/insertFinalNewLine/browser/insertFinalNewLineCommand.zig").InsertFinalNewLineCommand;
+const BracketMatchingController = @import("../vs/editor/contrib/bracketMatching/browser/bracketMatching.zig").BracketMatchingController;
+const language_configuration_service = @import("./languageConfiguration.zig");
+const ShiftCommand = @import("../vs/editor/common/commands/shiftCommand.zig").ShiftCommand;
+const IShiftCommandOpts = @import("../vs/editor/common/commands/shiftCommand.zig").IShiftCommandOpts;
+const indentation_commands = @import("../vs/editor/contrib/indentation/browser/indentation.zig");
+const IndentationToSpacesCommand = indentation_commands.IndentationToSpacesCommand;
+const IndentationToTabsCommand = indentation_commands.IndentationToTabsCommand;
+const ISingleEditOperation = @import("../vs/editor/common/core/editOperation.zig").ISingleEditOperation;
+const multicursor = @import("../vs/editor/contrib/multicursor/browser/multicursor.zig");
 
 const MAX_STATUS: usize = 512;
 
@@ -81,6 +101,9 @@ pub const Editor = struct {
     cursors: ?CursorCollection,
     model_adapter: TextModelCursorSimpleModel,
     word_separators: WordCharacterClassifier,
+    bracket_matching: BracketMatchingController,
+    language_config_service: *language_configuration_service.Service,
+    multicursor_session: ?multicursor.SearchSession,
     after_edit: AfterEditComputer,
     saved_version: u32,
     screen_width: usize,
@@ -122,6 +145,25 @@ pub const Editor = struct {
         errdefer allocator.destroy(language_service);
         language_service.* = LanguageService.init(allocator, codec);
         errdefer language_service.deinit();
+
+        var language_config = language_configuration.empty();
+        var has_language_config = false;
+        if (language.commentRuleFor(language_id)) |comments| {
+            language_config.comments = comments;
+            has_language_config = true;
+        }
+        if (language.bracketsFor(language_id)) |brackets| {
+            language_config.brackets = brackets;
+            has_language_config = true;
+        }
+        if (has_language_config) {
+            try language_service.registerLanguageConfiguration(language_id, language_config);
+        }
+
+        const language_config_service = try allocator.create(language_configuration_service.Service);
+        errdefer allocator.destroy(language_config_service);
+        language_config_service.* = try language_configuration_service.Service.init(allocator, language_service);
+        errdefer language_config_service.deinit();
 
         const undo_redo = try allocator.create(UndoRedoService);
         errdefer allocator.destroy(undo_redo);
@@ -173,6 +215,9 @@ pub const Editor = struct {
             .cursors = null,
             .model_adapter = TextModelCursorSimpleModel.init(allocator, model),
             .word_separators = word_separators,
+            .bracket_matching = BracketMatchingController.init(allocator, model),
+            .language_config_service = language_config_service,
+            .multicursor_session = null,
             .after_edit = .{ .model = model },
             .saved_version = model.getAlternativeVersionId(),
             .screen_width = @max(width, 1),
@@ -211,6 +256,10 @@ pub const Editor = struct {
         if (self.cursors) |*cursors| cursors.deinit();
         if (self.cursor_context) |context| self.allocator.destroy(context);
         self.model_adapter.deinit();
+        self.bracket_matching.deinit();
+        self.language_config_service.deinit();
+        self.allocator.destroy(self.language_config_service);
+        if (self.multicursor_session) |*session| session.deinit();
         self.word_separators.deinit();
         self.view_lines.deinit();
         self.model.deinit();
@@ -386,7 +435,91 @@ pub const Editor = struct {
     }
 
     fn setViewState(self: *Editor, state: SingleCursorState) !void {
-        try self.cursorsRef().setStates(&[_]PartialCursorState{CursorState.fromViewState(state)});
+        const cursors = try self.cursorsRef().getAll(self.allocator);
+        defer self.allocator.free(cursors);
+
+        const partials = try self.allocator.alloc(PartialCursorState, cursors.len);
+        defer self.allocator.free(partials);
+        partials[0] = CursorState.fromViewState(state);
+        for (cursors[1..], 0..) |cursor, i| {
+            partials[i + 1] = .{ .modelState = cursor.modelState, .viewState = cursor.viewState };
+        }
+
+        try self.cursorsRef().setStates(partials);
+        self.ensureCursorVisible();
+    }
+
+    pub fn viewCursorStates(self: *Editor) ![]CursorState {
+        return self.cursorsRef().getAll(self.allocator);
+    }
+
+    pub fn cursorCount(self: *Editor) usize {
+        return self.cursorsRef().cursors.items.len;
+    }
+
+    pub fn removeSecondaryCursors(self: *Editor) !void {
+        try self.cursorsRef().killSecondaryCursors();
+        self.ensureCursorVisible();
+    }
+
+    fn resetMultiCursorSession(self: *Editor) void {
+        if (self.multicursor_session) |*session| session.deinit();
+        self.multicursor_session = null;
+    }
+
+    fn ensureMultiCursorSession(self: *Editor) !?*multicursor.SearchSession {
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        if (self.multicursor_session) |*session| {
+            if (session.primary.equalsSelection(&selections[0])) return session;
+            self.resetMultiCursorSession();
+        }
+
+        self.multicursor_session = try multicursor.SearchSession.create(self.allocator, self.model, selections);
+        return if (self.multicursor_session) |*session| session else null;
+    }
+
+    pub fn addCursorAbove(self: *Editor) !void {
+        const cursors = try self.cursorsRef().getAll(self.allocator);
+        defer self.allocator.free(cursors);
+        const states = try multicursor.addCursorUp(self.allocator, &self.cursor_config, self.model_adapter.interface(), cursors);
+        defer self.allocator.free(states);
+        try self.cursorsRef().setStates(states);
+        try self.cursorsRef().normalize();
+        self.ensureCursorVisible();
+    }
+
+    pub fn addCursorBelow(self: *Editor) !void {
+        const cursors = try self.cursorsRef().getAll(self.allocator);
+        defer self.allocator.free(cursors);
+        const states = try multicursor.addCursorDown(self.allocator, &self.cursor_config, self.model_adapter.interface(), cursors);
+        defer self.allocator.free(states);
+        try self.cursorsRef().setStates(states);
+        try self.cursorsRef().normalize();
+        self.ensureCursorVisible();
+    }
+
+    pub fn selectNextOccurrence(self: *Editor) !void {
+        var session = (try self.ensureMultiCursorSession()) orelse return;
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+        const result = try session.addSelectionToNext(self.model, selections) orelse return;
+        defer self.allocator.free(result);
+        try self.cursorsRef().setSelections(self.allocator, result);
+        self.ensureCursorVisible();
+    }
+
+    pub fn selectAllOccurrences(self: *Editor) !void {
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        var session = (try multicursor.SearchSession.create(self.allocator, self.model, selections)) orelse return;
+        defer session.deinit();
+
+        const result = try session.selectAll(self.model) orelse return;
+        defer self.allocator.free(result);
+        try self.cursorsRef().setSelections(self.allocator, result);
         self.ensureCursorVisible();
     }
 
@@ -551,6 +684,10 @@ pub const Editor = struct {
     }
 
     pub fn insertTab(self: *Editor) !void {
+        if (!self.modelSelection().isEmpty()) {
+            try self.indentLines();
+            return;
+        }
         const position = self.modelCursorPosition();
         const line = try self.model.getLineContent(position.lineNumber);
         defer line.deinit();
@@ -568,6 +705,10 @@ pub const Editor = struct {
     }
 
     pub fn outdent(self: *Editor) !void {
+        if (!self.modelSelection().isEmpty()) {
+            try self.outdentLines();
+            return;
+        }
         self.closeTypingGroup();
         const position = self.modelCursorPosition();
         const line = try self.model.getLineContent(position.lineNumber);
@@ -592,6 +733,150 @@ pub const Editor = struct {
             line.items[0..new_len],
         );
         try self.executeReplaceCommands(&[_]?cursorCommon.ReplaceCommand{command});
+    }
+
+    fn refreshCursorOptions(self: *Editor) void {
+        const options = self.model.getOptions();
+        self.cursor_config.tabSize = options.tabSize;
+        self.cursor_config.indentSize = options.indentSize;
+        self.cursor_config.insertSpaces = options.insertSpaces;
+    }
+
+    fn applyEditOperations(self: *Editor, operations: []const ISingleEditOperation) !void {
+        const before = try self.getSelectionsCopy();
+        defer self.allocator.free(before);
+
+        var identified = ArrayList(IdentifiedSingleEditOperation).init(self.allocator);
+        defer identified.deinit();
+        for (operations) |operation| {
+            try identified.append(IdentifiedSingleEditOperation.init(
+                operation.range,
+                if (operation.text) |text| String.initBorrowed(text) else null,
+            ));
+        }
+
+        _ = try self.model.pushEditOperations(before, identified.items, null, null);
+        try self.afterEdit();
+        try self.cursorsRef().setSelections(self.allocator, before);
+        self.ensureCursorVisible();
+    }
+
+    fn indentLinesImpl(self: *Editor, is_unshift: bool) !void {
+        self.closeTypingGroup();
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        const opts = IShiftCommandOpts{
+            .isUnshift = is_unshift,
+            .tabSize = self.cursor_config.tabSize,
+            .indentSize = self.cursor_config.indentSize,
+            .insertSpaces = self.cursor_config.insertSpaces,
+            .useTabStops = false,
+            .autoIndent = .None,
+        };
+
+        const commands = try self.allocator.alloc(ShiftCommand, selections.len);
+        defer self.allocator.free(commands);
+        const interfaces = try self.allocator.alloc(?ICommand, selections.len);
+        defer self.allocator.free(interfaces);
+
+        self.language_config_service.activate();
+        for (selections, 0..) |selection, i| {
+            commands[i] = ShiftCommand.init(self.allocator, selection, opts, self.language_config_service.interface());
+            interfaces[i] = commandOf(ShiftCommand).of(&commands[i]);
+        }
+
+        try self.executeCommands(interfaces);
+    }
+
+    pub fn indentLines(self: *Editor) !void {
+        try self.indentLinesImpl(false);
+    }
+
+    pub fn outdentLines(self: *Editor) !void {
+        try self.indentLinesImpl(true);
+    }
+
+    pub fn reindentLines(self: *Editor) !void {
+        self.closeTypingGroup();
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+
+        self.language_config_service.activate();
+        var edits = try indentation_commands.reindentLines(
+            arena_state.allocator(),
+            self.model,
+            self.language_config_service.interface(),
+        );
+        defer edits.deinit();
+        if (edits.items.len == 0) return;
+
+        try self.applyEditOperations(edits.items);
+        self.model.pushStackElement();
+    }
+
+    pub fn reindentSelectedLines(self: *Editor) !void {
+        self.closeTypingGroup();
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        self.language_config_service.activate();
+        var edits = try indentation_commands.reindentSelectedLines(
+            arena_state.allocator(),
+            self.model,
+            self.language_config_service.interface(),
+            selections,
+        );
+        defer edits.deinit();
+        if (edits.items.len == 0) return;
+
+        try self.applyEditOperations(edits.items);
+        self.model.pushStackElement();
+    }
+
+    pub fn indentationToSpaces(self: *Editor) !void {
+        self.closeTypingGroup();
+        const selection = self.modelSelection();
+        var command = IndentationToSpacesCommand.init(self.allocator, selection, self.cursor_config.tabSize);
+        try self.executeCommands(&[_]?ICommand{commandOf(IndentationToSpacesCommand).of(&command)});
+        self.model.updateOptions(.{
+            .tabSize = null,
+            .indentSize = null,
+            .insertSpaces = true,
+            .trimAutoWhitespace = null,
+            .bracketColorizationOptions = null,
+        });
+        self.refreshCursorOptions();
+    }
+
+    pub fn indentationToTabs(self: *Editor) !void {
+        self.closeTypingGroup();
+        const selection = self.modelSelection();
+        var command = IndentationToTabsCommand.init(self.allocator, selection, self.cursor_config.tabSize);
+        try self.executeCommands(&[_]?ICommand{commandOf(IndentationToTabsCommand).of(&command)});
+        self.model.updateOptions(.{
+            .tabSize = null,
+            .indentSize = null,
+            .insertSpaces = false,
+            .trimAutoWhitespace = null,
+            .bracketColorizationOptions = null,
+        });
+        self.refreshCursorOptions();
+    }
+
+    pub fn detectIndentation(self: *Editor) void {
+        indentation_commands.detectIndentation(self.model);
+        self.refreshCursorOptions();
+        self.ensureCursorVisible();
+    }
+
+    pub fn changeIndentation(self: *Editor, tab_size: usize, insert_spaces: bool, display_size_only: bool) void {
+        indentation_commands.changeIndentation(self.model, tab_size, insert_spaces, display_size_only);
+        self.refreshCursorOptions();
+        self.ensureCursorVisible();
     }
 
     pub fn deleteLeft(self: *Editor) !void {
@@ -657,6 +942,182 @@ pub const Editor = struct {
         }
         try self.refreshLayout();
         self.ensureCursorVisible();
+    }
+
+    fn getSelectionsCopy(self: *Editor) ![]Selection {
+        return self.cursorsRef().getSelections(self.allocator);
+    }
+
+    fn applyCommandResult(self: *Editor, after: ?[]Selection) !void {
+        const selections = after orelse return;
+        defer self.allocator.free(selections);
+
+        try self.afterEdit();
+        try self.cursorsRef().setSelections(self.allocator, selections);
+        self.ensureCursorVisible();
+        self.model.pushStackElement();
+    }
+
+    fn executeCommands(self: *Editor, commands: []const ?ICommand) !void {
+        const before = try self.getSelectionsCopy();
+        defer self.allocator.free(before);
+
+        const after = try command_runner.executeCommands(self.allocator, self.model, commands, before);
+        try self.applyCommandResult(after);
+    }
+
+    pub fn moveLines(self: *Editor, down: bool) !void {
+        self.closeTypingGroup();
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+        const after = try lines_ops.moveLines(self.allocator, self.model, selections, down);
+        try self.applyCommandResult(after);
+    }
+
+    pub fn copyLines(self: *Editor, down: bool) !void {
+        self.closeTypingGroup();
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+        const after = try lines_ops.copyLines(self.allocator, self.model, selections, down);
+        try self.applyCommandResult(after);
+    }
+
+    pub fn sortLines(self: *Editor, descending: bool) !void {
+        self.closeTypingGroup();
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+        const after = try lines_ops.sortLines(self.allocator, self.model, selections, descending);
+        try self.applyCommandResult(after);
+    }
+
+    pub fn duplicateSelection(self: *Editor) !void {
+        self.closeTypingGroup();
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+        const after = try lines_ops.duplicateSelection(self.allocator, self.model, selections);
+        try self.applyCommandResult(after);
+    }
+
+    pub fn trimTrailingWhitespace(self: *Editor) !void {
+        self.closeTypingGroup();
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+        const after = try lines_ops.trimTrailingWhitespace(self.allocator, self.model, selections);
+        try self.applyCommandResult(after);
+    }
+
+    pub fn expandLineSelection(self: *Editor) !void {
+        const cursors = try self.cursorsRef().getAll(self.allocator);
+        defer self.allocator.free(cursors);
+
+        const states = try line_selection.expandLineSelection(self.allocator, self.view_lines.interface(), cursors);
+        defer self.allocator.free(states);
+
+        try self.cursorsRef().setStates(states);
+        self.ensureCursorVisible();
+    }
+
+    pub fn jumpToBracket(self: *Editor) !void {
+        const selection = self.modelSelection();
+        const target = self.bracket_matching.jumpToBracket(selection) orelse return;
+        try self.cursorsRef().setSelections(self.allocator, &[_]Selection{target});
+        self.ensureCursorVisible();
+    }
+
+    pub fn selectToBracket(self: *Editor, select_brackets: bool) !void {
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        const selected = try self.bracket_matching.selectToBracket(selections, select_brackets) orelse return;
+        defer self.allocator.free(selected);
+
+        try self.cursorsRef().setSelections(self.allocator, selected);
+        self.ensureCursorVisible();
+    }
+
+    pub fn removeBrackets(self: *Editor) !void {
+        const selection = self.modelSelection();
+        const pair = self.bracket_matching.removeBracketsForSelection(selection) orelse return;
+
+        self.closeTypingGroup();
+        const commands = [_]?cursorCommon.ReplaceCommand{
+            cursorCommon.ReplaceCommand.init(pair[0], ""),
+            cursorCommon.ReplaceCommand.init(pair[1], ""),
+        };
+        try self.executeReplaceCommands(&commands);
+        try self.cursorsRef().killSecondaryCursors();
+        self.model.pushStackElement();
+    }
+
+    pub fn toggleLineComment(self: *Editor) !void {
+        const rule = language.commentRuleFor(self.model.getLanguageId()) orelse {
+            self.setMessage("No comment configuration for {s}", .{self.model.getLanguageId()});
+            return;
+        };
+        if (rule.lineComment == null and rule.blockComment == null) {
+            self.setMessage("Comments are not supported for {s}", .{self.model.getLanguageId()});
+            return;
+        }
+
+        self.closeTypingGroup();
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        const commands = try self.allocator.alloc(LineCommentCommand, selections.len);
+        defer self.allocator.free(commands);
+        const interfaces = try self.allocator.alloc(?ICommand, selections.len);
+        defer self.allocator.free(interfaces);
+
+        for (selections, 0..) |selection, i| {
+            commands[i] = LineCommentCommand.init(
+                self.allocator,
+                self.language_service,
+                selection,
+                self.cursor_config.indentSize,
+                .Toggle,
+                true,
+                true,
+                false,
+            );
+            interfaces[i] = commandOf(LineCommentCommand).of(&commands[i]);
+        }
+
+        try self.executeCommands(interfaces);
+    }
+
+    pub fn toggleBlockComment(self: *Editor) !void {
+        const rule = language.commentRuleFor(self.model.getLanguageId()) orelse {
+            self.setMessage("No comment configuration for {s}", .{self.model.getLanguageId()});
+            return;
+        };
+        if (rule.blockComment == null) {
+            self.setMessage("Block comments are not supported for {s}", .{self.model.getLanguageId()});
+            return;
+        }
+
+        self.closeTypingGroup();
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        const commands = try self.allocator.alloc(BlockCommentCommand, selections.len);
+        defer self.allocator.free(commands);
+        const interfaces = try self.allocator.alloc(?ICommand, selections.len);
+        defer self.allocator.free(interfaces);
+
+        for (selections, 0..) |selection, i| {
+            commands[i] = BlockCommentCommand.init(self.allocator, selection, true, self.language_service);
+            interfaces[i] = commandOf(BlockCommentCommand).of(&commands[i]);
+        }
+
+        try self.executeCommands(interfaces);
+    }
+
+    pub fn insertFinalNewLine(self: *Editor) !void {
+        const selection = self.modelSelection();
+        self.closeTypingGroup();
+
+        var command = InsertFinalNewLineCommand.init(selection);
+        try self.executeCommands(&[_]?ICommand{commandOf(InsertFinalNewLineCommand).of(&command)});
     }
 
     pub fn save(self: *Editor) !void {
@@ -946,7 +1407,6 @@ test "Editor: tokenized Zig lines render through the wrapped view" {
     try std.testing.expect(out.written().len > 0);
 }
 
-
 test "Editor: syntax stays visible after inserting blank lines" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -1115,12 +1575,14 @@ test "Editor: undo of grouped typing restores the original text" {
     try std.testing.expectEqualStrings("var", value.items);
 }
 
-
 test "Editor: grouped undo restores consecutive edits" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var editor = try Editor.createFromText(allocator, io, "var queue = ArrayQueue(i32).init();\n", "test.zig", 80, 20);
-    defer { editor.deinit(); allocator.destroy(editor); }
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
 
     const cases = [_][]const u8{ "insert", "deleteLeft", "deleteRight", "replaceThenType" };
     for (cases) |kind| {
@@ -1172,4 +1634,250 @@ test "Editor: grouped undo restores consecutive edits" {
         }
         try editor.redo();
     }
+}
+
+test "Editor: move and copy lines" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.moveLines(true);
+    const moved = try editor.model.getLineContent(1);
+    defer moved.deinit();
+    try std.testing.expectEqualStrings("b", moved.items);
+
+    var copy_editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 40, 8);
+    defer {
+        copy_editor.deinit();
+        allocator.destroy(copy_editor);
+    }
+    try copy_editor.moveDown(false);
+    try copy_editor.copyLines(false);
+    const copied = try copy_editor.model.getLineContent(2);
+    defer copied.deinit();
+    try std.testing.expectEqualStrings("b", copied.items);
+    const copied2 = try copy_editor.model.getLineContent(3);
+    defer copied2.deinit();
+    try std.testing.expectEqualStrings("b", copied2.items);
+}
+
+test "Editor: line comments toggle back to the original text" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "let x = 1;", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.toggleLineComment();
+    const commented = try editor.model.getLineContent(1);
+    defer commented.deinit();
+    try std.testing.expectEqualStrings("// let x = 1;", commented.items);
+
+    try editor.toggleLineComment();
+    const uncommented = try editor.model.getLineContent(1);
+    defer uncommented.deinit();
+    try std.testing.expectEqualStrings("let x = 1;", uncommented.items);
+}
+
+test "Editor: block comment shortcut is language aware" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.toggleBlockComment();
+    try std.testing.expect(std.mem.indexOf(u8, editor.message(), "Block comments are not supported") != null);
+}
+
+test "Editor: expand line selection and insert final newline" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.expandLineSelection();
+    const selection = editor.modelSelection();
+    try std.testing.expectEqual(@as(usize, 1), selection.startLineNumber);
+    try std.testing.expectEqual(@as(usize, 2), selection.endLineNumber);
+    try std.testing.expectEqual(@as(usize, 1), selection.endColumn);
+
+    try editor.insertFinalNewLine();
+    const value = try editor.model.getValue(.TextDefined, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("a\nb\n", value.items);
+}
+
+test "Editor: jump to, select to, and remove matching brackets" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    {
+        var editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 40, 8);
+        defer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+        try editor.jumpToBracket();
+        try std.testing.expectEqual(@as(usize, 3), editor.modelCursorPosition().column);
+    }
+
+    {
+        var editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 40, 8);
+        defer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+        try editor.selectToBracket(true);
+        const selection = editor.modelSelection();
+        try std.testing.expectEqual(@as(usize, 1), selection.startColumn);
+        try std.testing.expectEqual(@as(usize, 4), selection.endColumn);
+    }
+
+    {
+        var editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 40, 8);
+        defer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+        try editor.removeBrackets();
+        const value = try editor.model.getValue(.TextDefined, false);
+        defer value.deinit();
+        try std.testing.expectEqualStrings("a", value.items);
+    }
+}
+
+test "Editor: indent and outdent a selected line block" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.moveDown(true); // select line 1
+    try editor.insertTab();
+    const first = try editor.model.getLineContent(1);
+    defer first.deinit();
+    try std.testing.expectEqualStrings("    a", first.items);
+    const second = try editor.model.getLineContent(2);
+    defer second.deinit();
+    try std.testing.expectEqualStrings("b", second.items);
+
+    try editor.moveUp(false);
+    try editor.outdent();
+    const unindented = try editor.model.getLineContent(1);
+    defer unindented.deinit();
+    try std.testing.expectEqualStrings("a", unindented.items);
+}
+
+test "Editor: conversion between tab and space indentation" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "\ta", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.indentationToSpaces();
+    const spaces = try editor.model.getLineContent(1);
+    defer spaces.deinit();
+    try std.testing.expectEqualStrings("    a", spaces.items);
+
+    try editor.indentationToTabs();
+    const tabs = try editor.model.getLineContent(1);
+    defer tabs.deinit();
+    try std.testing.expectEqualStrings("\ta", tabs.items);
+}
+
+test "Editor: reindent lines uses language indentation rules" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const RegExp = @import("../support/regexp.zig").RegExp;
+
+    const increase = try RegExp.init("\\{$", .{});
+    defer increase.deinit();
+    const decrease = try RegExp.init("^\\s*\\}", .{});
+    defer decrease.deinit();
+
+    var editor = try Editor.createFromText(allocator, io, "if (a) {\nb\n}", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var config = language_configuration.empty();
+    config.indentationRules = .{
+        .decreaseIndentPattern = decrease,
+        .increaseIndentPattern = increase,
+        .indentNextLinePattern = null,
+        .unIndentedLinePattern = null,
+    };
+    try editor.language_service.registerLanguageConfiguration("zig", config);
+
+    try editor.reindentLines();
+    const line2 = try editor.model.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("    b", line2.items);
+}
+
+test "Editor: add cursor below and edit both lines" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.addCursorBelow();
+    try std.testing.expectEqual(@as(usize, 2), editor.cursorCount());
+
+    try editor.insertText("x");
+    const first = try editor.model.getLineContent(1);
+    defer first.deinit();
+    const second = try editor.model.getLineContent(2);
+    defer second.deinit();
+    try std.testing.expectEqualStrings("xa", first.items);
+    try std.testing.expectEqualStrings("xb", second.items);
+}
+
+test "Editor: select next occurrence and replace all selections" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "foo foo", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.selectNextOccurrence();
+    try editor.selectNextOccurrence();
+    try std.testing.expectEqual(@as(usize, 2), editor.cursorCount());
+
+    try editor.insertText("bar");
+    const value = try editor.model.getValue(.TextDefined, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("bar bar", value.items);
 }

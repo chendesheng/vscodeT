@@ -17,6 +17,7 @@ const ModelContentChangedEvent = @import("../../textModelEvents.zig").ModelConte
 const WordAtPosition = @import("../../../../base/common/utils.zig").WordAtPosition;
 const wordHelper = @import("../../core/wordHelper.zig");
 const LanguageIdCodec = @import("../../languages.zig").LanguageIdCodec;
+const NULL_LANGUAGE_ID = @import("../../languages.zig").NULL_LANGUAGE_ID;
 const countEOL = @import("../../core/misc/eolCounter.zig").countEOL;
 const BackgroundTokenizationState = @import("./abstractSyntaxTokenBackend.zig").BackgroundTokenizationState;
 const ILanguageConfigurationService = @import("../../languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
@@ -303,7 +304,14 @@ pub const TokenizationTextModelPart = struct {
         const position = self.textModel().validatePosition(Position.init(lineNumber, column));
         var lineTokens = self.getLineTokens(position.lineNumber) catch return self._languageId;
         defer lineTokens.deinit();
-        return lineTokens.getLanguageId(lineTokens.findTokenIndexAtOffset(position.column - 1));
+        const language_id = lineTokens.getLanguageId(lineTokens.findTokenIndexAtOffset(position.column - 1));
+        // Tokenizers may leave the base language unset on plain tokens. Fall
+        // back to the model language so callers such as comment commands still
+        // resolve the right configuration.
+        if (language_id.len == 0 or std.mem.eql(u8, language_id, NULL_LANGUAGE_ID)) {
+            return self._languageId;
+        }
+        return language_id;
     }
 
     pub fn setLanguageId(self: *TokenizationTextModelPart, languageId: []const u8, source: []const u8) void {

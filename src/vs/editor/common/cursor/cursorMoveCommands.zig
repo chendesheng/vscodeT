@@ -51,6 +51,23 @@ pub const CursorMoveCommands = struct {
         return result;
     }
 
+    pub fn addCursorDown(allocator: Allocator, config: *const CursorConfiguration, model: ICursorSimpleModel, cursors: []const CursorState) ![]PartialCursorState {
+        const result = try allocator.alloc(PartialCursorState, cursors.len * 2);
+        for (cursors, 0..) |cursor, i| {
+            result[i * 2] = .{ .modelState = cursor.modelState, .viewState = cursor.viewState };
+            result[i * 2 + 1] = CursorState.fromModelState(MoveOperations.translateDown(config, model, cursor.modelState));
+        }
+        return result;
+    }
+
+    pub fn addCursorUp(allocator: Allocator, config: *const CursorConfiguration, model: ICursorSimpleModel, cursors: []const CursorState) ![]PartialCursorState {
+        const result = try allocator.alloc(PartialCursorState, cursors.len * 2);
+        for (cursors, 0..) |cursor, i| {
+            result[i * 2] = .{ .modelState = cursor.modelState, .viewState = cursor.viewState };
+            result[i * 2 + 1] = CursorState.fromModelState(MoveOperations.translateUp(config, model, cursor.modelState));
+        }
+        return result;
+    }
     pub fn selectAll(model: ICursorSimpleModel) PartialCursorState {
         const lineCount = model.getLineCount(model.context);
         const maxColumn = model.getLineMaxColumn(model.context, lineCount);
