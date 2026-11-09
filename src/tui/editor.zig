@@ -25,17 +25,17 @@ const CursorConfiguration = cursorCommon.CursorConfiguration;
 const CursorContext = @import("../vs/editor/common/cursor/cursorContext.zig").CursorContext;
 const CursorState = cursorCommon.CursorState;
 const PartialCursorState = cursorCommon.PartialCursorState;
-const SingleCursorState = cursorCommon.SingleCursorState;
 const EditOperationType = cursorCommon.EditOperationType;
 const CursorCollection = @import("../vs/editor/common/cursor/cursorCollection.zig").CursorCollection;
 const TextModelCursorSimpleModel = @import("../vs/editor/common/cursor/textModelCursorSimpleModel.zig").TextModelCursorSimpleModel;
-const MoveOperations = @import("../vs/editor/common/cursor/cursorMoveOperations.zig").MoveOperations;
-const WordOperations = @import("../vs/editor/common/cursor/cursorWordOperations.zig").WordOperations;
-const WordNavigationType = @import("../vs/editor/common/cursor/cursorWordOperations.zig").WordNavigationType;
+const CursorMoveCommands = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").CursorMoveCommands;
+const CursorMoveDirection = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").Direction;
+const CursorMoveUnit = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").Unit;
+const CursorWordDirection = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").WordDirection;
 const DeleteOperations = @import("../vs/editor/common/cursor/cursorDeleteOperations.zig").DeleteOperations;
 const TypeWithoutInterceptorsOperation = @import("../vs/editor/common/cursor/cursorTypeEditOperations.zig").TypeWithoutInterceptorsOperation;
 const EditOperationResult = cursorCommon.EditOperationResult;
-const CursorMoveCommands = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").CursorMoveCommands;
+
 const WordCharacterClassifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig").WordCharacterClassifier;
 const DefaultWordSeparators = @import("../vs/editor/common/core/wordCharacterClassifier.zig").DefaultWordSeparators;
 const InternalModelContentChangeEvent = @import("../vs/editor/common/textModelEvents.zig").InternalModelContentChangeEvent;
@@ -448,21 +448,6 @@ pub const Editor = struct {
         self.prev_edit_operation_type = .Other;
     }
 
-    fn setViewState(self: *Editor, state: SingleCursorState) !void {
-        const cursors = try self.cursorsRef().getAll(self.allocator);
-        defer self.allocator.free(cursors);
-
-        const partials = try self.allocator.alloc(PartialCursorState, cursors.len);
-        defer self.allocator.free(partials);
-        partials[0] = CursorState.fromViewState(state);
-        for (cursors[1..], 0..) |cursor, i| {
-            partials[i + 1] = .{ .modelState = cursor.modelState, .viewState = cursor.viewState };
-        }
-
-        try self.cursorsRef().setStates(partials);
-        self.ensureCursorVisible();
-    }
-
     pub fn viewCursorStates(self: *Editor) ![]CursorState {
         return self.cursorsRef().getAll(self.allocator);
     }
@@ -537,78 +522,214 @@ pub const Editor = struct {
         self.ensureCursorVisible();
     }
 
+    fn cursorStatesCopy(self: *Editor) ![]CursorState {
+        return self.cursorsRef().getAll(self.allocator);
+    }
+
+    fn applyCursorStates(self: *Editor, states: []PartialCursorState) !void {
+        defer self.allocator.free(states);
+        try self.cursorsRef().setStates(states);
+        try self.cursorsRef().normalize();
+        self.ensureCursorVisible();
+    }
+
     pub fn moveLeft(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveLeft(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select, 1));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.simpleMove(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            .left,
+            select,
+            1,
+            .character,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn moveRight(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveRight(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select, 1));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.simpleMove(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            .right,
+            select,
+            1,
+            .character,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn moveUp(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveUp(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select, 1));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.simpleMove(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            .up,
+            select,
+            1,
+            .wrapped_line,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn moveDown(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveDown(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select, 1));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.simpleMove(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            .down,
+            select,
+            1,
+            .wrapped_line,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn movePageUp(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveUp(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select, self.cursor_config.pageSize));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.simpleMove(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            .up,
+            select,
+            self.cursor_config.pageSize,
+            .wrapped_line,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn movePageDown(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveDown(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select, self.cursor_config.pageSize));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.simpleMove(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            .down,
+            select,
+            self.cursor_config.pageSize,
+            .wrapped_line,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn moveWordLeft(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        const position = WordOperations.moveWordLeft(&self.word_separators, self.view_lines.interface(), cursor.viewState.position, .WordStart, false);
-        try self.setViewState(cursor.viewState.move(select, position.lineNumber, position.column, 0));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.moveWord(
+            self.allocator,
+            self.model_adapter.interface(),
+            cursors,
+            .left,
+            &self.word_separators,
+            select,
+            cursors.len > 1,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn moveWordRight(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        const position = WordOperations.moveWordRight(&self.word_separators, self.view_lines.interface(), cursor.viewState.position, .WordStart);
-        try self.setViewState(cursor.viewState.move(select, position.lineNumber, position.column, 0));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.moveWord(
+            self.allocator,
+            self.model_adapter.interface(),
+            cursors,
+            .right,
+            &self.word_separators,
+            select,
+            cursors.len > 1,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn moveLineStart(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveToBeginningOfLine(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.moveToBeginningOfLine(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            select,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn moveLineEnd(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveToEndOfLine(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select, false));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.moveToEndOfLine(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            select,
+            false,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn moveDocStart(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveToBeginningOfBuffer(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.moveToBeginningOfBuffer(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            cursors,
+            select,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn moveDocEnd(self: *Editor, select: bool) !void {
         self.closeTypingGroup();
-        const cursor = self.cursorsRef().getPrimaryCursor();
-        try self.setViewState(MoveOperations.moveToEndOfBuffer(&self.cursor_config, self.view_lines.interface(), cursor.viewState, select));
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.moveToEndOfBuffer(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            cursors,
+            select,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn selectAll(self: *Editor) !void {
@@ -1977,4 +2098,46 @@ test "Editor: overtypes an existing closing bracket" {
     defer value.deinit();
     try std.testing.expectEqualStrings("()", value.items);
     try std.testing.expectEqual(Position.init(1, 3), editor.modelCursorPosition());
+}
+
+test "Editor: movement applies to every cursor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.addCursorBelow();
+    try editor.moveRight(false);
+    try editor.insertText("x");
+
+    const first = try editor.model.getLineContent(1);
+    defer first.deinit();
+    const second = try editor.model.getLineContent(2);
+    defer second.deinit();
+    try std.testing.expectEqualStrings("ax", first.items);
+    try std.testing.expectEqualStrings("bx", second.items);
+}
+
+test "Editor: word movement applies to every cursor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "foo bar\nbaz qux", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.addCursorBelow();
+    try editor.moveWordRight(false);
+
+    const cursors = try editor.viewCursorStates();
+    defer allocator.free(cursors);
+    try std.testing.expectEqual(@as(usize, 2), cursors.len);
+    try std.testing.expectEqual(@as(usize, 5), cursors[0].viewState.position.column);
+    try std.testing.expectEqual(@as(usize, 5), cursors[1].viewState.position.column);
 }

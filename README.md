@@ -142,8 +142,8 @@ Editor contributions:
   cursors at line ends/top/bottom, occurrence search sessions, and
   add/move/select-all occurrence actions. The TUI renders secondary cursors and
   selections. Find-widget option integration, the selection highlighter
-  contribution, and its decorations are not ported; navigation moves the
-  primary cursor while preserving secondary cursors.
+  contribution, and its decorations are not ported. Navigation now applies to
+  every cursor in the collection.
 - `src/vs/editor/contrib/indentation` ports the reindent edit generator,
   indent-utils, tab/space conversion commands, selected-line reindentation,
   detect-indentation, and indentation option changes. The quick-pick actions
