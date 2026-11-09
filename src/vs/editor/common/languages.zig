@@ -7,6 +7,8 @@ const ContiguousMultilineTokens = @import("./tokens/contiguousMultilineTokens.zi
 const TextModel = @import("./model/textModel.zig").TextModel;
 const TokenPacked = @import("./tokens/lineTokens.zig").TokenPacked;
 const LanguageId = @import("./encodedTokenAttributes.zig").LanguageId;
+const Range = @import("./core/range.zig").Range;
+const CancellationToken = @import("../../base/common/cancellation.zig").CancellationToken;
 
 pub const NULL_LANGUAGE_ID = "nullLanguage";
 
@@ -315,9 +317,70 @@ pub const IColorInformation = struct {
     color: IColor,
 };
 
-test "IColorInformation: holds a range and a color" {
-    const Range = @import("./core/range.zig").Range;
+/// A markdown string used by hover contents.
+pub const IMarkdownString = struct {
+    value: []const u8,
+    is_trusted: ?bool = null,
+    support_theme_icons: ?bool = null,
+    support_html: ?bool = null,
+};
 
+pub const MarkdownString = struct {
+    value: []const u8,
+    is_trusted: ?bool = null,
+    support_theme_icons: ?bool = null,
+    support_html: ?bool = null,
+
+    pub fn init(value: []const u8) MarkdownString {
+        return .{ .value = value };
+    }
+
+    pub fn asIMarkdownString(self: *const MarkdownString) IMarkdownString {
+        return .{
+            .value = self.value,
+            .is_trusted = self.is_trusted,
+            .support_theme_icons = self.support_theme_icons,
+            .support_html = self.support_html,
+        };
+    }
+};
+
+pub const HoverVerbosityAction = enum(u32) {
+    Increase = 0,
+    Decrease = 1,
+};
+
+/// Additional information for a symbol or word, rendered in a tooltip-like
+/// widget by the editor.
+pub const Hover = struct {
+    contents: []const IMarkdownString,
+    range: ?Range = null,
+    can_increase_verbosity: ?bool = null,
+    can_decrease_verbosity: ?bool = null,
+};
+
+pub const HoverVerbosityRequest = struct {
+    verbosity_delta: i32,
+    previous_hover: Hover,
+};
+
+pub const HoverContext = struct {
+    verbosity_request: ?HoverVerbosityRequest = null,
+};
+
+/// The contract between extensions and the hover feature.
+pub const HoverProvider = struct {
+    context: *anyopaque,
+    provide_hover: *const fn (
+        context: *anyopaque,
+        model: *TextModel,
+        position: Position,
+        token: CancellationToken,
+        hover_context: ?*const HoverContext,
+    ) anyerror!?Hover,
+};
+
+test "IColorInformation: holds a range and a color" {
     const information = IColorInformation{
         .range = Range.init(1, 1, 1, 7),
         .color = .{ .red = 1, .green = 0.5, .blue = 0, .alpha = 1 },

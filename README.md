@@ -122,6 +122,13 @@ Editor contributions:
 - `src/vs/editor/contrib/comment` ports `LineCommentCommand` and
   `BlockCommentCommand`. Comment rules for the TUI's languages live in
   `src/tui/language.zig`.
+- The portable hover layer is ported in `src/vs/editor/contrib/hover`:
+  `Hover`/`MarkdownString` data types, range and foreign-element anchors,
+  participant contracts, modifier-based hover enabling, provider result
+  aggregation, the hover operation state machine with an injectable timer,
+  content-hover result filtering, and synchronous participant computation.
+  The browser hover widget, async iterable/timing runtime, markdown/marker
+  participants, and TUI hover UI are not ported.
 - Auto-closing brackets are ported from
   `src/vs/editor/common/cursor/cursorTypeEditOperations.ts` into
   `src/vs/editor/common/cursor/autoClosing.zig`. Single-character bracket pairs

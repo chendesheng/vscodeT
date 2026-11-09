@@ -199,6 +199,12 @@ comptime {
     _ = @import("./vs/editor/test/common/contrib/indentation/indentationTests.zig");
     _ = @import("./vs/editor/contrib/multicursor/browser/multicursor.zig");
     _ = @import("./vs/editor/test/common/contrib/multicursor/multicursorTests.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/hoverTypes.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/hoverUtils.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/getHover.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/hoverOperation.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/contentHoverTypes.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/contentHoverComputer.zig");
     _ = @import("./vs/editor/test/common/port/commandTestSupport.zig");
     _ = @import("./vs/editor/test/common/contrib/linesOperations/copyLinesCommandTests.zig");
     _ = @import("./vs/editor/test/common/contrib/linesOperations/moveLinesCommandTests.zig");

@@ -1688,7 +1688,7 @@ pub const TextModel = struct {
         if (lineNumber < 1 or lineNumber > self.getLineCount()) {
             return &[_]ModelDecoration{};
         }
-        return try self.getLinesDecorations(lineNumber, lineNumber, ownerId, filterOutValidation);
+        return try self.getLinesDecorations(lineNumber, lineNumber, ownerId, filterOutValidation, false);
     }
 
     pub fn getLinesDecorations(self: *TextModel, startLineNumber: usize, endLineNumber: usize, ownerId: usize, filterOutValidation: bool, onlyMarginDecorations: bool) ![]ModelDecoration {
