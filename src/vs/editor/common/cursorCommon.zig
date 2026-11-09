@@ -6,6 +6,14 @@ const selection_mod = @import("./core/selection.zig");
 const Selection = selection_mod.Selection;
 const PositionAffinity = @import("./model.zig").PositionAffinity;
 const CursorColumns = @import("./core/cursorColumns.zig").CursorColumns;
+const editor_options = @import("./config/editorOptions.zig");
+const EditorAutoClosingStrategy = editor_options.EditorAutoClosingStrategy;
+const EditorAutoClosingEditStrategy = editor_options.EditorAutoClosingEditStrategy;
+const StandardAutoClosingPairConditional = @import("./languages/languageConfiguration.zig").StandardAutoClosingPairConditional;
+const DefaultWordSeparators = @import("./core/wordCharacterClassifier.zig").DefaultWordSeparators;
+
+const DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_QUOTES: []const u8 = ";:.,=}])> \n\t";
+const DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_BRACKETS: []const u8 = "'\"`:.,=}])> \n\t";
 
 pub const IColumnSelectData = struct {
     isReal: bool,
@@ -80,6 +88,15 @@ pub const CursorConfiguration = struct {
     useTabStops: bool = false,
     autoSurround: @import("./config/editorOptions.zig").EditorAutoSurroundStrategy = .never,
     overtype: bool = false,
+
+    autoClosingBrackets: EditorAutoClosingStrategy = .languageDefined,
+    autoClosingQuotes: EditorAutoClosingStrategy = .languageDefined,
+    autoClosingDelete: EditorAutoClosingEditStrategy = .auto,
+    autoClosingOvertype: EditorAutoClosingEditStrategy = .auto,
+    auto_closing_pairs: []const StandardAutoClosingPairConditional = &.{},
+    auto_close_before_quotes: []const u8 = DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_QUOTES,
+    auto_close_before_brackets: []const u8 = DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_BRACKETS,
+    wordSeparators: []const u8 = DefaultWordSeparators,
 
     pub fn visibleColumnFromColumn(self: *const CursorConfiguration, model: ICursorSimpleModel, position: Position) usize {
         return CursorColumns.visibleColumnFromColumn(

@@ -201,13 +201,12 @@ pub const StandardAutoClosingPairConditional = struct {
         return self;
     }
 
-    pub fn isOK(self: *StandardAutoClosingPairConditional, standardToken: StandardTokenType) bool {
+    pub fn isOK(self: *const StandardAutoClosingPairConditional, standardToken: StandardTokenType) bool {
         switch (standardToken) {
             StandardTokenType.Other => return true,
             StandardTokenType.Comment => return self._inComment,
             StandardTokenType.String => return self._inString,
             StandardTokenType.RegEx => return self._inRegEx,
-            _ => unreachable,
         }
     }
 

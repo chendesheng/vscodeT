@@ -102,6 +102,9 @@ TUI editor:
 - Bracket matching: `Ctrl-\` jumps to the matching/enclosing/next bracket,
   `Alt-B` selects to the bracket pair, and `Alt-Shift-B` removes the bracket
   pair around the cursor.
+- Bracket completion: typing an opening bracket inserts its closing bracket and
+  places the cursor between them. Typing an existing closing bracket moves
+  over it, and Backspace removes an auto-inserted pair.
 - Indentation: `Tab`/`Shift-Tab` indent or outdent the selected lines;
   `Ctrl-]` indents lines; `Alt-R` reindents the selected line block and
   `Alt-Shift-R` reindents the whole buffer.
@@ -119,6 +122,11 @@ Editor contributions:
 - `src/vs/editor/contrib/comment` ports `LineCommentCommand` and
   `BlockCommentCommand`. Comment rules for the TUI's languages live in
   `src/tui/language.zig`.
+- Auto-closing brackets are ported from
+  `src/vs/editor/common/cursor/cursorTypeEditOperations.ts` into
+  `src/vs/editor/common/cursor/autoClosing.zig`. Single-character bracket pairs
+  are supported; quotes, comments, multi-character opening pairs, and the
+  surrounding-selection path are not ported yet.
 - `src/vs/editor/contrib/bracketMatching` ports the controller logic: jump to
   bracket, select to bracket, remove brackets, and the cached bracket-match
   data used for visual highlighting. The TUI does not paint decoration classes

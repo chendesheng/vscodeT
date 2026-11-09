@@ -6,6 +6,17 @@ pub const EditorAutoIndentStrategy = enum(u8) { None = 0, Keep = 1, Brackets = 2
 // Configuration options for auto-surround behavior.
 pub const EditorAutoSurroundStrategy = enum(u8) { never = 0, languageDefined = 1, quotes = 2, brackets = 3 };
 
+// Configuration options for auto-closing brackets, quotes and comments.
+pub const EditorAutoClosingStrategy = enum(u8) {
+    always = 0,
+    languageDefined = 1,
+    beforeWhitespace = 2,
+    never = 3,
+};
+
+// Configuration options for auto-closing delete/overtype behavior.
+pub const EditorAutoClosingEditStrategy = enum(u8) { always = 0, auto = 1, never = 2 };
+
 /// Describes how to indent wrapped lines.
 pub const WrappingIndent = enum(u8) {
     /// No indentation => wrapped lines begin at column 1.

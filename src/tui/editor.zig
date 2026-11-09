@@ -63,6 +63,8 @@ const IndentationToSpacesCommand = indentation_commands.IndentationToSpacesComma
 const IndentationToTabsCommand = indentation_commands.IndentationToTabsCommand;
 const ISingleEditOperation = @import("../vs/editor/common/core/editOperation.zig").ISingleEditOperation;
 const multicursor = @import("../vs/editor/contrib/multicursor/browser/multicursor.zig");
+const auto_closing = @import("../vs/editor/common/cursor/autoClosing.zig");
+const CharacterPairSupport = @import("../vs/editor/common/languages/supports/characterPair.zig");
 
 const MAX_STATUS: usize = 512;
 
@@ -103,6 +105,7 @@ pub const Editor = struct {
     word_separators: WordCharacterClassifier,
     bracket_matching: BracketMatchingController,
     language_config_service: *language_configuration_service.Service,
+    character_pair: ?CharacterPairSupport,
     multicursor_session: ?multicursor.SearchSession,
     after_edit: AfterEditComputer,
     saved_version: u32,
@@ -193,6 +196,11 @@ pub const Editor = struct {
         var word_separators = try WordCharacterClassifier.init(allocator, DefaultWordSeparators);
         errdefer word_separators.deinit();
 
+        var character_pair: ?CharacterPairSupport = null;
+        if (language_service.getLanguageConfiguration(language_id)) |config| {
+            character_pair = try CharacterPairSupport.init(config);
+        }
+
         const cursor_config = CursorConfiguration{
             .tabSize = resolved.tabSize,
             .indentSize = resolved.indentSize,
@@ -217,6 +225,7 @@ pub const Editor = struct {
             .word_separators = word_separators,
             .bracket_matching = BracketMatchingController.init(allocator, model),
             .language_config_service = language_config_service,
+            .character_pair = character_pair,
             .multicursor_session = null,
             .after_edit = .{ .model = model },
             .saved_version = model.getAlternativeVersionId(),
@@ -233,6 +242,11 @@ pub const Editor = struct {
             .tokens_need_refresh = false,
         };
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
+        if (editor.character_pair) |*pair_support| {
+            editor.cursor_config.auto_closing_pairs = pair_support.getAutoClosingPairs();
+            editor.cursor_config.auto_close_before_quotes = pair_support.getAutoCloseBeforeSet(true);
+            editor.cursor_config.auto_close_before_brackets = pair_support.getAutoCloseBeforeSet(false);
+        }
 
         const context = try allocator.create(CursorContext);
         errdefer allocator.destroy(context);
@@ -667,6 +681,40 @@ pub const Editor = struct {
         try self.executeTypeResult(result);
     }
 
+    pub fn typeCharacter(self: *Editor, text: []const u8) !void {
+        if (text.len == 0) return;
+
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        if (try auto_closing.shouldOvertypeClose(&self.cursor_config, self.model, selections, text)) {
+            try self.moveRight(false);
+            return;
+        }
+
+        if (try auto_closing.findAutoClosingPair(&self.cursor_config, self.model, selections, text, false)) |pair| {
+            const commands = try self.allocator.alloc(auto_closing.TypeWithAutoClosingCommand, selections.len);
+            defer self.allocator.free(commands);
+            const interfaces = try self.allocator.alloc(?ICommand, selections.len);
+            defer self.allocator.free(interfaces);
+
+            for (selections, 0..) |selection, i| {
+                commands[i] = auto_closing.TypeWithAutoClosingCommand.init(
+                    self.allocator,
+                    selection,
+                    pair.open,
+                    pair.close,
+                    true,
+                );
+                interfaces[i] = commandOf(auto_closing.TypeWithAutoClosingCommand).of(&commands[i]);
+            }
+            try self.executeCommands(interfaces);
+            return;
+        }
+
+        try self.insertText(text);
+    }
+
     pub fn newline(self: *Editor) !void {
         const eol = eolToString(self.model.getEOL());
         const position = self.modelCursorPosition();
@@ -880,6 +928,14 @@ pub const Editor = struct {
     }
 
     pub fn deleteLeft(self: *Editor) !void {
+        if (try auto_closing.autoClosingDeleteRange(&self.cursor_config, self.model, self.modelSelection())) |range| {
+            self.closeTypingGroup();
+            const command = cursorCommon.ReplaceCommand.init(range, "");
+            try self.executeReplaceCommands(&[_]?cursorCommon.ReplaceCommand{command});
+            self.prev_edit_operation_type = .DeletingLeft;
+            return;
+        }
+
         const selections = try self.cursorsRef().getSelections(self.allocator);
         defer self.allocator.free(selections);
         var result = try DeleteOperations.deleteLeft(
@@ -1880,4 +1936,45 @@ test "Editor: select next occurrence and replace all selections" {
     const value = try editor.model.getValue(.TextDefined, false);
     defer value.deinit();
     try std.testing.expectEqualStrings("bar bar", value.items);
+}
+
+test "Editor: auto-closes brackets and deletes the pair" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.typeCharacter("(");
+    const value = try editor.model.getValue(.TextDefined, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("()", value.items);
+    try std.testing.expectEqual(Position.init(1, 2), editor.modelCursorPosition());
+
+    try editor.deleteLeft();
+    const after_delete = try editor.model.getValue(.TextDefined, false);
+    defer after_delete.deinit();
+    try std.testing.expectEqualStrings("", after_delete.items);
+    try std.testing.expectEqual(Position.init(1, 1), editor.modelCursorPosition());
+}
+
+test "Editor: overtypes an existing closing bracket" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.typeCharacter("(");
+    try editor.typeCharacter(")");
+    const value = try editor.model.getValue(.TextDefined, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("()", value.items);
+    try std.testing.expectEqual(Position.init(1, 3), editor.modelCursorPosition());
 }

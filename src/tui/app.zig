@@ -124,7 +124,13 @@ fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
         },
         .paste_end => return false,
         .text => |text| {
-            editor.insertText(text) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
+            var offset: usize = 0;
+            while (offset < text.len) {
+                const length = std.unicode.utf8ByteSequenceLength(text[offset]) catch 1;
+                const end = @min(offset + length, text.len);
+                editor.typeCharacter(text[offset..end]) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
+                offset = end;
+            }
             return false;
         },
         .char => |ch| {
@@ -159,7 +165,7 @@ fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
             }
             var buffer: [4]u8 = undefined;
             const encoded = std.unicode.utf8Encode(ch, &buffer) catch return false;
-            editor.insertText(buffer[0..encoded]) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
+            editor.typeCharacter(buffer[0..encoded]) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
             return false;
         },
         .enter => editor.newline() catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)}),
@@ -315,4 +321,23 @@ test "app: indent lines shortcut" {
     const line = try editor.model.getLineContent(1);
     defer line.deinit();
     try std.testing.expectEqualStrings("    a", line.items);
+}
+
+test "app: typing an open bracket auto-closes it" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var pasting = false;
+    const open_paren = input.Event{ .key = .{ .text = "(" } };
+    try std.testing.expect(!dispatch(editor, open_paren, &pasting));
+
+    const value = try editor.model.getValue(.TextDefined, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("()", value.items);
+    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().column);
 }

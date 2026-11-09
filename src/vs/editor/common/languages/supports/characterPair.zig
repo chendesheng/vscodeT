@@ -53,7 +53,7 @@ pub fn init(config: LanguageConfiguration) !Self {
     };
 }
 
-pub fn getAutoClosingPairs(self: *Self) []StandardAutoClosingPairConditional {
+pub fn getAutoClosingPairs(self: *Self) []const StandardAutoClosingPairConditional {
     return self._autoClosingPairs.slice();
 }
 
