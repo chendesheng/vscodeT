@@ -325,7 +325,7 @@ pub const TextChangeCompressor = struct {
                 }
             }
         }
-        try self._result.resize(write_index);
+        try self._result.resize(write_index + 1);
     }
 
     pub fn _removeNoOps(self: *TextChangeCompressor) !void {
@@ -399,4 +399,19 @@ test "textChange read/write" {
     try std.testing.expectEqualStrings(change.newText.items(), readChanges.items[0].newText.items());
     try std.testing.expectEqual(change.oldPosition, readChanges.items[0].oldPosition);
     try std.testing.expectEqualStrings(change.oldText.items(), readChanges.items[0].oldText.items());
+}
+
+test "compress consecutive insertions" {
+    const allocator = std.testing.allocator;
+    var prev = ArrayList(TextChange).init(allocator);
+    defer prev.deinit();
+    try prev.append(TextChange.init(3, String.initBorrowed(""), 3, String.initBorrowed("a")));
+    var curr = [_]TextChange{TextChange.init(4, String.initBorrowed(""), 4, String.initBorrowed("b"))};
+    var result = try compressConsecutiveTextChanges(allocator, prev, &curr);
+    defer {
+        for (result.items) |*change| change.deinit();
+        result.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualStrings("ab", result.items[0].newText.items());
 }

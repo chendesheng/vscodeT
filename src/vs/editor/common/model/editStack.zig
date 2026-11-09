@@ -9,6 +9,7 @@ const UndoRedoService = @import("../../../platform/undoRedo/common/undoRedoServi
 const Selection = @import("../core/selection.zig").Selection;
 const EOL = @import("../core/misc/eolCounter.zig").EOL;
 const TextChange = @import("../core/textChange.zig").TextChange;
+const compressConsecutiveTextChanges = @import("../core/textChange.zig").compressConsecutiveTextChanges;
 const String = @import("../../../base/common/strings.zig").String;
 const UndoRedoGroup = @import("../../../platform/undoRedo/common/undoRedo.zig").UndoRedoGroup;
 const ValidEditOperation = @import("../model.zig").ValidEditOperation;
@@ -250,10 +251,36 @@ pub const SingleModelEditStackDataUnserialized = struct {
     }
 
     pub fn append(self: *SingleModelEditStackDataUnserialized, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
-        for (textChanges) |change| {
-            var cloned = try cloneTextChange(self.changes.allocator, change);
-            errdefer cloned.deinit();
-            try self.changes.append(cloned);
+        if (textChanges.len > 0) {
+            // Consecutive edits use positions relative to different model
+            // states. Compress them into one change before serializing the
+            // group; replaying the originals as one batch can hit wrong ranges.
+            var arena = std.heap.ArenaAllocator.init(self.changes.allocator);
+            defer arena.deinit();
+            const temp_allocator = arena.allocator();
+
+            var prev = ArrayList(TextChange).init(temp_allocator);
+            for (self.changes.items) |*change| {
+                try prev.append(try cloneTextChange(temp_allocator, change.*));
+            }
+            var curr = ArrayList(TextChange).init(temp_allocator);
+            for (textChanges) |change| {
+                try curr.append(try cloneTextChange(temp_allocator, change));
+            }
+
+            const compressed = try compressConsecutiveTextChanges(temp_allocator, prev, curr.items);
+            var owned = ArrayList(TextChange).init(self.changes.allocator);
+            errdefer {
+                for (owned.items) |*change| change.deinit();
+                owned.deinit();
+            }
+            for (compressed.items) |*change| {
+                try owned.append(try cloneTextChange(self.changes.allocator, change.*));
+            }
+
+            for (self.changes.items) |*change| change.deinit();
+            self.changes.deinit();
+            self.changes = owned;
         }
         const newAfter = try dupeSelections(self.changes.allocator, afterCursorState);
         freeSelections(self.changes.allocator, self.afterCursorState);

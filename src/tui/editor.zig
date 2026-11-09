@@ -1091,3 +1091,85 @@ test "Editor: a closing brace stays on the newly inserted line" {
     try std.testing.expectEqualStrings("}", line3.items);
     try std.testing.expectEqualStrings("/// comment", line4.items);
 }
+
+test "Editor: undo of grouped typing restores the original text" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "var", "test.txt", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.insertText(" ");
+    try editor.insertText("q");
+    try editor.insertText("u");
+    try editor.insertText("e");
+    try editor.insertText("u");
+    try editor.insertText("e");
+    try editor.undo();
+
+    const value = try editor.model.getValue(.LF, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("var", value.items);
+}
+
+
+test "Editor: grouped undo restores consecutive edits" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "var queue = ArrayQueue(i32).init();\n", "test.zig", 80, 20);
+    defer { editor.deinit(); allocator.destroy(editor); }
+
+    const cases = [_][]const u8{ "insert", "deleteLeft", "deleteRight", "replaceThenType" };
+    for (cases) |kind| {
+        const before = try editor.model.getValue(.LF, false);
+        defer before.deinit();
+        editor.model.pushStackElement();
+
+        if (std.mem.eql(u8, kind, "insert")) {
+            try editor.insertText(" ");
+            try editor.insertText("a");
+            try editor.insertText("b");
+            try editor.insertText("c");
+            try editor.insertText("d");
+        } else if (std.mem.eql(u8, kind, "deleteLeft")) {
+            try editor.moveLineEnd(false);
+            try editor.deleteLeft();
+            try editor.deleteLeft();
+            try editor.deleteLeft();
+            try editor.deleteLeft();
+            try editor.deleteLeft();
+        } else if (std.mem.eql(u8, kind, "deleteRight")) {
+            try editor.moveLineStart(false);
+            try editor.deleteRight();
+            try editor.deleteRight();
+            try editor.deleteRight();
+            try editor.deleteRight();
+            try editor.deleteRight();
+        } else {
+            try editor.moveLineStart(false);
+            try editor.moveRight(true);
+            try editor.moveRight(true);
+            try editor.moveRight(true);
+            try editor.insertText("a");
+            try editor.insertText("b");
+            try editor.insertText("c");
+        }
+
+        const after = try editor.model.getValue(.LF, false);
+        defer after.deinit();
+        editor.undo() catch {
+            std.debug.print("UNDOERR {s}\n", .{kind});
+            return error.TestUnexpectedResult;
+        };
+        const undone = try editor.model.getValue(.LF, false);
+        defer undone.deinit();
+        if (!std.mem.eql(u8, before.items, undone.items)) {
+            std.debug.print("GROUP MISMATCH {s}\nbefore=[{s}]\nafter=[{s}]\nundone=[{s}]\n", .{ kind, before.items, after.items, undone.items });
+            return error.TestUnexpectedResult;
+        }
+        try editor.redo();
+    }
+}
