@@ -19,6 +19,12 @@ Notes for the Zig 0.17 port:
   deprecated-but-supported `std.array_list.Managed` shim as an intermediate
   step; moving to unmanaged lists is the main remaining modernization.
 
+## Design docs
+
+- [Terminal UI architecture](docs/terminal-ui.md) — the standalone `ui/`
+  library: DOM tree model, cell-grid renderer, and the POC-first plan for
+  porting the browser UI.
+
 Tokenizer status:
 
 - The syntax-tokenizer stack from `vscode/src/vs/editor/common/model/tokens`
