@@ -6,7 +6,8 @@ Requires Zig 0.17 or newer.
 brew install oniguruma
 zig build        # build the TUI editor
 zig build run -- <file>   # run the TUI editor on a file
-zig build test   # run the test suite
+zig build run -- --preview <file>   # read-only terminal UI preview
+zig build test   # run the editor and ui library tests
 ```
 
 Notes for the Zig 0.17 port:
@@ -24,6 +25,20 @@ Notes for the Zig 0.17 port:
 - [Terminal UI architecture](docs/terminal-ui.md) — the standalone `ui/`
   library: DOM tree model, cell-grid renderer, and the POC-first plan for
   porting the browser UI.
+
+## Terminal UI library
+
+- `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with direct
+  styles (no CSS), whole-cell layout, and a double-buffered cell renderer that
+  emits only an ANSI frame diff. It does not import editor code.
+- `zig build run -- --preview <file>` renders a read-only preview through the
+  library: text, syntax colors, right-aligned line numbers, wrapped-line
+  markers and the status row. Cursors, selections, scrolling, mouse input and
+  the browser view parts are not wired yet.
+- The library's tests are part of `zig build test`; when working inside `ui/`,
+  `cd ui && zig build test` runs them directly. Examples live in `ui/examples/`
+  and run with `cd ui && zig build examples` (or `example-hello`,
+  `example-list`, `example-layout` individually).
 
 Tokenizer status:
 

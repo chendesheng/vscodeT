@@ -6,20 +6,31 @@ const input = @import("./input.zig");
 const Editor = @import("./editor.zig").Editor;
 const Screen = @import("./screen.zig").Screen;
 const renderer = @import("./render.zig");
+const Preview = @import("./preview.zig").Preview;
 const ArrayList = std.array_list.Managed;
 
-fn getFirstArg(args: std.process.Args) ![]const u8 {
+const Args = struct {
+    path: []const u8,
+    preview: bool,
+};
+
+fn parseArgs(args: std.process.Args) !Args {
     var it = args.iterate();
     _ = it.next(); // executable name
-    return it.next() orelse error.NoPathProvided;
+    const first = it.next() orelse return error.NoPathProvided;
+    if (std.mem.eql(u8, first, "--preview")) {
+        const path = it.next() orelse return error.NoPathProvided;
+        return .{ .path = path, .preview = true };
+    }
+    return .{ .path = first, .preview = false };
 }
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
 
-    const path = getFirstArg(init.minimal.args) catch {
-        std.debug.print("usage: zig <file>\n", .{});
+    const args = parseArgs(init.minimal.args) catch {
+        std.debug.print("usage: zig <file>\n       zig --preview <file>\n", .{});
         return;
     };
 
@@ -44,10 +55,15 @@ pub fn main(init: std.process.Init) !void {
     try tui.installSigWinch();
 
     var size = try tui.getTerminalSize();
-    var editor = try Editor.create(allocator, io, path, size.width, size.height);
+    var editor = try Editor.create(allocator, io, args.path, size.width, size.height);
     defer {
         editor.deinit();
         allocator.destroy(editor);
+    }
+
+    if (args.preview) {
+        try runPreview(allocator, out, editor, size);
+        return;
     }
 
     var screen = try Screen.init(allocator, size.width, size.height);
@@ -86,6 +102,43 @@ pub fn main(init: std.process.Init) !void {
         }
 
         try renderer.render(editor, &screen, out);
+    }
+}
+
+fn runPreview(allocator: std.mem.Allocator, out: *Io.Writer, editor: *Editor, initial_size: tui.Size) !void {
+    var size = initial_size;
+    try tui.hideCursor(out);
+    defer tui.showCursor(out) catch {};
+
+    const preview = try Preview.init(allocator, editor);
+    defer preview.deinit();
+
+    try preview.render(out);
+    try out.flush();
+
+    var input_buffer = try ArrayList(u8).initCapacity(allocator, 256);
+    defer input_buffer.deinit();
+
+    while (true) {
+        const ready = try tui.pollInput(250);
+
+        if (try tui.resizedSize()) |new_size| {
+            size = new_size;
+            editor.setViewport(size.width, size.height);
+            try preview.resize();
+            try tui.clearScreen(out);
+            try preview.render(out);
+            try out.flush();
+            continue;
+        }
+
+        if (!ready) continue;
+
+        input_buffer.clearRetainingCapacity();
+        const bytes = try tui.readFd(posix.STDIN_FILENO, &input_buffer);
+        for (bytes) |byte| {
+            if (byte == 0x11) return; // Ctrl-Q
+        }
     }
 }
 

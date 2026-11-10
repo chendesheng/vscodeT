@@ -46,7 +46,7 @@ terminal cells (ANSI)
      frame.zig           # double buffer, damage bands, cell diff
      ansi.zig            # ANSI writer / style-diff encoder
      surface.zig         # Document + Frame + viewport + render()
-     test/               # library unit tests
+     tests.zig           # library unit tests
    ```
 
    The package/module name `ui` is provisional and easy to rename. The library
@@ -232,9 +232,8 @@ One `CellGrid` per frame, as parallel typed arrays:
 
 ### 5.2 Painting
 
-`PaintContext` carries the target grid, viewport offset, the active clip rect
-(from `overflow: hidden` ancestors), and the damage bands. All writes go through
-clipped primitives:
+The paint pass carries the target grid, the viewport, and the active clip rect
+(from `overflow: hidden` ancestors). All writes go through clipped primitives:
 
 - `drawRect(x, y, w, h, color)` — background fills.
 - `drawText(x, y, text, style)` — skips control characters and zero-width
@@ -272,8 +271,8 @@ The encoder follows TermDOM's `generateANSI`:
 - Choose the cheapest forward cursor move: `\r`, `\n`, CUD, CUF, or CUP.
 - Batch printable ASCII into one run; emit non-ASCII and wide glyphs
   individually.
-- Emit the minimal SGR diff against the previously emitted cell, with an
-  escape-sequence cache keyed by `(fg, bg, attrs, previous attrs)`.
+- Emit a style reset plus the needed SGR attributes when the style changes
+  (the escape cache and truly minimal diffs are a later optimization).
 - Reset style at the end of a row that used any.
 - The first time a row has content, emit `\r` + erase-to-line-end (`EL`) before
   painting, so a shortened line does not leave a stale tail.

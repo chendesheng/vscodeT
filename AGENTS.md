@@ -31,6 +31,20 @@ Do not edit upstream files. Port behavior into this repository instead.
 When a file contains a deliberate Zig adaptation rather than a literal port,
 state that in the comment and keep the behavioral contract intact.
 
+## Standalone UI library
+
+- `ui/` is a separate Zig package outside `src/` (a path dependency in
+  `build.zig.zon`). It must not import anything from `src/`.
+- There is no CSS and no HTML in this layer: node styles are direct `Style`
+  values, and class names are identifiers, never selectors.
+- The renderer is a double-buffered cell grid with an ANSI frame diff; see
+  `docs/terminal-ui.md`. Library tests read `Surface.grid()`, not ANSI strings.
+- TUI integration (preview, terminal input, status) stays in `src/tui/`.
+- `zig build test` builds and runs `ui/tests.zig` alongside the editor tests;
+  `cd ui && zig build test` runs the library on its own.
+- Because `ui/` is a new package, it uses Zig 0.17 unmanaged `std.ArrayList`;
+  the editor's `std.array_list.Managed` shim is the legacy side.
+
 ## Porting approach
 
 1. Read the upstream implementation and its tests before writing code.

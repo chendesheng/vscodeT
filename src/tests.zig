@@ -1,4 +1,5 @@
 comptime {
+    _ = @import("./tui/preview.zig");
     _ = @import("./vs/base/common/cache.zig");
     _ = @import("./vs/base/common/event.zig");
     _ = @import("./vs/editor/common/core/ranges/lineRange.zig");

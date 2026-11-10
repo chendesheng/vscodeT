@@ -1,0 +1,21 @@
+.{
+    .name = .ui,
+    .version = "0.0.0",
+    .fingerprint = 0x27ff46b054f71008,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "ui.zig",
+        "ansi.zig",
+        "cell.zig",
+        "dom.zig",
+        "frame.zig",
+        "layout.zig",
+        "paint.zig",
+        "style.zig",
+        "surface.zig",
+        "tests.zig",
+    },
+}

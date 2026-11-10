@@ -18,6 +18,8 @@ pub fn build(b: *std.Build) void {
     const onig = onigModule(b, target, optimize);
     const textmate_dep = b.dependency("textmate", .{ .target = target, .optimize = optimize });
     const textmate = textmate_dep.module("textmate");
+    const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
+    const ui = ui_dep.module("ui");
 
     // We will also create a module for our other entry point, 'main.zig'.
     const exe = b.addExecutable(.{
@@ -31,6 +33,7 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("oniguruma", onig);
     exe.root_module.addImport("textmate", textmate);
+    exe.root_module.addImport("ui", ui);
     exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
     exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
     exe.root_module.linkSystemLibrary("onig", .{});
@@ -58,7 +61,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    setupTests(b, target, optimize, onig, textmate);
+    setupTests(b, target, optimize, onig, textmate, ui);
 }
 
 /// Translates the oniguruma C header into a Zig module. Zig 0.17 removed
@@ -78,7 +81,7 @@ fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     return module;
 }
 
-fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, textmate: *std.Build.Module) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, textmate: *std.Build.Module, ui: *std.Build.Module) void {
     const test_step = b.step("test", "Run all tests");
 
     const tests = b.addTest(.{
@@ -91,10 +94,22 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     });
     tests.root_module.addImport("oniguruma", onig);
     tests.root_module.addImport("textmate", textmate);
+    tests.root_module.addImport("ui", ui);
     tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
     tests.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
     tests.root_module.linkSystemLibrary("onig", .{});
 
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
+
+    const ui_tests = b.addTest(.{
+        .name = "ui_tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("ui/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_ui_tests = b.addRunArtifact(ui_tests);
+    test_step.dependOn(&run_ui_tests.step);
 }
