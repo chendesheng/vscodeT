@@ -308,12 +308,14 @@ box. Flex is the next formatting context; the box tree
 already produces its items.
 
 The box tree owns invalidation. DOM mutation APIs notify the attached
-`MutationObserver`: a structural change sets `needs_rebuild`; a style or text
-change marks the affected box and its ancestors `needs_layout`. There is no
-document-level dirty flag or revision. The pass is currently a full rebuild and
-solve when those flags are set, then clears them, so fine-grained subtree layout
-can be added without changing the invalidation API. Direct writes to public
-`Element.style`/`Text.style` fields bypass the observer; use `Node.setStyle`.
+`MutationObserver`. Structural, style and text changes all set `needs_rebuild`
+(and `needs_layout`): boxes copy the direct `Style` and text data when they are
+built, and a `display` change can alter the box shape, so the POC rebuilds the
+derived tree from the DOM before solving. There is no document-level dirty flag
+or revision. Per-box `needs_layout` is kept for the future incremental pass,
+which can update copied values in place instead of rebuilding. Direct writes to
+public `Element.style`/`Text.style` fields bypass the observer; use
+`Node.setStyle`.
 
 ### 5.3 Why the tree
 

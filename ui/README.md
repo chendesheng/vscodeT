@@ -44,9 +44,9 @@ zig build examples         # all eight; press q in each
 ```
 
 Each example draws on the alternate screen and waits for `q` (or Ctrl-Q) to
-exit. Without a terminal on stdin it shows one frame for two seconds and exits,
-so `zig build examples` still terminates in a non-interactive run. The focus
-example additionally handles Tab/Shift-Tab and Enter.
+exit. Input is read from stdin, so a pipe can drive an example too; EOF exits,
+which keeps `zig build examples` terminating in a non-interactive run. The
+focus example additionally handles Tab/Shift-Tab and Enter.
 
 ## Minimal use
 

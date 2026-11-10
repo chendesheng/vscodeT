@@ -8,6 +8,7 @@ const box = @import("box.zig");
 const frame_mod = @import("frame.zig");
 const layout = @import("layout.zig");
 const paint = @import("paint.zig");
+const style = @import("style.zig");
 
 pub const ColorDepth = cell.ColorDepth;
 
@@ -133,4 +134,44 @@ test "Surface: text, diff and resize-free redraw" {
     defer second.deinit();
     try surface.render(&second.writer, .{});
     try std.testing.expectEqual(@as(usize, 0), second.written().len);
+}
+
+test "Surface: text and style mutations repaint" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 8, .rows = 2 });
+    defer surface.deinit();
+
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+    });
+    doc.setRoot(root);
+
+    const text = try doc.createText("a");
+    const red = style.Color{ .r = 255, .g = 0, .b = 0 };
+    const blue = style.Color{ .r = 0, .g = 0, .b = 255 };
+    text.setStyle(.{ .color = red });
+    _ = try root.appendChild(text);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try surface.render(&out.writer, .{});
+
+    const first_row = try surface.grid().rowText(allocator, 0);
+    defer allocator.free(first_row);
+    try std.testing.expectEqualStrings("a", first_row);
+    try std.testing.expectEqual(cell.packColor(red), surface.grid().fg[surface.grid().index(0, 0)]);
+
+    try text.setTextContent("b");
+    try surface.render(&out.writer, .{});
+    const second_row = try surface.grid().rowText(allocator, 0);
+    defer allocator.free(second_row);
+    try std.testing.expectEqualStrings("b", second_row);
+
+    text.setStyle(.{ .color = blue });
+    try surface.render(&out.writer, .{});
+    try std.testing.expectEqual(cell.packColor(blue), surface.grid().fg[surface.grid().index(0, 0)]);
 }

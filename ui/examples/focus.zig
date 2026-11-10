@@ -1,7 +1,6 @@
 //! Keyboard focus: focusable items, Tab traversal, Enter/Space activation and
-//! the active element. Press `q` to quit. Without a terminal it draws one frame
-//! and exits after two seconds, so a non-interactive `zig build examples` still
-//! terminates.
+//! the active element. Press `q` to quit. Input is read from stdin, so a pipe
+//! can drive it too; EOF exits.
 //!
 //! Run with `cd ui && zig build example-focus`.
 
@@ -101,9 +100,7 @@ pub fn main() !void {
         out.flush() catch {};
     }
 
-    // The example also runs without a terminal (for `zig build examples`):
-    // raw mode fails, one frame is drawn, and the example exits after the
-    // same two-second window.
+    // Raw mode is only needed for a terminal; piped bytes are already raw.
     const orig_termios = common.enableRawMode(io);
     defer {
         if (orig_termios) |orig| common.disableRawMode(orig) catch {};
@@ -111,11 +108,6 @@ pub fn main() !void {
 
     try surface.render(out, .{});
     try out.flush();
-
-    if (orig_termios == null) {
-        io.sleep(.fromMilliseconds(2000), .awake) catch {};
-        return;
-    }
 
     while (!app.quit) {
         var fds = [_]std.posix.pollfd{.{

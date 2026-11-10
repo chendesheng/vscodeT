@@ -2,8 +2,8 @@ const std = @import("std");
 const ui = @import("ui");
 
 /// Draws the example on the alternate screen and waits for `q` (or Ctrl-Q),
-/// then restores the terminal. Without a terminal on stdin there is no key to
-/// wait for, so it shows the frame for two seconds and exits.
+/// then restores the terminal. When stdin is a pipe the bytes are decoded the
+/// same way, so a demo can be driven non-interactively; EOF exits.
 pub fn present(surface: *ui.Surface, allocator: std.mem.Allocator) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     var buffer: [8192]u8 = undefined;
@@ -24,10 +24,6 @@ pub fn present(surface: *ui.Surface, allocator: std.mem.Allocator) !void {
     try surface.render(out, .{});
     try out.flush();
 
-    if (orig_termios == null) {
-        io.sleep(.fromMilliseconds(2000), .awake) catch {};
-        return;
-    }
     try waitForQ(allocator);
 }
 

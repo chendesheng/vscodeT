@@ -14,9 +14,10 @@
 //! `display: none` generates nothing; `display: contents` generates no box of
 //! its own and its children join the parent's formatting context.
 //!
-//! The tree owns layout invalidation: `needs_rebuild` for DOM structure changes
-//! and `needs_layout` for style/content changes, with per-box `needs_layout`
-//! marking the affected subtrees and their ancestors.
+//! The tree owns layout invalidation. Because boxes copy the DOM's direct
+//! `Style` and text data, structural, style and text changes set
+//! `needs_rebuild`; `needs_layout` triggers a solve after the rebuild. Per-box
+//! `needs_layout` is kept for the future incremental pass.
 
 const std = @import("std");
 const dom = @import("dom.zig");
@@ -57,10 +58,10 @@ pub const BoxTree = struct {
     arena: std.heap.ArenaAllocator,
     root: *LayoutBox,
     node_boxes: std.AutoHashMapUnmanaged(*dom.Node, *LayoutBox) = .empty,
-    /// A tree/structure change needs the boxes rebuilt from the DOM.
+    /// A structure, style or text change needs the boxes rebuilt from the DOM.
     needs_rebuild: bool = true,
-    /// A style/content change needs the layout solved. Per-box `needs_layout`
-    /// records which subtrees are dirty; the current pass still solves all.
+    /// The rebuilt boxes need the layout solved. Per-box `needs_layout` records
+    /// which subtrees are dirty; the current pass still solves all.
     needs_layout: bool = true,
 
     pub fn init(allocator: std.mem.Allocator) !BoxTree {
@@ -300,30 +301,20 @@ fn clearBoxNeedsLayout(box: *LayoutBox) void {
     for (box.children.items) |child| clearBoxNeedsLayout(child);
 }
 
-fn markNeedsLayout(tree: *BoxTree, box: *LayoutBox) void {
-    var current: ?*LayoutBox = box;
-    while (current) |item| {
-        item.needs_layout = true;
-        if (item == tree.root) break;
-        current = item.parent;
-    }
-    tree.needs_layout = true;
-}
-
-fn onMutation(context: *anyopaque, node: *dom.Node, kind: dom.MutationKind) void {
+fn onMutation(context: *anyopaque, _: *dom.Node, kind: dom.MutationKind) void {
     const tree: *BoxTree = @ptrCast(@alignCast(context));
     switch (kind) {
         .tree => {
             tree.needs_rebuild = true;
             tree.needs_layout = true;
         },
+        // Boxes copy the direct style and the text data when they are built.
+        // An in-place update would have to refresh principal, anonymous and
+        // text boxes alike (and `display` changes the box shape), so the POC
+        // rebuilds the derived tree and relayouts.
         .style, .text => {
-            if (tree.find(node)) |box| {
-                markNeedsLayout(tree, box);
-            } else {
-                tree.needs_rebuild = true;
-                tree.needs_layout = true;
-            }
+            tree.needs_rebuild = true;
+            tree.needs_layout = true;
         },
     }
 }
@@ -427,7 +418,7 @@ test "BoxTree: flex text runs become anonymous flex items" {
     try std.testing.expectEqual(Kind.anonymous_flex_item, root_box.children.items[2].kind);
 }
 
-test "BoxTree: mutations mark the affected boxes and the tree" {
+test "BoxTree: style, text and tree mutations rebuild" {
     const allocator = std.testing.allocator;
     var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
     defer doc.deinit();
@@ -447,13 +438,16 @@ test "BoxTree: mutations mark the affected boxes and the tree" {
     try std.testing.expect(!tree.needs_rebuild);
 
     root.setStyle(.{ .color = .{ .r = 1, .g = 2, .b = 3 } });
+    try std.testing.expect(tree.needs_rebuild);
     try std.testing.expect(tree.needs_layout);
-    try std.testing.expect(tree.find(root).?.needs_layout);
+    try tree.rebuild(&doc);
+    try std.testing.expectEqual(@as(?style_mod.Color, .{ .r = 1, .g = 2, .b = 3 }), tree.find(root).?.style.color);
 
     tree.clearNeedsLayout();
     try text.setTextContent("y");
-    try std.testing.expect(tree.needs_layout);
-    try std.testing.expect(tree.find(text).?.needs_layout);
+    try std.testing.expect(tree.needs_rebuild);
+    try tree.rebuild(&doc);
+    try std.testing.expectEqualStrings("y", tree.find(text).?.text.?);
 
     tree.clearNeedsLayout();
     _ = try root.appendChild(try doc.createText("z"));
