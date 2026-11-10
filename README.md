@@ -25,6 +25,9 @@ Notes for the Zig 0.17 port:
 - [Terminal UI architecture](docs/terminal-ui.md) — the standalone `ui/`
   library: DOM tree model, cell-grid renderer, and the POC-first plan for
   porting the browser UI.
+- [Extension system](docs/extensions.md) — reuse VS Code's Node extension host
+  unmodified, port the workbench side (RPC codec, `MainThread*` actors,
+  scanner, contribution points, TUI wiring) to Zig.
 
 ## Terminal UI library
 
