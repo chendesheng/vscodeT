@@ -566,6 +566,20 @@ Library constraints:
 - `src/vs/editor/contrib/find/browser/replacePattern.zig` and
   `src/vs/base/common/search.zig` port the replace-string parser and
   case-preserving replacement, with the upstream test cases.
+- The find contribution is ported end-to-end on this layer: `findState.zig`
+  (state/events/overrides), `findDecorations.zig` (ranges instead of model
+  decorations), `findModel.zig` (incremental research, next/previous with wrap,
+  replace, replace all, select all matches), `replaceAllCommand.zig` and
+  `findWidget.zig` (the terminal bar). `findController.zig` owns the state,
+  model and widget and forwards decoration ranges to the view. The app treats
+  Ctrl-F/Ctrl-H as global find keys, and `View.dispatchKey` routes everything
+  else to the focused widget first.
+- Key map for the terminal find bar (TUI-specific, documented in `README.md`):
+  Enter/Shift-Enter next/previous, Tab switches inputs, Escape closes,
+  Alt-C/W/R options, Alt-P preserve case, Ctrl-Alt-Enter replace all.
+- Model fixes the port needed: `TextModel.findNextMatch` no longer runs a
+  second discarded search (which leaked its capture array), and the
+  word-separator cache owns its keys instead of borrowing editor slices.
 - `src/tui/app.zig` dispatches keys to the editor, refreshes the view and syncs
   the hardware cursor after each frame; resize recreates the surface.
 - Gutter width follows the existing `gutterWidthFor` logic; line numbers are
@@ -641,9 +655,10 @@ Library constraints:
   reporting are not. Focus events have no capture pass and there are no
   `:focus`-style selectors; focus is explicit state plus listeners.
 - No cursors, selections, scrollbar or scrollable viewport (the preview
-  page-scrolls by rebuilding), decorations, minimap, glyph margin, view zones,
-  widgets, IME. The editor view does paint the current line, selections and a
-  hardware cursor; decorations and widgets are the next milestone.
+  page-scrolls by rebuilding), minimap, glyph margin, view zones, IME. The
+  editor view paints the current line, selections, hardware cursor and find
+  ranges; overlay widget hosting and the find bar are in, other contributions
+  are not.
 - No row damage bands or terminal scroll shift in the POC; full grid diff only.
 - No margin collapsing, auto margins, right/bottom anchoring, multi-cell/rounded
   border styles, background-clip or z-index paint ordering yet. Borders are

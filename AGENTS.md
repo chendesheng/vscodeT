@@ -60,6 +60,9 @@ state that in the comment and keep the behavioral contract intact.
   their view on this document; keep their model/state code upstream-shaped and
   put only the terminal DOM adaptation in the widget. Sidebar/preview/read-loop
   code must not re-implement focus or key dispatch that the library owns.
+  The find contribution is the first consumer: `findState`/`findModel` are the
+  model, `findWidget` is the terminal view, and `findController` wires state,
+  model, widget and the view's decoration sink.
 - `zig build test` builds and runs `ui/tests.zig` alongside the editor tests;
   `cd ui && zig build test` runs the library on its own.
 - Because `ui/` is a new package, it uses Zig 0.17 unmanaged `std.ArrayList`;

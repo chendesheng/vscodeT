@@ -42,8 +42,13 @@ Notes for the Zig 0.17 port:
   `zig build run -- --preview <file>` read-only mode uses the same token
   renderer and adds Up/Down, PageUp/PageDown, Home and End scrolling; Ctrl-Q
   quits. Overlay widgets and a single-line terminal input box
-  (`ui/inputbox.zig`) are in place for editor contributions; the find bar is
-  the first widget being wired. Mouse input is not wired yet.
+  (`ui/inputbox.zig`) are in place, and the find bar is wired: Ctrl-F opens
+  find (a single-line selection seeds the query), Ctrl-H opens the replace row,
+  Enter/Shift-Enter go to the next/previous match, Escape closes, Tab switches
+  between the find and replace inputs, Alt-C/Alt-W/Alt-R toggle match case,
+  whole word and regex, Alt-P toggles preserve case, and Ctrl-Alt-Enter
+  replaces all. The bar shows the match position/count and option state.
+  Mouse input is not wired yet.
 - Keyboard events and focus are library features: nodes take listeners, the
   active element receives keys, and Tab/Shift-Tab move through focusable nodes
   (`Element.focusable` / `Element.tab_index`). See `ui/README.md` and

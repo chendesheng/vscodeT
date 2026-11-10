@@ -166,6 +166,9 @@ pub const View = struct {
     /// The hardware cursor cell, valid after `render` has laid the tree out.
     /// Returns null when the caret is outside the text area.
     pub fn cursorCell(self: *View) ?Cell {
+        // A focused widget paints its own block caret; the hardware cursor
+        // belongs to the editor.
+        if (self.surface.document().active_element != null) return null;
         const line = self.cursor_line orelse return null;
         const rows = self.surface.document().rows;
         const cols = self.surface.document().cols;

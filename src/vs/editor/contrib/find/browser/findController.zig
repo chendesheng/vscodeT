@@ -1,0 +1,150 @@
+// Terminal controller for the find contribution.
+//
+// Upstream `findController.ts` registers editor contributions and a large set
+// of actions and keybindings. The TUI has no keybinding registry or editor
+// contribution host yet, so this controller owns the state, the find model and
+// the widget, exposes the commands the app calls (start, replace, close) and
+// forwards decoration changes to the view.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const editorBrowser = @import("../../../browser/editorBrowser.zig");
+const FindReplaceState = @import("./findState.zig").FindReplaceState;
+const FindModel = @import("./findModel.zig").FindModel;
+const FindWidget = @import("./findWidget.zig").FindWidget;
+const Editor = @import("../../../../../tui/editor.zig").Editor;
+
+/// The view side of the decoration hand-off. The controller does not depend on
+/// the TUI view type.
+pub const DecorationSink = struct {
+    context: ?*anyopaque = null,
+    set: ?*const fn (context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void = null,
+};
+
+pub const FindController = struct {
+    allocator: Allocator,
+    editor: *Editor,
+    state: *FindReplaceState,
+    model: *FindModel,
+    find_widget: *FindWidget,
+    sink: DecorationSink,
+
+    pub fn init(allocator: Allocator, editor: *Editor, sink: DecorationSink) !*FindController {
+        const self = try allocator.create(FindController);
+        errdefer allocator.destroy(self);
+
+        const state = try allocator.create(FindReplaceState);
+        errdefer allocator.destroy(state);
+        state.* = FindReplaceState.init(allocator);
+        errdefer state.deinit();
+
+        self.* = .{
+            .allocator = allocator,
+            .editor = editor,
+            .state = state,
+            .model = undefined,
+            .find_widget = undefined,
+            .sink = sink,
+        };
+
+        self.model = try FindModel.init(allocator, editor, state, onDecorationsChanged, self);
+        errdefer self.model.deinit();
+        self.find_widget = try FindWidget.init(allocator, state, self.model);
+        errdefer self.find_widget.deinit();
+
+        self.find_widget.close_context = self;
+        self.find_widget.on_close = onClose;
+
+        return self;
+    }
+
+    pub fn deinit(self: *FindController) void {
+        self.find_widget.deinit();
+        self.model.deinit();
+        self.state.deinit();
+        self.allocator.destroy(self.state);
+        self.allocator.destroy(self);
+    }
+
+    pub fn widget(self: *FindController) *FindWidget {
+        return self.find_widget;
+    }
+
+    pub fn isOpen(self: *const FindController) bool {
+        return self.state.is_revealed;
+    }
+
+    /// Ctrl-F: opens the bar, or refocuses its input when it is already open
+    /// (upstream `StartFindAction` focuses rather than closing).
+    pub fn startFind(self: *FindController) !void {
+        if (self.state.is_revealed) {
+            self.find_widget.open();
+            return;
+        }
+        try self.open(false);
+    }
+
+    pub fn startReplace(self: *FindController) !void {
+        if (!self.state.is_revealed) {
+            try self.open(true);
+        } else {
+            self.find_widget.toggleReplace();
+        }
+    }
+
+    pub fn open(self: *FindController, replace: bool) !void {
+        if (self.state.is_revealed) {
+            if (replace) {
+                self.find_widget.toggleReplace();
+            } else {
+                self.find_widget.open();
+            }
+            return;
+        }
+
+        const selection = self.editor.modelSelection();
+        if (!selection.isEmpty() and selection.startLineNumber == selection.endLineNumber) {
+            const text = try self.editor.model.getValueInRange(.{
+                .startLineNumber = selection.startLineNumber,
+                .startColumn = selection.startColumn,
+                .endLineNumber = selection.endLineNumber,
+                .endColumn = selection.endColumn,
+            }, null);
+            defer text.deinit();
+            if (text.items.len > 0 and text.items.len <= 200) {
+                try self.find_widget.find_input.setValue(text.items);
+            }
+        }
+
+        self.model.getDecorations().setStartPosition(self.editor.modelCursorPosition());
+        if (replace) {
+            self.find_widget.openReplace();
+        } else {
+            self.find_widget.open();
+        }
+        try self.model.research(true, .unset);
+    }
+
+    pub fn close(self: *FindController) void {
+        self.find_widget.close();
+    }
+
+    /// The editor content changed. The TUI has no content-changed event yet, so
+    /// the app calls this after edit commands.
+    pub fn onEditorChanged(self: *FindController) void {
+        if (self.state.is_revealed) {
+            self.model.onContentChanged();
+        }
+    }
+
+    fn onClose(context: ?*anyopaque) void {
+        const self: *FindController = @ptrCast(@alignCast(context orelse return));
+        if (self.sink.set) |set| set(self.sink.context, &.{});
+    }
+
+    fn onDecorationsChanged(context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void {
+        const self: *FindController = @ptrCast(@alignCast(context orelse return));
+        if (self.sink.set) |set| set(self.sink.context, decorations);
+    }
+};

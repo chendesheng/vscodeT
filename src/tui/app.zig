@@ -7,6 +7,8 @@ const input = ui.input;
 const Editor = @import("./editor.zig").Editor;
 const View = @import("./view.zig").View;
 const Preview = @import("./preview.zig").Preview;
+const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
+const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 const ArrayList = std.array_list.Managed;
 
 const Args = struct {
@@ -69,6 +71,13 @@ pub fn main(init: std.process.Init) !void {
     const view = try View.init(allocator, editor);
     defer view.deinit();
 
+    const find = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setViewDecorations,
+    });
+    defer find.deinit();
+    try view.addOverlayWidget(find.widget().interface());
+
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
 
@@ -108,9 +117,24 @@ pub fn main(init: std.process.Init) !void {
 
         for (events.items) |*event| {
             // A focused widget owns the keyboard; Ctrl-Q stays global so the
-            // quit prompt works from inside a widget.
-            if (!isCtrlQ(event.*) and view.dispatchKey(event)) continue;
+            // quit prompt works from inside a widget. Ctrl-F and Ctrl-H open
+            // the find bar from either side.
+            if (isCtrlQ(event.*)) {
+                if (dispatch(editor, event.*, &is_pasting)) return;
+                find.onEditorChanged();
+                continue;
+            }
+            if (isCtrlChar(event.*, 'f')) {
+                find.startFind() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
+                continue;
+            }
+            if (isCtrlChar(event.*, 'h')) {
+                find.startReplace() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
+                continue;
+            }
+            if (view.dispatchKey(event)) continue;
             if (dispatch(editor, event.*, &is_pasting)) return;
+            find.onEditorChanged();
         }
 
         try view.refresh();
@@ -180,11 +204,20 @@ fn runPreview(allocator: std.mem.Allocator, out: *Io.Writer, editor: *Editor, in
 }
 
 fn isCtrlQ(event: input.Event) bool {
-    if (!event.mods.ctrl) return false;
+    return isCtrlChar(event, 'q');
+}
+
+fn isCtrlChar(event: input.Event, wanted: u21) bool {
+    if (!event.mods.ctrl or event.mods.alt or event.mods.shift) return false;
     return switch (event.key) {
-        .char => |ch| ch == 'q',
+        .char => |ch| ch == wanted,
         else => false,
     };
+}
+
+fn setViewDecorations(context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void {
+    const view: *View = @ptrCast(@alignCast(context orelse return));
+    view.setDecorations(decorations) catch {};
 }
 
 fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
