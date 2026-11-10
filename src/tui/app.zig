@@ -2,7 +2,8 @@ const std = @import("std");
 const Io = std.Io;
 const posix = std.posix;
 const tui = @import("./tui.zig");
-const input = @import("./input.zig");
+const ui = @import("ui");
+const input = ui.input;
 const Editor = @import("./editor.zig").Editor;
 const Screen = @import("./screen.zig").Screen;
 const renderer = @import("./render.zig");
@@ -94,8 +95,8 @@ pub fn main(init: std.process.Init) !void {
         input_buffer.clearRetainingCapacity();
         const bytes = try tui.readFd(posix.STDIN_FILENO, &input_buffer);
 
-        const events = try input.decode(allocator, bytes);
-        defer events.deinit();
+        var events = try input.decode(allocator, bytes);
+        defer events.deinit(allocator);
 
         for (events.items) |event| {
             if (dispatch(editor, event, &is_pasting)) return;
@@ -136,8 +137,18 @@ fn runPreview(allocator: std.mem.Allocator, out: *Io.Writer, editor: *Editor, in
 
         input_buffer.clearRetainingCapacity();
         const bytes = try tui.readFd(posix.STDIN_FILENO, &input_buffer);
-        for (bytes) |byte| {
-            if (byte == 0x11) return; // Ctrl-Q
+
+        var events = try ui.input.decode(allocator, bytes);
+        defer events.deinit(allocator);
+
+        var redraw = false;
+        for (events.items) |event| {
+            if (try preview.handleKey(event)) redraw = true;
+            if (preview.shouldQuit()) return;
+        }
+        if (redraw) {
+            try preview.render(out);
+            try out.flush();
         }
     }
 }

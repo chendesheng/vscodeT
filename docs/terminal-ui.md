@@ -21,9 +21,9 @@ The long-term shape is:
 ```
 src/vs/editor/browser/...   ported upstream UI code (view parts, controllers)
         |
-src/tui/...                 TUI host: config, view model bridge, input, status
+src/tui/...                 TUI host: config, view model bridge, raw mode, status
         |
-ui/                         standalone UI library: tree, layout, cell renderer
+ui/                         standalone UI library: tree, events, layout, renderer
         |
 terminal cells (ANSI)
 ```
@@ -171,6 +171,7 @@ pub const Node = struct {
     next: ?*Node = null,
     prev: ?*Node = null,
     document: *Document,
+    listeners: []Listener = &.{}, // arena-owned, registration order
 };
 
 pub const Element = struct {
@@ -179,8 +180,13 @@ pub const Element = struct {
     classes: ClassList,
     style: Style,
     rect: Rect = .{}, // layout result
+    focusable: bool = false,
+    tab_index: i32 = 0, // positive first, then 0; negative is Tab-skipped
     // measurement/layout cache fields later
 };
+
+// Document also holds `active_element: ?*Node`, exposed as `activeElement()`
+// with the root as the body-like fallback.
 
 pub const Text = struct {
     data: []u8, // owned
@@ -204,12 +210,44 @@ pub const Text = struct {
   `parentNode`, `root`, `textContent` (read/write), `setAttribute`,
   `getAttribute`, `removeAttribute`, `classList` (`contains/add/remove/toggle`).
 - **Not implemented until a port needs them:** `querySelector*`,
-  `MutationObserver`, `Range`/`Selection`, `shadowRoot`, forms, HTML parsing,
-  and the full DOM exception taxonomy. Checks we do keep: no cycles, a node has
-  one parent, a document has one root element.
-- **Events:** not in the POC. The node gets a small listener list later
-  (capture/bubble as needed by the view parts); no full `Event` class hierarchy
-  and no per-type `on*` properties.
+  `Range`/`Selection`, `shadowRoot`, forms, HTML parsing, and the full DOM
+  exception taxonomy. Checks we do keep: no cycles, a node has one parent, a
+  document has one root element.
+- **Events and focus:** see §4.4. A node has a listener list; key events run
+  capture/target/bubble; `Document.activeElement` and `focus`/`blur` drive
+  keyboard delivery. There is no `Event` class hierarchy and no per-type `on*`
+  properties.
+
+### 4.4 Events and focus
+
+Event delivery is DOM-shaped but typed, and follows the same split as
+Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
+
+- Every node has a listener list (`addEventListener` / `removeEventListener`).
+  A listener is a struct of optional callbacks (`key_down`, `focus`, `blur`,
+  `focus_in`, `focus_out`) plus an optional context. There is no `Event` base
+  class and no per-type `on*` property.
+- Key events run capture (root → parent), target, then bubble (parent → root).
+  `stopPropagation`, `stopImmediatePropagation` and `preventDefault` have the
+  usual meanings. Only `key_down` exists: a terminal reports bytes, not releases
+  or repeats. There is no `keyup`/`keypress`.
+- `Document.activeElement` is the focused element, falling back to the root when
+  nothing is focused (the browser's `body` fallback), so a root listener still
+  receives keys before any widget takes focus.
+- `Element.focusable` opts a node into focus. `Element.tab_index` follows HTML:
+  positive values come first in ascending order, `0` keeps tree order, and
+  negative values are programmatically focusable but skipped by Tab. Tab is the
+  default action of a non-prevented key event. Focus requires a connected,
+  rendered (no `display: none` ancestor), visible element.
+- A focus move dispatches `blur` then `focusout` on the old element and `focus`
+  then `focusin` on the new one, with `related_target` pointing at the other
+  element. `focus`/`blur` do not bubble; `focusin`/`focusout` do. Removing a
+  focused subtree clears `activeElement` silently, as the references do.
+- `ui/input.zig` decodes terminal bytes into key events: printable runs,
+  control bytes, cursor/editing keys (including modifier parameters), and
+  bracketed paste. Text runs borrow the input buffer. Extended keyboard
+  protocols (CSI u, kitty), key release/repeat, mouse and terminal focus
+  reporting are not decoded yet.
 
 ## 5. Layout tree
 
@@ -447,7 +485,10 @@ Public surface for the POC:
 
 - `Surface`: allocator, `Document`, viewport, color depth, tab size, width
   callback, `render(writer, options)`.
-- `Document`: root, viewport, tab size, node creation/ownership.
+- `Document`: root, viewport, tab size, node creation/ownership,
+  `activeElement`, `focus`, `blur`, `moveFocus`, `dispatchKey`.
+- `Node`: tree navigation/mutation, direct styles, `addEventListener` /
+  `removeEventListener`, `focus`, `blur`, `isFocusable`.
 - `Style`: `position` (static/relative/absolute/fixed), `top/right/bottom/left`,
   `width/height` (`auto | cells | percent`), `display`
   (block/inline/inline-block/none), `overflow` (visible/hidden/clip),
@@ -470,8 +511,9 @@ Public surface for the POC:
 - Ownership: the document owns all nodes; text/attribute buffers are
   document-allocated; `remove()` detaches and queues recycle; `Document.deinit`
   frees everything. The allocator is always explicit, no globals.
-- No events/scheduler in the POC. They are added with the view parts; the
-  library contract will be extended, not replaced.
+- Events: `ui/event.zig` (keys, focus, listener dispatch) and
+  `ui/input.zig` (terminal byte decoder). The preview also handles Up/Down,
+  PageUp/PageDown, Home and End for scrolling and Ctrl-Q to quit.
 
 Library constraints:
 
@@ -500,8 +542,9 @@ Library constraints:
   - Builds the whole screen (editor area plus the status row) as one tree, so a
     single `Surface.render` diff covers it.
 - `src/tui/app.zig` gains a `--preview` flag (or a separate
-  `zig build preview` run step): read-only preview of the top of the file,
-  `Ctrl-Q` quits, resize re-renders. Default TUI behavior is unchanged.
+  `zig build preview` run step): read-only preview, Up/Down and
+  PageUp/PageDown scroll by a row/page, Home/End go to the edges, `Ctrl-Q`
+  quits, resize re-renders. Default TUI behavior is unchanged.
 - Gutter width follows the existing `gutterWidthFor` logic; line numbers are
   right-aligned with `text_align = .right`.
 - Long lines are clipped (no horizontal scrolling); wrapping uses the existing
@@ -516,13 +559,17 @@ Library constraints:
   right-aligned line numbers, empty lines, tabs, CJK/emoji wide characters,
   wrapped lines, long-line clipping, gutters for lines past 9 and 99.
 - Snapshot tests in `src/tui/` assert text rows and per-cell styles for ASCII,
-  CJK, tabs, wrapping and long-line clipping.
+  CJK, tabs, wrapping and long-line clipping, plus keyboard scrolling and
+  Ctrl-Q through the library dispatcher.
 - Library unit tests cover: tree linking/invariants, box-tree derivation
   (viewport root, principal/text boxes, anonymous inline/flex items,
   `display: contents`/`none`, mutation invalidation), absolute/percent/auto layout,
   clipping, right alignment, wide characters, tabs, cell painting, frame diff
   (changed cell, vanished cell, unchanged frame), first-row erase and a small
-  ANSI golden.
+  ANSI golden. Event tests cover capture/target/bubble order, propagation and
+  default prevention, focus event order and `related_target`, tabindex
+  traversal, hidden/focusability checks, silent focus clearing on removal, and
+  the terminal decoder (control keys, modifiers, paste, lone Escape).
 - No cursor, selection, scrollbar, mouse, view model or view-part ports in this
   POC.
 
@@ -537,7 +584,8 @@ Library constraints:
 4. `viewLayer`, `viewPart`, `renderingContext`, `viewOverlays`,
    `viewLines`/`viewLine`, margin/lineNumbers/currentLineHighlight/selections/
    viewCursors; `TerminalView` orchestrator; replace `render.zig`.
-5. Scroll, scrollbar, mouse input, cursor blink/timers; row damage bands and
+5. Scrollable viewport/scrollbar, mouse input, cursor blink/timers; row
+   damage bands and
    the `DECSTBM` + `IL`/`DL` scroll shift; hardware-cursor caret.
 6. Replace the adapter with a port of `viewModelImpl.ts` +
    `CursorsController`; port edit context/controllers; then widgets and
@@ -563,9 +611,13 @@ Library constraints:
   borders/radii.
 - No RTL/bidi visual reordering, grapheme segmentation, combining-mark cell
   composition, ligatures, or terminal width negotiation (mode 2027) in the POC.
-- No events, scheduler, ranges, focus, mouse in the POC.
-- No cursors, selections, scrollbar/viewport scrolling, decorations, minimap,
-  glyph margin, view zones, widgets, IME.
+- No mouse, IME, scheduler or `Range`/`Selection` in the POC. Keyboard events
+  and focus are in; key release/repeat, CSI u/kitty reports and terminal focus
+  reporting are not. Focus events have no capture pass and there are no
+  `:focus`-style selectors; focus is explicit state plus listeners.
+- No cursors, selections, scrollbar or scrollable viewport (the preview
+  page-scrolls by rebuilding), decorations, minimap, glyph margin, view zones,
+  widgets, IME.
 - No row damage bands or terminal scroll shift in the POC; full grid diff only.
 - No margin collapsing, auto margins, right/bottom anchoring, multi-cell/rounded
   border styles, background-clip or z-index paint ordering yet. Borders are

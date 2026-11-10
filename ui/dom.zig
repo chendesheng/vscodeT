@@ -10,10 +10,17 @@
 //! fresh tree per surface; a later retained tree will add a freelist.
 
 const std = @import("std");
+const event = @import("event.zig");
 const style_mod = @import("style.zig");
 
 pub const Style = style_mod.Style;
 pub const Rect = style_mod.Rect;
+pub const Key = event.Key;
+pub const KeyEvent = event.KeyEvent;
+pub const Modifiers = event.Modifiers;
+pub const FocusEvent = event.FocusEvent;
+pub const Listener = event.Listener;
+pub const FocusDirection = event.FocusDirection;
 
 pub const Tag = enum { div, span, generic };
 
@@ -29,6 +36,13 @@ pub const Element = struct {
     classes: std.ArrayList([]const u8) = .empty,
     style: Style = .{},
     rect: Rect = .{},
+    /// Participates in keyboard focus. Natively focusable tags are not
+    /// implicit here; the code that builds the node opts in.
+    focusable: bool = false,
+    /// Sequential focus order. Positive values are visited first in ascending
+    /// order; `0` uses tree order; negative values are focusable but skipped
+    /// by Tab, as in HTML.
+    tab_index: i32 = 0,
 };
 
 pub const MutationKind = enum { tree, style, text };
@@ -49,6 +63,9 @@ pub const Document = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     root: ?*Node = null,
+    /// The element that owns keyboard focus. Read it through `activeElement`,
+    /// which falls back to the root like a browser's body.
+    active_element: ?*Node = null,
     cols: usize,
     rows: usize,
     tab_size: usize,
@@ -108,7 +125,34 @@ pub const Document = struct {
     pub fn setRoot(self: *Document, root: *Node) void {
         root.parent = null;
         self.root = root;
+        event.clearDetachedFocus(self);
         self.notifyMutation(root, .tree);
+    }
+
+    /// The focused element, or the root when nothing is focused.
+    pub fn activeElement(self: *const Document) ?*Node {
+        return event.activeElement(self);
+    }
+
+    /// Moves keyboard focus. Returns false when the node is not a connected,
+    /// rendered, `focusable` element.
+    pub fn focus(self: *Document, node: *Node) bool {
+        return event.focus(self, node);
+    }
+
+    /// Clears keyboard focus, firing blur/focusout on the active element.
+    pub fn blur(self: *Document) void {
+        event.blur(self);
+    }
+
+    /// Moves focus to the next or previous tab stop.
+    pub fn moveFocus(self: *Document, direction: FocusDirection) bool {
+        return event.moveFocus(self, direction);
+    }
+
+    /// Dispatches a synthetic key event. The target is `activeElement()`.
+    pub fn dispatchKey(self: *Document, key: Key, mods: Modifiers) KeyEvent {
+        return event.dispatchKey(self, key, mods);
     }
 
     pub fn measureText(self: *const Document, text: []const u8) usize {
@@ -139,6 +183,41 @@ pub const Node = struct {
     next: ?*Node = null,
     prev: ?*Node = null,
     document: *Document,
+    /// Event listeners, in registration order. Arena-owned for the lifetime of
+    /// the document; `removeEventListener` only compacts the list.
+    listeners: std.ArrayList(Listener) = .empty,
+
+    /// Registers a listener. Adding is O(1); dispatch walks the list in order.
+    pub fn addEventListener(self: *Node, listener: Listener) !void {
+        try self.listeners.append(self.document.arena.allocator(), listener);
+    }
+
+    /// Removes the first listener equal to `listener`; returns whether one was
+    /// found.
+    pub fn removeEventListener(self: *Node, listener: Listener) bool {
+        for (self.listeners.items, 0..) |existing, i| {
+            if (existing.eql(listener)) {
+                _ = self.listeners.orderedRemove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Makes this node the active element when it is focusable and connected.
+    pub fn focus(self: *Node) bool {
+        return self.document.focus(self);
+    }
+
+    /// Clears focus when this node is the active element.
+    pub fn blur(self: *Node) void {
+        if (self.document.active_element == self) self.document.blur();
+    }
+
+    /// Whether this node can take focus right now.
+    pub fn isFocusable(self: *const Node) bool {
+        return event.canFocus(self.document, self);
+    }
 
     pub fn isElement(self: *const Node) bool {
         return switch (self.kind) {
@@ -197,7 +276,8 @@ pub const Node = struct {
 
     pub fn appendChild(self: *Node, child: *Node) !*Node {
         if (child == self or isAncestorOf(child, self)) return error.Cycle;
-        if (child.parent) |parent| _ = parent.removeChild(child);
+        // A move keeps focus: the node is reattached before anything renders.
+        if (child.parent) |parent| _ = parent.detachChild(child, false);
 
         child.parent = self;
         child.next = null;
@@ -219,7 +299,7 @@ pub const Node = struct {
         if (ref.parent != self) return error.NotFound;
         if (child == self or isAncestorOf(child, self)) return error.Cycle;
         if (child == ref) return child;
-        if (child.parent) |parent| _ = parent.removeChild(child);
+        if (child.parent) |parent| _ = parent.detachChild(child, false);
 
         child.parent = self;
         child.next = ref;
@@ -235,7 +315,17 @@ pub const Node = struct {
     }
 
     pub fn removeChild(self: *Node, child: *Node) *Node {
+        return self.detachChild(child, true);
+    }
+
+    /// Unlinks `child`. `clear_focus` is false only for the remove/reinsert
+    /// pair inside `appendChild`/`insertBefore`, where the node stays in the
+    /// document and keeps focus.
+    fn detachChild(self: *Node, child: *Node, clear_focus: bool) *Node {
         std.debug.assert(child.parent == self);
+        // Focus does not survive leaving the tree, and no blur fires for an
+        // element that is already gone (Lightpanda and TermDOM both do this).
+        if (clear_focus) event.clearFocusWithin(self.document, child);
         const first = self.first_child.?;
         if (child == first) {
             if (child.next) |next| {

@@ -34,6 +34,7 @@ pub fn build(b: *std.Build) void {
         .{ .step = "example-table", .path = "examples/table.zig", .description = "Run the table example" },
         .{ .step = "example-tree", .path = "examples/tree.zig", .description = "Run the tree example" },
         .{ .step = "example-styling", .path = "examples/styling.zig", .description = "Run the styling example" },
+        .{ .step = "example-focus", .path = "examples/focus.zig", .description = "Run the interactive focus example" },
     };
 
     const all_examples = b.step("examples", "Run all ui examples");

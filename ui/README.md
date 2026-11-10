@@ -19,6 +19,10 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   box and `overflow: hidden` clips to the padding box. Flex formatting contexts,
   margin collapsing and right/bottom anchoring are next.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
+- Keyboard events and focus: per-node listeners with capture/target/bubble,
+  `Document.activeElement`, `focus`/`blur` plus `focusin`/`focusout`, and
+  `Tab` traversal driven by `Element.focusable` / `Element.tab_index`. Terminal
+  bytes are decoded by `ui.input.decode`.
 - No hidden globals; allocators are passed explicitly.
 
 The architecture and the staged editor plan are in
@@ -35,11 +39,13 @@ zig build example-borders  # margin, padding and border boxes, nested absolute c
 zig build example-table    # bordered table with aligned columns
 zig build example-tree     # box-drawing file tree
 zig build example-styling  # text attributes, truecolor, background swatches
-zig build examples         # all seven
+zig build example-focus    # interactive: Tab/Shift-Tab, Enter, activeElement
+zig build examples         # all eight
 ```
 
-Each example draws one frame on the alternate screen, shows it for two seconds,
-and restores the terminal.
+Each example draws one frame on the alternate screen and shows it for two
+seconds. `example-focus` accepts keys during that window; without a terminal it
+still draws the frame and exits.
 
 ## Minimal use
 
@@ -91,6 +97,39 @@ use a box with a text child (as the examples do) rather than setting
 
 Direct writes to the public `Element.style`/`Text.style` fields bypass mutation
 tracking. Use `Node.setStyle` so the attached layout observer sees the change.
+
+## Keyboard and focus
+
+```zig
+const save = try doc.createElement(.div);
+save.asElement().focusable = true;
+save.asElement().tab_index = 0; // positive/0: Tab stop; negative: programmatic only
+_ = try save.appendChild(try doc.createText("Save"));
+
+try save.addEventListener(.{
+    .context = self,
+    .key_down = onKey,
+    .focus = onFocus,
+    .blur = onBlur,
+});
+
+// Keys go to Document.activeElement(), or the root when nothing is focused.
+var events = try ui.input.decode(allocator, bytes);
+defer events.deinit(allocator);
+for (events.items) |event| {
+    _ = doc.dispatchKey(event.key, event.mods);
+}
+```
+
+Listeners can also use `capture = true`, `focus_in`/`focus_out` (bubbling), and
+`stopPropagation` / `stopImmediatePropagation` / `preventDefault` on a
+`ui.KeyEvent`. `doc.focus(node)` moves focus; `doc.blur()` clears it; `Tab` and
+`Shift+Tab` are the default action of a non-prevented key event. Focus events
+carry `related_target`. A terminal only reports key presses, so there is no
+`keyup`/`keypress` and no repeat flag.
+
+Text runs in decoded events borrow the input buffer; dispatch them before
+reusing that buffer.
 
 ## Tests
 

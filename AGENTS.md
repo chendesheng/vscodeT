@@ -46,7 +46,13 @@ state that in the comment and keep the behavioral contract intact.
 - Invalidation is WebKit-like: DOM mutations notify the attached box tree,
   which marks boxes/tree dirty (`needs_rebuild`, `needs_layout`). Do not add a
   document-level revision or dirty flag.
-- TUI integration (preview, terminal input, status) stays in `src/tui/`.
+- Keyboard events and focus live in `ui/event.zig`; terminal byte decoding is
+  `ui/input.zig`. Key events capture/target/bubble and only `key_down` exists.
+  Focus uses `Document.activeElement`, `Element.focusable` / `tab_index`, and
+  `focus`/`blur` plus bubbling `focusin`/`focusout`; Tab is a default action,
+  not a global shortcut. Keep these rules in the library, not in `src/tui/`.
+- TUI integration (preview, terminal raw mode/read loop, status) stays in
+  `src/tui/`; it consumes `ui.input` and `Document.dispatchKey`.
 - `zig build test` builds and runs `ui/tests.zig` alongside the editor tests;
   `cd ui && zig build test` runs the library on its own.
 - Because `ui/` is a new package, it uses Zig 0.17 unmanaged `std.ArrayList`;

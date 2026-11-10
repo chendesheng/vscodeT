@@ -104,7 +104,6 @@ comptime {
     _ = @import("./vs/editor/test/common/viewModel/viewModelTests.zig");
     _ = @import("./tui/app.zig");
     _ = @import("./tui/editor.zig");
-    _ = @import("./tui/input.zig");
     _ = @import("./tui/screen.zig");
     _ = @import("./tui/render.zig");
     _ = @import("./tui/theme.zig");

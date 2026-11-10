@@ -3,8 +3,8 @@
 //! This is the POC view: the existing `Editor` supplies view-line data and
 //! tokenization, the partial `viewLineRenderer` port turns token runs into
 //! text runs, and the `ui.Surface` lays them out and renders a cell-grid frame.
-//! Cursors, selections, scrolling and the browser view parts are not part of
-//! this milestone.
+//! The keyboard handler scrolls the view and quits; cursors, selections, mouse
+//! and the browser view parts are not part of this milestone.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -22,6 +22,11 @@ pub const Preview = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
     surface: ui.Surface,
+    /// First visible view line (0-based).
+    scroll: usize = 0,
+    /// A key handler changed the view and the document must be rebuilt.
+    dirty: bool = false,
+    quit: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, editor: *Editor) !*Preview {
         const self = try allocator.create(Preview);
@@ -41,6 +46,11 @@ pub const Preview = struct {
     }
 
     pub fn resize(self: *Preview) !void {
+        try self.refresh();
+    }
+
+    /// Replaces the current document after a view change such as scrolling.
+    fn refresh(self: *Preview) !void {
         var old = self.surface;
         self.rebuild() catch |err| {
             // `rebuild` releases the surface it created; keep the old one so
@@ -49,6 +59,54 @@ pub const Preview = struct {
             return err;
         };
         old.deinit();
+    }
+
+    pub fn shouldQuit(self: *const Preview) bool {
+        return self.quit;
+    }
+
+    /// Dispatches one decoded key through the document. Returns true when the
+    /// view needs a new frame.
+    pub fn handleKey(self: *Preview, key_event: ui.KeyEvent) !bool {
+        _ = self.surface.document().dispatchKey(key_event.key, key_event.mods);
+        if (!self.dirty) return false;
+        self.dirty = false;
+        try self.refresh();
+        return true;
+    }
+
+    fn maxScroll(self: *const Preview) usize {
+        return self.editor.viewLineCount() -| self.editor.textHeight();
+    }
+
+    fn handleKeyEvent(self: *Preview, event: *ui.KeyEvent) void {
+        const ctrl_q = event.mods.ctrl and switch (event.key) {
+            .char => |ch| ch == 'q',
+            else => false,
+        };
+        if (ctrl_q) {
+            self.quit = true;
+            event.preventDefault();
+            return;
+        }
+        if (event.mods.ctrl or event.mods.alt) return;
+
+        const page = self.editor.textHeight();
+        const maximum = self.maxScroll();
+        const next = switch (event.key) {
+            .up => self.scroll -| 1,
+            .down => @min(self.scroll + 1, maximum),
+            .page_up => self.scroll -| page,
+            .page_down => @min(self.scroll + page, maximum),
+            .home => 0,
+            .end => maximum,
+            else => self.scroll,
+        };
+        if (next == self.scroll) return;
+
+        self.scroll = next;
+        self.dirty = true;
+        event.preventDefault();
     }
 
     /// Recreates the document for the editor's current viewport. The app calls
@@ -62,6 +120,7 @@ pub const Preview = struct {
             .measure_width = measureCodepoint,
         });
         errdefer self.surface.deinit();
+        self.scroll = @min(self.scroll, self.maxScroll());
 
         editor.ensureTokensVisible();
 
@@ -87,7 +146,7 @@ pub const Preview = struct {
 
         var row: usize = 0;
         while (row < text_height) : (row += 1) {
-            const view_line = row + 1;
+            const view_line = self.scroll + row + 1;
             const top: f64 = @floatFromInt(row);
 
             if (view_line > total) {
@@ -188,7 +247,7 @@ pub const Preview = struct {
             const message = editor.message();
             const status = std.fmt.bufPrint(
                 &status_buf,
-                " {s}{s}  Ln {d}, Col {d}  {s}  PREVIEW  Ctrl-Q quit{s}{s}",
+                " {s}{s}  Ln {d}, Col {d}  {s}  PREVIEW  Up/Down scroll  Ctrl-Q quit{s}{s}",
                 .{
                     editor.path,
                     if (editor.isDirty()) "*" else "",
@@ -205,12 +264,22 @@ pub const Preview = struct {
             _ = try bar.appendChild(text);
             _ = try root.appendChild(bar);
         }
+
+        // Keys go to the active element, or to this root when nothing is
+        // focused. The preview has no widgets yet, so the root handles
+        // scrolling and quit.
+        try root.addEventListener(.{ .context = self, .key_down = onKeyDown });
     }
 
     pub fn render(self: *Preview, writer: *std.Io.Writer) !void {
         try self.surface.render(writer, .{ .synchronized = true });
     }
 };
+
+fn onKeyDown(context: ?*anyopaque, event: *ui.KeyEvent) void {
+    const preview: *Preview = @ptrCast(@alignCast(context orelse return));
+    preview.handleKeyEvent(event);
+}
 
 fn measureCodepoint(cp: u21) u2 {
     const next = CursorColumns.nextVisibleColumn(cp, 0, 1);
@@ -318,4 +387,53 @@ test "Preview: wrapped continuation gets a gutter arrow" {
         }
     }
     try std.testing.expect(found_arrow);
+}
+
+test "Preview: keyboard scrolling and Ctrl-Q" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9",
+        "test.txt",
+        80,
+        5,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const preview = try Preview.init(allocator, editor);
+    defer preview.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try preview.render(&out.writer);
+    try std.testing.expect(!preview.shouldQuit());
+
+    try std.testing.expect(try preview.handleKey(.{ .key = .down }));
+    try std.testing.expectEqual(@as(usize, 1), preview.scroll);
+    try preview.render(&out.writer);
+    const scrolled = try rowText(preview, allocator, 0);
+    defer allocator.free(scrolled);
+    try std.testing.expect(std.mem.indexOf(u8, scrolled, "2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scrolled, "line 1") != null);
+
+    try std.testing.expect(try preview.handleKey(.{ .key = .page_down }));
+    try std.testing.expectEqual(@as(usize, 5), preview.scroll);
+    try preview.render(&out.writer);
+    const paged = try rowText(preview, allocator, 0);
+    defer allocator.free(paged);
+    try std.testing.expect(std.mem.indexOf(u8, paged, "line 5") != null);
+
+    try std.testing.expect(try preview.handleKey(.{ .key = .home }));
+    try std.testing.expectEqual(@as(usize, 0), preview.scroll);
+
+    try std.testing.expect(!try preview.handleKey(.{
+        .key = .{ .char = 'q' },
+        .mods = .{ .ctrl = true },
+    }));
+    try std.testing.expect(preview.shouldQuit());
 }
