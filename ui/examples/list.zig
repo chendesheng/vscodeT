@@ -116,5 +116,5 @@ pub fn main() !void {
         .color = common.rgb(140, 140, 160),
     });
 
-    try common.present(&surface);
+    try common.present(&surface, allocator);
 }

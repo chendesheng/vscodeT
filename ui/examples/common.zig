@@ -1,10 +1,10 @@
 const std = @import("std");
 const ui = @import("ui");
 
-/// Draws one frame on the alternate screen, shows it for two seconds, then
-/// restores the terminal. The examples are static; the next milestone adds
-/// input, cursors and scrolling.
-pub fn present(surface: *ui.Surface) !void {
+/// Draws the example on the alternate screen and waits for `q` (or Ctrl-Q),
+/// then restores the terminal. Without a terminal on stdin there is no key to
+/// wait for, so it shows the frame for two seconds and exits.
+pub fn present(surface: *ui.Surface, allocator: std.mem.Allocator) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     var buffer: [8192]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(io, &buffer);
@@ -16,9 +16,69 @@ pub fn present(surface: *ui.Surface) !void {
         out.flush() catch {};
     }
 
+    const orig_termios = enableRawMode(io);
+    defer {
+        if (orig_termios) |orig| disableRawMode(orig) catch {};
+    }
+
     try surface.render(out, .{});
     try out.flush();
-    io.sleep(.fromMilliseconds(2000), .awake) catch {};
+
+    if (orig_termios == null) {
+        io.sleep(.fromMilliseconds(2000), .awake) catch {};
+        return;
+    }
+    try waitForQ(allocator);
+}
+
+fn waitForQ(allocator: std.mem.Allocator) !void {
+    var fds = [_]std.posix.pollfd{.{
+        .fd = std.posix.STDIN_FILENO,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+    while (true) {
+        const ready = (std.posix.poll(&fds, -1) catch 0) > 0;
+        if (!ready) continue;
+
+        var bytes: [512]u8 = undefined;
+        const n = std.posix.read(std.posix.STDIN_FILENO, &bytes) catch 0;
+        if (n == 0) return;
+
+        var events = try ui.input.decode(allocator, bytes[0..n]);
+        defer events.deinit(allocator);
+        for (events.items) |event| {
+            const q = switch (event.key) {
+                .text => |text| std.mem.indexOfScalar(u8, text, 'q') != null,
+                .char => |ch| ch == 'q',
+                else => false,
+            };
+            if (q) return;
+        }
+    }
+}
+
+/// Puts stdin in raw mode when it is a terminal, returning the original state
+/// for `disableRawMode`. Returns null for redirected input.
+pub fn enableRawMode(io: std.Io) ?std.posix.termios {
+    if (!(std.Io.File.stdin().isTty(io) catch false)) return null;
+    const orig = std.posix.tcgetattr(std.posix.STDIN_FILENO) catch return null;
+    var raw = orig;
+    raw.lflag.ICANON = false;
+    raw.lflag.ECHO = false;
+    raw.lflag.IEXTEN = false;
+    raw.lflag.ISIG = false;
+    raw.iflag.IXON = false;
+    raw.iflag.ICRNL = false;
+    raw.oflag.OPOST = false;
+    raw.cc[@backingInt(std.posix.system.V.MIN)] = 0;
+    raw.cc[@backingInt(std.posix.system.V.TIME)] = 0;
+    std.posix.tcsetattr(std.posix.STDIN_FILENO, std.posix.TCSA.FLUSH, raw) catch return null;
+    return orig;
+}
+
+pub fn disableRawMode(orig: std.posix.termios) !void {
+    try std.posix.tcsetattr(std.posix.STDIN_FILENO, std.posix.TCSA.FLUSH, orig);
 }
 
 pub fn addBox(doc: *ui.Document, parent: *ui.Node, style: ui.Style) !*ui.Node {

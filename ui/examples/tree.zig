@@ -102,5 +102,5 @@ pub fn main() !void {
         .height = .{ .cells = 1 },
     }, .{ .color = common.rgb(180, 180, 200) });
 
-    try common.present(&surface);
+    try common.present(&surface, allocator);
 }

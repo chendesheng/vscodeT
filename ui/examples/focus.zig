@@ -1,6 +1,7 @@
 //! Keyboard focus: focusable items, Tab traversal, Enter/Space activation and
-//! the active element. This is the interactive example; it closes after two
-//! seconds so `zig build examples` stays non-blocking.
+//! the active element. Press `q` to quit. Without a terminal it draws one frame
+//! and exits after two seconds, so a non-interactive `zig build examples` still
+//! terminates.
 //!
 //! Run with `cd ui && zig build example-focus`.
 
@@ -103,9 +104,9 @@ pub fn main() !void {
     // The example also runs without a terminal (for `zig build examples`):
     // raw mode fails, one frame is drawn, and the example exits after the
     // same two-second window.
-    const orig_termios = enableRawMode(io);
+    const orig_termios = common.enableRawMode(io);
     defer {
-        if (orig_termios) |orig| disableRawMode(orig) catch {};
+        if (orig_termios) |orig| common.disableRawMode(orig) catch {};
     }
 
     try surface.render(out, .{});
@@ -116,19 +117,18 @@ pub fn main() !void {
         return;
     }
 
-    var elapsed_ms: usize = 0;
-    while (!app.quit and elapsed_ms < 2000) : (elapsed_ms += 50) {
+    while (!app.quit) {
         var fds = [_]std.posix.pollfd{.{
             .fd = std.posix.STDIN_FILENO,
             .events = std.posix.POLL.IN,
             .revents = 0,
         }};
-        const ready = (std.posix.poll(&fds, 50) catch 0) > 0;
+        const ready = (std.posix.poll(&fds, -1) catch 0) > 0;
         if (!ready) continue;
 
         var input_buffer: [512]u8 = undefined;
         const n = std.posix.read(std.posix.STDIN_FILENO, &input_buffer) catch 0;
-        if (n == 0) continue;
+        if (n == 0) return;
 
         var events = try ui.input.decode(allocator, input_buffer[0..n]);
         defer events.deinit(allocator);
@@ -273,24 +273,3 @@ const Item = struct {
         self.node.setStyle(style);
     }
 };
-
-fn enableRawMode(io: std.Io) ?std.posix.termios {
-    if (!(std.Io.File.stdin().isTty(io) catch false)) return null;
-    const orig = std.posix.tcgetattr(std.posix.STDIN_FILENO) catch return null;
-    var raw = orig;
-    raw.lflag.ICANON = false;
-    raw.lflag.ECHO = false;
-    raw.lflag.IEXTEN = false;
-    raw.lflag.ISIG = false;
-    raw.iflag.IXON = false;
-    raw.iflag.ICRNL = false;
-    raw.oflag.OPOST = false;
-    raw.cc[@backingInt(std.posix.system.V.MIN)] = 0;
-    raw.cc[@backingInt(std.posix.system.V.TIME)] = 0;
-    std.posix.tcsetattr(std.posix.STDIN_FILENO, std.posix.TCSA.FLUSH, raw) catch return null;
-    return orig;
-}
-
-fn disableRawMode(orig: std.posix.termios) !void {
-    try std.posix.tcsetattr(std.posix.STDIN_FILENO, std.posix.TCSA.FLUSH, orig);
-}

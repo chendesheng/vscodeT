@@ -108,5 +108,5 @@ pub fn main() !void {
         .reverse = true,
     });
 
-    try common.present(&surface);
+    try common.present(&surface, allocator);
 }

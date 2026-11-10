@@ -40,12 +40,13 @@ zig build example-table    # bordered table with aligned columns
 zig build example-tree     # box-drawing file tree
 zig build example-styling  # text attributes, truecolor, background swatches
 zig build example-focus    # interactive: Tab/Shift-Tab, Enter, activeElement
-zig build examples         # all eight
+zig build examples         # all eight; press q in each
 ```
 
-Each example draws one frame on the alternate screen and shows it for two
-seconds. `example-focus` accepts keys during that window; without a terminal it
-still draws the frame and exits.
+Each example draws on the alternate screen and waits for `q` (or Ctrl-Q) to
+exit. Without a terminal on stdin it shows one frame for two seconds and exits,
+so `zig build examples` still terminates in a non-interactive run. The focus
+example additionally handles Tab/Shift-Tab and Enter.
 
 ## Minimal use
 
