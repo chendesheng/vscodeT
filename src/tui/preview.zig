@@ -155,7 +155,7 @@ pub const Preview = struct {
                     .position = .absolute,
                     .left = .{ .cells = 0 },
                     .top = .{ .cells = top },
-                    .width = .{ .cells = @floatFromInt(gutter) },
+                    .width = .{ .cells = @floatFromInt(gutter - 1) },
                     .height = .{ .cells = 1 },
                     .text_align = .right,
                 });
@@ -175,7 +175,7 @@ pub const Preview = struct {
                 .position = .absolute,
                 .left = .{ .cells = 0 },
                 .top = .{ .cells = top },
-                .width = .{ .cells = @floatFromInt(gutter) },
+                .width = .{ .cells = @floatFromInt(gutter - 1) },
                 .height = .{ .cells = 1 },
                 .text_align = .right,
             });

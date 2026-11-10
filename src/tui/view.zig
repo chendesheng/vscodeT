@@ -225,7 +225,7 @@ pub const View = struct {
                         .position = .absolute,
                         .left = .{ .cells = 0 },
                         .top = .{ .cells = row_cells },
-                        .width = .{ .cells = @floatFromInt(gutter) },
+                        .width = .{ .cells = @floatFromInt(gutter - 1) },
                         .height = .{ .cells = 1 },
                         .text_align = .right,
                     });
@@ -241,13 +241,16 @@ pub const View = struct {
             const output_index = editor.outputLineIndex(view_line);
 
             // Gutter: the model line number on the first view line, a
-            // continuation arrow on the rest.
+            // continuation arrow on the rest. Upstream splits this into
+            // `lineNumbersWidth` and `lineDecorationsWidth` and starts the text
+            // at `contentLeft`; the terminal uses one decorations cell, so the
+            // number column is `gutter - 1` and the last gutter cell is blank.
             const gutter_line = try doc.createElement(.div);
             gutter_line.setStyle(.{
                 .position = .absolute,
                 .left = .{ .cells = 0 },
                 .top = .{ .cells = row_cells },
-                .width = .{ .cells = @floatFromInt(gutter) },
+                .width = .{ .cells = @floatFromInt(gutter - 1) },
                 .height = .{ .cells = 1 },
                 .text_align = .right,
             });
@@ -864,4 +867,29 @@ test "View: overlay widget is placed top-right and takes focused keys" {
     try std.testing.expect(view.surface.document().activeElement() != null);
     try std.testing.expect(view.dispatchKey(&event));
     try std.testing.expectEqual(@as(usize, 1), overlay.keys);
+}
+
+test "View: the gutter keeps a blank cell before the text" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const grid = view.surface.grid();
+    // Number column: right-aligned in `gutter - 1`; the last gutter cell is the
+    // decorations/gap column; text starts at `gutter`.
+    try std.testing.expectEqual(@as(u32, '1'), grid.cluster[grid.index(gutter - 2, 0)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(gutter - 1, 0)]);
+    try std.testing.expectEqual(@as(u32, 'a'), grid.cluster[grid.index(gutter, 0)]);
 }
