@@ -32,8 +32,9 @@ Notes for the Zig 0.17 port:
 ## Terminal UI library
 
 - `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with direct
-  styles (no CSS), whole-cell layout, and a double-buffered cell renderer that
-  emits only an ANSI frame diff. It does not import editor code.
+  styles (no CSS), a derived layout box tree (viewport, principal, anonymous and
+  text boxes), whole-cell layout, and a double-buffered cell renderer that emits
+  only an ANSI frame diff. It does not import editor code.
 - `zig build run -- --preview <file>` renders a read-only preview through the
   library: text, syntax colors, right-aligned line numbers, wrapped-line
   markers and the status row. Cursors, selections, scrolling, mouse input and

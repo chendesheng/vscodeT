@@ -40,9 +40,10 @@ terminal cells (ANSI)
      ui.zig              # public root module, re-exports the pieces below
      dom.zig             # Node/Element/Text/Document, tree operations
      style.zig           # Color, Style, Dimension
-     layout.zig          # layout pass
+     box.zig             # derived layout box tree + node→box mapping
+     layout.zig          # formatting contexts over the box tree
+     paint.zig           # paints the box tree
      cell.zig            # CellGrid, attributes, color, grapheme interning
-     paint.zig           # paint primitives (drawText/drawRect/setCell)
      frame.zig           # double buffer, damage bands, cell diff
      ansi.zig            # ANSI writer / style-diff encoder
      surface.zig         # Document + Frame + viewport + render()
@@ -67,7 +68,7 @@ terminal cells (ANSI)
 
 5. **The renderer is a double-buffered cell grid with a frame diff.** Painting
    writes cells; presenting compares the frame with the previous one and emits
-   only what changed. This follows TermDOM's architecture (see §5) instead of a
+   only what changed. This follows TermDOM's architecture (see §6) instead of a
    per-cell sink or a full-screen redraw.
 
 6. **The DOM tree is modeled on Lightpanda's Zig DOM.** Parent/child/sibling
@@ -76,15 +77,20 @@ terminal cells (ANSI)
    interop, no WebIDL, no shadow DOM, no full HTML element zoo, no HTML parser
    (see §4).
 
-7. **Terminal first, TUI integration stays in `src/tui/`.** Portable editor
+7. **A separate layout tree.** Layout runs on a derived `LayoutBox` tree
+   (viewport root, principal boxes, anonymous inline/flex boxes, text boxes),
+   not on DOM nodes. It follows WebKit's `Layout::Box` tree and TermDOM's box
+   derivation; sizing is in cells (see §5).
+
+8. **Terminal first, TUI integration stays in `src/tui/`.** Portable editor
    logic stays under `src/vs/...`. A future native/GUI backend can reuse the
    tree/layout and provide another renderer; it is not designed now.
 
-8. **POC before the full port.** The first integration is a read-only
+9. **POC before the full port.** The first integration is a read-only
    text + gutter preview. The existing editable TUI remains the default until
    the ported view stack replaces it.
 
-9. **Editing is not regressed.** During the POC and the first view-stack
+10. **Editing is not regressed.** During the POC and the first view-stack
    milestone, `src/tui/editor.zig` keeps the model/command/input path; only
    painting moves to the library/view stack.
 
@@ -92,8 +98,9 @@ terminal cells (ANSI)
 
 | Project | What it is | Takeaway |
 |---|---|---|
-| [TermDOM](https://github.com/bikeshaving/termdom) (TS, MIT) | DOM + CSS + flex/grid in terminal cells; runs CodeMirror | The renderer is the closest match: cell grid, frame diff, ANSI encoder, scroll shift. See §5. |
-| [Lightpanda](https://github.com/lightpanda-io/browser) (Zig, AGPL-3.0) | Zig headless browser with a DOM/CSS/layout stack | The Zig DOM tree, linking and ownership patterns are worth referencing. Reference only, no code copied. See §4. |
+| [TermDOM](https://github.com/bikeshaving/termdom) (TS, MIT) | DOM + CSS + flex/grid in terminal cells; runs CodeMirror | Closest renderer: cell grid, frame diff, ANSI encoder, scroll shift. Also a derived box tree plus a `LayoutNode` solver. See §6. |
+| [WebKit](https://github.com/WebKit/WebKit) (C++, LGPL-2.1/BSD) | Real browser: render tree plus a `Layout::Box` layout tree with block/flex/grid/inline formatting contexts | Reference for the separate layout tree and layout pass shape. No code copied. See §5. |
+| [Lightpanda](https://github.com/lightpanda-io/browser) (Zig, AGPL-3.0) | Zig headless browser; DOM and computed styles, but only a faux width/position model for geometry | The Zig DOM tree, linking and ownership patterns are worth referencing. It has no layout tree or layout engine. Reference only, no code copied. See §4. |
 | [rdom](https://github.com/miskun/rdom) (Rust, MIT) | "A DOM for terminal applications": arena nodes, CSS cascade, flex/grid, events, ranges, hit testing | Most complete reference for the DOM contract; its feature list shows why this design drops CSS. |
 | [RTXUI](https://github.com/ArthurSonzogni/RTXUI) (C++, MIT) | HTML + real CSS browser engine for the terminal | Maximum-fidelity approach; confirms a CSS engine is a project of its own. |
 | [Textual](https://textual.textualize.io/guide/CSS/) (Python) | DOM + TCSS + widgets + compositor | Mature architecture reference for a retained tree and compositor. |
@@ -204,7 +211,90 @@ pub const Text = struct {
   (capture/bubble as needed by the view parts); no full `Event` class hierarchy
   and no per-type `on*` properties.
 
-## 5. Renderer: CellGrid + frame diff
+## 5. Layout tree
+
+Layout does not walk the DOM. A derived box tree is built from the DOM and the
+direct `Style` values; the solver and painter operate on it. WebKit and TermDOM
+separate the same way: WebKit keeps a `RenderObject` render tree and a
+`Layout::Box` layout tree, and TermDOM keeps a box derivation over the DOM plus a
+`LayoutNode` solver tree.
+
+We collapse the two into one because our DOM nodes already carry the styles and
+are the paint scene; there is no separate style/paint/compositing tree:
+
+```
+DOM + Style (dom.zig)
+   ↓ mutation notifications
+BoxTree (box.zig)
+   ↓ layoutTree
+formatting contexts (layout.zig): block, absolute, flex (next)
+   ↓
+paint (paint.zig) + geometry copied back to DOM rects
+```
+
+### 5.1 Box kinds
+
+`ui/box.zig` defines `LayoutBox`:
+
+| kind | owner | meaning |
+|---|---|---|
+| `initial_containing_block` | null | viewport root; WebKit's `Layout::InitialContainingBlock` |
+| `element` | `*Node` | principal box for an element |
+| `anonymous_inline` | null | contiguous inline/text run in a block container |
+| `anonymous_flex_item` | null | bare text run in a flex container |
+| `text` | `*Node` | text content box; WebKit's `Layout::InlineTextBox` |
+
+Each box has `parent`, `children`, `style`, `rect`, `needs_layout`, and, for
+text, the content. `node_boxes` maps DOM nodes to principal/text boxes. `display: none`
+nodes have no box; `display: contents` elements have no box of their own, and
+their children are promoted into the parent's formatting context.
+
+### 5.2 Build and solve
+
+`BoxTree.rebuild(doc)` resets the tree arena and derives the boxes:
+
+- the viewport root, then the document element as its child;
+- a principal box per element that generates one;
+- contiguous inline content wrapped in an `anonymous_inline` box;
+- under a flex container, element children are flex items and bare text runs
+  become `anonymous_flex_item` boxes;
+- `display: none` is skipped; `display: contents` is promoted.
+
+`layoutTree(tree, doc)` sets the viewport, solves the box tree, and copies the
+rects back to DOM `Element.rect`/`Text.rect` for the measurement boundary. The
+current solver handles block flow, absolute positioning and one line of inline
+text per anonymous inline box. Flex is the next formatting context; the box tree
+already produces its items.
+
+The box tree owns invalidation. DOM mutation APIs notify the attached
+`MutationObserver`: a structural change sets `needs_rebuild`; a style or text
+change marks the affected box and its ancestors `needs_layout`. There is no
+document-level dirty flag or revision. The pass is currently a full rebuild and
+solve when those flags are set, then clears them, so fine-grained subtree layout
+can be added without changing the invalidation API. Direct writes to public
+`Element.style`/`Text.style` fields bypass the observer; use `Node.setStyle`.
+
+### 5.3 Why the tree
+
+The separate tree is what makes the following representable without polluting
+the DOM:
+
+- anonymous boxes (inline runs, future table wrappers, bare flex text);
+- a text box whose geometry is not stored on the text node;
+- `display: contents`;
+- a formatting-context root per block/flex container;
+- one geometry boundary for `getBoundingClientRect` and ranges.
+
+WebKit's LayoutFormattingContext is the reference for this shape:
+`layout/layouttree` (`Layout::Box`, `ElementBox`, `InlineTextBox`,
+`InitialContainingBlock`), `layout/formattingContexts/{block,flex,grid,inline}`,
+and `layout/integration` (`BoxTreeUpdater`, `layoutWithFormattingContextForBox`).
+Lightpanda is not: it has no layout tree, only a faux width/position model
+(`layout.zig`, and a `calculateDocumentPosition` that counts preceding nodes at
+5px each) plus a text-flow renderer for screenshots. TermDOM's derived `Box`
+list and `LayoutNode` solver are the closer non-browser reference.
+
+## 6. Renderer: CellGrid + frame diff
 
 This is the process we take from TermDOM
 ([`framebuffer.ts`](https://github.com/bikeshaving/termdom/blob/main/src/internal/framebuffer.ts),
@@ -213,7 +303,7 @@ This is the process we take from TermDOM
 We use the fullscreen/alternate-screen subset only: no flow mode, no scrollback
 re-anchoring.
 
-### 5.1 Cell grid
+### 6.1 Cell grid
 
 One `CellGrid` per frame, as parallel typed arrays:
 
@@ -230,7 +320,7 @@ One `CellGrid` per frame, as parallel typed arrays:
 - The POC uses one codepoint per cell and the host's width callback; grapheme
   segmentation and mode-2027 width negotiation are follow-ups.
 
-### 5.2 Painting
+### 6.2 Painting
 
 The paint pass carries the target grid, the viewport, and the active clip rect
 (from `overflow: hidden` ancestors). All writes go through clipped primitives:
@@ -241,12 +331,12 @@ The paint pass carries the target grid, the viewport, and the active clip rect
   cells.
 - `setCell(x, y, grapheme, style)` — the single clipped write path.
 
-The document's paint pass walks the tree in DOM order, applies the direct
-`Style` values (position, size, clip, colors, attributes), and paints
-backgrounds before text. The POC paints all rows; row-level damage bands are
+The box tree's paint pass walks boxes in order, applies the direct `Style`
+values (position, size, clip, colors, attributes), and paints backgrounds before
+text. The POC paints all rows; row-level damage bands are
 part of the API so the view can later name only changed lines.
 
-### 5.3 Frame diff
+### 6.3 Frame diff
 
 `Frame` keeps three grids: `next` (painted), `prev` (last presented), and
 `spare` (reused). Presenting:
@@ -263,7 +353,7 @@ The POC paints every row each frame; the diff still sends only changed cells.
 A later optimization lets the view report damaged rows and copy the rest of
 `prev` into `next`.
 
-### 5.4 ANSI encoding
+### 6.4 ANSI encoding
 
 The encoder follows TermDOM's `generateANSI`:
 
@@ -281,7 +371,7 @@ The encoder follows TermDOM's `generateANSI`:
   fallback as TermDOM.
 - Park the cursor at the end of the frame (at the caret once editing exists).
 
-### 5.5 Scroll shift (design hook, deferred)
+### 6.5 Scroll shift (design hook, deferred)
 
 Because every editor view line is exactly one terminal row, a viewport scroll is
 a whole-row shift. The later optimization mirrors TermDOM's `shiftPrevious`:
@@ -295,14 +385,14 @@ a whole-row shift. The later optimization mirrors TermDOM's `shiftPrevious`:
 The POC does not implement this, but `Frame` keeps `prev` and the row origin so
 it can be added without changing the API.
 
-### 5.6 Caret
+### 6.6 Caret
 
 TermDOM parks the **real terminal cursor** at the caret for IME and draws
 secondary cursors into cells. The POC has no caret. When cursors are ported, the
 primary caret should use the hardware cursor (DECSCUSR shape/color where
 supported) and secondary cursors should be cell runs; this keeps IME viable.
 
-### 5.7 Width and capability contract
+### 6.7 Width and capability contract
 
 The host passes `measure_width: fn (u21) u2` so the renderer agrees with the
 editor's `CursorColumns.nextVisibleColumn` for CJK and emoji. Color depth and
@@ -311,7 +401,7 @@ synchronized-output support are `Surface` options; probing the terminal (mode
 and a terminal that accepts synchronized output (both are ignored safely if
 not).
 
-## 6. Library API (POC slice)
+## 7. Library API (POC slice)
 
 ```zig
 const ui = @import("ui");
@@ -383,7 +473,7 @@ Library constraints:
 - Unit tests run with `std.testing.allocator`; the library exposes its own
   `zig build test`.
 
-## 7. Editor integration (POC)
+## 8. Editor integration (POC)
 
 - Root `build.zig.zon` adds the library as a path dependency
   (`.ui = .{ .path = "ui" }`); the TUI executable and tests import the `ui`
@@ -412,7 +502,7 @@ Library constraints:
 - The existing `src/tui/screen.zig`/its ANSI path stay for the old editor until
   the preview replaces the painter.
 
-## 8. POC acceptance
+## 9. POC acceptance
 
 - `zig build` and `zig build test --summary all` pass with no leaks.
 - A preview of a fixture file at 80x24 shows: text, syntax colors,
@@ -420,29 +510,33 @@ Library constraints:
   wrapped lines, long-line clipping, gutters for lines past 9 and 99.
 - Snapshot tests in `src/tui/` assert text rows and per-cell styles for ASCII,
   CJK, tabs, wrapping and long-line clipping.
-- Library unit tests cover: tree linking/invariants, absolute/percent/auto
-  layout, clipping, right alignment, wide characters, tabs, cell painting,
-  frame diff (changed cell, vanished cell, unchanged frame), first-row erase and
-  a small ANSI golden.
+- Library unit tests cover: tree linking/invariants, box-tree derivation
+  (viewport root, principal/text boxes, anonymous inline/flex items,
+  `display: contents`/`none`, mutation invalidation), absolute/percent/auto layout,
+  clipping, right alignment, wide characters, tabs, cell painting, frame diff
+  (changed cell, vanished cell, unchanged frame), first-row erase and a small
+  ANSI golden.
 - No cursor, selection, scrollbar, mouse, view model or view-part ports in this
   POC.
 
-## 9. Roadmap after the POC
+## 10. Roadmap after the POC
 
 1. Full `viewLineRenderer` port + `CharacterMapping` and the upstream
    `viewLineRenderer.test.ts` cases (canonical part comparison).
-2. `ViewLayout`/`Scrollable` + `IViewModel`/`IViewLayout` interfaces + a
+2. Flex formatting context over the box tree: direction, wrap, grow/shrink/basis,
+   justify/align, gap, order and auto margins; then an anonymous-flex-item pass.
+3. `ViewLayout`/`Scrollable` + `IViewModel`/`IViewLayout` interfaces + a
    temporary `TuiViewModel` adapter + view-event bridge.
-3. `viewLayer`, `viewPart`, `renderingContext`, `viewOverlays`,
+4. `viewLayer`, `viewPart`, `renderingContext`, `viewOverlays`,
    `viewLines`/`viewLine`, margin/lineNumbers/currentLineHighlight/selections/
    viewCursors; `TerminalView` orchestrator; replace `render.zig`.
-4. Scroll, scrollbar, mouse input, cursor blink/timers; row damage bands and
+5. Scroll, scrollbar, mouse input, cursor blink/timers; row damage bands and
    the `DECSTBM` + `IL`/`DL` scroll shift; hardware-cursor caret.
-5. Replace the adapter with a port of `viewModelImpl.ts` +
+6. Replace the adapter with a port of `viewModelImpl.ts` +
    `CursorsController`; port edit context/controllers; then widgets and
    contributions (find, hover, suggest, quick pick).
 
-## 10. Testing strategy
+## 11. Testing strategy
 
 - Library: unit tests with `std.testing.allocator`, run by `ui/build.zig`; also
   linked into the root test build so `zig build test` covers them.
@@ -453,10 +547,10 @@ Library constraints:
 - Upstream tests: ported where the behavior is portable (`viewLineRenderer`,
   layout helpers); adapted only where HTML/string output becomes structured
   parts.
-- No source-tree test duplication: library tests live under `ui/test/`; editor
+- No source-tree test duplication: library tests live under `ui/tests.zig`; editor
   tests mirror upstream paths under `src/vs/.../test/...`.
 
-## 11. Deferred / explicit limitations
+## 12. Deferred / explicit limitations
 
 - No CSS, HTML, `innerHTML`, flexbox/grid, transitions, opacity compositing,
   borders/radii.
@@ -466,12 +560,14 @@ Library constraints:
 - No cursors, selections, scrollbar/viewport scrolling, decorations, minimap,
   glyph margin, view zones, widgets, IME.
 - No row damage bands or terminal scroll shift in the POC; full grid diff only.
+- No flex/grid formatting contexts, table boxes or incremental box reuse yet;
+  the box tree is rebuilt from the DOM when mutations invalidate it, then solved whole.
 - No JS interop, WebIDL, shadow DOM, custom elements, HTML parsing, or the full
   DOM API; only the node/tree/attribute subset above.
 - The `ui/` name, module name and exact style field set are provisional;
   renaming before the first commit is cheap.
 
-## 12. Open questions
+## 13. Open questions
 
 - Final library name/location (`ui/` is a placeholder).
 - Whether the same tree should later get a native/window backend or remain

@@ -31,6 +31,20 @@ pub const Element = struct {
     rect: Rect = .{},
 };
 
+pub const MutationKind = enum { tree, style, text };
+
+/// WebKit-style invalidation: the DOM reports a mutation, and the attached
+/// layout context decides which boxes need rebuilding or layout. The document
+/// itself stores no layout state.
+pub const MutationObserver = struct {
+    context: *anyopaque,
+    on_mutation: *const fn (context: *anyopaque, node: *Node, kind: MutationKind) void,
+
+    pub fn notify(self: MutationObserver, node: *Node, kind: MutationKind) void {
+        self.on_mutation(self.context, node, kind);
+    }
+};
+
 pub const Document = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
@@ -39,6 +53,7 @@ pub const Document = struct {
     rows: usize,
     tab_size: usize,
     measure_width: *const fn (u21) u2,
+    observer: ?MutationObserver = null,
 
     pub const Options = struct {
         cols: usize,
@@ -46,6 +61,14 @@ pub const Document = struct {
         tab_size: usize = 4,
         measure_width: *const fn (u21) u2 = defaultMeasureWidth,
     };
+
+    pub fn setObserver(self: *Document, observer: ?MutationObserver) void {
+        self.observer = observer;
+    }
+
+    pub fn notifyMutation(self: *Document, node: *Node, kind: MutationKind) void {
+        if (self.observer) |observer| observer.notify(node, kind);
+    }
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !Document {
         return .{
@@ -85,6 +108,7 @@ pub const Document = struct {
     pub fn setRoot(self: *Document, root: *Node) void {
         root.parent = null;
         self.root = root;
+        self.notifyMutation(root, .tree);
     }
 
     pub fn measureText(self: *const Document, text: []const u8) usize {
@@ -142,6 +166,7 @@ pub const Node = struct {
             .element => |*element| element.style = value,
             .text => |*text| text.style = value,
         }
+        self.document.notifyMutation(self, .style);
     }
 
     pub fn style(self: *const Node) *const Style {
@@ -185,6 +210,7 @@ pub const Node = struct {
             self.first_child = child;
             child.prev = child;
         }
+        self.document.notifyMutation(child, .tree);
         return child;
     }
 
@@ -204,6 +230,7 @@ pub const Node = struct {
             ref.prev.?.next = child;
         }
         ref.prev = child;
+        self.document.notifyMutation(child, .tree);
         return child;
     }
 
@@ -228,6 +255,7 @@ pub const Node = struct {
         child.parent = null;
         child.next = null;
         child.prev = null;
+        self.document.notifyMutation(child, .tree);
         return child;
     }
 
@@ -244,10 +272,12 @@ pub const Node = struct {
             .text => |*text| {
                 const allocator = self.document.arena.allocator();
                 text.data = try allocator.dupe(u8, data);
+                self.document.notifyMutation(self, .text);
             },
             .element => {
                 while (self.first_child) |child| _ = self.removeChild(child);
                 if (data.len != 0) _ = try self.appendText(data);
+                self.document.notifyMutation(self, .tree);
             },
         }
     }
@@ -277,6 +307,7 @@ pub const Node = struct {
         const key = try allocator.dupe(u8, name);
         const val = try allocator.dupe(u8, value);
         try element.attributes.put(allocator, key, val);
+        self.document.notifyMutation(self, .style);
     }
 
     pub fn getAttribute(self: *const Node, name: []const u8) ?[]const u8 {
@@ -291,6 +322,7 @@ pub const Node = struct {
             .element => |*element| _ = element.attributes.remove(name),
             .text => {},
         }
+        self.document.notifyMutation(self, .style);
     }
 
     pub fn addClass(self: *Node, class: []const u8) !void {
@@ -298,6 +330,7 @@ pub const Node = struct {
         const allocator = self.document.arena.allocator();
         const element = self.asElement();
         try element.classes.append(allocator, try allocator.dupe(u8, class));
+        self.document.notifyMutation(self, .style);
     }
 
     pub fn hasClass(self: *const Node, class: []const u8) bool {
@@ -326,6 +359,7 @@ pub const Node = struct {
             },
             .text => {},
         }
+        self.document.notifyMutation(self, .style);
     }
 
     pub fn toggleClass(self: *Node, class: []const u8) !void {

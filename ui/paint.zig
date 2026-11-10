@@ -1,44 +1,60 @@
-//! Paints the laid-out tree into a cell grid.
+//! Paints the derived box tree into a cell grid.
 //!
-//! This is the direct-style replacement for the browser's paint pass: there is
-//! no cascade and no CSS, only the values on the node and what it inherits.
+//! There is no cascade and no CSS: each box carries the `Style` it was built
+//! with, and anonymous boxes carry the inherited style of their container.
+//! Text boxes own the text runs; element boxes own backgrounds and clipping.
 
 const std = @import("std");
+const box = @import("box.zig");
 const cell = @import("cell.zig");
 const dom = @import("dom.zig");
+const layout = @import("layout.zig");
 const style_mod = @import("style.zig");
 
 const CellGrid = cell.CellGrid;
+const LayoutBox = box.LayoutBox;
 const PaintStyle = cell.PaintStyle;
 const Rect = style_mod.Rect;
 const Style = style_mod.Style;
 
-pub fn paintDocument(doc: *dom.Document, grid: *CellGrid) void {
-    const root = doc.root orelse return;
+/// One-shot convenience for tests: build the box tree, lay it out and paint.
+pub fn paintDocument(doc: *dom.Document, grid: *CellGrid) !void {
+    var tree = try box.BoxTree.init(doc.allocator);
+    defer tree.deinit();
+    try tree.rebuild(doc);
+    layout.layoutTree(&tree, doc);
+    paintTree(&tree, doc, grid);
+}
+
+pub fn paintTree(tree: *const box.BoxTree, doc: *const dom.Document, grid: *CellGrid) void {
     const viewport = Rect{
         .x = 0,
         .y = 0,
         .w = @floatFromInt(doc.cols),
         .h = @floatFromInt(doc.rows),
     };
-    paintNode(doc, root, grid, .{}, viewport);
+    paintBox(doc, tree.root, grid, .{}, viewport);
 }
 
-fn paintNode(
+fn paintBox(
     doc: *const dom.Document,
-    node: *dom.Node,
+    current: *const LayoutBox,
     grid: *CellGrid,
     inherited: PaintStyle,
     clip: Rect,
 ) void {
     if (clip.isEmpty()) return;
 
-    switch (node.kind) {
-        .element => |*element| {
-            const style = element.style;
-            if (style.display == .none or style.visibility == .hidden) return;
+    switch (current.kind) {
+        .text => {
+            const own = mergeStyle(inherited, current.style);
+            drawText(doc, grid, current.text orelse "", current.rect.x, current.rect.y, own, clip);
+        },
+        .initial_containing_block, .element, .anonymous_inline, .anonymous_flex_item => {
+            const style = current.style;
+            if (style.display == .none or style.display == .contents) return;
 
-            const rect = element.rect;
+            const rect = current.rect;
             if (rect.isEmpty()) return;
 
             const own = mergeStyle(inherited, style);
@@ -51,14 +67,9 @@ fn paintNode(
                 .hidden, .clip => Rect.intersect(clip, rect),
             };
 
-            var child = node.first_child;
-            while (child) |current| : (child = current.next) {
-                paintNode(doc, current, grid, own, child_clip);
+            for (current.children.items) |child| {
+                paintBox(doc, child, grid, own, child_clip);
             }
-        },
-        .text => |*text| {
-            const own = mergeStyle(inherited, text.style);
-            drawText(doc, grid, text.data, text.rect.x, text.rect.y, own, clip);
         },
     }
 }
@@ -144,12 +155,9 @@ test "paint: text and backgrounds" {
     text.setStyle(.{ .color = .{ .r = 10, .g = 20, .b = 30 }, .bold = true });
     _ = try root.appendChild(text);
 
-    const ui_layout = @import("layout.zig");
-    ui_layout.layoutDocument(&doc);
-
     var grid = try CellGrid.init(allocator, 8, 2);
     defer grid.deinit();
-    paintDocument(&doc, &grid);
+    try paintDocument(&doc, &grid);
 
     const row = try grid.rowText(allocator, 0);
     defer allocator.free(row);
@@ -189,12 +197,9 @@ test "paint: clipping by a widths box" {
     const text = try doc.createText("abcdef");
     _ = try line.appendChild(text);
 
-    const ui_layout = @import("layout.zig");
-    ui_layout.layoutDocument(&doc);
-
     var grid = try CellGrid.init(allocator, 8, 2);
     defer grid.deinit();
-    paintDocument(&doc, &grid);
+    try paintDocument(&doc, &grid);
 
     const row = try grid.rowText(allocator, 0);
     defer allocator.free(row);
@@ -224,12 +229,9 @@ test "paint: wide glyph writes a continuation cell" {
     const text = try doc.createText("中x");
     _ = try root.appendChild(text);
 
-    const ui_layout = @import("layout.zig");
-    ui_layout.layoutDocument(&doc);
-
     var grid = try CellGrid.init(allocator, 6, 1);
     defer grid.deinit();
-    paintDocument(&doc, &grid);
+    try paintDocument(&doc, &grid);
 
     try std.testing.expectEqual(@as(u32, 0x4e2d), grid.cluster[0]);
     try std.testing.expectEqual(@as(u32, 0), grid.cluster[1]);

@@ -10,6 +10,7 @@
         "ui.zig",
         "ansi.zig",
         "cell.zig",
+        "box.zig",
         "dom.zig",
         "frame.zig",
         "layout.zig",

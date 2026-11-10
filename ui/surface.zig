@@ -4,6 +4,7 @@ const std = @import("std");
 const ansi = @import("ansi.zig");
 const cell = @import("cell.zig");
 const dom = @import("dom.zig");
+const box = @import("box.zig");
 const frame_mod = @import("frame.zig");
 const layout = @import("layout.zig");
 const paint = @import("paint.zig");
@@ -25,6 +26,7 @@ pub const RenderOptions = struct {
 pub const Surface = struct {
     allocator: std.mem.Allocator,
     doc: dom.Document,
+    box_tree: *box.BoxTree,
     frame: frame_mod.Frame,
     color_depth: ColorDepth,
     first_frame: bool = true,
@@ -41,15 +43,23 @@ pub const Surface = struct {
         var frame = try frame_mod.Frame.init(allocator, doc.cols, doc.rows);
         errdefer frame.deinit();
 
+        const box_tree = try box.BoxTree.create(allocator);
+        errdefer box_tree.destroy();
+        doc.setObserver(box_tree.observer());
+        errdefer doc.setObserver(null);
+
         return .{
             .allocator = allocator,
             .doc = doc,
+            .box_tree = box_tree,
             .frame = frame,
             .color_depth = options.color_depth,
         };
     }
 
     pub fn deinit(self: *Surface) void {
+        self.doc.setObserver(null);
+        self.box_tree.destroy();
         self.frame.deinit();
         self.doc.deinit();
     }
@@ -70,9 +80,14 @@ pub const Surface = struct {
             self.first_frame = false;
         }
 
-        layout.layoutDocument(&self.doc);
+        if (self.box_tree.needs_rebuild) {
+            try self.box_tree.rebuild(&self.doc);
+        }
+        if (self.box_tree.needs_layout) {
+            layout.layoutTree(self.box_tree, &self.doc);
+        }
         self.frame.begin();
-        paint.paintDocument(&self.doc, &self.frame.next);
+        paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
 
         const encoded = try ansi.encode(
             self.allocator,

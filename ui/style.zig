@@ -23,7 +23,7 @@ pub const Dimension = union(enum) {
 };
 
 pub const Position = enum { static, relative, absolute, fixed };
-pub const Display = enum { block, inline_, inline_block, none };
+pub const Display = enum { block, inline_, inline_block, flex, inline_flex, contents, none };
 pub const Overflow = enum { visible, hidden, clip };
 pub const TextAlign = enum { left, center, right };
 pub const Visibility = enum { visible, hidden };

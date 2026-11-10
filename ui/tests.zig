@@ -1,5 +1,6 @@
 comptime {
     _ = @import("ansi.zig");
+    _ = @import("box.zig");
     _ = @import("cell.zig");
     _ = @import("dom.zig");
     _ = @import("frame.zig");

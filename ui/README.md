@@ -5,8 +5,16 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
 
 - A DOM-like retained tree (`Node` is an element or text) with direct `Style`
   values. No CSS, no HTML, no class selectors.
+- A **derived layout box tree** separate from the DOM: a viewport root,
+  principal boxes, anonymous inline/flex boxes and text boxes. Layout and paint
+  operate on that tree; geometry is copied back to DOM rects only for
+  measurement.
+- Mutation-driven invalidation. The DOM reports tree/style/text changes to the
+  attached box tree; boxes carry `needs_layout`, and the tree carries
+  `needs_rebuild` / `needs_layout`. There is no document-level revision or
+  dirty flag.
 - A whole-cell layout pass: absolute positioning, percentages, inline text runs,
-  alignment and clipping.
+  alignment and clipping. Flex formatting contexts are the next addition.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
 - No hidden globals; allocators are passed explicitly.
 
@@ -73,6 +81,9 @@ pub fn main() !void {
 Text nodes are inline content. Position and size belong to the parent element;
 use a box with a text child (as the examples do) rather than setting
 `position`/`left`/`top` on a text node.
+
+Direct writes to the public `Element.style`/`Text.style` fields bypass mutation
+tracking. Use `Node.setStyle` so the attached layout observer sees the change.
 
 ## Tests
 

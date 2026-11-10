@@ -39,6 +39,13 @@ state that in the comment and keep the behavioral contract intact.
   values, and class names are identifiers, never selectors.
 - The renderer is a double-buffered cell grid with an ANSI frame diff; see
   `docs/terminal-ui.md`. Library tests read `Surface.grid()`, not ANSI strings.
+- Layout runs on the derived box tree in `ui/box.zig`, never on DOM nodes:
+  viewport root, principal element boxes, anonymous inline/flex-item boxes and
+  text boxes. `ui/layout.zig` solves that tree; `ui/paint.zig` walks it. Copy
+  geometry back to DOM rects only at the measurement boundary.
+- Invalidation is WebKit-like: DOM mutations notify the attached box tree,
+  which marks boxes/tree dirty (`needs_rebuild`, `needs_layout`). Do not add a
+  document-level revision or dirty flag.
 - TUI integration (preview, terminal input, status) stays in `src/tui/`.
 - `zig build test` builds and runs `ui/tests.zig` alongside the editor tests;
   `cd ui && zig build test` runs the library on its own.
