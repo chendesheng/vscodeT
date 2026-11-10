@@ -114,21 +114,16 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
     var tmp = SpacesDiffResult.init();
 
     for (1..linesCount + 1) |lineNumber| {
-        const currentLineLength = source.getLineLength(lineNumber);
         const currentLineText = try source.getLineContent(lineNumber);
         defer currentLineText.deinit();
-
-        // TODO: chunked string support
-        // if the text buffer is chunk based, so long lines are cons-string, v8 will flattern the string when we check charCode.
-        // checking charCode on chunks directly is cheaper.
-        const useCurrentLineText = (currentLineLength <= 65536);
+        const currentLineLength = currentLineText.items.len;
 
         var currentLineHasContent = false; // does `currentLineText` contain non-whitespace chars
         var currentLineIndentation: usize = 0; // index at which `currentLineText` contains the first non-whitespace char
         var currentLineSpacesCount: usize = 0; // count of spaces found in `currentLineText` indentation
         var currentLineTabsCount: usize = 0; // count of tabs found in `currentLineText` indentation
         for (0..currentLineLength) |j| {
-            const charCode = if (useCurrentLineText) currentLineText.items[j] else source.getLineCharCode(lineNumber, j);
+            const charCode = currentLineText.items[j];
 
             if (charCode == '\t') {
                 currentLineTabsCount += 1;

@@ -205,6 +205,8 @@ comptime {
     _ = @import("./vs/editor/contrib/hover/browser/hoverOperation.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverTypes.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverComputer.zig");
+    _ = @import("./vs/editor/browser/editorExtensions.zig");
+    _ = @import("./vs/editor/contrib/lineSelection/browser/lineSelection.zig");
     _ = @import("./vs/editor/test/common/port/commandTestSupport.zig");
     _ = @import("./vs/editor/test/common/contrib/linesOperations/copyLinesCommandTests.zig");
     _ = @import("./vs/editor/test/common/contrib/linesOperations/moveLinesCommandTests.zig");

@@ -1182,6 +1182,21 @@ pub const Editor = struct {
         try self.applyCommandResult(after);
     }
 
+    pub fn setCursorPosition(self: *Editor, position: Position) !void {
+        self.closeTypingGroup();
+        try self.cursorsRef().setSelections(self.allocator, &[_]Selection{Selection.init(position.lineNumber, position.column, position.lineNumber, position.column)});
+        self.ensureCursorVisible();
+    }
+
+    fn runExpandLineSelectionAction(context: *anyopaque) anyerror!void {
+        const editor: *Editor = @ptrCast(@alignCast(context));
+        return editor.expandLineSelection();
+    }
+
+    pub fn expandLineSelectionAction(self: *Editor) line_selection.ExpandLineSelectionAction {
+        return line_selection.ExpandLineSelectionAction.init(self, runExpandLineSelectionAction);
+    }
+
     pub fn expandLineSelection(self: *Editor) !void {
         const cursors = try self.cursorsRef().getAll(self.allocator);
         defer self.allocator.free(cursors);
