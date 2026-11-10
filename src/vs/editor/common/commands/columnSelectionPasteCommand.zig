@@ -15,6 +15,7 @@ const Selection = selection_module.Selection;
 const editor_common = @import("../editorCommon.zig");
 const ICursorStateComputerData = editor_common.ICursorStateComputerData;
 const IEditOperationBuilder = editor_common.IEditOperationBuilder;
+const ICommand = editor_common.ICommand;
 const commandOf = editor_common.commandOf;
 
 const replace_command = @import("./replaceCommand.zig");
@@ -48,6 +49,11 @@ pub const ColumnSelectionPasteCommand = struct {
             .tabSize = tab_size,
             .overtype = overtype,
         };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *ColumnSelectionPasteCommand) ICommand {
+        return commandOf(ColumnSelectionPasteCommand).of(self);
     }
 
     pub fn getEditOperations(self: *ColumnSelectionPasteCommand, model: *TextModel, builder: IEditOperationBuilder) !void {

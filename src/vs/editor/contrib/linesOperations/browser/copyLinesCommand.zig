@@ -11,6 +11,7 @@ const SelectionDirection = selection_mod.SelectionDirection;
 const editor_common = @import("../../../common/editorCommon.zig");
 const ICursorStateComputerData = editor_common.ICursorStateComputerData;
 const IEditOperationBuilder = editor_common.IEditOperationBuilder;
+const ICommand = editor_common.ICommand;
 const commandOf = editor_common.commandOf;
 
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
@@ -39,6 +40,11 @@ pub const CopyLinesCommand = struct {
             return Selection.init(selection.startLineNumber, selection.startColumn, endLineNumber, endColumn);
         }
         return Selection.init(endLineNumber, endColumn, selection.startLineNumber, selection.startColumn);
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *CopyLinesCommand) ICommand {
+        return commandOf(CopyLinesCommand).of(self);
     }
 
     pub fn getEditOperations(self: *CopyLinesCommand, model: *TextModel, builder: IEditOperationBuilder) !void {

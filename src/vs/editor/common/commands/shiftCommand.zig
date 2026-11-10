@@ -152,6 +152,11 @@ pub const ShiftCommand = struct {
         }
     }
 
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *ShiftCommand) ICommand {
+        return commandOf(ShiftCommand).of(self);
+    }
+
     pub fn getEditOperations(self: *ShiftCommand, model: *TextModel, builder: IEditOperationBuilder) !void {
         const start_line = self.selection.startLineNumber;
 

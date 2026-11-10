@@ -12,6 +12,7 @@ const eolCounter = @import("../../../common/core/misc/eolCounter.zig");
 const editor_common = @import("../../../common/editorCommon.zig");
 const ICursorStateComputerData = editor_common.ICursorStateComputerData;
 const IEditOperationBuilder = editor_common.IEditOperationBuilder;
+const ICommand = editor_common.ICommand;
 const commandOf = editor_common.commandOf;
 
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
@@ -22,6 +23,11 @@ pub const InsertFinalNewLineCommand = struct {
 
     pub fn init(selection: Selection) InsertFinalNewLineCommand {
         return .{ .selection = selection };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *InsertFinalNewLineCommand) ICommand {
+        return commandOf(InsertFinalNewLineCommand).of(self);
     }
 
     pub fn getEditOperations(self: *InsertFinalNewLineCommand, model: *TextModel, builder: IEditOperationBuilder) !void {
@@ -64,7 +70,7 @@ test "InsertFinalNewLineCommand: inserts the model EOL at the end" {
     const selections = try command_runner.executeCommands(
         allocator,
         ctx.model,
-        &[_]?editor_common.ICommand{commandOf(InsertFinalNewLineCommand).of(&command)},
+        &[_]?editor_common.ICommand{command.interface()},
         &[_]Selection{Selection.init(1, 3, 1, 3)},
     );
     defer if (selections) |value| allocator.free(value);

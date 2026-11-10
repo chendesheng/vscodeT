@@ -14,6 +14,7 @@ const Selection = selection_mod.Selection;
 const editor_common = @import("../../../common/editorCommon.zig");
 const ICursorStateComputerData = editor_common.ICursorStateComputerData;
 const IEditOperationBuilder = editor_common.IEditOperationBuilder;
+const ICommand = editor_common.ICommand;
 const commandOf = editor_common.commandOf;
 
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
@@ -107,6 +108,11 @@ pub const SortLinesCommand = struct {
             if (!std.mem.eql(u8, line.items, sorted)) return true;
         }
         return false;
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *SortLinesCommand) ICommand {
+        return commandOf(SortLinesCommand).of(self);
     }
 
     pub fn getEditOperations(self: *SortLinesCommand, model: *TextModel, builder: IEditOperationBuilder) !void {

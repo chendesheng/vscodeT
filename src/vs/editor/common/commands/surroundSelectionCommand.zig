@@ -12,6 +12,7 @@ const Selection = selection_module.Selection;
 const editor_common = @import("../editorCommon.zig");
 const ICursorStateComputerData = editor_common.ICursorStateComputerData;
 const IEditOperationBuilder = editor_common.IEditOperationBuilder;
+const ICommand = editor_common.ICommand;
 const commandOf = editor_common.commandOf;
 
 const text_model = @import("../model/textModel.zig");
@@ -30,6 +31,11 @@ pub const SurroundSelectionCommand = struct {
             .charBeforeSelection = char_before_selection,
             .charAfterSelection = char_after_selection,
         };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *SurroundSelectionCommand) ICommand {
+        return commandOf(SurroundSelectionCommand).of(self);
     }
 
     pub fn getEditOperations(self: *const SurroundSelectionCommand, model: *TextModel, builder: IEditOperationBuilder) !void {
@@ -83,6 +89,11 @@ pub const CompositionSurroundSelectionCommand = struct {
             .charAfter = char_after,
             .allocator = allocator,
         };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *CompositionSurroundSelectionCommand) ICommand {
+        return commandOf(CompositionSurroundSelectionCommand).of(self);
     }
 
     pub fn getEditOperations(self: *const CompositionSurroundSelectionCommand, model: *TextModel, builder: IEditOperationBuilder) !void {

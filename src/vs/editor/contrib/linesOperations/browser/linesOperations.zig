@@ -14,7 +14,6 @@ const Selection = @import("../../../common/core/selection.zig").Selection;
 
 const editor_common = @import("../../../common/editorCommon.zig");
 const ICommand = editor_common.ICommand;
-const commandOf = editor_common.commandOf;
 
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
 const command_runner = @import("../../../common/commands/commandRunner.zig");
@@ -35,7 +34,7 @@ fn runConcrete(
     const interfaces = try allocator.alloc(?ICommand, commands.len);
     defer allocator.free(interfaces);
     for (commands, 0..) |*command, i| {
-        interfaces[i] = commandOf(T).of(command);
+        interfaces[i] = command.interface();
     }
     return command_runner.executeCommands(allocator, model, interfaces, selections);
 }
@@ -190,7 +189,7 @@ pub fn duplicateSelection(
     for (selections, 0..) |selection, index| {
         if (selection.isEmpty()) {
             try copies.append(CopyLinesCommand.init(allocator, selection, true, false));
-            interfaces[index] = commandOf(CopyLinesCommand).of(&copies.items[copies.items.len - 1]);
+            interfaces[index] = copies.items[copies.items.len - 1].interface();
         } else {
             var value = try model.getValueInRange(Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn), null);
             const text = try value.toOwnedSlice();
@@ -199,7 +198,7 @@ pub fn duplicateSelection(
                 Range.init(selection.endLineNumber, selection.endColumn, selection.endLineNumber, selection.endColumn),
                 text,
             ));
-            interfaces[index] = commandOf(ReplaceCommandThatSelectsText).of(&replacements.items[replacements.items.len - 1]);
+            interfaces[index] = replacements.items[replacements.items.len - 1].interface();
         }
     }
 

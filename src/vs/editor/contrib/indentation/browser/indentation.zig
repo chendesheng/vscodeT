@@ -16,6 +16,7 @@ const Selection = selection_mod.Selection;
 const editor_common = @import("../../../common/editorCommon.zig");
 const ICursorStateComputerData = editor_common.ICursorStateComputerData;
 const IEditOperationBuilder = editor_common.IEditOperationBuilder;
+const ICommand = editor_common.ICommand;
 const commandOf = editor_common.commandOf;
 
 const registry = @import("../../../common/languages/languageConfigurationRegistry.zig");
@@ -91,6 +92,11 @@ pub const IndentationToSpacesCommand = struct {
         return .{ .allocator = allocator, .selection = selection, .tab_size = tab_size };
     }
 
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *IndentationToSpacesCommand) ICommand {
+        return commandOf(IndentationToSpacesCommand).of(self);
+    }
+
     pub fn getEditOperations(self: *IndentationToSpacesCommand, model: *TextModel, builder: IEditOperationBuilder) !void {
         var arena_state = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_state.deinit();
@@ -113,6 +119,11 @@ pub const IndentationToTabsCommand = struct {
 
     pub fn init(allocator: Allocator, selection: Selection, tab_size: usize) IndentationToTabsCommand {
         return .{ .allocator = allocator, .selection = selection, .tab_size = tab_size };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *IndentationToTabsCommand) ICommand {
+        return commandOf(IndentationToTabsCommand).of(self);
     }
 
     pub fn getEditOperations(self: *IndentationToTabsCommand, model: *TextModel, builder: IEditOperationBuilder) !void {

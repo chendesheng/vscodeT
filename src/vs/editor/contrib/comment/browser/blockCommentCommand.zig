@@ -12,6 +12,7 @@ const edit_operation = @import("../../../common/core/editOperation.zig");
 const ISingleEditOperation = edit_operation.ISingleEditOperation;
 
 const editor_common = @import("../../../common/editorCommon.zig");
+const ICommand = editor_common.ICommand;
 const ICursorStateComputerData = editor_common.ICursorStateComputerData;
 const IEditOperationBuilder = editor_common.IEditOperationBuilder;
 const commandOf = editor_common.commandOf;
@@ -224,6 +225,11 @@ pub const BlockCommentCommand = struct {
                 self.used_end_token = end_token;
             }
         }
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *BlockCommentCommand) ICommand {
+        return commandOf(BlockCommentCommand).of(self);
     }
 
     pub fn getEditOperations(self: *BlockCommentCommand, model: *TextModel, builder: IEditOperationBuilder) !void {

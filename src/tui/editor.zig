@@ -46,7 +46,6 @@ const language = @import("./language.zig");
 const language_configuration = @import("../vs/editor/common/languages/languageConfiguration.zig");
 const editor_common = @import("../vs/editor/common/editorCommon.zig");
 const ICommand = editor_common.ICommand;
-const commandOf = editor_common.commandOf;
 const command_runner = @import("../vs/editor/common/commands/commandRunner.zig");
 const lines_ops = @import("../vs/editor/contrib/linesOperations/browser/linesOperations.zig");
 const line_selection = @import("../vs/editor/contrib/lineSelection/browser/lineSelection.zig");
@@ -827,7 +826,7 @@ pub const Editor = struct {
                     pair.close,
                     true,
                 );
-                interfaces[i] = commandOf(auto_closing.TypeWithAutoClosingCommand).of(&commands[i]);
+                interfaces[i] = commands[i].interface();
             }
             try self.executeCommands(interfaces);
             return;
@@ -952,7 +951,7 @@ pub const Editor = struct {
         self.language_config_service.activate();
         for (selections, 0..) |selection, i| {
             commands[i] = ShiftCommand.init(self.allocator, selection, opts, self.language_config_service.interface());
-            interfaces[i] = commandOf(ShiftCommand).of(&commands[i]);
+            interfaces[i] = commands[i].interface();
         }
 
         try self.executeCommands(interfaces);
@@ -1010,7 +1009,7 @@ pub const Editor = struct {
         self.closeTypingGroup();
         const selection = self.modelSelection();
         var command = IndentationToSpacesCommand.init(self.allocator, selection, self.cursor_config.tabSize);
-        try self.executeCommands(&[_]?ICommand{commandOf(IndentationToSpacesCommand).of(&command)});
+        try self.executeCommands(&[_]?ICommand{command.interface()});
         self.model.updateOptions(.{
             .tabSize = null,
             .indentSize = null,
@@ -1025,7 +1024,7 @@ pub const Editor = struct {
         self.closeTypingGroup();
         const selection = self.modelSelection();
         var command = IndentationToTabsCommand.init(self.allocator, selection, self.cursor_config.tabSize);
-        try self.executeCommands(&[_]?ICommand{commandOf(IndentationToTabsCommand).of(&command)});
+        try self.executeCommands(&[_]?ICommand{command.interface()});
         self.model.updateOptions(.{
             .tabSize = null,
             .indentSize = null,
@@ -1256,7 +1255,7 @@ pub const Editor = struct {
                 true,
                 false,
             );
-            interfaces[i] = commandOf(LineCommentCommand).of(&commands[i]);
+            interfaces[i] = commands[i].interface();
         }
 
         try self.executeCommands(interfaces);
@@ -1283,7 +1282,7 @@ pub const Editor = struct {
 
         for (selections, 0..) |selection, i| {
             commands[i] = BlockCommentCommand.init(self.allocator, selection, true, self.language_service);
-            interfaces[i] = commandOf(BlockCommentCommand).of(&commands[i]);
+            interfaces[i] = commands[i].interface();
         }
 
         try self.executeCommands(interfaces);
@@ -1294,7 +1293,7 @@ pub const Editor = struct {
         self.closeTypingGroup();
 
         var command = InsertFinalNewLineCommand.init(selection);
-        try self.executeCommands(&[_]?ICommand{commandOf(InsertFinalNewLineCommand).of(&command)});
+        try self.executeCommands(&[_]?ICommand{command.interface()});
     }
 
     pub fn save(self: *Editor) !void {

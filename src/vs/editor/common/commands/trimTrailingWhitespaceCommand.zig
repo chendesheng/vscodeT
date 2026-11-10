@@ -24,6 +24,7 @@ const StandardTokenType = encoded_token_attributes.StandardTokenType;
 const editor_common = @import("../editorCommon.zig");
 const ICursorStateComputerData = editor_common.ICursorStateComputerData;
 const IEditOperationBuilder = editor_common.IEditOperationBuilder;
+const ICommand = editor_common.ICommand;
 const commandOf = editor_common.commandOf;
 
 const text_model = @import("../model/textModel.zig");
@@ -49,6 +50,11 @@ pub const TrimTrailingWhitespaceCommand = struct {
             .selection_id = null,
             .allocator = allocator,
         };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *TrimTrailingWhitespaceCommand) ICommand {
+        return commandOf(TrimTrailingWhitespaceCommand).of(self);
     }
 
     pub fn getEditOperations(self: *TrimTrailingWhitespaceCommand, model: *TextModel, builder: IEditOperationBuilder) !void {

@@ -14,6 +14,7 @@ const isQuote = cursor_common.isQuote;
 const editor_common = @import("../editorCommon.zig");
 const ICursorStateComputerData = editor_common.ICursorStateComputerData;
 const IEditOperationBuilder = editor_common.IEditOperationBuilder;
+const ICommand = editor_common.ICommand;
 const commandOf = editor_common.commandOf;
 
 const TextModel = @import("../model/textModel.zig").TextModel;
@@ -138,6 +139,11 @@ pub const TypeWithAutoClosingCommand = struct {
 
     pub fn init(allocator: Allocator, selection: Selection, open: []const u8, close: []const u8, insert_open: bool) TypeWithAutoClosingCommand {
         return .{ .allocator = allocator, .selection = selection, .open = open, .close = close, .insert_open = insert_open };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *TypeWithAutoClosingCommand) ICommand {
+        return commandOf(TypeWithAutoClosingCommand).of(self);
     }
 
     pub fn getEditOperations(self: *TypeWithAutoClosingCommand, model: *TextModel, builder: IEditOperationBuilder) !void {

@@ -33,6 +33,11 @@ pub const ReplaceCommand = struct {
         };
     }
 
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *ReplaceCommand) ICommand {
+        return commandOf(ReplaceCommand).of(self);
+    }
+
     pub fn getEditOperations(self: *const ReplaceCommand, model: *TextModel, builder: IEditOperationBuilder) !void {
         _ = model;
         try builder.addTrackedEditOperation(self.range, self.text, false);
@@ -60,6 +65,11 @@ pub const ReplaceOvertypeCommand = struct {
             .text = text,
             .insertsAutoWhitespace = inserts_auto_whitespace,
         };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *ReplaceOvertypeCommand) ICommand {
+        return commandOf(ReplaceOvertypeCommand).of(self);
     }
 
     pub fn getEditOperations(self: *const ReplaceOvertypeCommand, model: *TextModel, builder: IEditOperationBuilder) !void {
@@ -95,6 +105,11 @@ pub const ReplaceCommandThatSelectsText = struct {
         return .{ .range = range, .text = text };
     }
 
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *ReplaceCommandThatSelectsText) ICommand {
+        return commandOf(ReplaceCommandThatSelectsText).of(self);
+    }
+
     pub fn getEditOperations(self: *const ReplaceCommandThatSelectsText, model: *TextModel, builder: IEditOperationBuilder) !void {
         _ = model;
         try builder.addTrackedEditOperation(self.range, self.text, false);
@@ -122,6 +137,11 @@ pub const ReplaceCommandWithoutChangingPosition = struct {
             .text = text,
             .insertsAutoWhitespace = inserts_auto_whitespace,
         };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *ReplaceCommandWithoutChangingPosition) ICommand {
+        return commandOf(ReplaceCommandWithoutChangingPosition).of(self);
     }
 
     pub fn getEditOperations(self: *const ReplaceCommandWithoutChangingPosition, model: *TextModel, builder: IEditOperationBuilder) !void {
@@ -163,6 +183,11 @@ pub const ReplaceCommandWithOffsetCursorState = struct {
         };
     }
 
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *ReplaceCommandWithOffsetCursorState) ICommand {
+        return commandOf(ReplaceCommandWithOffsetCursorState).of(self);
+    }
+
     pub fn getEditOperations(self: *const ReplaceCommandWithOffsetCursorState, model: *TextModel, builder: IEditOperationBuilder) !void {
         _ = model;
         try builder.addTrackedEditOperation(self.range, self.text, false);
@@ -184,6 +209,11 @@ pub const ReplaceOvertypeCommandOnCompositionEnd = struct {
 
     pub fn init(range: Range) ReplaceOvertypeCommandOnCompositionEnd {
         return .{ .range = range };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *ReplaceOvertypeCommandOnCompositionEnd) ICommand {
+        return commandOf(ReplaceOvertypeCommandOnCompositionEnd).of(self);
     }
 
     pub fn getEditOperations(self: *const ReplaceOvertypeCommandOnCompositionEnd, model: *TextModel, builder: IEditOperationBuilder) !void {
@@ -228,6 +258,11 @@ pub const ReplaceCommandThatPreservesSelection = struct {
             .forceMoveMarkers = force_move_markers,
             .selection_id = null,
         };
+    }
+
+    /// Type-erased command interface used by the command runner.
+    pub fn interface(self: *ReplaceCommandThatPreservesSelection) ICommand {
+        return commandOf(ReplaceCommandThatPreservesSelection).of(self);
     }
 
     pub fn getEditOperations(self: *ReplaceCommandThatPreservesSelection, model: *TextModel, builder: IEditOperationBuilder) !void {
