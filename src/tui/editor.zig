@@ -1125,6 +1125,12 @@ pub const Editor = struct {
         return self.cursorsRef().getSelections(self.allocator);
     }
 
+    /// Model selections, allocated with the editor allocator. The caller owns
+    /// the returned slice.
+    pub fn getSelections(self: *Editor) ![]Selection {
+        return self.cursorsRef().getSelections(self.allocator);
+    }
+
     fn applyCommandResult(self: *Editor, after: ?[]Selection) !void {
         const selections = after orelse return;
         defer self.allocator.free(selections);

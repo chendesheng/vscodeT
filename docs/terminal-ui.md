@@ -576,7 +576,8 @@ Library constraints:
   else to the focused widget first.
 - Key map for the terminal find bar (TUI-specific, documented in `README.md`):
   Enter/Shift-Enter next/previous, Tab switches inputs, Escape closes,
-  Alt-C/W/R options, Alt-P preserve case, Ctrl-Alt-Enter replace all.
+  Alt-C/W/R options, Alt-P preserve case, Alt-L find in selection,
+  Alt-Enter select all matches, Ctrl-Alt-Enter replace all.
 - Model fixes the port needed: `TextModel.findNextMatch` no longer runs a
   second discarded search (which leaked its capture array), and the
   word-separator cache owns its keys instead of borrowing editor slices.

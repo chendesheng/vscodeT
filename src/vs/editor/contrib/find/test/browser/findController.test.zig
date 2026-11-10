@@ -195,3 +195,49 @@ test "FindController: decorations paint the match cells" {
     const cleared = view.surface.grid();
     try std.testing.expect(cleared.bg[cleared.index(gutter, 0)] != ui.cell.packColor(.{ .r = 200, .g = 120, .b = 0 }));
 }
+
+test "FindController: Alt-L limits the search to the selection" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+
+    try controller.open(false);
+    try view.refresh();
+    var type_event = ui.KeyEvent{ .key = .{ .text = "alpha" } };
+    try std.testing.expect(view.dispatchKey(&type_event));
+    try std.testing.expectEqual(@as(usize, 2), controller.state.matches_count);
+
+    // Find in the second word only.
+    try editor.setSelection(@import("../../../../common/core/range.zig").Range.init(2, 6, 2, 11));
+    var scope_event = ui.KeyEvent{ .key = .{ .char = 'l' }, .mods = .{ .alt = true } };
+    try std.testing.expect(view.dispatchKey(&scope_event));
+    try std.testing.expect(controller.state.search_scope != null);
+    try std.testing.expectEqual(@as(usize, 1), controller.state.matches_count);
+
+    // Toggling again clears the scope.
+    var unscoped_event = ui.KeyEvent{ .key = .{ .char = 'l' }, .mods = .{ .alt = true } };
+    try std.testing.expect(view.dispatchKey(&unscoped_event));
+    try std.testing.expect(controller.state.search_scope == null);
+    try std.testing.expectEqual(@as(usize, 2), controller.state.matches_count);
+
+    // Alt+Enter selects all matches.
+    var select_all_event = ui.KeyEvent{ .key = .enter, .mods = .{ .alt = true } };
+    try std.testing.expect(view.dispatchKey(&select_all_event));
+    try std.testing.expectEqual(@as(usize, 2), editor.cursorCount());
+
+    var escape_event = ui.KeyEvent{ .key = .escape };
+    _ = view.dispatchKey(&escape_event);
+}

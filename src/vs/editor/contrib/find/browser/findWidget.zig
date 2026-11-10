@@ -21,6 +21,7 @@ const FindReplaceState = find_state.FindReplaceState;
 const FindModel = @import("./findModel.zig").FindModel;
 
 const Allocator = std.mem.Allocator;
+const RangeType = @import("../../../common/core/range.zig").Range;
 
 const background = ui.Color{ .r = 45, .g = 45, .b = 55 };
 const foreground = ui.Color{ .r = 230, .g = 230, .b = 230 };
@@ -29,7 +30,7 @@ const dim_foreground = ui.Color{ .r = 140, .g = 140, .b = 150 };
 const label_x: usize = 1;
 const input_x: usize = 6;
 const count_width: usize = 10;
-const toggles_width: usize = 8;
+const toggles_width: usize = 12;
 const wide_reserve: usize = count_width + toggles_width + 2;
 
 const FocusField = enum { find, replace };
@@ -207,6 +208,7 @@ pub const FindWidget = struct {
             appendToggle(doc, root, toggles_x, 0, "Aa", self.state.matchCase());
             appendToggle(doc, root, toggles_x + 3, 0, "ab", self.state.wholeWord());
             appendToggle(doc, root, toggles_x + 6, 0, ".*", self.state.isRegex());
+            appendToggle(doc, root, toggles_x + 9, 0, "Sel", self.state.search_scope != null);
         }
 
         if (self.state.is_replace_revealed) {
@@ -305,6 +307,8 @@ pub const FindWidget = struct {
             .enter => {
                 if (event.mods.ctrl and event.mods.alt) {
                     self.model.replaceAll() catch |err| self.report(err);
+                } else if (event.mods.alt) {
+                    self.model.selectAllMatches() catch |err| self.report(err);
                 } else if (event.mods.ctrl) {
                     self.model.replace() catch |err| self.report(err);
                 } else if (event.mods.shift) {
@@ -347,6 +351,10 @@ pub const FindWidget = struct {
                             self.state.change(.{ .preserve_case = !self.state.preserveCase() }, true, true);
                             return true;
                         },
+                        'l', 'L' => {
+                            self.toggleSearchScope();
+                            return true;
+                        },
                         else => {},
                     }
                 }
@@ -354,6 +362,34 @@ pub const FindWidget = struct {
             else => {},
         }
         return false;
+    }
+
+    fn toggleSearchScope(self: *FindWidget) void {
+        if (self.state.search_scope != null) {
+            self.state.change(.{ .search_scope = .none }, true, true);
+            return;
+        }
+
+        const selections = self.model.editor.getSelections() catch return;
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return;
+
+        const ranges = self.allocator.alloc(RangeType, selections.len) catch return;
+        defer self.allocator.free(ranges);
+        var count: usize = 0;
+        for (selections) |selection| {
+            if (selection.isEmpty()) continue;
+            ranges[count] = RangeType.init(
+                selection.startLineNumber,
+                selection.startColumn,
+                selection.endLineNumber,
+                selection.endColumn,
+            );
+            count += 1;
+        }
+        if (count == 0) return;
+
+        self.state.change(.{ .search_scope = .{ .ranges = ranges[0..count] } }, true, true);
     }
 
     fn report(self: *FindWidget, err: anyerror) void {
