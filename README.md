@@ -151,6 +151,13 @@ Editor contributions:
   ported yet.
 - `src/vs/editor/contrib/lineSelection` and
   `src/vs/editor/contrib/insertFinalNewLine` are ported.
+- Folding is ported at the model/provider layer:
+  `foldingRanges` (range storage, parent lookup, collapse state, merge/sanitize),
+  `indentRangeProvider` (indentation-based folding and marker handling),
+  `foldingModel` (region state and collapse transitions), and
+  `hiddenRangeModel` (hidden-line ranges and selection adjustment). The
+  browser folding controller, decorations/chevrons, syntax folding providers,
+  sticky scroll, and TUI folding UI are not ported.
 - Cursor/editing contributions are ported at the portable command/model layer:
   `anchorSelect` (position anchor state and action metadata), `caretOperations`
   (`MoveCaretCommand` and action metadata), `cursorUndo` (cursor undo/redo
