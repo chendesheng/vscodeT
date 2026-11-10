@@ -376,8 +376,12 @@ The paint pass carries the target grid, the viewport, and the active clip rect
 
 The box tree's paint pass walks boxes in order, applies the direct `Style`
 values (position, size, clip, colors, attributes), and paints backgrounds before
-text. The POC paints all rows; row-level damage bands are
-part of the API so the view can later name only changed lines.
+text. Backgrounds are not inherited: a text run with no background of its own
+keeps the background already in the cell, following TermDOM's `setCell` rule, so
+a transparent label over a filled panel shows the panel instead of punching a
+hole to the root color. Borders use the same rule. The POC paints all rows;
+row-level damage bands are part of the API so the view can later name only
+changed lines.
 
 ### 6.3 Frame diff
 

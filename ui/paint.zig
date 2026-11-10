@@ -48,7 +48,11 @@ fn paintBox(
     switch (current.kind) {
         .text => {
             const own = mergeStyle(inherited, current.style);
-            drawText(doc, grid, current.text orelse "", current.rect.x, current.rect.y, own, clip);
+            // Backgrounds are not inherited in CSS. A text run with no
+            // background of its own sits on whatever the cell already shows;
+            // this is what lets a transparent label over a filled panel keep
+            // the panel color instead of punching a hole with the root's.
+            drawText(doc, grid, current.text orelse "", current.rect.x, current.rect.y, own, current.style.background == null, clip);
         },
         .initial_containing_block, .element, .anonymous_inline, .anonymous_flex_item => {
             const style = current.style;
@@ -167,7 +171,17 @@ fn putBorderGlyph(
 ) void {
     if (col < cell.snap(clip.x) or row < cell.snap(clip.y)) return;
     if (col >= cell.snap(clip.right()) or row >= cell.snap(clip.bottom())) return;
-    grid.putCodepoint(col, row, cp, 1, paint);
+    grid.putCodepoint(col, row, cp, 1, keepBackground(grid, col, row, paint));
+}
+
+/// A border belongs to its box, not to the root: if the box has no background
+/// fill, the border sits on the cell underneath it. The box's own fill, when
+/// present, has already written the cells, so preserving is correct either way.
+fn keepBackground(grid: *const CellGrid, col: usize, row: usize, paint: PaintStyle) PaintStyle {
+    if (col >= grid.cols or row >= grid.rows) return paint;
+    var result = paint;
+    result.bg = grid.bg[grid.index(col, row)];
+    return result;
 }
 
 pub fn drawText(
@@ -177,6 +191,7 @@ pub fn drawText(
     x: f64,
     y: f64,
     paint: PaintStyle,
+    keep_background: bool,
     clip: Rect,
 ) void {
     const row = cell.snap(y);
@@ -199,7 +214,10 @@ pub fn drawText(
         if (decoded.cp == '\t') {
             const next = dom.nextTabStop(column, doc.tab_size);
             while (column < next and column < clip_right) : (column += 1) {
-                if (column >= clip_left) grid.putSpace(column, row, paint);
+                if (column >= clip_left) {
+                    const cell_paint = if (keep_background) keepBackground(grid, column, row, paint) else paint;
+                    grid.putSpace(column, row, cell_paint);
+                }
             }
             continue;
         }
@@ -210,7 +228,8 @@ pub fn drawText(
         if (column >= clip_right) break;
         if (column + width > clip_right) break;
         if (column >= clip_left) {
-            grid.putCodepoint(column, row, decoded.cp, width, paint);
+            const cell_paint = if (keep_background) keepBackground(grid, column, row, paint) else paint;
+            grid.putCodepoint(column, row, decoded.cp, width, cell_paint);
         }
         column += width;
     }
@@ -355,4 +374,72 @@ test "paint: border box and box-drawing glyphs" {
     try std.testing.expectEqual(@as(u32, '└'), grid.cluster[4 * 9]);
     try std.testing.expectEqual(@as(u32, '┘'), grid.cluster[4 * 9 + 6]);
     try std.testing.expectEqual(cell.packColor(.{ .r = 200, .g = 200, .b = 200 }), grid.fg[0]);
+}
+
+test "paint: transparent text keeps the background underneath it" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 8, .rows = 2 });
+    defer doc.deinit();
+
+    const dark = style_mod.Color{ .r = 1, .g = 2, .b = 3 };
+    const panel_fill = style_mod.Color{ .r = 10, .g = 20, .b = 30 };
+    const explicit = style_mod.Color{ .r = 40, .g = 50, .b = 60 };
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+        .background = dark,
+    });
+    doc.setRoot(root);
+
+    // The panel is painted first; the labels are later siblings and overlap it
+    // without a background of their own, like the layout example.
+    _ = try commonBox(&doc, root, .{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 8 },
+        .height = .{ .cells = 2 },
+        .background = panel_fill,
+    });
+
+    const first = try commonBox(&doc, root, .{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 8 },
+        .height = .{ .cells = 1 },
+    });
+    const plain = try doc.createText("hi");
+    plain.setStyle(.{ .color = .{ .r = 255, .g = 255, .b = 255 } });
+    _ = try first.appendChild(plain);
+
+    const second = try commonBox(&doc, root, .{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 1 },
+        .width = .{ .cells = 8 },
+        .height = .{ .cells = 1 },
+    });
+    const filled = try doc.createText("xx");
+    filled.setStyle(.{ .background = explicit });
+    _ = try second.appendChild(filled);
+
+    var grid = try CellGrid.init(allocator, 8, 2);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    try std.testing.expectEqual(cell.packColor(panel_fill), grid.bg[0]);
+    try std.testing.expectEqual(@as(u32, 'h'), grid.cluster[0]);
+    try std.testing.expectEqual(cell.packColor(explicit), grid.bg[grid.index(0, 1)]);
+    try std.testing.expectEqual(@as(u32, 'x'), grid.cluster[grid.index(0, 1)]);
+}
+
+fn commonBox(doc: *dom.Document, parent: *dom.Node, style: Style) !*dom.Node {
+    const node = try doc.createElement(.div);
+    node.setStyle(style);
+    _ = try parent.appendChild(node);
+    return node;
 }
