@@ -43,7 +43,7 @@ Notes for the Zig 0.17 port:
   renderer and adds Up/Down, PageUp/PageDown, Home and End scrolling; Ctrl-Q
   quits. Overlay widgets and a single-line terminal input box
   (`ui/inputbox.zig`) are in place, and the find bar is wired: Ctrl-F opens
-  find (a single-line selection seeds the query), Ctrl-H opens the replace row,
+  find (a single-line selection seeds the query), Ctrl-R opens the replace row,
   Enter/Shift-Enter go to the next/previous match, Escape closes, Tab switches
   between the find and replace inputs, Alt-C/Alt-W/Alt-R toggle match case,
   whole word and regex, Alt-P toggles preserve case, Alt-L limits the search to

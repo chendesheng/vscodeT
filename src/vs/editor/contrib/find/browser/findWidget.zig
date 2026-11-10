@@ -11,6 +11,8 @@
 // while typing, Enter/Shift-Enter next/previous, Escape close, Alt-C/W/R
 // option toggles, replace and replace-all, and the match counter.
 // TUI-specific: the key map (documented in the README), and the layout.
+// Ctrl-H cannot be used for replace because terminals report it as Backspace;
+// the replace row is on Ctrl-R instead.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -329,7 +331,7 @@ pub const FindWidget = struct {
                 return true;
             },
             .char => |ch| {
-                if (event.mods.ctrl and !event.mods.alt and (ch == 'h' or ch == 'H')) {
+                if (event.mods.ctrl and !event.mods.alt and (ch == 'r' or ch == 'R')) {
                     self.toggleReplace();
                     return true;
                 }

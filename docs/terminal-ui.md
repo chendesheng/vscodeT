@@ -572,10 +572,11 @@ Library constraints:
   replace, replace all, select all matches), `replaceAllCommand.zig` and
   `findWidget.zig` (the terminal bar). `findController.zig` owns the state,
   model and widget and forwards decoration ranges to the view. The app treats
-  Ctrl-F/Ctrl-H as global find keys, and `View.dispatchKey` routes everything
+  Ctrl-F/Ctrl-R as global find keys, and `View.dispatchKey` routes everything
   else to the focused widget first.
 - Key map for the terminal find bar (TUI-specific, documented in `README.md`):
   Enter/Shift-Enter next/previous, Tab switches inputs, Escape closes,
+  Ctrl-R toggles the replace row (Ctrl-H is Backspace in a terminal),
   Alt-C/W/R options, Alt-P preserve case, Alt-L find in selection,
   Alt-Enter select all matches, Ctrl-Alt-Enter replace all.
 - Model fixes the port needed: `TextModel.findNextMatch` no longer runs a

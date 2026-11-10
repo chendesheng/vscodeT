@@ -116,25 +116,7 @@ pub fn main(init: std.process.Init) !void {
         defer events.deinit(allocator);
 
         for (events.items) |*event| {
-            // A focused widget owns the keyboard; Ctrl-Q stays global so the
-            // quit prompt works from inside a widget. Ctrl-F and Ctrl-H open
-            // the find bar from either side.
-            if (isCtrlQ(event.*)) {
-                if (dispatch(editor, event.*, &is_pasting)) return;
-                find.onEditorChanged();
-                continue;
-            }
-            if (isCtrlChar(event.*, 'f')) {
-                find.startFind() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
-                continue;
-            }
-            if (isCtrlChar(event.*, 'h')) {
-                find.startReplace() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
-                continue;
-            }
-            if (view.dispatchKey(event)) continue;
-            if (dispatch(editor, event.*, &is_pasting)) return;
-            find.onEditorChanged();
+            if (try handleKeyEvent(view, find, editor, event, &is_pasting)) return;
         }
 
         try view.refresh();
@@ -143,6 +125,36 @@ pub fn main(init: std.process.Init) !void {
         try syncCursor(out, view);
         try out.flush();
     }
+}
+
+/// Handles one decoded event. A focused widget owns the keyboard; Ctrl-Q stays
+/// global so the quit prompt works from inside a widget, and Ctrl-F/Ctrl-R open
+/// the find bar from either side (Ctrl-H is Backspace on terminals). Returns
+/// true when the app should quit.
+fn handleKeyEvent(
+    view: *View,
+    find: *FindController,
+    editor: *Editor,
+    event: *input.Event,
+    is_pasting: *bool,
+) !bool {
+    if (isCtrlQ(event.*)) {
+        const quit = dispatch(editor, event.*, is_pasting);
+        find.onEditorChanged();
+        return quit;
+    }
+    if (isCtrlChar(event.*, 'f')) {
+        find.startFind() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
+        return false;
+    }
+    if (isCtrlChar(event.*, 'r')) {
+        find.startReplace() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
+        return false;
+    }
+    if (view.dispatchKey(event)) return false;
+    if (dispatch(editor, event.*, is_pasting)) return true;
+    find.onEditorChanged();
+    return false;
 }
 
 /// Hides the hardware cursor when it has no cell, otherwise moves it to the
@@ -463,4 +475,66 @@ test "app: typing an open bracket auto-closes it" {
     defer value.deinit();
     try std.testing.expectEqualStrings("()", value.items);
     try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().column);
+}
+
+// Regression: the decoder used to drop 0x06, so Ctrl-F never reached the app.
+test "app: Ctrl-F opens the find bar through the byte decoder" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "alpha beta\nalpha gamma",
+        "test.txt",
+        100,
+        8,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const find = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setViewDecorations,
+    });
+    defer find.deinit();
+    try view.addOverlayWidget(find.widget().interface());
+
+    var pasting = false;
+    var open_events = try ui.input.decode(allocator, "\x06");
+    defer open_events.deinit(allocator);
+    for (open_events.items) |*event| {
+        try std.testing.expect(!try handleKeyEvent(view, find, editor, event, &pasting));
+    }
+
+    try std.testing.expect(find.isOpen());
+    try std.testing.expectEqualStrings("", find.state.search_string);
+
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const open_row = try view.surface.grid().rowText(allocator, 0);
+    defer allocator.free(open_row);
+    try std.testing.expect(std.mem.indexOf(u8, open_row, "Find") != null);
+    try std.testing.expect(view.surface.document().active_element != null);
+
+    // Escape is handled by the widget, not inserted into the document.
+    var close_events = try ui.input.decode(allocator, "\x1b");
+    defer close_events.deinit(allocator);
+    for (close_events.items) |*event| {
+        try std.testing.expect(!try handleKeyEvent(view, find, editor, event, &pasting));
+    }
+    try std.testing.expect(!find.isOpen());
+
+    try view.refresh();
+    try view.render(&out.writer);
+    const closed_row = try view.surface.grid().rowText(allocator, 0);
+    defer allocator.free(closed_row);
+    try std.testing.expect(std.mem.indexOf(u8, closed_row, "Find") == null);
 }

@@ -51,32 +51,28 @@ fn decodeString(
         }
         run_start = i + 1;
 
-        const key: ?Key = switch (ch) {
-            0x11 => .{ .char = 'q' },
-            0x13 => .{ .char = 's' },
-            0x1a => .{ .char = 'z' },
-            0x19 => .{ .char = 'y' },
-            0x01 => .{ .char = 'a' },
-            0x03 => .{ .char = 'c' },
-            0x0c => .{ .char = 'l' },
-            0x04 => .{ .char = 'd' },
-            0x1c => .{ .char = '\\' },
-            0x1d => .{ .char = ']' },
-            0x1f => .{ .char = '/' },
+        const control: ?struct { key: Key, mods: Modifiers = .{} } = switch (ch) {
+            0x7f => .{ .key = .backspace },
+            0x08 => .{ .key = .backspace },
+            '\r', '\n' => .{ .key = .enter },
+            '\t' => .{ .key = .tab },
+            0x1b => .{ .key = .escape },
+            0x00 => .{ .key = .{ .char = ' ' }, .mods = .{ .ctrl = true } },
+            // Ctrl-A through Ctrl-Z are the control bytes 0x01..0x1a. The
+            // exceptions above (Backspace, Tab, Enter, Escape) share a byte
+            // with a letter and win, because that is what terminals send.
+            0x01...0x07, 0x0b...0x0c, 0x0e...0x1a => .{
+                .key = .{ .char = 'a' + (ch - 1) },
+                .mods = .{ .ctrl = true },
+            },
+            0x1c => .{ .key = .{ .char = '\\' }, .mods = .{ .ctrl = true } },
+            0x1d => .{ .key = .{ .char = ']' }, .mods = .{ .ctrl = true } },
+            0x1e => .{ .key = .{ .char = '^' }, .mods = .{ .ctrl = true } },
+            0x1f => .{ .key = .{ .char = '/' }, .mods = .{ .ctrl = true } },
             else => null,
         };
-        if (key) |named| {
-            try result.append(allocator, .{ .key = named, .mods = .{ .ctrl = true } });
-            i += 1;
-            continue;
-        }
-
-        switch (ch) {
-            0x08, 0x7f => try result.append(allocator, .{ .key = .backspace }),
-            '\r', '\n' => try result.append(allocator, .{ .key = .enter }),
-            '\t' => try result.append(allocator, .{ .key = .tab }),
-            0x1b => try result.append(allocator, .{ .key = .escape }),
-            else => {},
+        if (control) |named| {
+            try result.append(allocator, .{ .key = named.key, .mods = named.mods });
         }
         i += 1;
     }
@@ -387,4 +383,30 @@ test "input: shifted tab and control bytes" {
     try std.testing.expect(events.items[0].key == .tab);
     try std.testing.expect(events.items[1].key == .enter);
     try std.testing.expect(events.items[2].key == .backspace);
+}
+
+// Regression: Ctrl-F used to be dropped, so the app never saw it (0x06).
+test "input: every Ctrl-letter is decoded, Ctrl-H stays backspace" {
+    const allocator = std.testing.allocator;
+
+    var ctrl_f = try decode(allocator, "\x06");
+    defer ctrl_f.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), ctrl_f.items.len);
+    try std.testing.expectEqual(@as(u21, 'f'), ctrl_f.items[0].key.char);
+    try std.testing.expect(ctrl_f.items[0].mods.ctrl);
+
+    var ctrl_r = try decode(allocator, "\x12");
+    defer ctrl_r.deinit(allocator);
+    try std.testing.expectEqual(@as(u21, 'r'), ctrl_r.items[0].key.char);
+    try std.testing.expect(ctrl_r.items[0].mods.ctrl);
+
+    var ctrl_g = try decode(allocator, "\x07");
+    defer ctrl_g.deinit(allocator);
+    try std.testing.expectEqual(@as(u21, 'g'), ctrl_g.items[0].key.char);
+
+    // 0x08 is Backspace, not Ctrl-H: terminals cannot distinguish them.
+    var ctrl_h = try decode(allocator, "\x08");
+    defer ctrl_h.deinit(allocator);
+    try std.testing.expectEqual(Key.backspace, ctrl_h.items[0].key);
+    try std.testing.expect(!ctrl_h.items[0].mods.ctrl);
 }
