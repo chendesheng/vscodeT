@@ -151,6 +151,15 @@ Editor contributions:
   ported yet.
 - `src/vs/editor/contrib/lineSelection` and
   `src/vs/editor/contrib/insertFinalNewLine` are ported.
+- Cursor/editing contributions are ported at the portable command/model layer:
+  `anchorSelect` (position anchor state and action metadata), `caretOperations`
+  (`MoveCaretCommand` and action metadata), `cursorUndo` (cursor undo/redo
+  stack), `wordOperations` (word movement and deletion commands),
+  `wordPartOperations` (word-part movement and deletion), `clipboard`
+  (in-memory copy metadata and action IDs), and `toggleTabFocusMode` (tab-focus
+  state and action metadata). Browser clipboard integration, anchor
+  decorations, selection-event wiring for cursor undo, and keybinding
+  registration remain TUI/browser-specific and are not ported.
 - `src/vs/editor/common/commands/commandRunner.zig` executes a batch of
   `ICommand`s, including multi-selection commands, and maps their resulting
   selections.

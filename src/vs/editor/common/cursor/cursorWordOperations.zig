@@ -2,8 +2,21 @@ const std = @import("std");
 const WordCharacterClassifier = @import("../core/wordCharacterClassifier.zig").WordCharacterClassifier;
 const WordCharacterClass = @import("../core/wordCharacterClassifier.zig").WordCharacterClass;
 const Position = @import("../core/position.zig").Position;
+const Range = @import("../core/range.zig").Range;
+const Selection = @import("../core/selection.zig").Selection;
 const cursorCommon = @import("../cursorCommon.zig");
 const ICursorSimpleModel = cursorCommon.ICursorSimpleModel;
+const EditorAutoClosingEditStrategy = @import("../config/editorOptions.zig").EditorAutoClosingEditStrategy;
+const StandardAutoClosingPairConditional = @import("../languages/languageConfiguration.zig").StandardAutoClosingPairConditional;
+
+pub const DeleteWordContext = struct {
+    wordSeparators: *const WordCharacterClassifier,
+    model: ICursorSimpleModel,
+    selection: Selection,
+    whitespaceHeuristics: bool = false,
+    autoClosingDelete: EditorAutoClosingEditStrategy = .never,
+    autoClosingPairs: []const StandardAutoClosingPairConditional = &.{},
+};
 
 const WordType = enum { None, Regular, Separator };
 
@@ -116,6 +129,239 @@ pub const WordOperations = struct {
             ch_index -= 1;
         }
         return 0;
+    }
+
+    fn charAtIsWhitespace(str: []const u8, index: usize) bool {
+        const ch = str[index];
+        return ch == ' ' or ch == '\t';
+    }
+
+    fn findFirstNonWhitespaceChar(str: []const u8, start_index: usize) usize {
+        var index = start_index;
+        while (index < str.len) : (index += 1) {
+            const ch = str[index];
+            if (ch != ' ' and ch != '\t') return index;
+        }
+        return str.len;
+    }
+
+    fn isAutoClosingPairDelete(ctx: DeleteWordContext) bool {
+        if (ctx.autoClosingDelete == .never or !ctx.selection.isEmpty()) return false;
+        const position = ctx.selection.getPosition();
+        if (position.column <= 1) return false;
+        const line = ctx.model.getLineContent(ctx.model.context, position.lineNumber);
+        if (position.column > line.len) return false;
+        const before = line[position.column - 2];
+        const after = line[position.column - 1];
+        for (ctx.autoClosingPairs) |pair| {
+            if (pair.open.len == 1 and pair.close.len == 1 and pair.open[0] == before and pair.close[0] == after) return true;
+        }
+        return false;
+    }
+
+    fn deleteWordLeftWhitespace(model: ICursorSimpleModel, position: Position) ?Range {
+        const lineContent = model.getLineContent(model.context, position.lineNumber);
+        const startIndex = position.column -| 2;
+        const lastNonWhitespace = @import("../../../base/common/strings.zig").lastNonWhitespaceIndex(lineContent) orelse 0;
+        if (lastNonWhitespace < startIndex) {
+            return Range.init(position.lineNumber, lastNonWhitespace + 2, position.lineNumber, position.column);
+        }
+        return null;
+    }
+
+    fn deleteWordRightWhitespace(model: ICursorSimpleModel, position: Position) ?Range {
+        const lineContent = model.getLineContent(model.context, position.lineNumber);
+        const startIndex = position.column -| 1;
+        const firstNonWhitespace = findFirstNonWhitespaceChar(lineContent, startIndex);
+        if (startIndex < firstNonWhitespace) {
+            return Range.init(position.lineNumber, position.column, position.lineNumber, firstNonWhitespace + 1);
+        }
+        return null;
+    }
+
+    fn selectionRange(selection: Selection) Range {
+        return Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn);
+    }
+
+    pub fn deleteWordLeft(ctx: DeleteWordContext, wordNavigationType: WordNavigationType) ?Range {
+        const selection = ctx.selection;
+        if (!selection.isEmpty()) return selectionRange(selection);
+
+        if (isAutoClosingPairDelete(ctx)) {
+            const position = selection.getPosition();
+            return Range.init(position.lineNumber, position.column - 1, position.lineNumber, position.column + 1);
+        }
+
+        const position = selection.getPosition();
+        var lineNumber = position.lineNumber;
+        var column = position.column;
+
+        if (lineNumber == 1 and column == 1) return null;
+
+        if (ctx.whitespaceHeuristics) {
+            if (deleteWordLeftWhitespace(ctx.model, position)) |range| return range;
+        }
+
+        const separators = ctx.wordSeparators;
+        const model = ctx.model;
+        var prevWord = findPreviousWordOnLine(separators, model, position);
+        if (wordNavigationType == .WordStart) {
+            if (prevWord) |word| {
+                column = word.start + 1;
+            } else if (column > 1) {
+                column = 1;
+            } else {
+                lineNumber -= 1;
+                column = model.getLineMaxColumn(model.context, lineNumber);
+            }
+        } else {
+            if (prevWord != null and column <= prevWord.?.end + 1) {
+                prevWord = findPreviousWordOnLine(separators, model, Position.init(lineNumber, prevWord.?.start + 1));
+            }
+            if (prevWord) |word| {
+                column = word.end + 1;
+            } else if (column > 1) {
+                column = 1;
+            } else {
+                lineNumber -= 1;
+                column = model.getLineMaxColumn(model.context, lineNumber);
+            }
+        }
+        return Range.init(lineNumber, column, position.lineNumber, position.column);
+    }
+
+    pub fn deleteWordRight(ctx: DeleteWordContext, wordNavigationType: WordNavigationType) ?Range {
+        const selection = ctx.selection;
+        if (!selection.isEmpty()) return selectionRange(selection);
+
+        const position = selection.getPosition();
+        var lineNumber = position.lineNumber;
+        var column = position.column;
+        const lineCount = ctx.model.getLineCount(ctx.model.context);
+        const maxColumn = ctx.model.getLineMaxColumn(ctx.model.context, lineNumber);
+        if (lineNumber == lineCount and column == maxColumn) return null;
+
+        if (ctx.whitespaceHeuristics) {
+            if (deleteWordRightWhitespace(ctx.model, position)) |range| return range;
+        }
+
+        var nextWord = findNextWordOnLine(ctx.wordSeparators, ctx.model, position);
+        if (wordNavigationType == .WordEnd) {
+            if (nextWord) |word| {
+                column = word.end + 1;
+            } else if (column < maxColumn or lineNumber == lineCount) {
+                column = maxColumn;
+            } else {
+                lineNumber += 1;
+                nextWord = findNextWordOnLine(ctx.wordSeparators, ctx.model, Position.init(lineNumber, 1));
+                column = if (nextWord) |word| word.start + 1 else ctx.model.getLineMaxColumn(ctx.model.context, lineNumber);
+            }
+        } else {
+            if (nextWord != null and column >= nextWord.?.start + 1) {
+                nextWord = findNextWordOnLine(ctx.wordSeparators, ctx.model, Position.init(lineNumber, nextWord.?.end + 1));
+            }
+            if (nextWord) |word| {
+                column = word.start + 1;
+            } else if (column < maxColumn or lineNumber == lineCount) {
+                column = maxColumn;
+            } else {
+                lineNumber += 1;
+                nextWord = findNextWordOnLine(ctx.wordSeparators, ctx.model, Position.init(lineNumber, 1));
+                column = if (nextWord) |word| word.start + 1 else ctx.model.getLineMaxColumn(ctx.model.context, lineNumber);
+            }
+        }
+        return Range.init(lineNumber, column, position.lineNumber, position.column);
+    }
+
+    fn deleteInsideWordWhitespace(model: ICursorSimpleModel, position: Position) ?Range {
+        const lineContent = model.getLineContent(model.context, position.lineNumber);
+        if (lineContent.len == 0) return null;
+        var leftIndex = position.column -| 2;
+        if (!charAtIsWhitespace(lineContent, leftIndex)) return null;
+        var rightIndex = @min(position.column - 1, lineContent.len - 1);
+        if (!charAtIsWhitespace(lineContent, rightIndex)) return null;
+        while (leftIndex > 0 and charAtIsWhitespace(lineContent, leftIndex - 1)) leftIndex -= 1;
+        while (rightIndex + 1 < lineContent.len and charAtIsWhitespace(lineContent, rightIndex + 1)) rightIndex += 1;
+        return Range.init(position.lineNumber, leftIndex + 1, position.lineNumber, rightIndex + 2);
+    }
+
+    fn deleteInsideWordDetermineRange(wordSeparators: *const WordCharacterClassifier, model: ICursorSimpleModel, position: Position, onlyWord: bool) Range {
+        const lineContent = model.getLineContent(model.context, position.lineNumber);
+        const lineLength = lineContent.len;
+        if (lineLength == 0) {
+            if (position.lineNumber > 1) return Range.init(position.lineNumber - 1, model.getLineMaxColumn(model.context, position.lineNumber - 1), position.lineNumber, 1);
+            if (position.lineNumber < model.getLineCount(model.context)) return Range.init(position.lineNumber, 1, position.lineNumber + 1, 1);
+            return Range.init(position.lineNumber, 1, position.lineNumber, 1);
+        }
+
+        const touchesWord = struct {
+            fn check(word: IFindWordResult, column: usize) bool {
+                return word.start + 1 <= column and column <= word.end + 1;
+            }
+        }.check;
+        const createRange = struct {
+            fn call(column: usize, start_column: usize, end_column: usize) Range {
+                return Range.init(0, @min(start_column, column), 0, @max(end_column, column));
+            }
+        }.call;
+
+        const deleteWordAndAdjacentWhitespace = struct {
+            fn call(word: IFindWordResult, col: usize, line: []const u8, only_word: bool) Range {
+                var startColumn = word.start + 1;
+                var endColumn = word.end + 1;
+                if (only_word) {
+                    return Range.init(0, @min(startColumn, col), 0, @max(endColumn, col));
+                }
+                var expandedToTheRight = false;
+                while (endColumn - 1 < line.len and charAtIsWhitespace(line, endColumn - 1)) {
+                    expandedToTheRight = true;
+                    endColumn += 1;
+                }
+                if (!expandedToTheRight) {
+                    while (startColumn > 1 and charAtIsWhitespace(line, startColumn - 2)) startColumn -= 1;
+                }
+                return Range.init(0, @min(startColumn, col), 0, @max(endColumn, col));
+            }
+        }.call;
+
+        const prevWord = findPreviousWordOnLine(wordSeparators, model, position);
+        if (prevWord != null and touchesWord(prevWord.?, position.column)) {
+            return deleteWordAndAdjacentWhitespace(prevWord.?, position.column, lineContent, onlyWord);
+        }
+        const nextWord = findNextWordOnLine(wordSeparators, model, position);
+        if (nextWord != null and touchesWord(nextWord.?, position.column)) {
+            return deleteWordAndAdjacentWhitespace(nextWord.?, position.column, lineContent, onlyWord);
+        }
+        if (prevWord != null and nextWord != null) {
+            return createRange(position.column, prevWord.?.end + 1, nextWord.?.start + 1);
+        }
+        if (prevWord) |word| return createRange(position.column, word.start + 1, word.end + 1);
+        if (nextWord) |word| return createRange(position.column, word.start + 1, word.end + 1);
+        return createRange(position.column, 1, lineLength + 1);
+    }
+
+    pub fn deleteInsideWord(wordSeparators: *const WordCharacterClassifier, model: ICursorSimpleModel, selection: Selection, onlyWord: bool) Range {
+        if (!selection.isEmpty()) return selectionRange(selection);
+        const position = selection.getPosition();
+        if (deleteInsideWordWhitespace(model, position)) |range| return range;
+        var range = deleteInsideWordDetermineRange(wordSeparators, model, position, onlyWord);
+        range.startLineNumber = position.lineNumber;
+        range.endLineNumber = position.lineNumber;
+        return range;
+    }
+
+    pub fn _deleteWordPartLeft(model: ICursorSimpleModel, selection: Selection) Range {
+        if (!selection.isEmpty()) return selectionRange(selection);
+        const pos = selection.getPosition();
+        const to = WordOperations.moveWordPartLeft(model, pos);
+        return Range.init(pos.lineNumber, pos.column, to.lineNumber, to.column);
+    }
+
+    pub fn _deleteWordPartRight(model: ICursorSimpleModel, selection: Selection) Range {
+        if (!selection.isEmpty()) return selectionRange(selection);
+        const pos = selection.getPosition();
+        const to = WordOperations.moveWordPartRight(model, pos);
+        return Range.init(pos.lineNumber, pos.column, to.lineNumber, to.column);
     }
 
     pub fn moveWordLeft(wordSeparators: *const WordCharacterClassifier, model: ICursorSimpleModel, position: Position, wordNavigationType: WordNavigationType, hasMulticursor: bool) Position {
@@ -247,6 +493,76 @@ fn isUpperAsciiLetter(ch: u8) bool {
 fn isAsciiDigit(ch: u8) bool {
     return ch >= '0' and ch <= '9';
 }
+
+pub const WordPartOperations = struct {
+    fn sortRangesByEnds(items: *[3]?Range) void {
+        std.mem.sort(?Range, items, {}, struct {
+            fn lessThan(_: void, a: ?Range, b: ?Range) bool {
+                if (a == null) return false;
+                if (b == null) return true;
+                return Range.compareRangesUsingEnds(&a.?, &b.?) < 0;
+            }
+        }.lessThan);
+    }
+
+    fn sortRangesByStarts(items: *[3]?Range) void {
+        std.mem.sort(?Range, items, {}, struct {
+            fn lessThan(_: void, a: ?Range, b: ?Range) bool {
+                if (a == null) return false;
+                if (b == null) return true;
+                return Range.compareRangesUsingStarts(&a.?, &b.?) < 0;
+            }
+        }.lessThan);
+    }
+
+    pub fn deleteWordPartLeft(ctx: DeleteWordContext) Range {
+        var candidates = [3]?Range{
+            WordOperations.deleteWordLeft(ctx, .WordStart),
+            WordOperations.deleteWordLeft(ctx, .WordEnd),
+            WordOperations._deleteWordPartLeft(ctx.model, ctx.selection),
+        };
+        sortRangesByEnds(&candidates);
+        return candidates[2].?;
+    }
+
+    pub fn deleteWordPartRight(ctx: DeleteWordContext) Range {
+        var candidates = [3]?Range{
+            WordOperations.deleteWordRight(ctx, .WordStart),
+            WordOperations.deleteWordRight(ctx, .WordEnd),
+            WordOperations._deleteWordPartRight(ctx.model, ctx.selection),
+        };
+        sortRangesByStarts(&candidates);
+        return candidates[0].?;
+    }
+
+    pub fn moveWordPartLeft(wordSeparators: *const WordCharacterClassifier, model: ICursorSimpleModel, position: Position, has_multicursor: bool) Position {
+        var candidates = [3]Position{
+            WordOperations.moveWordLeft(wordSeparators, model, position, .WordStart, has_multicursor),
+            WordOperations.moveWordLeft(wordSeparators, model, position, .WordEnd, has_multicursor),
+            WordOperations.moveWordPartLeft(model, position),
+        };
+        std.mem.sort(Position, &candidates, {}, struct {
+            fn lessThan(_: void, a: Position, b: Position) bool {
+                return Position.compare(a, b) < 0;
+            }
+        }.lessThan);
+        return candidates[2];
+    }
+
+    pub fn moveWordPartRight(wordSeparators: *const WordCharacterClassifier, model: ICursorSimpleModel, position: Position) Position {
+        var candidates = [3]Position{
+            WordOperations.moveWordRight(wordSeparators, model, position, .WordStart),
+            WordOperations.moveWordRight(wordSeparators, model, position, .WordEnd),
+            WordOperations.moveWordPartRight(model, position),
+        };
+        std.mem.sort(Position, &candidates, {}, struct {
+            fn lessThan(_: void, a: Position, b: Position) bool {
+                return Position.compare(a, b) < 0;
+            }
+        }.lessThan);
+        return candidates[0];
+    }
+};
 
 const WordTestModel = struct {
     lines: []const []const u8,
