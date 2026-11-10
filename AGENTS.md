@@ -51,8 +51,15 @@ state that in the comment and keep the behavioral contract intact.
   Focus uses `Document.activeElement`, `Element.focusable` / `tab_index`, and
   `focus`/`blur` plus bubbling `focusin`/`focusout`; Tab is a default action,
   not a global shortcut. Keep these rules in the library, not in `src/tui/`.
-- TUI integration (preview, terminal raw mode/read loop, status) stays in
-  `src/tui/`; it consumes `ui.input` and `Document.dispatchKey`.
+- TUI integration (terminal raw mode/read loop, status) stays in `src/tui/`.
+  `src/tui/view.zig` is the editor view on the `ui` tree: it owns the gutter,
+  token runs, selection, cursor cell and status bar, and rebuilds the document
+  through `Document.clear` so the `Surface` keeps its frame diff. The
+  read-only `--preview` variant is `src/tui/preview.zig`.
+- Widgets and view contributions ported from `src/vs/editor/contrib/...` build
+  their view on this document; keep their model/state code upstream-shaped and
+  put only the terminal DOM adaptation in the widget. Sidebar/preview/read-loop
+  code must not re-implement focus or key dispatch that the library owns.
 - `zig build test` builds and runs `ui/tests.zig` alongside the editor tests;
   `cd ui && zig build test` runs the library on its own.
 - Because `ui/` is a new package, it uses Zig 0.17 unmanaged `std.ArrayList`;

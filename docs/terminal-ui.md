@@ -5,10 +5,12 @@ Status: proposed design.
 ## 1. Context
 
 This repository is a Zig 0.17 port of VS Code editor internals. The model,
-commands and contributions are ported; `src/tui/` contains a hand-written
-terminal frontend that paints directly from the model (`src/tui/render.zig`).
-The next step is to port the browser-facing editor UI (`viewParts`, cursors,
-selections, scrollbar) while keeping the code close to upstream.
+commands and contributions are ported; `src/tui/` contains the terminal
+frontend. The editor is now rendered through the standalone `ui` library
+(`src/tui/view.zig`); the read-only `--preview` mode shares the same renderer.
+The next step is to port the browser-facing editor UI (`viewParts`, widgets,
+and the contributions in `src/vs/editor/contrib`) while keeping the code close
+to upstream.
 
 The obstacle is that upstream browser code is written against a browser DOM and
 CSS. This design introduces a small, standalone, DOM-like UI library that
@@ -540,23 +542,25 @@ Library constraints:
     `{ text, class_name, inline_style, metadata }` instead of HTML.
   - `src/tui/theme.zig` / a small adapter resolves token metadata to
     `ui.Style` colors and attributes (using the existing token color palette).
-- `src/tui/preview.zig` builds the POC view:
+- `src/tui/view.zig` builds the editor view on the library:
   - Uses the existing `Editor`, `ProjectedViewModelLines`, and `viewLineData`
     to iterate visible view lines.
   - Creates a gutter column (right-aligned line numbers) and a text column; one
     line element per view line, one text node per rendered part.
+  - Paints selections as inverted cells and the cursor line with a background;
+    the hardware cursor is moved to the caret cell after layout.
   - Builds the whole screen (editor area plus the status row) as one tree, so a
-    single `Surface.render` diff covers it.
-- `src/tui/app.zig` gains a `--preview` flag (or a separate
-  `zig build preview` run step): read-only preview, Up/Down and
-  PageUp/PageDown scroll by a row/page, Home/End go to the edges, `Ctrl-Q`
-  quits, resize re-renders. Default TUI behavior is unchanged.
+    single `Surface.render` diff covers it. `Document.clear` rebuilds the tree
+    between frames while keeping the previous grid for the diff.
+- `src/tui/preview.zig` remains the read-only `--preview` variant, adding
+  Up/Down and PageUp/PageDown scrolling.
+- `src/tui/app.zig` dispatches keys to the editor, refreshes the view and syncs
+  the hardware cursor after each frame; resize recreates the surface.
 - Gutter width follows the existing `gutterWidthFor` logic; line numbers are
   right-aligned with `text_align = .right`.
 - Long lines are clipped (no horizontal scrolling); wrapping uses the existing
   projection/wrapping column.
-- The existing `src/tui/screen.zig`/its ANSI path stay for the old editor until
-  the preview replaces the painter.
+- The old `src/tui/screen.zig`/`render.zig` path is gone.
 
 ## 9. POC acceptance
 
@@ -565,7 +569,8 @@ Library constraints:
   right-aligned line numbers, empty lines, tabs, CJK/emoji wide characters,
   wrapped lines, long-line clipping, gutters for lines past 9 and 99.
 - Snapshot tests in `src/tui/` assert text rows and per-cell styles for ASCII,
-  CJK, tabs, wrapping and long-line clipping, plus keyboard scrolling and
+  CJK, tabs, wrapping and long-line clipping; selection inversion; the hardware
+  cursor cell; an unchanged refresh writing no bytes; plus keyboard scrolling and
   Ctrl-Q through the library dispatcher.
 - Library unit tests cover: tree linking/invariants, box-tree derivation
   (viewport root, principal/text boxes, anonymous inline/flex items,
@@ -589,7 +594,9 @@ Library constraints:
    temporary `TuiViewModel` adapter + view-event bridge.
 4. `viewLayer`, `viewPart`, `renderingContext`, `viewOverlays`,
    `viewLines`/`viewLine`, margin/lineNumbers/currentLineHighlight/selections/
-   viewCursors; `TerminalView` orchestrator; replace `render.zig`.
+   viewCursors; `TerminalView` orchestrator. The terminal editor view
+   (`src/tui/view.zig`) already covers gutter, tokens, selection, cursor and
+   status; the split into upstream-shaped view parts is still open.
 5. Scrollable viewport/scrollbar, mouse input, cursor blink/timers; row
    damage bands and
    the `DECSTBM` + `IL`/`DL` scroll shift; hardware-cursor caret.
@@ -623,7 +630,8 @@ Library constraints:
   `:focus`-style selectors; focus is explicit state plus listeners.
 - No cursors, selections, scrollbar or scrollable viewport (the preview
   page-scrolls by rebuilding), decorations, minimap, glyph margin, view zones,
-  widgets, IME.
+  widgets, IME. The editor view does paint the current line, selections and a
+  hardware cursor; decorations and widgets are the next milestone.
 - No row damage bands or terminal scroll shift in the POC; full grid diff only.
 - No margin collapsing, auto margins, right/bottom anchoring, multi-cell/rounded
   border styles, background-clip or z-index paint ordering yet. Borders are

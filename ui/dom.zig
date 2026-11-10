@@ -102,6 +102,18 @@ pub const Document = struct {
         self.arena.deinit();
     }
 
+    /// Drops every node, listener and focus pointer while keeping the viewport
+    /// settings and the arena's capacity. Callers must not use any node pointer
+    /// handed out before the call; build a new tree and `setRoot` it.
+    ///
+    /// This is what lets a view rebuild its tree per frame without allocating a
+    /// new document (and without losing the renderer's previous frame diff).
+    pub fn clear(self: *Document) void {
+        _ = self.arena.reset(.retain_capacity);
+        self.root = null;
+        self.active_element = null;
+    }
+
     pub fn createElement(self: *Document, tag: Tag) !*Node {
         const allocator = self.arena.allocator();
         const node = try allocator.create(Node);
@@ -551,6 +563,29 @@ test "Node: moving a child reparents it" {
     _ = try two.appendChild(child);
     try std.testing.expectEqual(two, child.parent.?);
     try std.testing.expect(one.firstChild() == null);
+}
+
+test "Document: clear drops the tree and focus but keeps capacity" {
+    const allocator = std.testing.allocator;
+    var doc = try Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    child.asElement().focusable = true;
+    _ = try root.appendChild(child);
+    doc.setRoot(root);
+    try std.testing.expect(doc.focus(child));
+    try std.testing.expectEqual(child, doc.activeElement().?);
+
+    doc.clear();
+    try std.testing.expect(doc.root == null);
+    try std.testing.expect(doc.active_element == null);
+
+    const next_root = try doc.createElement(.div);
+    doc.setRoot(next_root);
+    try std.testing.expectEqual(next_root, doc.root.?);
+    try std.testing.expect(doc.activeElement() != null);
 }
 
 test "Node: text content and attributes" {

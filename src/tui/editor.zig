@@ -1405,8 +1405,7 @@ fn createModel(
 test "Editor: create, edit, undo, and render" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const Screen = @import("./screen.zig").Screen;
-    const renderer = @import("./render.zig");
+    const View = @import("./view.zig").View;
 
     var editor = try Editor.createFromText(allocator, io, "hello world\nsecond line", "test.txt", 24, 6);
     defer {
@@ -1434,11 +1433,11 @@ test "Editor: create, edit, undo, and render" {
     try std.testing.expectEqualStrings("Xhello world", redone.items);
     try std.testing.expectEqual(Position.init(1, 2), editor.modelCursorPosition());
 
-    var screen = try Screen.init(allocator, 24, 6);
-    defer screen.deinit();
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
-    try renderer.render(editor, &screen, &out.writer);
+    try view.render(&out.writer);
     try std.testing.expect(out.written().len > 0);
 }
 
@@ -1576,8 +1575,7 @@ test "Editor: missing file opens empty and save creates it" {
 test "Editor: tokenized Zig lines render through the wrapped view" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const Screen = @import("./screen.zig").Screen;
-    const renderer = @import("./render.zig");
+    const View = @import("./view.zig").View;
 
     var editor = try Editor.createFromText(allocator, io, "// hi\nconst x = 1;\n", "test.zig", 40, 8);
     defer {
@@ -1590,19 +1588,18 @@ test "Editor: tokenized Zig lines render through the wrapped view" {
     try std.testing.expect(line.tokens.getCount() > 0);
     try std.testing.expectEqual(@as(u9, 5), line.tokens.getForeground(0));
 
-    var screen = try Screen.init(allocator, 40, 8);
-    defer screen.deinit();
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
-    try renderer.render(editor, &screen, &out.writer);
+    try view.render(&out.writer);
     try std.testing.expect(out.written().len > 0);
 }
 
 test "Editor: syntax stays visible after inserting blank lines" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const Screen = @import("./screen.zig").Screen;
-    const renderer = @import("./render.zig");
+    const View = @import("./view.zig").View;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -1621,11 +1618,11 @@ test "Editor: syntax stays visible after inserting blank lines" {
     try editor.newline();
     try editor.newline();
 
-    var screen = try Screen.init(allocator, 80, 10);
-    defer screen.deinit();
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
-    try renderer.render(editor, &screen, &out.writer);
+    try view.render(&out.writer);
     const rendered = out.written();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;106;153;85m") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;197;134;192m") != null);
@@ -1681,8 +1678,7 @@ test "Editor: random edits release token storage" {
 test "Editor: typing a function keeps following comments highlighted" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const Screen = @import("./screen.zig").Screen;
-    const renderer = @import("./render.zig");
+    const View = @import("./view.zig").View;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -1702,11 +1698,11 @@ test "Editor: typing a function keeps following comments highlighted" {
     try editor.newline();
     try editor.insertText("}");
 
-    var screen = try Screen.init(allocator, 80, 12);
-    defer screen.deinit();
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
-    try renderer.render(editor, &screen, &out.writer);
+    try view.render(&out.writer);
     const rendered = out.written();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;106;153;85m") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;197;134;192m") != null);

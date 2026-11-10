@@ -36,10 +36,12 @@ Notes for the Zig 0.17 port:
   text boxes), whole-cell layout with margin/padding/border boxes and
   box-drawing borders, and a double-buffered cell renderer that emits only an
   ANSI frame diff. It does not import editor code.
-- `zig build run -- --preview <file>` renders a preview through the library:
-  text, syntax colors, right-aligned line numbers, wrapped-line markers and the
-  status row. Up/Down, PageUp/PageDown, Home and End scroll; Ctrl-Q quits.
-  Cursors, selections, mouse input and the browser view parts are not wired yet.
+- The editor is rendered through the library (`src/tui/view.zig`): text,
+  syntax colors, right-aligned line numbers, wrapped-line markers, selections,
+  the current line, a hardware cursor and the status row. The
+  `zig build run -- --preview <file>` read-only mode uses the same token
+  renderer and adds Up/Down, PageUp/PageDown, Home and End scrolling; Ctrl-Q
+  quits. Widgets, decorations and mouse input are not wired yet.
 - Keyboard events and focus are library features: nodes take listeners, the
   active element receives keys, and Tab/Shift-Tab move through focusable nodes
   (`Element.focusable` / `Element.tab_index`). See `ui/README.md` and

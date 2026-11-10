@@ -5,8 +5,7 @@ const tui = @import("./tui.zig");
 const ui = @import("ui");
 const input = ui.input;
 const Editor = @import("./editor.zig").Editor;
-const Screen = @import("./screen.zig").Screen;
-const renderer = @import("./render.zig");
+const View = @import("./view.zig").View;
 const Preview = @import("./preview.zig").Preview;
 const ArrayList = std.array_list.Managed;
 
@@ -67,14 +66,19 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    var screen = try Screen.init(allocator, size.width, size.height);
-    defer screen.deinit();
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
 
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
 
+    try tui.hideCursor(out);
+    defer tui.showCursor(out) catch {};
+
     var is_pasting = false;
-    try renderer.render(editor, &screen, out);
+    try view.render(out);
+    try syncCursor(out, view);
+    try out.flush();
 
     while (true) {
         const ready = try tui.pollInput(250);
@@ -82,13 +86,17 @@ pub fn main(init: std.process.Init) !void {
         if (try tui.resizedSize()) |new_size| {
             size = new_size;
             editor.setViewport(size.width, size.height);
-            screen.deinit();
-            screen = try Screen.init(allocator, size.width, size.height);
+            try view.resize();
+            try tui.clearScreen(out);
             resized = true;
         }
 
         if (!ready) {
-            if (resized) try renderer.render(editor, &screen, out);
+            if (resized) {
+                try view.render(out);
+                try syncCursor(out, view);
+                try out.flush();
+            }
             continue;
         }
 
@@ -102,7 +110,22 @@ pub fn main(init: std.process.Init) !void {
             if (dispatch(editor, event, &is_pasting)) return;
         }
 
-        try renderer.render(editor, &screen, out);
+        try view.refresh();
+        try tui.hideCursor(out);
+        try view.render(out);
+        try syncCursor(out, view);
+        try out.flush();
+    }
+}
+
+/// Hides the hardware cursor when it has no cell, otherwise moves it to the
+/// view's caret and shows it.
+fn syncCursor(out: *Io.Writer, view: *View) !void {
+    if (view.cursorCell()) |cell| {
+        try tui.moveCursor(out, .{ .row = cell.row + 1, .col = cell.col + 1 });
+        try tui.showCursor(out);
+    } else {
+        try tui.hideCursor(out);
     }
 }
 
