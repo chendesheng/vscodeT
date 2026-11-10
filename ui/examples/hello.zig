@@ -31,8 +31,10 @@ pub fn main() !void {
         .position = .absolute,
         .left = .{ .cells = 2 },
         .top = .{ .cells = 1 },
-        .width = .{ .cells = 48 },
-        .height = .{ .cells = 8 },
+        .width = .{ .cells = 44 },
+        .height = .{ .cells = 6 },
+        .border = ui.Edges.all(1),
+        .border_color = common.rgb(70, 70, 100),
         .background = common.rgb(30, 30, 42),
     });
 

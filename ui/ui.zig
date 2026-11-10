@@ -15,10 +15,12 @@ pub const style = @import("style.zig");
 pub const surface = @import("surface.zig");
 
 pub const BoxTree = box.BoxTree;
+pub const BorderStyle = style.BorderStyle;
 pub const CellGrid = cell.CellGrid;
 pub const Color = style.Color;
 pub const ColorDepth = cell.ColorDepth;
 pub const Dimension = style.Dimension;
+pub const Edges = style.Edges;
 pub const Document = dom.Document;
 pub const Frame = frame.Frame;
 pub const LayoutBox = box.LayoutBox;

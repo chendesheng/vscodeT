@@ -30,6 +30,10 @@ pub fn build(b: *std.Build) void {
         .{ .step = "example-hello", .path = "examples/hello.zig", .description = "Run the hello example" },
         .{ .step = "example-list", .path = "examples/list.zig", .description = "Run the list example" },
         .{ .step = "example-layout", .path = "examples/layout.zig", .description = "Run the layout example" },
+        .{ .step = "example-borders", .path = "examples/borders.zig", .description = "Run the borders example" },
+        .{ .step = "example-table", .path = "examples/table.zig", .description = "Run the table example" },
+        .{ .step = "example-tree", .path = "examples/tree.zig", .description = "Run the tree example" },
+        .{ .step = "example-styling", .path = "examples/styling.zig", .description = "Run the styling example" },
     };
 
     const all_examples = b.step("examples", "Run all ui examples");

@@ -244,8 +244,10 @@ paint (paint.zig) + geometry copied back to DOM rects
 | `anonymous_flex_item` | null | bare text run in a flex container |
 | `text` | `*Node` | text content box; WebKit's `Layout::InlineTextBox` |
 
-Each box has `parent`, `children`, `style`, `rect`, `needs_layout`, and, for
-text, the content. `node_boxes` maps DOM nodes to principal/text boxes. `display: none`
+Each box has `parent`, `children`, `style`, `needs_layout`, and three rects:
+`rect` (border box), `padding_rect` (border box inset by the border) and
+`content_rect` (padding box inset by the padding). Text boxes also hold their
+content. `node_boxes` maps DOM nodes to principal/text boxes. `display: none`
 nodes have no box; `display: contents` elements have no box of their own, and
 their children are promoted into the parent's formatting context.
 
@@ -262,8 +264,9 @@ their children are promoted into the parent's formatting context.
 
 `layoutTree(tree, doc)` sets the viewport, solves the box tree, and copies the
 rects back to DOM `Element.rect`/`Text.rect` for the measurement boundary. The
-current solver handles block flow, absolute positioning and one line of inline
-text per anonymous inline box. Flex is the next formatting context; the box tree
+current solver handles block flow, absolute positioning, the
+margin/padding/border box model and one line of inline text per anonymous inline
+box. Flex is the next formatting context; the box tree
 already produces its items.
 
 The box tree owns invalidation. DOM mutation APIs notify the attached
@@ -450,13 +453,17 @@ Public surface for the POC:
   (block/inline/inline-block/none), `overflow` (visible/hidden/clip),
   `text_align`, `white_space`, `color`, `background`, `bold`, `italic`,
   `underline`, `strikethrough`, `dim`, `reverse`, `visibility`, `z_index`,
-  `translate_x/y`, plus padding/margin placeholders for later widgets.
-- Measurement: `offsetWidth`, `offsetHeight`, `getBoundingClientRect`,
-  `getClientArea`; `Range.getClientRects` is a follow-up (needed by
-  cursors/selections, not by the POC).
-- Layout: absolute positioning against the nearest positioned ancestor; inline
-  text flow; shrink-to-fit auto sizes; percentage sizes; `text_align`;
-  clipping; `display:none`; visibility. No flexbox/grid in the POC.
+  `translate_x/y`, plus `margin`, `padding`, `border`, `border_style` and
+  `border_color`. `width`/`height` are content-box sizes; padding, border and
+  margin expand outward.
+- Measurement: not implemented yet; tests read `Surface.grid()` directly. The
+  `getBoundingClientRect`/`offsetWidth` boundary comes with the view parts.
+- Layout: absolute positioning against the nearest positioned ancestor using
+  `left`/`top`, with the margin box anchored there (right/bottom anchoring and
+  auto margins are not implemented); inline text flow; percentage sizes
+  resolved against the containing content box; `text_align`; clipping to the
+  padding box; `display:none`; backgrounds paint the border box. Auto width
+  fills the containing block. No flexbox/grid or margin collapsing in the POC.
 - Rendering: `Surface.render` = layout -> paint into the next grid -> diff against
   the previous grid -> ANSI to the writer. Tests read `Surface.grid()` instead of
   parsing ANSI.
@@ -560,6 +567,9 @@ Library constraints:
 - No cursors, selections, scrollbar/viewport scrolling, decorations, minimap,
   glyph margin, view zones, widgets, IME.
 - No row damage bands or terminal scroll shift in the POC; full grid diff only.
+- No margin collapsing, auto margins, right/bottom anchoring, multi-cell/rounded
+  border styles, background-clip or z-index paint ordering yet. Borders are
+  repeated single-line box-drawing glyphs.
 - No flex/grid formatting contexts, table boxes or incremental box reuse yet;
   the box tree is rebuilt from the DOM when mutations invalidate it, then solved whole.
 - No JS interop, WebIDL, shadow DOM, custom elements, HTML parsing, or the full

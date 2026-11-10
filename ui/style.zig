@@ -22,6 +22,36 @@ pub const Dimension = union(enum) {
     percent: f64,
 };
 
+pub const Edges = struct {
+    top: f64 = 0,
+    right: f64 = 0,
+    bottom: f64 = 0,
+    left: f64 = 0,
+
+    pub fn all(value: f64) Edges {
+        return .{ .top = value, .right = value, .bottom = value, .left = value };
+    }
+
+    pub fn horizontal(self: Edges) f64 {
+        return self.left + self.right;
+    }
+
+    pub fn vertical(self: Edges) f64 {
+        return self.top + self.bottom;
+    }
+
+    pub fn nonNegative(self: Edges) Edges {
+        return .{
+            .top = @max(0, self.top),
+            .right = @max(0, self.right),
+            .bottom = @max(0, self.bottom),
+            .left = @max(0, self.left),
+        };
+    }
+};
+
+pub const BorderStyle = enum { none, single };
+
 pub const Position = enum { static, relative, absolute, fixed };
 pub const Display = enum { block, inline_, inline_block, flex, inline_flex, contents, none };
 pub const Overflow = enum { visible, hidden, clip };
@@ -37,6 +67,16 @@ pub const Style = struct {
 
     width: Dimension = .auto,
     height: Dimension = .auto,
+
+    /// Space outside the border box. Negative margins are allowed.
+    margin: Edges = .{},
+    /// Space between the border and the content box.
+    padding: Edges = .{},
+    /// Border widths. Zero by default; with `border_style == .single` they are
+    /// drawn with box-drawing characters.
+    border: Edges = .{},
+    border_style: BorderStyle = .single,
+    border_color: ?Color = null,
 
     display: Display = .block,
     overflow: Overflow = .visible,
@@ -57,6 +97,11 @@ pub const Style = struct {
     translate_y: f64 = 0,
 };
 
+pub fn borderWidths(style: Style) Edges {
+    if (style.border_style == .none) return .{};
+    return style.border.nonNegative();
+}
+
 pub const Rect = struct {
     x: f64 = 0,
     y: f64 = 0,
@@ -73,6 +118,15 @@ pub const Rect = struct {
 
     pub fn isEmpty(self: Rect) bool {
         return self.w <= 0 or self.h <= 0;
+    }
+
+    pub fn inset(self: Rect, edges: Edges) Rect {
+        return .{
+            .x = self.x + edges.left,
+            .y = self.y + edges.top,
+            .w = @max(0, self.w - edges.left - edges.right),
+            .h = @max(0, self.h - edges.top - edges.bottom),
+        };
     }
 
     pub fn intersect(a: Rect, b: Rect) Rect {

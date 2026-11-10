@@ -13,8 +13,11 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   attached box tree; boxes carry `needs_layout`, and the tree carries
   `needs_rebuild` / `needs_layout`. There is no document-level revision or
   dirty flag.
-- A whole-cell layout pass: absolute positioning, percentages, inline text runs,
-  alignment and clipping. Flex formatting contexts are the next addition.
+- A whole-cell layout pass with the CSS box model: content `width`/`height`,
+  margin, padding and border widths, single-line box-drawing borders, and
+  absolute `left`/`top` anchoring the margin box. Backgrounds paint the border
+  box and `overflow: hidden` clips to the padding box. Flex formatting contexts,
+  margin collapsing and right/bottom anchoring are next.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
 - No hidden globals; allocators are passed explicitly.
 
@@ -28,7 +31,11 @@ cd ui
 zig build example-hello    # colors, bold, backgrounds, inline text runs
 zig build example-list     # rows, alternating backgrounds, right-aligned columns
 zig build example-layout   # absolute + percent layout, left/center/right text
-zig build examples         # all three
+zig build example-borders  # margin, padding and border boxes, nested absolute child
+zig build example-table    # bordered table with aligned columns
+zig build example-tree     # box-drawing file tree
+zig build example-styling  # text attributes, truecolor, background swatches
+zig build examples         # all seven
 ```
 
 Each example draws one frame on the alternate screen, shows it for two seconds,

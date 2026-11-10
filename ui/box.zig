@@ -38,7 +38,12 @@ pub const LayoutBox = struct {
     style: style_mod.Style = .{},
     parent: ?*LayoutBox = null,
     children: std.ArrayList(*LayoutBox) = .empty,
+    /// Border box.
     rect: style_mod.Rect = .{},
+    /// Border box inset by the border widths.
+    padding_rect: style_mod.Rect = .{},
+    /// Padding box inset by the padding: the content box.
+    content_rect: style_mod.Rect = .{},
     /// Text content for a `.text` box.
     text: ?[]const u8 = null,
     /// Set when this box or something it contains needs layout. The current
@@ -270,6 +275,11 @@ fn flushRun(
     style.background = null;
     style.overflow = .visible;
     style.z_index = 0;
+    style.margin = .{};
+    style.padding = .{};
+    style.border = .{};
+    style.border_style = .none;
+    style.border_color = null;
     style.translate_x = 0;
     style.translate_y = 0;
     style.display = if (flex) .block else .inline_;
