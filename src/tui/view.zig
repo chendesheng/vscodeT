@@ -36,9 +36,17 @@ pub const Cell = struct {
 
 const CellFlag = struct {
     const normal: u8 = 0;
-    const selected: u8 = 1;
-    const secondary_cursor: u8 = 2;
+    const selected: u8 = 1 << 0;
+    const secondary_cursor: u8 = 1 << 1;
+    const find_match: u8 = 1 << 2;
+    const current_find_match: u8 = 1 << 3;
+    const find_scope: u8 = 1 << 4;
 };
+
+const find_match_background = [3]u8{ 80, 70, 20 };
+const current_find_match_background = [3]u8{ 200, 120, 0 };
+const current_find_match_foreground = [3]u8{ 0, 0, 0 };
+const find_scope_background = [3]u8{ 40, 50, 70 };
 
 pub const View = struct {
     allocator: std.mem.Allocator,
@@ -47,6 +55,8 @@ pub const View = struct {
     /// Overlay widgets anchored to an editor corner, painted above the lines
     /// and the status row.
     overlays: std.array_list.Managed(editorBrowser.IOverlayWidget),
+    /// Model ranges highlighted by contributions such as find.
+    decorations: std.array_list.Managed(editorBrowser.Decoration),
     /// The line element under the primary cursor, filled in while building.
     cursor_line: ?*ui.Node = null,
     /// Cells between the start of that line's content and the caret.
@@ -60,8 +70,10 @@ pub const View = struct {
             .editor = editor,
             .surface = undefined,
             .overlays = std.array_list.Managed(editorBrowser.IOverlayWidget).init(allocator),
+            .decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
         };
         errdefer self.overlays.deinit();
+        errdefer self.decorations.deinit();
         self.surface = try ui.Surface.init(allocator, .{
             .cols = editor.screen_width,
             .rows = editor.screen_height,
@@ -74,6 +86,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.decorations.deinit();
         self.overlays.deinit();
         self.surface.deinit();
         self.allocator.destroy(self);
@@ -84,6 +97,17 @@ pub const View = struct {
     pub fn addOverlayWidget(self: *View, widget: editorBrowser.IOverlayWidget) !void {
         try self.overlays.append(widget);
         try self.refresh();
+    }
+
+    /// Replaces the highlighted model ranges (find matches, current match,
+    /// find scope) and rebuilds the view.
+    pub fn setDecorations(self: *View, decorations: []const editorBrowser.Decoration) !void {
+        self.decorations.clearRetainingCapacity();
+        try self.decorations.appendSlice(decorations);
+    }
+
+    pub fn clearDecorations(self: *View) !void {
+        try self.setDecorations(&.{});
     }
 
     pub fn removeOverlayWidget(self: *View, id: []const u8) !void {
@@ -276,6 +300,16 @@ pub const View = struct {
                 line_width,
                 flags,
             );
+            self.markDecorations(
+                model_line,
+                data.minColumn,
+                data.maxColumn,
+                model_content.items,
+                tab_size,
+                data.startVisibleColumn,
+                line_width,
+                flags,
+            );
 
             try appendRuns(doc, line, rendered, flags);
 
@@ -294,6 +328,48 @@ pub const View = struct {
 
         try appendStatus(self, doc, root, rows);
         try self.buildOverlays(doc, root, cols, text_height);
+    }
+
+    fn markDecorations(
+        self: *View,
+        model_line: usize,
+        min_column: usize,
+        max_column: usize,
+        model_content: []const u8,
+        tab_size: usize,
+        start_visible_column: usize,
+        line_width: usize,
+        flags: []u8,
+    ) void {
+        for (self.decorations.items) |decoration| {
+            const range = decoration.range;
+            if (range.startLineNumber > model_line or range.endLineNumber < model_line) continue;
+
+            var start_column = if (range.startLineNumber == model_line) range.startColumn else min_column;
+            var end_column = if (range.endLineNumber == model_line) range.endColumn else max_column;
+            start_column = @max(start_column, min_column);
+            end_column = @min(end_column, max_column);
+            if (start_column > max_column or end_column < min_column) continue;
+
+            var start = visibleOffset(model_content, start_column, tab_size, start_visible_column);
+            var end = visibleOffset(model_content, end_column, tab_size, start_visible_column);
+            if (end <= start) {
+                if (!range.isEmpty()) continue;
+                end = start + 1;
+            }
+            start = @min(start, line_width);
+            end = @min(end, line_width);
+
+            const bit: u8 = switch (decoration.kind) {
+                .find_match => CellFlag.find_match,
+                .current_find_match => CellFlag.current_find_match,
+                .find_scope => CellFlag.find_scope,
+            };
+            var cell = start;
+            while (cell < end and cell < flags.len) : (cell += 1) {
+                flags[cell] |= bit;
+            }
+        }
     }
 
     fn buildOverlays(
@@ -407,13 +483,21 @@ fn appendRuns(
         const width = measureCodepoint(decoded.cp);
 
         var style = tokenStyle(part);
-        switch (if (cell < flags.len) flags[cell] else CellFlag.normal) {
-            CellFlag.selected => style.reverse = true,
-            CellFlag.secondary_cursor => {
+        if (cell < flags.len) {
+            const flag = flags[cell];
+            if (flag & CellFlag.current_find_match != 0) {
+                style.background = color(current_find_match_background);
+                style.color = color(current_find_match_foreground);
+            } else if (flag & CellFlag.find_match != 0) {
+                style.background = color(find_match_background);
+            } else if (flag & CellFlag.find_scope != 0) {
+                style.background = color(find_scope_background);
+            }
+            if (flag & CellFlag.secondary_cursor != 0) {
                 style.reverse = true;
                 style.background = color(secondary_cursor_background);
-            },
-            else => {},
+            }
+            if (flag & CellFlag.selected != 0) style.reverse = true;
         }
 
         if (run_style == null or !styleEql(run_style.?, style)) {
@@ -464,7 +548,7 @@ fn markSelections(
         end = @min(end, line_width);
         var cell = start;
         while (cell < end and cell < flags.len) : (cell += 1) {
-            flags[cell] = CellFlag.selected;
+            flags[cell] |= CellFlag.selected;
         }
     }
 
@@ -473,7 +557,7 @@ fn markSelections(
             const position = state.viewState.position;
             if (position.lineNumber != view_line) continue;
             const cell = visibleOffset(model_content, position.column, tab_size, start_visible_column);
-            if (cell < flags.len) flags[cell] = CellFlag.secondary_cursor;
+            if (cell < flags.len) flags[cell] |= CellFlag.secondary_cursor;
         }
     }
 }

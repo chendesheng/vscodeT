@@ -74,7 +74,7 @@ pub const ReplacePattern = struct {
     }
 
     pub fn fromStaticValue(allocator: Allocator, value: []const u8) !ReplacePattern {
-        return init(allocator, &.{Piece.staticValueFn(value)});
+        return init(allocator, &.{Piece.staticValue(value)});
     }
 
     pub fn deinit(self: *ReplacePattern) void {

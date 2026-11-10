@@ -57,11 +57,16 @@ var wordClassifierCache: ?std.StringHashMap(WordCharacterClassifier) = null;
 
 pub fn freeWordClassifierCache() void {
     if (wordClassifierCache) |*cache| {
+        // The map owns the separator strings it copied on insertion; free them
+        // before dropping the map itself.
+        var keys = cache.keyIterator();
+        while (keys.next()) |key| {
+            cache.allocator.free(key.*);
+        }
         var iter = cache.valueIterator();
         while (iter.next()) |value| {
             value.deinit();
         }
-        cache.clearAndFree();
         cache.deinit();
         wordClassifierCache = null;
     }
@@ -73,11 +78,19 @@ pub fn getMapForWordSeparators(allocator: Allocator, wordSeparators: []const u8)
     }
 
     if (wordClassifierCache) |*cache| {
-        const res = try cache.getOrPut(wordSeparators);
-        if (!res.found_existing) {
-            res.value_ptr.* = try WordCharacterClassifier.init(allocator, wordSeparators);
+        if (cache.getPtr(wordSeparators)) |value| return value;
+
+        // Callers pass transient editor-owned slices, so the cache must own its
+        // keys; a borrowed key would dangle after the editor is destroyed.
+        const key = try allocator.dupe(u8, wordSeparators);
+        errdefer allocator.free(key);
+        const classifier = try WordCharacterClassifier.init(allocator, wordSeparators);
+        errdefer {
+            var owned = classifier;
+            owned.deinit();
         }
-        return res.value_ptr;
+        try cache.put(key, classifier);
+        return cache.getPtr(key).?;
     }
 
     unreachable;

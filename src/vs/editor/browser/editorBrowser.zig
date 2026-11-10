@@ -10,6 +10,7 @@
 //! widget's own struct, not to the nodes.
 
 const ui = @import("ui");
+const Range = @import("../common/core/range.zig").Range;
 
 /// Mirrors upstream `OverlayWidgetPositionPreference`.
 pub const OverlayWidgetPositionPreference = enum {
@@ -45,4 +46,18 @@ pub const IOverlayWidget = struct {
     /// Whether the widget currently owns focus. The host re-focuses
     /// `focus_node` after each rebuild so focus survives the new tree.
     is_focused: *const fn (context: *anyopaque) bool,
+};
+
+/// A highlighted model range the view knows how to paint. Upstream find uses
+/// model decorations with CSS classes; the terminal view takes the ranges
+/// directly and maps them to cells.
+pub const DecorationKind = enum {
+    find_match,
+    current_find_match,
+    find_scope,
+};
+
+pub const Decoration = struct {
+    range: Range,
+    kind: DecorationKind,
 };

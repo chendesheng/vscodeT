@@ -133,9 +133,14 @@ pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchRes
         return FindMatch.init(range, null);
     }
     var matches = ArrayList([]const u8).init(allocator);
+    errdefer {
+        for (matches.items) |match| allocator.free(match);
+        matches.deinit();
+    }
     for (0..rawMatches.numberOfGroups()) |i| {
-        // FIXME: do we need to copy the string?
-        try matches.append(rawMatches.groupN(i));
+        // The regex groups point into a transient line buffer. Copy them so the
+        // find model can build replacement strings after the search returns.
+        try matches.append(try allocator.dupe(u8, rawMatches.groupN(i)));
     }
     return FindMatch.init(range, try matches.toOwnedSlice());
 }

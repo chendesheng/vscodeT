@@ -263,6 +263,7 @@ pub const FindMatch = struct {
 
     pub fn free(self: *const FindMatch, allocator: Allocator) void {
         if (self.matches) |matches| {
+            for (matches) |match| allocator.free(match);
             allocator.free(matches);
         }
     }

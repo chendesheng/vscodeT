@@ -47,6 +47,7 @@ const language_configuration = @import("../vs/editor/common/languages/languageCo
 const editor_common = @import("../vs/editor/common/editorCommon.zig");
 const ICommand = editor_common.ICommand;
 const command_runner = @import("../vs/editor/common/commands/commandRunner.zig");
+const ReplaceCommandCommand = @import("../vs/editor/common/commands/replaceCommand.zig").ReplaceCommand;
 const lines_ops = @import("../vs/editor/contrib/linesOperations/browser/linesOperations.zig");
 const line_selection = @import("../vs/editor/contrib/lineSelection/browser/lineSelection.zig");
 const LineCommentCommand = @import("../vs/editor/contrib/comment/browser/lineCommentCommand.zig").LineCommentCommand;
@@ -1186,6 +1187,36 @@ pub const Editor = struct {
         self.closeTypingGroup();
         try self.cursorsRef().setSelections(self.allocator, &[_]Selection{Selection.init(position.lineNumber, position.column, position.lineNumber, position.column)});
         self.ensureCursorVisible();
+    }
+
+    /// Replaces the editor selection with one range. Used by find to put the
+    /// selection on a match.
+    pub fn setSelection(self: *Editor, range: Range) !void {
+        self.closeTypingGroup();
+        try self.cursorsRef().setSelections(self.allocator, &[_]Selection{
+            Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn),
+        });
+        self.ensureCursorVisible();
+    }
+
+    pub fn setSelections(self: *Editor, selections: []const Selection) !void {
+        self.closeTypingGroup();
+        try self.cursorsRef().setSelections(self.allocator, selections);
+        self.ensureCursorVisible();
+    }
+
+    /// Replaces one range through the command runner (no auto-closing or
+    /// typing interceptors). The cursor lands at the end of the replaced text.
+    pub fn replaceRange(self: *Editor, range: Range, text: []const u8) !void {
+        self.closeTypingGroup();
+        var command = ReplaceCommandCommand.init(range, text, false);
+        try self.executeCommands(&[_]?ICommand{command.interface()});
+    }
+
+    /// Runs a command against the model and applies its cursor state.
+    pub fn executeCommand(self: *Editor, command: ICommand) !void {
+        self.closeTypingGroup();
+        try self.executeCommands(&[_]?ICommand{command});
     }
 
     fn runExpandLineSelectionAction(context: *anyopaque) anyerror!void {

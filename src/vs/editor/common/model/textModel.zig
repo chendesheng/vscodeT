@@ -1010,8 +1010,6 @@ pub const TextModel = struct {
                 const searchRange = Range.init(searchStart.lineNumber, searchStart.column, lineCount, self.getLineMaxColumn(lineCount));
                 const ret = try self.findMatchesLineByLine(searchRange, searchData, captureMatches, 1);
                 defer ret.deinit();
-                // FIXME: what is this for?
-                _ = try TextModelSearch.findNextMatch(self, SearchParams.init(searchString, isRegex, matchCase, wordSeparators), searchStart, captureMatches);
                 if (ret.items.len > 0) {
                     return ret.items[0];
                 }

@@ -183,7 +183,12 @@ comptime {
     _ = @import("./vs/base/common/search.zig");
     _ = @import("./vs/editor/common/commands/commandRunner.zig");
     _ = @import("./vs/editor/contrib/find/browser/replacePattern.zig");
+    _ = @import("./vs/editor/contrib/find/browser/replaceAllCommand.zig");
+    _ = @import("./vs/editor/contrib/find/browser/findState.zig");
+    _ = @import("./vs/editor/contrib/find/browser/findDecorations.zig");
+    _ = @import("./vs/editor/contrib/find/browser/findModel.zig");
     _ = @import("./vs/editor/contrib/find/test/browser/replacePattern.test.zig");
+    _ = @import("./vs/editor/contrib/find/test/browser/findModel.test.zig");
     _ = @import("./vs/editor/contrib/lineSelection/browser/lineSelection.zig");
     _ = @import("./vs/editor/contrib/anchorSelect/browser/anchorSelect.zig");
     _ = @import("./vs/editor/contrib/caretOperations/browser/moveCaretCommand.zig");
@@ -224,7 +229,12 @@ comptime {
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverComputer.zig");
     _ = @import("./vs/editor/browser/editorExtensions.zig");
     _ = @import("./vs/editor/contrib/find/browser/replacePattern.zig");
+    _ = @import("./vs/editor/contrib/find/browser/replaceAllCommand.zig");
+    _ = @import("./vs/editor/contrib/find/browser/findState.zig");
+    _ = @import("./vs/editor/contrib/find/browser/findDecorations.zig");
+    _ = @import("./vs/editor/contrib/find/browser/findModel.zig");
     _ = @import("./vs/editor/contrib/find/test/browser/replacePattern.test.zig");
+    _ = @import("./vs/editor/contrib/find/test/browser/findModel.test.zig");
     _ = @import("./vs/editor/contrib/lineSelection/browser/lineSelection.zig");
     _ = @import("./vs/editor/contrib/anchorSelect/browser/anchorSelect.zig");
     _ = @import("./vs/editor/contrib/caretOperations/browser/moveCaretCommand.zig");
