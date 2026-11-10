@@ -41,7 +41,9 @@ Notes for the Zig 0.17 port:
   the current line, a hardware cursor and the status row. The
   `zig build run -- --preview <file>` read-only mode uses the same token
   renderer and adds Up/Down, PageUp/PageDown, Home and End scrolling; Ctrl-Q
-  quits. Widgets, decorations and mouse input are not wired yet.
+  quits. Overlay widgets and a single-line terminal input box
+  (`ui/inputbox.zig`) are in place for editor contributions; the find bar is
+  the first widget being wired. Mouse input is not wired yet.
 - Keyboard events and focus are library features: nodes take listeners, the
   active element receives keys, and Tab/Shift-Tab move through focusable nodes
   (`Element.focusable` / `Element.tab_index`). See `ui/README.md` and

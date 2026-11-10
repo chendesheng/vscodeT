@@ -132,6 +132,33 @@ carry `related_target`. A terminal only reports key presses, so there is no
 Text runs in decoded events borrow the input buffer; dispatch them before
 reusing that buffer.
 
+## Input boxes and rebuilt trees
+
+`ui.InputBox` is a single-line editor for widget text fields:
+
+```zig
+var input = ui.InputBox.init(allocator);
+defer input.deinit();
+input.focused = true;
+input.placeholder = "Find";
+input.on_enter = onEnter;
+
+const node = try input.build(doc, width); // focusable root; call doc.focus(node)
+var event = ui.KeyEvent{ .key = .{ .text = "query" } };
+_ = input.handleKey(&event);              // true when the input consumed it
+```
+
+It owns a UTF-8 buffer and byte caret, paints a block caret (an inverted cell)
+instead of using the hardware cursor, and handles text, Backspace, Delete,
+Left/Right, Home/End, Enter and Escape. Up/Down and Tab are left to the host.
+
+A view that rebuilds its tree every frame can reuse the same document and the
+renderer's previous grid: `Document.clear()` drops the arena, root and focus
+pointer while keeping the viewport and arena capacity. Build a new root and
+call `setRoot`. To forward an already decoded event and inspect whether a
+listener consumed it, use `Document.dispatchEvent(&event)`; it resets
+`default_prevented` and `propagation_stopped` before dispatch.
+
 ## Tests
 
 ```sh

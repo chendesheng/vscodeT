@@ -106,8 +106,11 @@ pub fn main(init: std.process.Init) !void {
         var events = try input.decode(allocator, bytes);
         defer events.deinit(allocator);
 
-        for (events.items) |event| {
-            if (dispatch(editor, event, &is_pasting)) return;
+        for (events.items) |*event| {
+            // A focused widget owns the keyboard; Ctrl-Q stays global so the
+            // quit prompt works from inside a widget.
+            if (!isCtrlQ(event.*) and view.dispatchKey(event)) continue;
+            if (dispatch(editor, event.*, &is_pasting)) return;
         }
 
         try view.refresh();

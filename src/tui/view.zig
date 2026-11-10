@@ -20,6 +20,7 @@ const theme = @import("./theme.zig");
 const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
 const CursorState = @import("../vs/editor/common/cursorCommon.zig").CursorState;
 const line_renderer = @import("../vs/editor/common/viewLayout/viewLineRenderer.zig");
+const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 
 const gutter_color = [3]u8{ 110, 110, 110 };
 const continuation_color = [3]u8{ 90, 90, 90 };
@@ -43,6 +44,9 @@ pub const View = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
     surface: ui.Surface,
+    /// Overlay widgets anchored to an editor corner, painted above the lines
+    /// and the status row.
+    overlays: std.array_list.Managed(editorBrowser.IOverlayWidget),
     /// The line element under the primary cursor, filled in while building.
     cursor_line: ?*ui.Node = null,
     /// Cells between the start of that line's content and the caret.
@@ -55,7 +59,9 @@ pub const View = struct {
             .allocator = allocator,
             .editor = editor,
             .surface = undefined,
+            .overlays = std.array_list.Managed(editorBrowser.IOverlayWidget).init(allocator),
         };
+        errdefer self.overlays.deinit();
         self.surface = try ui.Surface.init(allocator, .{
             .cols = editor.screen_width,
             .rows = editor.screen_height,
@@ -68,8 +74,38 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.overlays.deinit();
         self.surface.deinit();
         self.allocator.destroy(self);
+    }
+
+    /// Registers an overlay widget. The caller owns the widget struct and must
+    /// keep its context alive until it is removed or the view is destroyed.
+    pub fn addOverlayWidget(self: *View, widget: editorBrowser.IOverlayWidget) !void {
+        try self.overlays.append(widget);
+        try self.refresh();
+    }
+
+    pub fn removeOverlayWidget(self: *View, id: []const u8) !void {
+        var index: usize = 0;
+        while (index < self.overlays.items.len) : (index += 1) {
+            const widget = self.overlays.items[index];
+            if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
+                _ = self.overlays.orderedRemove(index);
+                try self.refresh();
+                return;
+            }
+        }
+    }
+
+    /// Sends the event through the widget document when a widget owns focus.
+    /// Returns true when a listener consumed it, so the editor must not also
+    /// handle the key.
+    pub fn dispatchKey(self: *View, event: *ui.KeyEvent) bool {
+        const doc = self.surface.document();
+        if (doc.active_element == null) return false;
+        doc.dispatchEvent(event);
+        return event.default_prevented or event.propagation_stopped;
     }
 
     /// Recreates the surface at the editor's current viewport size. The caller
@@ -257,6 +293,52 @@ pub const View = struct {
         }
 
         try appendStatus(self, doc, root, rows);
+        try self.buildOverlays(doc, root, cols, text_height);
+    }
+
+    fn buildOverlays(
+        self: *View,
+        doc: *ui.Document,
+        root: *ui.Node,
+        cols: usize,
+        text_height: usize,
+    ) !void {
+        for (self.overlays.items) |widget| {
+            const width = @min(widget.width(widget.context, cols), cols);
+            const height = @min(widget.height(widget.context), text_height);
+            if (width == 0 or height == 0) continue;
+
+            const top: usize = switch (widget.get_position(widget.context)) {
+                .top_right_corner, .top_center => 0,
+                .bottom_right_corner => text_height -| height,
+            };
+            const left: usize = switch (widget.get_position(widget.context)) {
+                .top_right_corner, .bottom_right_corner => cols -| width,
+                .top_center => (cols -| width) / 2,
+            };
+
+            const container = try doc.createElement(.div);
+            container.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = @floatFromInt(left) },
+                .top = .{ .cells = @floatFromInt(top) },
+                .width = .{ .cells = @floatFromInt(width) },
+                .height = .{ .cells = @floatFromInt(height) },
+                .overflow = .hidden,
+            });
+
+            const content = try widget.build(widget.context, doc);
+            _ = try container.appendChild(content);
+            _ = try root.appendChild(container);
+
+            // The widget subtree is connected now, so focus can be restored
+            // after the document rebuild.
+            if (widget.is_focused(widget.context)) {
+                if (widget.focus_node(widget.context)) |node| {
+                    _ = doc.focus(node);
+                }
+            }
+        }
     }
 };
 
@@ -588,4 +670,111 @@ test "View: refresh keeps the frame diff and the cursor visible" {
     try view.render(&moved.writer);
     try std.testing.expect(moved.written().len > 0);
     try std.testing.expectEqual(@as(usize, 1), view.cursorCell().?.row);
+}
+
+const TestOverlay = struct {
+    focused: bool = false,
+    node: ?*ui.Node = null,
+    keys: usize = 0,
+
+    fn overlay(self: *TestOverlay) editorBrowser.IOverlayWidget {
+        return .{
+            .context = self,
+            .get_id = getId,
+            .get_position = getPosition,
+            .width = width,
+            .height = height,
+            .build = build,
+            .focus_node = focusNode,
+            .is_focused = isFocused,
+        };
+    }
+
+    fn getId(context: *anyopaque) []const u8 {
+        _ = context;
+        return "test.overlay";
+    }
+
+    fn getPosition(context: *anyopaque) editorBrowser.OverlayWidgetPositionPreference {
+        _ = context;
+        return .top_right_corner;
+    }
+
+    fn width(context: *anyopaque, cols: usize) usize {
+        _ = context;
+        return @min(cols, 6);
+    }
+
+    fn height(context: *anyopaque) usize {
+        _ = context;
+        return 1;
+    }
+
+    fn build(context: *anyopaque, doc: *ui.Document) !*ui.Node {
+        const self: *TestOverlay = @ptrCast(@alignCast(context));
+        const node = try doc.createElement(.div);
+        node.asElement().focusable = true;
+        node.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = 0 },
+            .top = .{ .cells = 0 },
+            .width = .{ .percent = 100 },
+            .height = .{ .cells = 1 },
+            .reverse = true,
+        });
+        _ = try node.appendChild(try doc.createText("test"));
+        try node.addEventListener(.{ .context = self, .key_down = onKey });
+        self.node = node;
+        return node;
+    }
+
+    fn focusNode(context: *anyopaque) ?*ui.Node {
+        const self: *TestOverlay = @ptrCast(@alignCast(context));
+        return self.node;
+    }
+
+    fn isFocused(context: *anyopaque) bool {
+        const self: *TestOverlay = @ptrCast(@alignCast(context));
+        return self.focused;
+    }
+
+    fn onKey(context: ?*anyopaque, event: *ui.KeyEvent) void {
+        const self: *TestOverlay = @ptrCast(@alignCast(context orelse return));
+        self.keys += 1;
+        event.stopPropagation();
+        event.preventDefault();
+    }
+};
+
+test "View: overlay widget is placed top-right and takes focused keys" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var overlay = TestOverlay{};
+    try view.addOverlayWidget(overlay.overlay());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const row = try rowText(view, allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "test") != null);
+
+    var event = ui.KeyEvent{ .key = .{ .char = 'x' } };
+    try std.testing.expect(!view.dispatchKey(&event));
+
+    overlay.focused = true;
+    try view.refresh();
+    try std.testing.expect(view.surface.document().activeElement() != null);
+    try std.testing.expect(view.dispatchKey(&event));
+    try std.testing.expectEqual(@as(usize, 1), overlay.keys);
 }

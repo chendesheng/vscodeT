@@ -554,6 +554,18 @@ Library constraints:
     between frames while keeping the previous grid for the diff.
 - `src/tui/preview.zig` remains the read-only `--preview` variant, adding
   Up/Down and PageUp/PageDown scrolling.
+- Overlay widgets use the terminal adaptation of upstream `IOverlayWidget`
+  in `src/vs/editor/browser/editorBrowser.zig`. A widget reports its size in
+  cells, builds a `ui` subtree each frame and is anchored to a corner
+  (`top_right_corner`, `bottom_right_corner`, `top_center`); the view restores
+  focus after every rebuild. `View.dispatchKey` forwards decoded keys through
+  the widget document first, so a focused widget owns the keyboard.
+- `ui/inputbox.zig` is the terminal single-line input: UTF-8 buffer, byte
+  caret, block caret cell, placeholder, editing keys and `on_change` /
+  `on_enter` / `on_escape` callbacks. It is the base for the find bar.
+- `src/vs/editor/contrib/find/browser/replacePattern.zig` and
+  `src/vs/base/common/search.zig` port the replace-string parser and
+  case-preserving replacement, with the upstream test cases.
 - `src/tui/app.zig` dispatches keys to the editor, refreshes the view and syncs
   the hardware cursor after each frame; resize recreates the surface.
 - Gutter width follows the existing `gutterWidthFor` logic; line numbers are

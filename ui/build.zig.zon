@@ -15,6 +15,7 @@
         "event.zig",
         "frame.zig",
         "input.zig",
+        "inputbox.zig",
         "layout.zig",
         "paint.zig",
         "style.zig",

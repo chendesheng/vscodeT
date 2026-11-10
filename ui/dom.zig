@@ -167,6 +167,11 @@ pub const Document = struct {
         return event.dispatchKey(self, key, mods);
     }
 
+    /// Dispatches an existing event object, resetting its propagation flags.
+    pub fn dispatchEvent(self: *Document, key_event: *KeyEvent) void {
+        event.dispatchEvent(self, key_event);
+    }
+
     pub fn measureText(self: *const Document, text: []const u8) usize {
         var width: usize = 0;
         var offset: usize = 0;

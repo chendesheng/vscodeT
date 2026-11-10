@@ -125,14 +125,26 @@ pub const FocusDirection = enum { forward, backward };
 /// action.
 pub fn dispatchKey(document: *dom.Document, key: Key, mods: Modifiers) KeyEvent {
     var event = KeyEvent{ .key = key, .mods = mods };
-    const target = activeElement(document) orelse return event;
-    event.target = target;
-
-    dispatchCapture(target, &event);
-    if (!event.propagation_stopped) dispatchAtTarget(target, &event);
-    if (!event.propagation_stopped) dispatchBubble(target, &event);
-    if (!event.default_prevented) runDefaultAction(document, &event);
+    dispatchEvent(document, &event);
     return event;
+}
+
+/// Dispatches an already constructed key event, as `dispatchKey` does. This is
+/// how a host forwards a decoded terminal event and can inspect the flags the
+/// listeners set. The propagation flags are reset before the dispatch.
+pub fn dispatchEvent(document: *dom.Document, event: *KeyEvent) void {
+    const target = activeElement(document) orelse return;
+    event.target = target;
+    event.current_target = null;
+    event.phase = .target;
+    event.default_prevented = false;
+    event.propagation_stopped = false;
+    event.immediate_stopped = false;
+
+    dispatchCapture(target, event);
+    if (!event.propagation_stopped) dispatchAtTarget(target, event);
+    if (!event.propagation_stopped) dispatchBubble(target, event);
+    if (!event.default_prevented) runDefaultAction(document, event);
 }
 
 fn dispatchCapture(node: *dom.Node, event: *KeyEvent) void {
@@ -480,6 +492,34 @@ test "event: key dispatch runs capture, target and bubble" {
     try std.testing.expectEqual(root, root_bubble.nodes[0].?);
     try std.testing.expectEqual(Phase.bubble, root_bubble.phases[0]);
     try std.testing.expectEqual(@as(usize, 1), target_log.count);
+}
+
+test "event: dispatchEvent forwards a decoded event and resets flags" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    child.asElement().focusable = true;
+    _ = try root.appendChild(child);
+    doc.setRoot(root);
+    try std.testing.expect(doc.focus(child));
+
+    var log = TestLog{};
+    try child.addEventListener(.{ .context = &log, .key_down = TestLog.onKey });
+
+    var event = KeyEvent{
+        .key = .{ .char = 'x' },
+        .default_prevented = true,
+        .propagation_stopped = true,
+    };
+    doc.dispatchEvent(&event);
+
+    try std.testing.expectEqual(child, event.target.?);
+    try std.testing.expectEqual(@as(usize, 1), log.count);
+    try std.testing.expect(!event.default_prevented);
+    try std.testing.expect(!event.propagation_stopped);
 }
 
 test "event: stopPropagation and preventDefault" {
