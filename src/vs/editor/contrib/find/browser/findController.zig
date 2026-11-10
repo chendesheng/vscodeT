@@ -103,7 +103,16 @@ pub const FindController = struct {
             return;
         }
 
+        // Anchor the search before seeding the query: seeding runs an
+        // incremental search, and re-anchoring afterwards would skip past the
+        // first match. A selection is itself a match, so anchor at its start.
         const selection = self.editor.modelSelection();
+        if (selection.isEmpty()) {
+            self.model.getDecorations().setStartPosition(self.editor.modelCursorPosition());
+        } else {
+            self.model.getDecorations().setStartPosition(selection.getStartPosition());
+        }
+
         if (!selection.isEmpty() and selection.startLineNumber == selection.endLineNumber) {
             const text = try self.editor.model.getValueInRange(.{
                 .startLineNumber = selection.startLineNumber,
@@ -117,7 +126,6 @@ pub const FindController = struct {
             }
         }
 
-        self.model.getDecorations().setStartPosition(self.editor.modelCursorPosition());
         if (replace) {
             self.find_widget.openReplace();
         } else {

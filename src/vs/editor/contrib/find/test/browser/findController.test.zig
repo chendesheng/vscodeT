@@ -241,3 +241,43 @@ test "FindController: Alt-L limits the search to the selection" {
     var escape_event = ui.KeyEvent{ .key = .escape };
     _ = view.dispatchKey(&escape_event);
 }
+
+test "FindController: reopening keeps the current match" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+
+    try controller.open(false);
+    try view.refresh();
+    var type_event = ui.KeyEvent{ .key = .{ .text = "alpha" } };
+    try std.testing.expect(view.dispatchKey(&type_event));
+
+    var escape_event = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(view.dispatchKey(&escape_event));
+    try std.testing.expect(!controller.isOpen());
+
+    const before = editor.modelSelection();
+    try std.testing.expectEqual(@as(usize, 1), before.startLineNumber);
+
+    try controller.startFind();
+    try std.testing.expect(controller.isOpen());
+    const after = editor.modelSelection();
+    try std.testing.expectEqual(@as(usize, 1), after.startLineNumber);
+    try std.testing.expectEqual(@as(usize, 1), after.startColumn);
+
+    var close_event = ui.KeyEvent{ .key = .escape };
+    _ = view.dispatchKey(&close_event);
+}
