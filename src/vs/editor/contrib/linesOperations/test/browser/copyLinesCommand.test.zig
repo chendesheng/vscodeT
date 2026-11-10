@@ -2,7 +2,7 @@ const std = @import("std");
 const Selection = @import("../../../../common/core/selection.zig").Selection;
 const editor_common = @import("../../../../common/editorCommon.zig");
 const CopyLinesCommand = @import("../../../../contrib/linesOperations/browser/copyLinesCommand.zig").CopyLinesCommand;
-const support = @import("../../port/commandTestSupport.zig");
+const support = @import("../../../../test/common/port/commandTestSupport.zig");
 
 fn testCopyLines(
     down: bool,

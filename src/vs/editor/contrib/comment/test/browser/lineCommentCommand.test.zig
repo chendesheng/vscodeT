@@ -6,7 +6,7 @@ const editor_common = @import("../../../../common/editorCommon.zig");
 const line_comment = @import("../../../../contrib/comment/browser/lineCommentCommand.zig");
 const LineCommentCommand = line_comment.LineCommentCommand;
 const Type = line_comment.Type;
-const support = @import("../../port/commandTestSupport.zig");
+const support = @import("../../../../test/common/port/commandTestSupport.zig");
 
 const language_id = "commentMode";
 

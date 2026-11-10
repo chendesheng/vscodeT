@@ -192,13 +192,13 @@ comptime {
     _ = @import("./vs/editor/contrib/comment/browser/blockCommentCommand.zig");
     _ = @import("./vs/editor/contrib/comment/browser/lineCommentCommand.zig");
     _ = @import("./vs/editor/contrib/bracketMatching/browser/bracketMatching.zig");
-    _ = @import("./vs/editor/test/common/contrib/bracketMatching/bracketMatchingTests.zig");
+    _ = @import("./vs/editor/contrib/bracketMatching/test/browser/bracketMatching.test.zig");
     _ = @import("./vs/editor/contrib/indentation/common/indentUtils.zig");
     _ = @import("./vs/editor/contrib/indentation/common/indentation.zig");
     _ = @import("./vs/editor/contrib/indentation/browser/indentation.zig");
-    _ = @import("./vs/editor/test/common/contrib/indentation/indentationTests.zig");
+    _ = @import("./vs/editor/contrib/indentation/test/browser/indentation.test.zig");
     _ = @import("./vs/editor/contrib/multicursor/browser/multicursor.zig");
-    _ = @import("./vs/editor/test/common/contrib/multicursor/multicursorTests.zig");
+    _ = @import("./vs/editor/contrib/multicursor/test/browser/multicursor.test.zig");
     _ = @import("./vs/editor/contrib/hover/browser/hoverTypes.zig");
     _ = @import("./vs/editor/contrib/hover/browser/hoverUtils.zig");
     _ = @import("./vs/editor/contrib/hover/browser/getHover.zig");
@@ -208,12 +208,12 @@ comptime {
     _ = @import("./vs/editor/browser/editorExtensions.zig");
     _ = @import("./vs/editor/contrib/lineSelection/browser/lineSelection.zig");
     _ = @import("./vs/editor/test/common/port/commandTestSupport.zig");
-    _ = @import("./vs/editor/test/common/contrib/linesOperations/copyLinesCommandTests.zig");
-    _ = @import("./vs/editor/test/common/contrib/linesOperations/moveLinesCommandTests.zig");
-    _ = @import("./vs/editor/test/common/contrib/linesOperations/sortLinesCommandTests.zig");
-    _ = @import("./vs/editor/test/common/contrib/linesOperations/linesOperationsTests.zig");
-    _ = @import("./vs/editor/test/common/contrib/lineSelection/lineSelectionTests.zig");
-    _ = @import("./vs/editor/test/common/contrib/comment/lineCommentCommandTests.zig");
-    _ = @import("./vs/editor/test/common/contrib/comment/blockCommentCommandTests.zig");
-    _ = @import("./vs/editor/test/common/contrib/insertFinalNewLine/insertFinalNewLineCommandTests.zig");
+    _ = @import("./vs/editor/contrib/linesOperations/test/browser/copyLinesCommand.test.zig");
+    _ = @import("./vs/editor/contrib/linesOperations/test/browser/moveLinesCommand.test.zig");
+    _ = @import("./vs/editor/contrib/linesOperations/test/browser/sortLinesCommand.test.zig");
+    _ = @import("./vs/editor/contrib/linesOperations/test/browser/linesOperations.test.zig");
+    _ = @import("./vs/editor/contrib/lineSelection/test/browser/lineSelection.test.zig");
+    _ = @import("./vs/editor/contrib/comment/test/browser/lineCommentCommand.test.zig");
+    _ = @import("./vs/editor/contrib/comment/test/browser/blockCommentCommand.test.zig");
+    _ = @import("./vs/editor/contrib/insertFinalNewLine/test/browser/insertFinalNewLineCommand.test.zig");
 }

@@ -2,8 +2,8 @@ const std = @import("std");
 const Selection = @import("../../../../common/core/selection.zig").Selection;
 const editor_common = @import("../../../../common/editorCommon.zig");
 const InsertFinalNewLineCommand = @import("../../../../contrib/insertFinalNewLine/browser/insertFinalNewLineCommand.zig").InsertFinalNewLineCommand;
-const support = @import("../../port/commandTestSupport.zig");
-const TestModel = @import("../../port/testSupport.zig").TestModel;
+const support = @import("../../../../test/common/port/commandTestSupport.zig");
+const TestModel = @import("../../../../test/common/port/testSupport.zig").TestModel;
 const command_runner = @import("../../../../common/commands/commandRunner.zig");
 
 test "insert final newline with LF" {

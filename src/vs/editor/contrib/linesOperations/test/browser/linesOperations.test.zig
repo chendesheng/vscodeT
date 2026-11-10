@@ -1,7 +1,7 @@
 const std = @import("std");
 const Selection = @import("../../../../common/core/selection.zig").Selection;
 const lines_ops = @import("../../../../contrib/linesOperations/browser/linesOperations.zig");
-const support = @import("../../port/commandTestSupport.zig");
+const support = @import("../../../../test/common/port/commandTestSupport.zig");
 
 test "duplicate selection on empty and non-empty selections" {
     const allocator = std.testing.allocator;

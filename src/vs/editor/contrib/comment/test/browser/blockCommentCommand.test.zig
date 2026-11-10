@@ -3,7 +3,7 @@ const Selection = @import("../../../../common/core/selection.zig").Selection;
 const CommentRule = @import("../../../../common/languages/languageConfiguration.zig").CommentRule;
 const editor_common = @import("../../../../common/editorCommon.zig");
 const BlockCommentCommand = @import("../../../../contrib/comment/browser/blockCommentCommand.zig").BlockCommentCommand;
-const support = @import("../../port/commandTestSupport.zig");
+const support = @import("../../../../test/common/port/commandTestSupport.zig");
 
 const language_id = "commentMode";
 const block_rule = CommentRule{

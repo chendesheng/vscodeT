@@ -24,7 +24,7 @@ const ISingleEditOperation = @import("../../../../common/core/editOperation.zig"
 const indentation_browser = @import("../../../../contrib/indentation/browser/indentation.zig");
 const IndentationToSpacesCommand = indentation_browser.IndentationToSpacesCommand;
 const IndentationToTabsCommand = indentation_browser.IndentationToTabsCommand;
-const TestModel = @import("../../port/testSupport.zig").TestModel;
+const TestModel = @import("../../../../test/common/port/testSupport.zig").TestModel;
 const command_runner = @import("../../../../common/commands/commandRunner.zig");
 const editor_common = @import("../../../../common/editorCommon.zig");
 
@@ -68,7 +68,7 @@ fn setupConfiguration(allocator: Allocator, rules: IndentationRule) !void {
 }
 
 fn applyEdits(model: *TestModel, operations: []const ISingleEditOperation) !void {
-    var edits = std.array_list.Managed(@import("../../port/testSupport.zig").Edit).init(model.allocator);
+    var edits = std.array_list.Managed(@import("../../../../test/common/port/testSupport.zig").Edit).init(model.allocator);
     defer edits.deinit();
     for (operations) |op| {
         try edits.append(.{ .range = op.range, .text = op.text orelse "" });

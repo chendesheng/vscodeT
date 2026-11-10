@@ -7,7 +7,7 @@ const CursorState = cursorCommon.CursorState;
 const SingleCursorState = cursorCommon.SingleCursorState;
 const TextModelCursorSimpleModel = @import("../../../../common/cursor/textModelCursorSimpleModel.zig").TextModelCursorSimpleModel;
 const expandLineSelection = @import("../../../../contrib/lineSelection/browser/lineSelection.zig").expandLineSelection;
-const TestModel = @import("../../port/testSupport.zig").TestModel;
+const TestModel = @import("../../../../test/common/port/testSupport.zig").TestModel;
 const Editor = @import("../../../../../../tui/editor.zig").Editor;
 const Io = std.Io;
 

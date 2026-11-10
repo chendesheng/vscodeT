@@ -9,7 +9,7 @@ const CursorContext = @import("../../../../common/cursor/cursorContext.zig").Cur
 const CursorCollection = @import("../../../../common/cursor/cursorCollection.zig").CursorCollection;
 const TextModelCursorSimpleModel = @import("../../../../common/cursor/textModelCursorSimpleModel.zig").TextModelCursorSimpleModel;
 const IdentityCoordinatesConverter = @import("../../../../common/coordinatesConverter.zig").IdentityCoordinatesConverter;
-const TestModel = @import("../../port/testSupport.zig").TestModel;
+const TestModel = @import("../../../../test/common/port/testSupport.zig").TestModel;
 const multicursor = @import("../../../../contrib/multicursor/browser/multicursor.zig");
 
 fn expectSelections(actual: ?[]const Selection, expected: []const Selection) !void {

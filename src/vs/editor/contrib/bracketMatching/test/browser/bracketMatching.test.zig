@@ -14,7 +14,7 @@ const NullState = @import("../../../../common/languages/nullTokenize.zig").NullS
 
 const bracketMatching = @import("../../../../contrib/bracketMatching/browser/bracketMatching.zig");
 const BracketMatchingController = bracketMatching.BracketMatchingController;
-const TestModel = @import("../../port/testSupport.zig").TestModel;
+const TestModel = @import("../../../../test/common/port/testSupport.zig").TestModel;
 
 const language_id = "bracketMatchingTestLanguage";
 
@@ -95,7 +95,7 @@ const Fixture = struct {
 
     fn removeBracketsAt(self: *Fixture, position: Position) !void {
         const pair = self.controller.removeBracketsForSelection(Selection.init(position.lineNumber, position.column, position.lineNumber, position.column)) orelse return;
-        try self.ctx.applyEdits(&[_]@import("../../port/testSupport.zig").Edit{
+        try self.ctx.applyEdits(&[_]@import("../../../../test/common/port/testSupport.zig").Edit{
             .{ .range = pair[0], .text = "" },
             .{ .range = pair[1], .text = "" },
         });
