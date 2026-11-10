@@ -33,7 +33,7 @@ test "view model: identity coordinates converter" {
     defer ctx.deinit();
 
     var converter = IdentityCoordinatesConverter.init(ctx.model);
-    const interface = converter.toInterface();
+    const interface = converter.interface();
 
     const position = interface.convertViewPositionToModelPosition(interface.context, Position.init(1, 3));
     try std.testing.expectEqual(@as(usize, 1), position.lineNumber);
@@ -110,7 +110,7 @@ test "view model: computes regular, before, and after inline decorations" {
     };
 
     var converter = IdentityCoordinatesConverter.init(ctx.model);
-    var computer = InlineModelDecorationsComputer.init(allocator, context, ctx.model, converter.toInterface());
+    var computer = InlineModelDecorationsComputer.init(allocator, context, ctx.model, converter.interface());
     defer computer.deinit();
 
     var result = try computer.getDecorations(Range.init(1, 1, 1, 12), false, false);
@@ -153,7 +153,7 @@ test "view model: only whole-line layouts affect all intersecting lines" {
         .getModelDecorations = DecorationContext.get,
     };
     var converter = IdentityCoordinatesConverter.init(ctx.model);
-    var computer = InlineModelDecorationsComputer.init(allocator, context, ctx.model, converter.toInterface());
+    var computer = InlineModelDecorationsComputer.init(allocator, context, ctx.model, converter.interface());
     defer computer.deinit();
 
     var result = try computer.getDecorations(Range.init(1, 1, 3, 11), false, false);
@@ -334,7 +334,7 @@ test "view model: no decorations yields empty lines" {
         .getModelDecorations = DecorationContext.get,
     };
     var converter = IdentityCoordinatesConverter.init(ctx.model);
-    var computer = InlineModelDecorationsComputer.init(allocator, context, ctx.model, converter.toInterface());
+    var computer = InlineModelDecorationsComputer.init(allocator, context, ctx.model, converter.interface());
     defer computer.deinit();
 
     var result = try computer.getDecorations(Range.init(1, 1, 1, 12), false, false);

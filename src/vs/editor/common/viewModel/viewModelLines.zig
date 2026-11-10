@@ -383,7 +383,6 @@ pub const ProjectedViewModelLines = struct {
             }.call,
         };
     }
-
 };
 
 pub const CoordinatesConverter = struct {
@@ -466,7 +465,7 @@ pub const CoordinatesConverter = struct {
         return fromContext(context).lines.getViewLineNumberOfModelPosition(model_line_number, model_column);
     }
 
-    pub fn toInterface(self: *CoordinatesConverter) ICoordinatesConverter {
+    pub fn interface(self: *CoordinatesConverter) ICoordinatesConverter {
         return .{
             .context = self,
             .convertViewPositionToModelPosition = convertViewPositionToModelPosition,
@@ -509,7 +508,7 @@ test "ProjectedViewModelLines: maps wrapped view lines" {
     try std.testing.expectEqual(@as(usize, 3), lines.getLineMaxColumn(3));
 
     var converter = CoordinatesConverter.init(&lines);
-    const iface = converter.toInterface();
+    const iface = converter.interface();
     const view_position = iface.convertModelPositionToViewPosition(iface.context, Position.init(1, 5), .Right, false, false);
     try std.testing.expectEqual(@as(usize, 2), view_position.lineNumber);
     try std.testing.expectEqual(@as(usize, 1), view_position.column);

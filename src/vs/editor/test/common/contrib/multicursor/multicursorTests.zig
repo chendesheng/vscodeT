@@ -34,7 +34,7 @@ test "multicursor: add cursor above and below" {
     defer adapter.deinit();
     var converter = IdentityCoordinatesConverter.init(ctx.model);
     const config = CursorConfiguration{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = 1 };
-    var context = CursorContext.init(ctx.model, adapter.interface(), converter.toInterface(), &config);
+    var context = CursorContext.init(ctx.model, adapter.interface(), converter.interface(), &config);
 
     var collection = try CursorCollection.init(allocator, &context);
     defer collection.deinit();

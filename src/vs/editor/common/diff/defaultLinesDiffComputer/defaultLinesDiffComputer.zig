@@ -121,7 +121,7 @@ pub const DefaultLinesDiffComputer = struct {
             InfiniteTimeout.getInstance()
         else blk: {
             date_timeout = try DateTimeout.init(options.maxComputationTimeMs);
-            break :blk date_timeout.toInterface();
+            break :blk date_timeout.interface();
         };
         const consider_whitespace_changes = !options.ignoreTrimWhitespace;
 

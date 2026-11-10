@@ -281,7 +281,7 @@ test "ViewModelDecorations resolves and caches viewport decorations" {
         false,
         false,
         TestLines.interface(),
-        identity_converter.toInterface(),
+        identity_converter.interface(),
     );
     defer decorations.destroy();
 
@@ -327,7 +327,7 @@ test "ViewModelDecorations minimap query only asks for minimap decorations" {
         true,
         true,
         TestLines.interface(),
-        identity_converter.toInterface(),
+        identity_converter.interface(),
     );
     defer decorations.destroy();
 
@@ -357,7 +357,7 @@ test "ViewModelDecorations decorations on a line use the view line columns" {
         false,
         false,
         TestLines.interface(),
-        identity_converter.toInterface(),
+        identity_converter.interface(),
     );
     defer decorations.destroy();
 

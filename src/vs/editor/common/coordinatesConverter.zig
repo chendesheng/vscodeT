@@ -31,7 +31,7 @@ pub const IdentityCoordinatesConverter = struct {
         return .{ .model = model };
     }
 
-    pub fn toInterface(self: *IdentityCoordinatesConverter) ICoordinatesConverter {
+    pub fn interface(self: *IdentityCoordinatesConverter) ICoordinatesConverter {
         return .{
             .context = self,
             .convertViewPositionToModelPosition = convertViewPositionToModelPosition,

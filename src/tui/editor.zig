@@ -252,7 +252,7 @@ pub const Editor = struct {
         context.* = CursorContext.init(
             model,
             editor.view_lines.interface(),
-            editor.converter.toInterface(),
+            editor.converter.interface(),
             &editor.cursor_config,
         );
         editor.cursor_context = context;

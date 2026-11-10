@@ -326,7 +326,7 @@ pub const DateTimeout = struct {
         return self.isValid();
     }
 
-    pub fn toInterface(self: *Self) ITimeout {
+    pub fn interface(self: *Self) ITimeout {
         return .{ .context = self, .is_valid = &isValidAny };
     }
 };

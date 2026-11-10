@@ -128,7 +128,7 @@ const ContinueProcessingPredicate = struct {
         return time_compat.milliTimestamp() - self.start_time < self.maximum_runtime;
     }
 
-    fn asInterface(self: *ContinueProcessingPredicate) diff.IContinueProcessingPredicate {
+    fn interface(self: *ContinueProcessingPredicate) diff.IContinueProcessingPredicate {
         return .{
             .context = self,
             .predicateFn = struct {
@@ -334,7 +334,7 @@ fn computeDiffWithSequences(
         allocator,
         original_sequence,
         modified_sequence,
-        continue_processing_predicate.asInterface(),
+        continue_processing_predicate.interface(),
     );
     defer diff_algo.deinit();
     return diff_algo.computeDiff(pretty);

@@ -19,7 +19,7 @@ test "oneCursor: initializes and updates model/view state" {
 
     var converter = IdentityCoordinatesConverter.init(test_model.model);
     const config = CursorConfiguration{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = 1 };
-    var context = CursorContext.init(test_model.model, adapter.interface(), converter.toInterface(), &config);
+    var context = CursorContext.init(test_model.model, adapter.interface(), converter.interface(), &config);
 
     var cursor = try Cursor.init(&context);
     defer cursor.dispose(&context);
@@ -45,7 +45,7 @@ test "cursorCollection: adds, replaces, and normalizes cursors" {
 
     var converter = IdentityCoordinatesConverter.init(test_model.model);
     const config = CursorConfiguration{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = 1 };
-    var context = CursorContext.init(test_model.model, adapter.interface(), converter.toInterface(), &config);
+    var context = CursorContext.init(test_model.model, adapter.interface(), converter.interface(), &config);
 
     var collection = try CursorCollection.init(allocator, &context);
     defer collection.deinit();

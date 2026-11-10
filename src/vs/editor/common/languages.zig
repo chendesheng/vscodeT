@@ -61,7 +61,7 @@ pub const LanguageIdCodec = struct {
     }
 
     /// Erases the concrete codec behind `ILanguageIdCodec`.
-    pub fn asILanguageIdCodec(self: *LanguageIdCodec) ILanguageIdCodec {
+    pub fn interface(self: *LanguageIdCodec) ILanguageIdCodec {
         return .{
             .context = self,
             .encodeLanguageId = struct {
@@ -100,7 +100,7 @@ test "ILanguageIdCodec: adapts the concrete codec" {
     defer codec.deinit();
     try codec.register("zig");
 
-    const codec_iface = codec.asILanguageIdCodec();
+    const codec_iface = codec.interface();
     const zig_id = try codec_iface.encode("zig");
     try std.testing.expectEqualStrings("zig", codec_iface.decode(zig_id));
     try std.testing.expectEqualStrings(NULL_LANGUAGE_ID, codec_iface.decode(@backingInt(LanguageId.Null)));
@@ -335,7 +335,7 @@ pub const MarkdownString = struct {
         return .{ .value = value };
     }
 
-    pub fn asIMarkdownString(self: *const MarkdownString) IMarkdownString {
+    pub fn interface(self: *const MarkdownString) IMarkdownString {
         return .{
             .value = self.value,
             .is_trusted = self.is_trusted,
