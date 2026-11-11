@@ -1031,8 +1031,10 @@ fn rbTreeDelete(T: *IntervalTree, z: *IntervalNode) void {
         if (x.delta < MIN_SAFE_DELTA or x.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;
         }
-        x.start = usizeAdd(x.start, z.delta);
-        x.end = usizeAdd(x.end, z.delta);
+        if (x != SENTINEL) {
+            x.start = usizeAdd(x.start, z.delta);
+            x.end = usizeAdd(x.end, z.delta);
+        }
     } else if (z.right == SENTINEL) {
         x = z.left;
         y = z;
@@ -1043,8 +1045,10 @@ fn rbTreeDelete(T: *IntervalTree, z: *IntervalNode) void {
         // y's delta is no longer influenced by z's delta,
         // but we don't want to walk the entire right-hand-side subtree of x.
         // we therefore maintain z's delta in y, and adjust only x
-        x.start = usizeAdd(x.start, y.delta);
-        x.end = usizeAdd(x.end, y.delta);
+        if (x != SENTINEL) {
+            x.start = usizeAdd(x.start, y.delta);
+            x.end = usizeAdd(x.end, y.delta);
+        }
         x.delta += y.delta;
         if (x.delta < MIN_SAFE_DELTA or x.delta > MAX_SAFE_DELTA) {
             T.requestNormalizeDelta = true;

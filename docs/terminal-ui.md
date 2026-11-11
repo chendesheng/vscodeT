@@ -611,6 +611,36 @@ Library constraints:
   The rebuild reads the model's inline and overview-ruler decorations back
   through `getLineDecorations` / `getOverviewRulerDecorations`. This gives all
   contributions one range tracking and z-order path.
+- The suggest contribution (`src/vs/editor/contrib/suggest`) is the first
+  end-to-end completion UI. `SuggestModel` schedules quick suggestions 10 ms
+  after a typed word character, opens immediately for provider trigger
+  characters, and exposes `Ctrl-Space` as an explicit alternative. It supports
+  synchronous providers and deferred `CompletionRequest`s that are polled from
+  the app loop. `CompletionModel` uses the ported fuzzy subsequence scorer and
+  orders by preselect, score, `sortText` and label. `SuggestWidget` is a content
+  widget anchored below or above the caret; it windows at most eight rows,
+  draws a one-cell scrollbar, handles row click/wheel listeners, and shows a
+  plain-text documentation/details pane for the selected or resolved item.
+  Acceptance applies additional text edits atomically, supports multiple
+  cursors, honors commit characters, and uses the snippet session for
+  `InsertAsSnippet` items. The app routes suggest keys before the editor,
+  forwards the poll deadline and refilters after edits. The default provider
+  suggests document words.
+  Snippet parsing uses the upstream marker AST: text, placeholders, choices,
+  variables/defaults, escaped characters, nested placeholders, regex
+  transforms (variables and empty placeholders) with regex options, format
+  conditionals and case shorthands. `snippetSession` ports `OneSnippet`
+  placeholder decorations and groups, transform re-runs, nested merge, choice
+  completion, per-edit templates and snippet variable resolvers. Placeholder
+  decorations render through the generic model-decoration path with
+  `snippet-placeholder` / `finish-snippet-placeholder` cell backgrounds.
+  Remaining host limits: clipboard text comes from the caller, workspace
+  variables use the edited file's parent directory, time variables use UTC,
+  and Unicode case transforms are ASCII-only. Deliberately unported:
+  `SnippetController2` actions/context keys, asynchronous resolve,
+  incomplete-list retries, suggest memory, inline completions,
+  configuration/context keys, markdown rendering in the details pane and
+  accessibility announcements.
 - Word-occurrence highlighting is the third decoration consumer:
   `src/vs/editor/contrib/wordHighlighter` tracks the caret/selection, waits
   `max(50 ms, editor.occurrencesHighlightDelay)`, asks the textual provider for

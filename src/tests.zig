@@ -283,4 +283,14 @@ comptime {
     _ = @import("./vs/editor/contrib/comment/test/browser/blockCommentCommand.test.zig");
     _ = @import("./vs/editor/contrib/insertFinalNewLine/test/browser/insertFinalNewLineCommand.test.zig");
     _ = @import("./vs/editor/common/model/guidesTextModelPart.zig");
+    _ = @import("./vs/editor/common/languages/completion.zig");
+    _ = @import("./vs/editor/contrib/suggest/browser/wordBasedSuggestions.zig");
+    _ = @import("./vs/editor/contrib/suggest/browser/completionModel.zig");
+    _ = @import("./vs/editor/contrib/suggest/browser/suggestModel.zig");
+    _ = @import("./vs/editor/contrib/suggest/browser/suggestWidget.zig");
+    _ = @import("./vs/editor/contrib/suggest/browser/suggestController.zig");
+    _ = @import("./vs/editor/contrib/suggest/test/browser/suggest.test.zig");
+    _ = @import("./vs/editor/contrib/suggest/test/browser/suggestOvertypingCapturer.test.zig");
+    _ = @import("./vs/editor/contrib/snippet/test/browser/snippetParser.test.zig");
+    _ = @import("./vs/editor/contrib/snippet/test/browser/snippetSession.test.zig");
 }

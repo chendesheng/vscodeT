@@ -227,6 +227,27 @@ Editor contributions:
 - `src/vs/editor/contrib/comment` ports `LineCommentCommand` and
   `BlockCommentCommand`. Comment rules for the TUI's languages live in
   `src/tui/language.zig`.
+- `src/vs/editor/contrib/suggest` ports automatic completions: a 10 ms
+  quick-suggest deadline, provider trigger characters, optional explicit `Ctrl-Space`,
+  fuzzy filtering/ranking, a windowed content widget with keyboard/mouse
+  selection and a scrollbar, synchronous `resolveCompletionItem` plus a
+  documentation pane, commit characters, additional text edits, multi-cursor
+  acceptance and deferred/async provider requests. Snippet items use the
+  upstream-shaped `snippetParser`/`snippetSession` port: the full marker AST
+  (text, placeholders, choices, variables/defaults, escaped characters, nested
+  placeholders, regex transforms with options, format conditionals and case
+  shorthands), `OneSnippet` placeholder decorations and groups, transform
+  re-runs when leaving a placeholder, nested snippet merge, choice completion
+  through the suggest widget, per-edit snippet templates, multi-cursor
+  snippets, and model/file/time/workspace/comment/random/selection/clipboard
+  variable resolvers. Overtyping capture is ported and wired through the app.
+  Remaining host limits: the terminal has no clipboard service (clipboard text
+  is supplied by the caller), workspace variables use the edited file's parent
+  directory, time variables use UTC, Unicode case mapping is ASCII-only, and
+  `SnippetController2`'s actions/context keys/undo-stop options and a full
+  upstream snippet-session test suite adaptation are not ported.
+  The default provider suggests document words; language providers use the
+  same `CompletionItemProvider` interface.
 - `src/vs/editor/contrib/hover` ports the content-hover contribution end to
   end: anchors and result filtering, the delayed hover operation
   (`hoverOperation.zig`, with injected deadline timers), the widget wrapper and
@@ -318,6 +339,9 @@ Editor contributions:
   row-quantized (no pixel lanes, translucent alpha, minimap or horizontal
   scrollbar); guides are not drawn on wrapped continuation lines, horizontal
   bracket guide segments are not painted, and a bracket guide is suppressed
-  where text occupies the same cell; and the browser-facing editor
-  controllers, keybinding registry, menus, and context keys are not part of
-  this port.
+  where text occupies the same cell; advanced snippet variable services,
+  asynchronous resolve, markdown details rendering, Unicode case mapping for
+  snippet transforms, and `SnippetController2` action/context-key plumbing are
+  not ported; and the
+  browser-facing editor controllers, keybinding registry, menus, and context
+  keys are not part of this port.

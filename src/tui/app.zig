@@ -18,6 +18,8 @@ const hoverTypes = @import("../vs/editor/contrib/hover/browser/hoverTypes.zig");
 const ContentHoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
 const MarkdownHoverParticipant = @import("../vs/editor/contrib/hover/browser/markdownHoverParticipant.zig").MarkdownHoverParticipant;
 const WordHighlighterContribution = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+const SuggestController = @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestController;
+const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
 const TuiHoverProvider = @import("./hoverProvider.zig").TuiHoverProvider;
 const ArrayList = std.array_list.Managed;
 
@@ -134,6 +136,19 @@ pub fn main(init: std.process.Init) !void {
     defer word_highlighter.deinit();
     word_highlighter.onEditorChanged(time_compat.milliTimestamp());
 
+    var word_provider = WordBasedCompletionProvider.init();
+    const completion_providers = [_]@import("../vs/editor/common/languages/completion.zig").CompletionItemProvider{word_provider.interface()};
+    const suggest = try SuggestController.init(allocator, editor, &completion_providers, .{
+        .context = view,
+        .text_height = viewTextHeight,
+        .visible_row_of = viewVisibleRowOf,
+        .request_frame = viewRequestFrame,
+        .focus_editor = viewFocusEditor,
+        .has_editor_focus = viewHasEditorFocus,
+    });
+    defer suggest.deinit();
+    try view.addContentWidget(suggest.widgetInterface());
+
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
 
@@ -150,10 +165,15 @@ pub fn main(init: std.process.Init) !void {
         const now_ms = time_compat.milliTimestamp();
         if (hover.onTick(now_ms)) needs_render = true;
         if (word_highlighter.onTick(now_ms)) needs_render = true;
+        if (try suggest.onTick(now_ms)) needs_render = true;
         var timeout = hover.pollTimeout(now_ms, 250);
         if (word_highlighter.pollTimeout(now_ms)) |word_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(word_timeout, 250))));
         }
+        if (suggest.pollTimeout(now_ms)) |suggest_timeout| {
+            timeout = @min(timeout, @as(i32, @intCast(@min(suggest_timeout, 250))));
+        }
+        if (needs_render) timeout = 0;
         const ready = try tui.pollInput(timeout);
         var resized = false;
         if (try tui.resizedSize()) |new_size| {
@@ -184,10 +204,10 @@ pub fn main(init: std.process.Init) !void {
         for (events.items) |*item| {
             switch (item.*) {
                 .key => |*event| {
-                    if (try handleKeyEvent(view, hover, word_highlighter, find, editor, event, &is_pasting)) return;
+                    if (try handleKeyEvent(view, hover, word_highlighter, find, suggest, editor, event, &is_pasting, now_ms)) return;
                 },
                 .mouse => |*event| {
-                    handleMouseEvent(view, hover, find, editor, event) catch |err| {
+                    handleMouseEvent(view, hover, find, suggest, editor, event) catch |err| {
                         editor.setMessage("mouse failed: {s}", .{@errorName(err)});
                     };
                 },
@@ -195,6 +215,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         word_highlighter.onEditorChanged(time_compat.milliTimestamp());
+        _ = try suggest.onEditorChanged();
         try view.refresh();
         try tui.hideCursor(out);
         try view.render(out);
@@ -213,14 +234,19 @@ fn handleKeyEvent(
     hover: *ContentHoverController,
     word_highlighter: *WordHighlighterContribution,
     find: *FindController,
+    suggest: ?*SuggestController,
     editor: *Editor,
     event: *input.KeyEvent,
     is_pasting: *bool,
+    now_ms: i64,
 ) !bool {
     if (isCtrlQ(event.*)) {
         const quit = dispatch(editor, event.*, is_pasting);
         find.onEditorChanged();
         return quit;
+    }
+    if (suggest) |controller| {
+        if (try controller.handleKey(event, now_ms)) return false;
     }
     if (hover.onKeyDown(event)) return false;
     if (word_highlighter.handleKey(event)) {
@@ -228,17 +254,39 @@ fn handleKeyEvent(
         return false;
     }
     if (isCtrlChar(event.*, 'f')) {
+        if (suggest) |controller| controller.cancel();
         find.startFind() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
         return false;
     }
     if (isCtrlChar(event.*, 'r')) {
+        if (suggest) |controller| controller.cancel();
         find.startReplace() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
         return false;
     }
     if (view.dispatchKey(event)) return false;
+    if (suggest) |controller| {
+        switch (event.key) {
+            .char, .text, .enter, .tab, .backspace, .delete => controller.beforeTyping(),
+            else => {},
+        }
+    }
     if (dispatch(editor, event.*, is_pasting)) return true;
+    if (suggest) |controller| {
+        if (printableChar(event.*)) |ch| {
+            _ = try controller.onTypedCharacter(ch, now_ms);
+        }
+        _ = try controller.onEditorChanged();
+    }
     find.onEditorChanged();
     return false;
+}
+
+fn printableChar(event: input.KeyEvent) ?u8 {
+    return switch (event.key) {
+        .char => |ch| if (ch >= 0x20 and ch <= 0x7e and !event.mods.ctrl and !event.mods.alt) @intCast(ch) else null,
+        .text => |text| if (text.len == 1 and text[0] >= 0x20 and text[0] <= 0x7e) text[0] else null,
+        else => null,
+    };
 }
 
 /// Routes one mouse event through the view. The view owns hit testing, focus,
@@ -247,6 +295,7 @@ fn handleMouseEvent(
     view: *View,
     hover: *ContentHoverController,
     find: *FindController,
+    suggest: ?*SuggestController,
     editor: *Editor,
     event: *input.MouseEvent,
 ) !void {
@@ -277,6 +326,9 @@ fn handleMouseEvent(
         .wheel, .click => {},
     }
 
+    if (event.kind == .down and target.type != .content_widget) {
+        if (suggest) |controller| controller.cancel();
+    }
     const top_before = editor.topViewLine();
     if (try view.dispatchMouse(event)) find.onEditorChanged();
     if (event.kind == .wheel and !event.default_prevented) {
@@ -721,7 +773,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     var open_events = try ui.input.decodeKeys(allocator, "\x06");
     defer open_events.deinit(allocator);
     for (open_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, editor, event, &pasting));
+        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, null, editor, event, &pasting, 0));
     }
 
     try std.testing.expect(find.isOpen());
@@ -741,7 +793,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     var close_events = try ui.input.decodeKeys(allocator, "\x1b");
     defer close_events.deinit(allocator);
     for (close_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, editor, event, &pasting));
+        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, null, editor, event, &pasting, 0));
     }
     try std.testing.expect(!find.isOpen());
 
@@ -1064,7 +1116,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     for (items.items) |*item| {
         switch (item.*) {
             .key => return error.TestUnexpectedResult,
-            .mouse => |*mouse| try handleMouseEvent(view, hover, find, editor, mouse),
+            .mouse => |*mouse| try handleMouseEvent(view, hover, find, null, editor, mouse),
         }
     }
 
@@ -1083,7 +1135,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     for (drag_items.items) |*item| {
         switch (item.*) {
             .key => return error.TestUnexpectedResult,
-            .mouse => |*mouse| try handleMouseEvent(view, hover, find, editor, mouse),
+            .mouse => |*mouse| try handleMouseEvent(view, hover, find, null, editor, mouse),
         }
     }
     const selection = editor.modelSelection();
@@ -1096,7 +1148,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     for (wheel_items.items) |*item| {
         switch (item.*) {
             .key => return error.TestUnexpectedResult,
-            .mouse => |*mouse| try handleMouseEvent(view, hover, find, editor, mouse),
+            .mouse => |*mouse| try handleMouseEvent(view, hover, find, null, editor, mouse),
         }
     }
     try std.testing.expectEqual(@as(usize, 4), editor.topViewLine());

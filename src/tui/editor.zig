@@ -90,6 +90,17 @@ const AfterEditComputer = struct {
     }
 };
 
+pub const TextEdit = struct {
+    range: Range,
+    text: []const u8,
+};
+
+/// The position of an applied edit after all edits in the batch were applied.
+pub const AppliedTextEdit = struct {
+    start: Position,
+    end: Position,
+};
+
 pub const Editor = struct {
     allocator: Allocator,
     io: Io,
@@ -126,6 +137,9 @@ pub const Editor = struct {
     pending_selection: [8]Selection,
     pending_selection_count: usize,
     tokens_need_refresh: bool,
+    /// Whether multi-cursor paste spreads clipboard lines over cursors. The
+    /// terminal has no settings service yet; upstream's default is `spread`.
+    multi_cursor_paste_spread: bool = true,
 
     pub fn create(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Editor {
         return createInternal(allocator, io, path, width, height, null);
@@ -1229,8 +1243,12 @@ pub const Editor = struct {
         self.ensureCursorVisible();
     }
 
-    fn getSelectionsCopy(self: *Editor) ![]Selection {
+    pub fn getModelSelections(self: *Editor) ![]Selection {
         return self.cursorsRef().getSelections(self.allocator);
+    }
+
+    fn getSelectionsCopy(self: *Editor) ![]Selection {
+        return self.getModelSelections();
     }
 
     /// Model selections, allocated with the editor allocator. The caller owns
@@ -1334,6 +1352,99 @@ pub const Editor = struct {
         self.closeTypingGroup();
         var command = ReplaceCommandCommand.init(range, text, false);
         try self.executeCommands(&[_]?ICommand{command.interface()});
+    }
+
+    /// Applies several edits atomically and places one cursor at each supplied
+    /// position. Used by completion acceptance for additional text edits and
+    /// multi-cursor inserts.
+    pub fn applyTextEdits(self: *Editor, edits: []const TextEdit, cursors: []const Position) !void {
+        if (edits.len == 0) {
+            if (cursors.len > 0) {
+                const selections = try self.allocator.alloc(Selection, cursors.len);
+                defer self.allocator.free(selections);
+                for (cursors, 0..) |position, index| {
+                    selections[index] = Selection.init(position.lineNumber, position.column, position.lineNumber, position.column);
+                }
+                try self.cursorsRef().setSelections(self.allocator, selections);
+                self.ensureCursorVisible();
+            }
+            return;
+        }
+
+        const applied = try self.applyTextEditsWithPositions(edits);
+        defer self.allocator.free(applied);
+
+        if (cursors.len > 0) {
+            const selections = try self.allocator.alloc(Selection, cursors.len);
+            defer self.allocator.free(selections);
+            for (cursors, 0..) |position, index| {
+                selections[index] = Selection.init(position.lineNumber, position.column, position.lineNumber, position.column);
+            }
+            try self.cursorsRef().setSelections(self.allocator, selections);
+        }
+        self.ensureCursorVisible();
+    }
+
+    /// Applies a batch of edits and returns where each edit landed. The
+    /// returned positions are computed against the fully applied document,
+    /// mirroring the `textChange.newPosition` values the upstream snippet
+    /// session receives from `executeEdits`.
+    pub fn applyTextEditsWithPositions(self: *Editor, edits: []const TextEdit) ![]AppliedTextEdit {
+        const result = try self.allocator.alloc(AppliedTextEdit, edits.len);
+        errdefer self.allocator.free(result);
+        if (edits.len == 0) return result;
+
+        const order = try self.allocator.alloc(usize, edits.len);
+        defer self.allocator.free(order);
+        for (order, 0..) |*slot, index| slot.* = index;
+        const SortContext = struct {
+            editor: *Editor,
+            edits: []const TextEdit,
+
+            pub fn lessThan(context: @This(), a: usize, b: usize) bool {
+                const a_start = context.editor.model.getOffsetAt(context.edits[a].range.startPosition());
+                const b_start = context.editor.model.getOffsetAt(context.edits[b].range.startPosition());
+                return a_start < b_start;
+            }
+        };
+        std.mem.sort(usize, order, SortContext{ .editor = self, .edits = edits }, SortContext.lessThan);
+
+        const offsets = try self.allocator.alloc(struct { start: usize, end: usize }, edits.len);
+        defer self.allocator.free(offsets);
+        var delta: isize = 0;
+        for (order) |index| {
+            const edit = edits[index];
+            const start = self.model.getOffsetAt(edit.range.startPosition());
+            const end = self.model.getOffsetAt(edit.range.endPosition());
+            const adjusted: isize = @as(isize, @intCast(start)) + delta;
+            const adjusted_start: usize = if (adjusted < 0) 0 else @intCast(adjusted);
+            offsets[index] = .{ .start = adjusted_start, .end = adjusted_start + edit.text.len };
+            delta += @as(isize, @intCast(edit.text.len)) - @as(isize, @intCast(end - start));
+        }
+
+        self.closeTypingGroup();
+        const before = try self.getSelectionsCopy();
+        defer self.allocator.free(before);
+
+        var operations = ArrayList(IdentifiedSingleEditOperation).init(self.allocator);
+        defer operations.deinit();
+        for (edits) |edit| {
+            try operations.append(IdentifiedSingleEditOperation.init(
+                edit.range,
+                if (edit.text.len == 0) null else String.initBorrowed(edit.text),
+            ));
+        }
+
+        _ = try self.model.pushEditOperations(before, operations.items, null, null);
+        try self.afterEdit();
+        for (offsets, 0..) |offset, index| {
+            result[index] = .{
+                .start = self.model.getPositionAt(offset.start),
+                .end = self.model.getPositionAt(offset.end),
+            };
+        }
+        self.ensureCursorVisible();
+        return result;
     }
 
     /// Runs a command against the model and applies its cursor state.

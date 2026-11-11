@@ -156,6 +156,8 @@ const CellFlag = struct {
     const word_highlight_text: u16 = 1 << 7;
     const word_highlight: u16 = 1 << 8;
     const word_highlight_strong: u16 = 1 << 9;
+    const snippet_placeholder: u16 = 1 << 10;
+    const finish_snippet_placeholder: u16 = 1 << 11;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -173,6 +175,10 @@ const hover_highlight_background = [3]u8{ 32, 42, 52 };
 /// over the dark editor background because cells have no alpha.
 const word_highlight_background = [3]u8{ 71, 71, 71 };
 const word_highlight_strong_background = [3]u8{ 8, 61, 91 };
+/// Snippet placeholder decorations are CSS backgrounds upstream. Cells have
+/// no alpha, so these are composited over the dark editor background.
+const snippet_placeholder_background = [3]u8{ 52, 58, 68 };
+const finish_snippet_placeholder_background = [3]u8{ 66, 56, 42 };
 
 /// Overview-ruler marker colors. Cells have no alpha, so the translucent
 /// upstream theme colors are composited over the dark editor background.
@@ -1664,6 +1670,11 @@ fn appendRuns(
             } else if (flag & CellFlag.find_scope != 0) {
                 style.background = color(find_scope_background);
             }
+            if (flag & CellFlag.snippet_placeholder != 0) {
+                style.background = color(snippet_placeholder_background);
+            } else if (flag & CellFlag.finish_snippet_placeholder != 0) {
+                style.background = color(finish_snippet_placeholder_background);
+            }
             if (flag & CellFlag.secondary_cursor != 0) {
                 style.reverse = true;
                 style.background = color(secondary_cursor_background);
@@ -1791,6 +1802,8 @@ fn decorationBit(class_name: []const u8) ?u16 {
     if (std.mem.eql(u8, class_name, "wordHighlightText")) return CellFlag.word_highlight_text;
     if (std.mem.eql(u8, class_name, "wordHighlight")) return CellFlag.word_highlight;
     if (std.mem.eql(u8, class_name, "wordHighlightStrong")) return CellFlag.word_highlight_strong;
+    if (std.mem.eql(u8, class_name, "snippet-placeholder")) return CellFlag.snippet_placeholder;
+    if (std.mem.eql(u8, class_name, "finish-snippet-placeholder")) return CellFlag.finish_snippet_placeholder;
     return null;
 }
 
@@ -3233,4 +3246,9 @@ test "View: contribution highlights are stored as model decorations" {
     const cleared = try editor.model.getAllDecorations(1, false);
     defer allocator.free(cleared);
     try std.testing.expectEqual(@as(usize, 0), cleared.len);
+}
+
+test "view: snippet placeholder decoration classes map to cell flags" {
+    try std.testing.expectEqual(CellFlag.snippet_placeholder, decorationBit("snippet-placeholder").?);
+    try std.testing.expectEqual(CellFlag.finish_snippet_placeholder, decorationBit("finish-snippet-placeholder").?);
 }

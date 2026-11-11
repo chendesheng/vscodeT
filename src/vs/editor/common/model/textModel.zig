@@ -1630,19 +1630,21 @@ pub const TextModel = struct {
                 return null;
             }
             // node doesn't exist, the request is to set => add the tracked range
-            const ids = try self._deltaDecorationsImpl(0, &[_]u64{}, &[_]ModelDeltaDecoration{.{ .range = newRange, .options = TRACKED_RANGE_OPTIONS[@backingInt(newStickiness)] }}, true);
+            const ids = try self._deltaDecorationsImpl(0, &[_]u64{}, &[_]ModelDeltaDecoration{.{ .range = newRange.?, .options = @constCast(TRACKED_RANGE_OPTIONS[@backingInt(newStickiness)]) }}, true);
+            defer self.getAllocator().free(ids);
             return if (ids.len > 0) ids[0] else null;
         }
 
+        const existing = node.?;
         if (newRange == null) {
             // node exists, the request is to delete => delete node
-            self._decorationsTree.delete(node);
-            _ = self._decorations.remove(node.id);
-            self.getAllocator().destroy(node);
+            self._decorationsTree.delete(existing);
+            _ = self._decorations.remove(existing.id);
+            self.getAllocator().destroy(existing);
             return null;
         }
 
-        var node_ = node.?;
+        var node_ = existing;
         const newRange_ = newRange.?;
 
         // node exists, the request is to set => change the tracked range and its options
@@ -1652,7 +1654,7 @@ pub const TextModel = struct {
 
         self._decorationsTree.delete(node_);
         node_.reset(self.getVersionId(), startOffset, endOffset, range);
-        node_.setOptions(TRACKED_RANGE_OPTIONS[@backingInt(newStickiness)]);
+        node_.setOptions(@constCast(TRACKED_RANGE_OPTIONS[@backingInt(newStickiness)]));
         self._decorationsTree.insert(node_);
         return node_.id;
     }
@@ -1665,6 +1667,26 @@ pub const TextModel = struct {
             _ = self._decorations.remove(node.id);
             self.getAllocator().destroy(node);
         }
+    }
+
+    pub fn createTrackedRange(self: *TextModel, range: Range, stickiness: TrackedRangeStickiness) !u64 {
+        return (try self._setTrackedRange(null, range, stickiness)) orelse error.TrackedRangeFailed;
+    }
+
+    pub fn getTrackedRange(self: *TextModel, id: u64) ?Range {
+        return self.getDecorationRange(id);
+    }
+
+    pub fn removeTrackedRange(self: *TextModel, id: u64) void {
+        _ = self._setTrackedRange(id, null, .NeverGrowsWhenTypingAtEdges) catch {};
+    }
+
+    /// Public single-decoration option update used by contributions that keep
+    /// their own decoration handles (the snippet session placeholder groups).
+    pub fn changeDecorationOptionsById(self: *TextModel, decorationId: u64, options: *ModelDecorationOptions) void {
+        self._onDidChangeDecorations.beginDeferredEmit();
+        defer self._onDidChangeDecorations.endDeferredEmit();
+        self._changeDecorationOptionsImpl(0, decorationId, options);
     }
 
     pub fn getDecorationOptions(self: *TextModel, decorationId: u64) ?ModelDecorationOptions {
