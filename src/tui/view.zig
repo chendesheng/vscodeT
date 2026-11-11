@@ -22,6 +22,7 @@ const theme = @import("./theme.zig");
 const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
 const CursorState = @import("../vs/editor/common/cursorCommon.zig").CursorState;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
+const Range = @import("../vs/editor/common/core/range.zig").Range;
 const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const line_renderer = @import("../vs/editor/common/viewLayout/viewLineRenderer.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
@@ -45,12 +46,15 @@ const CellFlag = struct {
     const find_match: u8 = 1 << 2;
     const current_find_match: u8 = 1 << 3;
     const find_scope: u8 = 1 << 4;
+    const bracket_match: u8 = 1 << 5;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
 const current_find_match_background = [3]u8{ 200, 120, 0 };
 const current_find_match_foreground = [3]u8{ 0, 0, 0 };
 const find_scope_background = [3]u8{ 40, 50, 70 };
+const bracket_match_background = [3]u8{ 45, 80, 55 };
+const bracket_match_foreground = [3]u8{ 235, 255, 235 };
 
 pub const View = struct {
     allocator: std.mem.Allocator,
@@ -69,6 +73,8 @@ pub const View = struct {
     /// one of these maps to its view line; hits on the gutter, the status row
     /// or overlays do not.
     line_entries: std.array_list.Managed(LineEntry),
+    /// Matching bracket ranges for the current cursors, recomputed per frame.
+    bracket_ranges: std.array_list.Managed(Range),
     /// The last left-button press, in cells, kept across document rebuilds so
     /// a release can synthesize a click without retaining node pointers.
     mouse_press: ?MousePress = null,
@@ -97,10 +103,12 @@ pub const View = struct {
             .overlays = std.array_list.Managed(editorBrowser.IOverlayWidget).init(allocator),
             .decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
             .line_entries = std.array_list.Managed(LineEntry).init(allocator),
+            .bracket_ranges = std.array_list.Managed(Range).init(allocator),
         };
         errdefer self.overlays.deinit();
         errdefer self.decorations.deinit();
         errdefer self.line_entries.deinit();
+        errdefer self.bracket_ranges.deinit();
         self.surface = try ui.Surface.init(allocator, .{
             .cols = editor.screen_width,
             .rows = editor.screen_height,
@@ -113,6 +121,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.bracket_ranges.deinit();
         self.line_entries.deinit();
         self.decorations.deinit();
         self.overlays.deinit();
@@ -317,12 +326,27 @@ pub const View = struct {
         return .{ .row = row, .col = col };
     }
 
+    fn editorHasFocus(self: *const View) bool {
+        for (self.overlays.items) |overlay| {
+            if (overlay.is_focused(overlay.context)) return false;
+        }
+        return true;
+    }
+
     fn rebuild(self: *View) !void {
         const editor = self.editor;
         editor.ensureTokensVisible();
         // The cursor is revealed by cursor moves and edits, not on every
         // rebuild: a wheel scroll is allowed to leave it off-screen.
         _ = editor.scrollViewLines(0);
+
+        self.bracket_ranges.clearRetainingCapacity();
+        const bracket_data = try editor.updateBracketMatches(self.editorHasFocus());
+        for (bracket_data) |entry| {
+            const brackets = entry.brackets orelse continue;
+            try self.bracket_ranges.append(brackets[0]);
+            try self.bracket_ranges.append(brackets[1]);
+        }
 
         const doc = self.surface.document();
         doc.clear();
@@ -457,6 +481,16 @@ pub const View = struct {
                 line_width,
                 flags,
             );
+            self.markBracketMatches(
+                model_line,
+                data.minColumn,
+                data.maxColumn,
+                model_content.items,
+                tab_size,
+                data.startVisibleColumn,
+                line_width,
+                flags,
+            );
 
             try appendRuns(doc, line, rendered, flags);
 
@@ -516,6 +550,39 @@ pub const View = struct {
             var cell = start;
             while (cell < end and cell < flags.len) : (cell += 1) {
                 flags[cell] |= bit;
+            }
+        }
+    }
+
+    fn markBracketMatches(
+        self: *View,
+        model_line: usize,
+        min_column: usize,
+        max_column: usize,
+        model_content: []const u8,
+        tab_size: usize,
+        start_visible_column: usize,
+        line_width: usize,
+        flags: []u8,
+    ) void {
+        for (self.bracket_ranges.items) |range| {
+            if (range.startLineNumber > model_line or range.endLineNumber < model_line) continue;
+
+            var start_column = if (range.startLineNumber == model_line) range.startColumn else min_column;
+            var end_column = if (range.endLineNumber == model_line) range.endColumn else max_column;
+            start_column = @max(start_column, min_column);
+            end_column = @min(end_column, max_column);
+            if (start_column > max_column or end_column < min_column) continue;
+
+            var start = visibleOffset(model_content, start_column, tab_size, start_visible_column);
+            var end = visibleOffset(model_content, end_column, tab_size, start_visible_column);
+            if (end <= start) end = start + 1;
+            start = @min(start, line_width);
+            end = @min(end, line_width);
+
+            var cell = start;
+            while (cell < end and cell < flags.len) : (cell += 1) {
+                flags[cell] |= CellFlag.bracket_match;
             }
         }
     }
@@ -633,6 +700,11 @@ fn appendRuns(
         var style = tokenStyle(part);
         if (cell < flags.len) {
             const flag = flags[cell];
+            if (flag & CellFlag.bracket_match != 0) {
+                style.background = color(bracket_match_background);
+                style.color = color(bracket_match_foreground);
+                style.underline = true;
+            }
             if (flag & CellFlag.current_find_match != 0) {
                 style.background = color(current_find_match_background);
                 style.color = color(current_find_match_foreground);
@@ -1222,4 +1294,96 @@ test "View: the wheel scrolls without moving the caret and clamps" {
     // The next cursor move reveals the caret again.
     try editor.moveDown(false);
     try std.testing.expect(editor.topViewLine() <= editor.modelCursorPosition().lineNumber);
+}
+
+test "View: matching brackets are highlighted while the cursor is on one" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "(a)\n(\n)\nx", "test.zig", 20, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    try editor.setCursorPosition(Position.init(1, 2));
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const bracket_bg = ui.cell.packColor(color(bracket_match_background));
+    var grid = view.surface.grid();
+    try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter, 0)]);
+    try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter + 2, 0)]);
+
+    // Cursor off any bracket clears the highlights.
+    try editor.setCursorPosition(Position.init(4, 1));
+    try view.refresh();
+    try view.render(&out.writer);
+    grid = view.surface.grid();
+    try std.testing.expect(grid.bg[grid.index(gutter, 0)] != bracket_bg);
+    try std.testing.expect(grid.bg[grid.index(gutter + 2, 0)] != bracket_bg);
+
+    // A pair spanning lines highlights both brackets.
+    try editor.setCursorPosition(Position.init(2, 2));
+    try view.refresh();
+    try view.render(&out.writer);
+    grid = view.surface.grid();
+    try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter, 1)]);
+    try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter, 2)]);
+}
+
+test "View: a focused widget hides bracket highlights" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try editor.setCursorPosition(Position.init(1, 2));
+
+    var overlay = TestOverlay{ .focused = true };
+    try view.addOverlayWidget(overlay.overlay());
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+    const gutter = editor.gutterWidth();
+    const bracket_bg = ui.cell.packColor(color(bracket_match_background));
+    const grid = view.surface.grid();
+    try std.testing.expect(grid.bg[grid.index(gutter, 0)] != bracket_bg);
+}
+
+test "View: typing an auto-closed bracket highlights the pair" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "", "test.zig", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    try editor.typeCharacter("(");
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const bracket_bg = ui.cell.packColor(color(bracket_match_background));
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter, 0)]);
+    try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter + 1, 0)]);
 }

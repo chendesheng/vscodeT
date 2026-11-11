@@ -54,7 +54,8 @@ const LineCommentCommand = @import("../vs/editor/contrib/comment/browser/lineCom
 const CommentType = @import("../vs/editor/contrib/comment/browser/lineCommentCommand.zig").Type;
 const BlockCommentCommand = @import("../vs/editor/contrib/comment/browser/blockCommentCommand.zig").BlockCommentCommand;
 const InsertFinalNewLineCommand = @import("../vs/editor/contrib/insertFinalNewLine/browser/insertFinalNewLineCommand.zig").InsertFinalNewLineCommand;
-const BracketMatchingController = @import("../vs/editor/contrib/bracketMatching/browser/bracketMatching.zig").BracketMatchingController;
+const bracket_matching = @import("../vs/editor/contrib/bracketMatching/browser/bracketMatching.zig");
+const BracketMatchingController = bracket_matching.BracketMatchingController;
 const language_configuration_service = @import("./languageConfiguration.zig");
 const ShiftCommand = @import("../vs/editor/common/commands/shiftCommand.zig").ShiftCommand;
 const IShiftCommandOpts = @import("../vs/editor/common/commands/shiftCommand.zig").IShiftCommandOpts;
@@ -1292,6 +1293,15 @@ pub const Editor = struct {
 
         try self.cursorsRef().setStates(states);
         self.ensureCursorVisible();
+    }
+
+    /// Recomputes the bracket highlights for the current cursors. `has_focus`
+    /// mirrors upstream's `hasWidgetFocus`: a focused widget hides the hints.
+    pub fn updateBracketMatches(self: *Editor, has_focus: bool) ![]const bracket_matching.BracketsData {
+        self.bracket_matching.has_focus = has_focus;
+        const selections = try self.cursorsRef().getSelections(self.allocator);
+        defer self.allocator.free(selections);
+        return self.bracket_matching.updateBrackets(selections);
     }
 
     pub fn jumpToBracket(self: *Editor) !void {

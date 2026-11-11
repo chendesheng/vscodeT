@@ -178,12 +178,6 @@ pub const BracketMatchingController = struct {
             self.last_version_id = 0;
             return self.last_brackets_data.items;
         }
-        self.ensureTokenized();
-        if (self.match_brackets == .never or !self.has_focus) {
-            self.last_brackets_data.clearRetainingCapacity();
-            self.last_version_id = 0;
-            return self.last_brackets_data.items;
-        }
 
         if (selections.len > 100) {
             self.last_brackets_data.clearRetainingCapacity();
@@ -192,12 +186,6 @@ pub const BracketMatchingController = struct {
         }
 
         const version_id = self.model.getVersionId();
-
-        var previous = ArrayList(BracketsData).init(self.allocator);
-        defer previous.deinit();
-        if (self.last_version_id == version_id) {
-            try previous.appendSlice(self.last_brackets_data.items);
-        }
 
         var positions = ArrayList(Position).init(self.allocator);
         defer positions.deinit();
@@ -210,6 +198,24 @@ pub const BracketMatchingController = struct {
                     return Position.compare(a, b) < 0;
                 }
             }.lessThan);
+        }
+
+        // A redraw with the same version and cursor positions cannot change the
+        // matches. Returning the cache here also avoids forcing every line's
+        // tokens on hover/resize frames; tokenization is only needed when the
+        // document or the cursor actually changed.
+        if (self.last_version_id == version_id and
+            samePositions(positions.items, self.last_brackets_data.items))
+        {
+            return self.last_brackets_data.items;
+        }
+
+        if (self.last_version_id != version_id) self.ensureTokenized();
+
+        var previous = ArrayList(BracketsData).init(self.allocator);
+        defer previous.deinit();
+        if (self.last_version_id == version_id) {
+            try previous.appendSlice(self.last_brackets_data.items);
         }
 
         var new_data = ArrayList(BracketsData).init(self.allocator);
@@ -241,6 +247,14 @@ pub const BracketMatchingController = struct {
         return self.last_brackets_data.items;
     }
 };
+
+fn samePositions(positions: []const Position, data: []const BracketsData) bool {
+    if (positions.len != data.len) return false;
+    for (positions, data) |position, entry| {
+        if (!position.equals(entry.position)) return false;
+    }
+    return true;
+}
 
 fn orderBrackets(pair: Brackets) Brackets {
     if (range_mod.compareRangesUsingStarts(&pair[0], &pair[1]) <= 0) {

@@ -154,7 +154,10 @@ TUI editor:
   message.
 - Bracket matching: `Ctrl-\` jumps to the matching/enclosing/next bracket,
   `Alt-B` selects to the bracket pair, and `Alt-Shift-B` removes the bracket
-  pair around the cursor.
+  pair around the cursor. While the cursor is on a bracket, that bracket and
+  its match are highlighted (including across lines); the highlight disappears
+  while a widget such as the find bar has focus. Typing or moving the cursor
+  updates it immediately.
 - Bracket completion: typing an opening bracket inserts its closing bracket and
   places the cursor between them. Typing an existing closing bracket moves
   over it, and Backspace removes an auto-inserted pair.
@@ -189,8 +192,9 @@ Editor contributions:
   surrounding-selection path are not ported yet.
 - `src/vs/editor/contrib/bracketMatching` ports the controller logic: jump to
   bracket, select to bracket, remove brackets, and the cached bracket-match
-  data used for visual highlighting. The TUI does not paint decoration classes
-  yet, so the cached match data is available but not rendered inline.
+  data used for visual highlighting. The TUI paints the matching bracket cells
+  directly; the overview-ruler part and general decoration-class rendering are
+  still unpainted.
 - `src/vs/editor/contrib/multicursor` ports cursor insertion above/below,
   cursors at line ends/top/bottom, occurrence search sessions, and
   add/move/select-all occurrence actions. The TUI renders secondary cursors and
@@ -227,4 +231,5 @@ Editor contributions:
   `Full` auto-indent branch (plain line moves only); line sorting is bytewise
   rather than locale-aware; and the browser-facing editor controllers,
   keybinding registry, menus, and context keys are not part of this port.
-  Bracket matching also does not paint its inline/overview-ruler decorations.
+  Bracket matching paints its inline match cells, but not the overview-ruler
+  marker.
