@@ -53,7 +53,8 @@ Notes for the Zig 0.17 port:
   `ui.MouseEvent`s, `Surface.elementFromPoint` hit-tests the box tree, and a
   press focuses the element under the cell. In the editor, left-click places the
   caret, Shift-click extends, dragging selects (a selecting drag is not a
-  click), and the wheel scrolls three view lines without moving the caret.
+  click), the wheel scrolls three view lines without moving the caret, and the
+  right-edge overview-ruler/scrollbar column accepts click and thumb drags.
   Idle motion drives hover in the find bar: the option toggles and `All`
   highlight, clicking them runs the action without stealing input focus, and
   clicking an input places its byte caret. Clicking the editor blurs the find
@@ -146,6 +147,21 @@ TUI editor:
   the wheel scrolls three view lines (the caret stays put until it moves).
   Resting the pointer on a word opens a hover after 300 ms (see the hover
   contribution below); moving over the gutter or status row closes it.
+- Scrollbar and overview ruler: the rightmost two text cells show overview
+  markers and the proportional scrollbar thumb in the same cells. Markers
+  paint first: find matches, the current find match, bracket matches that use
+  the overview-ruler option, word occurrences and cursor positions. The thumb
+  paints afterwards on the rows it occupies as two foreground block glyphs,
+  covering the marker there. Markers use the same foreground-glyph technique
+  as Flow's vertical scrollbar, so the strip carries no background run at the
+  terminal edge. Because
+  a terminal has one row per cell, a row can represent many document lines:
+  markers are quantized to rows and collisions use the upstream z-order
+  (current find over find over bracket/word, cursors last). Clicking the track
+  jumps the viewport and dragging the thumb scrolls; the caret does not move.
+  Cells have no alpha, so the upstream translucent colors are composited over
+  the dark background. The read-only `--preview` mode does not reserve this
+  column. No minimap, pixel lanes, horizontal scrollbar or smooth scrolling.
 - Editing: `Enter`, `Tab`/`Shift-Tab`, `Backspace`, `Delete`, bracketed paste.
 - `Ctrl-A` selects all; `Escape` clears the selection.
 - Line operations: `Alt-Up`/`Alt-Down` move the current line or selection,
@@ -224,18 +240,20 @@ Editor contributions:
   `wordHighlight`/`wordHighlightText`/`wordHighlightStrong` ranges painted
   through the same line-decoration path as the other highlights, and the
   next/previous navigation actions (bound to `Alt-N`/`Alt-Shift-N` because the
-  terminal decoder has no F7). Language-feature providers, multi-file/notebook/
-  diff highlighting, the accessible announcement, context keys and
-  overview-ruler/minimap decorations are not ported; the TUI always uses the
-  textual provider. The `wordHighlighter` colors are composited from
+  terminal decoder has no F7). The ranges also contribute markers to the
+  overview-ruler column. Language-feature providers, multi-file/notebook/diff
+  highlighting, the accessible announcement, context keys and minimap
+  decorations are not ported; the TUI always uses the textual provider. The
+  `wordHighlighter` colors are composited from
   `editor.wordHighlightBackground`/`wordHighlightStrongBackground` because cells
   have no alpha.
 - `src/vs/editor/contrib/bracketMatching` ports the controller logic: jump to
   bracket, select to bracket, remove brackets, and the cached bracket-match
   data used for visual highlighting. The TUI turns that data into model
   decorations and paints them through the ported `LineDecoration.filter` /
-  `extractWrapped` path, the same route find ranges take; the overview-ruler
-  part and CSS decoration classes are still unpainted.
+  `extractWrapped` path, the same route find ranges take; matches that use the
+  with-overview-ruler mode also paint a marker in the overview-ruler column,
+  while CSS decoration classes remain unpainted.
 - `src/vs/editor/contrib/multicursor` ports cursor insertion above/below,
   cursors at line ends/top/bottom, occurrence search sessions, and
   add/move/select-all occurrence actions. The TUI renders secondary cursors and
@@ -270,7 +288,7 @@ Editor contributions:
   selections.
 - Known limitations: `MoveLinesCommand` does not yet implement VS Code's
   `Full` auto-indent branch (plain line moves only); line sorting is bytewise
-  rather than locale-aware; and the browser-facing editor controllers,
-  keybinding registry, menus, and context keys are not part of this port.
-  Bracket matching paints its inline match cells, but not the overview-ruler
-  marker.
+  rather than locale-aware; the overview-ruler/scrollbar column is
+  row-quantized (no pixel lanes, translucent alpha, minimap or horizontal
+  scrollbar); and the browser-facing editor controllers, keybinding registry,
+  menus, and context keys are not part of this port.

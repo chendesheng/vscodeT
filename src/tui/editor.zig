@@ -114,6 +114,10 @@ pub const Editor = struct {
     screen_width: usize,
     screen_height: usize,
     gutter_width: usize,
+    /// Rightmost columns reserved by the view for the overview ruler and
+    /// scrollbar. Zero for the read-only preview and for editors used without
+    /// the TUI view.
+    scrollbar_width: usize,
     top_view_line: usize,
     status: [MAX_STATUS]u8,
     status_len: usize,
@@ -234,6 +238,7 @@ pub const Editor = struct {
             .screen_width = @max(width, 1),
             .screen_height = @max(height, 1),
             .gutter_width = gutter,
+            .scrollbar_width = 0,
             .top_view_line = 1,
             .status = undefined,
             .status_len = 0,
@@ -327,6 +332,28 @@ pub const Editor = struct {
         return self.gutter_width;
     }
 
+    /// Width of the visible text columns after the gutter and the view's
+    /// scrollbar/overview-ruler columns.
+    pub fn textAreaWidth(self: *const Editor) usize {
+        return @max(
+            @as(usize, 1),
+            self.screen_width -| self.gutter_width -| self.scrollbar_width,
+        );
+    }
+
+    /// First terminal column after the text area.
+    pub fn textAreaRight(self: *const Editor) usize {
+        return @min(self.screen_width, self.gutter_width + self.textAreaWidth());
+    }
+
+    /// Scrollable height in view lines. This port has no
+    /// `scrollBeyondLastLine`, so the viewport and the content never require
+    /// more than the line count, but a short document still reports its
+    /// viewport height.
+    pub fn scrollHeight(self: *Editor) usize {
+        return @max(self.viewLineCount(), self.textHeight());
+    }
+
     pub fn viewLineData(self: *Editor, view_line: usize) !ViewLineData {
         return self.view_lines.getViewLineData(view_line);
     }
@@ -414,9 +441,22 @@ pub const Editor = struct {
         self.ensureCursorVisible();
     }
 
+    /// Reserves rightmost text columns for the view's scrollbar/overview ruler.
+    /// The editor wraps around them so text never paints underneath. The value
+    /// is clamped so at least one text column remains.
+    pub fn setScrollbarWidth(self: *Editor, width: usize) void {
+        const available = self.screen_width -| self.gutter_width;
+        const clamped = @min(width, available -| 1);
+        if (clamped == self.scrollbar_width) return;
+        self.scrollbar_width = clamped;
+        self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
+        self.ensureCursorVisible();
+    }
+
     fn refreshLayout(self: *Editor) !void {
         const new_gutter = gutterWidthFor(self.model.getLineCount());
-        const text_width = @max(@as(usize, 1), self.screen_width - new_gutter);
+        const available = self.screen_width -| new_gutter;
+        const text_width = @max(@as(usize, 1), available -| self.scrollbar_width);
         self.gutter_width = new_gutter;
         self.cursor_config.pageSize = self.textHeight();
 
@@ -460,6 +500,15 @@ pub const Editor = struct {
         const next = std.math.clamp(current + delta, 1, max);
         if (next == self.top_view_line) return false;
         self.top_view_line = @intCast(next);
+        return true;
+    }
+
+    /// Sets the first visible view line without moving the cursor. Used by the
+    /// terminal scrollbar, whose scroll position is expressed in lines.
+    pub fn setTopViewLine(self: *Editor, line: usize) bool {
+        const next = std.math.clamp(line, 1, self.maxTopViewLine());
+        if (next == self.top_view_line) return false;
+        self.top_view_line = next;
         return true;
     }
 
@@ -1562,6 +1611,57 @@ test "Editor: viewport reflows wrapping" {
     try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
     editor.setViewport(20, 5);
     try std.testing.expectEqual(@as(usize, 1), editor.viewLineCount());
+}
+
+test "Editor: scrollbar width reserves wrapping and text columns" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "abcdefghijk", "test.txt", 14, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), editor.viewLineCount());
+    try std.testing.expectEqual(@as(usize, 11), editor.textAreaWidth());
+    try std.testing.expectEqual(@as(usize, 14), editor.textAreaRight());
+
+    editor.setScrollbarWidth(2);
+    try std.testing.expectEqual(@as(usize, 2), editor.scrollbar_width);
+    try std.testing.expectEqual(@as(usize, 9), editor.textAreaWidth());
+    try std.testing.expectEqual(@as(usize, 12), editor.textAreaRight());
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+
+    editor.setScrollbarWidth(0);
+    try std.testing.expectEqual(@as(usize, 0), editor.scrollbar_width);
+    try std.testing.expectEqual(@as(usize, 11), editor.textAreaWidth());
+    try std.testing.expectEqual(@as(usize, 1), editor.viewLineCount());
+}
+
+test "Editor: scroll height and absolute top line follow the viewport" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(
+        allocator,
+        io,
+        "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11",
+        "test.txt",
+        40,
+        5,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try std.testing.expectEqual(@as(usize, 12), editor.viewLineCount());
+    try std.testing.expectEqual(@as(usize, 12), editor.scrollHeight());
+
+    try std.testing.expect(editor.setTopViewLine(99));
+    try std.testing.expectEqual(@as(usize, 9), editor.topViewLine());
+    try std.testing.expect(editor.setTopViewLine(0));
+    try std.testing.expectEqual(@as(usize, 1), editor.topViewLine());
+    try std.testing.expect(!editor.setTopViewLine(1));
 }
 
 test "Editor: save writes the model value" {

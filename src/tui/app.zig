@@ -266,7 +266,7 @@ fn handleMouseEvent(
             // VS Code, so they produce a mouse move (with no anchor) and the
             // sticky hover gets its grace period. The status row is outside
             // the editor, so it is a mouse leave.
-            .content_text, .content_empty, .content_widget, .gutter_line_numbers, .overlay_widget => hover.onMouseMove(hover_event),
+            .content_text, .content_empty, .content_widget, .gutter_line_numbers, .scrollbar, .overlay_widget => hover.onMouseMove(hover_event),
             .status, .unknown => hover.onEditorMouseLeave(hover_event),
         },
         .wheel, .click => {},

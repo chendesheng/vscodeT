@@ -96,6 +96,7 @@ pub const MouseTargetType = enum {
     content_text,
     content_empty,
     content_widget,
+    scrollbar,
     overlay_widget,
     status,
 };
@@ -140,4 +141,7 @@ pub const DecorationKind = enum {
 pub const Decoration = struct {
     range: Range,
     kind: DecorationKind,
+    /// Contribution-specific override for the overview-ruler marker. The kind
+    /// still decides whether it has a marker color at all.
+    show_in_overview_ruler: bool = true,
 };

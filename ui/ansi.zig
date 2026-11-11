@@ -30,7 +30,10 @@ pub fn encode(
     while (row < next.rows) : (row += 1) {
         if (!rowChanged(prev, next, row)) continue;
 
-        try appendPrint(&body, allocator, "\x1b[{d};1H\x1b[K", .{row + 1});
+        // Reset first: erase-to-end uses the terminal's current background
+        // with background-color erase. A stale marker background from a
+        // previous row/frame must not paint the cells beyond the grid.
+        try appendPrint(&body, allocator, "\x1b[0m\x1b[{d};1H\x1b[K", .{row + 1});
 
         if (!next.rowHasContent(row)) continue;
         try encodeRow(allocator, next, row, &body, options.color_depth);

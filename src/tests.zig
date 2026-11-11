@@ -100,6 +100,7 @@ comptime {
     _ = @import("./vs/editor/common/viewLayout/linesLayout.zig");
     _ = @import("./vs/editor/common/viewLayout/viewLinesViewportData.zig");
     _ = @import("./vs/editor/common/viewModel/overviewZoneManager.zig");
+    _ = @import("./vs/editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.zig");
     _ = @import("./vs/editor/common/viewModel/minimapTokensColorTracker.zig");
     _ = @import("./vs/editor/common/viewModel/viewModelDecorations.zig");
     _ = @import("./vs/editor/test/common/viewModel/viewModelTests.zig");
@@ -115,6 +116,8 @@ comptime {
     _ = @import("./vs/platform/undoRedo/common/undoRedo.zig");
     _ = @import("./vs/platform/undoRedo/common/undoRedoService.zig");
     _ = @import("./vs/base/common/scrollable.zig");
+    _ = @import("./vs/base/browser/ui/scrollbar/scrollbarState.zig");
+    _ = @import("./vs/base/test/browser/ui/scrollbar/scrollbarState.test.zig");
     _ = @import("./vs/platform/theme/common/theme.zig");
     _ = @import("./vs/platform/theme/common/themeService.zig");
     _ = @import("./vs/editor/common/editorCommon.zig");

@@ -17,6 +17,13 @@
 //! Find and bracket ranges are converted to inline decorations and resolved
 //! with the ported `LineDecoration.filter`/`extractWrapped` path, mirroring
 //! upstream's ViewLine; the resulting classes map to terminal cell flags.
+//!
+//! The right edge of the text area reserves two cells that double as the
+//! overview ruler and the scrollbar. Marker ranges project onto text rows
+//! instead of canvas pixels, so several document lines can share a row. The
+//! scrollbar thumb is painted after the markers in the same cells, so it covers
+//! them on the rows it occupies, matching the terminal rendering of the
+//! browser's overlapping overview-ruler and slider layers.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -33,6 +40,8 @@ const inlineDecorations = @import("../vs/editor/common/viewModel/inlineDecoratio
 const InlineDecoration = inlineDecorations.InlineDecoration;
 const line_renderer = @import("../vs/editor/common/viewLayout/viewLineRenderer.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
+const decorationsOverviewRuler = @import("../vs/editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.zig");
+const scrollbar_state = @import("../vs/base/browser/ui/scrollbar/scrollbarState.zig");
 
 const gutter_color = [3]u8{ 110, 110, 110 };
 const continuation_color = [3]u8{ 90, 90, 90 };
@@ -76,6 +85,21 @@ const hover_highlight_background = [3]u8{ 32, 42, 52 };
 const word_highlight_background = [3]u8{ 71, 71, 71 };
 const word_highlight_strong_background = [3]u8{ 8, 61, 91 };
 
+/// Overview-ruler marker colors. Cells have no alpha, so the translucent
+/// upstream theme colors are composited over the dark editor background.
+/// Find/current-find follow `editorOverviewRuler.findMatchForeground`; the
+/// current match keeps the stronger inline find color so it stands out.
+const overview_find_color = [3]u8{ 96, 66, 22 };
+const overview_current_find_color = [3]u8{ 150, 90, 0 };
+const overview_bracket_color = [3]u8{ 92, 92, 92 };
+const overview_word_color = [3]u8{ 78, 78, 78 };
+const overview_word_strong_color = [3]u8{ 96, 80, 96 };
+const overview_cursor_color = [3]u8{ 92, 93, 91 };
+const overview_secondary_cursor_color = [3]u8{ 86, 70, 26 };
+/// The thumb is intentionally a little brighter than the markers so it remains
+/// distinguishable while the marker cells stay subdued.
+const scrollbar_thumb_color = [3]u8{ 108, 108, 108 };
+
 pub const View = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
@@ -111,6 +135,12 @@ pub const View = struct {
     /// Matching bracket decorations for the current cursors, recomputed per
     /// frame and painted through the same line-decoration path as find.
     bracket_decorations: std.array_list.Managed(editorBrowser.Decoration),
+    /// Width of the rightmost cells reserved for the combined overview ruler
+    /// and scrollbar. The editor wraps around the same width.
+    scrollbar_width: usize = 0,
+    /// The active thumb/track drag. The state is cloned at press time so the
+    /// pointer delta maps against the geometry that was under the pointer.
+    scrollbar_drag: ?ScrollbarDrag = null,
     /// The last left-button press, in cells, kept across document rebuilds so
     /// a release can synthesize a click without retaining node pointers.
     mouse_press: ?MousePress = null,
@@ -159,6 +189,11 @@ pub const View = struct {
         y: usize,
     };
 
+    const ScrollbarDrag = struct {
+        start_row: usize,
+        initial_state: scrollbar_state.ScrollbarState,
+    };
+
     pub fn init(allocator: std.mem.Allocator, editor: *Editor) !*View {
         const self = try allocator.create(View);
         errdefer allocator.destroy(self);
@@ -185,6 +220,8 @@ pub const View = struct {
         errdefer self.word_highlights.deinit();
         errdefer self.line_entries.deinit();
         errdefer self.bracket_decorations.deinit();
+        editor.setScrollbarWidth(overviewRulerWidth(editor));
+        self.scrollbar_width = editor.scrollbar_width;
         self.surface = try ui.Surface.init(allocator, .{
             .cols = editor.screen_width,
             .rows = editor.screen_height,
@@ -289,9 +326,23 @@ pub const View = struct {
             (doc.root orelse return false);
         ui.event.dispatchMouse(doc, target, event);
 
+        const scrollbar_hit = self.isScrollbarCell(event.x) and
+            event.y < self.editor.textHeight() and
+            !self.pointInWidget(event.x, event.y);
+
         var caret_changed = false;
         switch (event.kind) {
             .down => {
+                if (event.button == .left and scrollbar_hit) {
+                    self.mouse_press = null;
+                    self.drag_anchor = null;
+                    self.drag_moved = false;
+                    if (!event.default_prevented) {
+                        self.beginScrollbarDrag(event.x, event.y);
+                    }
+                    return false;
+                }
+                self.scrollbar_drag = null;
                 if (event.button == .left) {
                     self.mouse_press = .{ .x = event.x, .y = event.y };
                     self.drag_anchor = null;
@@ -314,6 +365,10 @@ pub const View = struct {
                 }
             },
             .move => {
+                if (self.scrollbar_drag != null) {
+                    self.updateScrollbarDrag(event.y);
+                    return false;
+                }
                 if (event.button == .left) {
                     if (self.drag_anchor) |anchor| {
                         if (self.lineEntryAt(target)) |entry| {
@@ -330,6 +385,10 @@ pub const View = struct {
                 }
             },
             .up => {
+                if (self.scrollbar_drag != null) {
+                    self.scrollbar_drag = null;
+                    return false;
+                }
                 if (event.button == .left) {
                     if (self.mouse_press) |press| {
                         self.mouse_press = null;
@@ -367,6 +426,59 @@ pub const View = struct {
             .click => {},
         }
         return caret_changed;
+    }
+
+    fn isScrollbarCell(self: *View, x: usize) bool {
+        if (self.scrollbar_width == 0) return false;
+        const cols = self.surface.document().cols;
+        return x >= cols -| self.scrollbar_width;
+    }
+
+    fn pointInWidget(self: *const View, x: usize, y: usize) bool {
+        for (self.content_entries.items) |entry| {
+            if (entry.contains(x, y)) return true;
+        }
+        for (self.overlay_entries.items) |entry| {
+            if (entry.contains(x, y)) return true;
+        }
+        return false;
+    }
+
+    fn beginScrollbarDrag(self: *View, x: usize, y: usize) void {
+        const editor = self.editor;
+        const height = editor.textHeight();
+        if (height == 0) return;
+        const row = @min(y, height - 1);
+
+        var state = self.scrollbarState();
+        if (!state.isNeeded()) return;
+
+        const geometry = thumbGeometry(state, height);
+        const cols = self.surface.document().cols;
+        const in_thumb = x >= cols -| self.scrollbar_width and
+            row >= geometry.top and
+            row < geometry.top + geometry.size;
+
+        if (!in_thumb) {
+            const desired = state.getDesiredScrollPositionFromOffset(@floatFromInt(row));
+            const applied = applyScrollPosition(editor, desired);
+            _ = state.setScrollPosition(@floatFromInt(applied));
+        }
+
+        self.scrollbar_drag = .{
+            .start_row = row,
+            .initial_state = state,
+        };
+    }
+
+    fn updateScrollbarDrag(self: *View, y: usize) void {
+        const drag = self.scrollbar_drag orelse return;
+        const height = self.editor.textHeight();
+        if (height == 0) return;
+        const row = @min(y, height - 1);
+        const delta = @as(f64, @floatFromInt(row)) - @as(f64, @floatFromInt(drag.start_row));
+        const desired = drag.initial_state.getDesiredScrollPositionFromDelta(delta);
+        _ = applyScrollPosition(self.editor, desired);
     }
 
     fn lineEntryAt(self: *const View, target: *ui.Node) ?LineEntry {
@@ -414,6 +526,17 @@ pub const View = struct {
 
         const gutter = self.editor.gutterWidth();
         const top = self.editor.topViewLine();
+        const cols = doc.cols;
+        if (self.scrollbar_width > 0 and x >= cols -| self.scrollbar_width) {
+            const view_line = @min(top + y, self.editor.viewLineCount());
+            return .{
+                .element = target,
+                .type = .scrollbar,
+                .position = try self.editor.positionAtViewPoint(view_line, 0),
+                .mouse_column = x + 1,
+            };
+        }
+
         const view_line = top + y;
         if (x < gutter) {
             return .{
@@ -475,6 +598,7 @@ pub const View = struct {
     /// Recreates the surface at the editor's current viewport size. The caller
     /// clears the screen because the new surface starts a fresh frame.
     pub fn resize(self: *View) !void {
+        self.scrollbar_drag = null;
         const width = self.editor.screen_width;
         const height = self.editor.screen_height;
         if (self.surface.document().cols == width and self.surface.document().rows == height) {
@@ -531,7 +655,8 @@ pub const View = struct {
         const rect = line.asElement().rect;
         const row = ui.cell.snap(rect.y);
         if (row >= rows) return null;
-        const col = @min(ui.cell.snap(rect.x) + self.cursor_offset, cols -| 1);
+        const right = @min(cols, self.editor.textAreaRight());
+        const col = @min(ui.cell.snap(rect.x) + self.cursor_offset, right -| 1);
         return .{ .row = row, .col = col };
     }
 
@@ -549,6 +674,8 @@ pub const View = struct {
 
     fn rebuild(self: *View) !void {
         const editor = self.editor;
+        editor.setScrollbarWidth(overviewRulerWidth(editor));
+        self.scrollbar_width = editor.scrollbar_width;
         editor.ensureTokensVisible();
         // The cursor is revealed by cursor moves and edits, not on every
         // rebuild: a wheel scroll is allowed to leave it off-screen.
@@ -558,8 +685,17 @@ pub const View = struct {
         const bracket_data = try editor.updateBracketMatches(self.hasEditorFocus());
         for (bracket_data) |entry| {
             const brackets = entry.brackets orelse continue;
-            try self.bracket_decorations.append(.{ .range = brackets[0], .kind = .bracket_match });
-            try self.bracket_decorations.append(.{ .range = brackets[1], .kind = .bracket_match });
+            const overview = entry.options == .with_overview_ruler;
+            try self.bracket_decorations.append(.{
+                .range = brackets[0],
+                .kind = .bracket_match,
+                .show_in_overview_ruler = overview,
+            });
+            try self.bracket_decorations.append(.{
+                .range = brackets[1],
+                .kind = .bracket_match,
+                .show_in_overview_ruler = overview,
+            });
         }
 
         const doc = self.surface.document();
@@ -572,8 +708,15 @@ pub const View = struct {
 
         const cols = doc.cols;
         const rows = doc.rows;
-        const gutter = @min(editor.gutterWidth(), cols);
-        const text_width = @max(@as(usize, 1), cols -| gutter);
+        const scrollbar_width = if (self.scrollbar_width > 0 and
+            cols > editor.gutterWidth() + self.scrollbar_width)
+            self.scrollbar_width
+        else
+            0;
+        self.scrollbar_width = scrollbar_width;
+        const gutter = @min(editor.gutterWidth(), cols -| scrollbar_width);
+        const text_width = @max(@as(usize, 1), cols -| gutter -| scrollbar_width);
+        const text_right = @min(cols, gutter + text_width);
         const text_height = editor.textHeight();
         const total = editor.viewLineCount();
         const top = editor.topViewLine();
@@ -730,8 +873,9 @@ pub const View = struct {
         }
 
         try appendStatus(self, doc, root, rows);
+        try self.buildScrollbar(doc, root, states, text_height, cols);
         try self.buildOverlays(doc, root, cols, text_height);
-        try self.buildContentWidgets(doc, root, cols, text_height, gutter, tab_size);
+        try self.buildContentWidgets(doc, root, cols, text_right, text_height, gutter, tab_size);
     }
 
     fn markDecorations(
@@ -789,6 +933,143 @@ pub const View = struct {
                 flags[cell] |= bit;
             }
         }
+    }
+
+    fn buildScrollbar(
+        self: *View,
+        doc: *ui.Document,
+        root: *ui.Node,
+        states: []const CursorState,
+        text_height: usize,
+        cols: usize,
+    ) !void {
+        const column_width = self.scrollbar_width;
+        if (column_width < 1) return;
+        const left = cols -| column_width;
+        if (left >= cols) return;
+
+        var markers = std.array_list.Managed(decorationsOverviewRuler.Decoration).init(self.allocator);
+        defer markers.deinit();
+        try self.appendOverviewMarkers(&markers, self.decorations.items);
+        try self.appendOverviewMarkers(&markers, self.word_highlights.items);
+        try self.appendOverviewMarkers(&markers, self.bracket_decorations.items);
+
+        var cursors = std.array_list.Managed(decorationsOverviewRuler.Cursor).init(self.allocator);
+        defer cursors.deinit();
+        const multiple_cursors = states.len > 1;
+        for (states, 0..) |state, index| {
+            const cursor_color = if (multiple_cursors and index > 0)
+                overview_secondary_cursor_color
+            else
+                overview_cursor_color;
+            try cursors.append(.{
+                .line_number = state.viewState.position.lineNumber,
+                .color = cursor_color,
+            });
+        }
+        std.mem.sort(decorationsOverviewRuler.Cursor, cursors.items, {}, cursorLessThan);
+
+        const row_colors = try decorationsOverviewRuler.render(
+            self.allocator,
+            markers.items,
+            cursors.items,
+            .{
+                .line_height = 1,
+                .canvas_height = text_height,
+                .outer_height = self.editor.scrollHeight(),
+                .overview_ruler_lanes = 3,
+                .hide_cursor = false,
+                .min_decoration_height = 1,
+            },
+        );
+        defer self.allocator.free(row_colors);
+
+        // A single strip root owns both layers. Marker cells are appended
+        // first; thumb rows are overwritten with the thumb background in the
+        // same column, so the thumb covers the marker without a second column.
+        const state = self.scrollbarState();
+        const thumb_needed = state.isNeeded();
+        const geometry = thumbGeometry(state, text_height);
+        const thumb_end = if (thumb_needed)
+            @min(geometry.top + geometry.size, text_height)
+        else
+            0;
+
+        const column = try doc.createElement(.div);
+        column.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = @floatFromInt(left) },
+            .top = .{ .cells = 0 },
+            .width = .{ .cells = @floatFromInt(column_width) },
+            .height = .{ .cells = @floatFromInt(text_height) },
+            .overflow = .hidden,
+        });
+        _ = try root.appendChild(column);
+
+        var row: usize = 0;
+        while (row < text_height) : (row += 1) {
+            const is_thumb = thumb_needed and row >= geometry.top and row < thumb_end;
+            const marker_color = if (row < row_colors.len) row_colors[row] else null;
+            if (!is_thumb and marker_color == null) continue;
+
+            // Flow (github.com/neurocyte/flow) renders its vertical
+            // scrollbar as a foreground glyph over the editor background.
+            // Adopt the same technique for markers and the knob: no
+            // background run at the right edge, just block characters.
+            const cell = try doc.createElement(.div);
+            cell.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = @floatFromInt(row) },
+                .width = .{ .cells = @floatFromInt(column_width) },
+                .height = .{ .cells = 1 },
+                .color = color(if (is_thumb) scrollbar_thumb_color else marker_color.?),
+            });
+            const glyph_text: []const u8 = if (column_width >= 2) "██" else "█";
+            const glyph = try doc.createText(glyph_text);
+            glyph.setStyle(.{ .color = color(if (is_thumb) scrollbar_thumb_color else marker_color.?) });
+            _ = try cell.appendChild(glyph);
+            _ = try column.appendChild(cell);
+        }
+    }
+
+    fn appendOverviewMarkers(
+        self: *View,
+        markers: *std.array_list.Managed(decorationsOverviewRuler.Decoration),
+        decorations: []const editorBrowser.Decoration,
+    ) !void {
+        const editor = self.editor;
+        for (decorations) |decoration| {
+            if (!decoration.show_in_overview_ruler) continue;
+            const marker_color = overviewRulerColor(decoration.kind) orelse continue;
+            const start = editor.viewPositionOfModelPosition(Position.init(
+                decoration.range.startLineNumber,
+                decoration.range.startColumn,
+            ));
+            const end = editor.viewPositionOfModelPosition(Position.init(
+                decoration.range.endLineNumber,
+                decoration.range.endColumn,
+            ));
+            try markers.append(.{
+                .start_line_number = start.lineNumber,
+                .end_line_number = @max(start.lineNumber, end.lineNumber),
+                .color = marker_color,
+                .z_index = overviewRulerZIndex(decoration.kind),
+            });
+        }
+    }
+
+    fn scrollbarState(self: *const View) scrollbar_state.ScrollbarState {
+        const editor = self.editor;
+        return scrollbar_state.ScrollbarState.initWithMinimumSliderSize(
+            0,
+            1,
+            0,
+            @floatFromInt(editor.textHeight()),
+            @floatFromInt(editor.scrollHeight()),
+            @floatFromInt(editor.topViewLine() - 1),
+            1,
+        );
     }
 
     fn buildOverlays(
@@ -852,12 +1133,14 @@ pub const View = struct {
         doc: *ui.Document,
         root: *ui.Node,
         cols: usize,
+        text_right: usize,
         text_height: usize,
         gutter: usize,
         tab_size: usize,
     ) !void {
         const editor = self.editor;
         const top = editor.topViewLine();
+        if (text_right == 0) return;
         for (self.content_widgets.items) |widget| {
             const widget_position = widget.get_position(widget.context) orelse continue;
             const view_position = editor.viewPositionOfModelPosition(widget_position.position);
@@ -866,7 +1149,7 @@ pub const View = struct {
             }
             const row = view_position.lineNumber - top;
 
-            const width = @min(widget.width(widget.context, cols), cols);
+            const width = @min(widget.width(widget.context, cols), text_right);
             const height = @min(widget.height(widget.context), text_height);
             if (width == 0 or height == 0) continue;
 
@@ -883,7 +1166,7 @@ pub const View = struct {
                 data.minColumn - 1,
             );
 
-            const left = @min(gutter + anchor_cell, cols -| width);
+            const left = @min(gutter + anchor_cell, text_right -| width);
             var widget_top: usize = switch (widget_position.preference) {
                 .below => row + 1,
                 .above => row -| height,
@@ -922,6 +1205,81 @@ pub const View = struct {
         }
     }
 };
+
+/// Two cells when there is room for them plus at least one text column. The
+/// marker and thumb layers share these cells. Very narrow terminals keep their
+/// text instead.
+fn overviewRulerWidth(editor: *const Editor) usize {
+    const available = editor.screen_width -| editor.gutterWidth();
+    return if (available >= 3) 2 else 0;
+}
+
+fn overviewRulerColor(kind: editorBrowser.DecorationKind) ?[3]u8 {
+    return switch (kind) {
+        .find_match => overview_find_color,
+        .current_find_match => overview_current_find_color,
+        .bracket_match => overview_bracket_color,
+        .word_highlight_text, .word_highlight => overview_word_color,
+        .word_highlight_strong => overview_word_strong_color,
+        .find_scope, .hover_highlight => null,
+    };
+}
+
+fn overviewRulerZIndex(kind: editorBrowser.DecorationKind) i32 {
+    return switch (kind) {
+        .current_find_match => 13,
+        .find_match => 10,
+        else => 0,
+    };
+}
+
+fn cursorLessThan(_: void, a: decorationsOverviewRuler.Cursor, b: decorationsOverviewRuler.Cursor) bool {
+    return a.line_number < b.line_number;
+}
+
+const ThumbGeometry = struct {
+    top: usize,
+    size: usize,
+};
+
+fn thumbGeometry(state: scrollbar_state.ScrollbarState, track_height: usize) ThumbGeometry {
+    if (track_height == 0) return .{ .top = 0, .size = 0 };
+
+    const raw_size = @round(state.getSliderSize());
+    var size: usize = if (raw_size >= @as(f64, @floatFromInt(track_height)))
+        track_height
+    else if (raw_size <= 0)
+        1
+    else
+        @intFromFloat(raw_size);
+    if (size == 0) size = 1;
+    if (size > track_height) size = track_height;
+
+    const max_top = track_height - size;
+    const raw_top = @round(state.getSliderPosition());
+    const top: usize = if (raw_top <= 0)
+        0
+    else if (raw_top >= @as(f64, @floatFromInt(max_top)))
+        max_top
+    else
+        @intFromFloat(raw_top);
+
+    return .{ .top = top, .size = size };
+}
+
+/// Applies a scrollbar's zero-based scroll position to the editor and returns
+/// the clamped position.
+fn applyScrollPosition(editor: *Editor, desired: f64) usize {
+    const max_scroll = editor.scrollHeight() -| editor.textHeight();
+    const clamped: usize = if (!(desired > 0))
+        0
+    else if (desired >= @as(f64, @floatFromInt(max_scroll)))
+        max_scroll
+    else
+        @min(@as(usize, @intFromFloat(@round(desired))), max_scroll);
+    _ = editor.setTopViewLine(clamped + 1);
+    return clamped;
+}
 
 fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !void {
     if (rows == 0) return;
@@ -1166,6 +1524,18 @@ fn color(rgb: [3]u8) ui.Color {
 
 fn rowText(view: *View, allocator: std.mem.Allocator, row: usize) ![]u8 {
     return view.surface.grid().rowText(allocator, row);
+}
+
+fn numberedLines(allocator: std.mem.Allocator, count: usize) ![]u8 {
+    var out = std.array_list.Managed(u8).init(allocator);
+    errdefer out.deinit();
+    var buffer: [32]u8 = undefined;
+    for (0..count) |index| {
+        if (index != 0) try out.append('\n');
+        const text = try std.fmt.bufPrint(&buffer, "line{d}", .{index});
+        try out.appendSlice(text);
+    }
+    return out.toOwnedSlice();
 }
 
 test "View: text, gutter and status" {
@@ -2001,7 +2371,7 @@ test "View: typing an auto-closed bracket highlights the pair" {
 test "View: bracket highlights stay on their wrapped segment" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "(abcdefghij)", "test.zig", 8, 4);
+    const editor = try Editor.createFromText(allocator, io, "(abcdefghij)", "test.zig", 10, 4);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -2031,7 +2401,7 @@ test "View: bracket highlights stay on their wrapped segment" {
 test "View: find decorations stay on their wrapped segment" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 8, 4);
+    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 11, 4);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -2051,12 +2421,12 @@ test "View: find decorations stay on their wrapped segment" {
     const gutter = editor.gutterWidth();
     const match_bg = ui.cell.packColor(color(find_match_background));
     const grid = view.surface.grid();
-    // "ghij" is the tail of the second segment: cells 1..4.
-    var cell: usize = 1;
-    while (cell < 5) : (cell += 1) {
+    // "ghij" is the whole second segment: cells 0..3.
+    var cell: usize = 0;
+    while (cell < 4) : (cell += 1) {
         try std.testing.expectEqual(match_bg, grid.bg[grid.index(gutter + cell, 1)]);
     }
-    try std.testing.expect(grid.bg[grid.index(gutter, 1)] != match_bg);
+    try std.testing.expect(grid.bg[grid.index(gutter + 4, 1)] != match_bg);
     cell = 0;
     while (cell < 5) : (cell += 1) {
         try std.testing.expect(grid.bg[grid.index(gutter + cell, 0)] != match_bg);
@@ -2066,7 +2436,7 @@ test "View: find decorations stay on their wrapped segment" {
 test "View: bracket highlights include the synthetic wrap indentation" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "    (abcdefghij)", "test.zig", 11, 5);
+    const editor = try Editor.createFromText(allocator, io, "    (abcdefghij)", "test.zig", 11, 8);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -2111,4 +2481,221 @@ test "View: bracket highlights include the synthetic wrap indentation" {
     while (row < rows) : (row += 1) {
         try std.testing.expect(grid.bg[grid.index(gutter, row)] != bracket_bg);
     }
+}
+
+test "View: right column paints markers and the overlapping thumb" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text = try numberedLines(allocator, 20);
+    defer allocator.free(text);
+    const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try editor.setCursorPosition(Position.init(8, 1));
+    try view.setDecorations(&[_]editorBrowser.Decoration{
+        .{ .range = Range.init(1, 1, 1, 2), .kind = .find_match },
+        .{ .range = Range.init(10, 1, 10, 2), .kind = .find_match },
+    });
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const cols = view.surface.document().cols;
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(usize, 2), view.scrollbar_width);
+    const marker_col = cols - 2;
+    const thumb_col = cols - 1;
+    try std.testing.expectEqual(marker_col, editor.textAreaRight());
+
+    const find_fg = ui.cell.packColor(color(overview_find_color));
+    const cursor_fg = ui.cell.packColor(color(overview_cursor_color));
+    const thumb_fg = ui.cell.packColor(color(scrollbar_thumb_color));
+
+    // Twenty lines in a seven-row track need a thumb. The thumb is two
+    // foreground block glyphs and covers the find marker.
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(marker_col, 0)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 0)]);
+    try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(marker_col, 0)]);
+    try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(thumb_col, 0)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(marker_col, 2)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 2)]);
+    try std.testing.expectEqual(cursor_fg, grid.fg[grid.index(marker_col, 2)]);
+    try std.testing.expectEqual(cursor_fg, grid.fg[grid.index(thumb_col, 2)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(marker_col, 3)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 3)]);
+    try std.testing.expectEqual(find_fg, grid.fg[grid.index(marker_col, 3)]);
+    try std.testing.expectEqual(find_fg, grid.fg[grid.index(thumb_col, 3)]);
+
+    // The shared area is two cells wide: the cell immediately to its left is
+    // the end of the text area, not another scrollbar column.
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(marker_col - 1, 0)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(marker_col - 1, 3)]);
+}
+
+test "View: short document has no scrollbar thumb" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.setDecorations(&[_]editorBrowser.Decoration{
+        .{ .range = Range.init(2, 1, 2, 2), .kind = .find_match },
+    });
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const cols = view.surface.document().cols;
+    const grid = view.surface.grid();
+    const marker_col = cols - 2;
+    const thumb_col = cols - 1;
+    const find_fg = ui.cell.packColor(color(overview_find_color));
+
+    // Line 2 maps below the cursor row but no thumb is needed.
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(marker_col, 1)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 1)]);
+    try std.testing.expectEqual(find_fg, grid.fg[grid.index(marker_col, 1)]);
+    try std.testing.expectEqual(find_fg, grid.fg[grid.index(thumb_col, 1)]);
+    const thumb_fg = ui.cell.packColor(color(scrollbar_thumb_color));
+    var row: usize = 0;
+    while (row < editor.textHeight()) : (row += 1) {
+        try std.testing.expect(grid.fg[grid.index(marker_col, row)] != thumb_fg);
+        try std.testing.expect(grid.fg[grid.index(thumb_col, row)] != thumb_fg);
+    }
+}
+
+test "View: mouse target distinguishes overview ruler and scrollbar" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text = try numberedLines(allocator, 20);
+    defer allocator.free(text);
+    const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const cols = view.surface.document().cols;
+
+    const scrollbar = try view.mouseTargetAt(cols - 1, 0);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.scrollbar, scrollbar.type);
+    const ruler = try view.mouseTargetAt(cols - 2, 0);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.scrollbar, ruler.type);
+
+    const caret_before = editor.modelCursorPosition();
+    var down = testMouse(.down, cols - 1, 4);
+    try std.testing.expect(!try view.dispatchMouse(&down));
+    var up = testMouse(.up, cols - 1, 4);
+    try std.testing.expect(!try view.dispatchMouse(&up));
+    try std.testing.expect(editor.topViewLine() > 1);
+    try std.testing.expectEqual(caret_before.lineNumber, editor.modelCursorPosition().lineNumber);
+    try std.testing.expectEqual(caret_before.column, editor.modelCursorPosition().column);
+
+    // Dragging the thumb maps row deltas through ScrollbarState.
+    try std.testing.expect(editor.setTopViewLine(1));
+    try view.refresh();
+    var press = testMouse(.down, cols - 1, 0);
+    try std.testing.expect(!try view.dispatchMouse(&press));
+    var drag = testMouse(.move, cols - 1, 4);
+    try std.testing.expect(!try view.dispatchMouse(&drag));
+    var release = testMouse(.up, cols - 1, 4);
+    try std.testing.expect(!try view.dispatchMouse(&release));
+    try std.testing.expect(editor.topViewLine() > 1);
+    try std.testing.expectEqual(caret_before.lineNumber, editor.modelCursorPosition().lineNumber);
+    try std.testing.expectEqual(caret_before.column, editor.modelCursorPosition().column);
+}
+
+test "View: narrow terminal hides the scrollbar columns" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 4, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try std.testing.expectEqual(@as(usize, 0), view.scrollbar_width);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const cols = view.surface.document().cols;
+    const target = try view.mouseTargetAt(cols - 1, 0);
+    try std.testing.expect(target.type != .scrollbar);
+
+    const grid = view.surface.grid();
+    var row: usize = 0;
+    while (row < editor.textHeight()) : (row += 1) {
+        var col: usize = 0;
+        while (col < cols) : (col += 1) {
+            try std.testing.expect(grid.cluster[grid.index(col, row)] != '█');
+        }
+    }
+}
+
+test "View: overview markers honor the per-decoration flag" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var markers = std.array_list.Managed(decorationsOverviewRuler.Decoration).init(allocator);
+    defer markers.deinit();
+    try view.appendOverviewMarkers(&markers, &[_]editorBrowser.Decoration{
+        .{ .range = Range.init(1, 1, 1, 2), .kind = .bracket_match, .show_in_overview_ruler = false },
+        .{ .range = Range.init(2, 1, 2, 2), .kind = .find_scope },
+        .{ .range = Range.init(3, 1, 3, 2), .kind = .bracket_match },
+    });
+    try std.testing.expectEqual(@as(usize, 1), markers.items.len);
+    try std.testing.expectEqual(@as(usize, 3), markers.items[0].start_line_number);
+    try std.testing.expectEqual(overview_bracket_color, markers.items[0].color);
+}
+
+test "View: overview markers follow wrapped view lines" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 10, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expect(editor.viewLineCount() > 1);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var markers = std.array_list.Managed(decorationsOverviewRuler.Decoration).init(allocator);
+    defer markers.deinit();
+    try view.appendOverviewMarkers(&markers, &[_]editorBrowser.Decoration{
+        .{ .range = Range.init(1, 1, 1, 2), .kind = .find_match },
+        .{ .range = Range.init(1, 7, 1, 9), .kind = .find_match },
+    });
+    try std.testing.expectEqual(@as(usize, 2), markers.items.len);
+    try std.testing.expectEqual(@as(usize, 1), markers.items[0].start_line_number);
+    try std.testing.expectEqual(@as(usize, 2), markers.items[1].start_line_number);
 }

@@ -641,6 +641,23 @@ Library constraints:
   focuses it and places the byte caret; the option toggles (`Aa`, `ab`, `.*`,
   `Sel`) and `All` highlight on idle hover and run their action on click while
   keeping input focus. Clicking the editor blurs the bar without closing it.
+- The right edge reserves one text cell shared by the overview ruler and the
+  scrollbar. `decorationsOverviewRuler.zig` ports the upstream scaled
+  `y1`/`y2` projection and z-order paint rules, but writes cell rows instead of
+  canvas pixels: a row represents a range of document lines when the document
+  is taller than the track, and lanes collapse onto the cell. The view
+  supplies markers from find, the current find match, bracket matches with the
+  overview-ruler option, word occurrences and cursor positions. The thumb is
+  painted afterwards in the same cell as a foreground block glyph, so it
+  covers the markers on its rows. This follows Flow's vertical-scrollbar
+  rendering technique: a one-column plane erased to the editor background and
+  then a single glyph, with no background run at the terminal edge (the
+  terminal equivalent of the browser's overlapping slider and ruler layers). `ScrollbarState` is ported from `base/browser/ui/scrollbar` and
+  drives a one-cell-wide slider with a one-row minimum; click, thumb drag and
+  wheel use the upstream offset/delta math at row resolution. Cells have no alpha, so
+  the marker colors are composited over the dark editor background. There is
+  no minimap, horizontal scrollbar, pixel-lane width, border or smooth
+  scrolling.
 - Gutter width follows the existing `gutterWidthFor` logic; line numbers are
   right-aligned with `text_align = .right`.
 - Long lines are clipped (no horizontal scrolling); wrapping uses the existing
@@ -665,7 +682,12 @@ Library constraints:
   Escape, and wheel scrolling of long hover content without moving the
   editor viewport. Word-highlighter tests cover the textual provider, the
   delayed run, keeping/updating occurrences, stopping on edits, multi-line
-  selections and focus loss, and next/previous navigation.
+  selections and focus loss, and next/previous navigation. Scrollbar tests
+  cover the reserved column, marker colors and rows, the thumb covering a
+  marker row, cursor markers, the no-thumb short-document case, thumb geometry,
+  click/drag scrolling, narrow terminals and the per-decoration overview-ruler
+  flag. The ported
+  `ScrollbarState` tests include the upstream cases and a one-row minimum.
 - Library unit tests cover: tree linking/invariants, box-tree derivation
   (viewport root, principal/text boxes, anonymous inline/flex items,
   `display: contents`/`none`, mutation invalidation), absolute/percent/auto layout,
@@ -676,8 +698,10 @@ Library constraints:
   traversal, hidden/focusability checks, silent focus clearing on removal,
   mouse hit-testing, press-to-focus, wheel cancellation, and the terminal
   decoder (control keys, modifiers, paste, lone Escape, SGR mouse).
-- No cursor, selection, scrollbar, scrollable viewport, view model or view-part
-  ports in this POC.
+- No view model or view-part architecture ports in this POC; the editor view
+  remains the collapsed `src/tui/view.zig`. Cursor, selection and a two-cell
+  scrollbar/overview ruler are painted, but there is no generic scrollable
+  viewport.
 
 ## 10. Roadmap after the POC
 
@@ -692,11 +716,12 @@ Library constraints:
    viewCursors; `TerminalView` orchestrator. The terminal editor view
    (`src/tui/view.zig`) already covers gutter, tokens, selection, cursor and
    status; the split into upstream-shaped view parts is still open.
-5. Scrollable viewport/scrollbar, generic wheel scrolling (`overflow: auto`
-   boxes) and CSS-style `:hover`; cursor blink/timers; row damage bands and the
-   `DECSTBM` + `IL`/`DL` scroll shift; hardware-cursor caret. Click, drag, wheel
-   scrolling and widget-level hover are in; the generic scroll and selector
-   machinery is not.
+5. Generic scrollable viewport (`overflow: auto` boxes) and CSS-style
+   `:hover`; cursor blink/timers; row damage bands and the `DECSTBM` +
+   `IL`/`DL` scroll shift; hardware-cursor caret. The editor scrollbar and
+   overview ruler are in as a shared one-column terminal adaptation with
+   `ScrollbarState`, including click, thumb drag and wheel scrolling; the
+   generic scroll and selector machinery is not.
 6. Replace the adapter with a port of `viewModelImpl.ts` +
    `CursorsController`; port edit context/controllers; then the remaining
    widgets and contributions (suggest, quick pick, marker/glyph hover).
@@ -731,11 +756,15 @@ Library constraints:
   still absent. Keyboard events and focus are in; key release/repeat, CSI
   u/kitty reports are not. Focus events have no capture pass and there are no
   `:focus`-style selectors; focus is explicit state plus listeners.
-- No scrollbar or generic scrollable viewport (the editor scrolls its top view
-  line; the preview rebuilds), minimap, glyph margin, view zones, IME. The
-  editor view paints the current line, selections, hardware cursor and find
-  ranges; overlay widget hosting and the find bar are in, other contributions
-  are not.
+- The editor scrollbar/overview ruler is a two-cell strip that carries both
+  markers and the thumb; the thumb covers markers on its rows. It has no pixel
+  lanes, minimap, horizontal scrollbar, rounded/smooth slider, translucent
+  marker alpha or diagnostics markers; a marker row can represent many
+  document lines. There is no generic scrollable
+  viewport (the editor scrolls its top view line; the preview rebuilds), glyph
+  margin, view zones or IME. The editor view paints the current line,
+  selections, hardware cursor, find ranges and overview markers; overlay widget
+  hosting and the find bar are in, other contributions are not.
 - No row damage bands or terminal scroll shift in the POC; full grid diff only.
 - No margin collapsing, auto margins, right/bottom anchoring, multi-cell/rounded
   border styles, background-clip or z-index paint ordering yet. Borders are

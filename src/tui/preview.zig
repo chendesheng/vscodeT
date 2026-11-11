@@ -37,6 +37,9 @@ pub const Preview = struct {
             .editor = editor,
             .surface = undefined,
         };
+        // The preview has no overview ruler/scrollbar column; keep the full
+        // terminal width available for text.
+        editor.setScrollbarWidth(0);
         try self.rebuild();
         return self;
     }
