@@ -7,10 +7,13 @@
 //! keeps the hardware cursor, so a widget's caret must not fight it.
 //!
 //! Focus is the caller's decision: a widget sets `focused` before rebuilding
-//! and focuses the node returned by `build`. Key listeners are re-added on
-//! every build because the view rebuilds its document tree per frame.
+//! and focuses the node returned by `build`. Key and mouse listeners are
+//! re-added on every build because the view rebuilds its document tree per
+//! frame. A left click, or motion with the button held, maps the pointer cell
+//! to the byte caret.
 
 const std = @import("std");
+const cell = @import("cell.zig");
 const dom = @import("dom.zig");
 const style_mod = @import("style.zig");
 
@@ -18,6 +21,7 @@ const Allocator = std.mem.Allocator;
 const Color = style_mod.Color;
 const Document = dom.Document;
 const KeyEvent = @import("event.zig").KeyEvent;
+const MouseEvent = @import("event.zig").MouseEvent;
 const Node = dom.Node;
 
 pub const InputBox = struct {
@@ -31,6 +35,9 @@ pub const InputBox = struct {
     placeholder: []const u8 = "",
     color: ?Color = null,
     placeholder_color: ?Color = null,
+    /// The node built for the last frame, used to map pointer cells back into
+    /// the value. Rebuilt every frame; never retained across frames.
+    node: ?*Node = null,
 
     callback_context: ?*anyopaque = null,
     on_change: ?*const fn (context: ?*anyopaque, value: []const u8) void = null,
@@ -126,6 +133,7 @@ pub const InputBox = struct {
     pub fn build(self: *InputBox, doc: *Document, width: usize) !*Node {
         const root = try doc.createElement(.div);
         root.asElement().focusable = true;
+        self.node = root;
         root.setStyle(.{
             .position = .absolute,
             .left = .{ .cells = 0 },
@@ -136,6 +144,13 @@ pub const InputBox = struct {
             .color = self.color,
         });
         try root.addEventListener(.{ .context = self, .key_down = onKey });
+        // A click places the caret; dragging with the button held moves it.
+        // The press is not canceled, so the host's press-to-focus still runs.
+        try root.addEventListener(.{
+            .context = self,
+            .mouse_down = onMouse,
+            .mouse_move = onMouse,
+        });
 
         if (self.value.items.len == 0 and !self.focused) {
             if (self.placeholder.len > 0) {
@@ -179,6 +194,36 @@ pub const InputBox = struct {
         }
 
         return root;
+    }
+
+    /// Maps a pointer event inside the box to a byte caret. Only the left
+    /// button is used; motion arrives only while the button is held.
+    pub fn handleMouse(self: *InputBox, event: *MouseEvent) bool {
+        if (event.button != .left) return false;
+        const root = self.node orelse return false;
+        const left = cell.snap(root.asElement().rect.x);
+        const local = event.x -| left;
+        self.cursor = self.caretAtCell(root.document, local);
+        return true;
+    }
+
+    /// Byte caret for a visible cell offset. Tabs never reach the value (control
+    /// bytes are filtered), but wide characters still need the nearest edge.
+    fn caretAtCell(self: *const InputBox, doc: *Document, target: usize) usize {
+        const start = if (self.focused) self.view_start else 0;
+        if (target == 0) return @min(start, self.value.items.len);
+        var column: usize = 0;
+        var offset = @min(start, self.value.items.len);
+        while (offset < self.value.items.len and column < target) {
+            const next = self.nextBoundaryAt(offset);
+            const width = doc.measureText(self.value.items[offset..next]);
+            if (target < column + width) {
+                return if (width > 1 and target > column) next else offset;
+            }
+            column += width;
+            offset = next;
+        }
+        return offset;
     }
 
     fn notifyChange(self: *InputBox) void {
@@ -236,6 +281,11 @@ fn onKey(context: ?*anyopaque, event: *KeyEvent) void {
     _ = self.handleKey(event);
 }
 
+fn onMouse(context: ?*anyopaque, event: *MouseEvent) void {
+    const self: *InputBox = @ptrCast(@alignCast(context orelse return));
+    _ = self.handleMouse(event);
+}
+
 test "InputBox: typing, deleting and moving the caret" {
     const allocator = std.testing.allocator;
     var input = InputBox.init(allocator);
@@ -287,8 +337,6 @@ test "InputBox: typing, deleting and moving the caret" {
 test "InputBox: build paints the value and a block caret" {
     const allocator = std.testing.allocator;
     const Surface = @import("surface.zig").Surface;
-    const cell = @import("cell.zig");
-
     var surface = try Surface.init(allocator, .{ .cols = 10, .rows = 1 });
     defer surface.deinit();
 
@@ -358,4 +406,56 @@ test "InputBox: a long value scrolls to keep the caret visible" {
     const row = try surface.grid().rowText(allocator, 0);
     defer allocator.free(row);
     try std.testing.expectEqualStrings("ghij ", row);
+}
+
+fn testWideWidth(cp: u21) u2 {
+    return if (cp >= 0x1100) 2 else 1;
+}
+
+test "InputBox: clicking maps a cell to the byte caret" {
+    const allocator = std.testing.allocator;
+    const Surface = @import("surface.zig").Surface;
+
+    var surface = try Surface.init(allocator, .{
+        .cols = 10,
+        .rows = 1,
+        .measure_width = testWideWidth,
+    });
+    defer surface.deinit();
+
+    var input = InputBox.init(allocator);
+    defer input.deinit();
+    input.focused = true;
+    try input.setValue("a何b");
+
+    const root = try input.build(surface.document(), 10);
+    surface.document().setRoot(root);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try surface.render(&out.writer, .{});
+
+    var click = MouseEvent{ .kind = .down, .x = 2, .y = 0, .button = .left };
+    try std.testing.expect(input.handleMouse(&click));
+    // The second cell is the boundary after the wide character.
+    try std.testing.expectEqual(@as(usize, 4), input.cursor);
+
+    click.x = 1;
+    _ = input.handleMouse(&click);
+    // The left half of the wide character puts the caret before it.
+    try std.testing.expectEqual(@as(usize, 1), input.cursor);
+
+    click.x = 0;
+    _ = input.handleMouse(&click);
+    try std.testing.expectEqual(@as(usize, 0), input.cursor);
+
+    // Held-button motion moves the caret too.
+    var drag = MouseEvent{ .kind = .move, .x = 4, .y = 0, .button = .left };
+    _ = input.handleMouse(&drag);
+    try std.testing.expectEqual(@as(usize, 5), input.cursor);
+
+    // Another button is not a text caret gesture.
+    var right = MouseEvent{ .kind = .down, .x = 1, .y = 0, .button = .right };
+    try std.testing.expect(!input.handleMouse(&right));
+    try std.testing.expectEqual(@as(usize, 5), input.cursor);
 }

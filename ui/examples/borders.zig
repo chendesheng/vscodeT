@@ -12,12 +12,23 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var surface = try ui.Surface.init(allocator, .{ .cols = 64, .rows = 18 });
-    defer surface.deinit();
+    const example = try bordersExample(allocator);
+    defer if (example.deinit) |deinit| deinit(example.context);
+    try common.runStatic(allocator, example);
+}
 
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
+pub fn bordersExample(allocator: std.mem.Allocator) !common.Example {
+    _ = allocator;
+    return .{ .title = "borders", .build = build };
+}
+
+fn build(
+    _: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    size: common.Size,
+) !void {
+    const root = try common.addBox(doc, parent, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
         .top = .{ .cells = 0 },
@@ -25,7 +36,6 @@ pub fn main() !void {
         .height = .{ .percent = 100 },
         .background = common.rgb(18, 18, 24),
     });
-    doc.setRoot(root);
 
     _ = try common.addLabel(doc, root, "box model", .{
         .position = .absolute,
@@ -82,18 +92,17 @@ pub fn main() !void {
         .border = ui.Edges.all(1),
         .border_color = common.rgb(200, 140, 220),
         .background = common.rgb(34, 28, 42),
+        .overflow = .hidden,
     });
     _ = try common.addText(doc, shifted, "left/top anchor the margin box", .{
         .color = common.rgb(220, 190, 240),
     });
 
-    _ = try common.addLabel(doc, root, "outer content 26x8; inner is absolute inside the padding box", .{
+    _ = try common.addLabel(doc, root, "outer content 26x8; inner is absolute; shifted clips overflow", .{
         .position = .absolute,
         .left = .{ .cells = 2 },
-        .top = .{ .cells = 16 },
+        .top = .{ .cells = @floatFromInt(size.height -| 2) },
         .width = .{ .cells = 60 },
         .height = .{ .cells = 1 },
     }, .{ .color = common.rgb(140, 140, 160) });
-
-    try common.present(&surface, allocator);
 }

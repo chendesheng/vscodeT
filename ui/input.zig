@@ -551,6 +551,13 @@ test "input: SGR mouse motion and modifiers" {
     try std.testing.expectEqual(MouseKind.move, dragged.kind);
     try std.testing.expectEqual(MouseButton.left, dragged.button);
 
+    // Mode 1003 idle motion reports no held button.
+    var idle = try decode(allocator, "\x1b[<35;6;2M");
+    defer idle.deinit(allocator);
+    const hover = try mouseAt(idle.items, 0);
+    try std.testing.expectEqual(MouseKind.move, hover.kind);
+    try std.testing.expectEqual(MouseButton.none, hover.button);
+
     // shift (4) + alt (8) + ctrl (16) on a left press.
     var modified = try decode(allocator, "\x1b[<28;2;2M");
     defer modified.deinit(allocator);

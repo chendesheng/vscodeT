@@ -244,8 +244,10 @@ Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
   Click synthesis, drag state and the wheel's effect stay in the host, as
   TermDOM keeps them in `Input`: the TUI view tracks the press cell, drags a
   selection, clicks the press/release common ancestor, and scrolls three view
-  lines per notch. Motion is the button-held motion terminals report in mode
-  1002; idle hover needs mode 1003 and is not requested.
+  lines per notch. Motion is the all-motion report of mode 1003: button-held
+  motion drives drags, and idle motion lets widgets derive their hover state
+  from the hit-tested target. There is no CSS `:hover` and no implicit
+  enter/leave synthesis in the library; hover is host/widget state.
 - `Element.focusable` opts a node into focus. `Element.tab_index` follows HTML:
   positive values come first in ascending order, `0` keeps tree order, and
   negative values are programmatically focusable but skipped by Tab. Tab is the
@@ -597,12 +599,14 @@ Library constraints:
   word-separator cache owns its keys instead of borrowing editor slices.
 - `src/tui/app.zig` dispatches keys and mouse events to the editor, refreshes
   the view and syncs the hardware cursor after each frame; resize recreates the
-  surface. The terminal runs in mouse mode 1002 with SGR coordinates (1006), so
-  press, release, button-held motion and wheel arrive as `ui.MouseEvent`s.
+  surface. The terminal runs in mouse mode 1003 with SGR coordinates (1006), so
+  press, release, idle/button-held motion and wheel arrive as `ui.MouseEvent`s.
   `View.dispatchMouse` hit-tests, applies press-to-focus, places the caret
   (Shift extends), drag-selects, synthesizes the release click on the common
   ancestor and scrolls three view lines per wheel notch. Clicking a find input
-  focuses it; clicking the editor blurs the bar without closing it.
+  focuses it and places the byte caret; the option toggles (`Aa`, `ab`, `.*`,
+  `Sel`) and `All` highlight on idle hover and run their action on click while
+  keeping input focus. Clicking the editor blurs the bar without closing it.
 - Gutter width follows the existing `gutterWidthFor` logic; line numbers are
   right-aligned with `text_align = .right`.
 - Long lines are clipped (no horizontal scrolling); wrapping uses the existing
@@ -618,7 +622,8 @@ Library constraints:
 - Snapshot tests in `src/tui/` assert text rows and per-cell styles for ASCII,
   CJK, tabs, wrapping and long-line clipping; selection inversion; the hardware
   cursor cell; an unchanged refresh writing no bytes; mouse click/shift-click/
-  drag/wheel caret and viewport effects; plus keyboard scrolling and Ctrl-Q
+  drag/wheel caret and viewport effects; find-control hover highlighting and
+  click activation; input click-to-caret; plus keyboard scrolling and Ctrl-Q
   through the library dispatcher.
 - Library unit tests cover: tree linking/invariants, box-tree derivation
   (viewport root, principal/text boxes, anonymous inline/flex items,
@@ -646,11 +651,11 @@ Library constraints:
    viewCursors; `TerminalView` orchestrator. The terminal editor view
    (`src/tui/view.zig`) already covers gutter, tokens, selection, cursor and
    status; the split into upstream-shaped view parts is still open.
-5. Scrollable viewport/scrollbar, hover/`:hover` and generic wheel scrolling
-   (`overflow: auto` boxes); cursor blink/timers; row damage bands and the
-   `DECSTBM` + `IL`/`DL` scroll shift; hardware-cursor caret. Click, drag and
-   wheel scrolling of the editor viewport are in; the generic scroll machinery
-   is not.
+5. Scrollable viewport/scrollbar, generic wheel scrolling (`overflow: auto`
+   boxes) and CSS-style `:hover`; cursor blink/timers; row damage bands and the
+   `DECSTBM` + `IL`/`DL` scroll shift; hardware-cursor caret. Click, drag, wheel
+   scrolling and widget-level hover are in; the generic scroll and selector
+   machinery is not.
 6. Replace the adapter with a port of `viewModelImpl.ts` +
    `CursorsController`; port edit context/controllers; then widgets and
    contributions (find, hover, suggest, quick pick).
@@ -675,10 +680,13 @@ Library constraints:
   borders/radii.
 - No RTL/bidi visual reordering, grapheme segmentation, combining-mark cell
   composition, ligatures, or terminal width negotiation (mode 2027) in the POC.
-- Mouse press/release, click, button-held motion and wheel are in; idle
-  hover/`:hover`, double/triple click counts, context menus, middle-click paste,
-  legacy X10 reports, terminal focus reporting, drag auto-scroll and generic
-  `overflow: auto` scrolling are not. IME, scheduler and `Range`/`Selection` are
+- Mouse press/release, click, idle and button-held motion and wheel are in.
+  Hover is widget state derived from idle motion: find toggles/`All` highlight,
+  and the input box maps clicks to its byte caret. CSS-style `:hover`,
+  enter/leave events, double/triple click counts, context menus, middle-click
+  paste, legacy X10 reports, terminal focus reporting, drag auto-scroll and
+  generic `overflow: auto` scrolling are not. IME, scheduler and
+  `Range`/`Selection` are
   still absent. Keyboard events and focus are in; key release/repeat, CSI
   u/kitty reports are not. Focus events have no capture pass and there are no
   `:focus`-style selectors; focus is explicit state plus listeners.

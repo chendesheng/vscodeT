@@ -38,6 +38,7 @@ pub const MouseButton = event.MouseButton;
 pub const MouseEvent = event.MouseEvent;
 pub const MouseKind = event.MouseKind;
 pub const Node = dom.Node;
+pub const Overflow = style.Overflow;
 pub const Rect = style.Rect;
 pub const Style = style.Style;
 pub const TextAlign = style.TextAlign;

@@ -20,12 +20,23 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var surface = try ui.Surface.init(allocator, .{ .cols = 60, .rows = 11 });
-    defer surface.deinit();
+    const example = try layoutExample(allocator);
+    defer if (example.deinit) |deinit| deinit(example.context);
+    try common.runStatic(allocator, example);
+}
 
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
+pub fn layoutExample(allocator: std.mem.Allocator) !common.Example {
+    _ = allocator;
+    return .{ .title = "layout", .build = build };
+}
+
+fn build(
+    _: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    size: common.Size,
+) !void {
+    const root = try common.addBox(doc, parent, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
         .top = .{ .cells = 0 },
@@ -33,7 +44,6 @@ pub fn main() !void {
         .height = .{ .percent = 100 },
         .background = common.rgb(18, 18, 24),
     });
-    doc.setRoot(root);
 
     const panels = [_]Panel{
         .{
@@ -79,6 +89,7 @@ pub fn main() !void {
             .width = .{ .cells = panel.width },
             .height = .{ .cells = 1 },
             .text_align = panel.alignment,
+            .overflow = .hidden,
         }, .{
             .color = common.rgb(255, 255, 255),
             .bold = true,
@@ -91,6 +102,7 @@ pub fn main() !void {
             .width = .{ .cells = panel.width },
             .height = .{ .cells = 1 },
             .text_align = panel.alignment,
+            .overflow = .hidden,
         }, .{
             .color = common.rgb(180, 200, 220),
         });
@@ -99,7 +111,7 @@ pub fn main() !void {
     const bar = try common.addBox(doc, root, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
-        .top = .{ .cells = 9 },
+        .top = .{ .cells = @floatFromInt(size.height -| 2) },
         .width = .{ .percent = 100 },
         .height = .{ .cells = 1 },
         .reverse = true,
@@ -107,6 +119,4 @@ pub fn main() !void {
     _ = try common.addText(doc, bar, " absolute cells + percent width + text-align ", .{
         .reverse = true,
     });
-
-    try common.present(&surface, allocator);
 }

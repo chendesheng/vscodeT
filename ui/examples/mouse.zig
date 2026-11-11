@@ -1,6 +1,6 @@
-//! Mouse operations: click a row to select it, drag across rows to extend the
-//! selection, and wheel over the list to scroll. The status row reports the
-//! last event and the selection.
+//! Mouse operations: hover a row to highlight it, click to select it, drag
+//! across rows to extend the selection, and wheel over the list to scroll. The
+//! status row reports the last event and the selection.
 //!
 //! Press `q` to quit. Input is read from stdin with SGR mouse reports, so the
 //! example can also be driven by a pipe.
@@ -11,13 +11,14 @@ const std = @import("std");
 const ui = @import("ui");
 const common = @import("common.zig");
 
+const Allocator = std.mem.Allocator;
+
 const cols = 64;
 const rows = 16;
 const list_left = 2;
 const list_top = 3;
 const list_width = 60;
 const list_height = 9;
-const status_row = rows - 1;
 
 const items = [_][]const u8{
     "app.zig",      "dom.zig",        "event.zig",     "input.zig",
@@ -33,19 +34,46 @@ const panel_background = common.rgb(24, 24, 32);
 const foreground = common.rgb(220, 220, 235);
 const dim = common.rgb(140, 140, 160);
 const accent = common.rgb(48, 66, 112);
+const hover_background = common.rgb(36, 36, 48);
 const selected_text = common.rgb(255, 255, 255);
 
 pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const example = try mouseExample(allocator);
+    defer if (example.deinit) |destroy| destroy(example.context);
+    try common.runInteractive(allocator, example);
+}
 
-    var surface = try ui.Surface.init(allocator, .{ .cols = cols, .rows = rows });
-    defer surface.deinit();
+pub fn mouseExample(allocator: std.mem.Allocator) !common.Example {
+    const app = try allocator.create(App);
+    app.* = .{
+        .allocator = allocator,
+        .status = undefined,
+        .panel = undefined,
+    };
+    return .{
+        .title = "mouse",
+        .context = app,
+        .build = build,
+        .deinit = deinit,
+    };
+}
 
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
+fn deinit(context: ?*anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(context orelse return));
+    app.allocator.destroy(app);
+}
+
+fn build(
+    context: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    size: common.Size,
+) !void {
+    const app: *App = @ptrCast(@alignCast(context orelse return));
+    const root = try common.addBox(doc, parent, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
         .top = .{ .cells = 0 },
@@ -53,7 +81,6 @@ pub fn main() !void {
         .height = .{ .percent = 100 },
         .background = background,
     });
-    doc.setRoot(root);
 
     _ = try common.addLabel(doc, root, "mouse ops", .{
         .position = .absolute,
@@ -65,7 +92,7 @@ pub fn main() !void {
         .color = foreground,
         .bold = true,
     });
-    _ = try common.addLabel(doc, root, "click a row | drag to select | wheel over the list | q quit", .{
+    _ = try common.addLabel(doc, root, "hover/click a row | drag to select | wheel over the list | q quit", .{
         .position = .absolute,
         .left = .{ .cells = 2 },
         .top = .{ .cells = 1 },
@@ -88,18 +115,15 @@ pub fn main() !void {
     const status_bar = try common.addBox(doc, root, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
-        .top = .{ .cells = status_row },
+        .top = .{ .cells = @floatFromInt(size.height -| 1) },
         .width = .{ .percent = 100 },
         .height = .{ .cells = 1 },
         .background = common.rgb(40, 40, 52),
     });
-    const status = try common.addText(doc, status_bar, "", .{
+    app.status = try common.addText(doc, status_bar, "", .{
         .color = foreground,
     });
-
-    var app = App{
-        .status = status,
-    };
+    app.panel = panel;
 
     for (0..list_height) |index| {
         const row = try common.addBox(doc, panel, .{
@@ -113,7 +137,7 @@ pub fn main() !void {
             .color = foreground,
         });
         app.rows[index] = .{
-            .app = &app,
+            .app = app,
             .row = index,
             .box = row,
             .text = text,
@@ -124,21 +148,31 @@ pub fn main() !void {
     // Wheel and release bubble from a row to the panel, so the list keeps
     // scrolling even when the pointer is over a selected row.
     try panel.addEventListener(.{
-        .context = &app,
+        .context = app,
+        .mouse_move = App.onPanelMove,
         .mouse_up = App.onPanelUp,
         .wheel = App.onPanelWheel,
     });
+    if (doc.root) |doc_root| {
+        try doc_root.addEventListener(.{
+            .context = app,
+            .capture = true,
+            .mouse_move = App.onDocumentMove,
+        });
+    }
 
     app.apply();
-    try common.presentInteractive(&surface, allocator);
 }
 
 const App = struct {
+    allocator: Allocator,
     status: *ui.Node,
+    panel: *ui.Node,
     rows: [list_height]Row = undefined,
     scroll: usize = 0,
     anchor: ?usize = null,
     active: ?usize = null,
+    hovered: ?usize = null,
     dragging: bool = false,
     last: [96]u8 = undefined,
     last_len: usize = 0,
@@ -187,12 +221,13 @@ const App = struct {
             const item_index = self.scroll + index;
             const selected = item_index < items.len and self.isSelected(item_index);
 
+            const hovered = item_index < items.len and self.hovered == item_index;
             var row_style = row.box.style().*;
-            row_style.background = if (selected) accent else null;
+            row_style.background = if (selected) accent else if (hovered) hover_background else null;
             row.box.setStyle(row_style);
 
             var text_style = row.text.style().*;
-            text_style.color = if (selected) selected_text else foreground;
+            text_style.color = if (selected or hovered) selected_text else foreground;
             row.text.setStyle(text_style);
 
             if (item_index < items.len) {
@@ -224,6 +259,22 @@ const App = struct {
         return true;
     }
 
+    fn onPanelMove(context: ?*anyopaque, event: *ui.MouseEvent) void {
+        const self: *App = @ptrCast(@alignCast(context orelse return));
+        if (event.button != .none or event.target != self.panel) return;
+        if (self.hovered == null) return;
+        self.hovered = null;
+        self.apply();
+    }
+
+    fn onDocumentMove(context: ?*anyopaque, event: *ui.MouseEvent) void {
+        const self: *App = @ptrCast(@alignCast(context orelse return));
+        if (event.button != .none) return;
+        if (isWithin(event.target, self.panel) or self.hovered == null) return;
+        self.hovered = null;
+        self.apply();
+    }
+
     fn onPanelUp(context: ?*anyopaque, event: *ui.MouseEvent) void {
         const self: *App = @ptrCast(@alignCast(context orelse return));
         if (event.button != .left) return;
@@ -235,6 +286,7 @@ const App = struct {
     fn onPanelWheel(context: ?*anyopaque, event: *ui.MouseEvent) void {
         const self: *App = @ptrCast(@alignCast(context orelse return));
         if (event.delta_y != 0 and self.scrollBy(event.delta_y)) {
+            self.hovered = null;
             self.setLast("wheel dy={d} -> row {d}", .{ event.delta_y, self.scroll });
         }
         self.apply();
@@ -276,8 +328,15 @@ const Row = struct {
 
     fn onMove(context: ?*anyopaque, event: *ui.MouseEvent) void {
         const self: *Row = @ptrCast(@alignCast(context orelse return));
-        if (event.button != .left or !self.app.dragging) return;
         const index = self.itemIndex() orelse return;
+
+        if (event.button == .none) {
+            if (self.app.hovered == index) return;
+            self.app.hovered = index;
+            self.app.apply();
+            return;
+        }
+        if (event.button != .left or !self.app.dragging) return;
         if (self.app.active == index) return;
         self.app.active = index;
         self.app.setLast("drag row {d} at {d},{d}", .{ index + 1, event.x, event.y });
@@ -291,3 +350,11 @@ const Row = struct {
         self.app.apply();
     }
 };
+
+fn isWithin(target: ?*ui.Node, ancestor: *ui.Node) bool {
+    var current = target;
+    while (current) |node| : (current = node.parent) {
+        if (node == ancestor) return true;
+    }
+    return false;
+}

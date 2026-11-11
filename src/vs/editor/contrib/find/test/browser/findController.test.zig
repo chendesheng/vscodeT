@@ -339,3 +339,114 @@ test "FindController: clicking the input focuses it and clicking the editor blur
     try view.refresh();
     try std.testing.expect(view.surface.document().active_element == null);
 }
+
+test "FindController: find toggles hover and click from the mouse" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+
+    try controller.open(false);
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const iface = controller.widget().interface();
+    const width_cells = iface.width(iface.context, 60);
+    const left = 60 - width_cells;
+    // The Aa toggle is the first of the four 3-cell toggles at the right edge.
+    const toggle_x = left + width_cells - 12;
+    const grid = view.surface.grid();
+    const normal_bg = grid.bg[grid.index(toggle_x, 0)];
+
+    // Idle motion over the toggle highlights it; mode 1003 delivers this.
+    var hover = ui.MouseEvent{ .kind = .move, .x = toggle_x, .y = 0 };
+    _ = try view.dispatchMouse(&hover);
+    try std.testing.expect(controller.widget().hover_control != null);
+    try view.refresh();
+    try view.render(&out.writer);
+    const hovered_bg = view.surface.grid().bg[view.surface.grid().index(toggle_x, 0)];
+    try std.testing.expect(hovered_bg != normal_bg);
+
+    // Moving back to the editor clears the control hover.
+    var away = ui.MouseEvent{ .kind = .move, .x = editor.gutterWidth(), .y = 2 };
+    _ = try view.dispatchMouse(&away);
+    try std.testing.expect(controller.widget().hover_control == null);
+    try view.refresh();
+    try view.render(&out.writer);
+    try std.testing.expectEqual(
+        normal_bg,
+        view.surface.grid().bg[view.surface.grid().index(toggle_x, 0)],
+    );
+
+    // Clicking the toggle changes the option and keeps the input focused.
+    var down = ui.MouseEvent{ .kind = .down, .x = toggle_x, .y = 0, .button = .left };
+    _ = try view.dispatchMouse(&down);
+    var up = ui.MouseEvent{ .kind = .up, .x = toggle_x, .y = 0, .button = .left };
+    _ = try view.dispatchMouse(&up);
+    try std.testing.expect(controller.state.matchCase());
+    try std.testing.expect(view.surface.document().active_element != null);
+
+    _ = try view.dispatchMouse(&down);
+    _ = try view.dispatchMouse(&up);
+    try std.testing.expect(!controller.state.matchCase());
+}
+
+test "FindController: clicking All runs replace-all" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+
+    try controller.open(false);
+    try view.refresh();
+    var type_event = ui.KeyEvent{ .key = .{ .text = "alpha" } };
+    try std.testing.expect(view.dispatchKey(&type_event));
+    try controller.startReplace();
+    try view.refresh();
+    var replace_text = ui.KeyEvent{ .key = .{ .text = "omega" } };
+    try std.testing.expect(view.dispatchKey(&replace_text));
+
+    const iface = controller.widget().interface();
+    const width_cells = iface.width(iface.context, 60);
+    const left = 60 - width_cells;
+    const all_x = left + width_cells - 4;
+    var down = ui.MouseEvent{ .kind = .down, .x = all_x, .y = 1, .button = .left };
+    _ = try view.dispatchMouse(&down);
+    var up = ui.MouseEvent{ .kind = .up, .x = all_x, .y = 1, .button = .left };
+    _ = try view.dispatchMouse(&up);
+
+    const first_line = try editor.model.getLineContent(1);
+    defer first_line.deinit();
+    try std.testing.expectEqualStrings("omega", first_line.items);
+    const second_line = try editor.model.getLineContent(2);
+    defer second_line.deinit();
+    try std.testing.expectEqualStrings("beta omega", second_line.items);
+    try std.testing.expect(view.surface.document().active_element != null);
+}

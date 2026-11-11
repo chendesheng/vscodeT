@@ -443,3 +443,72 @@ fn commonBox(doc: *dom.Document, parent: *dom.Node, style: Style) !*dom.Node {
     _ = try parent.appendChild(node);
     return node;
 }
+
+test "paint: overflow hidden clips text and absolute children to the padding box" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 14, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+    });
+    doc.setRoot(root);
+
+    const container = try doc.createElement(.div);
+    container.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 1 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 1 },
+        .padding = style_mod.Edges.all(1),
+        .border = style_mod.Edges.all(1),
+        .overflow = .hidden,
+    });
+    _ = try root.appendChild(container);
+    _ = try container.appendChild(try doc.createText("overflowing"));
+
+    const child = try doc.createElement(.div);
+    child.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 4 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 8 },
+        .height = .{ .cells = 1 },
+    });
+    _ = try container.appendChild(child);
+    _ = try child.appendChild(try doc.createText("childtext"));
+
+    var grid = try CellGrid.init(allocator, 14, 5);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    // The text starts in the container's content box at (3, 2), but is cut at
+    // the padding edge x=10; the right border at x=10 still paints.
+    try std.testing.expectEqual(@as(u32, 'o'), grid.cluster[grid.index(3, 2)]);
+    try std.testing.expectEqual(@as(u32, 'o'), grid.cluster[grid.index(9, 2)]);
+    try std.testing.expect(grid.cluster[grid.index(11, 2)] == 0);
+    // The absolute child starts at (6, 1) and is clipped at the same edge.
+    try std.testing.expectEqual(@as(u32, 'c'), grid.cluster[grid.index(6, 1)]);
+    try std.testing.expect(grid.cluster[grid.index(10, 1)] != 't');
+    try std.testing.expect(grid.cluster[grid.index(11, 1)] == 0);
+
+    // With overflow visible the child paints past the border and padding.
+    container.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 1 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 1 },
+        .padding = style_mod.Edges.all(1),
+        .border = style_mod.Edges.all(1),
+        .overflow = .visible,
+    });
+    var visible = try CellGrid.init(allocator, 14, 5);
+    defer visible.deinit();
+    try paintDocument(&doc, &visible);
+    try std.testing.expectEqual(@as(u32, 't'), visible.cluster[visible.index(11, 1)]);
+}

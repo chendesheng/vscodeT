@@ -21,12 +21,23 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var surface = try ui.Surface.init(allocator, .{ .cols = 58, .rows = 13 });
-    defer surface.deinit();
+    const example = try listExample(allocator);
+    defer if (example.deinit) |deinit| deinit(example.context);
+    try common.runStatic(allocator, example);
+}
 
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
+pub fn listExample(allocator: std.mem.Allocator) !common.Example {
+    _ = allocator;
+    return .{ .title = "list", .build = build };
+}
+
+fn build(
+    _: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    size: common.Size,
+) !void {
+    const root = try common.addBox(doc, parent, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
         .top = .{ .cells = 0 },
@@ -34,7 +45,6 @@ pub fn main() !void {
         .height = .{ .percent = 100 },
         .background = common.rgb(18, 18, 24),
     });
-    doc.setRoot(root);
 
     _ = try common.addLabel(doc, root, "files", .{
         .position = .absolute,
@@ -109,12 +119,10 @@ pub fn main() !void {
     _ = try common.addLabel(doc, root, "6 files", .{
         .position = .absolute,
         .left = .{ .cells = 2 },
-        .top = .{ .cells = 11 },
+        .top = .{ .cells = @floatFromInt(size.height -| 2) },
         .width = .{ .cells = 54 },
         .height = .{ .cells = 1 },
     }, .{
         .color = common.rgb(140, 140, 160),
     });
-
-    try common.present(&surface, allocator);
 }

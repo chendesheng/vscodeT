@@ -8,19 +8,50 @@ const std = @import("std");
 const ui = @import("ui");
 const common = @import("common.zig");
 
+const Allocator = std.mem.Allocator;
+
 const labels = [_][]const u8{ "Open file", "Search", "Settings" };
 
 pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const example = try focusExample(allocator);
+    defer if (example.deinit) |destroy| destroy(example.context);
+    try common.runInteractive(allocator, example);
+}
 
-    var surface = try ui.Surface.init(allocator, .{ .cols = 60, .rows = 12 });
-    defer surface.deinit();
+pub fn focusExample(allocator: std.mem.Allocator) !common.Example {
+    const app = try allocator.create(App);
+    app.* = .{
+        .allocator = allocator,
+        .doc = undefined,
+        .status = undefined,
+    };
+    return .{
+        .title = "focus",
+        .context = app,
+        .build = build,
+        .deinit = deinit,
+    };
+}
 
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
+fn deinit(context: ?*anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(context orelse return));
+    app.allocator.destroy(app);
+}
+
+fn build(
+    context: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    size: common.Size,
+) !void {
+    const app: *App = @ptrCast(@alignCast(context orelse return));
+    app.doc = doc;
+    app.quit = false;
+
+    const root = try common.addBox(doc, parent, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
         .top = .{ .cells = 0 },
@@ -28,7 +59,6 @@ pub fn main() !void {
         .height = .{ .percent = 100 },
         .background = common.rgb(16, 16, 22),
     });
-    doc.setRoot(root);
 
     _ = try common.addLabel(doc, root, "keyboard focus", .{
         .position = .absolute,
@@ -44,19 +74,14 @@ pub fn main() !void {
     const status_bar = try common.addBox(doc, root, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
-        .top = .{ .cells = 11 },
+        .top = .{ .cells = @floatFromInt(size.height -| 1) },
         .width = .{ .percent = 100 },
         .height = .{ .cells = 1 },
         .background = common.rgb(40, 40, 52),
     });
-    const status = try common.addText(doc, status_bar, "", .{
+    app.status = try common.addText(doc, status_bar, "", .{
         .color = common.rgb(220, 220, 235),
     });
-
-    var app = App{
-        .doc = doc,
-        .status = status,
-    };
 
     inline for (labels, 0..) |label, i| {
         const top: f64 = @floatFromInt(2 + i * 3);
@@ -76,7 +101,7 @@ pub fn main() !void {
         });
 
         app.items[i] = .{
-            .app = &app,
+            .app = app,
             .node = node,
             .label = label,
         };
@@ -85,60 +110,13 @@ pub fn main() !void {
         try node.addEventListener(app.items[i].focusListener());
     }
 
-    try root.addEventListener(.{ .context = &app, .key_down = App.onRootKey });
+    try root.addEventListener(.{ .context = app, .key_down = App.onRootKey });
     _ = doc.focus(app.items[0].node);
     app.updateStatus();
-
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var out_buffer: [16384]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(io, &out_buffer);
-    const out = &stdout.interface;
-
-    try out.writeAll("\x1b[?1049h\x1b[?25l");
-    defer {
-        out.writeAll("\x1b[?25h\x1b[?1049l") catch {};
-        out.flush() catch {};
-    }
-
-    // Raw mode is only needed for a terminal; piped bytes are already raw.
-    const orig_termios = common.enableRawMode(io);
-    defer {
-        if (orig_termios) |orig| common.disableRawMode(orig) catch {};
-    }
-
-    try surface.render(out, .{});
-    try out.flush();
-
-    while (!app.quit) {
-        var fds = [_]std.posix.pollfd{.{
-            .fd = std.posix.STDIN_FILENO,
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        }};
-        const ready = (std.posix.poll(&fds, -1) catch 0) > 0;
-        if (!ready) continue;
-
-        var input_buffer: [512]u8 = undefined;
-        const n = std.posix.read(std.posix.STDIN_FILENO, &input_buffer) catch 0;
-        if (n == 0) return;
-
-        var events = try ui.input.decodeKeys(allocator, input_buffer[0..n]);
-        defer events.deinit(allocator);
-
-        var redraw = false;
-        for (events.items) |event| {
-            _ = doc.dispatchKey(event.key, event.mods);
-            redraw = true;
-            if (app.quit) break;
-        }
-        if (redraw) {
-            try surface.render(out, .{});
-            try out.flush();
-        }
-    }
 }
 
 const App = struct {
+    allocator: Allocator,
     doc: *ui.Document,
     status: *ui.Node,
     items: [labels.len]Item = undefined,

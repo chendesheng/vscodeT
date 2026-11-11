@@ -47,15 +47,15 @@ pub fn disableBracketedPaste(out: anytype) !void {
     try writeAll(out, "\x1b[?2004l");
 }
 
-/// Button-event mouse tracking with SGR coordinates. Mode 1002 reports motion
-/// while a button is held, which drives drag selection; idle hover would need
-/// mode 1003 and is not requested.
+/// All-motion mouse tracking with SGR coordinates. Mode 1003 reports motion
+/// without a button too, which drives hover; button-held motion still drives
+/// drag selection.
 pub fn enableMouseCapture(out: anytype) !void {
-    try writeAll(out, "\x1b[?1002h\x1b[?1006h");
+    try writeAll(out, "\x1b[?1003h\x1b[?1006h");
 }
 
 pub fn disableMouseCapture(out: anytype) !void {
-    try writeAll(out, "\x1b[?1006l\x1b[?1002l");
+    try writeAll(out, "\x1b[?1006l\x1b[?1003l");
 }
 
 pub fn disableRawMode(orig_termios: termios) !void {
@@ -175,7 +175,7 @@ pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     }
 
     const io = Io.Threaded.global_single_threaded.io();
-    Io.File.stdout().writeStreamingAll(io, "\x1b[?1006l\x1b[?1002l\x1b[?1049l\x1b[?7h") catch {};
+    Io.File.stdout().writeStreamingAll(io, "\x1b[?1006l\x1b[?1003l\x1b[?1049l\x1b[?7h") catch {};
 
     std.debug.defaultPanic(msg, first_trace_addr);
 

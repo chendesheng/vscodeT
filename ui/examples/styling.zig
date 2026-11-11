@@ -32,12 +32,23 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var surface = try ui.Surface.init(allocator, .{ .cols = 64, .rows = 14 });
-    defer surface.deinit();
+    const example = try stylingExample(allocator);
+    defer if (example.deinit) |deinit| deinit(example.context);
+    try common.runStatic(allocator, example);
+}
 
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
+pub fn stylingExample(allocator: std.mem.Allocator) !common.Example {
+    _ = allocator;
+    return .{ .title = "styling", .build = build };
+}
+
+fn build(
+    _: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    size: common.Size,
+) !void {
+    const root = try common.addBox(doc, parent, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
         .top = .{ .cells = 0 },
@@ -45,7 +56,6 @@ pub fn main() !void {
         .height = .{ .percent = 100 },
         .background = common.rgb(18, 18, 24),
     });
-    doc.setRoot(root);
 
     _ = try common.addLabel(doc, root, "text styles and colors", .{
         .position = .absolute,
@@ -90,10 +100,8 @@ pub fn main() !void {
     _ = try common.addLabel(doc, root, "truecolor foreground, background and attributes", .{
         .position = .absolute,
         .left = .{ .cells = 2 },
-        .top = .{ .cells = 11 },
+        .top = .{ .cells = @floatFromInt(size.height -| 2) },
         .width = .{ .cells = 60 },
         .height = .{ .cells = 1 },
     }, .{ .color = common.rgb(140, 140, 160) });
-
-    try common.present(&surface, allocator);
 }

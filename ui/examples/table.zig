@@ -20,12 +20,23 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var surface = try ui.Surface.init(allocator, .{ .cols = 64, .rows = 16 });
-    defer surface.deinit();
+    const example = try tableExample(allocator);
+    defer if (example.deinit) |deinit| deinit(example.context);
+    try common.runStatic(allocator, example);
+}
 
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
+pub fn tableExample(allocator: std.mem.Allocator) !common.Example {
+    _ = allocator;
+    return .{ .title = "table", .build = build };
+}
+
+fn build(
+    _: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    _: common.Size,
+) !void {
+    const root = try common.addBox(doc, parent, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
         .top = .{ .cells = 0 },
@@ -33,7 +44,6 @@ pub fn main() !void {
         .height = .{ .percent = 100 },
         .background = common.rgb(18, 18, 24),
     });
-    doc.setRoot(root);
 
     _ = try common.addLabel(doc, root, "recent commits", .{
         .position = .absolute,
@@ -53,6 +63,7 @@ pub fn main() !void {
         .border = ui.Edges.all(1),
         .border_color = common.rgb(70, 70, 100),
         .background = common.rgb(26, 28, 38),
+        .overflow = .hidden,
     });
 
     _ = try common.addLabel(doc, table, "hash", .{
@@ -114,6 +125,7 @@ pub fn main() !void {
             .top = .{ .cells = top },
             .width = .{ .cells = 28 },
             .height = .{ .cells = 1 },
+            .overflow = .hidden,
         }, .{ .color = common.rgb(200, 200, 210) });
 
         var number_buf: [16]u8 = undefined;
@@ -127,6 +139,4 @@ pub fn main() !void {
             .text_align = .right,
         }, .{ .color = common.rgb(120, 220, 160) });
     }
-
-    try common.present(&surface, allocator);
 }

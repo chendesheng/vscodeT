@@ -24,12 +24,23 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var surface = try ui.Surface.init(allocator, .{ .cols = 60, .rows = 16 });
-    defer surface.deinit();
+    const example = try treeExample(allocator);
+    defer if (example.deinit) |deinit| deinit(example.context);
+    try common.runStatic(allocator, example);
+}
 
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
+pub fn treeExample(allocator: std.mem.Allocator) !common.Example {
+    _ = allocator;
+    return .{ .title = "tree", .build = build };
+}
+
+fn build(
+    _: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    _: common.Size,
+) !void {
+    const root = try common.addBox(doc, parent, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
         .top = .{ .cells = 0 },
@@ -37,7 +48,6 @@ pub fn main() !void {
         .height = .{ .percent = 100 },
         .background = common.rgb(18, 18, 24),
     });
-    doc.setRoot(root);
 
     _ = try common.addLabel(doc, root, "file tree", .{
         .position = .absolute,
@@ -101,6 +111,4 @@ pub fn main() !void {
         .width = .{ .cells = 14 },
         .height = .{ .cells = 1 },
     }, .{ .color = common.rgb(180, 180, 200) });
-
-    try common.present(&surface, allocator);
 }

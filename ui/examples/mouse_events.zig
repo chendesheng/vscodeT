@@ -1,7 +1,7 @@
-//! Every mouse event kind in one place: press, move (while a button is held),
-//! release, click and wheel are logged with their cell, button, modifiers,
-//! wheel delta and hit-tested target. Presses focus a zone through the
-//! library's default action; the log is the demo.
+//! Every mouse event kind in one place: idle hover, press, move, release, click
+//! and wheel are logged with their cell, button, modifiers, wheel delta and
+//! hit-tested target. Idle motion highlights the zone under the pointer; the
+//! log is the demo.
 //!
 //! Press `q` to quit. Input is read from stdin with SGR mouse reports, so the
 //! example can also be driven by a pipe.
@@ -11,6 +11,8 @@
 const std = @import("std");
 const ui = @import("ui");
 const common = @import("common.zig");
+
+const Allocator = std.mem.Allocator;
 
 const cols = 64;
 const rows = 18;
@@ -28,18 +30,48 @@ const zone_colors = [_]ui.Color{
     common.rgb(32, 52, 44),
     common.rgb(36, 44, 64),
 };
+const zone_hover_colors = [_]ui.Color{
+    common.rgb(82, 56, 96),
+    common.rgb(48, 82, 68),
+    common.rgb(56, 68, 100),
+};
 
 pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const example = try mouseEventsExample(allocator);
+    defer if (example.deinit) |destroy| destroy(example.context);
+    try common.runInteractive(allocator, example);
+}
 
-    var surface = try ui.Surface.init(allocator, .{ .cols = cols, .rows = rows });
-    defer surface.deinit();
+pub fn mouseEventsExample(allocator: std.mem.Allocator) !common.Example {
+    const app = try allocator.create(App);
+    app.* = .{
+        .allocator = allocator,
+        .doc = undefined,
+    };
+    return .{
+        .title = "mouse events",
+        .context = app,
+        .build = build,
+        .deinit = deinit,
+    };
+}
 
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
+fn deinit(context: ?*anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(context orelse return));
+    app.allocator.destroy(app);
+}
+
+fn build(
+    context: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    _: common.Size,
+) !void {
+    const app: *App = @ptrCast(@alignCast(context orelse return));
+    const root = try common.addBox(doc, parent, .{
         .position = .absolute,
         .left = .{ .cells = 0 },
         .top = .{ .cells = 0 },
@@ -47,7 +79,6 @@ pub fn main() !void {
         .height = .{ .percent = 100 },
         .background = background,
     });
-    doc.setRoot(root);
 
     _ = try common.addLabel(doc, root, "mouse events", .{
         .position = .absolute,
@@ -59,7 +90,7 @@ pub fn main() !void {
         .color = foreground,
         .bold = true,
     });
-    _ = try common.addLabel(doc, root, "press, drag, release, click and wheel anywhere | q quit", .{
+    _ = try common.addLabel(doc, root, "hover a zone; press, drag, release, click and wheel | q quit", .{
         .position = .absolute,
         .left = .{ .cells = 2 },
         .top = .{ .cells = 1 },
@@ -69,7 +100,7 @@ pub fn main() !void {
         .color = dim,
     });
 
-    var app = App{ .doc = doc };
+    app.doc = doc;
     for (zone_names, 0..) |name, index| {
         const left: f64 = @floatFromInt(2 + index * 20);
         const zone = try common.addBox(doc, root, .{
@@ -115,34 +146,58 @@ pub fn main() !void {
     }
 
     try root.addEventListener(.{
-        .context = &app,
+        .context = app,
         .mouse_down = App.onDown,
         .mouse_move = App.onMove,
         .mouse_up = App.onUp,
         .click = App.onClick,
         .wheel = App.onWheel,
     });
+    // Capture motion before the logger so the hover style follows the pointer.
+    try root.addEventListener(.{
+        .context = app,
+        .capture = true,
+        .mouse_move = App.onHover,
+    });
 
-    app.push("ready: click a zone, drag, and wheel");
-    try common.presentInteractive(&surface, allocator);
+    app.push("ready: hover, click a zone, drag, and wheel");
 }
 
 const App = struct {
+    allocator: Allocator,
     doc: *ui.Document,
     zone_nodes: [3]*ui.Node = undefined,
     log_rows: [log_lines]*ui.Node = undefined,
     log_text: [log_lines][120]u8 = undefined,
     log_lens: [log_lines]usize = @splat(0),
+    hovered_zone: ?usize = null,
 
-    fn zoneName(self: *const App, target: ?*ui.Node) []const u8 {
+    fn zoneIndex(self: *const App, target: ?*ui.Node) ?usize {
         var current = target;
         while (current) |node| : (current = node.parent) {
             for (self.zone_nodes, 0..) |zone, index| {
-                if (zone == node) return zone_names[index];
+                if (zone == node) return index;
             }
             if (node == self.doc.root) break;
         }
-        return "root";
+        return null;
+    }
+
+    fn zoneName(self: *const App, target: ?*ui.Node) []const u8 {
+        const index = self.zoneIndex(target) orelse return "root";
+        return zone_names[index];
+    }
+
+    fn onHover(context: ?*anyopaque, event: *ui.MouseEvent) void {
+        const self: *App = @ptrCast(@alignCast(context orelse return));
+        const hovered = self.zoneIndex(event.target);
+        if (hovered == self.hovered_zone) return;
+        self.hovered_zone = hovered;
+        for (self.zone_nodes, 0..) |zone, index| {
+            var style = zone.style().*;
+            style.background = if (hovered == index) zone_hover_colors[index] else zone_colors[index];
+            zone.setStyle(style);
+        }
     }
 
     fn push(self: *App, text: []const u8) void {

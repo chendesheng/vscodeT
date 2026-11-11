@@ -1,6 +1,135 @@
 const std = @import("std");
 const ui = @import("ui");
 
+pub const Size = struct {
+    width: usize,
+    height: usize,
+};
+
+/// The terminal's cells, or 80x24 when stdout is not a terminal.
+pub fn terminalSize() Size {
+    var size: std.posix.winsize = std.mem.zeroes(std.posix.winsize);
+    _ = std.posix.system.ioctl(
+        std.posix.STDOUT_FILENO,
+        std.posix.T.IOCGWINSZ,
+        @intFromPtr(&size),
+    );
+    return .{
+        .width = if (size.col == 0) 80 else size.col,
+        .height = if (size.row == 0) 24 else size.row,
+    };
+}
+
+/// A fullscreen surface: the terminal's current size, or the 80x24 fallback.
+pub fn fullscreenSurface(allocator: std.mem.Allocator) !ui.Surface {
+    const size = terminalSize();
+    return ui.Surface.init(allocator, .{ .cols = size.width, .rows = size.height });
+}
+
+/// One gallery scene. `context` owns whatever state the scene needs; `build`
+/// may be called repeatedly and must recreate its nodes and listeners.
+pub const Example = struct {
+    title: []const u8,
+    context: ?*anyopaque = null,
+    build: *const fn (
+        context: ?*anyopaque,
+        doc: *ui.Document,
+        parent: *ui.Node,
+        size: Size,
+    ) anyerror!void,
+    deinit: ?*const fn (context: ?*anyopaque) void = null,
+};
+
+/// Hit-tests a pointer event, dispatches it to the document and synthesizes a
+/// left click on the press/release common ancestor when the press did not drag.
+/// This is the host-side policy shared by the standalone examples and gallery.
+pub const MouseRouter = struct {
+    press: ?struct { x: usize, y: usize } = null,
+    moved: bool = false,
+
+    pub fn dispatch(self: *MouseRouter, surface: *ui.Surface, event: *ui.MouseEvent) !void {
+        const doc = surface.document();
+        const target = (try surface.elementFromPoint(event.x, event.y)) orelse
+            (doc.root orelse return);
+        doc.dispatchMouse(target, event);
+
+        switch (event.kind) {
+            .down => if (event.button == .left) {
+                self.press = .{ .x = event.x, .y = event.y };
+                self.moved = false;
+            },
+            .move => if (event.button == .left and self.press != null) {
+                self.moved = true;
+            },
+            .up => if (event.button == .left) {
+                if (self.press) |pressed| {
+                    if (!self.moved) {
+                        const press_target =
+                            (try surface.elementFromPoint(pressed.x, pressed.y)) orelse target;
+                        const click_target =
+                            ui.event.commonInclusiveAncestor(press_target, target) orelse
+                            press_target;
+                        var click = ui.MouseEvent{
+                            .kind = .click,
+                            .x = event.x,
+                            .y = event.y,
+                            .button = .left,
+                            .mods = event.mods,
+                        };
+                        doc.dispatchMouse(click_target, &click);
+                    }
+                    self.press = null;
+                    self.moved = false;
+                }
+            },
+            else => {},
+        }
+    }
+};
+
+/// Creates a fullscreen surface, builds `example` under a full-size root and
+/// runs the static presenter (wait for `q`).
+pub fn runStatic(allocator: std.mem.Allocator, example: Example) !void {
+    var surface = try fullscreenSurface(allocator);
+    defer surface.deinit();
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+    });
+    doc.setRoot(root);
+    try example.build(example.context, doc, root, .{
+        .width = doc.cols,
+        .height = doc.rows,
+    });
+    try present(&surface, allocator);
+}
+
+/// Same setup, but runs the interactive loop (keys, mouse, hover).
+pub fn runInteractive(allocator: std.mem.Allocator, example: Example) !void {
+    var surface = try fullscreenSurface(allocator);
+    defer surface.deinit();
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+    });
+    doc.setRoot(root);
+    try example.build(example.context, doc, root, .{
+        .width = doc.cols,
+        .height = doc.rows,
+    });
+    try presentInteractive(&surface, allocator);
+}
+
 /// Draws the example on the alternate screen and waits for `q` (or Ctrl-Q),
 /// then restores the terminal. When stdin is a pipe the bytes are decoded the
 /// same way, so a demo can be driven non-interactively; EOF exits.
@@ -55,7 +184,7 @@ fn waitForQ(allocator: std.mem.Allocator) !void {
 }
 
 /// Interactive example loop for keyboard and mouse demos: enters the alternate
-/// screen, requests SGR mouse reports, dispatches every decoded event through
+/// screen, requests all-motion SGR mouse reports, dispatches every decoded event through
 /// the document (hit-testing mouse events with `Surface.elementFromPoint`) and
 /// redraws after each batch. `q` and Ctrl-Q quit; EOF exits.
 ///
@@ -68,9 +197,9 @@ pub fn presentInteractive(surface: *ui.Surface, allocator: std.mem.Allocator) !v
     var stdout = std.Io.File.stdout().writer(io, &buffer);
     const out = &stdout.interface;
 
-    try out.writeAll("\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h");
+    try out.writeAll("\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h");
     defer {
-        out.writeAll("\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?1049l") catch {};
+        out.writeAll("\x1b[?1006l\x1b[?1003l\x1b[?25h\x1b[?1049l") catch {};
         out.flush() catch {};
     }
 
@@ -82,8 +211,7 @@ pub fn presentInteractive(surface: *ui.Surface, allocator: std.mem.Allocator) !v
     try surface.render(out, .{});
     try out.flush();
 
-    var press: ?struct { x: usize, y: usize } = null;
-    var press_moved = false;
+    var router = MouseRouter{};
     var fds = [_]std.posix.pollfd{.{
         .fd = std.posix.STDIN_FILENO,
         .events = std.posix.POLL.IN,
@@ -107,47 +235,7 @@ pub fn presentInteractive(surface: *ui.Surface, allocator: std.mem.Allocator) !v
                     if (isQuitKey(key.*)) return;
                     _ = doc.dispatchKey(key.key, key.mods);
                 },
-                .mouse => |*mouse| {
-                    const target = (try surface.elementFromPoint(mouse.x, mouse.y)) orelse
-                        (doc.root orelse continue);
-                    doc.dispatchMouse(target, mouse);
-
-                    // The library leaves click synthesis and drag policy to the
-                    // host. This loop is the host for the examples: a left press
-                    // remembers its cell, a drag suppresses the click, and a
-                    // plain release clicks the press/release common ancestor.
-                    switch (mouse.kind) {
-                        .down => if (mouse.button == .left) {
-                            press = .{ .x = mouse.x, .y = mouse.y };
-                            press_moved = false;
-                        },
-                        .move => if (mouse.button == .left and press != null) {
-                            press_moved = true;
-                        },
-                        .up => if (mouse.button == .left) {
-                            if (press) |pressed| {
-                                if (!press_moved) {
-                                    const press_target =
-                                        (try surface.elementFromPoint(pressed.x, pressed.y)) orelse target;
-                                    const click_target =
-                                        ui.event.commonInclusiveAncestor(press_target, target) orelse
-                                        press_target;
-                                    var click = ui.MouseEvent{
-                                        .kind = .click,
-                                        .x = mouse.x,
-                                        .y = mouse.y,
-                                        .button = .left,
-                                        .mods = mouse.mods,
-                                    };
-                                    doc.dispatchMouse(click_target, &click);
-                                }
-                                press = null;
-                                press_moved = false;
-                            }
-                        },
-                        else => {},
-                    }
-                },
+                .mouse => |*mouse| try router.dispatch(surface, mouse),
             }
         }
 

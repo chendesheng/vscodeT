@@ -28,6 +28,7 @@ const RangeType = @import("../../../common/core/range.zig").Range;
 const background = ui.Color{ .r = 45, .g = 45, .b = 55 };
 const foreground = ui.Color{ .r = 230, .g = 230, .b = 230 };
 const dim_foreground = ui.Color{ .r = 140, .g = 140, .b = 150 };
+const hover_background = ui.Color{ .r = 72, .g = 72, .b = 92 };
 
 const label_x: usize = 1;
 const input_x: usize = 6;
@@ -36,6 +37,18 @@ const toggles_width: usize = 12;
 const wide_reserve: usize = count_width + toggles_width + 2;
 
 const FocusField = enum { find, replace };
+
+/// The mouse-operable controls in the bar. The terminal adaptation has no
+/// focusable buttons, but they are still clickable and show a hover state.
+const Control = enum {
+    match_case,
+    whole_word,
+    regex,
+    scope,
+    replace_all,
+};
+
+const control_count = 5;
 
 pub const FindWidget = struct {
     allocator: Allocator,
@@ -49,6 +62,12 @@ pub const FindWidget = struct {
     focus_field: FocusField = .find,
     widget_width: usize = 0,
     focus_node_value: ?*ui.Node = null,
+    /// The control under the pointer last frame, for the hover style.
+    hover_control: ?Control = null,
+    /// This frame's bar and control nodes, used to resolve pointer targets. They
+    /// are rebuilt every frame and never retained across `build`.
+    bar_root: ?*ui.Node = null,
+    control_nodes: [control_count]?*ui.Node = @splat(null),
 
     close_context: ?*anyopaque = null,
     on_close: ?*const fn (context: ?*anyopaque) void = null,
@@ -121,6 +140,8 @@ pub const FindWidget = struct {
 
     pub fn close(self: *FindWidget) void {
         self.focused = false;
+        self.hover_control = null;
+        self.bar_root = null;
         self.state.change(.{ .is_revealed = false }, false, true);
         if (self.on_close) |callback| callback(self.close_context);
     }
@@ -165,6 +186,8 @@ pub const FindWidget = struct {
 
     fn buildBar(self: *FindWidget, doc: *ui.Document) !*ui.Node {
         const width_cells = self.widget_width;
+        self.bar_root = null;
+        self.control_nodes = @splat(null);
         const root = try doc.createElement(.div);
         root.setStyle(.{
             .position = .absolute,
@@ -177,6 +200,17 @@ pub const FindWidget = struct {
             .color = foreground,
         });
         try root.addEventListener(.{ .context = self, .capture = true, .key_down = onKeyCapture });
+        try root.addEventListener(.{ .context = self, .mouse_move = onBarMove });
+        self.bar_root = root;
+        // Motion outside the bar never reaches a bar listener; the document
+        // root clears the stale hover so a control does not stay highlighted.
+        if (doc.root) |doc_root| {
+            try doc_root.addEventListener(.{
+                .context = self,
+                .capture = true,
+                .mouse_move = onDocumentMove,
+            });
+        }
 
         try appendLabel(doc, root, label_x, 0, "Find");
 
@@ -212,10 +246,10 @@ pub const FindWidget = struct {
             });
 
             const toggles_x = width_cells - toggles_width;
-            appendToggle(doc, root, toggles_x, 0, "Aa", self.state.matchCase());
-            appendToggle(doc, root, toggles_x + 3, 0, "ab", self.state.wholeWord());
-            appendToggle(doc, root, toggles_x + 6, 0, ".*", self.state.isRegex());
-            appendToggle(doc, root, toggles_x + 9, 0, "Sel", self.state.search_scope != null);
+            self.appendToggle(doc, root, toggles_x, 0, "Aa", self.state.matchCase(), .match_case);
+            self.appendToggle(doc, root, toggles_x + 3, 0, "ab", self.state.wholeWord(), .whole_word);
+            self.appendToggle(doc, root, toggles_x + 6, 0, ".*", self.state.isRegex(), .regex);
+            self.appendToggle(doc, root, toggles_x + 9, 0, "Sel", self.state.search_scope != null, .scope);
         }
 
         if (self.state.is_replace_revealed) {
@@ -238,7 +272,7 @@ pub const FindWidget = struct {
             });
 
             const all_x = width_cells -| 4;
-            try appendLabel(doc, root, all_x, 1, "All");
+            self.appendReplaceAll(doc, root, all_x, 1);
         }
 
         self.focus_node_value = if (self.focus_field == .replace)
@@ -278,17 +312,20 @@ pub const FindWidget = struct {
     }
 
     fn appendToggle(
+        self: *FindWidget,
         doc: *ui.Document,
         parent: *ui.Node,
         x: usize,
         y: usize,
         text: []const u8,
         active: bool,
+        control: Control,
     ) void {
+        const hovered = self.hover_control != null and self.hover_control.? == control;
         const node = doc.createText(text) catch return;
         node.setStyle(.{
-            .color = if (active) background else dim_foreground,
-            .background = if (active) foreground else null,
+            .color = if (active) background else if (hovered) foreground else dim_foreground,
+            .background = if (active) foreground else if (hovered) hover_background else null,
             .bold = active,
         });
         const holder = doc.createElement(.div) catch return;
@@ -301,6 +338,64 @@ pub const FindWidget = struct {
         });
         _ = holder.appendChild(node) catch return;
         _ = parent.appendChild(holder) catch {};
+        self.control_nodes[@backingInt(control)] = holder;
+        holder.addEventListener(.{
+            .context = self,
+            .mouse_down = onControlDown,
+            .click = onControlClick,
+        }) catch {};
+    }
+
+    fn appendReplaceAll(
+        self: *FindWidget,
+        doc: *ui.Document,
+        parent: *ui.Node,
+        x: usize,
+        y: usize,
+    ) void {
+        const hovered = self.hover_control != null and self.hover_control.? == .replace_all;
+        const node = doc.createText("All") catch return;
+        node.setStyle(.{
+            .color = if (hovered) foreground else dim_foreground,
+            .background = if (hovered) hover_background else null,
+        });
+        const holder = doc.createElement(.div) catch return;
+        holder.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = @floatFromInt(x) },
+            .top = .{ .cells = @floatFromInt(y) },
+            .width = .{ .cells = 3 },
+            .height = .{ .cells = 1 },
+        });
+        _ = holder.appendChild(node) catch return;
+        _ = parent.appendChild(holder) catch {};
+        self.control_nodes[@backingInt(Control.replace_all)] = holder;
+        holder.addEventListener(.{
+            .context = self,
+            .mouse_down = onControlDown,
+            .click = onControlClick,
+        }) catch {};
+    }
+
+    fn controlFor(self: *const FindWidget, target: ?*ui.Node) ?Control {
+        var current = target;
+        while (current) |node| : (current = node.parent) {
+            for (self.control_nodes, 0..) |maybe_control, index| {
+                const control_node = maybe_control orelse continue;
+                if (control_node == node) return @fromBackingInt(@intCast(index));
+            }
+        }
+        return null;
+    }
+
+    fn activateControl(self: *FindWidget, control: Control) void {
+        switch (control) {
+            .match_case => self.state.change(.{ .match_case = !self.state.matchCase() }, true, true),
+            .whole_word => self.state.change(.{ .whole_word = !self.state.wholeWord() }, true, true),
+            .regex => self.state.change(.{ .is_regex = !self.state.isRegex() }, true, true),
+            .scope => self.toggleSearchScope(),
+            .replace_all => self.model.replaceAll() catch |err| self.report(err),
+        }
     }
 
     fn handleKey(self: *FindWidget, event: *ui.KeyEvent) bool {
@@ -456,6 +551,41 @@ fn appendRightAligned(
     node.setStyle(style);
     _ = try holder.appendChild(node);
     _ = try parent.appendChild(holder);
+}
+
+fn isWithin(target: ?*ui.Node, ancestor: ?*ui.Node) bool {
+    const root = ancestor orelse return false;
+    var current = target;
+    while (current) |node| : (current = node.parent) {
+        if (node == root) return true;
+    }
+    return false;
+}
+
+fn onBarMove(context: ?*anyopaque, event: *ui.MouseEvent) void {
+    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    self.hover_control = self.controlFor(event.target);
+}
+
+fn onDocumentMove(context: ?*anyopaque, event: *ui.MouseEvent) void {
+    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    if (!isWithin(event.target, self.bar_root)) self.hover_control = null;
+}
+
+fn onControlDown(context: ?*anyopaque, event: *ui.MouseEvent) void {
+    _ = context;
+    if (event.button == .left) {
+        // Keep the input's keyboard focus; the click toggles the option.
+        event.preventDefault();
+    }
+}
+
+fn onControlClick(context: ?*anyopaque, event: *ui.MouseEvent) void {
+    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    if (event.button != .left) return;
+    const control = self.controlFor(event.target) orelse return;
+    self.activateControl(control);
+    self.hover_control = control;
 }
 
 fn onKeyCapture(context: ?*anyopaque, event: *ui.KeyEvent) void {

@@ -37,24 +37,33 @@ cd ui
 zig build example-hello    # colors, bold, backgrounds, inline text runs
 zig build example-list     # rows, alternating backgrounds, right-aligned columns
 zig build example-layout   # absolute + percent layout, left/center/right text
+zig build example-overflow # visible vs hidden/clip for text and absolute children
 zig build example-borders  # margin, padding and border boxes, nested absolute child
 zig build example-table    # bordered table with aligned columns
 zig build example-tree     # box-drawing file tree
 zig build example-styling  # text attributes, truecolor, background swatches
 zig build example-focus    # interactive: Tab/Shift-Tab, Enter, activeElement
-zig build example-mouse    # interactive: click/drag a list, wheel scrolling
-zig build example-mouse-events # interactive: down/move/up/click/wheel log
-zig build examples         # all ten; press q in each
+zig build example-mouse    # interactive: hover/click/drag a list, wheel scrolling
+zig build example-mouse-events # interactive: hover/down/move/up/click/wheel log
+zig build examples         # fullscreen gallery with a side navigation menu
 ```
 
-Each example draws on the alternate screen and waits for `q` (or Ctrl-Q) to
-exit. Input is read from stdin, so a pipe can drive an example too; EOF exits,
-which keeps `zig build examples` terminating in a non-interactive run. The
-focus example additionally handles Tab/Shift-Tab and Enter. The two mouse
-examples request SGR mouse reports (mode 1002/1006), so they accept real
-terminal input or piped `CSI < b ; x ; y M/m` sequences; `example-mouse` shows
-selection and wheel scrolling, while `example-mouse-events` logs every mouse
-event with its hit-tested target.
+Every example fills the terminal (80x24 when stdout is not a TTY), draws on the
+alternate screen and waits for `q` (or Ctrl-Q) to exit. Input is read from
+stdin, so a pipe can drive an example too; EOF exits. The focus example handles
+Tab/Shift-Tab and Enter. The two mouse examples request SGR mouse reports (mode
+1003/1006), so they accept real terminal input or piped `CSI < b ; x ; y M/m`
+sequences; `example-mouse` shows selection, hover and wheel scrolling, while
+`example-mouse-events` logs every mouse event with its hit-tested target and
+highlights the hovered zone.
+
+`zig build examples` opens the fullscreen gallery instead of running all
+examples in sequence: a side navigation menu on the left and the selected
+example in the content area. Up/Down, PageUp/PageDown, Home/End and the wheel
+move the selection; hover/click selects a menu item; `q`/Ctrl-Q quits. Mouse
+events over the content go to the example, so the mouse demos remain
+interactive there; run an individual `example-*` step for the full keyboard
+interaction of a scene.
 
 ## Minimal use
 
@@ -169,12 +178,18 @@ Listeners can handle `mouse_down`, `mouse_move`, `mouse_up`, `click` and
 `preventDefault`. A non-canceled press focuses the nearest focusable ancestor,
 or blurs. Wheel deltas are in lines (±3 per notch, as in TermDOM) and cancelable;
 the host decides what to scroll. There is no library click synthesis, drag state
-or hover: those belong to the host (`src/tui/view.zig`) or need terminal mode
-1003, which is not requested.
+or `:hover` selector: those belong to the host. The editor view does the press/
+drag/click synthesis and wheel scrolling; widgets derive hover from
+`mouse_move` with `button == .none`, reported under terminal mode 1003.
 
-`ui.input.decode` decodes button-held motion only because terminals report it in
-mode 1002. It does not decode legacy X10 mouse reports, idle hover, double-click
-counts, or terminal focus reports.
+`ui.input.decode` decodes both idle and button-held motion because mode 1003 is
+requested. It does not decode legacy X10 mouse reports, double-click counts, or
+terminal focus reports.
+
+`InputBox` turns a left click or held-button motion into a byte caret, mapping
+the cell through the visible window (wide characters choose the nearest
+boundary). Clicking a find toggle or its `All` button runs that control; the
+widget tracks the hovered control and clears it when idle motion leaves the bar.
 
 ## Input boxes and rebuilt trees
 
@@ -195,6 +210,8 @@ _ = input.handleKey(&event);              // true when the input consumed it
 It owns a UTF-8 buffer and byte caret, paints a block caret (an inverted cell)
 instead of using the hardware cursor, and handles text, Backspace, Delete,
 Left/Right, Home/End, Enter and Escape. Up/Down and Tab are left to the host.
+A left click or held-button drag maps the pointer cell to the byte caret;
+`handleMouse` is public for hosts that want to route pointer events themselves.
 
 A view that rebuilds its tree every frame can reuse the same document and the
 renderer's previous grid: `Document.clear()` drops the arena, root and focus

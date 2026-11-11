@@ -18,8 +18,10 @@
 //!
 //! We only have terminal input, so only `key_down` exists: a terminal reports
 //! bytes, not key releases, and cannot report key repeat. Mouse motion is the
-//! button-held motion a terminal sends in mode 1002; idle hover would need
-//! mode 1003 and is not requested.
+//! all-motion report a terminal sends in mode 1003: button-held motion drives
+//! drags, idle motion lets widgets derive their hover state from the
+//! hit-tested target. This layer has no CSS `:hover` and no implicit
+//! enter/leave synthesis; the host decides what motion means.
 
 const std = @import("std");
 const dom = @import("dom.zig");
