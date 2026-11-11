@@ -93,13 +93,57 @@ state that in the comment and keep the behavioral contract intact.
    already exists.
 4. Preserve upstream edge cases: empty selections, multi-cursor paths, mixed
    line endings, surrogate/UTF-8 boundaries, undo grouping, and option values.
-5. Browser DOM, widgets, keybinding registries, and other UI infrastructure are
-   not portable. Implement the underlying model/command logic, wire it into the
-   TUI where applicable, and document the missing UI layer.
-6. Do not invent behavior that upstream does not have. If a shortcut or command
+5. **Port the view logic too, not just the model or controller.** When a
+   contribution has browser view parts (view lines, decorations, widgets,
+   overlays, hit testing, rendering decisions), port the portable view logic
+   and keep its data flow, names, decoration kinds/classes, option values and
+   ordering close to upstream. Browser DOM/CSS/event plumbing is replaced by
+   the terminal `ui` layer; the surrounding behavior is still ported.
+6. Keep the implementation close to VS Code's structure. Prefer the upstream
+   pipeline over a new one: model -> view model -> line decorations -> renderer,
+   or contribution -> view part -> paint. Adapt only the terminal boundary
+   (cells, clipping, focus/input routing). Do not replace a portable view layer
+   with an ad hoc widget just because it is shorter.
+7. A view behavior may be left unported only when:
+   - the terminal has no corresponding capability (for example DOM/CSS layout
+     effects, subpixel rendering, browser text selection/IME); or
+   - porting it would require the infrastructure of a full web browser
+     (HTML/CSS parser, event loop, compositor, Web APIs), which this project
+     deliberately does not have.
+
+   State the exact reason in the file header, in `README.md`, and in
+   `docs/terminal-ui.md` when the limitation is in the UI library. Do not use
+   these exceptions for work that is merely larger than expected.
+8. Do not invent behavior that upstream does not have. If a shortcut or command
    is TUI-specific, say so.
-7. Update `README.md` when adding a contribution, changing supported behavior,
+9. Update `README.md` when adding a contribution, changing supported behavior,
    or leaving a notable feature unported.
+
+## View and rendering ports
+
+- Port the view-side behavior as part of the contribution: decorated ranges,
+  line/decoration rendering, widget layout and state, hover/selection/cursor
+  paint order, hit testing and focus/input handling. A model-only port is not
+  complete when upstream renders observable UI from that model.
+- Keep upstream concepts and names where practical: view model, line
+  decorations, inline decoration classes/kinds, `getViewLineData`, view parts,
+  and contribution/view/widget boundaries. The terminal implementation may
+  replace DOM nodes with `ui` nodes and CSS classes with direct `Style`/cell
+  attributes, but the decision-making logic and order should match.
+- Reuse the existing ported layers (`viewModelDecorations`, `lineDecorations`,
+  `viewLineRenderer`, the `editorBrowser` widget contracts) instead of
+  inventing a parallel path. For example, bracket and find highlights go
+  through model decorations and `LineDecoration.filter`/`extractWrapped`, the
+  same route VS Code's ViewLine uses, before the terminal maps classes to
+  cells.
+- Terminal constraints are expected at the paint boundary: no CSS cascade or
+  selectors, no subpixel geometry, no DOM, fixed cells. Implement the closest
+  terminal rendering, document the substitution in the file header, and keep
+  the upstream behavior and tests intact.
+- When a view part is genuinely browser-only (full HTML/CSS engine, browser
+  event loop, compositor, native selection), isolate the missing piece, port
+  the portable state/commands, wire what the TUI can support, and document the
+  exact gap in `README.md` and `docs/terminal-ui.md`.
 
 ## Zig conventions
 
@@ -203,6 +247,9 @@ git diff --check
 Also verify:
 
 - [ ] The portable upstream behavior and tests are present.
+- [ ] View-side behavior is ported through the upstream-shaped layers, not only
+      the model/controller; any terminal/browser-infrastructure exception is
+      documented in the file header and `README.md`.
 - [ ] New public command/interface adapters use `interface()`.
 - [ ] Allocations have cleanup paths.
 - [ ] TUI wiring and shortcuts are documented if applicable.
