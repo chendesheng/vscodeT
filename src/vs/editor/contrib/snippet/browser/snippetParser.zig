@@ -346,6 +346,15 @@ pub const TextmateSnippet = struct {
         return out.toOwnedSlice(allocator);
     }
 
+    pub fn clone(self: *TextmateSnippet) SnippetError!*TextmateSnippet {
+        const result = try TextmateSnippet.init(self.allocator);
+        errdefer result.deinit();
+        for (self.children()) |child| {
+            try result.appendChild(try child.cloneInto(result));
+        }
+        return result;
+    }
+
     pub fn toString(self: *TextmateSnippet, allocator: Allocator) Allocator.Error![]u8 {
         var out = std.ArrayListUnmanaged(u8).empty;
         errdefer out.deinit(allocator);
@@ -1457,6 +1466,22 @@ pub fn parse(allocator: Allocator, value: []const u8, insert_final_tabstop: bool
     var parser = SnippetParser{};
     try parser.parse(snippet, value, insert_final_tabstop, enforce_final_tabstop);
     return snippet;
+}
+
+pub fn escape(allocator: Allocator, value: []const u8) ![]u8 {
+    var out = std.ArrayListUnmanaged(u8).empty;
+    errdefer out.deinit(allocator);
+    for (value) |ch| {
+        if (ch == '$' or ch == '}' or ch == '\\') try out.append(allocator, '\\');
+        try out.append(allocator, ch);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn guessNeedsClipboard(template: []const u8) bool {
+    var re = regexp.RegExp.init("\\$\\{?CLIPBOARD", regexp.DefaultOption) catch return false;
+    defer re.deinit();
+    return re.isMatch(template);
 }
 
 pub fn asInsertText(allocator: Allocator, value: []const u8) ![]u8 {

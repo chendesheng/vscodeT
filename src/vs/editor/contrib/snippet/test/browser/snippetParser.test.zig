@@ -376,3 +376,44 @@ test "SnippetParser, simple placeholder transform replacement" {
     defer allocator.free(value);
     try std.testing.expectEqualStrings("bar", value);
 }
+
+test "SnippetParser, escape and clipboard detection" {
+    const allocator = std.testing.allocator;
+    const escaped = try parser.escape(allocator, "foo$0");
+    defer allocator.free(escaped);
+    try std.testing.expectEqualStrings("foo\\$0", escaped);
+    const escaped_complex = try parser.escape(allocator, "${1:foo}$0");
+    defer allocator.free(escaped_complex);
+    try std.testing.expectEqualStrings("\\${1:foo\\}\\$0", escaped_complex);
+
+    try std.testing.expect(parser.guessNeedsClipboard("x $CLIPBOARD y"));
+    try std.testing.expect(parser.guessNeedsClipboard("x ${CLIPBOARD} y"));
+    try std.testing.expect(!parser.guessNeedsClipboard("x $SELECTION y"));
+}
+
+test "SnippetParser, snippet clone keeps placeholders" {
+    const allocator = std.testing.allocator;
+    const snippet = try parseSnippet("foo ${1:bar} ${2|a,b|}");
+    defer snippet.deinit();
+    const clone = try snippet.clone();
+    defer clone.deinit();
+
+    const original = try snippet.toTextmateString(allocator);
+    defer allocator.free(original);
+    const cloned = try clone.toTextmateString(allocator);
+    defer allocator.free(cloned);
+    try std.testing.expectEqualStrings(original, cloned);
+    try std.testing.expectEqual((try snippet.placeholders()).len, (try clone.placeholders()).len);
+}
+
+test "SnippetParser, additional upstream text cases" {
+    try expectText("foo\\${1:bar\\}\\$0", "foo${1:bar}$0");
+    try expectText("far\\\\boo", "far\\boo");
+    try expectText("far{{id:bern {{basel}}}}boo", "far{{id:bern {{basel}}}}boo");
+    try expectText("$far-boo", "-boo");
+    try expectText("far$farboo", "far");
+    try expectText("${1:bar${2:foo}bar}", "barfoobar");
+    try expectText("${name:value", "${name:value");
+    try expectText("${1|one,two,three,|}", "${1|one,two,three,|}");
+    try expectText("console.log(${1|not\\, not, five, 5, 1   23|});", "console.log(not, not);");
+}
