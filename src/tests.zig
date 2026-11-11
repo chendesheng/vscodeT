@@ -1,5 +1,6 @@
 comptime {
     _ = @import("./tui/preview.zig");
+    _ = @import("./tui/hoverProvider.zig");
     _ = @import("./vs/base/common/cache.zig");
     _ = @import("./vs/base/common/event.zig");
     _ = @import("./vs/editor/common/core/ranges/lineRange.zig");
@@ -230,6 +231,14 @@ comptime {
     _ = @import("./vs/editor/contrib/hover/browser/hoverOperation.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverTypes.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverComputer.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/hoverMarkdownRenderer.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/markdownHoverParticipant.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/contentHoverStatusBar.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/contentHoverRendered.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/contentHoverWidget.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/contentHoverWidgetWrapper.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/contentHoverController.zig");
+    _ = @import("./vs/editor/contrib/hover/test/browser/contentHover.test.zig");
     _ = @import("./vs/editor/browser/editorExtensions.zig");
     _ = @import("./vs/editor/contrib/find/browser/replacePattern.zig");
     _ = @import("./vs/editor/contrib/find/browser/replaceAllCommand.zig");

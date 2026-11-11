@@ -144,6 +144,8 @@ TUI editor:
   `Home`/`End`, `Ctrl`+`Home`/`End` for buffer edges, `PageUp`/`PageDown`.
 - Mouse: left-click places the caret, `Shift`-click extends, drag selects, and
   the wheel scrolls three view lines (the caret stays put until it moves).
+  Resting the pointer on a word opens a hover after 300 ms (see the hover
+  contribution below); moving over the gutter or status row closes it.
 - Editing: `Enter`, `Tab`/`Shift-Tab`, `Backspace`, `Delete`, bracketed paste.
 - `Ctrl-A` selects all; `Escape` clears the selection.
 - Line operations: `Alt-Up`/`Alt-Down` move the current line or selection,
@@ -178,13 +180,34 @@ Editor contributions:
 - `src/vs/editor/contrib/comment` ports `LineCommentCommand` and
   `BlockCommentCommand`. Comment rules for the TUI's languages live in
   `src/tui/language.zig`.
-- The portable hover layer is ported in `src/vs/editor/contrib/hover`:
-  `Hover`/`MarkdownString` data types, range and foreign-element anchors,
-  participant contracts, modifier-based hover enabling, provider result
-  aggregation, the hover operation state machine with an injectable timer,
-  content-hover result filtering, and synchronous participant computation.
-  The browser hover widget, async iterable/timing runtime, markdown/marker
-  participants, and TUI hover UI are not ported.
+- `src/vs/editor/contrib/hover` ports the content-hover contribution end to
+  end: anchors and result filtering, the delayed hover operation
+  (`hoverOperation.zig`, with injected deadline timers), the widget wrapper and
+  controller (sticky grace period, hide on scroll/mouse leave/edit, modifier
+  modes), the terminal content widget (bordered, sized and clamped to the text
+  area, line scrolling with wheel/arrows/PageUp/PageDown/Home/End, click to
+  focus, Escape to close), and the markdown participant. Hover contents are
+  markdown-rendered to styled cells by
+  `markdownHoverRenderer.zig`; the hovered range is painted through the same
+  `LineDecoration.filter`/`extractWrapped` path as find and bracket highlights
+  (`hoverHighlight`). The app registers a TUI-local provider
+  (`src/tui/hoverProvider.zig`) that reports the word, language and token type,
+  because VS Code gets hover contents from language extensions. Not ported,
+  each because the corresponding infrastructure has no terminal counterpart:
+  marker/glyph/color-picker/inlay-hint hover participants (no marker service,
+  glyph margin, color picker or inlay hints), hover verbosity actions (no
+  command/keybinding service), the copy button (no clipboard plumbing),
+  accessible hover views (no screen-reader/accessible-view service), sash
+  resizing and horizontal scrolling, status-bar actions (the bar renders
+  labels but no participant adds one), and a keyboard "show hover" command (no
+  keybinding registry). Hover over the empty area *after* a line needs
+  sub-cell horizontal distances, so only a zero-cell distance (the first cell
+  past the text) anchors a hover. Mouse leave is inferred from motion over the
+  gutter, the status row or another widget; a pointer that leaves the terminal
+  window without another event leaves the hover visible until the next input.
+  A focused hover returns the keyboard to the editor with Tab, and Escape
+  closes it. The read-only `--preview` mode does not wire the hover
+  contribution.
 - Auto-closing brackets are ported from
   `src/vs/editor/common/cursor/cursorTypeEditOperations.ts` into
   `src/vs/editor/common/cursor/autoClosing.zig`. Single-character bracket pairs

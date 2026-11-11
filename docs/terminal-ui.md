@@ -579,6 +579,26 @@ Library constraints:
   (`top_right_corner`, `bottom_right_corner`, `top_center`); the view restores
   focus after every rebuild. `View.dispatchKey` forwards decoded keys through
   the widget document first, so a focused widget owns the keyboard.
+- Content widgets use the terminal adaptation of upstream `IContentWidget`: the
+  widget reports a model position plus an `above`/`below` preference, and
+  `View.buildContentWidgets` converts it with the view model
+  (`Editor.viewPositionOfModelPosition`), maps the column to a cell (tabs, wide
+  characters and wrapping indent included), and places the box inside the text
+  area. This is the hover anchor route; the browser's pixel `ResizableContentWidget`
+  geometry becomes cell sizing and clamping. Mouse hit testing reports
+  `CONTENT_TEXT`, `CONTENT_EMPTY` (with `isAfterLines` and a cell distance),
+  `GUTTER_LINE_NUMBERS`, `STATUS`, `CONTENT_WIDGET` and `OVERLAY_WIDGET` through
+  `View.mouseTargetAt`, which the hover controller consumes instead of the
+  browser's `onMouseMove` target.
+- The hover contribution is the second end-to-end widget consumer: the
+  controller schedules a delayed computation with two deadline timers (the TUI
+  event loop polls with the nearest deadline and calls `onTick`), the wrapper
+  picks range anchors, `contentHoverRendered.zig` builds participant rows and
+  the `hoverHighlight` decoration, and `contentHoverWidget.zig` renders the
+  bordered, scrollable box as a content widget. Markdown is rendered to styled
+  cells by `hoverMarkdownRenderer.zig`; there is no HTML/CSS engine, so links
+  show their URL in dim text, tables/images fall back to plain text, and raw
+  HTML is ignored.
 - `ui/inputbox.zig` is the terminal single-line input: UTF-8 buffer, byte
   caret, block caret cell, placeholder, editing keys and `on_change` /
   `on_enter` / `on_escape` callbacks. It is the base for the find bar.
@@ -628,7 +648,12 @@ Library constraints:
   cursor cell; an unchanged refresh writing no bytes; mouse click/shift-click/
   drag/wheel caret and viewport effects; find-control hover highlighting and
   click activation; input click-to-caret; plus keyboard scrolling and Ctrl-Q
-  through the library dispatcher.
+  through the library dispatcher. Content-widget tests cover model-position
+  anchoring, wrapped anchors, above/below flipping and cell clamping; the hover
+  contribution tests cover the upstream `contentHover.test.ts` placement cases,
+  markdown/decoration participants, rendering the box and highlight, focus with
+  Escape, and wheel scrolling of long hover content without moving the
+  editor viewport.
 - Library unit tests cover: tree linking/invariants, box-tree derivation
   (viewport root, principal/text boxes, anonymous inline/flex items,
   `display: contents`/`none`, mutation invalidation), absolute/percent/auto layout,
@@ -661,8 +686,8 @@ Library constraints:
    scrolling and widget-level hover are in; the generic scroll and selector
    machinery is not.
 6. Replace the adapter with a port of `viewModelImpl.ts` +
-   `CursorsController`; port edit context/controllers; then widgets and
-   contributions (find, hover, suggest, quick pick).
+   `CursorsController`; port edit context/controllers; then the remaining
+   widgets and contributions (suggest, quick pick, marker/glyph hover).
 
 ## 11. Testing strategy
 

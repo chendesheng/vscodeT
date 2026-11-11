@@ -54,6 +54,7 @@ const CellFlag = struct {
     const current_find_match: u8 = 1 << 3;
     const find_scope: u8 = 1 << 4;
     const bracket_match: u8 = 1 << 5;
+    const hover_highlight: u8 = 1 << 6;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -62,6 +63,10 @@ const current_find_match_foreground = [3]u8{ 0, 0, 0 };
 const find_scope_background = [3]u8{ 40, 50, 70 };
 const bracket_match_background = [3]u8{ 45, 80, 55 };
 const bracket_match_foreground = [3]u8{ 235, 255, 235 };
+/// Upstream's `editor.hoverHighlightBackground` (#264f7840) is translucent.
+/// Cells have no alpha, so this is the dark-theme color composited over the
+/// editor background, keeping the text readable.
+const hover_highlight_background = [3]u8{ 32, 42, 52 };
 
 pub const View = struct {
     allocator: std.mem.Allocator,
@@ -70,8 +75,20 @@ pub const View = struct {
     /// Overlay widgets anchored to an editor corner, painted above the lines
     /// and the status row.
     overlays: std.array_list.Managed(editorBrowser.IOverlayWidget),
+    /// Content widgets anchored to model positions, painted above the lines
+    /// and below the overlays (the hover widget is one).
+    content_widgets: std.array_list.Managed(editorBrowser.IContentWidget),
+    /// Content widget containers for the current frame, used to hit-test and
+    /// to keep pointer events out of the text.
+    content_entries: std.array_list.Managed(ContentEntry),
+    /// Overlay widget rectangles for the current frame; pointer events on an
+    /// overlay must not reach the editor's hover logic.
+    overlay_entries: std.array_list.Managed(WidgetRect),
     /// Model ranges highlighted by contributions such as find.
     decorations: std.array_list.Managed(editorBrowser.Decoration),
+    /// The range highlighted below a visible hover. Upstream stores this as a
+    /// `hoverHighlight` model decoration owned by the rendered hover.
+    hover_decorations: std.array_list.Managed(editorBrowser.Decoration),
     /// The line element under the primary cursor, filled in while building.
     cursor_line: ?*ui.Node = null,
     /// Cells between the start of that line's content and the caret.
@@ -94,6 +111,36 @@ pub const View = struct {
     const LineEntry = struct {
         node: *ui.Node,
         view_line: usize,
+        /// Cells of rendered text on this view line, used by hit testing to
+        /// separate CONTENT_TEXT from CONTENT_EMPTY.
+        text_width: usize = 0,
+    };
+
+    const ContentEntry = struct {
+        widget: editorBrowser.IContentWidget,
+        node: *ui.Node,
+        left: usize,
+        top: usize,
+        width: usize,
+        height: usize,
+
+        fn contains(self: ContentEntry, x: usize, y: usize) bool {
+            return x >= self.left and x < self.left + self.width and
+                y >= self.top and y < self.top + self.height;
+        }
+    };
+
+    const WidgetRect = struct {
+        node: *ui.Node,
+        left: usize,
+        top: usize,
+        width: usize,
+        height: usize,
+
+        fn contains(self: WidgetRect, x: usize, y: usize) bool {
+            return x >= self.left and x < self.left + self.width and
+                y >= self.top and y < self.top + self.height;
+        }
     };
 
     const MousePress = struct {
@@ -109,12 +156,20 @@ pub const View = struct {
             .editor = editor,
             .surface = undefined,
             .overlays = std.array_list.Managed(editorBrowser.IOverlayWidget).init(allocator),
+            .content_widgets = std.array_list.Managed(editorBrowser.IContentWidget).init(allocator),
+            .content_entries = std.array_list.Managed(ContentEntry).init(allocator),
+            .overlay_entries = std.array_list.Managed(WidgetRect).init(allocator),
             .decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
+            .hover_decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
             .line_entries = std.array_list.Managed(LineEntry).init(allocator),
             .bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
         };
         errdefer self.overlays.deinit();
+        errdefer self.content_widgets.deinit();
+        errdefer self.content_entries.deinit();
+        errdefer self.overlay_entries.deinit();
         errdefer self.decorations.deinit();
+        errdefer self.hover_decorations.deinit();
         errdefer self.line_entries.deinit();
         errdefer self.bracket_decorations.deinit();
         self.surface = try ui.Surface.init(allocator, .{
@@ -131,7 +186,11 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.bracket_decorations.deinit();
         self.line_entries.deinit();
+        self.hover_decorations.deinit();
         self.decorations.deinit();
+        self.overlay_entries.deinit();
+        self.content_entries.deinit();
+        self.content_widgets.deinit();
         self.overlays.deinit();
         self.surface.deinit();
         self.allocator.destroy(self);
@@ -144,11 +203,23 @@ pub const View = struct {
         try self.refresh();
     }
 
+    /// Registers a content widget anchored to a model position.
+    pub fn addContentWidget(self: *View, widget: editorBrowser.IContentWidget) !void {
+        try self.content_widgets.append(widget);
+        try self.refresh();
+    }
+
     /// Replaces the highlighted model ranges (find matches, current match,
     /// find scope) and rebuilds the view.
     pub fn setDecorations(self: *View, decorations: []const editorBrowser.Decoration) !void {
         self.decorations.clearRetainingCapacity();
         try self.decorations.appendSlice(decorations);
+    }
+
+    /// Sets (or clears, with an empty slice) the hover highlight range.
+    pub fn setHoverDecorations(self: *View, decorations: []const editorBrowser.Decoration) !void {
+        self.hover_decorations.clearRetainingCapacity();
+        try self.hover_decorations.appendSlice(decorations);
     }
 
     pub fn clearDecorations(self: *View) !void {
@@ -161,6 +232,18 @@ pub const View = struct {
             const widget = self.overlays.items[index];
             if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
                 _ = self.overlays.orderedRemove(index);
+                try self.refresh();
+                return;
+            }
+        }
+    }
+
+    pub fn removeContentWidget(self: *View, id: []const u8) !void {
+        var index: usize = 0;
+        while (index < self.content_widgets.items.len) : (index += 1) {
+            const widget = self.content_widgets.items[index];
+            if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
+                _ = self.content_widgets.orderedRemove(index);
                 try self.refresh();
                 return;
             }
@@ -276,6 +359,88 @@ pub const View = struct {
         return null;
     }
 
+    fn lineEntryForViewLine(self: *const View, view_line: usize) ?LineEntry {
+        const top = self.editor.topViewLine();
+        if (view_line < top) return null;
+        const index = view_line - top;
+        if (index >= self.line_entries.items.len) return null;
+        const entry = self.line_entries.items[index];
+        return if (entry.view_line == view_line) entry else null;
+    }
+
+    /// The mouse target for a cell, mirroring upstream's `onMouseMove` target
+    /// types. Hover needs to know whether the pointer is on text, past the end
+    /// of a line, on the gutter or on a widget.
+    pub fn mouseTargetAt(self: *View, x: usize, y: usize) !editorBrowser.MouseTarget {
+        const doc = self.surface.document();
+        const target = (try self.surface.elementFromPoint(x, y)) orelse doc.root orelse
+            return .{ .mouse_column = x + 1 };
+
+        for (self.content_entries.items) |entry| {
+            if (entry.contains(x, y)) {
+                return .{ .element = target, .type = .content_widget, .mouse_column = x + 1 };
+            }
+        }
+        for (self.overlay_entries.items) |entry| {
+            if (entry.contains(x, y)) {
+                return .{ .element = target, .type = .overlay_widget, .mouse_column = x + 1 };
+            }
+        }
+
+        const text_height = self.editor.textHeight();
+        if (y >= text_height) {
+            return .{ .element = target, .type = .status, .mouse_column = x + 1 };
+        }
+
+        const gutter = self.editor.gutterWidth();
+        const top = self.editor.topViewLine();
+        const view_line = top + y;
+        if (x < gutter) {
+            return .{
+                .element = target,
+                .type = .gutter_line_numbers,
+                .position = try self.editor.positionAtViewPoint(@min(view_line, self.editor.viewLineCount()), 0),
+                .mouse_column = x + 1,
+            };
+        }
+
+        if (view_line > self.editor.viewLineCount()) {
+            return .{
+                .element = target,
+                .type = .content_empty,
+                .mouse_column = x + 1,
+                .detail = .{ .content_empty = .{ .is_after_lines = true } },
+            };
+        }
+
+        const position = try self.editor.positionAtViewPoint(view_line, x - gutter);
+        const range = Range.init(position.lineNumber, position.column, position.lineNumber, position.column);
+        const entry = self.lineEntryForViewLine(view_line) orelse {
+            return .{ .element = target, .type = .content_empty, .mouse_column = x + 1, .detail = .{ .content_empty = .{ .is_after_lines = false } } };
+        };
+        const offset = x - gutter;
+        if (offset < entry.text_width) {
+            return .{
+                .element = target,
+                .type = .content_text,
+                .position = position,
+                .range = range,
+                .mouse_column = x + 1,
+            };
+        }
+        return .{
+            .element = target,
+            .type = .content_empty,
+            .position = position,
+            .range = range,
+            .mouse_column = x + 1,
+            .detail = .{ .content_empty = .{
+                .is_after_lines = false,
+                .horizontal_distance_to_text = offset - entry.text_width,
+            } },
+        };
+    }
+
     fn positionAtCell(self: *const View, view_line: usize, x: usize) !Position {
         const gutter = self.editor.gutterWidth();
         return self.editor.positionAtViewPoint(view_line, x -| gutter);
@@ -314,6 +479,22 @@ pub const View = struct {
         try self.rebuild();
     }
 
+    /// The text row of a model position, or null when it is outside the
+    /// viewport. Content widgets use this to decide above/below placement.
+    pub fn visibleRowOf(self: *View, position: Position) ?usize {
+        const view_position = self.editor.viewPositionOfModelPosition(position);
+        const top = self.editor.topViewLine();
+        if (view_position.lineNumber < top) return null;
+        const row = view_position.lineNumber - top;
+        if (row >= self.editor.textHeight()) return null;
+        return row;
+    }
+
+    /// Gives the keyboard back to the editor after a content widget closes.
+    pub fn focusEditor(self: *View) void {
+        self.surface.document().blur();
+    }
+
     pub fn render(self: *View, writer: *std.Io.Writer) !void {
         try self.surface.render(writer, .{ .synchronized = true });
     }
@@ -338,6 +519,9 @@ pub const View = struct {
         for (self.overlays.items) |overlay| {
             if (overlay.is_focused(overlay.context)) return false;
         }
+        for (self.content_widgets.items) |widget| {
+            if (widget.is_focused(widget.context)) return false;
+        }
         return true;
     }
 
@@ -361,6 +545,8 @@ pub const View = struct {
         self.cursor_line = null;
         self.cursor_offset = 0;
         self.line_entries.clearRetainingCapacity();
+        self.content_entries.clearRetainingCapacity();
+        self.overlay_entries.clearRetainingCapacity();
 
         const cols = doc.cols;
         const rows = doc.rows;
@@ -518,11 +704,12 @@ pub const View = struct {
             }
 
             _ = try root.appendChild(line);
-            try self.line_entries.append(.{ .node = line, .view_line = view_line });
+            try self.line_entries.append(.{ .node = line, .view_line = view_line, .text_width = line_width });
         }
 
         try appendStatus(self, doc, root, rows);
         try self.buildOverlays(doc, root, cols, text_height);
+        try self.buildContentWidgets(doc, root, cols, text_height, gutter, tab_size);
     }
 
     fn markDecorations(
@@ -541,6 +728,7 @@ pub const View = struct {
         var inline_list = std.array_list.Managed(InlineDecoration).init(self.allocator);
         defer inline_list.deinit();
         try appendInlineDecorations(&inline_list, self.decorations.items, model_line);
+        try appendInlineDecorations(&inline_list, self.hover_decorations.items, model_line);
         try appendInlineDecorations(&inline_list, self.bracket_decorations.items, model_line);
         if (inline_list.items.len == 0) return;
 
@@ -614,9 +802,95 @@ pub const View = struct {
             const content = try widget.build(widget.context, doc);
             _ = try container.appendChild(content);
             _ = try root.appendChild(container);
+            try self.overlay_entries.append(.{
+                .node = container,
+                .left = left,
+                .top = top,
+                .width = width,
+                .height = height,
+            });
 
             // The widget subtree is connected now, so focus can be restored
             // after the document rebuild.
+            if (widget.is_focused(widget.context)) {
+                if (widget.focus_node(widget.context)) |node| {
+                    _ = doc.focus(node);
+                }
+            }
+        }
+    }
+
+    /// Places content widgets at their model anchor. Upstream positions them
+    /// in pixels next to the view position and lets the content widget layer
+    /// clamp them to the editor; the terminal maps the anchor to a cell and
+    /// keeps the box inside the text area.
+    fn buildContentWidgets(
+        self: *View,
+        doc: *ui.Document,
+        root: *ui.Node,
+        cols: usize,
+        text_height: usize,
+        gutter: usize,
+        tab_size: usize,
+    ) !void {
+        const editor = self.editor;
+        const top = editor.topViewLine();
+        for (self.content_widgets.items) |widget| {
+            const widget_position = widget.get_position(widget.context) orelse continue;
+            const view_position = editor.viewPositionOfModelPosition(widget_position.position);
+            if (view_position.lineNumber < top or view_position.lineNumber >= top + text_height) {
+                continue;
+            }
+            const row = view_position.lineNumber - top;
+
+            const width = @min(widget.width(widget.context, cols), cols);
+            const height = @min(widget.height(widget.context), text_height);
+            if (width == 0 or height == 0) continue;
+
+            const data = try editor.viewLineData(view_position.lineNumber);
+            const model_line = editor.modelLineNumber(view_position.lineNumber);
+            const model_column = editor.modelColumnOfViewPosition(view_position.lineNumber, view_position.column);
+            const model_content = try editor.model.getLineContent(model_line);
+            defer model_content.deinit();
+            const anchor_cell = visibleOffset(
+                model_content.items,
+                model_column,
+                tab_size,
+                data.startVisibleColumn,
+                data.minColumn - 1,
+            );
+
+            const left = @min(gutter + anchor_cell, cols -| width);
+            var widget_top: usize = switch (widget_position.preference) {
+                .below => row + 1,
+                .above => row -| height,
+            };
+            if (widget_top + height > text_height) {
+                widget_top = text_height -| height;
+            }
+
+            const container = try doc.createElement(.div);
+            container.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = @floatFromInt(left) },
+                .top = .{ .cells = @floatFromInt(widget_top) },
+                .width = .{ .cells = @floatFromInt(width) },
+                .height = .{ .cells = @floatFromInt(height) },
+                .overflow = .hidden,
+            });
+
+            const content = try widget.build(widget.context, doc);
+            _ = try container.appendChild(content);
+            _ = try root.appendChild(container);
+            try self.content_entries.append(.{
+                .widget = widget,
+                .node = container,
+                .left = left,
+                .top = widget_top,
+                .width = width,
+                .height = height,
+            });
+
             if (widget.is_focused(widget.context)) {
                 if (widget.focus_node(widget.context)) |node| {
                     _ = doc.focus(node);
@@ -693,6 +967,9 @@ fn appendRuns(
         var style = tokenStyle(part);
         if (cell < flags.len) {
             const flag = flags[cell];
+            if (flag & CellFlag.hover_highlight != 0) {
+                style.background = color(hover_highlight_background);
+            }
             if (flag & CellFlag.bracket_match != 0) {
                 style.background = color(bracket_match_background);
                 style.color = color(bracket_match_foreground);
@@ -829,6 +1106,7 @@ fn decorationClassName(kind: editorBrowser.DecorationKind) []const u8 {
         .current_find_match => "currentFindMatchInline",
         .find_scope => "findScope",
         .bracket_match => "bracket-match-inline",
+        .hover_highlight => "hoverHighlight",
     };
 }
 
@@ -837,6 +1115,7 @@ fn decorationBit(class_name: []const u8) ?u8 {
     if (std.mem.eql(u8, class_name, "currentFindMatchInline")) return CellFlag.current_find_match;
     if (std.mem.eql(u8, class_name, "findScope")) return CellFlag.find_scope;
     if (std.mem.eql(u8, class_name, "bracket-match-inline")) return CellFlag.bracket_match;
+    if (std.mem.eql(u8, class_name, "hoverHighlight")) return CellFlag.hover_highlight;
     return null;
 }
 
@@ -1112,6 +1391,238 @@ test "View: overlay widget is placed top-right and takes focused keys" {
     try std.testing.expect(view.surface.document().activeElement() != null);
     try std.testing.expect(view.dispatchKey(&event));
     try std.testing.expectEqual(@as(usize, 1), overlay.keys);
+}
+
+const TestContentWidget = struct {
+    position: Position,
+    preference: editorBrowser.ContentWidgetPositionPreference = .below,
+    width_cells: usize = 5,
+    height_cells: usize = 1,
+    node: ?*ui.Node = null,
+
+    fn widget(self: *TestContentWidget) editorBrowser.IContentWidget {
+        return .{
+            .context = self,
+            .get_id = getId,
+            .get_position = getPosition,
+            .width = width,
+            .height = height,
+            .build = build,
+            .focus_node = focusNode,
+            .is_focused = isFocused,
+        };
+    }
+
+    fn getId(_: *anyopaque) []const u8 {
+        return "test.content";
+    }
+
+    fn getPosition(context: *anyopaque) ?editorBrowser.IContentWidgetPosition {
+        const self: *TestContentWidget = @ptrCast(@alignCast(context));
+        return .{ .position = self.position, .preference = self.preference };
+    }
+
+    fn width(context: *anyopaque, cols: usize) usize {
+        const self: *TestContentWidget = @ptrCast(@alignCast(context));
+        return @min(self.width_cells, cols);
+    }
+
+    fn height(context: *anyopaque) usize {
+        const self: *TestContentWidget = @ptrCast(@alignCast(context));
+        return self.height_cells;
+    }
+
+    fn build(context: *anyopaque, doc: *ui.Document) !*ui.Node {
+        const self: *TestContentWidget = @ptrCast(@alignCast(context));
+        const node = try doc.createElement(.div);
+        node.asElement().focusable = true;
+        node.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = 0 },
+            .top = .{ .cells = 0 },
+            .width = .{ .percent = 100 },
+            .height = .{ .cells = 1 },
+            .reverse = true,
+        });
+        _ = try node.appendChild(try doc.createText("HOVER"));
+        self.node = node;
+        return node;
+    }
+
+    fn focusNode(context: *anyopaque) ?*ui.Node {
+        const self: *TestContentWidget = @ptrCast(@alignCast(context));
+        return self.node;
+    }
+
+    fn isFocused(_: *anyopaque) bool {
+        return false;
+    }
+};
+
+test "View: content widget anchors to a model position" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abcdef", "test.txt", 20, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var widget = TestContentWidget{
+        .position = Position.init(1, 3),
+        .width_cells = 7,
+        .height_cells = 1,
+    };
+    try view.addContentWidget(widget.widget());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    try std.testing.expectEqual(@as(usize, 1), view.content_entries.items.len);
+    const entry = view.content_entries.items[0];
+    // Gutter is 3 cells wide, and column 3 starts at cell 2 of the text.
+    try std.testing.expectEqual(@as(usize, 5), entry.left);
+    try std.testing.expectEqual(@as(usize, 1), entry.top);
+
+    const row = try rowText(view, allocator, 1);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "HOVER") != null);
+
+    const target = try view.mouseTargetAt(entry.left + 1, entry.top);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.content_widget, target.type);
+}
+
+test "View: content widget anchors on a wrapped line" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "aaaa bbbb cccc dddd", "test.txt", 20, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    // Text width is 17; the word wrap puts `dddd` on the second view line.
+    try std.testing.expectEqual(@as(usize, 1), view.visibleRowOf(Position.init(1, 18)).?);
+    try std.testing.expectEqual(@as(usize, 0), view.visibleRowOf(Position.init(1, 1)).?);
+
+    var widget = TestContentWidget{
+        .position = Position.init(1, 18),
+        .width_cells = 5,
+        .height_cells = 1,
+    };
+    try view.addContentWidget(widget.widget());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    try std.testing.expectEqual(@as(usize, 2), view.content_entries.items[0].top);
+    // Column 18 is the third cell of the wrapped segment, which starts at the
+    // left edge of the text area.
+    try std.testing.expectEqual(@as(usize, 5), view.content_entries.items[0].left);
+}
+
+test "View: content widget flips above and clamps to the text area" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 12, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var below = TestContentWidget{
+        .position = Position.init(2, 1),
+        .preference = .below,
+        .width_cells = 5,
+        .height_cells = 2,
+    };
+    try view.addContentWidget(below.widget());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    // Row 1 is the anchor; two rows below do not fit the three-row text area,
+    // so the widget is clamped to its last two rows.
+    try std.testing.expectEqual(@as(usize, 1), view.content_entries.items[0].top);
+
+    below.preference = .above;
+    try view.refresh();
+    try view.render(&out.writer);
+    try std.testing.expectEqual(@as(usize, 0), view.content_entries.items[0].top);
+}
+
+test "View: hover highlight paints the anchor range" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abcdef", "test.txt", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.setHoverDecorations(&[_]editorBrowser.Decoration{
+        .{ .range = Range.init(1, 2, 1, 5), .kind = .hover_highlight },
+    });
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    // Gutter is 2; columns 2..4 of the text are highlighted.
+    const background = grid.bg[grid.index(3, 0)];
+    try std.testing.expect(background != 0);
+}
+
+test "View: mouse target distinguishes text, empty area, gutter and status" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 20, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const on_text = try view.mouseTargetAt(4, 0);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.content_text, on_text.type);
+    try std.testing.expectEqual(@as(usize, 2), on_text.position.?.column);
+
+    const empty = try view.mouseTargetAt(15, 0);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.content_empty, empty.type);
+    const empty_detail = empty.detail.?.content_empty;
+    try std.testing.expect(!empty_detail.is_after_lines);
+
+    const after_lines = try view.mouseTargetAt(3, 3);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.content_empty, after_lines.type);
+    try std.testing.expect(after_lines.detail.?.content_empty.is_after_lines);
+
+    const gutter = try view.mouseTargetAt(0, 0);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.gutter_line_numbers, gutter.type);
+
+    const status = try view.mouseTargetAt(3, 4);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.status, status.type);
 }
 
 test "View: the gutter keeps a blank cell before the text" {

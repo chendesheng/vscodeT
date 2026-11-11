@@ -9,6 +9,7 @@ const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
 const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
 const TextModelCreationOptions = @import("../vs/editor/common/model.zig").TextModelCreationOptions;
+const PositionAffinity = @import("../vs/editor/common/model.zig").PositionAffinity;
 const IdentifiedSingleEditOperation = @import("../vs/editor/common/model.zig").IdentifiedSingleEditOperation;
 const ValidEditOperation = @import("../vs/editor/common/model.zig").ValidEditOperation;
 const CursorStateComputer = @import("../vs/editor/common/model/editStack.zig").CursorStateComputer;
@@ -465,6 +466,14 @@ pub const Editor = struct {
     /// The model column of a 1-based column in a view line's output content.
     pub fn modelColumnOfViewPosition(self: *Editor, view_line_number: usize, view_column: usize) usize {
         return self.view_lines.getModelColumnOfViewPosition(view_line_number, view_column);
+    }
+
+    /// The view position of a model position, following wrapped view lines.
+    /// Content widgets anchor to model positions, so the view needs the same
+    /// model-to-view conversion the cursor uses.
+    pub fn viewPositionOfModelPosition(self: *Editor, model_position: Position) Position {
+        const converter = self.converter.interface();
+        return converter.convertModelPositionToViewPosition(converter.context, model_position, .None, false, false);
     }
 
     /// Maps a visible cell offset within a view line to the model position.

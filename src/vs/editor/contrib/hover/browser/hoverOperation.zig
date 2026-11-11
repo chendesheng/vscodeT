@@ -31,8 +31,8 @@ pub const Timer = struct {
 pub fn HoverComputer(comptime Args: type, comptime Result: type) type {
     return struct {
         context: *anyopaque,
-        compute_async: ?*const fn (context: *anyopaque, args: *const Args, token: CancellationToken) []const Result = null,
-        compute_sync: ?*const fn (context: *anyopaque, args: *const Args) []const Result = null,
+        compute_async: ?*const fn (context: *anyopaque, args: *const Args, token: CancellationToken) anyerror![]const Result = null,
+        compute_sync: ?*const fn (context: *anyopaque, args: *const Args) anyerror![]const Result = null,
     };
 }
 
@@ -119,7 +119,7 @@ pub fn HoverOperation(comptime Args: type, comptime Result: type) type {
         fn appendAsyncResults(self: *Self) void {
             if (self.computer.compute_async) |compute| {
                 const args = self.options.?;
-                const values = compute(self.computer.context, &args, .None);
+                const values = compute(self.computer.context, &args, .None) catch &[_]Result{};
                 self.results.appendSlice(values) catch {};
                 self.state = .waiting_for_async;
             } else {
@@ -138,7 +138,7 @@ pub fn HoverOperation(comptime Args: type, comptime Result: type) type {
         fn triggerSyncComputation(self: *Self) void {
             if (self.computer.compute_sync) |compute| {
                 const options = self.options orelse return;
-                const values = compute(self.computer.context, &options);
+                const values = compute(self.computer.context, &options) catch &[_]Result{};
                 self.results.appendSlice(values) catch {};
             }
             self.state = .idle;
@@ -173,6 +173,10 @@ pub fn HoverOperation(comptime Args: type, comptime Result: type) type {
         pub fn cancel(self: *Self) void {
             self.timer.cancel(self.timer.context);
             self.resetResults();
+        }
+
+        pub fn isIdle(self: *const Self) bool {
+            return self.state == .idle and self.pending_phase == .none;
         }
     };
 }
@@ -212,7 +216,7 @@ test "hoverOperation: delayed operation fires after both waits" {
     const computer = @import("./hoverOperation.zig").HoverComputer(u32, u32){
         .context = &state,
         .compute_sync = struct {
-            fn compute(_: *anyopaque, _: *const u32) []const u32 {
+            fn compute(_: *anyopaque, _: *const u32) anyerror![]const u32 {
                 return &.{ 7, 8 };
             }
         }.compute,
