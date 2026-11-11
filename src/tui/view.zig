@@ -13,6 +13,10 @@
 //! `Surface` frame so the renderer still emits only the changed cells. The view
 //! also owns the terminal mouse adaptation: click/drag caret placement, drag
 //! selection, click synthesis and wheel scrolling of the editor viewport.
+//!
+//! Find and bracket ranges are converted to inline decorations and resolved
+//! with the ported `LineDecoration.filter`/`extractWrapped` path, mirroring
+//! upstream's ViewLine; the resulting classes map to terminal cell flags.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -24,6 +28,9 @@ const CursorState = @import("../vs/editor/common/cursorCommon.zig").CursorState;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
 const Range = @import("../vs/editor/common/core/range.zig").Range;
 const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
+const lineDecorations = @import("../vs/editor/common/viewLayout/lineDecorations.zig");
+const inlineDecorations = @import("../vs/editor/common/viewModel/inlineDecorations.zig");
+const InlineDecoration = inlineDecorations.InlineDecoration;
 const line_renderer = @import("../vs/editor/common/viewLayout/viewLineRenderer.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 
@@ -73,8 +80,9 @@ pub const View = struct {
     /// one of these maps to its view line; hits on the gutter, the status row
     /// or overlays do not.
     line_entries: std.array_list.Managed(LineEntry),
-    /// Matching bracket ranges for the current cursors, recomputed per frame.
-    bracket_ranges: std.array_list.Managed(Range),
+    /// Matching bracket decorations for the current cursors, recomputed per
+    /// frame and painted through the same line-decoration path as find.
+    bracket_decorations: std.array_list.Managed(editorBrowser.Decoration),
     /// The last left-button press, in cells, kept across document rebuilds so
     /// a release can synthesize a click without retaining node pointers.
     mouse_press: ?MousePress = null,
@@ -103,12 +111,12 @@ pub const View = struct {
             .overlays = std.array_list.Managed(editorBrowser.IOverlayWidget).init(allocator),
             .decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
             .line_entries = std.array_list.Managed(LineEntry).init(allocator),
-            .bracket_ranges = std.array_list.Managed(Range).init(allocator),
+            .bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
         };
         errdefer self.overlays.deinit();
         errdefer self.decorations.deinit();
         errdefer self.line_entries.deinit();
-        errdefer self.bracket_ranges.deinit();
+        errdefer self.bracket_decorations.deinit();
         self.surface = try ui.Surface.init(allocator, .{
             .cols = editor.screen_width,
             .rows = editor.screen_height,
@@ -121,7 +129,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
-        self.bracket_ranges.deinit();
+        self.bracket_decorations.deinit();
         self.line_entries.deinit();
         self.decorations.deinit();
         self.overlays.deinit();
@@ -340,12 +348,12 @@ pub const View = struct {
         // rebuild: a wheel scroll is allowed to leave it off-screen.
         _ = editor.scrollViewLines(0);
 
-        self.bracket_ranges.clearRetainingCapacity();
+        self.bracket_decorations.clearRetainingCapacity();
         const bracket_data = try editor.updateBracketMatches(self.editorHasFocus());
         for (bracket_data) |entry| {
             const brackets = entry.brackets orelse continue;
-            try self.bracket_ranges.append(brackets[0]);
-            try self.bracket_ranges.append(brackets[1]);
+            try self.bracket_decorations.append(.{ .range = brackets[0], .kind = .bracket_match });
+            try self.bracket_decorations.append(.{ .range = brackets[1], .kind = .bracket_match });
         }
 
         const doc = self.surface.document();
@@ -457,6 +465,17 @@ pub const View = struct {
             const model_content = try editor.model.getLineContent(model_line);
             defer model_content.deinit();
 
+            // Bracket and find ranges are model columns; clip them to this
+            // wrapped segment's model span before mapping to cells. Without
+            // this, a range on another segment maps to cell zero of every
+            // continuation line.
+            const segment_start_column = editor.modelColumnOfViewPosition(view_line, data.minColumn);
+            const segment_end_column = editor.modelColumnOfViewPosition(view_line, data.maxColumn);
+            const line_start_offset = editor.model.getOffsetAt(Position.init(model_line, 1));
+            const segment_start_offset = editor.model.getOffsetAt(Position.init(model_line, segment_start_column)) - line_start_offset;
+            const segment_end_offset = editor.model.getOffsetAt(Position.init(model_line, segment_end_column)) - line_start_offset;
+
+            const indent_cells = data.minColumn - 1;
             const line_width = doc.measureText(rendered.bytes);
             const flags = try self.allocator.alloc(u8, @max(line_width, 1));
             defer self.allocator.free(flags);
@@ -468,26 +487,19 @@ pub const View = struct {
                 model_content.items,
                 tab_size,
                 data.startVisibleColumn,
+                indent_cells,
                 line_width,
                 flags,
             );
-            self.markDecorations(
+            try self.markDecorations(
                 model_line,
-                data.minColumn,
-                data.maxColumn,
+                segment_start_column,
+                segment_start_offset,
+                segment_end_offset,
                 model_content.items,
                 tab_size,
                 data.startVisibleColumn,
-                line_width,
-                flags,
-            );
-            self.markBracketMatches(
-                model_line,
-                data.minColumn,
-                data.maxColumn,
-                model_content.items,
-                tab_size,
-                data.startVisibleColumn,
+                indent_cells,
                 line_width,
                 flags,
             );
@@ -501,6 +513,7 @@ pub const View = struct {
                     cursor.column,
                     tab_size,
                     data.startVisibleColumn,
+                    indent_cells,
                 );
             }
 
@@ -515,74 +528,54 @@ pub const View = struct {
     fn markDecorations(
         self: *View,
         model_line: usize,
-        min_column: usize,
-        max_column: usize,
+        segment_start_column: usize,
+        segment_start_offset: usize,
+        segment_end_offset: usize,
         model_content: []const u8,
         tab_size: usize,
         start_visible_column: usize,
+        indent_cells: usize,
         line_width: usize,
         flags: []u8,
-    ) void {
-        for (self.decorations.items) |decoration| {
-            const range = decoration.range;
-            if (range.startLineNumber > model_line or range.endLineNumber < model_line) continue;
+    ) !void {
+        var inline_list = std.array_list.Managed(InlineDecoration).init(self.allocator);
+        defer inline_list.deinit();
+        try appendInlineDecorations(&inline_list, self.decorations.items, model_line);
+        try appendInlineDecorations(&inline_list, self.bracket_decorations.items, model_line);
+        if (inline_list.items.len == 0) return;
 
-            var start_column = if (range.startLineNumber == model_line) range.startColumn else min_column;
-            var end_column = if (range.endLineNumber == model_line) range.endColumn else max_column;
-            start_column = @max(start_column, min_column);
-            end_column = @min(end_column, max_column);
-            if (start_column > max_column or end_column < min_column) continue;
+        const filtered = try lineDecorations.LineDecoration.filter(
+            self.allocator,
+            inline_list.items,
+            model_line,
+            1,
+            self.editor.model.getLineMaxColumn(model_line),
+        );
+        defer self.allocator.free(filtered);
 
-            var start = visibleOffset(model_content, start_column, tab_size, start_visible_column);
-            var end = visibleOffset(model_content, end_column, tab_size, start_visible_column);
-            if (end <= start) {
-                if (!range.isEmpty()) continue;
-                end = start + 1;
-            }
+        // Upstream's ViewLine does the same: filter the model decorations for
+        // this line, then extract the slice for each wrapped output line.
+        const wrapped = try lineDecorations.LineDecoration.extractWrapped(
+            self.allocator,
+            filtered,
+            segment_start_offset,
+            segment_end_offset,
+        );
+        defer self.allocator.free(wrapped);
+
+        for (wrapped) |decoration| {
+            const bit = decorationBit(decoration.className) orelse continue;
+            const start_model_column = segment_start_column + decoration.startColumn - 1;
+            const end_model_column = segment_start_column + decoration.endColumn - 1;
+            var start = visibleOffset(model_content, start_model_column, tab_size, start_visible_column, indent_cells);
+            var end = visibleOffset(model_content, end_model_column, tab_size, start_visible_column, indent_cells);
+            if (start >= end) continue;
             start = @min(start, line_width);
             end = @min(end, line_width);
 
-            const bit: u8 = switch (decoration.kind) {
-                .find_match => CellFlag.find_match,
-                .current_find_match => CellFlag.current_find_match,
-                .find_scope => CellFlag.find_scope,
-            };
             var cell = start;
             while (cell < end and cell < flags.len) : (cell += 1) {
                 flags[cell] |= bit;
-            }
-        }
-    }
-
-    fn markBracketMatches(
-        self: *View,
-        model_line: usize,
-        min_column: usize,
-        max_column: usize,
-        model_content: []const u8,
-        tab_size: usize,
-        start_visible_column: usize,
-        line_width: usize,
-        flags: []u8,
-    ) void {
-        for (self.bracket_ranges.items) |range| {
-            if (range.startLineNumber > model_line or range.endLineNumber < model_line) continue;
-
-            var start_column = if (range.startLineNumber == model_line) range.startColumn else min_column;
-            var end_column = if (range.endLineNumber == model_line) range.endColumn else max_column;
-            start_column = @max(start_column, min_column);
-            end_column = @min(end_column, max_column);
-            if (start_column > max_column or end_column < min_column) continue;
-
-            var start = visibleOffset(model_content, start_column, tab_size, start_visible_column);
-            var end = visibleOffset(model_content, end_column, tab_size, start_visible_column);
-            if (end <= start) end = start + 1;
-            start = @min(start, line_width);
-            end = @min(end, line_width);
-
-            var cell = start;
-            while (cell < end and cell < flags.len) : (cell += 1) {
-                flags[cell] |= CellFlag.bracket_match;
             }
         }
     }
@@ -748,6 +741,7 @@ fn markSelections(
     model_content: []const u8,
     tab_size: usize,
     start_visible_column: usize,
+    indent_cells: usize,
     line_width: usize,
     flags: []u8,
 ) void {
@@ -758,11 +752,11 @@ fn markSelections(
 
         var start: usize = 0;
         if (view_line == selection.startLineNumber) {
-            start = visibleOffset(model_content, selection.startColumn, tab_size, start_visible_column);
+            start = visibleOffset(model_content, selection.startColumn, tab_size, start_visible_column, indent_cells);
         }
         var end: usize = line_width;
         if (view_line == selection.endLineNumber) {
-            end = visibleOffset(model_content, selection.endColumn, tab_size, start_visible_column);
+            end = visibleOffset(model_content, selection.endColumn, tab_size, start_visible_column, indent_cells);
         }
         start = @min(start, line_width);
         end = @min(end, line_width);
@@ -776,7 +770,7 @@ fn markSelections(
         for (states[1..]) |state| {
             const position = state.viewState.position;
             if (position.lineNumber != view_line) continue;
-            const cell = visibleOffset(model_content, position.column, tab_size, start_visible_column);
+            const cell = visibleOffset(model_content, position.column, tab_size, start_visible_column, indent_cells);
             if (cell < flags.len) flags[cell] |= CellFlag.secondary_cursor;
         }
     }
@@ -787,9 +781,10 @@ fn visibleOffset(
     column: usize,
     tab_size: usize,
     start_visible_column: usize,
+    indent_cells: usize,
 ) usize {
     const visible = CursorColumns.visibleColumnFromColumn(model_content, column, tab_size);
-    return visible -| start_visible_column;
+    return (visible -| start_visible_column) + indent_cells;
 }
 
 fn tokenStyle(part: line_renderer.RenderedPart) ui.Style {
@@ -807,6 +802,42 @@ fn tokenStyle(part: line_renderer.RenderedPart) ui.Style {
 
 fn styleEql(a: ui.Style, b: ui.Style) bool {
     return std.meta.eql(a, b);
+}
+
+fn appendInlineDecorations(
+    out: *std.array_list.Managed(InlineDecoration),
+    decorations: []const editorBrowser.Decoration,
+    model_line: usize,
+) !void {
+    for (decorations) |decoration| {
+        if (decoration.range.endLineNumber < model_line or
+            decoration.range.startLineNumber > model_line)
+        {
+            continue;
+        }
+        try out.append(.{
+            .range = decoration.range,
+            .inlineClassName = decorationClassName(decoration.kind),
+            .type = .Regular,
+        });
+    }
+}
+
+fn decorationClassName(kind: editorBrowser.DecorationKind) []const u8 {
+    return switch (kind) {
+        .find_match => "findMatchInline",
+        .current_find_match => "currentFindMatchInline",
+        .find_scope => "findScope",
+        .bracket_match => "bracket-match-inline",
+    };
+}
+
+fn decorationBit(class_name: []const u8) ?u8 {
+    if (std.mem.eql(u8, class_name, "findMatchInline")) return CellFlag.find_match;
+    if (std.mem.eql(u8, class_name, "currentFindMatchInline")) return CellFlag.current_find_match;
+    if (std.mem.eql(u8, class_name, "findScope")) return CellFlag.find_scope;
+    if (std.mem.eql(u8, class_name, "bracket-match-inline")) return CellFlag.bracket_match;
+    return null;
 }
 
 fn measureCodepoint(cp: u21) u2 {
@@ -1386,4 +1417,119 @@ test "View: typing an auto-closed bracket highlights the pair" {
     const grid = view.surface.grid();
     try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter, 0)]);
     try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter + 1, 0)]);
+}
+
+test "View: bracket highlights stay on their wrapped segment" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "(abcdefghij)", "test.zig", 8, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expect(editor.viewLineCount() > 1);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try editor.setCursorPosition(Position.init(1, 2));
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const bracket_bg = ui.cell.packColor(color(bracket_match_background));
+    const grid = view.surface.grid();
+    // The opening bracket is on the first segment.
+    try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter, 0)]);
+    // The last continuation is "j)"; its closing bracket is one cell in.
+    try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter + 1, 2)]);
+    // Previous continuations must not get a mis-mapped cell at their start.
+    try std.testing.expect(grid.bg[grid.index(gutter, 1)] != bracket_bg);
+    try std.testing.expect(grid.bg[grid.index(gutter, 2)] != bracket_bg);
+}
+
+test "View: find decorations stay on their wrapped segment" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 8, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expect(editor.viewLineCount() > 1);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.setDecorations(&[_]editorBrowser.Decoration{
+        .{ .range = Range.init(1, 7, 1, 11), .kind = .find_match },
+    });
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const match_bg = ui.cell.packColor(color(find_match_background));
+    const grid = view.surface.grid();
+    // "ghij" is the tail of the second segment: cells 1..4.
+    var cell: usize = 1;
+    while (cell < 5) : (cell += 1) {
+        try std.testing.expectEqual(match_bg, grid.bg[grid.index(gutter + cell, 1)]);
+    }
+    try std.testing.expect(grid.bg[grid.index(gutter, 1)] != match_bg);
+    cell = 0;
+    while (cell < 5) : (cell += 1) {
+        try std.testing.expect(grid.bg[grid.index(gutter + cell, 0)] != match_bg);
+    }
+}
+
+test "View: bracket highlights include the synthetic wrap indentation" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "    (abcdefghij)", "test.zig", 11, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expect(editor.viewLineCount() > 1);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try editor.setCursorPosition(Position.init(1, 6));
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const cols = view.surface.document().cols;
+    const rows = editor.textHeight();
+    const bracket_bg = ui.cell.packColor(color(bracket_match_background));
+    const grid = view.surface.grid();
+
+    var found_open = false;
+    var found_close = false;
+    var row: usize = 0;
+    while (row < rows) : (row += 1) {
+        var col = gutter;
+        while (col < cols) : (col += 1) {
+            const cluster = grid.cluster[grid.index(col, row)];
+            if (cluster == '(') {
+                found_open = true;
+                try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(col, row)]);
+            } else if (cluster == ')') {
+                found_close = true;
+                try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(col, row)]);
+            }
+        }
+    }
+    try std.testing.expect(found_open);
+    try std.testing.expect(found_close);
+
+    // Synthetic indentation cells are not bracket cells.
+    row = 1;
+    while (row < rows) : (row += 1) {
+        try std.testing.expect(grid.bg[grid.index(gutter, row)] != bracket_bg);
+    }
 }

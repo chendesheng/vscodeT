@@ -192,9 +192,10 @@ Editor contributions:
   surrounding-selection path are not ported yet.
 - `src/vs/editor/contrib/bracketMatching` ports the controller logic: jump to
   bracket, select to bracket, remove brackets, and the cached bracket-match
-  data used for visual highlighting. The TUI paints the matching bracket cells
-  directly; the overview-ruler part and general decoration-class rendering are
-  still unpainted.
+  data used for visual highlighting. The TUI turns that data into model
+  decorations and paints them through the ported `LineDecoration.filter` /
+  `extractWrapped` path, the same route find ranges take; the overview-ruler
+  part and CSS decoration classes are still unpainted.
 - `src/vs/editor/contrib/multicursor` ports cursor insertion above/below,
   cursors at line ends/top/bottom, occurrence search sessions, and
   add/move/select-all occurrence actions. The TUI renders secondary cursors and

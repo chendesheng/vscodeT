@@ -55,6 +55,7 @@ pub const DecorationKind = enum {
     find_match,
     current_find_match,
     find_scope,
+    bracket_match,
 };
 
 pub const Decoration = struct {

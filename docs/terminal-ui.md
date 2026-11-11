@@ -564,9 +564,10 @@ Library constraints:
     line element per view line, one text node per rendered part.
   - Paints selections as inverted cells and the cursor line with a background;
     the hardware cursor is moved to the caret cell after layout.
-  - Paints the two matching-bracket cells while the cursor is on a bracket,
-    using the cached bracket-matching controller data. Highlights are hidden
-    while a widget owns focus and update on typing or cursor movement.
+  - Turns the cached bracket-matching data into model decorations and paints
+    them through `LineDecoration.filter`/`extractWrapped`, the same per-wrapped-
+    line route as find ranges. Highlights are hidden while a widget owns focus
+    and update on typing or cursor movement.
   - Builds the whole screen (editor area plus the status row) as one tree, so a
     single `Surface.render` diff covers it. `Document.clear` rebuilds the tree
     between frames while keeping the previous grid for the diff.

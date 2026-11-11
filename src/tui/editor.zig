@@ -462,6 +462,11 @@ pub const Editor = struct {
         return true;
     }
 
+    /// The model column of a 1-based column in a view line's output content.
+    pub fn modelColumnOfViewPosition(self: *Editor, view_line_number: usize, view_column: usize) usize {
+        return self.view_lines.getModelColumnOfViewPosition(view_line_number, view_column);
+    }
+
     /// Maps a visible cell offset within a view line to the model position.
     /// This is a terminal adaptation of the upstream view-model point mapping:
     /// `visible_column` counts cells after tab expansion, not model columns.
