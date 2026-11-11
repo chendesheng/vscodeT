@@ -61,6 +61,7 @@ pub const ContentHoverComputer = struct {
         if (line_number > self.model.getLineCount()) return &.{};
 
         const decorations = try self.model.getLineDecorations(line_number, 0, false);
+        defer if (decorations.len > 0) self.model.getAllocator().free(decorations);
         const allocator = self.scratch.allocator();
         var result = ArrayList(ModelDecoration).init(allocator);
 
