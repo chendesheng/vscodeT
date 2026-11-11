@@ -555,6 +555,13 @@ pub const MinimapSectionHeaderStyle = enum(u2) {
 pub const ModelDecorationOverviewRulerOptions = struct {
     // The position in the overview ruler.
     position: OverviewRulerLane,
+    // Terminal cell color for the overview marker. Upstream stores a CSS color
+    // string; the TUI resolves colors to RGB cells.
+    color: ?[3]u8 = null,
+
+    pub fn init(options: ModelDecorationOverviewRulerOptions) ModelDecorationOverviewRulerOptions {
+        return options;
+    }
 };
 
 // Options for rendering a model decoration in the minimap.

@@ -124,9 +124,10 @@ pub const MouseTarget = struct {
     detail: ?MouseTargetDetail = null,
 };
 
-/// A highlighted model range the view knows how to paint. Upstream find uses
-/// model decorations with CSS classes; the terminal view takes the ranges
-/// directly and maps them to cells.
+/// A highlighted model range handed to a decoration sink. The sink
+/// materializes it as a `TextModel` decoration with the corresponding class
+/// name and options; painting and the overview ruler read the model
+/// decoration back.
 pub const DecorationKind = enum {
     find_match,
     current_find_match,

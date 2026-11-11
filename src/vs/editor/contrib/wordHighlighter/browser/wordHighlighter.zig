@@ -54,10 +54,14 @@ pub const WordHighlighterSettings = struct {
     run_delay_ms: u64 = 50,
 };
 
-/// The view-side hand-off. `set_decorations` must copy the ranges; the
-/// controller reuses its buffer for the next result.
+/// The decoration hand-off. `set_decorations` must copy the ranges; the
+/// controller reuses its buffer for the next result. `decoration_context` is
+/// separate so the sink can write model decorations without the view.
 pub const WordHighlighterHost = struct {
     context: *anyopaque,
+    /// Optional separate context for the decoration sink. The app uses this to
+    /// write model decorations without routing through the view.
+    decoration_context: ?*anyopaque = null,
     has_text_focus: *const fn (context: *anyopaque) bool,
     set_decorations: *const fn (context: *anyopaque, decorations: []const editorBrowser.Decoration) void,
     request_frame: *const fn (context: *anyopaque) void,
@@ -313,7 +317,7 @@ pub const WordHighlighter = struct {
         }
 
         if (self.decorations.items.len > 0) {
-            self.host.set_decorations(self.host.context, self.decorations.items);
+            self.host.set_decorations(self.host.decoration_context orelse self.host.context, self.decorations.items);
         }
         self.host.request_frame(self.host.context);
         return true;
@@ -327,7 +331,7 @@ pub const WordHighlighter = struct {
         if (self.decorations.items.len == 0 and self.ranges.items.len == 0) return false;
         self.decorations.clearRetainingCapacity();
         self.ranges.clearRetainingCapacity();
-        self.host.set_decorations(self.host.context, &.{});
+        self.host.set_decorations(self.host.decoration_context orelse self.host.context, &.{});
         self.host.request_frame(self.host.context);
         return true;
     }

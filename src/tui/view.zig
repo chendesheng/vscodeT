@@ -14,9 +14,11 @@
 //! also owns the terminal mouse adaptation: click/drag caret placement, drag
 //! selection, click synthesis and wheel scrolling of the editor viewport.
 //!
-//! Find and bracket ranges are converted to inline decorations and resolved
-//! with the ported `LineDecoration.filter`/`extractWrapped` path, mirroring
-//! upstream's ViewLine; the resulting classes map to terminal cell flags.
+//! Find, bracket, word and hover ranges are materialized as `TextModel`
+//! decorations by `ModelDecorationSink` or by the view's bracket pass. Inline
+//! decorations are resolved with the ported
+//! `LineDecoration.filter`/`extractWrapped` path, mirroring upstream's
+//! ViewLine; the resulting classes map to terminal cell flags.
 //!
 //! Indentation guides are painted as dim `│` cells over the leading
 //! whitespace, using the ported `GuidesTextModelPart` count. Vertical
@@ -47,6 +49,11 @@ const InlineDecoration = inlineDecorations.InlineDecoration;
 const line_renderer = @import("../vs/editor/common/viewLayout/viewLineRenderer.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 const decorationsOverviewRuler = @import("../vs/editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.zig");
+const model_module = @import("../vs/editor/common/model.zig");
+const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
+const ModelDeltaDecoration = model_module.ModelDeltaDecoration;
+const ModelDecorationOptions = model_module.ModelDecorationOptions;
+const OverviewRulerLane = model_module.OverviewRulerLane;
 const scrollbar_state = @import("../vs/base/browser/ui/scrollbar/scrollbarState.zig");
 const GuidesTextModelPart = @import("../vs/editor/common/model/guidesTextModelPart.zig").GuidesTextModelPart;
 const computeIndentLevel = @import("../vs/editor/common/model/utils.zig").computeIndentLevel;
@@ -66,6 +73,55 @@ const bracket_guide_colors = [_][3]u8{
     .{ 70, 84, 86 },
 };
 const bracket_guide_active_color = [3]u8{ 132, 138, 144 };
+
+const find_options = makeDecorationOptions("findMatch", .Left, overview_find_color, 10);
+const current_find_options = makeDecorationOptions("currentFindMatch", .Full, overview_current_find_color, 13);
+const find_scope_options = makeDecorationOptions("findScope", null, null, 0);
+const bracket_options = makeDecorationOptions("bracket-match", .Right, overview_bracket_color, 0);
+const bracket_inline_options = makeDecorationOptions("bracket-match", null, null, 0);
+const word_text_options = makeDecorationOptions("wordHighlightText", .Center, overview_word_color, 0);
+const word_options = makeDecorationOptions("wordHighlight", .Center, overview_word_color, 0);
+const word_strong_options = makeDecorationOptions("wordHighlightStrong", .Center, overview_word_strong_color, 0);
+const hover_options = makeDecorationOptions("hoverHighlight", null, null, 0);
+
+fn makeDecorationOptions(
+    comptime class_name: []const u8,
+    lane: ?OverviewRulerLane,
+    marker_color: ?[3]u8,
+    z_index: usize,
+) ModelDecorationOptions {
+    var options = ModelDecorationOptions.init(class_name, .NeverGrowsWhenTypingAtEdges);
+    options.className = class_name;
+    options.inlineClassName = class_name;
+    options.overviewRuler = if (lane != null and marker_color != null)
+        .{ .position = lane.?, .color = marker_color.? }
+    else
+        null;
+    options.zIndex = z_index;
+    return options;
+}
+
+fn decorationOptions(kind: editorBrowser.DecorationKind, show_in_overview: bool) *const ModelDecorationOptions {
+    return switch (kind) {
+        .find_match => &find_options,
+        .current_find_match => &current_find_options,
+        .find_scope => &find_scope_options,
+        .bracket_match => if (show_in_overview) &bracket_options else &bracket_inline_options,
+        .hover_highlight => &hover_options,
+        .word_highlight_text => &word_text_options,
+        .word_highlight => &word_options,
+        .word_highlight_strong => &word_strong_options,
+    };
+}
+
+fn overviewRulerLaneFromModel(lane: OverviewRulerLane) decorationsOverviewRuler.Lane {
+    return switch (lane) {
+        .Left => .left,
+        .Center => .center,
+        .Right => .right,
+        .Full => .full,
+    };
+}
 const current_line_background = [3]u8{ 32, 32, 36 };
 const secondary_cursor_background = [3]u8{ 110, 90, 30 };
 
@@ -79,6 +135,13 @@ const GuideSpec = struct {
     row: usize,
     col: usize,
     color: [3]u8,
+};
+
+const DecorationOwner = struct {
+    const find: usize = 1;
+    const bracket: usize = 2;
+    const word: usize = 3;
+    const hover: usize = 4;
 };
 
 const CellFlag = struct {
@@ -143,14 +206,6 @@ pub const View = struct {
     /// Overlay widget rectangles for the current frame; pointer events on an
     /// overlay must not reach the editor's hover logic.
     overlay_entries: std.array_list.Managed(WidgetRect),
-    /// Model ranges highlighted by contributions such as find.
-    decorations: std.array_list.Managed(editorBrowser.Decoration),
-    /// The range highlighted below a visible hover. Upstream stores this as a
-    /// `hoverHighlight` model decoration owned by the rendered hover.
-    hover_decorations: std.array_list.Managed(editorBrowser.Decoration),
-    /// Occurrence highlights from the wordHighlighter contribution
-    /// (`wordHighlight`, `wordHighlightText`, `wordHighlightStrong`).
-    word_highlights: std.array_list.Managed(editorBrowser.Decoration),
     /// The line element under the primary cursor, filled in while building.
     cursor_line: ?*ui.Node = null,
     /// Cells between the start of that line's content and the caret.
@@ -159,9 +214,6 @@ pub const View = struct {
     /// one of these maps to its view line; hits on the gutter, the status row
     /// or overlays do not.
     line_entries: std.array_list.Managed(LineEntry),
-    /// Matching bracket decorations for the current cursors, recomputed per
-    /// frame and painted through the same line-decoration path as find.
-    bracket_decorations: std.array_list.Managed(editorBrowser.Decoration),
     /// Width of the rightmost cells reserved for the combined overview ruler
     /// and scrollbar. The editor wraps around the same width.
     scrollbar_width: usize = 0,
@@ -233,21 +285,13 @@ pub const View = struct {
             .content_widgets = std.array_list.Managed(editorBrowser.IContentWidget).init(allocator),
             .content_entries = std.array_list.Managed(ContentEntry).init(allocator),
             .overlay_entries = std.array_list.Managed(WidgetRect).init(allocator),
-            .decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
-            .hover_decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
-            .word_highlights = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
             .line_entries = std.array_list.Managed(LineEntry).init(allocator),
-            .bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
         };
         errdefer self.overlays.deinit();
         errdefer self.content_widgets.deinit();
         errdefer self.content_entries.deinit();
         errdefer self.overlay_entries.deinit();
-        errdefer self.decorations.deinit();
-        errdefer self.hover_decorations.deinit();
-        errdefer self.word_highlights.deinit();
         errdefer self.line_entries.deinit();
-        errdefer self.bracket_decorations.deinit();
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
         self.surface = try ui.Surface.init(allocator, .{
@@ -262,11 +306,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
-        self.bracket_decorations.deinit();
         self.line_entries.deinit();
-        self.word_highlights.deinit();
-        self.hover_decorations.deinit();
-        self.decorations.deinit();
         self.overlay_entries.deinit();
         self.content_entries.deinit();
         self.content_widgets.deinit();
@@ -288,27 +328,70 @@ pub const View = struct {
         try self.refresh();
     }
 
-    /// Replaces the highlighted model ranges (find matches, current match,
-    /// find scope) and rebuilds the view.
+    /// Replaces the find contribution's model decorations.
     pub fn setDecorations(self: *View, decorations: []const editorBrowser.Decoration) !void {
-        self.decorations.clearRetainingCapacity();
-        try self.decorations.appendSlice(decorations);
+        try self.replaceModelDecorations(DecorationOwner.find, decorations);
     }
 
     /// Sets (or clears, with an empty slice) the hover highlight range.
     pub fn setHoverDecorations(self: *View, decorations: []const editorBrowser.Decoration) !void {
-        self.hover_decorations.clearRetainingCapacity();
-        try self.hover_decorations.appendSlice(decorations);
+        try self.replaceModelDecorations(DecorationOwner.hover, decorations);
     }
 
     /// Sets (or clears, with an empty slice) the word-occurrence highlights.
     pub fn setWordHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
-        self.word_highlights.clearRetainingCapacity();
-        try self.word_highlights.appendSlice(decorations);
+        try self.replaceModelDecorations(DecorationOwner.word, decorations);
     }
 
     pub fn clearDecorations(self: *View) !void {
         try self.setDecorations(&.{});
+    }
+
+    fn replaceModelDecorations(
+        self: *View,
+        owner: usize,
+        decorations: []const editorBrowser.Decoration,
+    ) !void {
+        try replaceModelDecorationsFor(self.editor.model, owner, decorations);
+    }
+
+    /// A contribution-facing sink that writes model decorations directly,
+    /// without going through the view. The view reads the same model
+    /// decorations back for painting and the overview ruler.
+    pub const ModelDecorationSink = struct {
+        model: *TextModel,
+        owner: usize,
+
+        pub fn context(self: *ModelDecorationSink) *anyopaque {
+            return self;
+        }
+
+        pub fn set(sink_context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void {
+            const self: *ModelDecorationSink = @ptrCast(@alignCast(sink_context orelse return));
+            replaceModelDecorationsFor(self.model, self.owner, decorations) catch {};
+        }
+    };
+
+    pub fn replaceModelDecorationsFor(
+        model: *TextModel,
+        owner: usize,
+        decorations: []const editorBrowser.Decoration,
+    ) !void {
+        const allocator = model.getAllocator();
+        try model.removeAllDecorationsWithOwnerId(owner);
+        if (decorations.len == 0) return;
+
+        const deltas = try allocator.alloc(ModelDeltaDecoration, decorations.len);
+        defer allocator.free(deltas);
+        for (decorations, 0..) |decoration, index| {
+            deltas[index] = .{
+                .range = decoration.range,
+                .options = @constCast(decorationOptions(decoration.kind, decoration.show_in_overview_ruler)),
+            };
+        }
+
+        const ids = try model.deltaDecorations(&.{}, deltas, owner);
+        defer allocator.free(ids);
     }
 
     pub fn removeOverlayWidget(self: *View, id: []const u8) !void {
@@ -709,22 +792,24 @@ pub const View = struct {
         // rebuild: a wheel scroll is allowed to leave it off-screen.
         _ = editor.scrollViewLines(0);
 
-        self.bracket_decorations.clearRetainingCapacity();
+        var bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(self.allocator);
+        defer bracket_decorations.deinit();
         const bracket_data = try editor.updateBracketMatches(self.hasEditorFocus());
         for (bracket_data) |entry| {
             const brackets = entry.brackets orelse continue;
             const overview = entry.options == .with_overview_ruler;
-            try self.bracket_decorations.append(.{
+            try bracket_decorations.append(.{
                 .range = brackets[0],
                 .kind = .bracket_match,
                 .show_in_overview_ruler = overview,
             });
-            try self.bracket_decorations.append(.{
+            try bracket_decorations.append(.{
                 .range = brackets[1],
                 .kind = .bracket_match,
                 .show_in_overview_ruler = overview,
             });
         }
+        try self.replaceModelDecorations(DecorationOwner.bracket, bracket_decorations.items);
 
         const doc = self.surface.document();
         doc.clear();
@@ -1049,10 +1134,7 @@ pub const View = struct {
     ) !void {
         var inline_list = std.array_list.Managed(InlineDecoration).init(self.allocator);
         defer inline_list.deinit();
-        try appendInlineDecorations(&inline_list, self.decorations.items, model_line);
-        try appendInlineDecorations(&inline_list, self.word_highlights.items, model_line);
-        try appendInlineDecorations(&inline_list, self.hover_decorations.items, model_line);
-        try appendInlineDecorations(&inline_list, self.bracket_decorations.items, model_line);
+        try appendModelInlineDecorations(&inline_list, self.editor.model, model_line, self.allocator);
         if (inline_list.items.len == 0) return;
 
         const filtered = try lineDecorations.LineDecoration.filter(
@@ -1106,9 +1188,7 @@ pub const View = struct {
 
         var markers = std.array_list.Managed(decorationsOverviewRuler.Decoration).init(self.allocator);
         defer markers.deinit();
-        try self.appendOverviewMarkers(&markers, self.decorations.items);
-        try self.appendOverviewMarkers(&markers, self.word_highlights.items);
-        try self.appendOverviewMarkers(&markers, self.bracket_decorations.items);
+        try self.appendOverviewMarkers(&markers);
 
         var cursors = std.array_list.Managed(decorationsOverviewRuler.Cursor).init(self.allocator);
         defer cursors.deinit();
@@ -1204,12 +1284,14 @@ pub const View = struct {
     fn appendOverviewMarkers(
         self: *View,
         markers: *std.array_list.Managed(decorationsOverviewRuler.Decoration),
-        decorations: []const editorBrowser.Decoration,
     ) !void {
         const editor = self.editor;
-        for (decorations) |decoration| {
-            if (!decoration.show_in_overview_ruler) continue;
-            const marker_color = overviewRulerColor(decoration.kind) orelse continue;
+        const model_decorations = try editor.model.getOverviewRulerDecorations(0, false);
+        defer self.allocator.free(model_decorations);
+
+        for (model_decorations) |decoration| {
+            const ruler = decoration.options.overviewRuler orelse continue;
+            const marker_color = ruler.color orelse continue;
             const start = editor.viewPositionOfModelPosition(Position.init(
                 decoration.range.startLineNumber,
                 decoration.range.startColumn,
@@ -1222,8 +1304,8 @@ pub const View = struct {
                 .start_line_number = start.lineNumber,
                 .end_line_number = @max(start.lineNumber, end.lineNumber),
                 .color = marker_color,
-                .lane = overviewRulerLane(decoration.kind),
-                .z_index = overviewRulerZIndex(decoration.kind),
+                .lane = overviewRulerLaneFromModel(ruler.position),
+                .z_index = @intCast(decoration.options.zIndex orelse 0),
             });
         }
     }
@@ -1383,17 +1465,6 @@ fn overviewRulerWidth(editor: *const Editor) usize {
     return if (available >= 3) 2 else 0;
 }
 
-fn overviewRulerColor(kind: editorBrowser.DecorationKind) ?[3]u8 {
-    return switch (kind) {
-        .find_match => overview_find_color,
-        .current_find_match => overview_current_find_color,
-        .bracket_match => overview_bracket_color,
-        .word_highlight_text, .word_highlight => overview_word_color,
-        .word_highlight_strong => overview_word_strong_color,
-        .find_scope, .hover_highlight => null,
-    };
-}
-
 fn markerGlyph(lane: decorationsOverviewRuler.Lane, vertical: decorationsOverviewRuler.Vertical) []const u8 {
     return switch (vertical) {
         .full => switch (lane) {
@@ -1414,25 +1485,6 @@ fn markerGlyph(lane: decorationsOverviewRuler.Lane, vertical: decorationsOvervie
             .right => " ▗", // lower right quadrant of the second cell
             .full => "▗▄", // lower 1.5 cells
         },
-    };
-}
-
-fn overviewRulerLane(kind: editorBrowser.DecorationKind) decorationsOverviewRuler.Lane {
-    return switch (kind) {
-        .find_match => .left,
-        .bracket_match => .right,
-        // The third half-cell lane uses the legacy "center" label.
-        .word_highlight_text, .word_highlight, .word_highlight_strong => .center,
-        .current_find_match => .full,
-        .find_scope, .hover_highlight => .center,
-    };
-}
-
-fn overviewRulerZIndex(kind: editorBrowser.DecorationKind) i32 {
-    return switch (kind) {
-        .current_find_match => 13,
-        .find_match => 10,
-        else => 0,
     };
 }
 
@@ -1710,43 +1762,31 @@ fn styleEql(a: ui.Style, b: ui.Style) bool {
     return std.meta.eql(a, b);
 }
 
-fn appendInlineDecorations(
+fn appendModelInlineDecorations(
     out: *std.array_list.Managed(InlineDecoration),
-    decorations: []const editorBrowser.Decoration,
+    model: *TextModel,
     model_line: usize,
+    allocator: std.mem.Allocator,
 ) !void {
+    const decorations = try model.getLineDecorations(model_line, 0, false);
+    defer allocator.free(decorations);
     for (decorations) |decoration| {
-        if (decoration.range.endLineNumber < model_line or
-            decoration.range.startLineNumber > model_line)
-        {
-            continue;
-        }
+        const class_name = decoration.options.inlineClassName orelse
+            decoration.options.className orelse continue;
+        if (decorationBit(class_name) == null) continue;
         try out.append(.{
             .range = decoration.range,
-            .inlineClassName = decorationClassName(decoration.kind),
+            .inlineClassName = class_name,
             .type = .Regular,
         });
     }
 }
 
-fn decorationClassName(kind: editorBrowser.DecorationKind) []const u8 {
-    return switch (kind) {
-        .find_match => "findMatchInline",
-        .current_find_match => "currentFindMatchInline",
-        .find_scope => "findScope",
-        .bracket_match => "bracket-match-inline",
-        .hover_highlight => "hoverHighlight",
-        .word_highlight_text => "wordHighlightText",
-        .word_highlight => "wordHighlight",
-        .word_highlight_strong => "wordHighlightStrong",
-    };
-}
-
 fn decorationBit(class_name: []const u8) ?u16 {
-    if (std.mem.eql(u8, class_name, "findMatchInline")) return CellFlag.find_match;
-    if (std.mem.eql(u8, class_name, "currentFindMatchInline")) return CellFlag.current_find_match;
+    if (std.mem.eql(u8, class_name, "findMatch") or std.mem.eql(u8, class_name, "findMatchInline")) return CellFlag.find_match;
+    if (std.mem.eql(u8, class_name, "currentFindMatch") or std.mem.eql(u8, class_name, "currentFindMatchInline")) return CellFlag.current_find_match;
     if (std.mem.eql(u8, class_name, "findScope")) return CellFlag.find_scope;
-    if (std.mem.eql(u8, class_name, "bracket-match-inline")) return CellFlag.bracket_match;
+    if (std.mem.eql(u8, class_name, "bracket-match") or std.mem.eql(u8, class_name, "bracket-match-inline")) return CellFlag.bracket_match;
     if (std.mem.eql(u8, class_name, "hoverHighlight")) return CellFlag.hover_highlight;
     if (std.mem.eql(u8, class_name, "wordHighlightText")) return CellFlag.word_highlight_text;
     if (std.mem.eql(u8, class_name, "wordHighlight")) return CellFlag.word_highlight;
@@ -2923,11 +2963,12 @@ test "View: overview markers honor the per-decoration flag" {
 
     var markers = std.array_list.Managed(decorationsOverviewRuler.Decoration).init(allocator);
     defer markers.deinit();
-    try view.appendOverviewMarkers(&markers, &[_]editorBrowser.Decoration{
+    try view.replaceModelDecorations(DecorationOwner.bracket, &[_]editorBrowser.Decoration{
         .{ .range = Range.init(1, 1, 1, 2), .kind = .bracket_match, .show_in_overview_ruler = false },
         .{ .range = Range.init(2, 1, 2, 2), .kind = .find_scope },
         .{ .range = Range.init(3, 1, 3, 2), .kind = .bracket_match },
     });
+    try view.appendOverviewMarkers(&markers);
     try std.testing.expectEqual(@as(usize, 1), markers.items.len);
     try std.testing.expectEqual(@as(usize, 3), markers.items[0].start_line_number);
     try std.testing.expectEqual(overview_bracket_color, markers.items[0].color);
@@ -2948,10 +2989,11 @@ test "View: overview markers follow wrapped view lines" {
 
     var markers = std.array_list.Managed(decorationsOverviewRuler.Decoration).init(allocator);
     defer markers.deinit();
-    try view.appendOverviewMarkers(&markers, &[_]editorBrowser.Decoration{
+    try view.replaceModelDecorations(DecorationOwner.find, &[_]editorBrowser.Decoration{
         .{ .range = Range.init(1, 1, 1, 2), .kind = .find_match },
         .{ .range = Range.init(1, 7, 1, 9), .kind = .find_match },
     });
+    try view.appendOverviewMarkers(&markers);
     try std.testing.expectEqual(@as(usize, 2), markers.items.len);
     try std.testing.expectEqual(@as(usize, 1), markers.items[0].start_line_number);
     try std.testing.expectEqual(@as(usize, 2), markers.items[1].start_line_number);
@@ -3164,4 +3206,31 @@ test "View: active indentation guide follows the cursor scope" {
     // Level 2 on `grand` remains a normal guide.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 2)]);
     try std.testing.expectEqual(normal_fg, grid.fg[grid.index(gutter + 4, 2)]);
+}
+
+test "View: contribution highlights are stored as model decorations" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "alpha beta alpha", "test.txt", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.setDecorations(&[_]editorBrowser.Decoration{
+        .{ .range = Range.init(1, 1, 1, 6), .kind = .find_match },
+        .{ .range = Range.init(1, 12, 1, 17), .kind = .find_match },
+    });
+
+    const decorations = try editor.model.getAllDecorations(1, false);
+    defer allocator.free(decorations);
+    try std.testing.expectEqual(@as(usize, 2), decorations.len);
+    try std.testing.expectEqualStrings("findMatch", decorations[0].options.className.?);
+
+    try view.setDecorations(&.{});
+    const cleared = try editor.model.getAllDecorations(1, false);
+    defer allocator.free(cleared);
+    try std.testing.expectEqual(@as(usize, 0), cleared.len);
 }

@@ -85,7 +85,9 @@ test "FindController: opens, searches incrementally and closes" {
     var escape_event = ui.KeyEvent{ .key = .escape };
     try std.testing.expect(view.dispatchKey(&escape_event));
     try std.testing.expect(!controller.isOpen());
-    try std.testing.expectEqual(@as(usize, 0), view.decorations.items.len);
+    const find_decorations = try editor.model.getAllDecorations(1, false);
+    defer allocator.free(find_decorations);
+    try std.testing.expectEqual(@as(usize, 0), find_decorations.len);
 
     try view.refresh();
     try view.render(&out.writer);

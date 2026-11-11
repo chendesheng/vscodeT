@@ -279,7 +279,6 @@ pub const IntervalTree = struct {
 
     pub fn delete(self: *IntervalTree, node: *IntervalNode) void {
         rbTreeDelete(self, node);
-        node.deinit(self.allocator);
         self._normalizeDeltaIfNecessary();
     }
 
@@ -355,6 +354,7 @@ test "IntervalTree.insert" {
     const node = try IntervalNode.init(allocator, 42, 0, 10);
     tree.insert(node);
     tree.delete(node);
+    node.deinit(allocator);
     try std.testing.expectEqual(SENTINEL, tree.root);
 }
 

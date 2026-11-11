@@ -107,6 +107,8 @@ pub const DeadlineTimer = struct {
 
 pub const ContentHoverControllerHost = struct {
     context: *anyopaque,
+    /// Optional separate context for the hover decoration sink.
+    decoration_context: ?*anyopaque = null,
     text_height: *const fn (context: *anyopaque) usize,
     visible_row_of: *const fn (context: *anyopaque, position: Position) ?usize,
     request_frame: *const fn (context: *anyopaque) void,
@@ -221,7 +223,7 @@ pub const ContentHoverController = struct {
 
     fn widgetSetHoverDecoration(context: *anyopaque, range: ?Range) void {
         const self: *ContentHoverController = @ptrCast(@alignCast(context));
-        self.host.set_hover_decoration(self.host.context, range);
+        self.host.set_hover_decoration(self.host.decoration_context orelse self.host.context, range);
     }
 
     fn modifierState(mods: ui.Modifiers) ModifierState {

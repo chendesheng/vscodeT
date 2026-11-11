@@ -1,10 +1,11 @@
 // Port of `src/vs/editor/contrib/find/browser/findDecorations.ts`.
 //
 // Terminal adaptation: upstream stores the matches as model decorations and
-// lets CSS paint `findMatch` / `currentFindMatch`. The view paints model ranges
-// directly, so this keeps the ranges and emits `editorBrowser.Decoration`
-// values for the view. Range highlighting for the current match is folded into
-// the `current_find_match` kind instead of a second whole-line decoration.
+// lets CSS paint `findMatch` / `currentFindMatch`. This object keeps the match
+// ranges; the decoration sink materializes them as `TextModel` decorations
+// with those class names. Range highlighting for the current match is one model
+// decoration with class `currentFindMatch` instead of a second whole-line
+// decoration.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

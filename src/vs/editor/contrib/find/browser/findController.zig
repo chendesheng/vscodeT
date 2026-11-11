@@ -15,8 +15,8 @@ const FindModel = @import("./findModel.zig").FindModel;
 const FindWidget = @import("./findWidget.zig").FindWidget;
 const Editor = @import("../../../../../tui/editor.zig").Editor;
 
-/// The view side of the decoration hand-off. The controller does not depend on
-/// the TUI view type.
+/// The decoration sink. The controller does not depend on the TUI view type;
+/// the app can point it at a model-decoration sink.
 pub const DecorationSink = struct {
     context: ?*anyopaque = null,
     set: ?*const fn (context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void = null,

@@ -5,8 +5,9 @@
 //   `onDidChangeCursorPosition`). The TUI calls `onContentChanged` after an
 //   edit instead; cursor changes only matter for the search start position,
 //   which is updated on every find move.
-// - Matches are not model decorations. `FindDecorations` keeps the ranges and
-//   notifies the view, which paints them directly.
+// - `FindDecorations` keeps the match ranges and notifies the decoration
+//   sink, which materializes them as `TextModel` decorations with find class
+//   names.
 // - Find options collapse to their defaults (`cursorMoveOnType` is on,
 //   `find.loop` lives on the state).
 // - `replaceAll` uses the regular path; the upstream large-file path replaces

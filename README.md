@@ -148,6 +148,16 @@ TUI editor:
   the wheel scrolls three view lines (the caret stays put until it moves).
   Resting the pointer on a word opens a hover after 300 ms (see the hover
   contribution below); moving over the gutter or status row closes it.
+- Find, bracket, word and hover highlights are stored as `TextModel`
+  decorations with upstream class names (`findMatch`, `currentFindMatch`,
+  `bracket-match`, `wordHighlight*`, `hoverHighlight`) and overview-ruler
+  colors/lanes. In the app, find/word/hover contributions receive a
+  `View.ModelDecorationSink` that writes the `TextModel` directly; the bracket
+  pass writes model decorations from the view. The view reads inline
+  decorations through `getLineDecorations` and overview markers through
+  `getOverviewRulerDecorations`, so edits track the ranges and all highlights
+  share one z-order. The `View.set*` setters remain as test/compatibility
+  wrappers.
 - Indentation and bracket guides: a dim `│` is drawn at each indentation
   column of a line's leading whitespace, using the ported
   `common/model/guidesTextModelPart.zig` rules. Blank lines inherit the guide

@@ -604,14 +604,22 @@ Library constraints:
   in a leading-whitespace or blank cell, because one terminal cell cannot show
   both a guide and a text glyph; horizontal bracket guide segments are
   therefore not painted. Wrapped continuation lines do not get guides.
+- Find, bracket and word ranges are stored in the model as `TextModel`
+  decorations (`findMatch`, `currentFindMatch`, `bracket-match`,
+  `wordHighlight*`). `View.ModelDecorationSink` replaces each contribution's
+  owner ID directly against the model; the view's bracket pass does the same.
+  The rebuild reads the model's inline and overview-ruler decorations back
+  through `getLineDecorations` / `getOverviewRulerDecorations`. This gives all
+  contributions one range tracking and z-order path.
 - Word-occurrence highlighting is the third decoration consumer:
   `src/vs/editor/contrib/wordHighlighter` tracks the caret/selection, waits
   `max(50 ms, editor.occurrencesHighlightDelay)`, asks the textual provider for
   whole-word matches, and sends `wordHighlightText`/`wordHighlight`/
-  `wordHighlightStrong` ranges to `View.setWordHighlights`. The view paints
-  them through the same `LineDecoration.filter`/`extractWrapped` path as find,
-  bracket and hover highlights, using the dark-theme colors composited to
-  cells. The controller replaces the upstream cursor/content/focus listeners
+  `wordHighlightStrong` ranges to `View.setWordHighlights`. The view stores
+  them as `TextModel` decorations with the corresponding class names and
+  paints them through the same `LineDecoration.filter`/`extractWrapped` path
+  as find, bracket and hover highlights, using the dark-theme colors
+  composited to cells. The controller replaces the upstream cursor/content/focus listeners
   with `onEditorChanged`/`onTick`, which the app calls after each input batch
   and from the nearest-deadline poll timeout.
 - The hover contribution is the second end-to-end widget consumer: the

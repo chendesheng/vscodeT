@@ -87,9 +87,10 @@ pub fn main(init: std.process.Init) !void {
     const view = try View.init(allocator, editor);
     defer view.deinit();
 
+    var find_sink = View.ModelDecorationSink{ .model = editor.model, .owner = 1 };
     const find = try FindController.init(allocator, editor, .{
-        .context = view,
-        .set = setViewDecorations,
+        .context = find_sink.context(),
+        .set = View.ModelDecorationSink.set,
     });
     defer find.deinit();
     try view.addOverlayWidget(find.widget().interface());
@@ -103,13 +104,15 @@ pub fn main(init: std.process.Init) !void {
     var hover_participant = MarkdownHoverParticipant.init(allocator, editor.model, &hover_providers);
     defer hover_participant.deinit();
     const participants = [_]hoverTypes.IEditorHoverParticipant{hover_participant.interface()};
+    var hover_sink = View.ModelDecorationSink{ .model = editor.model, .owner = 4 };
     const hover = try ContentHoverController.init(allocator, editor.model, &participants, .{}, .{
         .context = view,
+        .decoration_context = hover_sink.context(),
         .text_height = viewTextHeight,
         .visible_row_of = viewVisibleRowOf,
         .request_frame = viewRequestFrame,
         .focus_editor = viewFocusEditor,
-        .set_hover_decoration = viewSetHoverDecoration,
+        .set_hover_decoration = setHoverModelDecoration,
         .coordinates = .{
             .context = view,
             .model_column_at_view_line_start = viewModelColumnAtViewLineStart,
@@ -120,10 +123,12 @@ pub fn main(init: std.process.Init) !void {
 
     // Word occurrence highlighting follows the caret/selection. The textual
     // provider stands in for language highlight providers.
+    var word_sink = View.ModelDecorationSink{ .model = editor.model, .owner = 3 };
     const word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
         .context = view,
+        .decoration_context = word_sink.context(),
         .has_text_focus = viewHasEditorFocus,
-        .set_decorations = viewSetWordDecorations,
+        .set_decorations = View.ModelDecorationSink.set,
         .request_frame = viewRequestFrame,
     }, .{});
     defer word_highlighter.deinit();
@@ -307,6 +312,17 @@ fn viewHasEditorFocus(context: *anyopaque) bool {
 fn viewSetWordDecorations(context: *anyopaque, decorations: []const editorBrowser.Decoration) void {
     const view: *View = @ptrCast(@alignCast(context));
     view.setWordHighlights(decorations) catch {};
+}
+
+fn setHoverModelDecoration(context: *anyopaque, range: ?Range) void {
+    if (range) |value| {
+        const decorations = [_]editorBrowser.Decoration{
+            .{ .range = value, .kind = .hover_highlight },
+        };
+        View.ModelDecorationSink.set(context, &decorations);
+    } else {
+        View.ModelDecorationSink.set(context, &.{});
+    }
 }
 
 fn viewSetHoverDecoration(context: *anyopaque, range: ?Range) void {
@@ -691,10 +707,12 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     });
     defer hover.deinit();
 
+    var word_sink = View.ModelDecorationSink{ .model = editor.model, .owner = 3 };
     const word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
         .context = view,
+        .decoration_context = word_sink.context(),
         .has_text_focus = viewHasEditorFocus,
-        .set_decorations = viewSetWordDecorations,
+        .set_decorations = View.ModelDecorationSink.set,
         .request_frame = viewRequestFrame,
     }, .{});
     defer word_highlighter.deinit();
@@ -747,10 +765,12 @@ test "app: the word under the caret highlights its occurrences" {
     const view = try View.init(allocator, editor);
     defer view.deinit();
 
+    var word_sink = View.ModelDecorationSink{ .model = editor.model, .owner = 3 };
     const word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
         .context = view,
+        .decoration_context = word_sink.context(),
         .has_text_focus = viewHasEditorFocus,
-        .set_decorations = viewSetWordDecorations,
+        .set_decorations = View.ModelDecorationSink.set,
         .request_frame = viewRequestFrame,
     }, .{});
     defer word_highlighter.deinit();
