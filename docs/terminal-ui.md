@@ -590,6 +590,20 @@ Library constraints:
   `GUTTER_LINE_NUMBERS`, `STATUS`, `CONTENT_WIDGET` and `OVERLAY_WIDGET` through
   `View.mouseTargetAt`, which the hover controller consumes instead of the
   browser's `onMouseMove` target.
+- Indentation guides are painted by `View.rebuild` from the ported
+  `src/vs/editor/common/model/guidesTextModelPart.zig` indentation subset. The
+  model computes a guide count per visible model line, including the upstream
+  blank-line rule that inherits from the surrounding content, and the view
+  overlays a dim `│` at each `(level - 1) * indentSize` column inside the
+  leading whitespace. This follows Flow's whitespace-indent glyph. Vertical
+  bracket-pair guides come from
+  `src/vs/editor/browser/viewParts/indentGuides/indentGuides.zig`, which reads
+  the existing bracket-pairs model and colors each guide by nesting level. The
+  active indentation scope around the caret and the bracket pair containing
+  the caret are painted with brighter guide colors. A guide is only painted
+  in a leading-whitespace or blank cell, because one terminal cell cannot show
+  both a guide and a text glyph; horizontal bracket guide segments are
+  therefore not painted. Wrapped continuation lines do not get guides.
 - Word-occurrence highlighting is the third decoration consumer:
   `src/vs/editor/contrib/wordHighlighter` tracks the caret/selection, waits
   `max(50 ms, editor.occurrencesHighlightDelay)`, asks the textual provider for

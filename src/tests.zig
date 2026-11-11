@@ -282,4 +282,5 @@ comptime {
     _ = @import("./vs/editor/contrib/comment/test/browser/lineCommentCommand.test.zig");
     _ = @import("./vs/editor/contrib/comment/test/browser/blockCommentCommand.test.zig");
     _ = @import("./vs/editor/contrib/insertFinalNewLine/test/browser/insertFinalNewLineCommand.test.zig");
+    _ = @import("./vs/editor/common/model/guidesTextModelPart.zig");
 }

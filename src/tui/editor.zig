@@ -324,6 +324,10 @@ pub const Editor = struct {
         return self.cursor_config.tabSize;
     }
 
+    pub fn indentSize(self: *const Editor) usize {
+        return self.cursor_config.indentSize;
+    }
+
     pub fn topViewLine(self: *const Editor) usize {
         return self.top_view_line;
     }

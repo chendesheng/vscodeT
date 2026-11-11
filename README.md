@@ -118,8 +118,9 @@ View model:
   injected-text decoration computers.
 - The TUI uses a reduced port of `viewModelLines`: wrapped model-line projections,
   view-line prefix sums, view/model conversion, and incremental line mapping.
-  Folding, view zones, decorations, guides, and the browser-facing
-  `viewModelImpl` rendering stack are not ported.
+  Folding, view zones, decorations, and the browser-facing `viewModelImpl`
+  rendering stack are not ported. Indentation guides are ported separately at
+  the model/view boundary (see below).
 
 TextMate tokenization:
 
@@ -147,6 +148,16 @@ TUI editor:
   the wheel scrolls three view lines (the caret stays put until it moves).
   Resting the pointer on a word opens a hover after 300 ms (see the hover
   contribution below); moving over the gutter or status row closes it.
+- Indentation and bracket guides: a dim `│` is drawn at each indentation
+  column of a line's leading whitespace, using the ported
+  `common/model/guidesTextModelPart.zig` rules. Blank lines inherit the guide
+  count from the surrounding content. Vertical bracket-pair guides are
+  computed from the existing bracket-pairs model and colored by nesting level.
+  The guide level around the caret and the bracket pair containing the caret
+  are highlighted. Guides are only painted over leading whitespace or blank
+  cells, so a guide never replaces a text glyph; horizontal guide segments are
+  not painted. Flow uses the same solid `│` glyph for its indent whitespace
+  mode.
 - Scrollbar and overview ruler: the scrollbar is right-aligned and 1.5 cells
   wide: the right half of the first reserved cell plus the whole second cell.
   It uses foreground block glyphs, so it carries no background run at the
@@ -295,5 +306,8 @@ Editor contributions:
   `Full` auto-indent branch (plain line moves only); line sorting is bytewise
   rather than locale-aware; the overview-ruler/scrollbar column is
   row-quantized (no pixel lanes, translucent alpha, minimap or horizontal
-  scrollbar); and the browser-facing editor controllers, keybinding registry,
-  menus, and context keys are not part of this port.
+  scrollbar); guides are not drawn on wrapped continuation lines, horizontal
+  bracket guide segments are not painted, and a bracket guide is suppressed
+  where text occupies the same cell; and the browser-facing editor
+  controllers, keybinding registry, menus, and context keys are not part of
+  this port.
