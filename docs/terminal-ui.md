@@ -590,6 +590,16 @@ Library constraints:
   `GUTTER_LINE_NUMBERS`, `STATUS`, `CONTENT_WIDGET` and `OVERLAY_WIDGET` through
   `View.mouseTargetAt`, which the hover controller consumes instead of the
   browser's `onMouseMove` target.
+- Word-occurrence highlighting is the third decoration consumer:
+  `src/vs/editor/contrib/wordHighlighter` tracks the caret/selection, waits
+  `max(50 ms, editor.occurrencesHighlightDelay)`, asks the textual provider for
+  whole-word matches, and sends `wordHighlightText`/`wordHighlight`/
+  `wordHighlightStrong` ranges to `View.setWordHighlights`. The view paints
+  them through the same `LineDecoration.filter`/`extractWrapped` path as find,
+  bracket and hover highlights, using the dark-theme colors composited to
+  cells. The controller replaces the upstream cursor/content/focus listeners
+  with `onEditorChanged`/`onTick`, which the app calls after each input batch
+  and from the nearest-deadline poll timeout.
 - The hover contribution is the second end-to-end widget consumer: the
   controller schedules a delayed computation with two deadline timers (the TUI
   event loop polls with the nearest deadline and calls `onTick`), the wrapper
@@ -653,7 +663,9 @@ Library constraints:
   contribution tests cover the upstream `contentHover.test.ts` placement cases,
   markdown/decoration participants, rendering the box and highlight, focus with
   Escape, and wheel scrolling of long hover content without moving the
-  editor viewport.
+  editor viewport. Word-highlighter tests cover the textual provider, the
+  delayed run, keeping/updating occurrences, stopping on edits, multi-line
+  selections and focus loss, and next/previous navigation.
 - Library unit tests cover: tree linking/invariants, box-tree derivation
   (viewport root, principal/text boxes, anonymous inline/flex items,
   `display: contents`/`none`, mutation invalidation), absolute/percent/auto layout,

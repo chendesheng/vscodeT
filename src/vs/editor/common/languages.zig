@@ -380,6 +380,34 @@ pub const HoverProvider = struct {
     ) anyerror!?Hover,
 };
 
+/// Port of `DocumentHighlightKind` from
+/// `src/vs/editor/common/languages.ts`.
+pub const DocumentHighlightKind = enum(u8) {
+    /// A textual occurrence.
+    Text = 0,
+    /// Read-access of a symbol, like reading a variable.
+    Read = 1,
+    /// Write-access of a symbol, like writing to a variable.
+    Write = 2,
+};
+
+/// Port of `DocumentHighlight`. The kind defaults to `Text` when omitted.
+pub const DocumentHighlight = struct {
+    range: Range,
+    kind: ?DocumentHighlightKind = null,
+};
+
+/// Port of `DocumentHighlightProvider`.
+pub const DocumentHighlightProvider = struct {
+    context: *anyopaque,
+    provide_document_highlights: *const fn (
+        context: *anyopaque,
+        model: *TextModel,
+        position: Position,
+        token: CancellationToken,
+    ) anyerror!?[]const DocumentHighlight,
+};
+
 test "IColorInformation: holds a range and a color" {
     const information = IColorInformation{
         .range = Range.init(1, 1, 1, 7),

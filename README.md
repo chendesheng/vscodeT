@@ -160,6 +160,11 @@ TUI editor:
   its match are highlighted (including across lines); the highlight disappears
   while a widget such as the find bar has focus. Typing or moving the cursor
   updates it immediately.
+- Occurrences: the word under the caret (or a selection that stays inside one
+  word) highlights every whole-word occurrence in the file. `Alt-N` and
+  `Alt-Shift-N` jump to the next/previous occurrence. Highlights stop on edits,
+  on a multi-line selection and while a widget has the keyboard; they return
+  after the next cursor move.
 - Bracket completion: typing an opening bracket inserts its closing bracket and
   places the cursor between them. Typing an existing closing bracket moves
   over it, and Backspace removes an auto-inserted pair.
@@ -213,6 +218,18 @@ Editor contributions:
   `src/vs/editor/common/cursor/autoClosing.zig`. Single-character bracket pairs
   are supported; quotes, comments, multi-character opening pairs, and the
   surrounding-selection path are not ported yet.
+- `src/vs/editor/contrib/wordHighlighter` ports the word-occurrence
+  contribution for the single-model TUI: cursor/selection tracking, the 50 ms
+  run delay and `occurrencesHighlightDelay`, the textual whole-word provider,
+  `wordHighlight`/`wordHighlightText`/`wordHighlightStrong` ranges painted
+  through the same line-decoration path as the other highlights, and the
+  next/previous navigation actions (bound to `Alt-N`/`Alt-Shift-N` because the
+  terminal decoder has no F7). Language-feature providers, multi-file/notebook/
+  diff highlighting, the accessible announcement, context keys and
+  overview-ruler/minimap decorations are not ported; the TUI always uses the
+  textual provider. The `wordHighlighter` colors are composited from
+  `editor.wordHighlightBackground`/`wordHighlightStrongBackground` because cells
+  have no alpha.
 - `src/vs/editor/contrib/bracketMatching` ports the controller logic: jump to
   bracket, select to bracket, remove brackets, and the cached bracket-match
   data used for visual highlighting. The TUI turns that data into model

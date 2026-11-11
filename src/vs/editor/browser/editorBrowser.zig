@@ -132,6 +132,9 @@ pub const DecorationKind = enum {
     find_scope,
     bracket_match,
     hover_highlight,
+    word_highlight_text,
+    word_highlight,
+    word_highlight_strong,
 };
 
 pub const Decoration = struct {

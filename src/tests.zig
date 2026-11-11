@@ -239,6 +239,10 @@ comptime {
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverWidgetWrapper.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverController.zig");
     _ = @import("./vs/editor/contrib/hover/test/browser/contentHover.test.zig");
+    _ = @import("./vs/editor/contrib/wordHighlighter/browser/highlightDecorations.zig");
+    _ = @import("./vs/editor/contrib/wordHighlighter/browser/textualHighlightProvider.zig");
+    _ = @import("./vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig");
+    _ = @import("./vs/editor/contrib/wordHighlighter/test/browser/wordHighlighter.test.zig");
     _ = @import("./vs/editor/browser/editorExtensions.zig");
     _ = @import("./vs/editor/contrib/find/browser/replacePattern.zig");
     _ = @import("./vs/editor/contrib/find/browser/replaceAllCommand.zig");

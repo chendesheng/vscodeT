@@ -47,14 +47,17 @@ pub const Cell = struct {
 };
 
 const CellFlag = struct {
-    const normal: u8 = 0;
-    const selected: u8 = 1 << 0;
-    const secondary_cursor: u8 = 1 << 1;
-    const find_match: u8 = 1 << 2;
-    const current_find_match: u8 = 1 << 3;
-    const find_scope: u8 = 1 << 4;
-    const bracket_match: u8 = 1 << 5;
-    const hover_highlight: u8 = 1 << 6;
+    const normal: u16 = 0;
+    const selected: u16 = 1 << 0;
+    const secondary_cursor: u16 = 1 << 1;
+    const find_match: u16 = 1 << 2;
+    const current_find_match: u16 = 1 << 3;
+    const find_scope: u16 = 1 << 4;
+    const bracket_match: u16 = 1 << 5;
+    const hover_highlight: u16 = 1 << 6;
+    const word_highlight_text: u16 = 1 << 7;
+    const word_highlight: u16 = 1 << 8;
+    const word_highlight_strong: u16 = 1 << 9;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -67,6 +70,11 @@ const bracket_match_foreground = [3]u8{ 235, 255, 235 };
 /// Cells have no alpha, so this is the dark-theme color composited over the
 /// editor background, keeping the text readable.
 const hover_highlight_background = [3]u8{ 32, 42, 52 };
+/// `editor.wordHighlightBackground` / `wordHighlightTextBackground`
+/// (#575757B8) and `wordHighlightStrongBackground` (#004972B8), composited
+/// over the dark editor background because cells have no alpha.
+const word_highlight_background = [3]u8{ 71, 71, 71 };
+const word_highlight_strong_background = [3]u8{ 8, 61, 91 };
 
 pub const View = struct {
     allocator: std.mem.Allocator,
@@ -89,6 +97,9 @@ pub const View = struct {
     /// The range highlighted below a visible hover. Upstream stores this as a
     /// `hoverHighlight` model decoration owned by the rendered hover.
     hover_decorations: std.array_list.Managed(editorBrowser.Decoration),
+    /// Occurrence highlights from the wordHighlighter contribution
+    /// (`wordHighlight`, `wordHighlightText`, `wordHighlightStrong`).
+    word_highlights: std.array_list.Managed(editorBrowser.Decoration),
     /// The line element under the primary cursor, filled in while building.
     cursor_line: ?*ui.Node = null,
     /// Cells between the start of that line's content and the caret.
@@ -161,6 +172,7 @@ pub const View = struct {
             .overlay_entries = std.array_list.Managed(WidgetRect).init(allocator),
             .decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
             .hover_decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
+            .word_highlights = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
             .line_entries = std.array_list.Managed(LineEntry).init(allocator),
             .bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
         };
@@ -170,6 +182,7 @@ pub const View = struct {
         errdefer self.overlay_entries.deinit();
         errdefer self.decorations.deinit();
         errdefer self.hover_decorations.deinit();
+        errdefer self.word_highlights.deinit();
         errdefer self.line_entries.deinit();
         errdefer self.bracket_decorations.deinit();
         self.surface = try ui.Surface.init(allocator, .{
@@ -186,6 +199,7 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.bracket_decorations.deinit();
         self.line_entries.deinit();
+        self.word_highlights.deinit();
         self.hover_decorations.deinit();
         self.decorations.deinit();
         self.overlay_entries.deinit();
@@ -220,6 +234,12 @@ pub const View = struct {
     pub fn setHoverDecorations(self: *View, decorations: []const editorBrowser.Decoration) !void {
         self.hover_decorations.clearRetainingCapacity();
         try self.hover_decorations.appendSlice(decorations);
+    }
+
+    /// Sets (or clears, with an empty slice) the word-occurrence highlights.
+    pub fn setWordHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
+        self.word_highlights.clearRetainingCapacity();
+        try self.word_highlights.appendSlice(decorations);
     }
 
     pub fn clearDecorations(self: *View) !void {
@@ -515,7 +535,9 @@ pub const View = struct {
         return .{ .row = row, .col = col };
     }
 
-    fn editorHasFocus(self: *const View) bool {
+    /// Whether no overlay or content widget owns the keyboard. Word
+    /// occurrence highlighting follows the editor's text focus.
+    pub fn hasEditorFocus(self: *const View) bool {
         for (self.overlays.items) |overlay| {
             if (overlay.is_focused(overlay.context)) return false;
         }
@@ -533,7 +555,7 @@ pub const View = struct {
         _ = editor.scrollViewLines(0);
 
         self.bracket_decorations.clearRetainingCapacity();
-        const bracket_data = try editor.updateBracketMatches(self.editorHasFocus());
+        const bracket_data = try editor.updateBracketMatches(self.hasEditorFocus());
         for (bracket_data) |entry| {
             const brackets = entry.brackets orelse continue;
             try self.bracket_decorations.append(.{ .range = brackets[0], .kind = .bracket_match });
@@ -663,7 +685,7 @@ pub const View = struct {
 
             const indent_cells = data.minColumn - 1;
             const line_width = doc.measureText(rendered.bytes);
-            const flags = try self.allocator.alloc(u8, @max(line_width, 1));
+            const flags = try self.allocator.alloc(u16, @max(line_width, 1));
             defer self.allocator.free(flags);
             @memset(flags, CellFlag.normal);
 
@@ -723,11 +745,12 @@ pub const View = struct {
         start_visible_column: usize,
         indent_cells: usize,
         line_width: usize,
-        flags: []u8,
+        flags: []u16,
     ) !void {
         var inline_list = std.array_list.Managed(InlineDecoration).init(self.allocator);
         defer inline_list.deinit();
         try appendInlineDecorations(&inline_list, self.decorations.items, model_line);
+        try appendInlineDecorations(&inline_list, self.word_highlights.items, model_line);
         try appendInlineDecorations(&inline_list, self.hover_decorations.items, model_line);
         try appendInlineDecorations(&inline_list, self.bracket_decorations.items, model_line);
         if (inline_list.items.len == 0) return;
@@ -942,7 +965,7 @@ fn appendRuns(
     doc: *ui.Document,
     line: *ui.Node,
     rendered: line_renderer.RenderedLine,
-    flags: []const u8,
+    flags: []const u16,
 ) !void {
     var part_index: usize = 0;
     var byte_in_part: usize = 0;
@@ -967,6 +990,13 @@ fn appendRuns(
         var style = tokenStyle(part);
         if (cell < flags.len) {
             const flag = flags[cell];
+            if (flag & CellFlag.word_highlight_text != 0) {
+                style.background = color(word_highlight_background);
+            } else if (flag & CellFlag.word_highlight != 0) {
+                style.background = color(word_highlight_background);
+            } else if (flag & CellFlag.word_highlight_strong != 0) {
+                style.background = color(word_highlight_strong_background);
+            }
             if (flag & CellFlag.hover_highlight != 0) {
                 style.background = color(hover_highlight_background);
             }
@@ -1020,7 +1050,7 @@ fn markSelections(
     start_visible_column: usize,
     indent_cells: usize,
     line_width: usize,
-    flags: []u8,
+    flags: []u16,
 ) void {
     for (states) |state| {
         const selection = state.viewState.selection;
@@ -1107,15 +1137,21 @@ fn decorationClassName(kind: editorBrowser.DecorationKind) []const u8 {
         .find_scope => "findScope",
         .bracket_match => "bracket-match-inline",
         .hover_highlight => "hoverHighlight",
+        .word_highlight_text => "wordHighlightText",
+        .word_highlight => "wordHighlight",
+        .word_highlight_strong => "wordHighlightStrong",
     };
 }
 
-fn decorationBit(class_name: []const u8) ?u8 {
+fn decorationBit(class_name: []const u8) ?u16 {
     if (std.mem.eql(u8, class_name, "findMatchInline")) return CellFlag.find_match;
     if (std.mem.eql(u8, class_name, "currentFindMatchInline")) return CellFlag.current_find_match;
     if (std.mem.eql(u8, class_name, "findScope")) return CellFlag.find_scope;
     if (std.mem.eql(u8, class_name, "bracket-match-inline")) return CellFlag.bracket_match;
     if (std.mem.eql(u8, class_name, "hoverHighlight")) return CellFlag.hover_highlight;
+    if (std.mem.eql(u8, class_name, "wordHighlightText")) return CellFlag.word_highlight_text;
+    if (std.mem.eql(u8, class_name, "wordHighlight")) return CellFlag.word_highlight;
+    if (std.mem.eql(u8, class_name, "wordHighlightStrong")) return CellFlag.word_highlight_strong;
     return null;
 }
 
@@ -1561,6 +1597,38 @@ test "View: content widget flips above and clamps to the text area" {
     try view.refresh();
     try view.render(&out.writer);
     try std.testing.expectEqual(@as(usize, 0), view.content_entries.items[0].top);
+}
+
+test "View: word highlight decorations paint text and strong colors" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "word word", "test.txt", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.setWordHighlights(&[_]editorBrowser.Decoration{
+        .{ .range = Range.init(1, 1, 1, 5), .kind = .word_highlight_text },
+        .{ .range = Range.init(1, 6, 1, 10), .kind = .word_highlight_strong },
+    });
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const text = ui.cell.unpackColor(grid.bg[grid.index(gutter, 0)]);
+    try std.testing.expectEqual(@as(u8, 71), text.r);
+    try std.testing.expectEqual(@as(u8, 71), text.g);
+    const strong = ui.cell.unpackColor(grid.bg[grid.index(gutter + 5, 0)]);
+    try std.testing.expectEqual(@as(u8, 8), strong.r);
+    try std.testing.expectEqual(@as(u8, 61), strong.g);
+    try std.testing.expectEqual(@as(u8, 91), strong.b);
 }
 
 test "View: hover highlight paints the anchor range" {

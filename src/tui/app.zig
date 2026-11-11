@@ -17,6 +17,7 @@ const languages = @import("../vs/editor/common/languages.zig");
 const hoverTypes = @import("../vs/editor/contrib/hover/browser/hoverTypes.zig");
 const ContentHoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
 const MarkdownHoverParticipant = @import("../vs/editor/contrib/hover/browser/markdownHoverParticipant.zig").MarkdownHoverParticipant;
+const WordHighlighterContribution = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
 const TuiHoverProvider = @import("./hoverProvider.zig").TuiHoverProvider;
 const ArrayList = std.array_list.Managed;
 
@@ -117,6 +118,17 @@ pub fn main(init: std.process.Init) !void {
     defer hover.deinit();
     try view.addContentWidget(hover.widget().contentWidget());
 
+    // Word occurrence highlighting follows the caret/selection. The textual
+    // provider stands in for language highlight providers.
+    const word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
+        .context = view,
+        .has_text_focus = viewHasEditorFocus,
+        .set_decorations = viewSetWordDecorations,
+        .request_frame = viewRequestFrame,
+    }, .{});
+    defer word_highlighter.deinit();
+    word_highlighter.onEditorChanged(time_compat.milliTimestamp());
+
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
 
@@ -132,7 +144,12 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (hover.onTick(now_ms)) needs_render = true;
-        const ready = try tui.pollInput(hover.pollTimeout(now_ms, 250));
+        if (word_highlighter.onTick(now_ms)) needs_render = true;
+        var timeout = hover.pollTimeout(now_ms, 250);
+        if (word_highlighter.pollTimeout(now_ms)) |word_timeout| {
+            timeout = @min(timeout, @as(i32, @intCast(@min(word_timeout, 250))));
+        }
+        const ready = try tui.pollInput(timeout);
         var resized = false;
         if (try tui.resizedSize()) |new_size| {
             size = new_size;
@@ -162,7 +179,7 @@ pub fn main(init: std.process.Init) !void {
         for (events.items) |*item| {
             switch (item.*) {
                 .key => |*event| {
-                    if (try handleKeyEvent(view, hover, find, editor, event, &is_pasting)) return;
+                    if (try handleKeyEvent(view, hover, word_highlighter, find, editor, event, &is_pasting)) return;
                 },
                 .mouse => |*event| {
                     handleMouseEvent(view, hover, find, editor, event) catch |err| {
@@ -172,6 +189,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        word_highlighter.onEditorChanged(time_compat.milliTimestamp());
         try view.refresh();
         try tui.hideCursor(out);
         try view.render(out);
@@ -188,6 +206,7 @@ pub fn main(init: std.process.Init) !void {
 fn handleKeyEvent(
     view: *View,
     hover: *ContentHoverController,
+    word_highlighter: *WordHighlighterContribution,
     find: *FindController,
     editor: *Editor,
     event: *input.KeyEvent,
@@ -199,6 +218,10 @@ fn handleKeyEvent(
         return quit;
     }
     if (hover.onKeyDown(event)) return false;
+    if (word_highlighter.handleKey(event)) {
+        find.onEditorChanged();
+        return false;
+    }
     if (isCtrlChar(event.*, 'f')) {
         find.startFind() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
         return false;
@@ -274,6 +297,16 @@ fn viewRequestFrame(_: *anyopaque) void {
 fn viewFocusEditor(context: *anyopaque) void {
     const view: *View = @ptrCast(@alignCast(context));
     view.focusEditor();
+}
+
+fn viewHasEditorFocus(context: *anyopaque) bool {
+    const view: *View = @ptrCast(@alignCast(context));
+    return view.hasEditorFocus();
+}
+
+fn viewSetWordDecorations(context: *anyopaque, decorations: []const editorBrowser.Decoration) void {
+    const view: *View = @ptrCast(@alignCast(context));
+    view.setWordHighlights(decorations) catch {};
 }
 
 fn viewSetHoverDecoration(context: *anyopaque, range: ?Range) void {
@@ -658,11 +691,19 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     });
     defer hover.deinit();
 
+    const word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
+        .context = view,
+        .has_text_focus = viewHasEditorFocus,
+        .set_decorations = viewSetWordDecorations,
+        .request_frame = viewRequestFrame,
+    }, .{});
+    defer word_highlighter.deinit();
+
     var pasting = false;
     var open_events = try ui.input.decodeKeys(allocator, "\x06");
     defer open_events.deinit(allocator);
     for (open_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, find, editor, event, &pasting));
+        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, editor, event, &pasting));
     }
 
     try std.testing.expect(find.isOpen());
@@ -682,7 +723,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     var close_events = try ui.input.decodeKeys(allocator, "\x1b");
     defer close_events.deinit(allocator);
     for (close_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, find, editor, event, &pasting));
+        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, editor, event, &pasting));
     }
     try std.testing.expect(!find.isOpen());
 
@@ -691,6 +732,58 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     const closed_row = try view.surface.grid().rowText(allocator, 0);
     defer allocator.free(closed_row);
     try std.testing.expect(std.mem.indexOf(u8, closed_row, "Find") == null);
+}
+
+test "app: the word under the caret highlights its occurrences" {
+    const allocator = std.testing.allocator;
+    defer word_character_classifier.freeWordClassifierCache();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "word word word other", "test.txt", 60, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
+        .context = view,
+        .has_text_focus = viewHasEditorFocus,
+        .set_decorations = viewSetWordDecorations,
+        .request_frame = viewRequestFrame,
+    }, .{});
+    defer word_highlighter.deinit();
+
+    word_highlighter.onEditorChanged(0);
+    try std.testing.expect(word_highlighter.onTick(50));
+
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const grid = view.surface.grid();
+    for ([_]usize{ 0, 5, 10 }) |offset| {
+        const background = ui.cell.unpackColor(grid.bg[grid.index(gutter + offset, 0)]);
+        try std.testing.expectEqual(@as(u8, 71), background.r);
+        try std.testing.expectEqual(@as(u8, 71), background.g);
+        try std.testing.expectEqual(@as(u8, 71), background.b);
+    }
+    // `other` is not an occurrence of `word`.
+    const other = ui.cell.unpackColor(grid.bg[grid.index(gutter + 16, 0)]);
+    try std.testing.expectEqual(@as(u8, 32), other.r);
+
+    // Move to `other`: the old highlights are replaced.
+    try editor.setCursorPosition(Position.init(1, 17));
+    word_highlighter.onEditorChanged(100);
+    try std.testing.expect(word_highlighter.onTick(150));
+    try view.refresh();
+    try view.render(&out.writer);
+
+    const moved = ui.cell.unpackColor(view.surface.grid().bg[view.surface.grid().index(gutter + 0, 0)]);
+    try std.testing.expectEqual(@as(u8, 32), moved.r);
 }
 
 test "app: hover coordinate host uses the wrapped segment start" {
