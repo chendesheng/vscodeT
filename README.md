@@ -154,8 +154,12 @@ TUI editor:
   use the left lane (right half of the first cell), word occurrences the
   center lane (left half of the second cell), bracket matches the right lane
   (right half of the second cell), and the current find match and cursors use
-  the full 1.5-cell width. The thumb is also 1.5 cells wide and covers the
-  markers on its rows. Because
+  the full 1.5-cell width. The cursor tick is half-height at the top of its
+  row (`▝▀`), closer to the browser's two-pixel cursor line. The thumb is also
+  1.5 cells wide and covers the markers on its rows. Its top and bottom edges
+  are quantized to half cells:
+  `▝▀` on an upper edge, `▗▄` on a lower edge, and `▐█` on a full row, using the
+  unrounded slider position from `ScrollbarState`. Because
   a terminal has one row per cell, a row can represent many document lines:
   markers are quantized to rows and collisions use the upstream z-order
   (current find over find over bracket/word, cursors last). Clicking the track

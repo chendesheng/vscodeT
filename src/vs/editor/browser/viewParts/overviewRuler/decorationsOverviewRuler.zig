@@ -18,6 +18,9 @@ const Allocator = std.mem.Allocator;
 /// Horizontal lane inside the one-column terminal ruler.
 pub const Lane = enum { left, center, right, full };
 
+/// Vertical extent of a marker inside its terminal row.
+pub const Vertical = enum { full, upper, lower };
+
 /// One overview-ruler decoration, already converted to view lines and color.
 pub const Decoration = struct {
     start_line_number: usize,
@@ -32,12 +35,14 @@ pub const Cursor = struct {
     line_number: usize,
     color: [3]u8,
     lane: Lane = .full,
+    vertical: Vertical = .upper,
 };
 
 /// The winning marker for one terminal row.
 pub const Marker = struct {
     color: [3]u8,
     lane: Lane,
+    vertical: Vertical = .full,
 };
 
 pub const Settings = struct {
@@ -129,7 +134,7 @@ pub fn render(
             const offset = @as(f64, @floatFromInt(line - 1)) * settings.line_height;
             var row = clampToUsize(@floor(offset * height_ratio), settings.canvas_height);
             if (row >= settings.canvas_height) row = settings.canvas_height - 1;
-            rows[row] = .{ .color = cursor.color, .lane = cursor.lane };
+            rows[row] = .{ .color = cursor.color, .lane = cursor.lane, .vertical = cursor.vertical };
         }
     }
 
@@ -273,6 +278,7 @@ test "decorationsOverviewRuler: cursors paint after decorations" {
     defer allocator.free(rows);
 
     try expectMarker(rows[4], white, .full);
+    try testing.expectEqual(Vertical.upper, rows[4].?.vertical);
 }
 
 test "decorationsOverviewRuler: lanes off renders no markers or cursors" {

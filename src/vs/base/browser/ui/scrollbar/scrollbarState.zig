@@ -220,6 +220,14 @@ pub const ScrollbarState = struct {
         return self._computedSliderPosition;
     }
 
+    /// Unrounded slider position, for sub-cell rendering. The scrollbar state
+    /// keeps the upstream rounded value for hit testing; the terminal view uses
+    /// this to place the thumb at half-cell precision.
+    pub fn getSliderPositionExact(self: *const ScrollbarState) f64 {
+        if (!self._computedIsNeeded) return 0;
+        return self._scrollPosition * self._computedSliderRatio;
+    }
+
     /// Compute a desired `scrollPosition` such that `offset` ends up in the
     /// center of the slider.
     pub fn getDesiredScrollPositionFromOffset(self: *const ScrollbarState, offset: f64) f64 {

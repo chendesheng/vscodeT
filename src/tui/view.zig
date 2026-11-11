@@ -986,15 +986,14 @@ pub const View = struct {
         defer self.allocator.free(row_markers);
 
         // A single strip root owns both layers. Marker cells are appended
-        // first; thumb rows are overwritten with the thumb background in the
-        // same column, so the thumb covers the marker without a second column.
+        // first; thumb rows are overwritten by the thumb glyph in the same
+        // cells, so the thumb covers the marker without a second column.
         const state = self.scrollbarState();
         const thumb_needed = state.isNeeded();
-        const geometry = thumbGeometry(state, text_height);
-        const thumb_end = if (thumb_needed)
-            @min(geometry.top + geometry.size, text_height)
+        const halves = if (thumb_needed)
+            thumbHalfGeometry(state, text_height)
         else
-            0;
+            ThumbHalves{ .top = 0, .end = 0 };
 
         const column = try doc.createElement(.div);
         column.setStyle(.{
@@ -1009,25 +1008,26 @@ pub const View = struct {
 
         var row: usize = 0;
         while (row < text_height) : (row += 1) {
-            const is_thumb = thumb_needed and row >= geometry.top and row < thumb_end;
+            const thumb_part = thumbPartAt(halves, row);
             const marker = if (row < row_markers.len) row_markers[row] else null;
-            if (!is_thumb and marker == null) continue;
+            if (thumb_part == .none and marker == null) continue;
 
             // Flow (github.com/neurocyte/flow) renders its vertical
             // scrollbar as a foreground glyph over the editor background.
-            // The scrollbar is 1.5 cells wide: one full cell plus the left
-            // half of the next. Three half-cell lanes occupy the full cell's
-            // left/right halves and the next cell's left half; the final half
-            // cell remains background.
-            const marker_color = if (is_thumb) scrollbar_thumb_color else marker.?.color;
-            const glyph_text: []const u8 = if (is_thumb)
-                "▐█" // right half of the first cell + full second cell
-            else switch (marker.?.lane) {
-                .left => "▐ ", // first lane: right half of the first cell
-                .center => " ▌", // center lane: left half of the full second cell
-                .right => " ▐", // right lane: right half of the full second cell
-                .full => "▐█", // all three half lanes
-            };
+            // The scrollbar is right-aligned and 1.5 cells wide: the right
+            // half of the first cell plus the full second cell. Quadrant
+            // blocks give the thumb half-cell vertical precision at its top
+            // and bottom edges.
+            const marker_color = if (thumb_part != .none) scrollbar_thumb_color else marker.?.color;
+            const glyph_text: []const u8 = if (thumb_part != .none)
+                switch (thumb_part) {
+                    .none => unreachable,
+                    .full => "▐█", // right half first cell + full second cell
+                    .upper => "▝▀", // upper right quadrant + upper half block
+                    .lower => "▗▄", // lower right quadrant + lower half block
+                }
+            else
+                markerGlyph(marker.?.lane, marker.?.vertical);
 
             const cell = try doc.createElement(.div);
             cell.setStyle(.{
@@ -1238,6 +1238,29 @@ fn overviewRulerColor(kind: editorBrowser.DecorationKind) ?[3]u8 {
     };
 }
 
+fn markerGlyph(lane: decorationsOverviewRuler.Lane, vertical: decorationsOverviewRuler.Vertical) []const u8 {
+    return switch (vertical) {
+        .full => switch (lane) {
+            .left => "▐ ", // right half of the first cell
+            .center => " ▌", // left half of the second cell
+            .right => " ▐", // right half of the second cell
+            .full => "▐█", // all 1.5 cells
+        },
+        .upper => switch (lane) {
+            .left => "▝ ", // upper right quadrant of the first cell
+            .center => " ▘", // upper left quadrant of the second cell
+            .right => " ▝", // upper right quadrant of the second cell
+            .full => "▝▀", // upper 1.5 cells
+        },
+        .lower => switch (lane) {
+            .left => "▗ ", // lower right quadrant of the first cell
+            .center => " ▖", // lower left quadrant of the second cell
+            .right => " ▗", // lower right quadrant of the second cell
+            .full => "▗▄", // lower 1.5 cells
+        },
+    };
+}
+
 fn overviewRulerLane(kind: editorBrowser.DecorationKind) decorationsOverviewRuler.Lane {
     return switch (kind) {
         .find_match => .left,
@@ -1265,6 +1288,44 @@ const ThumbGeometry = struct {
     top: usize,
     size: usize,
 };
+
+const ThumbHalves = struct {
+    top: usize,
+    end: usize,
+};
+
+const ThumbPart = enum { none, upper, lower, full };
+
+fn thumbHalfGeometry(state: scrollbar_state.ScrollbarState, track_height: usize) ThumbHalves {
+    const total_halves = track_height * 2;
+    if (track_height == 0 or total_halves == 0) return .{ .top = 0, .end = 0 };
+
+    const raw_top = @round(state.getSliderPositionExact() * 2);
+    const raw_size = @round(state.getSliderSize() * 2);
+    const size: usize = if (raw_size <= 0)
+        1
+    else
+        @intFromFloat(raw_size);
+    const top: usize = if (raw_top <= 0)
+        0
+    else if (raw_top >= @as(f64, @floatFromInt(total_halves - 1)))
+        total_halves - 1
+    else
+        @intFromFloat(raw_top);
+    return .{
+        .top = top,
+        .end = @min(top + size, total_halves),
+    };
+}
+
+fn thumbPartAt(halves: ThumbHalves, row: usize) ThumbPart {
+    const row_start = row * 2;
+    const row_end = row_start + 2;
+    if (halves.end <= row_start or halves.top >= row_end) return .none;
+    if (halves.top <= row_start and halves.end >= row_end) return .full;
+    if (halves.top <= row_start) return .upper;
+    return .lower;
+}
 
 fn thumbGeometry(state: scrollbar_state.ScrollbarState, track_height: usize) ThumbGeometry {
     if (track_height == 0) return .{ .top = 0, .size = 0 };
@@ -2539,19 +2600,23 @@ test "View: right column paints markers and the overlapping thumb" {
     try std.testing.expectEqual(marker_col, editor.textAreaRight());
 
     const find_fg = ui.cell.packColor(color(overview_find_color));
-    const cursor_fg = ui.cell.packColor(color(overview_cursor_color));
     const thumb_fg = ui.cell.packColor(color(scrollbar_thumb_color));
 
-    // Twenty lines in a seven-row track need a thumb. The right-aligned
-    // 1.5-cell thumb is a right half followed by a full cell.
-    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 0)]);
-    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 0)]);
+    // Twenty lines in a seven-row track need a 1.5-cell thumb. The cursor
+    // scrolls the viewport, so the exact thumb position starts at the lower
+    // half of row 0; half-cell glyphs render that edge.
+    try std.testing.expectEqual(@as(u32, '▗'), grid.cluster[grid.index(marker_col, 0)]);
+    try std.testing.expectEqual(@as(u32, '▄'), grid.cluster[grid.index(thumb_col, 0)]);
     try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(marker_col, 0)]);
     try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(thumb_col, 0)]);
-    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 2)]);
-    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 2)]);
-    try std.testing.expectEqual(cursor_fg, grid.fg[grid.index(marker_col, 2)]);
-    try std.testing.expectEqual(cursor_fg, grid.fg[grid.index(thumb_col, 2)]);
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 1)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 1)]);
+    try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(marker_col, 1)]);
+    try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(thumb_col, 1)]);
+    try std.testing.expectEqual(@as(u32, '▝'), grid.cluster[grid.index(marker_col, 2)]);
+    try std.testing.expectEqual(@as(u32, '▀'), grid.cluster[grid.index(thumb_col, 2)]);
+    try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(marker_col, 2)]);
+    try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(thumb_col, 2)]);
     // Find markers use the first lane: right half of the first cell.
     try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 3)]);
     try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(thumb_col, 3)]);
@@ -2752,9 +2817,9 @@ test "View: three overview lanes use half-cell glyphs" {
     const first = cols - 2;
     const second = cols - 1;
 
-    // Cursor: full 1.5-cell marker.
-    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(first, 0)]);
-    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(second, 0)]);
+    // Cursor: half-height upper edge across the full 1.5-cell width.
+    try std.testing.expectEqual(@as(u32, '▝'), grid.cluster[grid.index(first, 0)]);
+    try std.testing.expectEqual(@as(u32, '▀'), grid.cluster[grid.index(second, 0)]);
     // Find: left lane, right half of the first cell.
     try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(first, 1)]);
     try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(second, 1)]);
@@ -2764,4 +2829,38 @@ test "View: three overview lanes use half-cell glyphs" {
     // Word: center lane, left half of the second cell.
     try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(first, 3)]);
     try std.testing.expectEqual(@as(u32, '▌'), grid.cluster[grid.index(second, 3)]);
+}
+
+test "View: half-cell thumb uses quadrant edges" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text = try numberedLines(allocator, 13);
+    defer allocator.free(text);
+    const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try std.testing.expect(editor.setTopViewLine(2));
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const cols = view.surface.document().cols;
+    const grid = view.surface.grid();
+    const first = cols - 2;
+    const second = cols - 1;
+
+    // The thumb starts at half a cell and is one cell tall: lower half of row
+    // 0, upper half of row 1.
+    try std.testing.expectEqual(@as(u32, '▗'), grid.cluster[grid.index(first, 0)]);
+    try std.testing.expectEqual(@as(u32, '▄'), grid.cluster[grid.index(second, 0)]);
+    try std.testing.expectEqual(@as(u32, '▝'), grid.cluster[grid.index(first, 1)]);
+    try std.testing.expectEqual(@as(u32, '▀'), grid.cluster[grid.index(second, 1)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(first, 2)]);
 }
