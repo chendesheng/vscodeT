@@ -756,11 +756,11 @@ Library constraints:
   still absent. Keyboard events and focus are in; key release/repeat, CSI
   u/kitty reports are not. Focus events have no capture pass and there are no
   `:focus`-style selectors; focus is explicit state plus listeners.
-- The editor scrollbar/overview ruler is a two-cell strip that carries both
-  markers and the thumb; the thumb covers markers on its rows. It has no pixel
-  lanes, minimap, horizontal scrollbar, rounded/smooth slider, translucent
-  marker alpha or diagnostics markers; a marker row can represent many
-  document lines. There is no generic scrollable
+- The editor scrollbar/overview ruler is a right-aligned 1.5-cell strip with
+  three half-cell marker lanes; the 1.5-cell thumb covers markers on its rows.
+  It has no pixel lanes, minimap, horizontal scrollbar, rounded/smooth slider,
+  translucent marker alpha or diagnostics markers; a marker row can represent
+  many document lines. There is no generic scrollable
   viewport (the editor scrolls its top view line; the preview rebuilds), glyph
   margin, view zones or IME. The editor view paints the current line,
   selections, hardware cursor, find ranges and overview markers; overlay widget

@@ -147,14 +147,15 @@ TUI editor:
   the wheel scrolls three view lines (the caret stays put until it moves).
   Resting the pointer on a word opens a hover after 300 ms (see the hover
   contribution below); moving over the gutter or status row closes it.
-- Scrollbar and overview ruler: the rightmost two text cells show overview
-  markers and the proportional scrollbar thumb in the same cells. Markers
-  paint first: find matches, the current find match, bracket matches that use
-  the overview-ruler option, word occurrences and cursor positions. The thumb
-  paints afterwards on the rows it occupies as two foreground block glyphs,
-  covering the marker there. Markers use the same foreground-glyph technique
-  as Flow's vertical scrollbar, so the strip carries no background run at the
-  terminal edge. Because
+- Scrollbar and overview ruler: the scrollbar is right-aligned and 1.5 cells
+  wide: the right half of the first reserved cell plus the whole second cell.
+  It uses foreground block glyphs, so it carries no background run at the
+  terminal edge. Three half-cell marker lanes occupy that width: find matches
+  use the left lane (right half of the first cell), word occurrences the
+  center lane (left half of the second cell), bracket matches the right lane
+  (right half of the second cell), and the current find match and cursors use
+  the full 1.5-cell width. The thumb is also 1.5 cells wide and covers the
+  markers on its rows. Because
   a terminal has one row per cell, a row can represent many document lines:
   markers are quantized to rows and collisions use the upstream z-order
   (current find over find over bracket/word, cursors last). Clicking the track

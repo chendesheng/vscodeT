@@ -15,11 +15,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// Horizontal lane inside the one-column terminal ruler.
+pub const Lane = enum { left, center, right, full };
+
 /// One overview-ruler decoration, already converted to view lines and color.
 pub const Decoration = struct {
     start_line_number: usize,
     end_line_number: usize,
     color: [3]u8,
+    lane: Lane = .center,
     z_index: i32 = 0,
 };
 
@@ -27,6 +31,13 @@ pub const Decoration = struct {
 pub const Cursor = struct {
     line_number: usize,
     color: [3]u8,
+    lane: Lane = .full,
+};
+
+/// The winning marker for one terminal row.
+pub const Marker = struct {
+    color: [3]u8,
+    lane: Lane,
 };
 
 pub const Settings = struct {
@@ -40,15 +51,15 @@ pub const Settings = struct {
     min_decoration_height: usize = 1,
 };
 
-/// Renders the overview ruler into one optional color per track row. The
+/// Renders the overview ruler into one optional marker per track row. The
 /// returned slice is owned by the caller.
 pub fn render(
     allocator: Allocator,
     decorations: []const Decoration,
     cursors: []const Cursor,
     settings: Settings,
-) ![]?[3]u8 {
-    const rows = try allocator.alloc(?[3]u8, settings.canvas_height);
+) ![]?Marker {
+    const rows = try allocator.alloc(?Marker, settings.canvas_height);
     errdefer allocator.free(rows);
     for (rows) |*row| row.* = null;
 
@@ -108,7 +119,7 @@ pub fn render(
 
         var row = top;
         while (row < bottom) : (row += 1) {
-            rows[row] = decoration.color;
+            rows[row] = .{ .color = decoration.color, .lane = decoration.lane };
         }
     }
 
@@ -118,7 +129,7 @@ pub fn render(
             const offset = @as(f64, @floatFromInt(line - 1)) * settings.line_height;
             var row = clampToUsize(@floor(offset * height_ratio), settings.canvas_height);
             if (row >= settings.canvas_height) row = settings.canvas_height - 1;
-            rows[row] = cursor.color;
+            rows[row] = .{ .color = cursor.color, .lane = cursor.lane };
         }
     }
 
@@ -148,19 +159,21 @@ fn lessThan(_: void, a: Decoration, b: Decoration) bool {
 
 const testing = std.testing;
 
-fn expectRows(rows: []const ?[3]u8, expected: []const ?[3]u8) !void {
+fn expectRows(rows: []const ?Marker, expected: []const ?Marker) !void {
     try testing.expectEqual(expected.len, rows.len);
     for (rows, expected) |actual, wanted| {
-        if (wanted) |color| {
-            try testing.expectEqual(color, actual.?);
+        if (wanted) |marker| {
+            try testing.expectEqual(marker.color, actual.?.color);
+            try testing.expectEqual(marker.lane, actual.?.lane);
         } else {
             try testing.expect(actual == null);
         }
     }
 }
 
-fn expectColor(actual: ?[3]u8, expected: [3]u8) !void {
-    try testing.expectEqual(expected, actual.?);
+fn expectMarker(actual: ?Marker, color: [3]u8, lane: Lane) !void {
+    try testing.expectEqual(color, actual.?.color);
+    try testing.expectEqual(lane, actual.?.lane);
 }
 
 test "decorationsOverviewRuler: maps lines to rows" {
@@ -178,10 +191,10 @@ test "decorationsOverviewRuler: maps lines to rows" {
     });
     defer allocator.free(rows);
 
-    var expected = [_]?[3]u8{ null, null, null, null, null, null, null, null, null, null };
-    expected[0] = red;
-    expected[4] = red;
-    expected[9] = red;
+    var expected = [_]?Marker{ null, null, null, null, null, null, null, null, null, null };
+    expected[0] = .{ .color = red, .lane = .center };
+    expected[4] = .{ .color = red, .lane = .center };
+    expected[9] = .{ .color = red, .lane = .center };
     try expectRows(rows, &expected);
 }
 
@@ -198,9 +211,9 @@ test "decorationsOverviewRuler: multi-line range spans rows" {
     });
     defer allocator.free(rows);
 
-    var expected = [_]?[3]u8{ null, null, null, null, null, null, null, null, null, null };
-    expected[0] = blue;
-    expected[1] = blue;
+    var expected = [_]?Marker{ null, null, null, null, null, null, null, null, null, null };
+    expected[0] = .{ .color = blue, .lane = .center };
+    expected[1] = .{ .color = blue, .lane = .center };
     try expectRows(rows, &expected);
 }
 
@@ -217,8 +230,8 @@ test "decorationsOverviewRuler: short document stays at the top" {
     });
     defer allocator.free(rows);
 
-    var expected = [_]?[3]u8{ null, null, null, null, null, null, null, null, null, null };
-    expected[1] = green;
+    var expected = [_]?Marker{ null, null, null, null, null, null, null, null, null, null };
+    expected[1] = .{ .color = green, .lane = .center };
     try expectRows(rows, &expected);
 }
 
@@ -238,8 +251,8 @@ test "decorationsOverviewRuler: higher z-index wins a shared row" {
     defer allocator.free(rows);
 
     // Red covers rows 0-1; blue lands on row 1 and wins there by z-index.
-    try expectColor(rows[0], red);
-    try expectColor(rows[1], blue);
+    try expectMarker(rows[0], red, .center);
+    try expectMarker(rows[1], blue, .center);
 }
 
 test "decorationsOverviewRuler: cursors paint after decorations" {
@@ -259,7 +272,7 @@ test "decorationsOverviewRuler: cursors paint after decorations" {
     });
     defer allocator.free(rows);
 
-    try expectColor(rows[4], white);
+    try expectMarker(rows[4], white, .full);
 }
 
 test "decorationsOverviewRuler: lanes off renders no markers or cursors" {
@@ -279,7 +292,7 @@ test "decorationsOverviewRuler: lanes off renders no markers or cursors" {
     });
     defer allocator.free(rows);
 
-    var expected = [_]?[3]u8{ null, null, null, null, null, null, null, null, null, null };
+    var expected = [_]?Marker{ null, null, null, null, null, null, null, null, null, null };
     try expectRows(rows, &expected);
 }
 
@@ -299,7 +312,7 @@ test "decorationsOverviewRuler: many decorations in one row collapse" {
     });
     defer allocator.free(rows);
 
-    try expectColor(rows[0], red);
+    try expectMarker(rows[0], red, .center);
     var count: usize = 0;
     for (rows) |row| {
         if (row != null) count += 1;

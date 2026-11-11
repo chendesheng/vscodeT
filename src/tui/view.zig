@@ -965,11 +965,12 @@ pub const View = struct {
             try cursors.append(.{
                 .line_number = state.viewState.position.lineNumber,
                 .color = cursor_color,
+                .lane = .full,
             });
         }
         std.mem.sort(decorationsOverviewRuler.Cursor, cursors.items, {}, cursorLessThan);
 
-        const row_colors = try decorationsOverviewRuler.render(
+        const row_markers = try decorationsOverviewRuler.render(
             self.allocator,
             markers.items,
             cursors.items,
@@ -982,7 +983,7 @@ pub const View = struct {
                 .min_decoration_height = 1,
             },
         );
-        defer self.allocator.free(row_colors);
+        defer self.allocator.free(row_markers);
 
         // A single strip root owns both layers. Marker cells are appended
         // first; thumb rows are overwritten with the thumb background in the
@@ -1009,13 +1010,25 @@ pub const View = struct {
         var row: usize = 0;
         while (row < text_height) : (row += 1) {
             const is_thumb = thumb_needed and row >= geometry.top and row < thumb_end;
-            const marker_color = if (row < row_colors.len) row_colors[row] else null;
-            if (!is_thumb and marker_color == null) continue;
+            const marker = if (row < row_markers.len) row_markers[row] else null;
+            if (!is_thumb and marker == null) continue;
 
             // Flow (github.com/neurocyte/flow) renders its vertical
             // scrollbar as a foreground glyph over the editor background.
-            // Adopt the same technique for markers and the knob: no
-            // background run at the right edge, just block characters.
+            // The scrollbar is 1.5 cells wide: one full cell plus the left
+            // half of the next. Three half-cell lanes occupy the full cell's
+            // left/right halves and the next cell's left half; the final half
+            // cell remains background.
+            const marker_color = if (is_thumb) scrollbar_thumb_color else marker.?.color;
+            const glyph_text: []const u8 = if (is_thumb)
+                "▐█" // right half of the first cell + full second cell
+            else switch (marker.?.lane) {
+                .left => "▐ ", // first lane: right half of the first cell
+                .center => " ▌", // center lane: left half of the full second cell
+                .right => " ▐", // right lane: right half of the full second cell
+                .full => "▐█", // all three half lanes
+            };
+
             const cell = try doc.createElement(.div);
             cell.setStyle(.{
                 .position = .absolute,
@@ -1023,11 +1036,10 @@ pub const View = struct {
                 .top = .{ .cells = @floatFromInt(row) },
                 .width = .{ .cells = @floatFromInt(column_width) },
                 .height = .{ .cells = 1 },
-                .color = color(if (is_thumb) scrollbar_thumb_color else marker_color.?),
+                .color = color(marker_color),
             });
-            const glyph_text: []const u8 = if (column_width >= 2) "██" else "█";
             const glyph = try doc.createText(glyph_text);
-            glyph.setStyle(.{ .color = color(if (is_thumb) scrollbar_thumb_color else marker_color.?) });
+            glyph.setStyle(.{ .color = color(marker_color) });
             _ = try cell.appendChild(glyph);
             _ = try column.appendChild(cell);
         }
@@ -1054,6 +1066,7 @@ pub const View = struct {
                 .start_line_number = start.lineNumber,
                 .end_line_number = @max(start.lineNumber, end.lineNumber),
                 .color = marker_color,
+                .lane = overviewRulerLane(decoration.kind),
                 .z_index = overviewRulerZIndex(decoration.kind),
             });
         }
@@ -1222,6 +1235,17 @@ fn overviewRulerColor(kind: editorBrowser.DecorationKind) ?[3]u8 {
         .word_highlight_text, .word_highlight => overview_word_color,
         .word_highlight_strong => overview_word_strong_color,
         .find_scope, .hover_highlight => null,
+    };
+}
+
+fn overviewRulerLane(kind: editorBrowser.DecorationKind) decorationsOverviewRuler.Lane {
+    return switch (kind) {
+        .find_match => .left,
+        .bracket_match => .right,
+        // The third half-cell lane uses the legacy "center" label.
+        .word_highlight_text, .word_highlight, .word_highlight_strong => .center,
+        .current_find_match => .full,
+        .find_scope, .hover_highlight => .center,
     };
 }
 
@@ -2518,20 +2542,20 @@ test "View: right column paints markers and the overlapping thumb" {
     const cursor_fg = ui.cell.packColor(color(overview_cursor_color));
     const thumb_fg = ui.cell.packColor(color(scrollbar_thumb_color));
 
-    // Twenty lines in a seven-row track need a thumb. The thumb is two
-    // foreground block glyphs and covers the find marker.
-    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(marker_col, 0)]);
+    // Twenty lines in a seven-row track need a thumb. The right-aligned
+    // 1.5-cell thumb is a right half followed by a full cell.
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 0)]);
     try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 0)]);
     try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(marker_col, 0)]);
     try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(thumb_col, 0)]);
-    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(marker_col, 2)]);
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 2)]);
     try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 2)]);
     try std.testing.expectEqual(cursor_fg, grid.fg[grid.index(marker_col, 2)]);
     try std.testing.expectEqual(cursor_fg, grid.fg[grid.index(thumb_col, 2)]);
-    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(marker_col, 3)]);
-    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 3)]);
+    // Find markers use the first lane: right half of the first cell.
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 3)]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(thumb_col, 3)]);
     try std.testing.expectEqual(find_fg, grid.fg[grid.index(marker_col, 3)]);
-    try std.testing.expectEqual(find_fg, grid.fg[grid.index(thumb_col, 3)]);
 
     // The shared area is two cells wide: the cell immediately to its left is
     // the end of the text area, not another scrollbar column.
@@ -2565,11 +2589,11 @@ test "View: short document has no scrollbar thumb" {
     const thumb_col = cols - 1;
     const find_fg = ui.cell.packColor(color(overview_find_color));
 
-    // Line 2 maps below the cursor row but no thumb is needed.
-    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(marker_col, 1)]);
-    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 1)]);
+    // Line 2 maps below the cursor row but no thumb is needed. Find uses the
+    // first lane, so only the first cell's right half is filled.
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 1)]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(thumb_col, 1)]);
     try std.testing.expectEqual(find_fg, grid.fg[grid.index(marker_col, 1)]);
-    try std.testing.expectEqual(find_fg, grid.fg[grid.index(thumb_col, 1)]);
     const thumb_fg = ui.cell.packColor(color(scrollbar_thumb_color));
     var row: usize = 0;
     while (row < editor.textHeight()) : (row += 1) {
@@ -2698,4 +2722,46 @@ test "View: overview markers follow wrapped view lines" {
     try std.testing.expectEqual(@as(usize, 2), markers.items.len);
     try std.testing.expectEqual(@as(usize, 1), markers.items[0].start_line_number);
     try std.testing.expectEqual(@as(usize, 2), markers.items[1].start_line_number);
+}
+
+test "View: three overview lanes use half-cell glyphs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\nb\nc\nd", "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try editor.setCursorPosition(Position.init(1, 1));
+    try view.setDecorations(&[_]editorBrowser.Decoration{
+        .{ .range = Range.init(2, 1, 2, 2), .kind = .find_match },
+        .{ .range = Range.init(3, 1, 3, 2), .kind = .bracket_match },
+        .{ .range = Range.init(4, 1, 4, 2), .kind = .word_highlight },
+    });
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const cols = view.surface.document().cols;
+    const grid = view.surface.grid();
+    const first = cols - 2;
+    const second = cols - 1;
+
+    // Cursor: full 1.5-cell marker.
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(first, 0)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(second, 0)]);
+    // Find: left lane, right half of the first cell.
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(first, 1)]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(second, 1)]);
+    // Bracket: right lane, right half of the second cell.
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(first, 2)]);
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(second, 2)]);
+    // Word: center lane, left half of the second cell.
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(first, 3)]);
+    try std.testing.expectEqual(@as(u32, '▌'), grid.cluster[grid.index(second, 3)]);
 }
