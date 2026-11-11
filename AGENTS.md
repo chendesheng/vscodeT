@@ -46,6 +46,22 @@ state that in the comment and keep the behavioral contract intact.
 - Invalidation is WebKit-like: DOM mutations notify the attached box tree,
   which marks boxes/tree dirty (`needs_rebuild`, `needs_layout`). Do not add a
   document-level revision or dirty flag.
+- **Use TermDOM and WebKit as the reference implementations for this layer.**
+  When adding or changing UI behavior, read the corresponding implementation
+  and mirror its structure and rules before inventing a new one:
+  - [TermDOM](https://github.com/bikeshaving/termdom) for the terminal
+    pipeline: box derivation over the DOM, cell painting and paint order,
+    background propagation (`setCell` keeps the existing cell background
+    unless the box owns one), frame diffing, ANSI encoding and cursor
+    handling.
+  - [WebKit](https://github.com/WebKit/WebKit) for the browser architecture:
+    the separate `Layout::Box` tree, block/inline/flex formatting contexts,
+    layout invalidation and style-driven dirtying.
+  Reimplement the behavior in Zig; do not copy code (TermDOM is MIT, WebKit is
+  LGPL-2.1/BSD). When a terminal constraint forces a deviation (no CSS, no
+  subpixel units, no HTML parser), state it in the file comment and in
+  `docs/terminal-ui.md`. Lightpanda remains a reference for DOM linking and
+  ownership only; it has no layout engine.
 - Keyboard events and focus live in `ui/event.zig`; terminal byte decoding is
   `ui/input.zig`. Key events capture/target/bubble and only `key_down` exists.
   Focus uses `Document.activeElement`, `Element.focusable` / `tab_index`, and
