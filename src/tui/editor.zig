@@ -437,10 +437,50 @@ pub const Editor = struct {
         } else if (position.lineNumber >= self.top_view_line + height) {
             self.top_view_line = position.lineNumber - height + 1;
         }
-        const total = self.view_lines.getViewLineCount();
-        const max_top = if (total <= height) 1 else total - height + 1;
+        const max_top = self.maxTopViewLine();
         if (self.top_view_line < 1) self.top_view_line = 1;
         if (self.top_view_line > max_top) self.top_view_line = max_top;
+    }
+
+    fn maxTopViewLine(self: *Editor) usize {
+        const total = self.view_lines.getViewLineCount();
+        const height = self.textHeight();
+        return if (total <= height) 1 else total - height + 1;
+    }
+
+    /// Scrolls the viewport by `delta` view lines without moving the cursor.
+    /// Returns whether the top line changed; the wheel uses this so a cursor
+    /// may stay off-screen until the next cursor move reveals it.
+    pub fn scrollViewLines(self: *Editor, delta: isize) bool {
+        const max_top = self.maxTopViewLine();
+        const current: isize = @intCast(@min(self.top_view_line, max_top));
+        const max: isize = @intCast(max_top);
+        const next = std.math.clamp(current + delta, 1, max);
+        if (next == self.top_view_line) return false;
+        self.top_view_line = @intCast(next);
+        return true;
+    }
+
+    /// Maps a visible cell offset within a view line to the model position.
+    /// This is a terminal adaptation of the upstream view-model point mapping:
+    /// `visible_column` counts cells after tab expansion, not model columns.
+    pub fn positionAtViewPoint(self: *Editor, view_line_number: usize, visible_column: usize) !Position {
+        const view_line = @min(@max(view_line_number, 1), self.viewLineCount());
+        const data = try self.viewLineData(view_line);
+        const target = data.startVisibleColumn + visible_column;
+        const output_column = CursorColumns.columnFromVisibleColumnFrom(
+            data.content,
+            target,
+            self.cursor_config.tabSize,
+            data.startVisibleColumn,
+        );
+        const column = self.view_lines.getModelColumnOfViewPosition(view_line, output_column);
+        const min_column = self.view_lines.getModelColumnOfViewPosition(view_line, data.minColumn);
+        const max_column = self.view_lines.getModelColumnOfViewPosition(view_line, data.maxColumn);
+        return Position.init(
+            self.modelLineNumber(view_line),
+            std.math.clamp(column, min_column, max_column),
+        );
     }
 
     fn closeTypingGroup(self: *Editor) void {
@@ -1208,6 +1248,15 @@ pub const Editor = struct {
     pub fn setSelections(self: *Editor, selections: []const Selection) !void {
         self.closeTypingGroup();
         try self.cursorsRef().setSelections(self.allocator, selections);
+        self.ensureCursorVisible();
+    }
+
+    /// Updates the selection during a mouse drag. The press already closed the
+    /// typing group, so motion must not start a new undo stop per report.
+    pub fn updateDragSelection(self: *Editor, anchor: Position, position: Position) !void {
+        try self.cursorsRef().setSelections(self.allocator, &[_]Selection{
+            Selection.init(anchor.lineNumber, anchor.column, position.lineNumber, position.column),
+        });
         self.ensureCursorVisible();
     }
 

@@ -42,9 +42,21 @@ pub const CursorColumns = struct {
     }
 
     pub fn columnFromVisibleColumn(lineContent: []const u8, visibleColumn: usize, tabSize: usize) usize {
-        if (visibleColumn == 0) return 1;
+        return columnFromVisibleColumnFrom(lineContent, visibleColumn, tabSize, 0);
+    }
 
-        var beforeVisibleColumn: usize = 0;
+    /// `columnFromVisibleColumn` for content that begins at a non-zero visible
+    /// column, as a wrapped continuation line does: tab stops are resolved
+    /// against the line's absolute columns, not against zero.
+    pub fn columnFromVisibleColumnFrom(
+        lineContent: []const u8,
+        visibleColumn: usize,
+        tabSize: usize,
+        startVisibleColumn: usize,
+    ) usize {
+        if (visibleColumn <= startVisibleColumn) return 1;
+
+        var beforeVisibleColumn = startVisibleColumn;
         var beforeColumn: usize = 1;
         var offset: usize = 0;
         while (offset < lineContent.len) {
@@ -148,4 +160,15 @@ test "cursorColumns: column from visible column" {
     try std.testing.expectEqual(@as(usize, 4), CursorColumns.columnFromVisibleColumn("\t\tvar x = 3;", 9, 4));
     try std.testing.expectEqual(@as(usize, 4), CursorColumns.columnFromVisibleColumn("baz", 3, 4));
     try std.testing.expectEqual(@as(usize, 5), CursorColumns.columnFromVisibleColumn("📚az", 2, 4));
+}
+
+test "cursorColumns: column from visible column at a wrapped start" {
+    // A continuation line's tab stops are absolute: the tab at visible 4
+    // reaches 8, not 4-from-zero.
+    try std.testing.expectEqual(@as(usize, 1), CursorColumns.columnFromVisibleColumnFrom("\tx", 6, 4, 4));
+    try std.testing.expectEqual(@as(usize, 2), CursorColumns.columnFromVisibleColumnFrom("\tx", 7, 4, 4));
+    try std.testing.expectEqual(@as(usize, 3), CursorColumns.columnFromVisibleColumnFrom("\tx", 9, 4, 4));
+    try std.testing.expectEqual(@as(usize, 1), CursorColumns.columnFromVisibleColumnFrom("何z", 2, 4, 2));
+    try std.testing.expectEqual(@as(usize, 4), CursorColumns.columnFromVisibleColumnFrom("何z", 4, 4, 2));
+    try std.testing.expectEqual(@as(usize, 1), CursorColumns.columnFromVisibleColumnFrom("abc", 2, 4, 5));
 }

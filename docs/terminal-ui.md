@@ -226,16 +226,26 @@ Event delivery is DOM-shaped but typed, and follows the same split as
 Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
 
 - Every node has a listener list (`addEventListener` / `removeEventListener`).
-  A listener is a struct of optional callbacks (`key_down`, `focus`, `blur`,
-  `focus_in`, `focus_out`) plus an optional context. There is no `Event` base
-  class and no per-type `on*` property.
-- Key events run capture (root → parent), target, then bubble (parent → root).
-  `stopPropagation`, `stopImmediatePropagation` and `preventDefault` have the
-  usual meanings. Only `key_down` exists: a terminal reports bytes, not releases
-  or repeats. There is no `keyup`/`keypress`.
+  A listener is a struct of optional callbacks (`key_down`, `mouse_down`,
+  `mouse_move`, `mouse_up`, `click`, `wheel`, `focus`, `blur`, `focus_in`,
+  `focus_out`) plus an optional context. There is no `Event` base class and no
+  per-type `on*` property.
+- Key and mouse events run capture (root → parent), target, then bubble
+  (parent → root). `stopPropagation`, `stopImmediatePropagation` and
+  `preventDefault` have the usual meanings. Only `key_down` exists: a terminal
+  reports bytes, not releases or repeats. There is no `keyup`/`keypress`.
 - `Document.activeElement` is the focused element, falling back to the root when
   nothing is focused (the browser's `body` fallback), so a root listener still
   receives keys before any widget takes focus.
+- Mouse events carry zero-based terminal-cell coordinates. `Surface.elementFromPoint`
+  solves pending layout, walks the box tree in reverse paint order and clips to
+  `overflow: hidden`/`clip`; a text hit reports its parent element, like the DOM
+  API. A non-canceled press focuses the nearest focusable ancestor, or blurs.
+  Click synthesis, drag state and the wheel's effect stay in the host, as
+  TermDOM keeps them in `Input`: the TUI view tracks the press cell, drags a
+  selection, clicks the press/release common ancestor, and scrolls three view
+  lines per notch. Motion is the button-held motion terminals report in mode
+  1002; idle hover needs mode 1003 and is not requested.
 - `Element.focusable` opts a node into focus. `Element.tab_index` follows HTML:
   positive values come first in ascending order, `0` keeps tree order, and
   negative values are programmatically focusable but skipped by Tab. Tab is the
@@ -245,11 +255,12 @@ Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
   then `focusin` on the new one, with `related_target` pointing at the other
   element. `focus`/`blur` do not bubble; `focusin`/`focusout` do. Removing a
   focused subtree clears `activeElement` silently, as the references do.
-- `ui/input.zig` decodes terminal bytes into key events: printable runs,
-  control bytes, cursor/editing keys (including modifier parameters), and
-  bracketed paste. Text runs borrow the input buffer. Extended keyboard
-  protocols (CSI u, kitty), key release/repeat, mouse and terminal focus
-  reporting are not decoded yet.
+- `ui/input.zig` decodes terminal bytes into key and mouse events: printable
+  runs, control bytes, cursor/editing keys (including modifier parameters),
+  bracketed paste, and SGR mouse reports (`CSI < b ; x ; y M/m`). Text runs
+  borrow the input buffer. Extended keyboard protocols (CSI u, kitty), key
+  release/repeat, legacy X10 mouse reports and terminal focus reporting are not
+  decoded yet.
 
 ## 5. Layout tree
 
@@ -519,9 +530,11 @@ Public surface for the POC:
 - Ownership: the document owns all nodes; text/attribute buffers are
   document-allocated; `remove()` detaches and queues recycle; `Document.deinit`
   frees everything. The allocator is always explicit, no globals.
-- Events: `ui/event.zig` (keys, focus, listener dispatch) and
-  `ui/input.zig` (terminal byte decoder). The preview also handles Up/Down,
-  PageUp/PageDown, Home and End for scrolling and Ctrl-Q to quit.
+- Events: `ui/event.zig` (keys, mouse, focus, listener dispatch),
+  `ui/box.zig`/`ui/surface.zig` (`elementFromPoint`) and `ui/input.zig` (the
+  terminal byte decoder, including SGR mouse reports). The preview also handles
+  Up/Down, PageUp/PageDown, Home/End and mouse-wheel scrolling, and Ctrl-Q to
+  quit.
 
 Library constraints:
 
@@ -553,7 +566,7 @@ Library constraints:
     single `Surface.render` diff covers it. `Document.clear` rebuilds the tree
     between frames while keeping the previous grid for the diff.
 - `src/tui/preview.zig` remains the read-only `--preview` variant, adding
-  Up/Down and PageUp/PageDown scrolling.
+  Up/Down, PageUp/PageDown, Home/End and mouse-wheel scrolling.
 - Overlay widgets use the terminal adaptation of upstream `IOverlayWidget`
   in `src/vs/editor/browser/editorBrowser.zig`. A widget reports its size in
   cells, builds a `ui` subtree each frame and is anchored to a corner
@@ -582,8 +595,14 @@ Library constraints:
 - Model fixes the port needed: `TextModel.findNextMatch` no longer runs a
   second discarded search (which leaked its capture array), and the
   word-separator cache owns its keys instead of borrowing editor slices.
-- `src/tui/app.zig` dispatches keys to the editor, refreshes the view and syncs
-  the hardware cursor after each frame; resize recreates the surface.
+- `src/tui/app.zig` dispatches keys and mouse events to the editor, refreshes
+  the view and syncs the hardware cursor after each frame; resize recreates the
+  surface. The terminal runs in mouse mode 1002 with SGR coordinates (1006), so
+  press, release, button-held motion and wheel arrive as `ui.MouseEvent`s.
+  `View.dispatchMouse` hit-tests, applies press-to-focus, places the caret
+  (Shift extends), drag-selects, synthesizes the release click on the common
+  ancestor and scrolls three view lines per wheel notch. Clicking a find input
+  focuses it; clicking the editor blurs the bar without closing it.
 - Gutter width follows the existing `gutterWidthFor` logic; line numbers are
   right-aligned with `text_align = .right`.
 - Long lines are clipped (no horizontal scrolling); wrapping uses the existing
@@ -598,8 +617,9 @@ Library constraints:
   wrapped lines, long-line clipping, gutters for lines past 9 and 99.
 - Snapshot tests in `src/tui/` assert text rows and per-cell styles for ASCII,
   CJK, tabs, wrapping and long-line clipping; selection inversion; the hardware
-  cursor cell; an unchanged refresh writing no bytes; plus keyboard scrolling and
-  Ctrl-Q through the library dispatcher.
+  cursor cell; an unchanged refresh writing no bytes; mouse click/shift-click/
+  drag/wheel caret and viewport effects; plus keyboard scrolling and Ctrl-Q
+  through the library dispatcher.
 - Library unit tests cover: tree linking/invariants, box-tree derivation
   (viewport root, principal/text boxes, anonymous inline/flex items,
   `display: contents`/`none`, mutation invalidation), absolute/percent/auto layout,
@@ -607,10 +627,11 @@ Library constraints:
   (changed cell, vanished cell, unchanged frame), first-row erase and a small
   ANSI golden. Event tests cover capture/target/bubble order, propagation and
   default prevention, focus event order and `related_target`, tabindex
-  traversal, hidden/focusability checks, silent focus clearing on removal, and
-  the terminal decoder (control keys, modifiers, paste, lone Escape).
-- No cursor, selection, scrollbar, mouse, view model or view-part ports in this
-  POC.
+  traversal, hidden/focusability checks, silent focus clearing on removal,
+  mouse hit-testing, press-to-focus, wheel cancellation, and the terminal
+  decoder (control keys, modifiers, paste, lone Escape, SGR mouse).
+- No cursor, selection, scrollbar, scrollable viewport, view model or view-part
+  ports in this POC.
 
 ## 10. Roadmap after the POC
 
@@ -625,9 +646,11 @@ Library constraints:
    viewCursors; `TerminalView` orchestrator. The terminal editor view
    (`src/tui/view.zig`) already covers gutter, tokens, selection, cursor and
    status; the split into upstream-shaped view parts is still open.
-5. Scrollable viewport/scrollbar, mouse input, cursor blink/timers; row
-   damage bands and
-   the `DECSTBM` + `IL`/`DL` scroll shift; hardware-cursor caret.
+5. Scrollable viewport/scrollbar, hover/`:hover` and generic wheel scrolling
+   (`overflow: auto` boxes); cursor blink/timers; row damage bands and the
+   `DECSTBM` + `IL`/`DL` scroll shift; hardware-cursor caret. Click, drag and
+   wheel scrolling of the editor viewport are in; the generic scroll machinery
+   is not.
 6. Replace the adapter with a port of `viewModelImpl.ts` +
    `CursorsController`; port edit context/controllers; then widgets and
    contributions (find, hover, suggest, quick pick).
@@ -652,12 +675,15 @@ Library constraints:
   borders/radii.
 - No RTL/bidi visual reordering, grapheme segmentation, combining-mark cell
   composition, ligatures, or terminal width negotiation (mode 2027) in the POC.
-- No mouse, IME, scheduler or `Range`/`Selection` in the POC. Keyboard events
-  and focus are in; key release/repeat, CSI u/kitty reports and terminal focus
-  reporting are not. Focus events have no capture pass and there are no
+- Mouse press/release, click, button-held motion and wheel are in; idle
+  hover/`:hover`, double/triple click counts, context menus, middle-click paste,
+  legacy X10 reports, terminal focus reporting, drag auto-scroll and generic
+  `overflow: auto` scrolling are not. IME, scheduler and `Range`/`Selection` are
+  still absent. Keyboard events and focus are in; key release/repeat, CSI
+  u/kitty reports are not. Focus events have no capture pass and there are no
   `:focus`-style selectors; focus is explicit state plus listeners.
-- No cursors, selections, scrollbar or scrollable viewport (the preview
-  page-scrolls by rebuilding), minimap, glyph margin, view zones, IME. The
+- No scrollbar or generic scrollable viewport (the editor scrolls its top view
+  line; the preview rebuilds), minimap, glyph margin, view zones, IME. The
   editor view paints the current line, selections, hardware cursor and find
   ranges; overlay widget hosting and the find bar are in, other contributions
   are not.

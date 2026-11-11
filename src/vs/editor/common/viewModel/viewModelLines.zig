@@ -266,6 +266,20 @@ pub const ProjectedViewModelLines = struct {
         return self.getViewLineInfo(view_line_number).output_index;
     }
 
+    /// Maps a column in the view line's output content to the model column.
+    /// `view_column` is one-based and counts the wrapped line's indentation.
+    pub fn getModelColumnOfViewPosition(
+        self: *ProjectedViewModelLines,
+        view_line_number: usize,
+        view_column: usize,
+    ) usize {
+        const info = self.getViewLineInfo(view_line_number);
+        return self.projections.items[info.model_line - 1].getModelColumnOfViewPosition(
+            info.output_index,
+            view_column,
+        );
+    }
+
     pub fn getModelLineViewLineCount(self: *ProjectedViewModelLines, model_line_number: usize) usize {
         if (model_line_number < 1 or model_line_number > self.projections.items.len) return 1;
         return self.projections.items[model_line_number - 1].getViewLineCount();
@@ -506,6 +520,9 @@ test "ProjectedViewModelLines: maps wrapped view lines" {
     try std.testing.expectEqualStrings("abcd", lines.getLineContent(1));
     try std.testing.expectEqual(@as(usize, 1), lines.getLineMinColumn(2));
     try std.testing.expectEqual(@as(usize, 3), lines.getLineMaxColumn(3));
+    try std.testing.expectEqual(@as(usize, 5), lines.getModelColumnOfViewPosition(2, 1));
+    try std.testing.expectEqual(@as(usize, 7), lines.getModelColumnOfViewPosition(2, 3));
+    try std.testing.expectEqual(@as(usize, 9), lines.getModelColumnOfViewPosition(3, 1));
 
     var converter = CoordinatesConverter.init(&lines);
     const iface = converter.interface();

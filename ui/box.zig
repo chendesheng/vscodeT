@@ -104,6 +104,18 @@ pub const BoxTree = struct {
         return self.node_boxes.get(node);
     }
 
+    /// The element under a viewport point (terminal cells), or null when no box
+    /// contains it. The tree is walked in reverse paint order, so a later
+    /// sibling wins, and clipping follows `overflow` as the painter does. A hit
+    /// on a text box retargets to its parent element, like `elementFromPoint`.
+    ///
+    /// The tree must have been laid out; `Surface.elementFromPoint` does that
+    /// before calling here.
+    pub fn elementFromPoint(self: *const BoxTree, x: f64, y: f64) ?*dom.Node {
+        const hit = hitTestBox(self.root, x, y, self.root.rect) orelse return null;
+        return elementForNode(hit);
+    }
+
     pub fn clearNeedsLayout(self: *BoxTree) void {
         clearBoxNeedsLayout(self.root);
         self.needs_layout = false;
@@ -156,6 +168,58 @@ pub const BoxTree = struct {
         self.needs_layout = true;
     }
 };
+
+fn hitTestBox(current: *const LayoutBox, x: f64, y: f64, clip: style_mod.Rect) ?*dom.Node {
+    switch (current.kind) {
+        .text => {
+            if (!rectContains(clip, x, y)) return null;
+            if (!rectContains(current.rect, x, y)) return null;
+            return current.owner;
+        },
+        .initial_containing_block, .element, .anonymous_inline, .anonymous_flex_item => {
+            if (current.kind == .element and current.style.display == .none) return null;
+            // The inherited clip bounds everything this subtree paints.
+            if (!rectContains(clip, x, y)) return null;
+
+            const child_clip = switch (current.style.overflow) {
+                .visible => clip,
+                .hidden, .clip => style_mod.Rect.intersect(clip, current.padding_rect),
+            };
+
+            // Children are probed last-painted first. A child of a
+            // non-clipping box may lie outside the parent's rect and still be
+            // hit, so the parent's rect does not gate the descent.
+            if (!child_clip.isEmpty() and rectContains(child_clip, x, y)) {
+                var index = current.children.items.len;
+                while (index > 0) {
+                    index -= 1;
+                    if (hitTestBox(current.children.items[index], x, y, child_clip)) |hit| {
+                        return hit;
+                    }
+                }
+            }
+
+            if (current.owner) |owner| {
+                if (current.kind == .element and rectContains(current.rect, x, y)) {
+                    return owner;
+                }
+            }
+            return null;
+        },
+    }
+}
+
+fn rectContains(rect: style_mod.Rect, x: f64, y: f64) bool {
+    return x >= rect.x and x < rect.right() and y >= rect.y and y < rect.bottom();
+}
+
+fn elementForNode(node: *dom.Node) ?*dom.Node {
+    var current: ?*dom.Node = node;
+    while (current) |candidate| : (current = candidate.parent) {
+        if (candidate.isElement()) return candidate;
+    }
+    return null;
+}
 
 fn rootStyle() style_mod.Style {
     return .{

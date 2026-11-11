@@ -17,6 +17,9 @@ pub const Style = style_mod.Style;
 pub const Rect = style_mod.Rect;
 pub const Key = event.Key;
 pub const KeyEvent = event.KeyEvent;
+pub const MouseButton = event.MouseButton;
+pub const MouseEvent = event.MouseEvent;
+pub const MouseKind = event.MouseKind;
 pub const Modifiers = event.Modifiers;
 pub const FocusEvent = event.FocusEvent;
 pub const Listener = event.Listener;
@@ -170,6 +173,12 @@ pub const Document = struct {
     /// Dispatches an existing event object, resetting its propagation flags.
     pub fn dispatchEvent(self: *Document, key_event: *KeyEvent) void {
         event.dispatchEvent(self, key_event);
+    }
+
+    /// Dispatches a mouse event at an already hit-tested target. A non-canceled
+    /// press focuses the nearest focusable ancestor, or blurs.
+    pub fn dispatchMouse(self: *Document, target: *Node, mouse_event: *MouseEvent) void {
+        event.dispatchMouse(self, target, mouse_event);
     }
 
     pub fn measureText(self: *const Document, text: []const u8) usize {

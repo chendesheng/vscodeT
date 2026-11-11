@@ -35,6 +35,8 @@ pub fn build(b: *std.Build) void {
         .{ .step = "example-tree", .path = "examples/tree.zig", .description = "Run the tree example" },
         .{ .step = "example-styling", .path = "examples/styling.zig", .description = "Run the styling example" },
         .{ .step = "example-focus", .path = "examples/focus.zig", .description = "Run the interactive focus example" },
+        .{ .step = "example-mouse", .path = "examples/mouse.zig", .description = "Run the interactive mouse example" },
+        .{ .step = "example-mouse-events", .path = "examples/mouse_events.zig", .description = "Run the interactive mouse event log" },
     };
 
     const all_examples = b.step("examples", "Run all ui examples");

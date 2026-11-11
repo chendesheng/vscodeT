@@ -40,8 +40,8 @@ Notes for the Zig 0.17 port:
   syntax colors, right-aligned line numbers, wrapped-line markers, selections,
   the current line, a hardware cursor and the status row. The
   `zig build run -- --preview <file>` read-only mode uses the same token
-  renderer and adds Up/Down, PageUp/PageDown, Home and End scrolling; Ctrl-Q
-  quits. Overlay widgets and a single-line terminal input box
+  renderer and adds Up/Down, PageUp/PageDown, Home, End and mouse-wheel
+  scrolling; Ctrl-Q quits. Overlay widgets and a single-line terminal input box
   (`ui/inputbox.zig`) are in place, and the find bar is wired: Ctrl-F opens
   find (a single-line selection seeds the query), Ctrl-R opens the replace row,
   Enter/Shift-Enter go to the next/previous match, Escape closes, Tab switches
@@ -49,7 +49,14 @@ Notes for the Zig 0.17 port:
   whole word and regex, Alt-P toggles preserve case, Alt-L limits the search to
   the current selection(s), Alt-Enter selects all matches, and Ctrl-Alt-Enter
   replaces all. The bar shows the match position/count and option state.
-  Mouse input is not wired yet.
+- Mouse input is wired through the library: SGR reports in mode 1002/1006 become
+  `ui.MouseEvent`s, `Surface.elementFromPoint` hit-tests the box tree, and a
+  press focuses the element under the cell. In the editor, left-click places the
+  caret, Shift-click extends, dragging selects (a selecting drag is not a
+  click), and the wheel scrolls three view lines without moving the caret.
+  Clicking the editor blurs the find bar so the keyboard returns to the editor.
+  Hover/idle motion (mode 1003), double-click, context menus and horizontal
+  scrolling are not wired.
 - Keyboard events and focus are library features: nodes take listeners, the
   active element receives keys, and Tab/Shift-Tab move through focusable nodes
   (`Element.focusable` / `Element.tab_index`). See `ui/README.md` and
@@ -57,7 +64,8 @@ Notes for the Zig 0.17 port:
 - The library's tests are part of `zig build test`; when working inside `ui/`,
   `cd ui && zig build test` runs them directly. Examples live in `ui/examples/`
   and run with `cd ui && zig build examples` (or `example-hello`,
-  `example-list`, `example-focus` individually).
+  `example-list`, `example-focus`, `example-mouse`, `example-mouse-events`
+  individually).
 
 Tokenizer status:
 
@@ -131,6 +139,8 @@ TUI editor:
   changes); save with `Ctrl-S`; undo/redo with `Ctrl-Z`/`Ctrl-Y`.
 - Navigation: arrows, `Shift`+arrows for selection, `Ctrl`+left/right for words,
   `Home`/`End`, `Ctrl`+`Home`/`End` for buffer edges, `PageUp`/`PageDown`.
+- Mouse: left-click places the caret, `Shift`-click extends, drag selects, and
+  the wheel scrolls three view lines (the caret stays put until it moves).
 - Editing: `Enter`, `Tab`/`Shift-Tab`, `Backspace`, `Delete`, bracketed paste.
 - `Ctrl-A` selects all; `Escape` clears the selection.
 - Line operations: `Alt-Up`/`Alt-Down` move the current line or selection,

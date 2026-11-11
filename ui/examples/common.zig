@@ -41,7 +41,7 @@ fn waitForQ(allocator: std.mem.Allocator) !void {
         const n = std.posix.read(std.posix.STDIN_FILENO, &bytes) catch 0;
         if (n == 0) return;
 
-        var events = try ui.input.decode(allocator, bytes[0..n]);
+        var events = try ui.input.decodeKeys(allocator, bytes[0..n]);
         defer events.deinit(allocator);
         for (events.items) |event| {
             const q = switch (event.key) {
@@ -52,6 +52,122 @@ fn waitForQ(allocator: std.mem.Allocator) !void {
             if (q) return;
         }
     }
+}
+
+/// Interactive example loop for keyboard and mouse demos: enters the alternate
+/// screen, requests SGR mouse reports, dispatches every decoded event through
+/// the document (hit-testing mouse events with `Surface.elementFromPoint`) and
+/// redraws after each batch. `q` and Ctrl-Q quit; EOF exits.
+///
+/// The example owns all behavior in listeners: press-to-focus, click/drag,
+/// wheel handling and status updates. This loop only wires terminal input to the
+/// same `ui` APIs an application uses.
+pub fn presentInteractive(surface: *ui.Surface, allocator: std.mem.Allocator) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var buffer: [8192]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(io, &buffer);
+    const out = &stdout.interface;
+
+    try out.writeAll("\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h");
+    defer {
+        out.writeAll("\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?1049l") catch {};
+        out.flush() catch {};
+    }
+
+    const orig_termios = enableRawMode(io);
+    defer {
+        if (orig_termios) |orig| disableRawMode(orig) catch {};
+    }
+
+    try surface.render(out, .{});
+    try out.flush();
+
+    var press: ?struct { x: usize, y: usize } = null;
+    var press_moved = false;
+    var fds = [_]std.posix.pollfd{.{
+        .fd = std.posix.STDIN_FILENO,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+    while (true) {
+        const ready = (std.posix.poll(&fds, -1) catch 0) > 0;
+        if (!ready) continue;
+
+        var bytes: [1024]u8 = undefined;
+        const n = std.posix.read(std.posix.STDIN_FILENO, &bytes) catch 0;
+        if (n == 0) return;
+
+        var items = try ui.input.decode(allocator, bytes[0..n]);
+        defer items.deinit(allocator);
+
+        const doc = surface.document();
+        for (items.items) |*item| {
+            switch (item.*) {
+                .key => |*key| {
+                    if (isQuitKey(key.*)) return;
+                    _ = doc.dispatchKey(key.key, key.mods);
+                },
+                .mouse => |*mouse| {
+                    const target = (try surface.elementFromPoint(mouse.x, mouse.y)) orelse
+                        (doc.root orelse continue);
+                    doc.dispatchMouse(target, mouse);
+
+                    // The library leaves click synthesis and drag policy to the
+                    // host. This loop is the host for the examples: a left press
+                    // remembers its cell, a drag suppresses the click, and a
+                    // plain release clicks the press/release common ancestor.
+                    switch (mouse.kind) {
+                        .down => if (mouse.button == .left) {
+                            press = .{ .x = mouse.x, .y = mouse.y };
+                            press_moved = false;
+                        },
+                        .move => if (mouse.button == .left and press != null) {
+                            press_moved = true;
+                        },
+                        .up => if (mouse.button == .left) {
+                            if (press) |pressed| {
+                                if (!press_moved) {
+                                    const press_target =
+                                        (try surface.elementFromPoint(pressed.x, pressed.y)) orelse target;
+                                    const click_target =
+                                        ui.event.commonInclusiveAncestor(press_target, target) orelse
+                                        press_target;
+                                    var click = ui.MouseEvent{
+                                        .kind = .click,
+                                        .x = mouse.x,
+                                        .y = mouse.y,
+                                        .button = .left,
+                                        .mods = mouse.mods,
+                                    };
+                                    doc.dispatchMouse(click_target, &click);
+                                }
+                                press = null;
+                                press_moved = false;
+                            }
+                        },
+                        else => {},
+                    }
+                },
+            }
+        }
+
+        try surface.render(out, .{});
+        try out.flush();
+    }
+}
+
+fn isQuitKey(event: ui.KeyEvent) bool {
+    if (event.mods.ctrl) {
+        return switch (event.key) {
+            .char => |ch| ch == 'q',
+            else => false,
+        };
+    }
+    return switch (event.key) {
+        .text => |text| std.mem.eql(u8, text, "q"),
+        .char => |ch| ch == 'q',
+        else => false,
+    };
 }
 
 /// Puts stdin in raw mode when it is a terminal, returning the original state

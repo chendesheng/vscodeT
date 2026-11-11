@@ -54,6 +54,9 @@ pub fn main(init: std.process.Init) !void {
     try tui.disableLineWrap(out);
     defer tui.enableLineWrap(out) catch {};
 
+    try tui.enableMouseCapture(out);
+    defer tui.disableMouseCapture(out) catch {};
+
     try tui.installSigWinch();
 
     var size = try tui.getTerminalSize();
@@ -115,8 +118,17 @@ pub fn main(init: std.process.Init) !void {
         var events = try input.decode(allocator, bytes);
         defer events.deinit(allocator);
 
-        for (events.items) |*event| {
-            if (try handleKeyEvent(view, find, editor, event, &is_pasting)) return;
+        for (events.items) |*item| {
+            switch (item.*) {
+                .key => |*event| {
+                    if (try handleKeyEvent(view, find, editor, event, &is_pasting)) return;
+                },
+                .mouse => |*event| {
+                    handleMouseEvent(view, find, editor, event) catch |err| {
+                        editor.setMessage("mouse failed: {s}", .{@errorName(err)});
+                    };
+                },
+            }
         }
 
         try view.refresh();
@@ -135,7 +147,7 @@ fn handleKeyEvent(
     view: *View,
     find: *FindController,
     editor: *Editor,
-    event: *input.Event,
+    event: *input.KeyEvent,
     is_pasting: *bool,
 ) !bool {
     if (isCtrlQ(event.*)) {
@@ -155,6 +167,21 @@ fn handleKeyEvent(
     if (dispatch(editor, event.*, is_pasting)) return true;
     find.onEditorChanged();
     return false;
+}
+
+/// Routes one mouse event through the view. The view owns hit testing, focus,
+/// caret placement, drag selection, click synthesis and wheel scrolling.
+fn handleMouseEvent(
+    view: *View,
+    find: *FindController,
+    editor: *Editor,
+    event: *input.MouseEvent,
+) !void {
+    if (event.kind != .move) {
+        editor.clearQuitArmed();
+        editor.clearMessage();
+    }
+    if (try view.dispatchMouse(event)) find.onEditorChanged();
 }
 
 /// Hides the hardware cursor when it has no cell, otherwise moves it to the
@@ -204,8 +231,15 @@ fn runPreview(allocator: std.mem.Allocator, out: *Io.Writer, editor: *Editor, in
         defer events.deinit(allocator);
 
         var redraw = false;
-        for (events.items) |event| {
-            if (try preview.handleKey(event)) redraw = true;
+        for (events.items) |*item| {
+            switch (item.*) {
+                .key => |*event| {
+                    if (try preview.handleKey(event.*)) redraw = true;
+                },
+                .mouse => |*event| {
+                    if (try preview.handleMouse(event)) redraw = true;
+                },
+            }
             if (preview.shouldQuit()) return;
         }
         if (redraw) {
@@ -215,11 +249,11 @@ fn runPreview(allocator: std.mem.Allocator, out: *Io.Writer, editor: *Editor, in
     }
 }
 
-fn isCtrlQ(event: input.Event) bool {
+fn isCtrlQ(event: input.KeyEvent) bool {
     return isCtrlChar(event, 'q');
 }
 
-fn isCtrlChar(event: input.Event, wanted: u21) bool {
+fn isCtrlChar(event: input.KeyEvent, wanted: u21) bool {
     if (!event.mods.ctrl or event.mods.alt or event.mods.shift) return false;
     return switch (event.key) {
         .char => |ch| ch == wanted,
@@ -232,7 +266,7 @@ fn setViewDecorations(context: ?*anyopaque, decorations: []const editorBrowser.D
     view.setDecorations(decorations) catch {};
 }
 
-fn dispatch(editor: *Editor, event: input.Event, is_pasting: *bool) bool {
+fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
     if (!isCtrlQ(event)) {
         editor.clearQuitArmed();
         editor.clearMessage();
@@ -386,14 +420,14 @@ test "app: q inserts text and Ctrl-Q is the quit key" {
     }
 
     var pasting = false;
-    const q_event = input.Event{ .key = .{ .text = "q" } };
+    const q_event = input.KeyEvent{ .key = .{ .text = "q" } };
     try std.testing.expect(!dispatch(editor, q_event, &pasting));
     const line = try editor.model.getLineContent(1);
     defer line.deinit();
     try std.testing.expectEqualStrings("qhello", line.items);
     try std.testing.expect(editor.isDirty());
 
-    const ctrl_q = input.Event{ .key = .{ .char = 'q' }, .mods = .{ .ctrl = true } };
+    const ctrl_q = input.KeyEvent{ .key = .{ .char = 'q' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(!dispatch(editor, ctrl_q, &pasting));
     try std.testing.expect(editor.quit_armed);
     try std.testing.expect(dispatch(editor, ctrl_q, &pasting));
@@ -409,19 +443,19 @@ test "app: move lines and line comment shortcuts" {
     }
 
     var pasting = false;
-    const alt_down = input.Event{ .key = .down, .mods = .{ .alt = true } };
+    const alt_down = input.KeyEvent{ .key = .down, .mods = .{ .alt = true } };
     try std.testing.expect(!dispatch(editor, alt_down, &pasting));
     const first = try editor.model.getLineContent(1);
     defer first.deinit();
     try std.testing.expectEqualStrings("b", first.items);
 
-    const ctrl_slash = input.Event{ .key = .{ .char = '/' }, .mods = .{ .ctrl = true } };
+    const ctrl_slash = input.KeyEvent{ .key = .{ .char = '/' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(!dispatch(editor, ctrl_slash, &pasting));
     const second = try editor.model.getLineContent(2);
     defer second.deinit();
     try std.testing.expectEqualStrings("// a", second.items);
 
-    const ctrl_l = input.Event{ .key = .{ .char = 'l' }, .mods = .{ .ctrl = true } };
+    const ctrl_l = input.KeyEvent{ .key = .{ .char = 'l' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(!dispatch(editor, ctrl_l, &pasting));
     try std.testing.expectEqual(@as(usize, 2), editor.modelSelection().endLineNumber);
 }
@@ -436,7 +470,7 @@ test "app: jump to bracket shortcut" {
     }
 
     var pasting = false;
-    const ctrl_backslash = input.Event{ .key = .{ .char = '\\' }, .mods = .{ .ctrl = true } };
+    const ctrl_backslash = input.KeyEvent{ .key = .{ .char = '\\' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(!dispatch(editor, ctrl_backslash, &pasting));
     try std.testing.expectEqual(@as(usize, 3), editor.modelCursorPosition().column);
 }
@@ -451,7 +485,7 @@ test "app: indent lines shortcut" {
     }
 
     var pasting = false;
-    const ctrl_bracket = input.Event{ .key = .{ .char = ']' }, .mods = .{ .ctrl = true } };
+    const ctrl_bracket = input.KeyEvent{ .key = .{ .char = ']' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(!dispatch(editor, ctrl_bracket, &pasting));
     const line = try editor.model.getLineContent(1);
     defer line.deinit();
@@ -468,7 +502,7 @@ test "app: typing an open bracket auto-closes it" {
     }
 
     var pasting = false;
-    const open_paren = input.Event{ .key = .{ .text = "(" } };
+    const open_paren = input.KeyEvent{ .key = .{ .text = "(" } };
     try std.testing.expect(!dispatch(editor, open_paren, &pasting));
 
     const value = try editor.model.getValue(.TextDefined, false);
@@ -505,7 +539,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     try view.addOverlayWidget(find.widget().interface());
 
     var pasting = false;
-    var open_events = try ui.input.decode(allocator, "\x06");
+    var open_events = try ui.input.decodeKeys(allocator, "\x06");
     defer open_events.deinit(allocator);
     for (open_events.items) |*event| {
         try std.testing.expect(!try handleKeyEvent(view, find, editor, event, &pasting));
@@ -525,7 +559,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     try std.testing.expect(view.surface.document().active_element != null);
 
     // Escape is handled by the widget, not inserted into the document.
-    var close_events = try ui.input.decode(allocator, "\x1b");
+    var close_events = try ui.input.decodeKeys(allocator, "\x1b");
     defer close_events.deinit(allocator);
     for (close_events.items) |*event| {
         try std.testing.expect(!try handleKeyEvent(view, find, editor, event, &pasting));
@@ -537,4 +571,80 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     const closed_row = try view.surface.grid().rowText(allocator, 0);
     defer allocator.free(closed_row);
     try std.testing.expect(std.mem.indexOf(u8, closed_row, "Find") == null);
+}
+
+test "app: decoded clicks, drags and wheel reach the editor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text =
+        "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9";
+    const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const find = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setViewDecorations,
+    });
+    defer find.deinit();
+    try view.addOverlayWidget(find.widget().interface());
+
+    const gutter = editor.gutterWidth();
+    var press_buf: [40]u8 = undefined;
+    var release_buf: [40]u8 = undefined;
+    const press = try std.fmt.bufPrint(&press_buf, "\x1b[<0;{d};2M", .{gutter + 2});
+    const release = try std.fmt.bufPrint(&release_buf, "\x1b[<0;{d};2m", .{gutter + 2});
+
+    var buffer: [128]u8 = undefined;
+    const events = try std.fmt.bufPrint(&buffer, "{s}{s}", .{ press, release });
+    var items = try ui.input.decode(allocator, events);
+    defer items.deinit(allocator);
+    for (items.items) |*item| {
+        switch (item.*) {
+            .key => return error.TestUnexpectedResult,
+            .mouse => |*mouse| try handleMouseEvent(view, find, editor, mouse),
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
+    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().column);
+
+    // Drag from the start of line 3 five cells to the right.
+    var drag_buf: [64]u8 = undefined;
+    const drag = try std.fmt.bufPrint(
+        &drag_buf,
+        "\x1b[<0;{d};3M\x1b[<32;{d};3M\x1b[<0;{d};3m",
+        .{ gutter + 1, gutter + 6, gutter + 6 },
+    );
+    var drag_items = try ui.input.decode(allocator, drag);
+    defer drag_items.deinit(allocator);
+    for (drag_items.items) |*item| {
+        switch (item.*) {
+            .key => return error.TestUnexpectedResult,
+            .mouse => |*mouse| try handleMouseEvent(view, find, editor, mouse),
+        }
+    }
+    const selection = editor.modelSelection();
+    try std.testing.expectEqual(@as(usize, 3), selection.selectionStartLineNumber);
+    try std.testing.expectEqual(@as(usize, 1), selection.selectionStartColumn);
+    try std.testing.expectEqual(@as(usize, 6), selection.positionColumn);
+
+    var wheel_items = try ui.input.decode(allocator, "\x1b[<65;1;1M");
+    defer wheel_items.deinit(allocator);
+    for (wheel_items.items) |*item| {
+        switch (item.*) {
+            .key => return error.TestUnexpectedResult,
+            .mouse => |*mouse| try handleMouseEvent(view, find, editor, mouse),
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 4), editor.topViewLine());
+    try std.testing.expectEqual(@as(usize, 3), editor.modelCursorPosition().lineNumber);
+
+    const value = try editor.model.getValue(.TextDefined, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings(text, value.items);
 }

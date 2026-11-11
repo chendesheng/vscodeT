@@ -281,3 +281,61 @@ test "FindController: reopening keeps the current match" {
     var close_event = ui.KeyEvent{ .key = .escape };
     _ = view.dispatchKey(&close_event);
 }
+
+test "FindController: clicking the input focuses it and clicking the editor blurs it" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+
+    try controller.open(false);
+    try view.refresh();
+
+    const iface = controller.widget().interface();
+    const width_cells = iface.width(iface.context, 60);
+    const left = 60 - width_cells;
+    // The find input starts six cells into the bar; click inside its text.
+    var click = ui.MouseEvent{
+        .kind = .down,
+        .x = left + 8,
+        .y = 0,
+        .button = .left,
+    };
+    _ = try view.dispatchMouse(&click);
+    try std.testing.expectEqual(
+        iface.focus_node(iface.context).?,
+        view.surface.document().activeElement().?,
+    );
+    try std.testing.expect(iface.is_focused(iface.context));
+
+    // The widget restores its input after the per-frame rebuild.
+    try view.refresh();
+    try std.testing.expect(view.surface.document().active_element != null);
+    try std.testing.expect(iface.is_focused(iface.context));
+
+    // A click on the editor text blurs the widget; the next rebuild does not
+    // take focus back, so keys reach the editor.
+    var away = ui.MouseEvent{
+        .kind = .down,
+        .x = editor.gutterWidth(),
+        .y = 2,
+        .button = .left,
+    };
+    try std.testing.expect(try view.dispatchMouse(&away));
+    try std.testing.expect(!iface.is_focused(iface.context));
+    try std.testing.expect(view.surface.document().active_element == null);
+    try view.refresh();
+    try std.testing.expect(view.surface.document().active_element == null);
+}

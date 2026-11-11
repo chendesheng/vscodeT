@@ -3,8 +3,9 @@
 //! This is the POC view: the existing `Editor` supplies view-line data and
 //! tokenization, the partial `viewLineRenderer` port turns token runs into
 //! text runs, and the `ui.Surface` lays them out and renders a cell-grid frame.
-//! The keyboard handler scrolls the view and quits; cursors, selections, mouse
-//! and the browser view parts are not part of this milestone.
+//! The keyboard handler scrolls the view and quits; the mouse wheel scrolls it
+//! too. Cursors, selections and the browser view parts are not part of this
+//! milestone.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -71,6 +72,29 @@ pub const Preview = struct {
         _ = self.surface.document().dispatchKey(key_event.key, key_event.mods);
         if (!self.dirty) return false;
         self.dirty = false;
+        try self.refresh();
+        return true;
+    }
+
+    /// Hit-tests and dispatches a mouse event, then scrolls on an uncanceled
+    /// wheel notch. Returns true when a new frame is needed.
+    pub fn handleMouse(self: *Preview, event: *ui.MouseEvent) !bool {
+        const doc = self.surface.document();
+        const target = (try self.surface.elementFromPoint(event.x, event.y)) orelse
+            (doc.root orelse return false);
+        ui.event.dispatchMouse(doc, target, event);
+
+        if (event.kind != .wheel or event.default_prevented) return false;
+        if (event.y >= self.editor.textHeight()) return false;
+        if (event.delta_y == 0) return false;
+        const maximum: isize = @intCast(self.maxScroll());
+        const next = std.math.clamp(
+            @as(isize, @intCast(self.scroll)) + event.delta_y,
+            0,
+            maximum,
+        );
+        if (next == @as(isize, @intCast(self.scroll))) return false;
+        self.scroll = @intCast(next);
         try self.refresh();
         return true;
     }
@@ -247,7 +271,7 @@ pub const Preview = struct {
             const message = editor.message();
             const status = std.fmt.bufPrint(
                 &status_buf,
-                " {s}{s}  Ln {d}, Col {d}  {s}  PREVIEW  Up/Down scroll  Ctrl-Q quit{s}{s}",
+                " {s}{s}  Ln {d}, Col {d}  {s}  PREVIEW  wheel/Up/Down scroll  Ctrl-Q quit{s}{s}",
                 .{
                     editor.path,
                     if (editor.isDirty()) "*" else "",
@@ -436,4 +460,44 @@ test "Preview: keyboard scrolling and Ctrl-Q" {
         .mods = .{ .ctrl = true },
     }));
     try std.testing.expect(preview.shouldQuit());
+}
+
+test "Preview: the mouse wheel scrolls and clamps" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9",
+        "test.txt",
+        80,
+        5,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const preview = try Preview.init(allocator, editor);
+    defer preview.deinit();
+
+    var down = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 0, .delta_y = 3 };
+    try std.testing.expect(try preview.handleMouse(&down));
+    try std.testing.expectEqual(@as(usize, 3), preview.scroll);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try preview.render(&out.writer);
+    const row = try rowText(preview, allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "line 3") != null);
+
+    var up = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 0, .delta_y = -100 };
+    try std.testing.expect(try preview.handleMouse(&up));
+    try std.testing.expectEqual(@as(usize, 0), preview.scroll);
+
+    var end = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 0, .delta_y = 100 };
+    try std.testing.expect(try preview.handleMouse(&end));
+    try std.testing.expectEqual(preview.maxScroll(), preview.scroll);
+    try std.testing.expect(!try preview.handleMouse(&end));
 }

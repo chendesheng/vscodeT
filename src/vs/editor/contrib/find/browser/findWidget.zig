@@ -194,8 +194,13 @@ pub const FindWidget = struct {
             input_x,
             0,
             input_width,
-            self.focus_field == .find,
+            self.focused and self.focus_field == .find,
         );
+        try find_node.addEventListener(.{
+            .context = self,
+            .focus = onFindFocus,
+            .blur = onBlur,
+        });
 
         var replace_node: ?*ui.Node = null;
         if (reserved > 0) {
@@ -224,8 +229,13 @@ pub const FindWidget = struct {
                 input_x,
                 1,
                 replace_width,
-                self.focus_field == .replace,
+                self.focused and self.focus_field == .replace,
             );
+            try replace_node.?.addEventListener(.{
+                .context = self,
+                .focus = onReplaceFocus,
+                .blur = onBlur,
+            });
 
             const all_x = width_cells -| 4;
             try appendLabel(doc, root, all_x, 1, "All");
@@ -454,6 +464,23 @@ fn onKeyCapture(context: ?*anyopaque, event: *ui.KeyEvent) void {
         event.stopPropagation();
         event.preventDefault();
     }
+}
+
+fn onFindFocus(context: ?*anyopaque, _: *ui.FocusEvent) void {
+    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    self.focused = true;
+    self.focus_field = .find;
+}
+
+fn onReplaceFocus(context: ?*anyopaque, _: *ui.FocusEvent) void {
+    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    self.focused = true;
+    self.focus_field = .replace;
+}
+
+fn onBlur(context: ?*anyopaque, _: *ui.FocusEvent) void {
+    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    self.focused = false;
 }
 
 fn onFindChanged(context: ?*anyopaque, value: []const u8) void {

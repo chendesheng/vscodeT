@@ -1,8 +1,8 @@
-//! Keyboard and focus events for the retained tree.
+//! Keyboard, mouse and focus events for the retained tree.
 //!
 //! The model is DOM-shaped but deliberately smaller: every node carries one
-//! listener list, key events run through capture -> target -> bubble, and focus
-//! moves use `focus`/`blur` (non-bubbling) plus `focusin`/`focusout`
+//! listener list, key and mouse events run through capture -> target -> bubble,
+//! and focus moves use `focus`/`blur` (non-bubbling) plus `focusin`/`focusout`
 //! (bubbling). There is no `Event` base class and no per-type `on*` property;
 //! a listener is a struct of optional callbacks.
 //!
@@ -12,10 +12,14 @@
 //!   `activeElement` before dispatching blur/focus.
 //! - TermDOM's browser layer: focusable areas are connected and rendered,
 //!   `tabindex` orders sequential navigation (positive first, then document
-//!   order), and a removed subtree loses focus silently.
+//!   order), and a removed subtree loses focus silently. A mouse press focuses
+//!   the nearest focusable ancestor (or blurs), and mouse coordinates are
+//!   terminal cells.
 //!
 //! We only have terminal input, so only `key_down` exists: a terminal reports
-//! bytes, not key releases, and cannot report key repeat.
+//! bytes, not key releases, and cannot report key repeat. Mouse motion is the
+//! button-held motion a terminal sends in mode 1002; idle hover would need
+//! mode 1003 and is not requested.
 
 const std = @import("std");
 const dom = @import("dom.zig");
@@ -90,16 +94,62 @@ pub const FocusEvent = struct {
     phase: Phase = .target,
 };
 
+/// The button a mouse event names. A SGR release names the button that was
+/// released, not `none`, and motion names the button held during the drag.
+pub const MouseButton = enum { none, left, middle, right };
+
+pub const MouseKind = enum { down, move, up, click, wheel };
+
+/// A mouse event in terminal-cell coordinates, both zero-based.
+pub const MouseEvent = struct {
+    kind: MouseKind = .down,
+    x: usize = 0,
+    y: usize = 0,
+    button: MouseButton = .none,
+    mods: Modifiers = .{},
+    /// Wheel distance in lines (TermDOM reports three lines per notch). Positive
+    /// scrolls down or right.
+    delta_x: i32 = 0,
+    delta_y: i32 = 0,
+    /// The node hit by the pointer.
+    target: ?*dom.Node = null,
+    /// The node whose listeners are running.
+    current_target: ?*dom.Node = null,
+    phase: Phase = .target,
+    default_prevented: bool = false,
+    propagation_stopped: bool = false,
+    immediate_stopped: bool = false,
+
+    pub fn preventDefault(self: *MouseEvent) void {
+        self.default_prevented = true;
+    }
+
+    pub fn stopPropagation(self: *MouseEvent) void {
+        self.propagation_stopped = true;
+    }
+
+    pub fn stopImmediatePropagation(self: *MouseEvent) void {
+        self.propagation_stopped = true;
+        self.immediate_stopped = true;
+    }
+};
+
 /// A listener callback plus the optional context passed back to it.
 ///
-/// Key listeners run in the capture or bubble pass according to `capture`.
-/// Focus callbacks run on the target only for `focus`/`blur`; `focus_in` and
-/// `focus_out` additionally run on ancestors. Capture is ignored for focus
-/// events in this POC.
+/// Key and mouse listeners run in the capture or bubble pass according to
+/// `capture`; a mouse listener runs only for its own event kind. Focus callbacks
+/// run on the target only for `focus`/`blur`; `focus_in` and `focus_out`
+/// additionally run on ancestors. Capture is ignored for focus events in this
+/// POC.
 pub const Listener = struct {
     context: ?*anyopaque = null,
     capture: bool = false,
     key_down: ?*const fn (context: ?*anyopaque, event: *KeyEvent) void = null,
+    mouse_down: ?*const fn (context: ?*anyopaque, event: *MouseEvent) void = null,
+    mouse_move: ?*const fn (context: ?*anyopaque, event: *MouseEvent) void = null,
+    mouse_up: ?*const fn (context: ?*anyopaque, event: *MouseEvent) void = null,
+    click: ?*const fn (context: ?*anyopaque, event: *MouseEvent) void = null,
+    wheel: ?*const fn (context: ?*anyopaque, event: *MouseEvent) void = null,
     focus: ?*const fn (context: ?*anyopaque, event: *FocusEvent) void = null,
     blur: ?*const fn (context: ?*anyopaque, event: *FocusEvent) void = null,
     focus_in: ?*const fn (context: ?*anyopaque, event: *FocusEvent) void = null,
@@ -110,6 +160,11 @@ pub const Listener = struct {
         return a.context == b.context and
             a.capture == b.capture and
             a.key_down == b.key_down and
+            a.mouse_down == b.mouse_down and
+            a.mouse_move == b.mouse_move and
+            a.mouse_up == b.mouse_up and
+            a.click == b.click and
+            a.wheel == b.wheel and
             a.focus == b.focus and
             a.blur == b.blur and
             a.focus_in == b.focus_in and
@@ -199,6 +254,105 @@ fn runDefaultAction(document: *dom.Document, event: *KeyEvent) void {
         .backtab => _ = moveFocus(document, .backward),
         else => {},
     }
+}
+
+/// Dispatches a mouse event at `target`, the element hit-tested for the cell.
+/// The propagation flags are reset before the dispatch. A non-canceled press
+/// focuses the nearest focusable ancestor (or blurs), as TermDOM and browsers
+/// do; motion, release, click and wheel have no library default.
+pub fn dispatchMouse(document: *dom.Document, target: *dom.Node, event: *MouseEvent) void {
+    event.target = target;
+    event.current_target = null;
+    event.phase = .target;
+    event.default_prevented = false;
+    event.propagation_stopped = false;
+    event.immediate_stopped = false;
+
+    dispatchMouseCapture(target, event);
+    if (!event.propagation_stopped) dispatchMouseAtTarget(target, event);
+    if (!event.propagation_stopped) dispatchMouseBubble(target, event);
+    if (!event.default_prevented) runMouseDefaultAction(document, event);
+}
+
+fn dispatchMouseCapture(node: *dom.Node, event: *MouseEvent) void {
+    if (node.parent) |parent| {
+        dispatchMouseCapture(parent, event);
+        if (event.propagation_stopped) return;
+    }
+    if (node == event.target) return;
+    event.current_target = node;
+    event.phase = .capture;
+    invokeMouseListeners(node, event, true);
+}
+
+fn dispatchMouseAtTarget(target: *dom.Node, event: *MouseEvent) void {
+    event.current_target = target;
+    event.phase = .target;
+    for (target.listeners.items) |listener| {
+        if (event.immediate_stopped) return;
+        invokeMouseListener(listener, event);
+    }
+}
+
+fn dispatchMouseBubble(target: *dom.Node, event: *MouseEvent) void {
+    var current = target.parent;
+    while (current) |node| : (current = node.parent) {
+        if (event.propagation_stopped) return;
+        event.current_target = node;
+        event.phase = .bubble;
+        invokeMouseListeners(node, event, false);
+    }
+}
+
+fn invokeMouseListeners(node: *dom.Node, event: *MouseEvent, capture: bool) void {
+    for (node.listeners.items) |listener| {
+        if (event.immediate_stopped) return;
+        if (listener.capture != capture) continue;
+        invokeMouseListener(listener, event);
+    }
+}
+
+fn invokeMouseListener(listener: Listener, event: *MouseEvent) void {
+    const handler = switch (event.kind) {
+        .down => listener.mouse_down,
+        .move => listener.mouse_move,
+        .up => listener.mouse_up,
+        .click => listener.click,
+        .wheel => listener.wheel,
+    } orelse return;
+    handler(listener.context, event);
+}
+
+fn runMouseDefaultAction(document: *dom.Document, event: *MouseEvent) void {
+    if (event.kind != .down) return;
+    if (focusableAncestor(document, event.target)) |node| {
+        _ = focus(document, node);
+    } else if (document.active_element != null) {
+        blur(document);
+    }
+}
+
+/// The nearest inclusive ancestor that can take focus, or null. A press on
+/// text or other non-focusable content blurs, as in a browser.
+fn focusableAncestor(document: *const dom.Document, target: ?*dom.Node) ?*dom.Node {
+    var current = target;
+    while (current) |node| : (current = node.parent) {
+        if (canFocus(document, node)) return node;
+    }
+    return null;
+}
+
+/// The nearest common ancestor of two connected nodes, used to pick the click
+/// target when a press and its release landed on different elements.
+pub fn commonInclusiveAncestor(a: *dom.Node, b: *dom.Node) ?*dom.Node {
+    var first: ?*dom.Node = a;
+    while (first) |ancestor| : (first = ancestor.parent) {
+        var second: ?*dom.Node = b;
+        while (second) |candidate| : (second = candidate.parent) {
+            if (ancestor == candidate) return ancestor;
+        }
+    }
+    return null;
 }
 
 /// The focused element, or the root when nothing is focused. Browsers return
@@ -833,4 +987,149 @@ test "event: moving a focused node keeps focus" {
     _ = try second.appendChild(item);
     try std.testing.expectEqual(item, doc.activeElement().?);
     try std.testing.expectEqual(second, item.parent.?);
+}
+
+const MouseLog = struct {
+    kinds: [16]MouseKind = @splat(.down),
+    nodes: [16]?*dom.Node = @splat(null),
+    phases: [16]Phase = @splat(.target),
+    count: usize = 0,
+
+    fn record(self: *MouseLog, event: *MouseEvent) void {
+        if (self.count == self.kinds.len) return;
+        self.kinds[self.count] = event.kind;
+        self.nodes[self.count] = event.current_target;
+        self.phases[self.count] = event.phase;
+        self.count += 1;
+    }
+
+    fn onDown(context: ?*anyopaque, event: *MouseEvent) void {
+        const self: *MouseLog = @ptrCast(@alignCast(context orelse return));
+        self.record(event);
+    }
+
+    fn onClick(context: ?*anyopaque, event: *MouseEvent) void {
+        const self: *MouseLog = @ptrCast(@alignCast(context orelse return));
+        self.record(event);
+    }
+
+    fn onWheel(context: ?*anyopaque, event: *MouseEvent) void {
+        const self: *MouseLog = @ptrCast(@alignCast(context orelse return));
+        self.record(event);
+    }
+};
+
+test "event: mouse dispatch runs capture, target and bubble" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const parent = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    parent.asElement().focusable = true;
+    _ = try root.appendChild(parent);
+    _ = try parent.appendChild(child);
+    doc.setRoot(root);
+
+    var root_capture = MouseLog{};
+    var root_bubble = MouseLog{};
+    var target_log = MouseLog{};
+    try root.addEventListener(.{ .context = &root_capture, .capture = true, .mouse_down = MouseLog.onDown });
+    try root.addEventListener(.{ .context = &root_bubble, .mouse_down = MouseLog.onDown });
+    try child.addEventListener(.{ .context = &target_log, .mouse_down = MouseLog.onDown });
+
+    var down = MouseEvent{ .kind = .down, .x = 2, .y = 1, .button = .left };
+    doc.dispatchMouse(child, &down);
+
+    try std.testing.expectEqual(child, down.target.?);
+    try std.testing.expect(!down.default_prevented);
+    try std.testing.expectEqual(root, root_capture.nodes[0].?);
+    try std.testing.expectEqual(Phase.capture, root_capture.phases[0]);
+    try std.testing.expectEqual(child, target_log.nodes[0].?);
+    try std.testing.expectEqual(Phase.target, target_log.phases[0]);
+    try std.testing.expectEqual(root, root_bubble.nodes[0].?);
+    try std.testing.expectEqual(Phase.bubble, root_bubble.phases[0]);
+    // A press focuses the nearest focusable ancestor.
+    try std.testing.expectEqual(parent, doc.activeElement().?);
+}
+
+test "event: mouse default focus can be canceled and blur is the fallback" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const focusable = try doc.createElement(.div);
+    const plain = try doc.createElement(.div);
+    focusable.asElement().focusable = true;
+    _ = try root.appendChild(focusable);
+    _ = try root.appendChild(plain);
+    doc.setRoot(root);
+
+    const Blocker = struct {
+        fn onDown(_: ?*anyopaque, event: *MouseEvent) void {
+            event.preventDefault();
+        }
+    };
+    var down = MouseEvent{ .kind = .down, .x = 1, .y = 1 };
+    doc.dispatchMouse(plain, &down);
+    try std.testing.expectEqual(root, doc.activeElement().?);
+
+    try std.testing.expect(doc.focus(focusable));
+    try plain.addEventListener(.{ .mouse_down = Blocker.onDown });
+    doc.dispatchMouse(plain, &down);
+    try std.testing.expectEqual(focusable, doc.activeElement().?);
+
+    // An uncanceled press on plain content blurs.
+    try std.testing.expect(plain.removeEventListener(.{ .mouse_down = Blocker.onDown }));
+    doc.dispatchMouse(plain, &down);
+    try std.testing.expectEqual(root, doc.activeElement().?);
+
+    // Wheel is cancelable and never changes focus.
+    var root_log = MouseLog{};
+    try root.addEventListener(.{ .context = &root_log, .wheel = MouseLog.onWheel });
+    var wheel = MouseEvent{ .kind = .wheel, .x = 1, .y = 1, .delta_y = 3 };
+    doc.dispatchMouse(plain, &wheel);
+    try std.testing.expectEqual(@as(usize, 1), root_log.count);
+    try std.testing.expectEqual(MouseKind.wheel, root_log.kinds[0]);
+    try std.testing.expectEqual(@as(i32, 0), wheel.delta_x);
+
+    const WheelBlocker = struct {
+        fn onWheel(_: ?*anyopaque, event: *MouseEvent) void {
+            event.preventDefault();
+        }
+    };
+    try plain.addEventListener(.{ .wheel = WheelBlocker.onWheel });
+    doc.dispatchMouse(plain, &wheel);
+    try std.testing.expect(wheel.default_prevented);
+}
+
+test "event: click listeners run only for click and common ancestors are found" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const left = try doc.createElement(.div);
+    const right = try doc.createElement(.div);
+    _ = try root.appendChild(left);
+    _ = try root.appendChild(right);
+    doc.setRoot(root);
+
+    var log = MouseLog{};
+    try root.addEventListener(.{ .context = &log, .click = MouseLog.onClick });
+
+    var down = MouseEvent{ .kind = .down, .x = 1, .y = 1 };
+    doc.dispatchMouse(left, &down);
+    try std.testing.expectEqual(@as(usize, 0), log.count);
+
+    var click = MouseEvent{ .kind = .click, .x = 1, .y = 1, .button = .left };
+    doc.dispatchMouse(root, &click);
+    try std.testing.expectEqual(@as(usize, 1), log.count);
+    try std.testing.expectEqual(MouseKind.click, log.kinds[0]);
+
+    try std.testing.expectEqual(root, commonInclusiveAncestor(left, right).?);
+    try std.testing.expectEqual(left, commonInclusiveAncestor(left, left).?);
+    try std.testing.expectEqual(root, commonInclusiveAncestor(left, root).?);
 }

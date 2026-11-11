@@ -10,7 +10,9 @@
 //!
 //! The document is rebuilt from the editor when `refresh` is called (after a
 //! key, an edit or a resize). `Document.clear` keeps the arena and the
-//! `Surface` frame so the renderer still emits only the changed cells.
+//! `Surface` frame so the renderer still emits only the changed cells. The view
+//! also owns the terminal mouse adaptation: click/drag caret placement, drag
+//! selection, click synthesis and wheel scrolling of the editor viewport.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -19,6 +21,8 @@ const Editor = @import("./editor.zig").Editor;
 const theme = @import("./theme.zig");
 const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
 const CursorState = @import("../vs/editor/common/cursorCommon.zig").CursorState;
+const Position = @import("../vs/editor/common/core/position.zig").Position;
+const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const line_renderer = @import("../vs/editor/common/viewLayout/viewLineRenderer.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 
@@ -61,6 +65,27 @@ pub const View = struct {
     cursor_line: ?*ui.Node = null,
     /// Cells between the start of that line's content and the caret.
     cursor_offset: usize = 0,
+    /// Text-row elements in view order, rebuilt with the document. A hit on
+    /// one of these maps to its view line; hits on the gutter, the status row
+    /// or overlays do not.
+    line_entries: std.array_list.Managed(LineEntry),
+    /// The last left-button press, in cells, kept across document rebuilds so
+    /// a release can synthesize a click without retaining node pointers.
+    mouse_press: ?MousePress = null,
+    /// Where a left-button drag started, in model coordinates.
+    drag_anchor: ?Position = null,
+    /// A drag moved the selection, so the release is not a click.
+    drag_moved: bool = false,
+
+    const LineEntry = struct {
+        node: *ui.Node,
+        view_line: usize,
+    };
+
+    const MousePress = struct {
+        x: usize,
+        y: usize,
+    };
 
     pub fn init(allocator: std.mem.Allocator, editor: *Editor) !*View {
         const self = try allocator.create(View);
@@ -71,9 +96,11 @@ pub const View = struct {
             .surface = undefined,
             .overlays = std.array_list.Managed(editorBrowser.IOverlayWidget).init(allocator),
             .decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator),
+            .line_entries = std.array_list.Managed(LineEntry).init(allocator),
         };
         errdefer self.overlays.deinit();
         errdefer self.decorations.deinit();
+        errdefer self.line_entries.deinit();
         self.surface = try ui.Surface.init(allocator, .{
             .cols = editor.screen_width,
             .rows = editor.screen_height,
@@ -86,6 +113,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.line_entries.deinit();
         self.decorations.deinit();
         self.overlays.deinit();
         self.surface.deinit();
@@ -130,6 +158,116 @@ pub const View = struct {
         if (doc.active_element == null) return false;
         doc.dispatchEvent(event);
         return event.default_prevented or event.propagation_stopped;
+    }
+
+    /// Hit-tests and dispatches a mouse event, then applies the editor's own
+    /// default actions: a press places the caret, a drag selects, and the wheel
+    /// scrolls the viewport. Returns true when the caret or selection changed.
+    pub fn dispatchMouse(self: *View, event: *ui.MouseEvent) !bool {
+        const doc = self.surface.document();
+        const target = (try self.surface.elementFromPoint(event.x, event.y)) orelse
+            (doc.root orelse return false);
+        ui.event.dispatchMouse(doc, target, event);
+
+        var caret_changed = false;
+        switch (event.kind) {
+            .down => {
+                if (event.button == .left) {
+                    self.mouse_press = .{ .x = event.x, .y = event.y };
+                    self.drag_anchor = null;
+                    self.drag_moved = false;
+                    if (!event.default_prevented) {
+                        if (self.lineEntryAt(target)) |entry| {
+                            const position = try self.positionAtCell(entry.view_line, event.x);
+                            if (event.mods.shift) {
+                                const previous = self.editor.modelSelection();
+                                const anchor = previous.getSelectionStart();
+                                self.drag_anchor = anchor;
+                                try self.selectFrom(anchor, position);
+                            } else {
+                                try self.editor.setCursorPosition(position);
+                                self.drag_anchor = position;
+                            }
+                            caret_changed = true;
+                        }
+                    }
+                }
+            },
+            .move => {
+                if (event.button == .left) {
+                    if (self.drag_anchor) |anchor| {
+                        if (self.lineEntryAt(target)) |entry| {
+                            const position = try self.positionAtCell(entry.view_line, event.x);
+                            if (position.lineNumber != anchor.lineNumber or
+                                position.column != anchor.column)
+                            {
+                                try self.editor.updateDragSelection(anchor, position);
+                                self.drag_moved = true;
+                                caret_changed = true;
+                            }
+                        }
+                    }
+                }
+            },
+            .up => {
+                if (event.button == .left) {
+                    if (self.mouse_press) |press| {
+                        self.mouse_press = null;
+                        const drag_moved = self.drag_moved;
+                        self.drag_anchor = null;
+                        self.drag_moved = false;
+                        // A selecting drag is not a click; otherwise a press
+                        // and a release on different elements click their
+                        // common ancestor.
+                        if (!drag_moved) {
+                            const press_target = (try self.surface.elementFromPoint(press.x, press.y)) orelse
+                                (doc.root orelse target);
+                            const click_target = ui.event.commonInclusiveAncestor(press_target, target) orelse
+                                press_target;
+                            var click = ui.MouseEvent{
+                                .kind = .click,
+                                .x = event.x,
+                                .y = event.y,
+                                .button = .left,
+                                .mods = event.mods,
+                            };
+                            ui.event.dispatchMouse(doc, click_target, &click);
+                        }
+                    }
+                }
+            },
+            .wheel => {
+                if (!event.default_prevented and
+                    event.y < self.editor.textHeight() and
+                    event.delta_y != 0)
+                {
+                    _ = self.editor.scrollViewLines(event.delta_y);
+                }
+            },
+            .click => {},
+        }
+        return caret_changed;
+    }
+
+    fn lineEntryAt(self: *const View, target: *ui.Node) ?LineEntry {
+        var node: ?*ui.Node = target;
+        while (node) |current| : (node = current.parent) {
+            for (self.line_entries.items) |entry| {
+                if (entry.node == current) return entry;
+            }
+        }
+        return null;
+    }
+
+    fn positionAtCell(self: *const View, view_line: usize, x: usize) !Position {
+        const gutter = self.editor.gutterWidth();
+        return self.editor.positionAtViewPoint(view_line, x -| gutter);
+    }
+
+    fn selectFrom(self: *View, anchor: Position, position: Position) !void {
+        try self.editor.setSelections(&[_]Selection{
+            Selection.init(anchor.lineNumber, anchor.column, position.lineNumber, position.column),
+        });
     }
 
     /// Recreates the surface at the editor's current viewport size. The caller
@@ -182,12 +320,15 @@ pub const View = struct {
     fn rebuild(self: *View) !void {
         const editor = self.editor;
         editor.ensureTokensVisible();
-        editor.ensureCursorVisible();
+        // The cursor is revealed by cursor moves and edits, not on every
+        // rebuild: a wheel scroll is allowed to leave it off-screen.
+        _ = editor.scrollViewLines(0);
 
         const doc = self.surface.document();
         doc.clear();
         self.cursor_line = null;
         self.cursor_offset = 0;
+        self.line_entries.clearRetainingCapacity();
 
         const cols = doc.cols;
         const rows = doc.rows;
@@ -330,6 +471,7 @@ pub const View = struct {
             }
 
             _ = try root.appendChild(line);
+            try self.line_entries.append(.{ .node = line, .view_line = view_line });
         }
 
         try appendStatus(self, doc, root, rows);
@@ -892,4 +1034,192 @@ test "View: the gutter keeps a blank cell before the text" {
     try std.testing.expectEqual(@as(u32, '1'), grid.cluster[grid.index(gutter - 2, 0)]);
     try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(gutter - 1, 0)]);
     try std.testing.expectEqual(@as(u32, 'a'), grid.cluster[grid.index(gutter, 0)]);
+}
+
+fn testMouse(kind: ui.MouseKind, x: usize, y: usize) ui.MouseEvent {
+    return .{ .kind = kind, .x = x, .y = y, .button = .left };
+}
+
+test "View: a left click places the caret and ignores gutter and status" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abc\ndef", "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const gutter = editor.gutterWidth();
+    var down = testMouse(.down, gutter + 1, 1);
+    try std.testing.expect(try view.dispatchMouse(&down));
+    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
+    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().column);
+
+    // The status row and the gutter are not text.
+    try editor.setCursorPosition(Position.init(1, 2));
+    var gutter_click = testMouse(.down, gutter -| 1, 0);
+    try std.testing.expect(!try view.dispatchMouse(&gutter_click));
+    try std.testing.expectEqual(@as(usize, 1), editor.modelCursorPosition().lineNumber);
+    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().column);
+
+    var status_click = testMouse(.down, gutter, 5);
+    try std.testing.expect(!try view.dispatchMouse(&status_click));
+    try std.testing.expectEqual(@as(usize, 1), editor.modelCursorPosition().lineNumber);
+
+    // Past the end of the line clamps to its last column.
+    var past_end = testMouse(.down, gutter + 20, 0);
+    try std.testing.expect(try view.dispatchMouse(&past_end));
+    try std.testing.expectEqual(@as(usize, 4), editor.modelCursorPosition().column);
+}
+
+test "View: clicks account for tabs, wide characters and wrapped lines" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "ab\tcd\na何b", "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const gutter = editor.gutterWidth();
+
+    // ab -> cells 0-1, tab -> 2-3, c -> 4, d -> 5.
+    var tab_click = testMouse(.down, gutter + 4, 0);
+    try std.testing.expect(try view.dispatchMouse(&tab_click));
+    try std.testing.expectEqual(@as(usize, 4), editor.modelCursorPosition().column);
+
+    // a -> cell 0, 何 -> cells 1-2, b -> cell 3.
+    var wide_click = testMouse(.down, gutter + 3, 1);
+    try std.testing.expect(try view.dispatchMouse(&wide_click));
+    try std.testing.expectEqual(@as(usize, 5), editor.modelCursorPosition().column);
+}
+
+test "View: a click on a wrapped continuation maps to its model line" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 8, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try std.testing.expect(editor.viewLineCount() > 1);
+
+    const expected = try editor.positionAtViewPoint(2, 0);
+    var click = testMouse(.down, editor.gutterWidth(), 1);
+    try std.testing.expect(try view.dispatchMouse(&click));
+    try std.testing.expectEqual(expected.lineNumber, editor.modelCursorPosition().lineNumber);
+    try std.testing.expectEqual(expected.column, editor.modelCursorPosition().column);
+}
+
+test "View: shift-click extends and a drag selects without clicking" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "hello world", "test.txt", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const gutter = editor.gutterWidth();
+
+    var first = testMouse(.down, gutter, 0);
+    _ = try view.dispatchMouse(&first);
+    var extend = testMouse(.down, gutter + 3, 0);
+    extend.mods.shift = true;
+    try std.testing.expect(try view.dispatchMouse(&extend));
+    const extended = editor.modelSelection();
+    try std.testing.expectEqual(@as(usize, 1), extended.selectionStartColumn);
+    try std.testing.expectEqual(@as(usize, 4), extended.positionColumn);
+
+    const ClickLog = struct {
+        count: usize = 0,
+
+        fn onClick(context: ?*anyopaque, _: *ui.MouseEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.count += 1;
+        }
+    };
+    var clicks = ClickLog{};
+    try view.surface.document().root.?.addEventListener(.{
+        .context = &clicks,
+        .click = ClickLog.onClick,
+    });
+
+    var down = testMouse(.down, gutter, 0);
+    _ = try view.dispatchMouse(&down);
+    var move = testMouse(.move, gutter + 4, 0);
+    try std.testing.expect(try view.dispatchMouse(&move));
+    const selected = editor.modelSelection();
+    try std.testing.expectEqual(@as(usize, 1), selected.startColumn);
+    try std.testing.expectEqual(@as(usize, 5), selected.endColumn);
+    var up = testMouse(.up, gutter + 4, 0);
+    try std.testing.expect(!try view.dispatchMouse(&up));
+    try std.testing.expectEqual(@as(usize, 0), clicks.count);
+
+    // A plain press and release still clicks.
+    var plain_down = testMouse(.down, gutter, 0);
+    _ = try view.dispatchMouse(&plain_down);
+    var plain_up = testMouse(.up, gutter, 0);
+    _ = try view.dispatchMouse(&plain_up);
+    try std.testing.expectEqual(@as(usize, 1), clicks.count);
+}
+
+test "View: the wheel scrolls without moving the caret and clamps" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11",
+        "test.txt",
+        40,
+        5,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try std.testing.expectEqual(@as(usize, 1), editor.topViewLine());
+
+    var down = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 0, .delta_y = 3 };
+    try std.testing.expect(!try view.dispatchMouse(&down));
+    try std.testing.expectEqual(@as(usize, 4), editor.topViewLine());
+    try std.testing.expectEqual(@as(usize, 1), editor.modelCursorPosition().lineNumber);
+
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+    const row = try rowText(view, allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "line3") != null);
+    // The caret is off-screen, so the hardware cursor has no cell.
+    try std.testing.expectEqual(@as(?Cell, null), view.cursorCell());
+
+    // The status row does not scroll.
+    var status = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 4, .delta_y = 3 };
+    try std.testing.expect(!try view.dispatchMouse(&status));
+    try std.testing.expectEqual(@as(usize, 4), editor.topViewLine());
+
+    var up = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 0, .delta_y = -3 };
+    _ = try view.dispatchMouse(&up);
+    try std.testing.expectEqual(@as(usize, 1), editor.topViewLine());
+
+    var end = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 0, .delta_y = 100 };
+    _ = try view.dispatchMouse(&end);
+    const max_top = editor.viewLineCount() - editor.textHeight() + 1;
+    try std.testing.expectEqual(max_top, editor.topViewLine());
+
+    // The next cursor move reveals the caret again.
+    try editor.moveDown(false);
+    try std.testing.expect(editor.topViewLine() <= editor.modelCursorPosition().lineNumber);
 }

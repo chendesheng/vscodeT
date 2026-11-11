@@ -122,7 +122,7 @@ pub fn main() !void {
         const n = std.posix.read(std.posix.STDIN_FILENO, &input_buffer) catch 0;
         if (n == 0) return;
 
-        var events = try ui.input.decode(allocator, input_buffer[0..n]);
+        var events = try ui.input.decodeKeys(allocator, input_buffer[0..n]);
         defer events.deinit(allocator);
 
         var redraw = false;

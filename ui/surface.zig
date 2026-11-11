@@ -81,12 +81,7 @@ pub const Surface = struct {
             self.first_frame = false;
         }
 
-        if (self.box_tree.needs_rebuild) {
-            try self.box_tree.rebuild(&self.doc);
-        }
-        if (self.box_tree.needs_layout) {
-            layout.layoutTree(self.box_tree, &self.doc);
-        }
+        try self.ensureLayout();
         self.frame.begin();
         paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
 
@@ -103,6 +98,26 @@ pub const Surface = struct {
         if (encoded.len != 0) try writer.writeAll(encoded);
 
         self.frame.swap();
+    }
+
+    /// The element under a viewport cell, or null when nothing was hit. The
+    /// box tree is rebuilt and solved first when mutations are pending, so a
+    /// pointer can be resolved before the next frame is painted. A cell's
+    /// center is the point tested.
+    pub fn elementFromPoint(self: *Surface, col: usize, row: usize) !?*dom.Node {
+        try self.ensureLayout();
+        const x = @as(f64, @floatFromInt(col)) + 0.5;
+        const y = @as(f64, @floatFromInt(row)) + 0.5;
+        return self.box_tree.elementFromPoint(x, y);
+    }
+
+    fn ensureLayout(self: *Surface) !void {
+        if (self.box_tree.needs_rebuild) {
+            try self.box_tree.rebuild(&self.doc);
+        }
+        if (self.box_tree.needs_layout) {
+            layout.layoutTree(self.box_tree, &self.doc);
+        }
     }
 };
 
@@ -174,4 +189,116 @@ test "Surface: text and style mutations repaint" {
     text.setStyle(.{ .color = blue });
     try surface.render(&out.writer, .{});
     try std.testing.expectEqual(cell.packColor(blue), surface.grid().fg[surface.grid().index(0, 0)]);
+}
+
+test "Surface: elementFromPoint hits the topmost box and retargets text" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 10, .rows = 4 });
+    defer surface.deinit();
+
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+        .overflow = .hidden,
+    });
+    doc.setRoot(root);
+
+    const under = try doc.createElement(.div);
+    under.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 1 },
+    });
+    _ = try under.appendChild(try doc.createText("under"));
+    _ = try root.appendChild(under);
+
+    const over = try doc.createElement(.div);
+    over.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 1 },
+    });
+    _ = try over.appendChild(try doc.createText("over"));
+    _ = try root.appendChild(over);
+
+    // No render needed: hit testing solves the pending layout itself.
+    try std.testing.expectEqual(over, (try surface.elementFromPoint(2, 0)).?);
+    try std.testing.expectEqual(over, (try surface.elementFromPoint(0, 0)).?);
+    // Outside both children the root covers the viewport.
+    try std.testing.expectEqual(root, (try surface.elementFromPoint(8, 2)).?);
+    try std.testing.expectEqual(@as(?*dom.Node, null), try surface.elementFromPoint(20, 20));
+}
+
+test "Surface: elementFromPoint clips and lets visible overflow through" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 12, .rows = 4 });
+    defer surface.deinit();
+
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+        .overflow = .hidden,
+    });
+    doc.setRoot(root);
+
+    const under = try doc.createElement(.div);
+    under.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 3 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 4 },
+        .height = .{ .cells = 1 },
+    });
+    _ = try root.appendChild(under);
+
+    const clipping = try doc.createElement(.div);
+    clipping.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .overflow = .hidden,
+    });
+    const spill = try doc.createElement(.div);
+    spill.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 2 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 5 },
+        .height = .{ .cells = 1 },
+    });
+    _ = try clipping.appendChild(spill);
+    _ = try root.appendChild(clipping);
+
+    // The spill reaches the row but is clipped by its parent, so the sibling
+    // under that part of the row wins.
+    try std.testing.expectEqual(under, (try surface.elementFromPoint(4, 0)).?);
+    // The visible part of the spill still hits the spill itself.
+    try std.testing.expectEqual(spill, (try surface.elementFromPoint(2, 0)).?);
+
+    // A non-clipping parent lets the pointer reach a child outside its rect.
+    clipping.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .overflow = .visible,
+    });
+    try std.testing.expectEqual(spill, (try surface.elementFromPoint(5, 0)).?);
 }

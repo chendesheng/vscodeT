@@ -19,10 +19,12 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   box and `overflow: hidden` clips to the padding box. Flex formatting contexts,
   margin collapsing and right/bottom anchoring are next.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
-- Keyboard events and focus: per-node listeners with capture/target/bubble,
-  `Document.activeElement`, `focus`/`blur` plus `focusin`/`focusout`, and
-  `Tab` traversal driven by `Element.focusable` / `Element.tab_index`. Terminal
-  bytes are decoded by `ui.input.decode`.
+- Keyboard and mouse events and focus: per-node listeners with
+  capture/target/bubble, `Document.activeElement`, `focus`/`blur` plus
+  `focusin`/`focusout`, and `Tab` traversal driven by `Element.focusable` /
+  `Element.tab_index`. `Surface.elementFromPoint` hit-tests the box tree against
+  a viewport cell, and mouse presses focus the nearest focusable ancestor.
+  Terminal bytes are decoded by `ui.input.decode`.
 - No hidden globals; allocators are passed explicitly.
 
 The architecture and the staged editor plan are in
@@ -40,13 +42,19 @@ zig build example-table    # bordered table with aligned columns
 zig build example-tree     # box-drawing file tree
 zig build example-styling  # text attributes, truecolor, background swatches
 zig build example-focus    # interactive: Tab/Shift-Tab, Enter, activeElement
-zig build examples         # all eight; press q in each
+zig build example-mouse    # interactive: click/drag a list, wheel scrolling
+zig build example-mouse-events # interactive: down/move/up/click/wheel log
+zig build examples         # all ten; press q in each
 ```
 
 Each example draws on the alternate screen and waits for `q` (or Ctrl-Q) to
 exit. Input is read from stdin, so a pipe can drive an example too; EOF exits,
 which keeps `zig build examples` terminating in a non-interactive run. The
-focus example additionally handles Tab/Shift-Tab and Enter.
+focus example additionally handles Tab/Shift-Tab and Enter. The two mouse
+examples request SGR mouse reports (mode 1002/1006), so they accept real
+terminal input or piped `CSI < b ; x ; y M/m` sequences; `example-mouse` shows
+selection and wheel scrolling, while `example-mouse-events` logs every mouse
+event with its hit-tested target.
 
 ## Minimal use
 
@@ -131,6 +139,42 @@ carry `related_target`. A terminal only reports key presses, so there is no
 
 Text runs in decoded events borrow the input buffer; dispatch them before
 reusing that buffer.
+
+## Mouse, hit testing and scrolling
+
+`ui.input.decode` returns a mixed stream of keyboard and mouse items, in
+arrival order. SGR reports (mode 1006) become `ui.MouseEvent`s with zero-based
+cell coordinates; `decodeKeys` filters the stream for keyboard-only hosts.
+
+```zig
+var items = try ui.input.decode(allocator, bytes);
+defer items.deinit(allocator);
+for (items.items) |item| switch (item) {
+    .key => |key_event| _ = doc.dispatchKey(key_event.key, key_event.mods),
+    .mouse => |mouse| {
+        const target = (try surface.elementFromPoint(mouse.x, mouse.y)) orelse doc.root.?;
+        var event = mouse;
+        doc.dispatchMouse(target, &event);
+    },
+};
+```
+
+`Surface.elementFromPoint` solves pending layout, walks the box tree in reverse
+paint order and clips to `overflow: hidden`/`clip`, so the deepest, topmost
+element under a cell wins. A text box reports its parent element, matching
+`document.elementFromPoint`.
+
+Listeners can handle `mouse_down`, `mouse_move`, `mouse_up`, `click` and
+`wheel`; all run capture → target → bubble and honor `stopPropagation` /
+`preventDefault`. A non-canceled press focuses the nearest focusable ancestor,
+or blurs. Wheel deltas are in lines (±3 per notch, as in TermDOM) and cancelable;
+the host decides what to scroll. There is no library click synthesis, drag state
+or hover: those belong to the host (`src/tui/view.zig`) or need terminal mode
+1003, which is not requested.
+
+`ui.input.decode` decodes button-held motion only because terminals report it in
+mode 1002. It does not decode legacy X10 mouse reports, idle hover, double-click
+counts, or terminal focus reports.
 
 ## Input boxes and rebuilt trees
 
