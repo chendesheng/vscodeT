@@ -57,6 +57,7 @@ pub const SearchParams = struct {
         if (regex == null) {
             return null;
         }
+        errdefer regex.?.deinit();
 
         var canUseSimpleSearch = (!self.isRegex and !multiline);
         if (canUseSimpleSearch and strings.containsEnglishLetter(self.searchString)) {
@@ -215,6 +216,7 @@ pub const TextModelSearch = struct {
         const allocator = model.getAllocator();
         var params = searchParams;
         if (try params.parseSearchRequest(allocator)) |searchData| {
+            defer searchData.regex.deinit();
             if (searchData.regex.options().multiline) {
                 return _doFindMatchesMultiline(model, searchRange, Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0), captureMatches, limitResultCount);
             }
@@ -355,6 +357,7 @@ pub const TextModelSearch = struct {
     pub fn findNextMatch(model: *TextModel, searchParams: SearchParams, searchStart: Position, captureMatches: bool) !?FindMatch {
         var params = searchParams;
         if (try params.parseSearchRequest(model.getAllocator())) |searchData| {
+            defer searchData.regex.deinit();
             const searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
 
             if (searchData.regex.options().multiline) {
@@ -434,6 +437,7 @@ pub const TextModelSearch = struct {
     pub fn findPreviousMatch(model: *TextModel, searchParams: SearchParams, searchStart: Position, captureMatches: bool) !?FindMatch {
         var params = searchParams;
         if (try params.parseSearchRequest(model.getAllocator())) |searchData| {
+            defer searchData.regex.deinit();
             const searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
 
             if (searchData.regex.options().multiline) {

@@ -55,6 +55,9 @@ test "WordCharacterClassifier" {
 
 var wordClassifierCache: ?std.StringHashMap(WordCharacterClassifier) = null;
 
+/// The classifier cache lives for the process, matching upstream's global LRU.
+/// Long-running hosts must call this at shutdown so a leak-checking allocator
+/// sees the map, keys and per-classifier hash maps released.
 pub fn freeWordClassifierCache() void {
     if (wordClassifierCache) |*cache| {
         // The map owns the separator strings it copied on insertion; free them

@@ -8,6 +8,7 @@ const Editor = @import("./editor.zig").Editor;
 const View = @import("./view.zig").View;
 const Preview = @import("./preview.zig").Preview;
 const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
+const word_character_classifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 const ArrayList = std.array_list.Managed;
 
@@ -30,6 +31,9 @@ fn parseArgs(args: std.process.Args) !Args {
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
+    // The whole-word search classifier cache is process-lifetime by design;
+    // release it before the safe allocator checks for leaks on exit.
+    defer word_character_classifier.freeWordClassifierCache();
 
     const args = parseArgs(init.minimal.args) catch {
         std.debug.print("usage: zig <file>\n       zig --preview <file>\n", .{});
