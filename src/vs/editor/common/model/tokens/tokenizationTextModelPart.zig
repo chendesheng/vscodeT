@@ -249,6 +249,12 @@ pub const TokenizationTextModelPart = struct {
             var config = service.getLanguageConfiguration(languageId);
             return config.getWordDefinition();
         }
+        // The TUI's models are constructed without a separate language
+        // configuration service; the language service owns the registered
+        // configurations, so use the language's word pattern when it has one.
+        if (self._languageService.getLanguageConfiguration(languageId)) |config| {
+            if (config.wordPattern) |pattern| return pattern;
+        }
         return null;
     }
 

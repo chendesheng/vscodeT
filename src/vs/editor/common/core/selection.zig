@@ -31,6 +31,14 @@ pub const Selection = struct {
     // The column on `positionLineNumber` where the selection has ended.
     positionColumn: usize,
 
+    pub fn fromPositions(start: Position, end: ?Position) Selection {
+        if (end) |endPosition| {
+            return init(start.lineNumber, start.column, endPosition.lineNumber, endPosition.column);
+        } else {
+            return init(start.lineNumber, start.column, start.lineNumber, start.column);
+        }
+    }
+
     pub fn init(selectionStartLineNumber: usize, selectionStartColumn: usize, positionLineNumber: usize, positionColumn: usize) Selection {
         const reversed = (selectionStartLineNumber > positionLineNumber) or
             (selectionStartLineNumber == positionLineNumber and selectionStartColumn > positionColumn);

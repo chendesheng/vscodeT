@@ -158,6 +158,7 @@ const CellFlag = struct {
     const word_highlight_strong: u16 = 1 << 9;
     const snippet_placeholder: u16 = 1 << 10;
     const finish_snippet_placeholder: u16 = 1 << 11;
+    const value_set_replacement: u16 = 1 << 12;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -1675,6 +1676,12 @@ fn appendRuns(
             } else if (flag & CellFlag.finish_snippet_placeholder != 0) {
                 style.background = color(finish_snippet_placeholder_background);
             }
+            if (flag & CellFlag.value_set_replacement != 0) {
+                // The browser draws a 2 px bracket-match outline; a cell has no
+                // outline, so use the same foreground color as an underline.
+                style.color = color(bracket_match_foreground);
+                style.underline = true;
+            }
             if (flag & CellFlag.secondary_cursor != 0) {
                 style.reverse = true;
                 style.background = color(secondary_cursor_background);
@@ -1804,6 +1811,7 @@ fn decorationBit(class_name: []const u8) ?u16 {
     if (std.mem.eql(u8, class_name, "wordHighlightStrong")) return CellFlag.word_highlight_strong;
     if (std.mem.eql(u8, class_name, "snippet-placeholder")) return CellFlag.snippet_placeholder;
     if (std.mem.eql(u8, class_name, "finish-snippet-placeholder")) return CellFlag.finish_snippet_placeholder;
+    if (std.mem.eql(u8, class_name, "valueSetReplacement")) return CellFlag.value_set_replacement;
     return null;
 }
 
@@ -3251,4 +3259,5 @@ test "View: contribution highlights are stored as model decorations" {
 test "view: snippet placeholder decoration classes map to cell flags" {
     try std.testing.expectEqual(CellFlag.snippet_placeholder, decorationBit("snippet-placeholder").?);
     try std.testing.expectEqual(CellFlag.finish_snippet_placeholder, decorationBit("finish-snippet-placeholder").?);
+    try std.testing.expectEqual(CellFlag.value_set_replacement, decorationBit("valueSetReplacement").?);
 }

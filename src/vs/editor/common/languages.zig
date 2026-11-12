@@ -408,6 +408,28 @@ pub const DocumentHighlightProvider = struct {
     ) anyerror!?[]const DocumentHighlight,
 };
 
+/// Port of `SelectionRange` from
+/// `src/vs/editor/common/languages.ts`.
+pub const SelectionRange = struct {
+    range: Range,
+};
+
+/// Port of `SelectionRangeProvider`.
+///
+/// The provider allocates the returned buckets with the supplied allocator;
+/// the caller decides how they are freed (the smart-select helper gives each
+/// provider a temporary arena).
+pub const SelectionRangeProvider = struct {
+    context: *anyopaque,
+    provide_selection_ranges: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        positions: []const Position,
+        token: CancellationToken,
+    ) anyerror![]const []const SelectionRange,
+};
+
 test "IColorInformation: holds a range and a color" {
     const information = IColorInformation{
         .range = Range.init(1, 1, 1, 7),

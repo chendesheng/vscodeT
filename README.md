@@ -2,8 +2,13 @@ Port of vscode's pieceTree to zig.
 
 Requires Zig 0.17 or newer.
 
-```
+```sh
+# macOS
 brew install oniguruma
+
+# Debian/Ubuntu
+sudo apt install libonig-dev
+
 zig build        # build the TUI editor
 zig build run -- <file>   # run the TUI editor on a file
 zig build run -- --preview <file>   # read-only terminal UI preview
@@ -13,7 +18,10 @@ zig build test   # run the editor and ui library tests
 Notes for the Zig 0.17 port:
 
 - `@cImport` was removed in Zig 0.17, so `oniguruma.h` is translated by the
-  build system (`addTranslateC`) and imported as the `oniguruma` module.
+  build system (`addTranslateC`) and imported as the `oniguruma` module. The
+  build searches the standard Homebrew and Linux prefixes for the header and
+  library; `textmate` is wired from its package sources so its macOS-only
+  build script is not used.
 - `std.io` was replaced by the `std.Io` reader/writer interfaces; the app
   receives its `Io` instance through `std.process.Init`.
 - `std.ArrayList` is unmanaged in Zig 0.17. This port currently uses the
@@ -190,6 +198,16 @@ TUI editor:
   column. No minimap, pixel lanes, horizontal scrollbar or smooth scrolling.
 - Editing: `Enter`, `Tab`/`Shift-Tab`, `Backspace`, `Delete`, bracketed paste.
 - `Ctrl-A` selects all; `Escape` clears the selection.
+- Smart select: `Shift-Alt-Right` expands and `Shift-Alt-Left` shrinks every
+  selection through the subword, word, bracket, line and document ranges. The
+  controller caches ranges per selection and invalidates them when the
+  selections or model version change.
+- In-place replace: `Alt-.` and `Alt-,` replace the value under the primary
+  caret with the next/previous value in its value set (numbers, `true`/`false`
+  and the access-modifier sets). The replaced range is underlined for 350 ms.
+  Terminals cannot encode the upstream `Ctrl-Shift-Period`/`Ctrl-Shift-Comma`
+  chords, so the TUI uses the Alt keys; the action metadata keeps the upstream
+  keybindings.
 - Line operations: `Alt-Up`/`Alt-Down` move the current line or selection,
   `Shift-Alt-Up`/`Shift-Alt-Down` copy it, and `Ctrl-L` expands the selection
   line by line.
@@ -314,6 +332,17 @@ Editor contributions:
   ported yet.
 - `src/vs/editor/contrib/lineSelection` and
   `src/vs/editor/contrib/insertFinalNewLine` are ported.
+- `src/vs/editor/contrib/smartSelect` ports the word and bracket selection-range
+  providers, the provider merge/filter/leading-trailing-whitespace logic, the
+  selection-range cache and the expand/shrink action metadata. There is no
+  generic language-feature registry in this port, so providers are passed
+  explicitly and the TUI uses the bracket + word providers; the upstream suite
+  is adapted to `TestModel`.
+- `src/vs/editor/contrib/inPlaceReplace` ports the `InPlaceReplaceCommand` and
+  the controller's value-set lookup. The browser editor-worker service is
+  replaced by a direct call to the already-ported `BasicInplaceReplace`; the
+  lookup is synchronous, so the upstream async `EditorState` validation is not
+  needed. The TUI owns the timed decoration.
 - Folding is ported at the model/provider layer:
   `foldingRanges` (range storage, parent lookup, collapse state, merge/sanitize),
   `indentRangeProvider` (indentation-based folding and marker handling),
@@ -342,6 +371,9 @@ Editor contributions:
   where text occupies the same cell; advanced snippet variable services,
   asynchronous resolve, markdown details rendering, Unicode case mapping for
   snippet transforms, and `SnippetController2` action/context-key plumbing are
-  not ported; and the
+  not ported; smart select has no language selection-range provider registry
+  (it takes explicit providers and otherwise uses bracket + word); the
+  in-place-replace decoration is an underline instead of the browser's 2 px
+  outline; and the
   browser-facing editor controllers, keybinding registry, menus, and context
   keys are not part of this port.

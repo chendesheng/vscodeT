@@ -21,6 +21,10 @@ pub const Range = struct {
         return Position.init(self.endLineNumber, self.endColumn);
     }
 
+    pub fn fromPositions(start: Position, end: Position) Range {
+        return init(start.lineNumber, start.column, end.lineNumber, end.column);
+    }
+
     pub fn init(startLineNumber: usize, startColumn: usize, endLineNumber: usize, endColumn: usize) Range {
         if ((startLineNumber > endLineNumber) or (startLineNumber == endLineNumber and startColumn > endColumn)) {
             return .{

@@ -819,6 +819,8 @@ Library constraints:
   selections, hardware cursor, find ranges and overview markers; overlay widget
   hosting and the find bar are in, other contributions are not.
 - No row damage bands or terminal scroll shift in the POC; full grid diff only.
+- The in-place-replace decoration is rendered as an underline in the
+  bracket-match color; terminal cells cannot draw the browser's 2 px outline.
 - No margin collapsing, auto margins, right/bottom anchoring, multi-cell/rounded
   border styles, background-clip or z-index paint ordering yet. Borders are
   repeated single-line box-drawing glyphs.

@@ -67,8 +67,24 @@ const ISingleEditOperation = @import("../vs/editor/common/core/editOperation.zig
 const multicursor = @import("../vs/editor/contrib/multicursor/browser/multicursor.zig");
 const auto_closing = @import("../vs/editor/common/cursor/autoClosing.zig");
 const CharacterPairSupport = @import("../vs/editor/common/languages/supports/characterPair.zig");
+const smart_select = @import("../vs/editor/contrib/smartSelect/browser/smartSelect.zig");
+const in_place_replace = @import("../vs/editor/contrib/inPlaceReplace/browser/inPlaceReplace.zig");
+const InPlaceReplaceCommand = @import("../vs/editor/contrib/inPlaceReplace/browser/inPlaceReplaceCommand.zig").InPlaceReplaceCommand;
+const model_module = @import("../vs/editor/common/model.zig");
+const ModelDecorationOptions = model_module.ModelDecorationOptions;
+const ModelDeltaDecoration = model_module.ModelDeltaDecoration;
+const time_compat = @import("../vs/base/common/timeCompat.zig");
 
 const MAX_STATUS: usize = 512;
+
+/// In-place replace is rendered as an outline in the browser. A terminal cell
+/// cannot draw an outline, so the view underlines the range instead.
+var value_set_replacement_options = blk: {
+    var options = ModelDecorationOptions.init("in-place-replace", .NeverGrowsWhenTypingAtEdges);
+    options.className = "valueSetReplacement";
+    options.inlineClassName = "valueSetReplacement";
+    break :blk options;
+};
 
 const AfterEditComputer = struct {
     model: *TextModel,
@@ -117,6 +133,8 @@ pub const Editor = struct {
     model_adapter: TextModelCursorSimpleModel,
     word_separators: WordCharacterClassifier,
     bracket_matching: BracketMatchingController,
+    smart_select: smart_select.SmartSelectController,
+    in_place_replace_deadline: ?i64,
     language_config_service: *language_configuration_service.Service,
     character_pair: ?CharacterPairSupport,
     multicursor_session: ?multicursor.SearchSession,
@@ -244,6 +262,8 @@ pub const Editor = struct {
             .model_adapter = TextModelCursorSimpleModel.init(allocator, model),
             .word_separators = word_separators,
             .bracket_matching = BracketMatchingController.init(allocator, model),
+            .smart_select = smart_select.SmartSelectController.init(allocator, &.{}, .{}),
+            .in_place_replace_deadline = null,
             .language_config_service = language_config_service,
             .character_pair = character_pair,
             .multicursor_session = null,
@@ -292,6 +312,7 @@ pub const Editor = struct {
         if (self.cursor_context) |context| self.allocator.destroy(context);
         self.model_adapter.deinit();
         self.bracket_matching.deinit();
+        self.smart_select.deinit();
         self.language_config_service.deinit();
         self.allocator.destroy(self.language_config_service);
         if (self.multicursor_session) |*session| session.deinit();
@@ -1471,6 +1492,109 @@ pub const Editor = struct {
 
         try self.cursorsRef().setStates(states);
         self.ensureCursorVisible();
+    }
+
+    /// Expands or shrinks every selection through the ported smart-select
+    /// controller. Upstream drives this from `editor.action.smartSelect.*`.
+    pub fn growSelection(self: *Editor, forward: bool) !void {
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        const updated = (try self.smart_select.run(self.model, selections, forward)) orelse return;
+        defer self.allocator.free(updated);
+        try self.cursorsRef().setSelections(self.allocator, updated);
+        self.ensureCursorVisible();
+    }
+
+    fn runSmartSelectExpandAction(context: *anyopaque) anyerror!void {
+        const editor: *Editor = @ptrCast(@alignCast(context));
+        return editor.growSelection(true);
+    }
+
+    fn runSmartSelectShrinkAction(context: *anyopaque) anyerror!void {
+        const editor: *Editor = @ptrCast(@alignCast(context));
+        return editor.growSelection(false);
+    }
+
+    pub fn smartSelectExpandAction(self: *Editor) smart_select.ExpandSelectionAction {
+        return smart_select.ExpandSelectionAction.init(self, runSmartSelectExpandAction);
+    }
+
+    pub fn smartSelectShrinkAction(self: *Editor) smart_select.ShrinkSelectionAction {
+        return smart_select.ShrinkSelectionAction.init(self, runSmartSelectShrinkAction);
+    }
+
+    /// Replaces the value at the primary selection with the previous/next value
+    /// in its value set. Kills secondary cursors first, matching upstream
+    /// `executeCommand` semantics.
+    pub fn inPlaceReplace(self: *Editor, up: bool) !bool {
+        self.closeTypingGroup();
+        const selection = self.modelSelection();
+        var result = (try in_place_replace.compute(self.allocator, self.model, selection, up)) orelse return false;
+        defer result.deinit(self.allocator);
+
+        try self.cursorsRef().killSecondaryCursors();
+        const primary = self.modelSelection();
+        const before = [_]Selection{primary};
+        var command = InPlaceReplaceCommand.init(result.range, result.selection, result.value);
+        const after = try command_runner.executeCommands(
+            self.allocator,
+            self.model,
+            &[_]?ICommand{command.interface()},
+            &before,
+        );
+        try self.applyCommandResult(after);
+        self.setInPlaceReplaceDecoration(result.highlight_range) catch {};
+        self.in_place_replace_deadline = time_compat.milliTimestamp() + 350;
+        return true;
+    }
+
+    fn runInPlaceReplaceUpAction(context: *anyopaque) anyerror!void {
+        const editor: *Editor = @ptrCast(@alignCast(context));
+        _ = try editor.inPlaceReplace(false);
+    }
+
+    fn runInPlaceReplaceDownAction(context: *anyopaque) anyerror!void {
+        const editor: *Editor = @ptrCast(@alignCast(context));
+        _ = try editor.inPlaceReplace(true);
+    }
+
+    pub fn inPlaceReplaceUpAction(self: *Editor) in_place_replace.InPlaceReplaceUpAction {
+        return in_place_replace.InPlaceReplaceUpAction.init(self, runInPlaceReplaceUpAction);
+    }
+
+    pub fn inPlaceReplaceDownAction(self: *Editor) in_place_replace.InPlaceReplaceDownAction {
+        return in_place_replace.InPlaceReplaceDownAction.init(self, runInPlaceReplaceDownAction);
+    }
+
+    fn setInPlaceReplaceDecoration(self: *Editor, range: Range) !void {
+        try self.model.removeAllDecorationsWithOwnerId(5);
+        const decorations = [_]ModelDeltaDecoration{.{
+            .range = range,
+            .options = &value_set_replacement_options,
+        }};
+        const ids = try self.model.deltaDecorations(&.{}, &decorations, 5);
+        self.allocator.free(ids);
+    }
+
+    fn clearInPlaceReplaceDecoration(self: *Editor) void {
+        self.model.removeAllDecorationsWithOwnerId(5) catch {};
+    }
+
+    /// Called from the app loop. Returns true when the decoration expired.
+    pub fn inPlaceReplaceTick(self: *Editor, now_ms: i64) bool {
+        const deadline = self.in_place_replace_deadline orelse return false;
+        if (now_ms < deadline) return false;
+        self.in_place_replace_deadline = null;
+        self.clearInPlaceReplaceDecoration();
+        return true;
+    }
+
+    /// Milliseconds until the replacement decoration expires, or null when no
+    /// timer is pending.
+    pub fn inPlaceReplacePollTimeout(self: *Editor, now_ms: i64) ?i64 {
+        const deadline = self.in_place_replace_deadline orelse return null;
+        return @max(0, deadline - now_ms);
     }
 
     /// Recomputes the bracket highlights for the current cursors. `has_focus`

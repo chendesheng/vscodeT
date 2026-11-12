@@ -12,6 +12,7 @@ const word_character_classifier = @import("../vs/editor/common/core/wordCharacte
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 const Position = @import("../vs/editor/common/core/position.zig").Position;
 const Range = @import("../vs/editor/common/core/range.zig").Range;
+const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const time_compat = @import("../vs/base/common/timeCompat.zig");
 const languages = @import("../vs/editor/common/languages.zig");
 const hoverTypes = @import("../vs/editor/contrib/hover/browser/hoverTypes.zig");
@@ -163,10 +164,14 @@ pub fn main(init: std.process.Init) !void {
     var needs_render = false;
     while (true) {
         const now_ms = time_compat.milliTimestamp();
+        if (editor.inPlaceReplaceTick(now_ms)) needs_render = true;
         if (hover.onTick(now_ms)) needs_render = true;
         if (word_highlighter.onTick(now_ms)) needs_render = true;
         if (try suggest.onTick(now_ms)) needs_render = true;
         var timeout = hover.pollTimeout(now_ms, 250);
+        if (editor.inPlaceReplacePollTimeout(now_ms)) |replace_timeout| {
+            timeout = @min(timeout, @as(i32, @intCast(@min(replace_timeout, 250))));
+        }
         if (word_highlighter.pollTimeout(now_ms)) |word_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(word_timeout, 250))));
         }
@@ -516,6 +521,8 @@ fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
         .char => |ch| {
             if (event.mods.alt) {
                 switch (ch) {
+                    ',' => _ = editor.inPlaceReplace(false) catch |err| editor.setMessage("in-place replace failed: {s}", .{@errorName(err)}),
+                    '.' => _ = editor.inPlaceReplace(true) catch |err| editor.setMessage("in-place replace failed: {s}", .{@errorName(err)}),
                     '/' => editor.toggleBlockComment() catch |err| editor.setMessage("comment failed: {s}", .{@errorName(err)}),
                     'b' => editor.selectToBracket(true) catch |err| editor.setMessage("select bracket failed: {s}", .{@errorName(err)}),
                     'B' => editor.removeBrackets() catch |err| editor.setMessage("remove brackets failed: {s}", .{@errorName(err)}),
@@ -561,14 +568,18 @@ fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
             }
         },
         .left => {
-            if (event.mods.ctrl) {
+            if (event.mods.alt and event.mods.shift) {
+                editor.growSelection(false) catch |err| editor.setMessage("shrink selection failed: {s}", .{@errorName(err)});
+            } else if (event.mods.ctrl) {
                 editor.moveWordLeft(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
             } else {
                 editor.moveLeft(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
             }
         },
         .right => {
-            if (event.mods.ctrl) {
+            if (event.mods.alt and event.mods.shift) {
+                editor.growSelection(true) catch |err| editor.setMessage("expand selection failed: {s}", .{@errorName(err)});
+            } else if (event.mods.ctrl) {
                 editor.moveWordRight(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
             } else {
                 editor.moveRight(event.mods.shift) catch |err| editor.setMessage("move failed: {s}", .{@errorName(err)});
@@ -1157,4 +1168,50 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     const value = try editor.model.getValue(.TextDefined, false);
     defer value.deinit();
     try std.testing.expectEqualStrings(text, value.items);
+}
+
+test "app: smart select shortcuts expand and shrink the selection" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "fooBar", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.setSelections(&[_]Selection{Selection.init(1, 2, 1, 2)});
+
+    var pasting = false;
+    const expand = input.KeyEvent{
+        .key = .right,
+        .mods = .{ .shift = true, .alt = true },
+    };
+    try std.testing.expect(!dispatch(editor, expand, &pasting));
+    try std.testing.expectEqualDeep(Selection.init(1, 1, 1, 4), editor.modelSelection());
+
+    const shrink = input.KeyEvent{
+        .key = .left,
+        .mods = .{ .shift = true, .alt = true },
+    };
+    try std.testing.expect(!dispatch(editor, shrink, &pasting));
+    try std.testing.expectEqualDeep(Selection.init(1, 2, 1, 2), editor.modelSelection());
+}
+
+test "app: in-place replace shortcut cycles the value" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "true", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var pasting = false;
+    const next = input.KeyEvent{
+        .key = .{ .char = '.' },
+        .mods = .{ .alt = true },
+    };
+    try std.testing.expect(!dispatch(editor, next, &pasting));
+    const value = try editor.model.getValue(.TextDefined, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("false", value.items);
 }

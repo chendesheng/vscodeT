@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
 
     const onig = onigModule(b, target, optimize);
     const textmate_dep = b.dependency("textmate", .{ .target = target, .optimize = optimize });
-    const textmate = textmate_dep.module("textmate");
+    const textmate = textmateModule(b, textmate_dep, target, optimize, onig);
     const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
     const ui = ui_dep.module("ui");
 
@@ -34,8 +34,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("oniguruma", onig);
     exe.root_module.addImport("textmate", textmate);
     exe.root_module.addImport("ui", ui);
-    exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-    exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    addOnigLibraryPath(b, exe.root_module);
     exe.root_module.linkSystemLibrary("onig", .{});
 
     // This declares intent for the executable to be installed into the
@@ -64,21 +63,92 @@ pub fn build(b: *std.Build) void {
     setupTests(b, target, optimize, onig, textmate, ui);
 }
 
+/// Installs a textmate module backed by this build's oniguruma module.
+///
+/// The upstream textmate package hardcodes the macOS Homebrew prefix in its
+/// own build script. Wiring the package's sources here keeps the dependency
+/// but lets both Linux and macOS find oniguruma through `onigModule`.
+fn textmateModule(
+    b: *std.Build,
+    dep: *std.Build.Dependency,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.Optimize,
+    onig: *std.Build.Module,
+) *std.Build.Module {
+    const onig_wrapper = b.createModule(.{
+        .root_source_file = dep.path("src/pkg/oniguruma/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    onig_wrapper.addImport("c_onig", onig);
+
+    const module = b.createModule(.{
+        .root_source_file = dep.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addImport("oniguruma", onig_wrapper);
+    return module;
+}
+
 /// Translates the oniguruma C header into a Zig module. Zig 0.17 removed
 /// `@cImport`, so C headers must be translated by the build system instead.
+///
+/// Search the usual Linux and macOS install prefixes instead of assuming a
+/// single Homebrew location.
 fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) *std.Build.Module {
+    const include_dir = onigIncludeDir(b) orelse @panic(
+        "oniguruma.h not found; install oniguruma " ++
+            "(macOS: brew install oniguruma, Debian/Ubuntu: apt install libonig-dev)",
+    );
+
     const translate = b.addTranslateC(.{
         .root_source_file = b.path("src/support/oniguruma.h"),
         .target = target,
         .optimize = optimize,
     });
-    translate.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    translate.addIncludePath(.{ .cwd_relative = include_dir });
 
     const module = translate.createModule();
-    module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-    module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    module.addIncludePath(.{ .cwd_relative = include_dir });
+    addOnigLibraryPath(b, module);
     module.linkSystemLibrary("onig", .{});
     return module;
+}
+
+const onig_include_candidates = [_][]const u8{
+    "/opt/homebrew/include", // Homebrew on Apple Silicon
+    "/usr/local/include", // Homebrew on Intel macOS and /usr/local installs
+    "/usr/include",
+};
+
+const onig_lib_candidates = [_][]const u8{
+    "/opt/homebrew/lib",
+    "/usr/local/lib",
+    "/usr/lib/x86_64-linux-gnu", // Debian/Ubuntu multiarch
+    "/usr/lib64",
+    "/usr/lib",
+};
+
+fn onigIncludeDir(b: *std.Build) ?[]const u8 {
+    for (onig_include_candidates) |dir| {
+        const header = std.fmt.allocPrint(b.allocator, "{s}/oniguruma.h", .{dir}) catch @panic("OOM");
+        if (std.Io.Dir.accessAbsolute(b.graph.io, header, .{})) |_| return dir else |_| {}
+    }
+    return null;
+}
+
+fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module) void {
+    for (onig_lib_candidates) |dir| {
+        const names = [_][]const u8{ "libonig.so", "libonig.dylib", "libonig.a" };
+        for (names) |name| {
+            const lib = std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ dir, name }) catch @panic("OOM");
+            if (std.Io.Dir.accessAbsolute(b.graph.io, lib, .{})) |_| {
+                module.addLibraryPath(.{ .cwd_relative = dir });
+                return;
+            } else |_| {}
+        }
+    }
 }
 
 fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, textmate: *std.Build.Module, ui: *std.Build.Module) void {
@@ -95,8 +165,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     tests.root_module.addImport("oniguruma", onig);
     tests.root_module.addImport("textmate", textmate);
     tests.root_module.addImport("ui", ui);
-    tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-    tests.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    addOnigLibraryPath(b, tests.root_module);
     tests.root_module.linkSystemLibrary("onig", .{});
 
     const run_tests = b.addRunArtifact(tests);

@@ -293,4 +293,6 @@ comptime {
     _ = @import("./vs/editor/contrib/suggest/test/browser/suggestOvertypingCapturer.test.zig");
     _ = @import("./vs/editor/contrib/snippet/test/browser/snippetParser.test.zig");
     _ = @import("./vs/editor/contrib/snippet/test/browser/snippetSession.test.zig");
+    _ = @import("./vs/editor/contrib/smartSelect/test/browser/smartSelect.test.zig");
+    _ = @import("./vs/editor/contrib/inPlaceReplace/test/browser/inPlaceReplace.test.zig");
 }
