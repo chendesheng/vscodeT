@@ -58,6 +58,10 @@ pub const Sidebar = struct {
     model: *ExplorerModel,
     visible: std.array_list.Managed(Visible),
     expanded: std.AutoHashMap(*ExplorerItem, void),
+    /// Upstream the Explorer uses the single root itself as the tree input in
+    /// a folder workspace, so the root row is hidden and its children are the
+    /// top-level rows. Multi-root workspaces show the root rows.
+    show_roots: bool = false,
     selected: usize = 0,
     scroll: usize = 0,
     last_rect: ui.Rect = .{},
@@ -75,9 +79,20 @@ pub const Sidebar = struct {
         };
         errdefer self.model.deinit();
 
-        for (self.model.roots.items) |root| {
-            try self.loadChildren(root);
-            try self.setExpanded(root, true);
+        self.show_roots = context.getWorkbenchState() != .FOLDER or self.model.roots.items.len != 1;
+        if (!self.show_roots and self.model.roots.items.len == 1) {
+            // The root is the tree input and starts expanded; its direct
+            // children are the top-level rows.
+            try self.loadChildren(self.model.roots.items[0]);
+            try self.setExpanded(self.model.roots.items[0], true);
+        } else {
+            // Upstream expands up to five roots when there is no stored view
+            // state; deeper directories remain lazy.
+            const expand_count = @min(self.model.roots.items.len, 5);
+            for (self.model.roots.items[0..expand_count]) |root| {
+                try self.loadChildren(root);
+                try self.setExpanded(root, true);
+            }
         }
         try self.rebuildVisible();
         return self;
@@ -108,9 +123,19 @@ pub const Sidebar = struct {
 
     fn rebuildVisible(self: *Sidebar) !void {
         self.visible.clearRetainingCapacity();
-        for (self.model.roots.items) |root| {
-            try self.visible.append(.{ .item = root, .depth = 0 });
-            if (self.isExpanded(root)) try self.appendVisible(root, 1);
+        if (!self.show_roots and self.model.roots.items.len == 1) {
+            const root = self.model.roots.items[0];
+            for (root.children.items) |child| {
+                try self.visible.append(.{ .item = child, .depth = 0 });
+                if (child.is_directory and self.isExpanded(child)) {
+                    try self.appendVisible(child, 1);
+                }
+            }
+        } else {
+            for (self.model.roots.items) |root| {
+                try self.visible.append(.{ .item = root, .depth = 0 });
+                if (self.isExpanded(root)) try self.appendVisible(root, 1);
+            }
         }
         if (self.visible.items.len == 0) {
             self.selected = 0;
@@ -351,15 +376,14 @@ test "sidebar: lists directories first and toggles" {
     const sidebar = try Sidebar.init(allocator, io, context);
     defer sidebar.deinit();
 
-    try std.testing.expectEqual(@as(usize, 5), sidebar.count());
-    try std.testing.expectEqualStrings("alpha", sidebar.visible.items[1].item.name);
-    try std.testing.expectEqualStrings("beta", sidebar.visible.items[2].item.name);
-    try std.testing.expectEqualStrings("a.txt", sidebar.visible.items[3].item.name);
-    try std.testing.expectEqualStrings("z.txt", sidebar.visible.items[4].item.name);
+    try std.testing.expectEqual(@as(usize, 4), sidebar.count());
+    try std.testing.expectEqualStrings("alpha", sidebar.visible.items[0].item.name);
+    try std.testing.expectEqualStrings("beta", sidebar.visible.items[1].item.name);
+    try std.testing.expectEqualStrings("a.txt", sidebar.visible.items[2].item.name);
+    try std.testing.expectEqualStrings("z.txt", sidebar.visible.items[3].item.name);
 
-    try std.testing.expectEqual(Action.handled, try sidebar.handleKey(&.{ .key = .down }));
     try std.testing.expectEqual(Action.handled, try sidebar.handleKey(&.{ .key = .right }));
-    try std.testing.expect(sidebar.isExpanded(sidebar.visible.items[1].item));
+    try std.testing.expect(sidebar.isExpanded(sidebar.visible.items[0].item));
 }
 
 test "sidebar: enter on a file returns its path" {
@@ -380,7 +404,6 @@ test "sidebar: enter on a file returns its path" {
     const sidebar = try Sidebar.init(allocator, io, context);
     defer sidebar.deinit();
 
-    _ = try sidebar.handleKey(&.{ .key = .down });
     const action = try sidebar.handleKey(&.{ .key = .enter });
     switch (action) {
         .open => |path| try std.testing.expect(std.mem.endsWith(u8, path, "open.txt")),
@@ -413,12 +436,46 @@ test "sidebar: renders rows and handles clicks" {
     const header = try grid.rowText(allocator, 0);
     defer allocator.free(header);
     try std.testing.expect(std.mem.indexOf(u8, header, "EXPLORER") != null);
-    const row = try grid.rowText(allocator, 2);
+    const row = try grid.rowText(allocator, 1);
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "click.txt") != null);
-    try std.testing.expect(std.mem.startsWith(u8, row, "    "));
+    try std.testing.expect(std.mem.startsWith(u8, row, "  "));
 
-    const opened = try sidebar.handleClick(4, 2);
+    const opened = try sidebar.handleClick(4, 1);
     try std.testing.expect(opened != null);
     try std.testing.expect(std.mem.endsWith(u8, opened.?, "click.txt"));
+}
+
+test "sidebar: multi-root workspace shows root rows" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp_a = std.testing.tmpDir(.{});
+    defer tmp_a.cleanup();
+    var tmp_b = std.testing.tmpDir(.{});
+    defer tmp_b.cleanup();
+
+    var file = try tmp_a.dir.createFile(io, "root_file.txt", .{});
+    try file.writeStreamingAll(io, "x");
+    file.close(io);
+
+    const root_a = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp_a.sub_path});
+    defer allocator.free(root_a);
+    const root_b = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp_b.sub_path});
+    defer allocator.free(root_b);
+
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{ root_a, root_b });
+    defer context.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), sidebar.count());
+    try std.testing.expectEqualStrings(std.fs.path.basename(root_a), sidebar.visible.items[0].item.name);
+    try std.testing.expectEqualStrings("root_file.txt", sidebar.visible.items[1].item.name);
+
+    var grid = try CellGrid.init(allocator, 30, 7);
+    defer grid.deinit();
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 30, .h = 7 }, true);
+    const row = try grid.rowText(allocator, 2);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.startsWith(u8, row, "  "));
 }

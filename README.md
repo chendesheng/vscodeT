@@ -59,11 +59,14 @@ Notes for the Zig 0.17 port:
 - A terminal Explorer sidebar (`src/tui/sidebar.zig`) sits left of the editor
   area over the ported `ExplorerModel`
   (`src/vs/workbench/contrib/files/common/explorerModel.zig`). It lists the
-  current working directory lazily, directories first, expands/collapses with
+  workspace folders lazily, directories first, expands/collapses with
   `Right`/`Left` or a click, moves with `Up`/`Down`, and opens a file on
   `Enter` or a click through the same cross-group `openPath` path as the tab
-  model. `Ctrl-B` toggles the side panel and `Escape` returns focus to the
-  editor.
+  model. In a single-folder workspace the folder is the tree input, so its
+  children are the top-level rows; a multi-root workspace shows root rows and
+  expands the first five roots, matching the Explorer view's default. Deeper
+  directories resolve only when expanded. `Ctrl-B` toggles the side panel and
+  `Escape` returns focus to the editor.
 - A minimal activity bar (`src/tui/activityBar.zig`) switches between Explorer,
   Search and Settings containers. Explorer is wired to the file tree; Search
   and Settings are placeholders until their contributions are ported.

@@ -753,9 +753,13 @@ Library constraints:
   (`src/tui/sidebar.zig`) over `ExplorerModel`/`ExplorerItem` from
   `src/vs/workbench/contrib/files/common/explorerModel.zig`: lazy directory
   resolution, directories-first ordering, expand/collapse, selection and
-  scroll. The workbench reserves a fixed left activity column and sidebar
-  column and offsets the editor split root; a click or Enter on a file calls
-  `Workbench.openPath`. `src/tui/activityBar.zig` switches fixed Explorer,
+  scroll. A single-folder workspace uses the folder as the tree input, so its
+  children are top-level rows; multi-root workspaces show roots and expand the
+  first five by default. The workbench reserves a fixed left activity column
+  and sidebar column and offsets the editor split root; a click or Enter on a
+  file calls `Workbench.openPath`. Directory resolution is synchronous and
+  only the visible rows are painted; the async data tree/loading placeholders
+  and list virtualization of the browser tree are not ported. `src/tui/activityBar.zig` switches fixed Explorer,
   Search and Settings containers (the latter two are placeholders). This is
   not the browser `ExplorerView`/tree widget or registered view-container
   service port; file watching, resizing, context menus and real Search/Settings

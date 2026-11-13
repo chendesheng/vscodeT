@@ -1743,7 +1743,7 @@ test "Workbench: sidebar renders and opens a file" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXPLORER") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "side_open.txt") != null);
 
-    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 3 };
+    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 2 };
     try std.testing.expect(workbench.handleSidebarMouse(&click));
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
     try std.testing.expectEqualStrings("side_open.txt", workbench.activeTab().?.input.base.getName());
@@ -1824,7 +1824,7 @@ test "Workbench: opens a folder workspace with no initial tabs" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXPLORER") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "folder_file.txt") != null);
 
-    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 2 };
+    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 1 };
     try std.testing.expect(workbench.handleSidebarMouse(&click));
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("folder_file.txt", workbench.activeTab().?.input.base.getName());
