@@ -85,13 +85,17 @@ pub fn draw(
     grid: *CellGrid,
     tabs: []const TabInfo,
     active: usize,
+    x: usize,
     row: usize,
+    width: usize,
     hits: *std.array_list.Managed(Hit),
 ) !void {
     hits.clearRetainingCapacity();
     if (row >= grid.rows or tabs.len == 0) return;
+    if (x >= grid.cols) return;
 
-    const cols = grid.cols;
+    const cols = @min(width, grid.cols - x);
+    if (cols == 0) return;
     const widths = try grid.allocator.alloc(usize, tabs.len);
     defer grid.allocator.free(widths);
     for (tabs, 0..) |tab, index| {
@@ -119,30 +123,31 @@ pub fn draw(
     while (index < tabs.len and col < cols) : (index += 1) {
         if (index > first) {
             if (col >= cols) break;
-            grid.putCodepoint(col, row, ' ', 1, separator_style);
+            grid.putCodepoint(x + col, row, ' ', 1, separator_style);
             col += 1;
             if (col >= cols) break;
         }
 
-        const width = @min(widths[index], cols - col);
-        if (width < 2) break;
+        const tab_width = @min(widths[index], cols - col);
+        if (tab_width < 2) break;
 
         const paint = if (index == active) active_style else inactive_style;
-        grid.fillRect(@floatFromInt(col), @floatFromInt(row), @floatFromInt(width), 1, paint);
+        const screen_col = x + col;
+        grid.fillRect(@floatFromInt(screen_col), @floatFromInt(row), @floatFromInt(tab_width), 1, paint);
 
-        const label = truncateLabel(tabs[index].label, width - 2);
-        drawLabel(grid, label, col + 1, row, width - 2, paint);
-        if (tabs[index].dirty and textWidth(label) + 2 < width) {
+        const label = truncateLabel(tabs[index].label, tab_width - 2);
+        drawLabel(grid, label, screen_col + 1, row, tab_width - 2, paint);
+        if (tabs[index].dirty and textWidth(label) + 2 < tab_width) {
             const dirty_paint = PaintStyle{
                 .fg = paint.fg,
                 .bg = paint.bg,
                 .attrs = paint.attrs | ui.cell.Attr.bold,
             };
-            drawLabel(grid, "*", col + 1 + textWidth(label), row, 1, dirty_paint);
+            drawLabel(grid, "*", screen_col + 1 + textWidth(label), row, 1, dirty_paint);
         }
 
-        try hits.append(.{ .start = col, .end = col + width, .index = index });
-        col += width;
+        try hits.append(.{ .start = screen_col, .end = screen_col + tab_width, .index = index });
+        col += tab_width;
     }
 }
 
@@ -167,7 +172,7 @@ test "tabBar draws labels, active state and hits" {
         .{ .label = "b.txt", .dirty = true },
         .{ .label = "c.txt" },
     };
-    try draw(&grid, &tabs, 1, 0, &hits);
+    try draw(&grid, &tabs, 1, 0, 0, grid.cols, &hits);
 
     try std.testing.expectEqual(@as(usize, 3), hits.items.len);
     try std.testing.expectEqual(@as(usize, 1), hitAt(hits.items, hits.items[1].start).?);
@@ -192,7 +197,7 @@ test "tabBar scrolls to keep the active tab visible" {
         .{ .label = "second.txt" },
         .{ .label = "third.txt" },
     };
-    try draw(&grid, &tabs, 2, 0, &hits);
+    try draw(&grid, &tabs, 2, 0, 0, grid.cols, &hits);
 
     try std.testing.expect(hits.items.len >= 1);
     try std.testing.expectEqual(@as(usize, 2), hits.items[hits.items.len - 1].index);

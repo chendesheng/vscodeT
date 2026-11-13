@@ -8,6 +8,10 @@ const Editor = @import("./editor.zig").Editor;
 const View = @import("./view.zig").View;
 const Preview = @import("./preview.zig").Preview;
 const Workbench = @import("./workbench.zig").Workbench;
+const session = @import("./session.zig");
+const FileEditorSerializer = @import("./editorInput.zig").FileEditorSerializer;
+const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
+const EditorFactoryRegistry = @import("../vs/workbench/common/editor/editorFactory.zig").EditorFactoryRegistry;
 const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
 const word_character_classifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
@@ -25,27 +29,32 @@ const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browse
 const TuiHoverProvider = @import("./hoverProvider.zig").TuiHoverProvider;
 const ArrayList = std.array_list.Managed;
 
-/// Parses the path list. `--preview` is only valid with a single path.
-/// Returns whether preview mode was requested.
-fn parseArgs(args: std.process.Args, paths: *ArrayList([]const u8)) !bool {
+const Args = struct {
+    preview: bool = false,
+    session: ?[]const u8 = null,
+};
+
+/// Parses `--preview`, `--session <file>` and the remaining paths.
+/// `--preview` is only valid with exactly one path; `--session` restores the
+/// saved group when the file exists and otherwise opens the given paths.
+fn parseArgs(args: std.process.Args, paths: *ArrayList([]const u8)) !Args {
     var it = args.iterate();
     _ = it.next(); // executable name
 
-    var preview = false;
-    var first = true;
+    var parsed: Args = .{};
     while (it.next()) |arg| {
-        if (first and std.mem.eql(u8, arg, "--preview")) {
-            preview = true;
-            first = false;
-            continue;
+        if (std.mem.eql(u8, arg, "--preview")) {
+            parsed.preview = true;
+        } else if (std.mem.eql(u8, arg, "--session")) {
+            parsed.session = it.next() orelse return error.MissingSessionPath;
+        } else {
+            try paths.append(arg);
         }
-        first = false;
-        try paths.append(arg);
     }
 
-    if (paths.items.len == 0) return error.NoPathProvided;
-    if (preview and paths.items.len != 1) return error.TooManyPathsForPreview;
-    return preview;
+    if (parsed.preview and parsed.session != null) return error.PreviewWithSession;
+    if (parsed.preview and paths.items.len != 1) return error.InvalidPreviewPaths;
+    return parsed;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -58,8 +67,11 @@ pub fn main(init: std.process.Init) !void {
     var paths = ArrayList([]const u8).init(allocator);
     defer paths.deinit();
 
-    const preview = parseArgs(init.minimal.args, &paths) catch {
-        std.debug.print("usage: zig <file>...\n       zig --preview <file>\n", .{});
+    const args = parseArgs(init.minimal.args, &paths) catch {
+        std.debug.print(
+            "usage: zig <file>...\n       zig --session <file> [<file>...]\n       zig --preview <file>\n",
+            .{},
+        );
         return;
     };
 
@@ -88,7 +100,7 @@ pub fn main(init: std.process.Init) !void {
 
     var size = try tui.getTerminalSize();
 
-    if (preview) {
+    if (args.preview) {
         var editor = try Editor.create(allocator, io, paths.items[0], size.width, size.height);
         defer {
             editor.deinit();
@@ -98,8 +110,73 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    const workbench = try Workbench.init(allocator, io, paths.items, size.width, size.height);
+    var file_serializer: ?FileEditorSerializer = null;
+    var registry: ?EditorFactoryRegistry = null;
+    if (args.session != null) {
+        file_serializer = FileEditorSerializer.init(allocator, io, size.width, size.height -| 1);
+        registry = EditorFactoryRegistry.init(allocator);
+        try registry.?.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.?.interface());
+    }
+    defer if (registry) |*value| value.deinit();
+
+    var workbench: *Workbench = undefined;
+    var restored = false;
+    if (args.session) |session_path| {
+        const loaded = session.loadPart(allocator, io, session_path) catch |err| blk: {
+            std.debug.print("session load failed: {s}\n", .{@errorName(err)});
+            break :blk null;
+        };
+        if (loaded) |data| {
+            var owned = data;
+            defer owned.deinit(allocator);
+
+            const created = Workbench.initFromSerializedPart(
+                allocator,
+                io,
+                data,
+                &registry.?,
+                size.width,
+                size.height,
+            ) catch |err| blk: {
+                std.debug.print("session restore failed: {s}\n", .{@errorName(err)});
+                break :blk @as(?*Workbench, null);
+            };
+
+            if (created) |candidate| {
+                if (candidate.tabCount() > 0) {
+                    workbench = candidate;
+                    restored = true;
+                } else {
+                    candidate.deinit();
+                }
+            }
+        }
+    }
+
+    if (!restored) {
+        if (paths.items.len == 0) {
+            std.debug.print("no files to open and no restorable session\n", .{});
+            return;
+        }
+        workbench = try Workbench.init(allocator, io, paths.items, size.width, size.height);
+    }
     defer workbench.deinit();
+
+    if (args.session) |session_path| {
+        defer {
+            if (workbench.tabCount() > 0) {
+                if (workbench.serializePart(allocator, &registry.?)) |data| {
+                    var owned = data;
+                    defer owned.deinit(allocator);
+                    session.savePart(allocator, io, session_path, &data) catch |err| {
+                        std.debug.print("session save failed: {s}\n", .{@errorName(err)});
+                    };
+                } else |err| {
+                    std.debug.print("session serialize failed: {s}\n", .{@errorName(err)});
+                }
+            }
+        }
+    }
 
     try workbench.activeTab().?.ensureControllers();
 
@@ -200,14 +277,13 @@ pub fn main(init: std.process.Init) !void {
                     if (workbench.handleTabMouse(event)) continue;
                     workbench.clearQuitArmed();
 
+                    var adjusted = workbench.editorMouseEvent(event.*) orelse continue;
                     const current = workbench.activeTab() orelse return;
                     if (event.kind == .down) current.editor.clearCloseTabArmed();
                     const tab_controllers = current.controllers orelse blk: {
                         try current.ensureControllers();
                         break :blk current.controllers.?;
                     };
-                    var adjusted = event.*;
-                    adjusted.y -|= 1;
                     handleMouseEvent(
                         current.view,
                         tab_controllers.hover,

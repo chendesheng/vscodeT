@@ -1,16 +1,17 @@
 //! The multi-file terminal workbench: an editor-part-like shell over the
-//! ported `EditorGroupModel`.
+//! ported editor-groups service and `EditorGroupModel`.
 //!
-//! Layout is the terminal adaptation of the workbench editor part: one tab row
-//! at the top, the active editor pane below it. Each tab owns a persistent
-//! `View` with its own cell frame; the workbench composites the active view
-//! into its frame and encodes one ANSI diff for the whole screen. Switching
-//! tabs therefore changes cells, not terminal state, and inactive tabs keep
-//! their controllers, decorations and scroll position.
+//! Layout is the terminal adaptation of the workbench editor part: every group
+//! gets a tab row and an editor pane, groups are arranged in a binary split
+//! tree, and the workbench composites all visible panes into one frame before
+//! encoding a single ANSI diff. Each tab owns a persistent `View`, so
+//! switching tabs or groups keeps scroll position and decorations.
 //!
-//! A single editor group is ported. Splitting, dragging tabs between groups,
-//! tab overflow menus and serialization remain workbench features without a
-//! port yet; the group model already supports the single-group behavior.
+//! A split currently moves the active tab into the new group (the terminal
+//! equivalent of "move editor to group"); upstream `splitEditor` duplicates the
+//! active input and gives each pane independent view state. Duplicating an
+//! `Editor` would duplicate the text model, so the move preserves the one
+//! model until the editor is split into model/view state.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -19,13 +20,72 @@ const Io = std.Io;
 const ui = @import("ui");
 const tui = @import("./tui.zig");
 const Tab = @import("./tab.zig").Tab;
+const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
+const FileEditorSerializer = @import("./editorInput.zig").FileEditorSerializer;
+const editor_factory = @import("../vs/workbench/common/editor/editorFactory.zig");
 const Editor = @import("./editor.zig").Editor;
 const View = @import("./view.zig").View;
 const ViewCell = @import("./view.zig").Cell;
 const tab_bar = @import("./tabBar.zig");
 const group_mod = @import("../vs/workbench/common/editor/editorGroupModel.zig");
+const editor_groups = @import("../vs/workbench/services/editor/common/editorGroupsService.zig");
+const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
+const EditorInput = editor_input.EditorInput;
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
+pub const SplitDirection = enum { horizontal, vertical };
+
+const LayoutNode = struct {
+    kind: union(enum) {
+        leaf: *GroupPane,
+        split: struct {
+            direction: SplitDirection,
+            ratio: f64,
+            first: *LayoutNode,
+            second: *LayoutNode,
+        },
+    },
+    rect: ui.Rect = .{},
+};
+
+/// One editor group in the terminal editor part: the group model plus the tabs
+/// (views/controllers) and the cell rectangle it occupies.
+pub const GroupPane = struct {
+    group: *editor_groups.EditorGroup,
+    tabs: std.array_list.Managed(*Tab),
+    hits: std.array_list.Managed(tab_bar.Hit),
+    rect: ui.Rect = .{},
+
+    pub fn init(allocator: Allocator, group: *editor_groups.EditorGroup) GroupPane {
+        return .{
+            .group = group,
+            .tabs = std.array_list.Managed(*Tab).init(allocator),
+            .hits = std.array_list.Managed(tab_bar.Hit).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *GroupPane) void {
+        self.hits.deinit();
+        self.tabs.deinit();
+    }
+
+    pub fn activeTab(self: *const GroupPane) ?*Tab {
+        const active = self.group.model.activeEditor() orelse return null;
+        for (self.tabs.items) |tab| {
+            if (&tab.input.base == active) return tab;
+        }
+        return null;
+    }
+
+    pub fn tabForInput(self: *const GroupPane, input: *EditorInput) ?*Tab {
+        for (self.tabs.items) |tab| {
+            if (&tab.input.base == input) return tab;
+        }
+        return null;
+    }
+};
+
+const editor_mod = @import("../vs/workbench/common/editor.zig");
 
 pub const Workbench = struct {
     allocator: Allocator,
@@ -33,10 +93,10 @@ pub const Workbench = struct {
     cols: usize,
     rows: usize,
 
-    group: group_mod.EditorGroupModel,
-    tabs: std.array_list.Managed(*Tab),
+    service: *editor_groups.EditorGroupsService,
+    panes: std.array_list.Managed(*GroupPane),
+    layout: *LayoutNode,
     frame: ui.Frame,
-    hits: std.array_list.Managed(tab_bar.Hit),
     is_pasting: bool = false,
     quit_armed: bool = false,
 
@@ -58,56 +118,191 @@ pub const Workbench = struct {
         self.is_pasting = false;
         self.quit_armed = false;
 
-        self.group = try group_mod.EditorGroupModel.init(allocator, .{});
-        self.tabs = std.array_list.Managed(*Tab).init(allocator);
-        // Registered in this order so LIFO cleanup disposes the group (and its
-        // editor listeners) before the tab inputs are destroyed.
+        self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
+        errdefer self.service.deinit();
+
+        self.panes = std.array_list.Managed(*GroupPane).init(allocator);
         errdefer {
-            for (self.tabs.items) |tab| tab.deinit();
-            self.tabs.deinit();
+            for (self.panes.items) |pane| {
+                for (pane.tabs.items) |tab| tab.deinit();
+                pane.deinit();
+                allocator.destroy(pane);
+            }
+            self.panes.deinit();
         }
-        errdefer self.group.deinit();
+
+        const pane = try self.createPane(self.service.activeGroup());
+        self.layout = try self.createLeaf(pane);
+        errdefer self.destroyLayout(self.layout);
+
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
-        self.hits = std.array_list.Managed(tab_bar.Hit).init(allocator);
 
-        for (paths, 0..) |path, index| {
-            const tab = try Tab.init(
-                allocator,
-                io,
-                path,
-                self.cols,
-                editorHeight(self.rows),
-            );
-            // Opening the same resource twice focuses the existing tab, the
-            // way the workbench's editor service resolves duplicate inputs.
-            if (self.group.findEditor(&tab.input.base, .{})) |existing| {
-                tab.deinit();
-                if (index == 0) _ = try self.group.setActive(existing.editor);
-                continue;
-            }
+        self.layoutAll();
 
-            self.tabs.append(tab) catch |err| {
-                tab.deinit();
-                return err;
-            };
-            _ = try self.group.openEditor(&tab.input.base, .{
-                .pinned = true,
-                .active = index == 0,
-            });
+        for (paths) |path| {
+            try self.openPath(path);
         }
 
         return self;
     }
 
+    /// Restores a single serialized group. Multi-group session serialization is
+    /// a follow-up; the group model/serializer already support it.
+    pub fn initFromSerialized(
+        allocator: Allocator,
+        io: Io,
+        data: group_mod.SerializedEditorGroupModel,
+        registry: *editor_factory.EditorFactoryRegistry,
+        cols: usize,
+        rows: usize,
+    ) !*Workbench {
+        const self = try allocator.create(Workbench);
+        errdefer allocator.destroy(self);
+
+        self.* = undefined;
+        self.allocator = allocator;
+        self.io = io;
+        self.cols = @max(cols, 1);
+        self.rows = @max(rows, 1);
+        self.is_pasting = false;
+        self.quit_armed = false;
+
+        self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
+        errdefer self.service.deinit();
+
+        self.panes = std.array_list.Managed(*GroupPane).init(allocator);
+        errdefer {
+            for (self.panes.items) |pane| {
+                for (pane.tabs.items) |tab| tab.deinit();
+                pane.deinit();
+                allocator.destroy(pane);
+            }
+            self.panes.deinit();
+        }
+
+        const group = self.service.activeGroup();
+        group.model.deinit();
+        group.model = try group_mod.EditorGroupModel.initFromSerialized(allocator, .{}, data, registry);
+        group.id = group.model.id;
+
+        const pane = try self.createPane(group);
+        self.layout = try self.createLeaf(pane);
+        errdefer self.destroyLayout(self.layout);
+
+        self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
+        errdefer self.frame.deinit();
+
+        self.layoutAll();
+
+        const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
+        defer allocator.free(editors);
+        for (editors) |input| {
+            if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
+            const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
+            const tab = try Tab.initFromInput(allocator, file_input);
+            try addTabToPane(pane, tab);
+        }
+
+        return self;
+    }
+
+    /// Restores every serialized group and rebuilds the terminal split tree.
+    /// Upstream also persists the split grid; the TUI currently restores the
+    /// groups as equal horizontal splits.
+    pub fn initFromSerializedPart(
+        allocator: Allocator,
+        io: Io,
+        data: editor_groups.SerializedEditorPart,
+        registry: *editor_factory.EditorFactoryRegistry,
+        cols: usize,
+        rows: usize,
+    ) !*Workbench {
+        const self = try allocator.create(Workbench);
+        errdefer allocator.destroy(self);
+
+        self.* = undefined;
+        self.allocator = allocator;
+        self.io = io;
+        self.cols = @max(cols, 1);
+        self.rows = @max(rows, 1);
+        self.is_pasting = false;
+        self.quit_armed = false;
+
+        self.service = try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, data, registry, .{});
+        errdefer self.service.deinit();
+
+        self.panes = std.array_list.Managed(*GroupPane).init(allocator);
+        errdefer {
+            for (self.panes.items) |pane| {
+                for (pane.tabs.items) |tab| tab.deinit();
+                pane.deinit();
+                allocator.destroy(pane);
+            }
+            self.panes.deinit();
+        }
+
+        self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
+        errdefer self.frame.deinit();
+
+        self.layout = undefined;
+        for (self.service.groups.items, 0..) |group, index| {
+            const pane = try self.createPane(group);
+            const leaf = try self.createLeaf(pane);
+            if (index == 0) {
+                self.layout = leaf;
+            } else {
+                self.layout = try self.createSplit(.horizontal, self.layout, leaf);
+            }
+
+            const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
+            defer allocator.free(editors);
+            for (editors) |input| {
+                if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
+                const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
+                const tab = try Tab.initFromInput(allocator, file_input);
+                try addTabToPane(pane, tab);
+            }
+        }
+
+        self.layoutAll();
+        return self;
+    }
+
+    /// Serializes every group and the active group index.
+    pub fn serializePart(
+        self: *Workbench,
+        allocator: Allocator,
+        registry: *editor_factory.EditorFactoryRegistry,
+    ) !editor_groups.SerializedEditorPart {
+        return self.service.serializePart(allocator, registry);
+    }
+
+    /// Serializes the active group.
+    pub fn serialize(
+        self: *Workbench,
+        allocator: Allocator,
+        registry: *editor_factory.EditorFactoryRegistry,
+    ) !group_mod.SerializedEditorGroupModel {
+        return self.service.activeGroup().model.serialize(allocator, registry);
+    }
+
+    pub fn createFileSerializer(self: *Workbench) FileEditorSerializer {
+        return FileEditorSerializer.init(self.allocator, self.io, self.cols, editorHeight(self.rows));
+    }
+
     pub fn deinit(self: *Workbench) void {
-        // Unregister the group's editor listeners before tab inputs (and their
-        // emitters) are destroyed.
-        self.group.deinit();
-        for (self.tabs.items) |tab| tab.deinit();
-        self.tabs.deinit();
+        // Dispose the service (and unregister editor listeners) before tab
+        // inputs/emitters are destroyed.
+        self.service.deinit();
+        for (self.panes.items) |pane| {
+            for (pane.tabs.items) |tab| tab.deinit();
+            pane.deinit();
+            self.allocator.destroy(pane);
+        }
+        self.panes.deinit();
+        self.destroyLayout(self.layout);
         self.frame.deinit();
-        self.hits.deinit();
         self.allocator.destroy(self);
     }
 
@@ -115,20 +310,159 @@ pub const Workbench = struct {
         return @max(rows -| 1, 1);
     }
 
-    pub fn activeTab(self: *Workbench) ?*Tab {
-        const active = self.group.activeEditor() orelse return null;
-        for (self.tabs.items) |tab| {
-            if (&tab.input.base == active) return tab;
+    fn createPane(self: *Workbench, group: *editor_groups.EditorGroup) !*GroupPane {
+        const pane = try self.allocator.create(GroupPane);
+        errdefer self.allocator.destroy(pane);
+        pane.* = GroupPane.init(self.allocator, group);
+        try self.panes.append(pane);
+        return pane;
+    }
+
+    fn createLeaf(self: *Workbench, pane: *GroupPane) !*LayoutNode {
+        const node = try self.allocator.create(LayoutNode);
+        node.* = .{ .kind = .{ .leaf = pane } };
+        return node;
+    }
+
+    fn createSplit(self: *Workbench, direction: SplitDirection, first: *LayoutNode, second: *LayoutNode) !*LayoutNode {
+        const node = try self.allocator.create(LayoutNode);
+        node.* = .{ .kind = .{ .split = .{
+            .direction = direction,
+            .ratio = 0.5,
+            .first = first,
+            .second = second,
+        } } };
+        return node;
+    }
+
+    fn destroyLayout(self: *Workbench, node: *LayoutNode) void {
+        switch (node.kind) {
+            .leaf => {},
+            .split => |split| {
+                self.destroyLayout(split.first);
+                self.destroyLayout(split.second);
+            },
+        }
+        self.allocator.destroy(node);
+    }
+
+    fn layoutAll(self: *Workbench) void {
+        const rect = ui.Rect{
+            .x = 0,
+            .y = 0,
+            .w = @floatFromInt(self.cols),
+            .h = @floatFromInt(self.rows),
+        };
+        self.computeLayout(self.layout, rect);
+        for (self.panes.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                tab.editor.setViewport(
+                    @max(ui.cell.snap(pane.rect.w), 1),
+                    editorHeight(@max(ui.cell.snap(pane.rect.h), 1)),
+                );
+                tab.view.resize() catch {};
+            }
+        }
+    }
+
+    fn computeLayout(self: *Workbench, node: *LayoutNode, rect: ui.Rect) void {
+        node.rect = rect;
+        switch (node.kind) {
+            .leaf => |pane| pane.rect = rect,
+            .split => |split| {
+                if (split.direction == .horizontal) {
+                    const gap: f64 = if (rect.w >= 6) 1 else 0;
+                    const available = @max(rect.w - gap, 0);
+                    const first_width = @floor(available * split.ratio);
+                    const first = ui.Rect{ .x = rect.x, .y = rect.y, .w = first_width, .h = rect.h };
+                    const second = ui.Rect{
+                        .x = rect.x + first_width + gap,
+                        .y = rect.y,
+                        .w = @max(rect.w - first_width - gap, 0),
+                        .h = rect.h,
+                    };
+                    self.computeLayout(split.first, first);
+                    self.computeLayout(split.second, second);
+                } else {
+                    const gap: f64 = if (rect.h >= 6) 1 else 0;
+                    const available = @max(rect.h - gap, 0);
+                    const first_height = @floor(available * split.ratio);
+                    const first = ui.Rect{ .x = rect.x, .y = rect.y, .w = rect.w, .h = first_height };
+                    const second = ui.Rect{
+                        .x = rect.x,
+                        .y = rect.y + first_height + gap,
+                        .w = rect.w,
+                        .h = @max(rect.h - first_height - gap, 0),
+                    };
+                    self.computeLayout(split.first, first);
+                    self.computeLayout(split.second, second);
+                }
+            },
+        }
+    }
+
+    fn replaceLeaf(self: *Workbench, target: *GroupPane, replacement: *LayoutNode) bool {
+        if (self.layout.kind == .leaf and self.layout.kind.leaf == target) {
+            replacement.kind.split.first = self.layout;
+            self.layout = replacement;
+            return true;
+        }
+        return self.replaceChild(self.layout, target, replacement);
+    }
+
+    fn replaceChild(self: *Workbench, node: *LayoutNode, target: *GroupPane, replacement: *LayoutNode) bool {
+        switch (node.kind) {
+            .leaf => return false,
+            .split => |*split| {
+                if (split.first.kind == .leaf and split.first.kind.leaf == target) {
+                    split.first = replacement;
+                    return true;
+                }
+                if (split.second.kind == .leaf and split.second.kind.leaf == target) {
+                    split.second = replacement;
+                    return true;
+                }
+                if (self.replaceChild(split.first, target, replacement)) return true;
+                return self.replaceChild(split.second, target, replacement);
+            },
+        }
+    }
+
+    fn activeGroup(self: *Workbench) *editor_groups.EditorGroup {
+        return self.service.activeGroup();
+    }
+
+    fn paneForGroup(self: *Workbench, group: *editor_groups.EditorGroup) ?*GroupPane {
+        for (self.panes.items) |pane| {
+            if (pane.group == group) return pane;
         }
         return null;
     }
 
-    /// Tabs in sequential (tab strip) order, matching the group model.
-    fn orderedTabs(self: *Workbench, out: *std.array_list.Managed(*Tab)) !void {
-        const editors = try self.group.getEditors(self.allocator, .SEQUENTIAL, false);
-        defer self.allocator.free(editors);
+    pub fn activePane(self: *Workbench) ?*GroupPane {
+        return self.paneForGroup(self.service.activeGroup());
+    }
+
+    pub fn activeTab(self: *Workbench) ?*Tab {
+        const pane = self.activePane() orelse return null;
+        return pane.activeTab();
+    }
+
+    pub fn tabCount(self: *Workbench) usize {
+        var count: usize = 0;
+        for (self.panes.items) |pane| count += pane.tabs.items.len;
+        return count;
+    }
+
+    pub fn groupCount(self: *const Workbench) usize {
+        return self.service.count();
+    }
+
+    fn orderedTabs(pane: *GroupPane, allocator: Allocator, out: *std.array_list.Managed(*Tab)) !void {
+        const editors = try pane.group.model.getEditors(allocator, .SEQUENTIAL, false);
+        defer allocator.free(editors);
         for (editors) |input| {
-            for (self.tabs.items) |tab| {
+            for (pane.tabs.items) |tab| {
                 if (&tab.input.base == input) {
                     try out.append(tab);
                     break;
@@ -137,24 +471,65 @@ pub const Workbench = struct {
         }
     }
 
-    fn activeIndex(self: *Workbench, ordered: []const *Tab) usize {
-        const active = self.group.activeEditor() orelse return 0;
+    fn activeIndex(pane: *GroupPane, ordered: []const *Tab) usize {
+        const active = pane.group.model.activeEditor() orelse return 0;
         for (ordered, 0..) |tab, index| {
             if (&tab.input.base == active) return index;
         }
         return 0;
     }
 
-    pub fn activateIndex(self: *Workbench, index: usize) !void {
-        if (index >= self.tabs.items.len) return;
+    fn addTabToPane(pane: *GroupPane, tab: *Tab) !void {
+        try pane.tabs.append(tab);
+        tab.editor.setViewport(
+            @max(ui.cell.snap(pane.rect.w), 1),
+            editorHeight(@max(ui.cell.snap(pane.rect.h), 1)),
+        );
+        try tab.view.resize();
+    }
 
+    /// Opens a path through the editor-groups service. If the resource is
+    /// already open in another group, the service reveals that group and the
+    /// newly created input is discarded.
+    pub fn openPath(self: *Workbench, path: []const u8) !void {
+        const editor = try Editor.create(self.allocator, self.io, path, self.cols, editorHeight(self.rows));
+        errdefer {
+            editor.deinit();
+            self.allocator.destroy(editor);
+        }
+        const input = try FileEditorInput.init(self.allocator, editor);
+        errdefer input.deinit();
+
+        const opened = try self.service.openEditor(
+            &input.base,
+            null,
+            .{ .open = .{ .pinned = true, .active = true } },
+        );
+
+        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (!opened.result.is_new) {
+            input.deinit();
+            if (pane.tabForInput(opened.result.editor)) |tab| {
+                try tab.ensureControllers();
+                tab.view.focusEditor();
+            }
+            return;
+        }
+
+        const tab = try Tab.initFromInput(self.allocator, input);
+        try addTabToPane(pane, tab);
+        try tab.ensureControllers();
+    }
+
+    pub fn activateIndex(self: *Workbench, index: usize) !void {
+        const pane = self.activePane() orelse return;
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
         defer ordered.deinit();
-        try self.orderedTabs(&ordered);
+        try orderedTabs(pane, self.allocator, &ordered);
         if (index >= ordered.items.len) return;
 
         const tab = ordered.items[index];
-        _ = try self.group.setActive(&tab.input.base);
+        _ = try pane.group.model.setActive(&tab.input.base);
         try tab.ensureControllers();
         tab.view.focusEditor();
         tab.onEditorChanged(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
@@ -162,34 +537,117 @@ pub const Workbench = struct {
     }
 
     pub fn switchTab(self: *Workbench, delta: isize) !void {
+        const pane = self.activePane() orelse return;
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
         defer ordered.deinit();
-        try self.orderedTabs(&ordered);
+        try orderedTabs(pane, self.allocator, &ordered);
         if (ordered.items.len == 0) return;
 
-        const current: isize = @intCast(self.activeIndex(ordered.items));
+        const current: isize = @intCast(activeIndex(pane, ordered.items));
         const count: isize = @intCast(ordered.items.len);
         const next: isize = @mod(current + delta, count);
         try self.activateIndex(@intCast(next));
     }
 
-    /// Returns true when closing the last tab should quit the workbench.
+    pub fn switchGroup(self: *Workbench, delta: isize) !void {
+        const groups = try self.service.getGroups(self.allocator, .CREATION_TIME);
+        defer self.allocator.free(groups);
+        if (groups.len <= 1) return;
+
+        const current = for (groups, 0..) |group, index| {
+            if (group == self.service.activeGroup()) break index;
+        } else 0;
+
+        const count: isize = @intCast(groups.len);
+        var offset: isize = 1;
+        while (offset <= count) : (offset += 1) {
+            const next_index: usize = @intCast(@mod(@as(isize, @intCast(current)) + delta * offset, count));
+            const candidate = groups[next_index];
+            if (candidate == self.service.activeGroup()) continue;
+            const pane = self.paneForGroup(candidate) orelse continue;
+            if (pane.tabs.items.len == 0) continue;
+            self.service.activateGroup(candidate);
+            if (self.activeTab()) |tab| try tab.ensureControllers();
+            return;
+        }
+    }
+
+    /// Splits the active group and moves the active tab into the new group.
+    pub fn splitActive(self: *Workbench, direction: SplitDirection) !void {
+        const source = self.activePane() orelse return;
+        const tab = source.activeTab() orelse return;
+
+        const new_group = try self.service.addGroup(
+            source.group,
+            if (direction == .horizontal) .RIGHT else .DOWN,
+        );
+        const new_pane = try self.createPane(new_group);
+        const new_leaf = try self.createLeaf(new_pane);
+
+        _ = try source.group.model.closeEditor(&tab.input.base, .MOVE, false);
+        for (source.tabs.items, 0..) |candidate, index| {
+            if (candidate == tab) {
+                _ = source.tabs.orderedRemove(index);
+                break;
+            }
+        }
+        try new_pane.tabs.append(tab);
+        _ = try new_group.model.openEditor(&tab.input.base, .{ .pinned = true, .active = true });
+
+        const old_leaf = self.findLeaf(self.layout, source) orelse return error.LayoutLeafMissing;
+        const split = try self.createSplit(direction, old_leaf, new_leaf);
+        if (!self.replaceLeaf(source, split)) {
+            return error.LayoutLeafMissing;
+        }
+
+        self.service.activateGroup(new_group);
+        self.layoutAll();
+        if (self.activeTab()) |active| {
+            try active.ensureControllers();
+            try active.refresh();
+        }
+    }
+
+    fn findLeaf(self: *Workbench, node: *LayoutNode, pane: *GroupPane) ?*LayoutNode {
+        switch (node.kind) {
+            .leaf => |candidate| return if (candidate == pane) node else null,
+            .split => |split| {
+                if (self.findLeaf(split.first, pane)) |leaf| return leaf;
+                return self.findLeaf(split.second, pane);
+            },
+        }
+    }
+
     pub fn closeActive(self: *Workbench) !bool {
-        const tab = self.activeTab() orelse return true;
+        const pane = self.activePane() orelse return true;
+        const tab = pane.activeTab() orelse {
+            return self.tabCount() == 0;
+        };
 
         if (!tab.editor.requestCloseTab()) return false;
 
-        _ = try self.group.closeEditor(&tab.input.base, .UNKNOWN, true);
-
-        for (self.tabs.items, 0..) |candidate, index| {
+        _ = try pane.group.model.closeEditor(&tab.input.base, .UNKNOWN, true);
+        for (pane.tabs.items, 0..) |candidate, index| {
             if (candidate == tab) {
-                _ = self.tabs.orderedRemove(index);
+                _ = pane.tabs.orderedRemove(index);
                 break;
             }
         }
         tab.deinit();
 
-        if (self.tabs.items.len == 0) return true;
+        if (self.tabCount() == 0) return true;
+
+        if (pane.tabs.items.len == 0) {
+            const groups = try self.service.getGroups(self.allocator, .MOST_RECENTLY_ACTIVE);
+            defer self.allocator.free(groups);
+            for (groups) |group| {
+                if (group == pane.group) continue;
+                const candidate = self.paneForGroup(group) orelse continue;
+                if (candidate.tabs.items.len == 0) continue;
+                self.service.activateGroup(group);
+                break;
+            }
+        }
 
         if (self.activeTab()) |active| {
             try active.ensureControllers();
@@ -202,6 +660,29 @@ pub const Workbench = struct {
             return if (try self.closeActive()) .quit else .handled;
         }
 
+        if (event.mods.alt and !event.mods.ctrl and !event.mods.shift) {
+            switch (event.key) {
+                .char => |ch| {
+                    if (ch == '\\') {
+                        try self.splitActive(.horizontal);
+                        return .handled;
+                    }
+                },
+                else => {},
+            }
+        }
+        if (event.mods.alt and event.mods.shift and !event.mods.ctrl) {
+            switch (event.key) {
+                .char => |ch| {
+                    if (ch == '|' or ch == '\\') {
+                        try self.splitActive(.vertical);
+                        return .handled;
+                    }
+                },
+                else => {},
+            }
+        }
+
         if (event.mods.ctrl and !event.mods.alt and !event.mods.shift) {
             switch (event.key) {
                 .page_up => {
@@ -210,6 +691,20 @@ pub const Workbench = struct {
                 },
                 .page_down => {
                     try self.switchTab(1);
+                    return .handled;
+                },
+                else => {},
+            }
+        }
+
+        if (event.mods.ctrl and event.mods.alt and !event.mods.shift) {
+            switch (event.key) {
+                .left => {
+                    try self.switchGroup(-1);
+                    return .handled;
+                },
+                .right => {
+                    try self.switchGroup(1);
                     return .handled;
                 },
                 else => {},
@@ -231,17 +726,15 @@ pub const Workbench = struct {
         return .unhandled;
     }
 
-    /// Handles mouse input in the tab row. Returns true when the event was
-    /// consumed, so the caller does not forward it to the editor at y - 1.
     pub fn hasDirtyTabs(self: *const Workbench) bool {
-        for (self.tabs.items) |tab| {
-            if (tab.editor.isDirty()) return true;
+        for (self.panes.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.editor.isDirty()) return true;
+            }
         }
         return false;
     }
 
-    /// Mirrors the workbench quit prompt for the whole editor part: a dirty
-    /// tab arms the first request and the second request quits.
     pub fn requestQuit(self: *Workbench) bool {
         if (!self.hasDirtyTabs()) return true;
         if (self.quit_armed) return true;
@@ -257,53 +750,56 @@ pub const Workbench = struct {
         self.quit_armed = false;
     }
 
+    fn paneAt(self: *Workbench, x: usize, y: usize) ?*GroupPane {
+        for (self.panes.items) |pane| {
+            if (x >= ui.cell.snap(pane.rect.x) and x < ui.cell.snap(pane.rect.right()) and
+                y >= ui.cell.snap(pane.rect.y) and y < ui.cell.snap(pane.rect.bottom()))
+            {
+                return pane;
+            }
+        }
+        return null;
+    }
+
     pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-        if (event.y != 0) return false;
-        if (event.kind == .down) {
-            if (tab_bar.hitAt(self.hits.items, event.x)) |index| {
+        const pane = self.paneAt(event.x, event.y) orelse return false;
+        if (ui.cell.snap(pane.rect.y) != event.y) {
+            if (pane.tabs.items.len > 0 and event.kind == .down) {
+                self.service.activateGroup(pane.group);
+            }
+            return false;
+        }
+
+        if (event.kind == .down and pane.tabs.items.len > 0) {
+            self.service.activateGroup(pane.group);
+            if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                 self.activateIndex(index) catch {};
             }
         }
-        // The whole row belongs to the tab strip; never forward a tab-row
-        // event to the editor as view row 0.
         return true;
+    }
+
+    /// Converts a terminal mouse position inside a pane into editor-relative
+    /// coordinates, or null when the event belongs to a tab row.
+    pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?ui.MouseEvent {
+        const pane = self.paneAt(event.x, event.y) orelse return null;
+        if (pane.group != self.service.activeGroup()) return null;
+        if (event.y == ui.cell.snap(pane.rect.y)) return null;
+        if (pane.activeTab() == null) return null;
+
+        var adjusted = event;
+        adjusted.x -|= ui.cell.snap(pane.rect.x);
+        adjusted.y -|= ui.cell.snap(pane.rect.y) + 1;
+        return adjusted;
     }
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
         self.frame.begin();
 
-        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
-        defer ordered.deinit();
-        try self.orderedTabs(&ordered);
-
-        const infos = try self.allocator.alloc(tab_bar.TabInfo, ordered.items.len);
-        defer self.allocator.free(infos);
-        for (ordered.items, 0..) |tab, index| {
-            infos[index] = .{
-                .label = tab.input.base.getName(),
-                .dirty = tab.input.base.isDirty(),
-            };
+        for (self.panes.items) |pane| {
+            try self.renderPane(pane);
         }
-
-        try tab_bar.draw(
-            &self.frame.next,
-            infos,
-            self.activeIndex(ordered.items),
-            0,
-            &self.hits,
-        );
-
-        if (self.activeTab()) |active| {
-            try active.view.paint();
-            ui.CellGrid.blit(
-                &self.frame.next,
-                active.view.grid(),
-                0,
-                1,
-                self.cols,
-                self.rows -| 1,
-            );
-        }
+        self.renderDividers(self.layout);
 
         const encoded = try ui.ansi.encode(
             self.allocator,
@@ -317,20 +813,94 @@ pub const Workbench = struct {
         self.frame.swap();
     }
 
-    /// The hardware cursor cell in terminal coordinates, or null when hidden.
+    fn renderPane(self: *Workbench, pane: *GroupPane) !void {
+        const x = ui.cell.snap(pane.rect.x);
+        const y = ui.cell.snap(pane.rect.y);
+        const width = ui.cell.snap(pane.rect.w);
+        const height = ui.cell.snap(pane.rect.h);
+        if (width == 0 or height == 0) return;
+
+        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
+        defer ordered.deinit();
+        try orderedTabs(pane, self.allocator, &ordered);
+
+        const infos = try self.allocator.alloc(tab_bar.TabInfo, ordered.items.len);
+        defer self.allocator.free(infos);
+        for (ordered.items, 0..) |tab, index| {
+            infos[index] = .{
+                .label = tab.input.base.getName(),
+                .dirty = tab.input.base.isDirty(),
+            };
+        }
+
+        try tab_bar.draw(
+            &self.frame.next,
+            infos,
+            activeIndex(pane, ordered.items),
+            x,
+            y,
+            width,
+            &pane.hits,
+        );
+
+        if (pane.activeTab()) |active| {
+            try active.view.paint();
+            ui.CellGrid.blit(
+                &self.frame.next,
+                active.view.grid(),
+                x,
+                y + 1,
+                width,
+                height -| 1,
+            );
+        }
+    }
+
+    fn renderDividers(self: *Workbench, node: *LayoutNode) void {
+        switch (node.kind) {
+            .leaf => {},
+            .split => |split| {
+                const style = ui.cell.PaintStyle{
+                    .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
+                };
+                if (split.direction == .horizontal) {
+                    const x = ui.cell.snap(split.first.rect.right());
+                    var y = ui.cell.snap(split.first.rect.y);
+                    const bottom = ui.cell.snap(split.first.rect.bottom());
+                    while (y < bottom) : (y += 1) {
+                        self.frame.next.putCodepoint(x, y, '│', 1, style);
+                    }
+                } else {
+                    const y = ui.cell.snap(split.first.rect.bottom());
+                    var x = ui.cell.snap(split.first.rect.x);
+                    const right = ui.cell.snap(split.first.rect.right());
+                    while (x < right) : (x += 1) {
+                        self.frame.next.putCodepoint(x, y, '─', 1, style);
+                    }
+                }
+                self.renderDividers(split.first);
+                self.renderDividers(split.second);
+            },
+        }
+    }
+
     pub fn cursorCell(self: *Workbench) ?ViewCell {
-        const active = self.activeTab() orelse return null;
+        const pane = self.activePane() orelse return null;
+        const active = pane.activeTab() orelse return null;
         const cell = active.view.cursorCell() orelse return null;
-        const row = cell.row + 1;
-        if (row >= self.rows) return null;
-        return .{ .row = row, .col = cell.col };
+        const row = ui.cell.snap(pane.rect.y) + 1 + cell.row;
+        const col = ui.cell.snap(pane.rect.x) + cell.col;
+        if (row >= self.rows or col >= self.cols) return null;
+        return .{ .row = row, .col = col };
     }
 
     pub fn resize(self: *Workbench, cols: usize, rows: usize) !void {
         const new_cols = @max(cols, 1);
         const new_rows = @max(rows, 1);
         if (new_cols == self.cols and new_rows == self.rows) {
-            for (self.tabs.items) |tab| try tab.refresh();
+            for (self.panes.items) |pane| {
+                for (pane.tabs.items) |tab| try tab.refresh();
+            }
             return;
         }
 
@@ -342,10 +912,7 @@ pub const Workbench = struct {
         self.frame = replacement;
         previous.deinit();
 
-        for (self.tabs.items) |tab| {
-            tab.editor.setViewport(new_cols, editorHeight(new_rows));
-            try tab.view.resize();
-        }
+        self.layoutAll();
     }
 
     pub fn syncCursor(self: *Workbench, out: *std.Io.Writer) !void {
@@ -366,35 +933,35 @@ fn isCtrlChar(event: *const ui.KeyEvent, wanted: u21) bool {
     };
 }
 
+fn seedFile(allocator: Allocator, io: Io, tmp: *std.testing.TmpDir, name: []const u8, contents: []const u8) ![]u8 {
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, name });
+    errdefer allocator.free(path);
+    var editor = try Editor.createFromText(allocator, io, contents, path, 40, 7);
+    try editor.save();
+    editor.deinit();
+    allocator.destroy(editor);
+    return path;
+}
+
 test "Workbench: opens two files, switches tabs and closes them" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const path_a = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/a.txt", .{tmp.sub_path});
+    const path_a = try seedFile(allocator, io, &tmp, "a.txt", "alpha");
     defer allocator.free(path_a);
-    const path_b = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/b.txt", .{tmp.sub_path});
+    const path_b = try seedFile(allocator, io, &tmp, "b.txt", "beta");
     defer allocator.free(path_b);
 
-    var seed_a = try Editor.createFromText(allocator, io, "alpha", path_a, 30, 7);
-    try seed_a.save();
-    seed_a.deinit();
-    allocator.destroy(seed_a);
-
-    var seed_b = try Editor.createFromText(allocator, io, "beta", path_b, 30, 7);
-    try seed_b.save();
-    seed_b.deinit();
-    allocator.destroy(seed_b);
-
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 30, 8);
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 40, 9);
     defer workbench.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), workbench.tabs.items.len);
-    try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+    try std.testing.expectEqualStrings("b.txt", workbench.activeTab().?.input.base.getName());
 
     try workbench.activeTab().?.ensureControllers();
-
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try workbench.render(&out.writer);
@@ -402,100 +969,151 @@ test "Workbench: opens two files, switches tabs and closes them" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "b.txt") != null);
     try std.testing.expectEqual(@as(usize, 1), workbench.cursorCell().?.row);
 
-    try workbench.activateIndex(1);
-    try std.testing.expectEqualStrings("b.txt", workbench.activeTab().?.input.base.getName());
-
-    try workbench.switchTab(-1);
+    try workbench.activateIndex(0);
     try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.base.getName());
-
-    const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
-    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
-    try std.testing.expectEqual(@as(usize, 1), workbench.tabs.items.len);
+    try workbench.switchTab(1);
     try std.testing.expectEqualStrings("b.txt", workbench.activeTab().?.input.base.getName());
 
-    try std.testing.expectEqual(TabKeyResult.quit, try workbench.handleTabKey(&ctrl_w));
-}
-
-test "Workbench: dirty tab needs two close requests" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/dirty.txt", .{tmp.sub_path});
-    defer allocator.free(path);
-
-    var seed = try Editor.createFromText(allocator, io, "text", path, 30, 7);
-    try seed.save();
-    seed.deinit();
-    allocator.destroy(seed);
-
-    const workbench = try Workbench.init(allocator, io, &.{path}, 30, 8);
-    defer workbench.deinit();
-
-    const tab = workbench.activeTab().?;
-    try tab.ensureControllers();
-    try tab.editor.insertText("!");
-    try std.testing.expect(tab.editor.isDirty());
-
     const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
     try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
-    try std.testing.expectEqual(@as(usize, 1), workbench.tabs.items.len);
-    try std.testing.expect(tab.editor.isDirty());
-
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.base.getName());
     try std.testing.expectEqual(TabKeyResult.quit, try workbench.handleTabKey(&ctrl_w));
 }
 
-test "Workbench: duplicate paths focus one tab" {
+test "Workbench: split moves the active tab into a second group" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/same.txt", .{tmp.sub_path});
-    defer allocator.free(path);
-
-    var seed = try Editor.createFromText(allocator, io, "same", path, 20, 5);
-    try seed.save();
-    seed.deinit();
-    allocator.destroy(seed);
-
-    const workbench = try Workbench.init(allocator, io, &.{ path, path }, 20, 6);
-    defer workbench.deinit();
-
-    try std.testing.expectEqual(@as(usize, 1), workbench.tabs.items.len);
-    try std.testing.expectEqualStrings("same.txt", workbench.activeTab().?.input.base.getName());
-}
-
-test "Workbench: quit is armed while any tab is dirty" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const path_a = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/clean.txt", .{tmp.sub_path});
+    const path_a = try seedFile(allocator, io, &tmp, "split_a.txt", "alpha");
     defer allocator.free(path_a);
-    const path_b = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/dirty2.txt", .{tmp.sub_path});
+    const path_b = try seedFile(allocator, io, &tmp, "split_b.txt", "beta");
     defer allocator.free(path_b);
 
-    var seed_a = try Editor.createFromText(allocator, io, "clean", path_a, 20, 5);
-    try seed_a.save();
-    seed_a.deinit();
-    allocator.destroy(seed_a);
-    var seed_b = try Editor.createFromText(allocator, io, "dirty", path_b, 20, 5);
-    try seed_b.save();
-    seed_b.deinit();
-    allocator.destroy(seed_b);
-
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 20, 6);
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
     defer workbench.deinit();
-
     try workbench.activateIndex(1);
-    try workbench.activeTab().?.editor.insertText("!");
 
-    try std.testing.expect(!workbench.requestQuit());
-    try std.testing.expect(workbench.requestQuit());
-    workbench.clearQuitArmed();
-    try workbench.activeTab().?.editor.save();
-    try std.testing.expect(workbench.requestQuit());
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqualStrings("split_b.txt", workbench.activeTab().?.input.base.getName());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "split_a.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "split_b.txt") != null);
+
+    // The original group still holds the other tab.
+    const first_pane = workbench.panes.items[0];
+    const second_pane = workbench.panes.items[1];
+    try std.testing.expectEqual(@as(usize, 1), first_pane.tabs.items.len);
+    try std.testing.expectEqual(@as(usize, 1), second_pane.tabs.items.len);
+
+    // Splitting again moves the active tab to a third group.
+    try workbench.splitActive(.vertical);
+    try std.testing.expectEqual(@as(usize, 3), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+}
+
+test "Workbench: openPath reveals an already-open file in another group" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "reveal_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "reveal_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expectEqualStrings("reveal_b.txt", workbench.activeTab().?.input.base.getName());
+
+    try workbench.openPath(path_a);
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqualStrings("reveal_a.txt", workbench.activeTab().?.input.base.getName());
+}
+
+test "Workbench: serialize and restore a group" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "restore_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "restore_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 9);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+
+    var serializer = workbench.createFileSerializer();
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, serializer.interface());
+
+    var data = try workbench.serialize(allocator, &registry);
+    defer data.deinit(allocator);
+
+    const restored = try Workbench.initFromSerialized(allocator, io, data, &registry, 60, 9);
+    defer restored.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), restored.tabCount());
+    try std.testing.expectEqualStrings("restore_b.txt", restored.activeTab().?.input.base.getName());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try restored.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "restore_a.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "restore_b.txt") != null);
+}
+
+test "Workbench: serialize and restore multiple groups" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "part_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "part_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 70, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+
+    var serializer = workbench.createFileSerializer();
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, serializer.interface());
+
+    var data = try workbench.serializePart(allocator, &registry);
+    defer data.deinit(allocator);
+
+    const restored = try Workbench.initFromSerializedPart(allocator, io, data, &registry, 70, 10);
+    defer restored.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), restored.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), restored.tabCount());
+    try std.testing.expectEqualStrings("part_b.txt", restored.activeTab().?.input.base.getName());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try restored.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "part_a.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "part_b.txt") != null);
 }

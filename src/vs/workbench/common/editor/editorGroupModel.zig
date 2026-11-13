@@ -22,6 +22,7 @@ const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../base/common/event.zig").Emitter;
 const editor = @import("../editor.zig");
 const editor_input = @import("editorInput.zig");
+const editor_factory = @import("editorFactory.zig");
 
 const EditorInput = editor_input.EditorInput;
 const Candidate = editor_input.Candidate;
@@ -112,20 +113,29 @@ pub const EditorOrIndex = union(enum) {
 
 /// Mirrors upstream `ISerializedEditorInput`.
 pub const SerializedEditorInput = struct {
-    id: []const u8,
-    value: []const u8,
+    id: []u8,
+    value: []u8,
 };
 
-/// Mirrors upstream `ISerializedEditorGroupModel`. Serialization itself waits
-/// for the editor factory registry; the types are kept so callers can evolve
-/// toward the same persisted shape.
+/// Mirrors upstream `ISerializedEditorGroupModel`. Slices are owned by the
+/// value; call `deinit` with the allocator used for `serialize`.
 pub const SerializedEditorGroupModel = struct {
     id: GroupIdentifier,
     locked: bool = false,
-    editors: []const SerializedEditorInput = &.{},
-    mru: []const usize = &.{},
+    editors: []SerializedEditorInput = &.{},
+    mru: []usize = &.{},
     preview: ?usize = null,
     sticky: ?isize = null,
+
+    pub fn deinit(self: *SerializedEditorGroupModel, allocator: Allocator) void {
+        for (self.editors) |entry| {
+            allocator.free(entry.id);
+            allocator.free(entry.value);
+        }
+        if (self.editors.len > 0) allocator.free(self.editors);
+        if (self.mru.len > 0) allocator.free(self.mru);
+        self.* = .{ .id = self.id };
+    }
 };
 
 var next_group_id: GroupIdentifier = 0;
@@ -312,7 +322,7 @@ pub const EditorGroupModel = struct {
 
         const index = switch (candidate) {
             .index => |index| index,
-            .editor => |input| self.indexOfExact(input) orelse return false,
+            .editor => |input| self.indexOf(.{ .input = input }) orelse return false,
         };
         if (index >= self.editors.items.len) return false;
         return @as(isize, @intCast(index)) <= self.sticky;
@@ -639,6 +649,136 @@ pub const EditorGroupModel = struct {
         const result = self.findEditor(candidate, .{}) orelse return null;
         try self.doSetTransient(result.editor, result.index, transient);
         return result.editor;
+    }
+
+    /// Mirrors upstream `serialize`. Editors without a registered serializer,
+    /// or whose serializer currently declines, are omitted from the stored
+    /// list; the preview and sticky indexes are adjusted for the omissions.
+    pub fn serialize(
+        self: *EditorGroupModel,
+        allocator: Allocator,
+        registry: *editor_factory.EditorFactoryRegistry,
+    ) !SerializedEditorGroupModel {
+        var serialized_editors = std.array_list.Managed(SerializedEditorInput).init(allocator);
+        errdefer {
+            for (serialized_editors.items) |entry| {
+                allocator.free(entry.id);
+                allocator.free(entry.value);
+            }
+            serialized_editors.deinit();
+        }
+
+        var serializable_editors = std.array_list.Managed(*EditorInput).init(allocator);
+        defer serializable_editors.deinit();
+
+        var serializable_preview: ?usize = null;
+        var serializable_sticky = self.sticky;
+
+        for (self.editors.items, 0..) |input, index| {
+            var can_serialize = false;
+
+            if (registry.getEditorSerializer(input)) |serializer| {
+                if (serializer.canSerialize(serializer.context, input)) {
+                    if (try serializer.serialize(serializer.context, input, allocator)) |value| {
+                        can_serialize = true;
+                        try serialized_editors.append(.{
+                            .id = try allocator.dupe(u8, input.type_id),
+                            .value = @constCast(value),
+                        });
+                        try serializable_editors.append(input);
+                        if (self.preview == input) {
+                            serializable_preview = serializable_editors.items.len - 1;
+                        }
+                    }
+                }
+            }
+
+            if (!can_serialize and self.isSticky(.{ .index = index })) {
+                serializable_sticky -= 1;
+            }
+        }
+
+        var serializable_mru = std.array_list.Managed(usize).init(allocator);
+        errdefer serializable_mru.deinit();
+        for (self.mru.items) |input| {
+            if (self.indexOfIn(.{ .input = input }, serializable_editors.items, .{})) |index| {
+                try serializable_mru.append(index);
+            }
+        }
+
+        return .{
+            .id = self.id,
+            .locked = self.locked,
+            .editors = try serialized_editors.toOwnedSlice(),
+            .mru = try serializable_mru.toOwnedSlice(),
+            .preview = serializable_preview,
+            .sticky = if (serializable_sticky >= 0) serializable_sticky else null,
+        };
+    }
+
+    /// Mirrors upstream `deserialize`: restore editors through the registry,
+    /// drop inputs that cannot be deserialized while keeping sticky indexes
+    /// consistent, and rebuild the MRU/selection/preview state.
+    pub fn deserialize(
+        self: *EditorGroupModel,
+        data: SerializedEditorGroupModel,
+        registry: *editor_factory.EditorFactoryRegistry,
+    ) !void {
+        if (data.id > 0) {
+            self.id = data.id;
+            next_group_id = @max(next_group_id, data.id +% 1);
+        }
+        if (data.locked) self.locked = true;
+
+        var sticky = data.sticky;
+
+        for (data.editors, 0..) |serialized, index| {
+            var restored: ?*EditorInput = null;
+            if (registry.getEditorSerializerByType(serialized.id)) |serializer| {
+                restored = serializer.deserialize(serializer.context, serialized.value) catch null;
+            }
+
+            if (restored) |input| {
+                try self.registerEditorListeners(input);
+                try self.editors.append(input);
+            } else if (sticky != null and @as(isize, @intCast(index)) <= sticky.?) {
+                sticky = sticky.? - 1;
+            }
+        }
+
+        for (data.mru) |index| {
+            if (index < self.editors.items.len) {
+                try self.mru.append(self.editors.items[index]);
+            }
+        }
+
+        if (self.mru.items.len > 0) {
+            try self.selection.append(self.mru.items[0]);
+        }
+
+        if (data.preview) |index| {
+            if (index < self.editors.items.len) {
+                self.preview = self.editors.items[index];
+            }
+        }
+
+        if (sticky) |value| {
+            if (value >= 0) self.sticky = value;
+        }
+    }
+
+    /// Upstream constructs the model with an optional serialized group. This
+    /// is the same entry point for the terminal workbench.
+    pub fn initFromSerialized(
+        allocator: Allocator,
+        config: Configuration,
+        data: SerializedEditorGroupModel,
+        registry: *editor_factory.EditorFactoryRegistry,
+    ) !EditorGroupModel {
+        var model = try EditorGroupModel.init(allocator, config);
+        errdefer model.deinit();
+        try model.deserialize(data, registry);
+        return model;
     }
 
     /// Mirrors upstream `clone`: copies editors, MRU, selection, preview and

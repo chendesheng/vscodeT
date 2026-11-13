@@ -723,8 +723,12 @@ Library constraints:
   view/contribution set per file. `ui.Surface.paintFrame` paints without
   encoding ANSI and `ui.CellGrid.blit` copies the pane grid into the shell
   frame, so switching tabs reuses the one double-buffered frame diff instead of
-  clearing the screen. Each tab keeps its scroll position and decorations. The shell is a single editor group: splitting, tab
-  drag/drop, overflow menus and persisted tab state are not ported.
+  clearing the screen. Each tab keeps its scroll position and decorations.
+  Groups form a binary split tree; every pane gets its own tab row and active
+  view, and all panes are composited into one frame. Group state is serialized
+  through the workbench editor serializer registry; the JSON session stores
+  the group list and active group and restores splits as equal horizontal
+  splits. Dirty working copies are not persisted.
 
 ## 9. POC acceptance
 

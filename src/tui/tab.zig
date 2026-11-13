@@ -64,6 +64,24 @@ pub const Tab = struct {
         return self;
     }
 
+    /// Builds a tab around an input that already owns its editor, used when a
+    /// serialized group restores file inputs before the tab list is rebuilt.
+    pub fn initFromInput(allocator: Allocator, input: *FileEditorInput) !*Tab {
+        const self = try allocator.create(Tab);
+        errdefer allocator.destroy(self);
+
+        const view = try View.init(allocator, input.editor);
+        errdefer view.deinit();
+
+        self.* = .{
+            .allocator = allocator,
+            .editor = input.editor,
+            .view = view,
+            .input = input,
+        };
+        return self;
+    }
+
     /// Creates the editor contributions on first activation. The tab must have
     /// been attached to a view before any key/mouse event is routed to it.
     pub fn ensureControllers(self: *Tab) !void {

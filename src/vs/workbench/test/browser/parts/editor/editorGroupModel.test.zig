@@ -1704,3 +1704,198 @@ test "EditorGroupModel: transient basics" {
     try std.testing.expect(!group.isTransient(.{ .editor = input2 }));
     try std.testing.expectEqual(input2, events.transient.items[2].editor);
 }
+
+const editor_factory = @import("../../../../common/editor/editorFactory.zig");
+const TestSerializer = struct {
+    allocator: Allocator,
+    disable_serialize: bool = false,
+    disable_deserialize: bool = false,
+
+    fn interface(self: *TestSerializer) editor_factory.IEditorSerializer {
+        return .{
+            .context = self,
+            .canSerialize = canSerialize,
+            .serialize = serialize,
+            .deserialize = deserialize,
+        };
+    }
+
+    fn canSerialize(_: *anyopaque, input: *EditorInput) bool {
+        return toTest(input).kind == .serializable;
+    }
+
+    fn serialize(context: *anyopaque, input: *EditorInput, allocator: Allocator) anyerror!?[]const u8 {
+        const self: *TestSerializer = @ptrCast(@alignCast(context));
+        if (self.disable_serialize) return null;
+        return try allocator.dupe(u8, toTest(input).id);
+    }
+
+    fn deserialize(context: *anyopaque, data: []const u8) anyerror!?*EditorInput {
+        const self: *TestSerializer = @ptrCast(@alignCast(context));
+        if (self.disable_deserialize) return null;
+        const id = try self.allocator.dupe(u8, data);
+        return try newInput(self.allocator, .serializable, id, null);
+    }
+};
+
+fn testRegistry(allocator: Allocator, serializer: *TestSerializer) !editor_factory.EditorFactoryRegistry {
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    errdefer registry.deinit();
+    try registry.registerEditorSerializer("testEditorInputForGroups", serializer.interface());
+    return registry;
+}
+
+test "EditorGroupModel: group serialization" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var serializer = TestSerializer{ .allocator = allocator };
+    var registry = try testRegistry(allocator, &serializer);
+    defer registry.deinit();
+
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const input1 = try newInput(allocator, .serializable, "1", null);
+    const input2 = try newInput(allocator, .serializable, "2", null);
+    const input3 = try newInput(allocator, .serializable, "3", null);
+
+    _ = try group.openEditor(input1, .{ .pinned = true, .active = true });
+    _ = try group.openEditor(input2, .{ .pinned = true, .active = true });
+    _ = try group.openEditor(input3, .{ .pinned = false, .active = true });
+
+    {
+        var data = try group.serialize(allocator, &registry);
+        defer data.deinit(allocator);
+
+        var deserialized = try EditorGroupModel.initFromSerialized(allocator, .{}, data, &registry);
+        defer deserialized.deinit();
+
+        try std.testing.expectEqual(group.id, deserialized.id);
+        try std.testing.expectEqual(@as(usize, 3), deserialized.count());
+        try std.testing.expect(deserialized.isPinned(.{ .editor = input1 }));
+        try std.testing.expect(deserialized.isPinned(.{ .editor = input2 }));
+        try std.testing.expect(!deserialized.isPinned(.{ .editor = input3 }));
+        try std.testing.expect(deserialized.isActive(.{ .input = input3 }));
+    }
+
+    // Case 2: inputs cannot be serialized.
+    serializer.disable_serialize = true;
+    {
+        var data = try group.serialize(allocator, &registry);
+        defer data.deinit(allocator);
+        try std.testing.expectEqual(@as(usize, 0), data.editors.len);
+
+        var deserialized = try EditorGroupModel.initFromSerialized(allocator, .{}, data, &registry);
+        defer deserialized.deinit();
+        try std.testing.expectEqual(group.id, deserialized.id);
+        try std.testing.expectEqual(@as(usize, 0), deserialized.count());
+    }
+
+    // Case 3: inputs cannot be deserialized.
+    serializer.disable_serialize = false;
+    serializer.disable_deserialize = true;
+    {
+        var data = try group.serialize(allocator, &registry);
+        defer data.deinit(allocator);
+        try std.testing.expectEqual(@as(usize, 3), data.editors.len);
+
+        var deserialized = try EditorGroupModel.initFromSerialized(allocator, .{}, data, &registry);
+        defer deserialized.deinit();
+        try std.testing.expectEqual(group.id, deserialized.id);
+        try std.testing.expectEqual(@as(usize, 0), deserialized.count());
+    }
+}
+
+test "EditorGroupModel: group serialization (sticky editor)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var serializer = TestSerializer{ .allocator = allocator };
+    var registry = try testRegistry(allocator, &serializer);
+    defer registry.deinit();
+
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const input1 = try newInput(allocator, .serializable, "1", null);
+    const input2 = try newInput(allocator, .serializable, "2", null);
+    const input3 = try newInput(allocator, .serializable, "3", null);
+
+    _ = try group.openEditor(input1, .{ .pinned = true, .active = true });
+    _ = try group.openEditor(input2, .{ .pinned = true, .active = true });
+    _ = try group.openEditor(input3, .{ .pinned = false, .active = true });
+    _ = try group.stick(input2);
+
+    var data = try group.serialize(allocator, &registry);
+    defer data.deinit(allocator);
+
+    var deserialized = try EditorGroupModel.initFromSerialized(allocator, .{}, data, &registry);
+    defer deserialized.deinit();
+
+    try std.testing.expectEqual(group.id, deserialized.id);
+    try std.testing.expectEqual(@as(usize, 3), deserialized.count());
+    try std.testing.expect(deserialized.isPinned(.{ .editor = input1 }));
+    try std.testing.expect(!deserialized.isActive(.{ .input = input1 }));
+    try std.testing.expect(!deserialized.isSticky(.{ .editor = input1 }));
+    try std.testing.expect(deserialized.isPinned(.{ .editor = input2 }));
+    try std.testing.expect(deserialized.isSticky(.{ .editor = input2 }));
+    try std.testing.expect(!deserialized.isPinned(.{ .editor = input3 }));
+    try std.testing.expect(deserialized.isActive(.{ .input = input3 }));
+    try std.testing.expect(!deserialized.isSticky(.{ .editor = input3 }));
+}
+
+test "EditorGroupModel: group serialization (locked group)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var serializer = TestSerializer{ .allocator = allocator };
+    var registry = try testRegistry(allocator, &serializer);
+    defer registry.deinit();
+
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+    try group.lock(true);
+
+    var data = try group.serialize(allocator, &registry);
+    defer data.deinit(allocator);
+    var deserialized = try EditorGroupModel.initFromSerialized(allocator, .{}, data, &registry);
+    defer deserialized.deinit();
+    try std.testing.expectEqual(group.id, deserialized.id);
+    try std.testing.expect(deserialized.isLocked());
+}
+
+test "EditorGroupModel: serialization skips non-serializable editors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var serializer = TestSerializer{ .allocator = allocator };
+    var registry = try testRegistry(allocator, &serializer);
+    defer registry.deinit();
+
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const serializable1 = try newInput(allocator, .serializable, "1", null);
+    const non_serializable = try newInput(allocator, .non_serializable, "2", null);
+    const serializable2 = try newInput(allocator, .serializable, "3", null);
+
+    _ = try group.openEditor(serializable1, .{ .pinned = true, .active = true });
+    _ = try group.openEditor(non_serializable, .{ .pinned = false, .active = true });
+    _ = try group.openEditor(serializable2, .{ .pinned = true, .active = false });
+
+    var data = try group.serialize(allocator, &registry);
+    defer data.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), data.editors.len);
+
+    var deserialized = try EditorGroupModel.initFromSerialized(allocator, .{}, data, &registry);
+    defer deserialized.deinit();
+    try std.testing.expectEqual(@as(usize, 2), deserialized.count());
+    try std.testing.expect(deserialized.isPinned(.{ .editor = serializable1 }));
+    try std.testing.expect(deserialized.isPinned(.{ .editor = serializable2 }));
+    try std.testing.expect(deserialized.isActive(.{ .input = serializable2 }));
+}

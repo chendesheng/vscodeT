@@ -11,6 +11,7 @@ sudo apt install libonig-dev
 
 zig build        # build the TUI editor
 zig build run -- <file>...   # run the TUI editor on one or more files
+zig build run -- --session <file> [<file>...]  # restore/save the tab session
 zig build run -- --preview <file>   # read-only terminal UI preview
 zig build test   # run the editor and ui library tests
 ```
@@ -378,12 +379,28 @@ Editor contributions:
   ordered editors, MRU order, preview/pinned/sticky/transient state,
   multi-selection, close-next selection, lock, clone, and dirty/label/
   capability/will-dispose re-emission. The upstream `editorGroupModel.test.ts`
-  cases for this behavior are ported. Serialization/deserialization (needs the
-  editor factory registry), side-by-side/diff inputs, editor splitting and
-  tab drag-and-drop are not ported yet; the model keeps the upstream
-  serialized-group types for that follow-up. The terminal shell is a single
-  editor group with a composited tab row; there is no file picker yet, so the
-  initial tabs come from the command line.
+  cases for this behavior are ported.
+- The editor-groups service and split layout are ported:
+  `src/vs/workbench/services/editor/common/editorGroupsService.zig` provides
+  group creation/removal, active-group MRU ordering, typed `openEditor`
+  resolution with `revealIfOpen`/`revealIfVisible`/`ForceReveal`/`Singleton`,
+  and multi-group serialization. `src/tui/workbench.zig` renders a binary split
+  tree with a tab row per group and composites every pane into one frame;
+  `Alt-\` splits horizontally, `Alt-Shift-\` vertically, `Ctrl-Alt-Left` /
+  `Ctrl-Alt-Right` switch groups, and clicking a group activates it. A split
+  moves the active tab into the new group (independent view state for one
+  shared model still needs the model/view split).
+- Serialization/restore is ported at the model and TUI boundaries:
+  `src/vs/workbench/common/editor/editorFactory.zig` holds the editor
+  serializer registry, `EditorGroupModel.serialize`/`deserialize` rebuilds the
+  ordered group/MRU/preview/sticky state through registered serializers, and
+  `src/tui/session.zig` stores the group list and active group as JSON.
+  `--session <file>` restores them on startup and writes them back on exit; a
+  missing file falls back to the given paths. Split positions are restored as
+  equal horizontal splits. Dirty working copies are not persisted because the
+  working-copy backup service is not ported. Side-by-side/diff inputs, settings
+  editors and tab drag-and-drop are still not ported, and there is no file
+  picker yet.
 - Known limitations: `MoveLinesCommand` does not yet implement VS Code's
   `Full` auto-indent branch (plain line moves only); line sorting is bytewise
   rather than locale-aware; the overview-ruler/scrollbar column is

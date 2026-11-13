@@ -4,6 +4,7 @@ comptime {
     _ = @import("./tui/tabBar.zig");
     _ = @import("./tui/tab.zig");
     _ = @import("./tui/workbench.zig");
+    _ = @import("./tui/session.zig");
     _ = @import("./tui/hoverProvider.zig");
     _ = @import("./vs/base/common/cache.zig");
     _ = @import("./vs/base/common/event.zig");
@@ -49,6 +50,7 @@ comptime {
     _ = @import("./vs/editor/common/model/decorationProvider.zig");
     _ = @import("./vs/editor/common/model.zig");
     _ = @import("./vs/workbench/services/notification/common/notificationService.zig");
+    _ = @import("./vs/workbench/services/editor/common/editorGroupsService.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeBase.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBufferBuilder.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.zig");

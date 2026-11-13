@@ -15,6 +15,8 @@ const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
 const GroupIdentifier = editor_input.GroupIdentifier;
 const SaveResult = editor_input.SaveResult;
+const editor_factory = @import("../vs/workbench/common/editor/editorFactory.zig");
+const IEditorSerializer = editor_factory.IEditorSerializer;
 const Editor = @import("./editor.zig").Editor;
 
 pub const FileEditorInput = struct {
@@ -23,8 +25,8 @@ pub const FileEditorInput = struct {
     editor: *Editor,
     dirty_listener: Emitter(void).ListenerId,
 
-    /// Upstream `TextFileEditorInput` type id.
-    pub const TYPE_ID = "workbench.editors.files.textFileEditorInput";
+    /// Upstream `FILE_EDITOR_INPUT_ID`.
+    pub const TYPE_ID = "workbench.editors.files.fileEditorInput";
 
     pub fn init(allocator: Allocator, editor: *Editor) !*FileEditorInput {
         const self = try allocator.create(FileEditorInput);
@@ -89,6 +91,56 @@ pub const FileEditorInput = struct {
 
     fn onEditorDirty(_: void, self: *FileEditorInput) anyerror!void {
         try self.base.fireDirty();
+    }
+};
+
+/// Serializer for file inputs. Upstream `FileEditorInputSerializer` persists
+/// the resource, preferred resource/name/description/encoding/language id; the
+/// terminal editor has no separate preferred state yet, so the canonical path
+/// is the serialized value. Dirty buffers are not persisted (upstream restores
+/// those through working-copy backups, which are not ported).
+pub const FileEditorSerializer = struct {
+    allocator: Allocator,
+    io: std.Io,
+    width: usize,
+    height: usize,
+
+    pub fn init(allocator: Allocator, io: std.Io, width: usize, height: usize) FileEditorSerializer {
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .width = @max(width, 1),
+            .height = @max(height, 1),
+        };
+    }
+
+    pub fn interface(self: *FileEditorSerializer) IEditorSerializer {
+        return .{
+            .context = self,
+            .canSerialize = canSerialize,
+            .serialize = serialize,
+            .deserialize = deserialize,
+        };
+    }
+
+    fn canSerialize(_: *anyopaque, input: *EditorInput) bool {
+        return std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID);
+    }
+
+    fn serialize(_: *anyopaque, input: *EditorInput, allocator: Allocator) anyerror!?[]const u8 {
+        const resource = input.resource orelse return null;
+        return try allocator.dupe(u8, resource);
+    }
+
+    fn deserialize(context: *anyopaque, data: []const u8) anyerror!?*EditorInput {
+        const self: *FileEditorSerializer = @ptrCast(@alignCast(context));
+        const editor = Editor.create(self.allocator, self.io, data, self.width, self.height) catch return null;
+        errdefer {
+            editor.deinit();
+            self.allocator.destroy(editor);
+        }
+        const input = FileEditorInput.init(self.allocator, editor) catch return null;
+        return &input.base;
     }
 };
 
@@ -164,4 +216,27 @@ test "FileEditorInput drives the editor group model" {
     // emitters) are destroyed by the defers below.
     _ = try group.closeEditor(&input_a.base, .UNKNOWN, true);
     _ = try group.closeEditor(&input_b.base, .UNKNOWN, true);
+}
+
+test "FileEditorSerializer round-trips a path" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var serializer = FileEditorSerializer.init(allocator, io, 20, 5);
+    const ser = serializer.interface();
+
+    const editor = try Editor.createFromText(allocator, io, "alpha", "serialized.txt", 20, 5);
+    const input = try FileEditorInput.init(allocator, editor);
+    defer input.deinit();
+
+    try std.testing.expect(ser.canSerialize(ser.context, &input.base));
+    const value = (try ser.serialize(ser.context, &input.base, allocator)).?;
+    defer allocator.free(@constCast(value));
+    try std.testing.expectEqualStrings("serialized.txt", value);
+
+    const restored = (try ser.deserialize(ser.context, value)).?;
+    const restored_file: *FileEditorInput = @ptrCast(@alignCast(restored.impl.?));
+    defer restored_file.deinit();
+    try std.testing.expectEqualStrings("serialized.txt", restored_file.base.resource.?);
+    try std.testing.expect(!restored_file.base.isDirty());
 }
