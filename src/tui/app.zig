@@ -69,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
 
     const args = parseArgs(init.minimal.args, &paths) catch {
         std.debug.print(
-            "usage: zig <file>...\n       zig --session <file> [<file>...]\n       zig --preview <file>\n",
+            "usage: zig <folder> [<file>...]\n       zig <file>...\n       zig --session <file> [<folder>] [<file>...]\n       zig --preview <file>\n",
             .{},
         );
         return;
@@ -110,6 +110,38 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    var folders = ArrayList([]u8).init(allocator);
+    defer {
+        for (folders.items) |folder| allocator.free(folder);
+        folders.deinit();
+    }
+    var files = ArrayList([]const u8).init(allocator);
+    defer files.deinit();
+
+    const cwd = Io.Dir.cwd();
+    var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = cwd.realPath(io, &cwd_buffer) catch 0;
+    const cwd_path = cwd_buffer[0..cwd_len];
+
+    for (paths.items) |path| {
+        const stat = cwd.statFile(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (stat) |info| {
+            if (info.kind == .directory) {
+                try folders.append(try std.fs.path.resolveAlloc(allocator, &.{ cwd_path, path }));
+                continue;
+            }
+        }
+        try files.append(path);
+    }
+
+    if (args.session == null and folders.items.len == 0 and files.items.len == 0) {
+        std.debug.print("no files or folders to open\n", .{});
+        return;
+    }
+
     var file_serializer: ?FileEditorSerializer = null;
     var registry: ?EditorFactoryRegistry = null;
     if (args.session != null) {
@@ -143,22 +175,18 @@ pub fn main(init: std.process.Init) !void {
             };
 
             if (created) |candidate| {
-                if (candidate.tabCount() > 0) {
-                    workbench = candidate;
-                    restored = true;
-                } else {
-                    candidate.deinit();
-                }
+                workbench = candidate;
+                restored = true;
             }
         }
     }
 
     if (!restored) {
-        if (paths.items.len == 0) {
-            std.debug.print("no files to open and no restorable session\n", .{});
+        if (files.items.len == 0 and folders.items.len == 0) {
+            std.debug.print("no files or folders to open and no restorable session\n", .{});
             return;
         }
-        workbench = try Workbench.init(allocator, io, paths.items, size.width, size.height);
+        workbench = try Workbench.init(allocator, io, files.items, size.width, size.height);
     }
     defer workbench.deinit();
 
@@ -178,7 +206,15 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    try workbench.activeTab().?.ensureControllers();
+    if (folders.items.len > 0) {
+        try workbench.setWorkspaceFolders(folders.items);
+    }
+    try workbench.initSidebarFromWorkspace();
+    if (workbench.activeTab()) |active| {
+        try active.ensureControllers();
+    } else {
+        workbench.focusSidebar();
+    }
 
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
@@ -192,27 +228,29 @@ pub fn main(init: std.process.Init) !void {
 
     var needs_render = false;
     while (true) {
-        const active = workbench.activeTab() orelse return;
-        try active.ensureControllers();
-        const controllers = active.controllers.?;
-
         const now_ms = time_compat.milliTimestamp();
-        if (active.editor.inPlaceReplaceTick(now_ms)) needs_render = true;
-        if (controllers.hover.onTick(now_ms)) needs_render = true;
-        if (controllers.word_highlighter.onTick(now_ms)) needs_render = true;
-        if (try controllers.suggest.onTick(now_ms)) needs_render = true;
+        var timeout: i32 = 250;
+        if (workbench.activeTab()) |active| {
+            try active.ensureControllers();
+            const controllers = active.controllers.?;
 
-        var timeout = controllers.hover.pollTimeout(now_ms, 250);
-        if (active.editor.inPlaceReplacePollTimeout(now_ms)) |replace_timeout| {
-            timeout = @min(timeout, @as(i32, @intCast(@min(replace_timeout, 250))));
+            if (active.editor.inPlaceReplaceTick(now_ms)) needs_render = true;
+            if (controllers.hover.onTick(now_ms)) needs_render = true;
+            if (controllers.word_highlighter.onTick(now_ms)) needs_render = true;
+            if (try controllers.suggest.onTick(now_ms)) needs_render = true;
+
+            timeout = controllers.hover.pollTimeout(now_ms, 250);
+            if (active.editor.inPlaceReplacePollTimeout(now_ms)) |replace_timeout| {
+                timeout = @min(timeout, @as(i32, @intCast(@min(replace_timeout, 250))));
+            }
+            if (controllers.word_highlighter.pollTimeout(now_ms)) |word_timeout| {
+                timeout = @min(timeout, @as(i32, @intCast(@min(word_timeout, 250))));
+            }
+            if (controllers.suggest.pollTimeout(now_ms)) |suggest_timeout| {
+                timeout = @min(timeout, @as(i32, @intCast(@min(suggest_timeout, 250))));
+            }
+            if (needs_render) timeout = 0;
         }
-        if (controllers.word_highlighter.pollTimeout(now_ms)) |word_timeout| {
-            timeout = @min(timeout, @as(i32, @intCast(@min(word_timeout, 250))));
-        }
-        if (controllers.suggest.pollTimeout(now_ms)) |suggest_timeout| {
-            timeout = @min(timeout, @as(i32, @intCast(@min(suggest_timeout, 250))));
-        }
-        if (needs_render) timeout = 0;
 
         const ready = try tui.pollInput(timeout);
         var resized = false;
@@ -225,9 +263,10 @@ pub fn main(init: std.process.Init) !void {
 
         if (!ready) {
             if (resized or needs_render) {
-                const current = workbench.activeTab() orelse return;
-                current.onEditorChanged(now_ms);
-                try current.view.refresh();
+                if (workbench.activeTab()) |current| {
+                    current.onEditorChanged(now_ms);
+                    try current.view.refresh();
+                }
                 try workbench.render(out);
                 try workbench.syncCursor(out);
                 try out.flush();
@@ -245,20 +284,23 @@ pub fn main(init: std.process.Init) !void {
         for (events.items) |*item| {
             switch (item.*) {
                 .key => |*event| {
-                    const current = workbench.activeTab() orelse return;
-                    try current.ensureControllers();
-
                     if (isCtrlQ(event.*)) {
                         if (workbench.requestQuit()) return;
                         continue;
                     }
                     workbench.clearQuitArmed();
 
+                    if (try workbench.handleSidebarKey(event)) continue;
+
                     switch (try workbench.handleTabKey(event)) {
                         .quit => return,
                         .handled => continue,
-                        .unhandled => current.editor.clearCloseTabArmed(),
+                        .unhandled => {},
                     }
+
+                    const current = workbench.activeTab() orelse continue;
+                    try current.ensureControllers();
+                    current.editor.clearCloseTabArmed();
 
                     const tab_controllers = current.controllers.?;
                     if (try handleKeyEvent(
@@ -274,11 +316,12 @@ pub fn main(init: std.process.Init) !void {
                     )) return;
                 },
                 .mouse => |*event| {
+                    if (workbench.handleSidebarMouse(event)) continue;
                     if (workbench.handleTabMouse(event)) continue;
                     workbench.clearQuitArmed();
 
                     var adjusted = workbench.editorMouseEvent(event.*) orelse continue;
-                    const current = workbench.activeTab() orelse return;
+                    const current = workbench.activeTab() orelse continue;
                     if (event.kind == .down) current.editor.clearCloseTabArmed();
                     const tab_controllers = current.controllers orelse blk: {
                         try current.ensureControllers();
@@ -298,9 +341,10 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        const current = workbench.activeTab() orelse return;
-        current.onEditorChanged(time_compat.milliTimestamp());
-        try current.view.refresh();
+        if (workbench.activeTab()) |current| {
+            current.onEditorChanged(time_compat.milliTimestamp());
+            try current.view.refresh();
+        }
         try tui.hideCursor(out);
         try workbench.render(out);
         try workbench.syncCursor(out);

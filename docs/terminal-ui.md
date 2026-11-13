@@ -729,6 +729,23 @@ Library constraints:
   through the workbench editor serializer registry; the JSON session stores
   the group list and active group and restores splits as equal horizontal
   splits. Dirty working copies are not persisted.
+- Workspace roots come from the portable `Workspace` /
+  `WorkspaceContextService` models (`src/vs/platform/workspace/common/` and
+  `src/vs/workbench/services/workspaces/common/`). The CLI classifies directory
+  arguments as workspace folders and file arguments as initial editors;
+  `ExplorerModel` creates one root per workspace folder. The workbench starts
+  with an empty editor group when only a folder is opened.
+- The Explorer sidebar is a direct cell-painted TUI view
+  (`src/tui/sidebar.zig`) over `ExplorerModel`/`ExplorerItem` from
+  `src/vs/workbench/contrib/files/common/explorerModel.zig`: lazy directory
+  resolution, directories-first ordering, expand/collapse, selection and
+  scroll. The workbench reserves a fixed left activity column and sidebar
+  column and offsets the editor split root; a click or Enter on a file calls
+  `Workbench.openPath`. `src/tui/activityBar.zig` switches fixed Explorer,
+  Search and Settings containers (the latter two are placeholders). This is
+  not the browser `ExplorerView`/tree widget or registered view-container
+  service port; file watching, resizing, context menus and real Search/Settings
+  views are not ported.
 
 ## 9. POC acceptance
 

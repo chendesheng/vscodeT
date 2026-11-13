@@ -27,6 +27,11 @@ const Editor = @import("./editor.zig").Editor;
 const View = @import("./view.zig").View;
 const ViewCell = @import("./view.zig").Cell;
 const tab_bar = @import("./tabBar.zig");
+const Sidebar = @import("./sidebar.zig").Sidebar;
+const activity_bar_mod = @import("./activityBar.zig");
+const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
+const WorkspaceContextService = workspace_context.WorkspaceContextService;
+const ActivityBar = activity_bar_mod.ActivityBar;
 const group_mod = @import("../vs/workbench/common/editor/editorGroupModel.zig");
 const editor_groups = @import("../vs/workbench/services/editor/common/editorGroupsService.zig");
 const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
@@ -34,6 +39,7 @@ const EditorInput = editor_input.EditorInput;
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = enum { horizontal, vertical };
+pub const Focus = enum { editor, sidebar };
 
 const LayoutNode = struct {
     kind: union(enum) {
@@ -97,6 +103,13 @@ pub const Workbench = struct {
     panes: std.array_list.Managed(*GroupPane),
     layout: *LayoutNode,
     frame: ui.Frame,
+    sidebar: ?*Sidebar = null,
+    sidebar_visible: bool = false,
+    sidebar_width: usize = 28,
+    activity_bar: ActivityBar = .{},
+    active_activity: usize = 0,
+    workspace: *WorkspaceContextService,
+    focus: Focus = .editor,
     is_pasting: bool = false,
     quit_armed: bool = false,
 
@@ -117,6 +130,13 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
+        self.focus = .editor;
+        self.sidebar = null;
+        self.sidebar_visible = false;
+        self.sidebar_width = 28;
+        self.activity_bar = .{};
+        self.active_activity = 0;
+        self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
@@ -167,6 +187,13 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
+        self.focus = .editor;
+        self.sidebar = null;
+        self.sidebar_visible = false;
+        self.sidebar_width = 28;
+        self.activity_bar = .{};
+        self.active_activity = 0;
+        self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
@@ -228,6 +255,13 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
+        self.focus = .editor;
+        self.sidebar = null;
+        self.sidebar_visible = false;
+        self.sidebar_width = 28;
+        self.activity_bar = .{};
+        self.active_activity = 0;
+        self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
 
         self.service = try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, data, registry, .{});
         errdefer self.service.deinit();
@@ -295,6 +329,8 @@ pub const Workbench = struct {
         // Dispose the service (and unregister editor listeners) before tab
         // inputs/emitters are destroyed.
         self.service.deinit();
+        if (self.sidebar) |sidebar| sidebar.deinit();
+        self.workspace.deinit();
         for (self.panes.items) |pane| {
             for (pane.tabs.items) |tab| tab.deinit();
             pane.deinit();
@@ -346,13 +382,109 @@ pub const Workbench = struct {
         self.allocator.destroy(node);
     }
 
+    fn sidebarWidth(self: *const Workbench) usize {
+        const max_width = @max(self.cols / 2, 10);
+        return @min(self.sidebar_width, @max(max_width, 1));
+    }
+
+    const activity_width: usize = 3;
+
+    fn sidebarShown(self: *const Workbench) bool {
+        return self.sidebar_visible and self.sidebar != null and
+            activity_width + self.sidebarWidth() + 8 < self.cols;
+    }
+
+    fn activityRect(self: *const Workbench) ui.Rect {
+        return .{
+            .x = 0,
+            .y = 0,
+            .w = @floatFromInt(activity_width),
+            .h = @floatFromInt(self.rows),
+        };
+    }
+
+    fn sidebarRect(self: *const Workbench) ui.Rect {
+        return .{
+            .x = @floatFromInt(activity_width),
+            .y = 0,
+            .w = @floatFromInt(self.sidebarWidth()),
+            .h = @floatFromInt(self.rows),
+        };
+    }
+
+    /// Sets the workspace folders and rebuilds the Explorer roots. Upstream
+    /// the workspace context service is set by the workbench startup; here the
+    /// CLI folder arguments replace the empty workspace.
+    pub fn setWorkspaceFolders(self: *Workbench, folders: []const []const u8) !void {
+        const replacement = try WorkspaceContextService.initWithFolders(self.allocator, "workspace", folders);
+        if (self.sidebar) |sidebar| {
+            sidebar.deinit();
+            self.sidebar = null;
+        }
+        self.workspace.deinit();
+        self.workspace = replacement;
+    }
+
+    /// Test/standalone helper: set a single-folder workspace and open the
+    /// Explorer on it.
+    pub fn initSidebar(self: *Workbench, root_path: []const u8) !void {
+        try self.setWorkspaceFolders(&.{root_path});
+        try self.initSidebarFromWorkspace();
+    }
+
+    pub fn initSidebarFromWorkspace(self: *Workbench) !void {
+        if (self.sidebar != null) return;
+        self.sidebar = try Sidebar.init(self.allocator, self.io, self.workspace);
+        self.sidebar_visible = true;
+        self.active_activity = 0;
+        self.layoutAll();
+    }
+
+    pub fn showActivity(self: *Workbench, index: usize) !void {
+        if (index >= self.activity_bar.count()) return;
+        if (self.sidebar == null) try self.initSidebarFromWorkspace();
+        self.active_activity = index;
+        self.sidebar_visible = true;
+        self.focus = .sidebar;
+        self.layoutAll();
+    }
+
+    pub fn toggleSidebar(self: *Workbench) !void {
+        if (self.sidebar == null) {
+            try self.initSidebarFromWorkspace();
+            self.focus = .sidebar;
+            return;
+        }
+        self.sidebar_visible = !self.sidebar_visible;
+        self.focus = if (self.sidebar_visible) .sidebar else .editor;
+        self.layoutAll();
+    }
+
+    pub fn focusSidebar(self: *Workbench) void {
+        if (!self.sidebarShown()) return;
+        self.focus = .sidebar;
+    }
+
+    pub fn focusEditor(self: *Workbench) void {
+        self.focus = .editor;
+    }
+
     fn layoutAll(self: *Workbench) void {
-        const rect = ui.Rect{
+        var rect = ui.Rect{
             .x = 0,
             .y = 0,
             .w = @floatFromInt(self.cols),
             .h = @floatFromInt(self.rows),
         };
+        if (self.sidebarShown()) {
+            const width = self.sidebarWidth();
+            rect = .{
+                .x = @floatFromInt(activity_width + width + 1),
+                .y = 0,
+                .w = @floatFromInt(self.cols - activity_width - width - 1),
+                .h = @floatFromInt(self.rows),
+            };
+        }
         self.computeLayout(self.layout, rect);
         for (self.panes.items) |pane| {
             for (pane.tabs.items) |tab| {
@@ -619,10 +751,8 @@ pub const Workbench = struct {
     }
 
     pub fn closeActive(self: *Workbench) !bool {
-        const pane = self.activePane() orelse return true;
-        const tab = pane.activeTab() orelse {
-            return self.tabCount() == 0;
-        };
+        const pane = self.activePane() orelse return false;
+        const tab = pane.activeTab() orelse return false;
 
         if (!tab.editor.requestCloseTab()) return false;
 
@@ -635,7 +765,7 @@ pub const Workbench = struct {
         }
         tab.deinit();
 
-        if (self.tabCount() == 0) return true;
+        if (self.tabCount() == 0) return false;
 
         if (pane.tabs.items.len == 0) {
             const groups = try self.service.getGroups(self.allocator, .MOST_RECENTLY_ACTIVE);
@@ -761,7 +891,76 @@ pub const Workbench = struct {
         return null;
     }
 
+    pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+        if (isCtrlChar(event, 'b')) {
+            try self.toggleSidebar();
+            return true;
+        }
+
+        if (self.focus != .sidebar or !self.sidebarShown()) return false;
+        if (self.sidebar == null) return false;
+
+        if (event.key == .escape) {
+            self.focus = .editor;
+            return true;
+        }
+
+        if (event.mods.alt and !event.mods.ctrl and !event.mods.shift) {
+            switch (event.key) {
+                .char => |ch| {
+                    if (ch >= '1' and ch <= '9') {
+                        try self.showActivity(ch - '1');
+                        return true;
+                    }
+                },
+                else => {},
+            }
+        }
+
+        if (self.active_activity != 0) {
+            if (event.key == .up) try self.showActivity(@mod(self.active_activity + self.activity_bar.count() - 1, self.activity_bar.count()));
+            if (event.key == .down) try self.showActivity(@mod(self.active_activity + 1, self.activity_bar.count()));
+            return true;
+        }
+
+        switch (try self.sidebar.?.handleKey(event)) {
+            .open => |path| {
+                try self.openPath(path);
+                self.focus = .editor;
+                return true;
+            },
+            .handled, .none => return true,
+        }
+    }
+
+    pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        if (!self.sidebarShown()) return false;
+
+        if (event.x < activity_width) {
+            if (event.kind == .down) {
+                if (self.activity_bar.hitAt(event.x, event.y, self.activityRect())) |index| {
+                    self.showActivity(index) catch {};
+                }
+            }
+            return true;
+        }
+
+        if (event.x > activity_width + self.sidebarWidth()) return false;
+        if (event.kind == .down) self.focus = .sidebar;
+        if (self.active_activity != 0) return true;
+
+        const sidebar = self.sidebar orelse return false;
+        if (event.kind == .down) {
+            if (sidebar.handleClick(event.x, event.y) catch null) |path| {
+                self.openPath(path) catch {};
+                self.focus = .editor;
+            }
+        }
+        return true;
+    }
+
     pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        if (self.sidebarShown() and event.x <= activity_width + self.sidebarWidth()) return false;
         const pane = self.paneAt(event.x, event.y) orelse return false;
         if (ui.cell.snap(pane.rect.y) != event.y) {
             if (pane.tabs.items.len > 0 and event.kind == .down) {
@@ -782,6 +981,7 @@ pub const Workbench = struct {
     /// Converts a terminal mouse position inside a pane into editor-relative
     /// coordinates, or null when the event belongs to a tab row.
     pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?ui.MouseEvent {
+        if (self.sidebarShown() and event.x <= activity_width + self.sidebarWidth()) return null;
         const pane = self.paneAt(event.x, event.y) orelse return null;
         if (pane.group != self.service.activeGroup()) return null;
         if (event.y == ui.cell.snap(pane.rect.y)) return null;
@@ -795,6 +995,27 @@ pub const Workbench = struct {
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
         self.frame.begin();
+
+        if (self.sidebarShown()) {
+            const focused = self.focus == .sidebar;
+            self.activity_bar.render(&self.frame.next, self.activityRect(), self.active_activity, focused);
+            if (self.active_activity == 0) {
+                if (self.sidebar) |sidebar| {
+                    try sidebar.render(&self.frame.next, self.sidebarRect(), focused);
+                }
+            } else {
+                self.renderPlaceholder(self.sidebarRect(), focused);
+            }
+
+            const divider_x = activity_width + self.sidebarWidth();
+            const style = ui.cell.PaintStyle{
+                .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
+            };
+            var row: usize = 0;
+            while (row < self.rows) : (row += 1) {
+                self.frame.next.putCodepoint(divider_x, row, '│', 1, style);
+            }
+        }
 
         for (self.panes.items) |pane| {
             try self.renderPane(pane);
@@ -856,6 +1077,30 @@ pub const Workbench = struct {
         }
     }
 
+    fn renderPlaceholder(self: *Workbench, rect: ui.Rect, focused: bool) void {
+        const x = ui.cell.snap(rect.x);
+        const y = ui.cell.snap(rect.y);
+        const width = ui.cell.snap(rect.w);
+        const height = ui.cell.snap(rect.h);
+        if (width == 0 or height == 0) return;
+
+        const bg = ui.cell.PaintStyle{
+            .fg = ui.cell.packColor(.{ .r = 190, .g = 190, .b = 190 }),
+            .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }),
+        };
+        const header = if (self.active_activity == 1) " SEARCH " else " SETTINGS ";
+        const title = if (self.active_activity == 1) "Search view is not ported yet" else "Settings view is not ported yet";
+        self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
+        const header_style = ui.cell.PaintStyle{
+            .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
+            .bg = ui.cell.packColor(.{ .r = 38, .g = 38, .b = 42 }),
+        };
+        self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style);
+        drawPlainText(&self.frame.next, x + 1, y, width - 2, header, header_style);
+        drawPlainText(&self.frame.next, x + 2, y + 2, width -| 3, title, bg);
+        _ = focused;
+    }
+
     fn renderDividers(self: *Workbench, node: *LayoutNode) void {
         switch (node.kind) {
             .leaf => {},
@@ -885,6 +1130,7 @@ pub const Workbench = struct {
     }
 
     pub fn cursorCell(self: *Workbench) ?ViewCell {
+        if (self.focus == .sidebar) return null;
         const pane = self.activePane() orelse return null;
         const active = pane.activeTab() orelse return null;
         const cell = active.view.cursorCell() orelse return null;
@@ -924,6 +1170,19 @@ pub const Workbench = struct {
         }
     }
 };
+
+fn drawPlainText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []const u8, paint: ui.cell.PaintStyle) void {
+    var col = x;
+    var offset: usize = 0;
+    while (offset < text.len and col < x + max_width) {
+        const decoded = ui.dom.decodeAt(text, offset);
+        const width = ui.dom.defaultMeasureWidth(decoded.cp);
+        if (col + width > x + max_width) break;
+        grid.putCodepoint(col, y, decoded.cp, width, paint);
+        col += width;
+        offset += decoded.len;
+    }
+}
 
 fn isCtrlChar(event: *const ui.KeyEvent, wanted: u21) bool {
     if (!event.mods.ctrl or event.mods.alt or event.mods.shift) return false;
@@ -978,7 +1237,8 @@ test "Workbench: opens two files, switches tabs and closes them" {
     try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.base.getName());
-    try std.testing.expectEqual(TabKeyResult.quit, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 }
 
 test "Workbench: split moves the active tab into a second group" {
@@ -1116,4 +1376,120 @@ test "Workbench: serialize and restore multiple groups" {
     try restored.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "part_a.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "part_b.txt") != null);
+}
+
+test "Workbench: sidebar renders and opens a file" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "side_a.txt", "alpha");
+    defer allocator.free(path_a);
+
+    const workbench = try Workbench.init(allocator, io, &.{path_a}, 70, 12);
+    defer workbench.deinit();
+
+    // Put the sidebar at the temp root and create the file it should open.
+    var sidebar_file = try tmp.dir.createFile(io, "side_open.txt", .{});
+    try sidebar_file.writeStreamingAll(io, "opened from sidebar");
+    sidebar_file.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    try workbench.initSidebar(root);
+    workbench.focusSidebar();
+    try std.testing.expect(workbench.panes.items[0].rect.x > 0);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXPLORER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "side_open.txt") != null);
+
+    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 3 };
+    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqualStrings("side_open.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+
+    const ctrl_b = ui.KeyEvent{ .key = .{ .char = 'b' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try workbench.handleSidebarKey(&ctrl_b));
+    try std.testing.expect(!workbench.sidebar_visible);
+    try std.testing.expect(try workbench.handleSidebarKey(&ctrl_b));
+    try std.testing.expect(workbench.sidebar_visible);
+}
+
+test "Workbench: activity bar switches view containers" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "activity.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    try workbench.initSidebar(root);
+    workbench.focusSidebar();
+
+    const search_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 2 };
+    try std.testing.expect(workbench.handleSidebarMouse(&search_click));
+    try std.testing.expectEqual(@as(usize, 1), workbench.active_activity);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "SEARCH") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "Search view is not ported") != null);
+
+    const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 3 };
+    try std.testing.expect(workbench.handleSidebarMouse(&settings_click));
+    try std.testing.expectEqual(@as(usize, 2), workbench.active_activity);
+
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "SETTINGS") != null);
+
+    const alt_1 = ui.KeyEvent{ .key = .{ .char = '1' }, .mods = .{ .alt = true } };
+    try std.testing.expect(try workbench.handleSidebarKey(&alt_1));
+    try std.testing.expectEqual(@as(usize, 0), workbench.active_activity);
+}
+
+test "Workbench: opens a folder workspace with no initial tabs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try tmp.dir.createFile(io, "folder_file.txt", .{});
+    try file.writeStreamingAll(io, "from folder");
+    file.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 12);
+    defer workbench.deinit();
+    try workbench.setWorkspaceFolders(&.{root});
+    try workbench.initSidebarFromWorkspace();
+    workbench.focusSidebar();
+
+    try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
+    try std.testing.expect(workbench.activeTab() == null);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXPLORER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "folder_file.txt") != null);
+
+    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 2 };
+    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expectEqualStrings("folder_file.txt", workbench.activeTab().?.input.base.getName());
 }

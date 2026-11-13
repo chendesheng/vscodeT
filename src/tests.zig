@@ -2,6 +2,8 @@ comptime {
     _ = @import("./tui/preview.zig");
     _ = @import("./tui/editorInput.zig");
     _ = @import("./tui/tabBar.zig");
+    _ = @import("./tui/sidebar.zig");
+    _ = @import("./tui/activityBar.zig");
     _ = @import("./tui/tab.zig");
     _ = @import("./tui/workbench.zig");
     _ = @import("./tui/session.zig");
@@ -51,6 +53,11 @@ comptime {
     _ = @import("./vs/editor/common/model.zig");
     _ = @import("./vs/workbench/services/notification/common/notificationService.zig");
     _ = @import("./vs/workbench/services/editor/common/editorGroupsService.zig");
+    _ = @import("./vs/workbench/contrib/files/common/explorerModel.zig");
+    _ = @import("./vs/workbench/contrib/files/test/browser/explorerModel.test.zig");
+    _ = @import("./vs/workbench/services/views/common/viewContainerModel.zig");
+    _ = @import("./vs/workbench/services/workspaces/common/workspaceContextService.zig");
+    _ = @import("./vs/workbench/services/views/test/browser/viewContainerModel.test.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeBase.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBufferBuilder.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.zig");

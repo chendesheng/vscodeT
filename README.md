@@ -10,8 +10,9 @@ brew install oniguruma
 sudo apt install libonig-dev
 
 zig build        # build the TUI editor
-zig build run -- <file>...   # run the TUI editor on one or more files
-zig build run -- --session <file> [<file>...]  # restore/save the tab session
+zig build run -- <folder> [<file>...]   # open a workspace folder and files
+zig build run -- <file>...   # open files in an empty workspace
+zig build run -- --session <file> [<folder>] [<file>...]  # restore/save the tab session
 zig build run -- --preview <file>   # read-only terminal UI preview
 zig build test   # run the editor and ui library tests
 ```
@@ -55,6 +56,28 @@ Notes for the Zig 0.17 port:
   activates a tab by position, `Ctrl-S` saves and `Ctrl-Q` quits (a second
   `Ctrl-Q` is required while any tab is dirty). `--preview` remains a
   single-file mode.
+- A terminal Explorer sidebar (`src/tui/sidebar.zig`) sits left of the editor
+  area over the ported `ExplorerModel`
+  (`src/vs/workbench/contrib/files/common/explorerModel.zig`). It lists the
+  current working directory lazily, directories first, expands/collapses with
+  `Right`/`Left` or a click, moves with `Up`/`Down`, and opens a file on
+  `Enter` or a click through the same cross-group `openPath` path as the tab
+  model. `Ctrl-B` toggles the side panel and `Escape` returns focus to the
+  editor.
+- A minimal activity bar (`src/tui/activityBar.zig`) switches between Explorer,
+  Search and Settings containers. Explorer is wired to the file tree; Search
+  and Settings are placeholders until their contributions are ported.
+  `Alt-1..3` switches containers while the side panel has focus. The width is
+  fixed for now; there is no registered activity-bar/view-container service,
+  file watching, context menu or drag-and-drop.
+- Folder opening follows the workspace model: a directory argument stat'd from
+  the CLI becomes a `Workspace` folder through
+  `src/vs/platform/workspace/common/workspace.zig` and
+  `src/vs/workbench/services/workspaces/common/workspaceContextService.zig`.
+  `ExplorerModel` builds its roots from `getWorkspace().folders`, so opening a
+  folder shows that folder as the Explorer root and starts with an empty
+  editor group; files on the command line still open as tabs. Opening only
+  files uses an empty workspace, as upstream does.
 - The editor is rendered through the library (`src/tui/view.zig`): text,
   syntax colors, right-aligned line numbers, wrapped-line markers, selections,
   the current line, a hardware cursor and the status row. The
