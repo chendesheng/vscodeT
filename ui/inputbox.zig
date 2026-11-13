@@ -33,6 +33,10 @@ pub const InputBox = struct {
     view_start: usize = 0,
     focused: bool = false,
     placeholder: []const u8 = "",
+    /// Show the placeholder even while the box is focused and empty. The
+    /// quick pick uses this; the find bar keeps the browser-like behavior
+    /// where a focused empty box shows only its caret.
+    placeholder_when_focused: bool = false,
     color: ?Color = null,
     placeholder_color: ?Color = null,
     /// The node built for the last frame, used to map pointer cells back into
@@ -152,7 +156,7 @@ pub const InputBox = struct {
             .mouse_move = onMouse,
         });
 
-        if (self.value.items.len == 0 and !self.focused) {
+        if (self.value.items.len == 0 and (!self.focused or self.placeholder_when_focused)) {
             if (self.placeholder.len > 0) {
                 try appendText(doc, root, self.placeholder, .{
                     .color = self.placeholder_color,
@@ -359,6 +363,31 @@ test "InputBox: build paints the value and a block caret" {
     const grid = surface.grid();
     try std.testing.expect(grid.attrs[grid.index(2, 0)] & cell.Attr.inverse != 0);
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 0)] & cell.Attr.inverse);
+}
+
+test "InputBox: placeholder can show while focused" {
+    const allocator = std.testing.allocator;
+    const Surface = @import("surface.zig").Surface;
+
+    var surface = try Surface.init(allocator, .{ .cols = 16, .rows = 1 });
+    defer surface.deinit();
+
+    var input = InputBox.init(allocator);
+    defer input.deinit();
+    input.placeholder = "Search files";
+    input.placeholder_when_focused = true;
+    input.focused = true;
+
+    const root = try input.build(surface.document(), 16);
+    surface.document().setRoot(root);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try surface.render(&out.writer, .{});
+
+    const row = try surface.grid().rowText(allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.startsWith(u8, row, "Search files"));
 }
 
 test "InputBox: placeholder shows while empty and unfocused" {

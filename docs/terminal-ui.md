@@ -579,6 +579,20 @@ Library constraints:
   (`top_right_corner`, `bottom_right_corner`, `top_center`); the view restores
   focus after every rebuild. `View.dispatchKey` forwards decoded keys through
   the widget document first, so a focused widget owns the keyboard.
+- Quick open is a workbench-level overlay, not an editor overlay. The
+  controller (`src/vs/platform/quickinput/browser/quickAccess.zig`) owns one
+  persistent `QuickPick` model and selects a provider from
+  `src/vs/platform/quickinput/common/quickAccess.zig`; the terminal view
+  (`src/tui/quickInput.zig`) renders the input row with a one-row `ui.Surface`
+  and paints the list rows directly into the workbench grid. The workbench
+  composites it after every pane and the tab strip, and hides the hardware
+  cursor while it is open. `Ctrl-P` opens Go to File, `>` switches to the
+  command provider, and `Alt-P` opens the command provider directly because a
+  terminal cannot distinguish `Ctrl-Shift-P`. The workspace file index is a
+  TUI adapter (`src/tui/fileIndex.zig`) because there is no search service or
+  `.gitignore` handling in this port. Icons, buttons, keybinding labels,
+  virtualized lists, symbol/go-to-line/link providers and the browser
+  `fuzzyScorer.ts` path-aware scorer are not ported.
 - Content widgets use the terminal adaptation of upstream `IContentWidget`: the
   widget reports a model position plus an `above`/`below` preference, and
   `View.buildContentWidgets` converts it with the view model
@@ -807,7 +821,9 @@ Library constraints:
    generic scroll and selector machinery is not.
 6. Replace the adapter with a port of `viewModelImpl.ts` +
    `CursorsController`; port edit context/controllers; then the remaining
-   widgets and contributions (suggest, quick pick, marker/glyph hover).
+   widgets and contributions (marker/glyph hover, and the quick-pick list's
+   icons/buttons/virtualization). The workbench quick-open overlay, file and
+   command providers, and their terminal view are in.
 
 ## 11. Testing strategy
 

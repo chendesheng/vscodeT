@@ -309,4 +309,25 @@ comptime {
     _ = @import("./vs/editor/contrib/smartSelect/test/browser/smartSelect.test.zig");
     _ = @import("./vs/editor/contrib/inPlaceReplace/test/browser/inPlaceReplace.test.zig");
     _ = @import("./vs/workbench/test/browser/parts/editor/editorGroupModel.test.zig");
+    _ = @import("./vs/base/common/filters.zig");
+    _ = @import("./vs/platform/commands/common/commands.zig");
+    _ = @import("./vs/platform/commands/test/common/commands.test.zig");
+    _ = @import("./vs/platform/quickinput/common/quickInput.zig");
+    _ = @import("./vs/platform/quickinput/browser/quickInput.zig");
+    _ = @import("./vs/platform/quickinput/test/browser/quickinput.test.zig");
+    _ = @import("./vs/platform/quickinput/common/quickAccess.zig");
+    _ = @import("./vs/platform/quickinput/browser/quickAccess.zig");
+    _ = @import("./vs/platform/quickinput/browser/pickerQuickAccess.zig");
+    _ = @import("./vs/platform/quickinput/browser/commandsQuickAccess.zig");
+    _ = @import("./vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.zig");
+    _ = @import("./vs/workbench/contrib/quickaccess/test/browser/commandsQuickAccess.test.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/anythingQuickAccess.zig");
+    _ = @import("./vs/workbench/contrib/search/test/browser/anythingQuickAccess.test.zig");
+    _ = @import("./vs/workbench/services/history/common/history.zig");
+    _ = @import("./vs/workbench/services/history/test/browser/historyService.test.zig");
+    _ = @import("./vs/workbench/test/browser/quickAccess.test.zig");
+    _ = @import("./tui/commands.zig");
+    _ = @import("./tui/fileIndex.zig");
+    _ = @import("./tui/quickInput.zig");
+    _ = @import("./tui/quickAccess.zig");
 }

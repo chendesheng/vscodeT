@@ -229,6 +229,7 @@ pub fn main(init: std.process.Init) !void {
     var needs_render = false;
     while (true) {
         const now_ms = time_compat.milliTimestamp();
+        if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
         var timeout: i32 = 250;
         if (workbench.activeTab()) |active| {
             try active.ensureControllers();
@@ -251,6 +252,7 @@ pub fn main(init: std.process.Init) !void {
             }
             if (needs_render) timeout = 0;
         }
+        if (workbench.quickAccessWantsTick()) timeout = 0;
 
         const ready = try tui.pollInput(timeout);
         var resized = false;
@@ -290,6 +292,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                     workbench.clearQuitArmed();
 
+                    if (try workbench.handleQuickAccessKey(event)) continue;
                     if (try workbench.handleSidebarKey(event)) continue;
 
                     switch (try workbench.handleTabKey(event)) {
@@ -316,6 +319,7 @@ pub fn main(init: std.process.Init) !void {
                     )) return;
                 },
                 .mouse => |*event| {
+                    if (workbench.handleQuickAccessMouse(event)) continue;
                     if (workbench.handleSidebarMouse(event)) continue;
                     if (workbench.handleTabMouse(event)) continue;
                     workbench.clearQuitArmed();

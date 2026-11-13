@@ -91,6 +91,22 @@ Notes for the Zig 0.17 port:
   whole word and regex, Alt-P toggles preserve case, Alt-L limits the search to
   the current selection(s), Alt-Enter selects all matches, and Ctrl-Alt-Enter
   replaces all. The bar shows the match position/count and option state.
+- Quick open is wired through `src/tui/quickAccess.zig`: `Ctrl-P` opens
+  "Go to File" with recent editors first and workspace files as the query is
+  typed, and typing `>` switches to the command selector. The command selector
+  is also bound to `Alt-P` because a plain terminal reports `Ctrl-Shift-P` as
+  `Ctrl-P`; the action metadata keeps the upstream command ids and labels. Up,
+  Down, PageUp/PageDown, Ctrl-Home/Ctrl-End navigate, Enter accepts, Escape or
+  an outside click closes, the wheel scrolls the list, and clicking a row
+  accepts it. The workspace file index is built lazily while the picker is
+  open, skips `.git`, `.hg`, `.svn`, `node_modules`, `.zig-cache`, `zig-cache`
+  and `zig-out`, does not follow symlinks, does not honor `.gitignore` or
+  `search.exclude`, and caps at 100,000 files. Matching uses the ported
+  `filters.fuzzyScore` scorer; the browser `fuzzyScorer.ts` path-aware scorer
+  and its identity/prefix boosts are not ported. Symbol (`@`), go-to-line
+  (`:`), link and help providers, absolute/relative path queries, open-to-side,
+  icons, quick-input buttons and keybinding labels are not ported. Command
+  history is in memory for the session.
 - Mouse input is wired through the library: SGR reports in mode 1003/1006 become
   `ui.MouseEvent`s, `Surface.elementFromPoint` hit-tests the box tree, and a
   press focuses the element under the cell. In the editor, left-click places the
@@ -422,8 +438,9 @@ Editor contributions:
   missing file falls back to the given paths. Split positions are restored as
   equal horizontal splits. Dirty working copies are not persisted because the
   working-copy backup service is not ported. Side-by-side/diff inputs, settings
-  editors and tab drag-and-drop are still not ported, and there is no file
-  picker yet.
+  editors and tab drag-and-drop are still not ported. Quick open searches
+  workspace files and the TUI command table; extension-contributed commands and
+  files outside the workspace are not reachable through it yet.
 - Known limitations: `MoveLinesCommand` does not yet implement VS Code's
   `Full` auto-indent branch (plain line moves only); line sorting is bytewise
   rather than locale-aware; the overview-ruler/scrollbar column is
@@ -438,4 +455,6 @@ Editor contributions:
   in-place-replace decoration is an underline instead of the browser's 2 px
   outline; and the
   browser-facing editor controllers, keybinding registry, menus, and context
-  keys are not part of this port.
+  keys are not part of this port. Quick open has no `fuzzyScorer.ts`
+  path-aware scoring, symbol/go-to-line/link providers, quick-input buttons,
+  icons, keybinding labels or persisted command history.

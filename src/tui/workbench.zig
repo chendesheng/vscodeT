@@ -29,6 +29,12 @@ const ViewCell = @import("./view.zig").Cell;
 const tab_bar = @import("./tabBar.zig");
 const Sidebar = @import("./sidebar.zig").Sidebar;
 const activity_bar_mod = @import("./activityBar.zig");
+const history_mod = @import("../vs/workbench/services/history/common/history.zig");
+const HistoryService = history_mod.HistoryService;
+const commands_mod = @import("./commands.zig");
+const CommandRegistry = commands_mod.CommandRegistry;
+const quick_access_mod = @import("./quickAccess.zig");
+const QuickAccessService = quick_access_mod.QuickAccessService;
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const ActivityBar = activity_bar_mod.ActivityBar;
@@ -109,6 +115,9 @@ pub const Workbench = struct {
     activity_bar: ActivityBar = .{},
     active_activity: usize = 0,
     workspace: *WorkspaceContextService,
+    history: HistoryService,
+    commands: CommandRegistry,
+    quick_access: *QuickAccessService,
     focus: Focus = .editor,
     is_pasting: bool = false,
     quit_armed: bool = false,
@@ -158,6 +167,10 @@ pub const Workbench = struct {
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
 
+        try self.initQuickAccess();
+        errdefer self.history.deinit();
+        errdefer self.commands.deinit();
+        errdefer self.quick_access.deinit();
         self.layoutAll();
 
         for (paths) |path| {
@@ -220,6 +233,10 @@ pub const Workbench = struct {
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
 
+        try self.initQuickAccess();
+        errdefer self.history.deinit();
+        errdefer self.commands.deinit();
+        errdefer self.quick_access.deinit();
         self.layoutAll();
 
         const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
@@ -229,6 +246,7 @@ pub const Workbench = struct {
             const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
             const tab = try Tab.initFromInput(allocator, file_input);
             try addTabToPane(pane, tab);
+            try self.history.add(file_input.editor.path);
         }
 
         return self;
@@ -279,6 +297,10 @@ pub const Workbench = struct {
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
 
+        try self.initQuickAccess();
+        errdefer self.history.deinit();
+        errdefer self.commands.deinit();
+        errdefer self.quick_access.deinit();
         self.layout = undefined;
         for (self.service.groups.items, 0..) |group, index| {
             const pane = try self.createPane(group);
@@ -296,6 +318,7 @@ pub const Workbench = struct {
                 const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
                 const tab = try Tab.initFromInput(allocator, file_input);
                 try addTabToPane(pane, tab);
+                try self.history.add(file_input.editor.path);
             }
         }
 
@@ -325,7 +348,98 @@ pub const Workbench = struct {
         return FileEditorSerializer.init(self.allocator, self.io, self.cols, editorHeight(self.rows));
     }
 
+    fn initQuickAccess(self: *Workbench) !void {
+        self.history = HistoryService.init(self.allocator);
+        errdefer self.history.deinit();
+
+        self.commands = CommandRegistry.init(self.allocator);
+        errdefer self.commands.deinit();
+        self.commands.setEditorAvailability(self, hasActiveEditor);
+
+        self.quick_access = try QuickAccessService.init(
+            self.allocator,
+            self.io,
+            self.workspace,
+            &self.history,
+            &self.commands,
+            .{
+                .context = self,
+                .open_file = quickOpenFile,
+                .report_error = quickReportError,
+                .cancel_popups = quickCancelPopups,
+            },
+        );
+        errdefer self.quick_access.deinit();
+
+        try self.registerDefaultCommands();
+    }
+
+    fn registerDefaultCommands(self: *Workbench) !void {
+        const commands = [_]commands_mod.CommandInfo{
+            .{ .id = "workbench.action.quickOpen", .label = "Go to File...", .category = "File", .context = self, .run = commandQuickOpen },
+            .{ .id = "workbench.action.showCommands", .label = "Show All Commands", .context = self, .run = commandShowCommands },
+            .{ .id = "workbench.action.files.save", .label = "Save", .category = "File", .context = self, .run = commandSave },
+            .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
+            .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
+            .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
+            .{ .id = "actions.find", .label = "Find", .context = self, .requires_editor = true, .run = commandFind },
+            .{ .id = "editor.action.startFindReplaceAction", .label = "Replace", .context = self, .requires_editor = true, .run = commandReplace },
+            .{ .id = "editor.action.commentLine", .label = "Toggle Line Comment", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleLineComment },
+            .{ .id = "editor.action.blockComment", .label = "Toggle Block Comment", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleBlockComment },
+            .{ .id = "editor.action.moveLinesUpAction", .label = "Move Line Up", .category = "Editor", .context = self, .requires_editor = true, .run = commandMoveLinesUp },
+            .{ .id = "editor.action.moveLinesDownAction", .label = "Move Line Down", .category = "Editor", .context = self, .requires_editor = true, .run = commandMoveLinesDown },
+            .{ .id = "editor.action.copyLinesUpAction", .label = "Copy Line Up", .category = "Editor", .context = self, .requires_editor = true, .run = commandCopyLinesUp },
+            .{ .id = "editor.action.copyLinesDownAction", .label = "Copy Line Down", .category = "Editor", .context = self, .requires_editor = true, .run = commandCopyLinesDown },
+            .{ .id = "editor.action.duplicateSelection", .label = "Duplicate Selection", .category = "Editor", .context = self, .requires_editor = true, .run = commandDuplicateSelection },
+            .{ .id = "editor.action.sortLinesAscending", .label = "Sort Lines Ascending", .category = "Editor", .context = self, .requires_editor = true, .run = commandSortLinesAscending },
+            .{ .id = "editor.action.sortLinesDescending", .label = "Sort Lines Descending", .category = "Editor", .context = self, .requires_editor = true, .run = commandSortLinesDescending },
+            .{ .id = "editor.action.indentLines", .label = "Indent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandIndentLines },
+            .{ .id = "editor.action.outdentLines", .label = "Outdent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandOutdentLines },
+            .{ .id = "editor.action.insertFinalNewLine", .label = "Insert Final New Line", .category = "Editor", .context = self, .requires_editor = true, .run = commandInsertFinalNewLine },
+            .{ .id = "expandLineSelection", .label = "Expand Line Selection", .category = "Editor", .context = self, .requires_editor = true, .run = commandExpandLineSelection },
+            .{ .id = "editor.action.insertCursorAbove", .label = "Add Cursor Above", .category = "Editor", .context = self, .requires_editor = true, .run = commandInsertCursorAbove },
+            .{ .id = "editor.action.insertCursorBelow", .label = "Add Cursor Below", .category = "Editor", .context = self, .requires_editor = true, .run = commandInsertCursorBelow },
+            .{ .id = "editor.action.addSelectionToNextFindMatch", .label = "Add Selection To Next Find Match", .category = "Selection", .context = self, .requires_editor = true, .run = commandAddSelectionToNextFindMatch },
+            .{ .id = "editor.action.selectHighlights", .label = "Select All Occurrences of Find Match", .category = "Selection", .context = self, .requires_editor = true, .run = commandSelectHighlights },
+            .{ .id = "editor.action.jumpToBracket", .label = "Go to Bracket", .category = "Go", .context = self, .requires_editor = true, .run = commandJumpToBracket },
+            .{ .id = "editor.action.selectToBracket", .label = "Select to Bracket", .category = "Selection", .context = self, .requires_editor = true, .run = commandSelectToBracket },
+            .{ .id = "editor.action.removeBrackets", .label = "Remove Brackets", .category = "Editor", .context = self, .requires_editor = true, .run = commandRemoveBrackets },
+            .{ .id = "editor.action.smartSelect.expand", .label = "Expand Selection", .category = "Selection", .context = self, .requires_editor = true, .run = commandExpandSelection },
+            .{ .id = "editor.action.smartSelect.shrink", .label = "Shrink Selection", .category = "Selection", .context = self, .requires_editor = true, .run = commandShrinkSelection },
+            .{ .id = "editor.action.inPlaceReplace.up", .label = "Replace with Previous Value", .category = "Editor", .context = self, .requires_editor = true, .run = commandInPlaceReplacePrevious },
+            .{ .id = "editor.action.inPlaceReplace.down", .label = "Replace with Next Value", .category = "Editor", .context = self, .requires_editor = true, .run = commandInPlaceReplaceNext },
+            .{ .id = "editor.action.reindentlines", .label = "Reindent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandReindentLines },
+            .{ .id = "editor.action.reindentselectedlines", .label = "Reindent Selected Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandReindentSelectedLines },
+            .{ .id = "editor.action.wordHighlight.next", .label = "Go to Next Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightNext },
+            .{ .id = "editor.action.wordHighlight.prev", .label = "Go to Previous Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightPrevious },
+        };
+        for (commands) |command| try self.commands.register(command);
+    }
+
+    pub fn handleQuickAccessKey(self: *Workbench, event: *ui.KeyEvent) !bool {
+        return self.quick_access.handleKey(event);
+    }
+
+    pub fn handleQuickAccessMouse(self: *Workbench, event: *ui.MouseEvent) bool {
+        return self.quick_access.handleMouse(event);
+    }
+
+    pub fn pollQuickAccess(self: *Workbench, now_ms: i64) !bool {
+        return self.quick_access.poll(now_ms);
+    }
+
+    pub fn quickAccessWantsTick(self: *Workbench) bool {
+        return self.quick_access.wantsTick();
+    }
+
+    pub fn isQuickAccessOpen(self: *const Workbench) bool {
+        return self.quick_access.isOpen();
+    }
+
     pub fn deinit(self: *Workbench) void {
+        self.quick_access.deinit();
+        self.commands.deinit();
+        self.history.deinit();
         // Dispose the service (and unregister editor listeners) before tab
         // inputs/emitters are destroyed.
         self.service.deinit();
@@ -423,6 +537,7 @@ pub const Workbench = struct {
         }
         self.workspace.deinit();
         self.workspace = replacement;
+        try self.quick_access.setWorkspace(self.workspace);
     }
 
     /// Test/standalone helper: set a single-folder workspace and open the
@@ -645,12 +760,14 @@ pub const Workbench = struct {
                 try tab.ensureControllers();
                 tab.view.focusEditor();
             }
+            try self.history.add(path);
             return;
         }
 
         const tab = try Tab.initFromInput(self.allocator, input);
         try addTabToPane(pane, tab);
         try tab.ensureControllers();
+        try self.history.add(path);
     }
 
     pub fn activateIndex(self: *Workbench, index: usize) !void {
@@ -666,6 +783,7 @@ pub const Workbench = struct {
         tab.view.focusEditor();
         tab.onEditorChanged(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
         try tab.refresh();
+        try self.history.add(tab.input.editor.path);
     }
 
     pub fn switchTab(self: *Workbench, delta: isize) !void {
@@ -1021,6 +1139,7 @@ pub const Workbench = struct {
             try self.renderPane(pane);
         }
         self.renderDividers(self.layout);
+        try self.quick_access.render(&self.frame.next);
 
         const encoded = try ui.ansi.encode(
             self.allocator,
@@ -1130,6 +1249,7 @@ pub const Workbench = struct {
     }
 
     pub fn cursorCell(self: *Workbench) ?ViewCell {
+        if (self.quick_access.isOpen()) return null;
         if (self.focus == .sidebar) return null;
         const pane = self.activePane() orelse return null;
         const active = pane.activeTab() orelse return null;
@@ -1170,6 +1290,222 @@ pub const Workbench = struct {
         }
     }
 };
+
+fn hasActiveEditor(context: *anyopaque) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.activeTab() != null;
+}
+
+fn quickOpenFile(context: *anyopaque, path: []const u8) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.openPath(path);
+}
+
+fn quickReportError(context: *anyopaque, message: []const u8) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.activeTab()) |tab| {
+        tab.editor.setMessage("Quick open: {s}", .{message});
+    }
+}
+
+fn quickCancelPopups(context: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.activeTab()) |tab| {
+        if (tab.controllers) |controllers| {
+            controllers.suggest.cancel();
+            controllers.hover.hideContentHover();
+        }
+    }
+}
+
+fn commandTab(context: *anyopaque) !*Tab {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.activeTab() orelse error.NoActiveEditor;
+}
+
+fn commandQuickOpen(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.quick_access.showFilePicker();
+}
+
+fn commandShowCommands(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.quick_access.showCommandPicker();
+}
+
+fn commandSave(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.save();
+}
+
+fn commandCloseEditor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = try self.closeActive();
+}
+
+fn commandSplitEditor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.splitActive(.horizontal);
+}
+
+fn commandToggleSidebar(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.toggleSidebar();
+}
+
+fn commandFind(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.ensureControllers();
+    try tab.controllers.?.find.startFind();
+}
+
+fn commandReplace(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.ensureControllers();
+    try tab.controllers.?.find.startReplace();
+}
+
+fn commandToggleLineComment(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.toggleLineComment();
+}
+
+fn commandToggleBlockComment(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.toggleBlockComment();
+}
+
+fn commandMoveLinesUp(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.moveLines(false);
+}
+
+fn commandMoveLinesDown(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.moveLines(true);
+}
+
+fn commandCopyLinesUp(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.copyLines(false);
+}
+
+fn commandCopyLinesDown(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.copyLines(true);
+}
+
+fn commandDuplicateSelection(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.duplicateSelection();
+}
+
+fn commandSortLinesAscending(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.sortLines(false);
+}
+
+fn commandSortLinesDescending(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.sortLines(true);
+}
+
+fn commandIndentLines(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.indentLines();
+}
+
+fn commandOutdentLines(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.outdentLines();
+}
+
+fn commandInsertFinalNewLine(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.insertFinalNewLine();
+}
+
+fn commandExpandLineSelection(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.expandLineSelection();
+}
+
+fn commandInsertCursorAbove(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.addCursorAbove();
+}
+
+fn commandInsertCursorBelow(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.addCursorBelow();
+}
+
+fn commandAddSelectionToNextFindMatch(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.selectNextOccurrence();
+}
+
+fn commandSelectHighlights(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.selectAllOccurrences();
+}
+
+fn commandJumpToBracket(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.jumpToBracket();
+}
+
+fn commandSelectToBracket(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.selectToBracket(true);
+}
+
+fn commandRemoveBrackets(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.removeBrackets();
+}
+
+fn commandExpandSelection(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.growSelection(true);
+}
+
+fn commandShrinkSelection(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.growSelection(false);
+}
+
+fn commandInPlaceReplacePrevious(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    _ = try tab.editor.inPlaceReplace(false);
+}
+
+fn commandInPlaceReplaceNext(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    _ = try tab.editor.inPlaceReplace(true);
+}
+
+fn commandReindentLines(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.reindentLines();
+}
+
+fn commandReindentSelectedLines(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.reindentSelectedLines();
+}
+
+fn commandWordHighlightNext(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.ensureControllers();
+    tab.controllers.?.word_highlighter.moveNext();
+}
+
+fn commandWordHighlightPrevious(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.ensureControllers();
+    tab.controllers.?.word_highlighter.moveBack();
+}
 
 fn drawPlainText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []const u8, paint: ui.cell.PaintStyle) void {
     var col = x;
@@ -1492,4 +1828,82 @@ test "Workbench: opens a folder workspace with no initial tabs" {
     try std.testing.expect(workbench.handleSidebarMouse(&click));
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("folder_file.txt", workbench.activeTab().?.input.base.getName());
+}
+
+test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "src");
+    var file = try tmp.dir.createFile(io, "src/alpha.txt", .{});
+    try file.writeStreamingAll(io, "alpha");
+    file.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.setWorkspaceFolders(&.{root});
+
+    var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try workbench.handleQuickAccessKey(&ctrl_p));
+    try std.testing.expect(workbench.isQuickAccessOpen());
+
+    const picker = workbench.quick_access.controller.pickerRef();
+    try picker.setValue("alp");
+    var guard: usize = 0;
+    while (workbench.quickAccessWantsTick() and guard < 200) : (guard += 1) {
+        _ = try workbench.pollQuickAccess(0);
+    }
+    try std.testing.expectEqualStrings("alpha.txt", picker.activeItem().?.label);
+
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expectEqualStrings("alpha.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqual(@as(usize, 1), workbench.history.getHistory().len);
+
+    // Alt-P opens the command palette directly; "split" runs the split command.
+    var alt_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .alt = true } };
+    try std.testing.expect(try workbench.handleQuickAccessKey(&alt_p));
+    try std.testing.expect(workbench.isQuickAccessOpen());
+    try picker.setValue(">split");
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+}
+
+test "Workbench: quick open renders and an outside click only closes it" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try tmp.dir.createFile(io, "outside.txt", .{});
+    try file.writeStreamingAll(io, "outside");
+    file.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 60, 10);
+    defer workbench.deinit();
+    try workbench.setWorkspaceFolders(&.{root});
+
+    var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try workbench.handleQuickAccessKey(&ctrl_p));
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "Search files") != null);
+
+    var click = ui.MouseEvent{ .kind = .down, .x = 0, .y = 9 };
+    try std.testing.expect(workbench.handleQuickAccessMouse(&click));
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 }
