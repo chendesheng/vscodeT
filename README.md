@@ -84,12 +84,16 @@ Notes for the Zig 0.17 port:
   `Right` collapse/expand; `Delete` dismisses; `Alt-Enter` replaces the
   selection and `Ctrl-Alt-Enter` replaces all. Results stream incrementally
   and are grouped as Text Results -> workspace/nested folder -> file -> line.
-  The implementation skips symlinks, binary/invalid-UTF-8 files, files over
-  10 MB and the usual `.git`/`node_modules` build directories. It does not
-  honor `.gitignore` or `search.exclude`, has no AI/notebook/search-editor
-  results, no replace preview, no multi-selection/context menus, and does not
-  watch the filesystem; edits to the active editor schedule a debounced
-  re-search instead.
+  The implementation honors `.gitignore` and `.ignore` through the ported
+  `IgnoreFile` (`src/vs/workbench/services/search/common/ignoreFile.zig`):
+  every directory's ignore file inherits the enclosing one, so nested files,
+  directory-only patterns and `!` negations behave like git. It still skips
+  symlinks, binary/invalid-UTF-8 files, files over 10 MB and version control
+  metadata (`.git`/`.hg`/`.svn`) plus `node_modules` and Zig build output. It
+  does not honor `search.exclude`/`files.exclude` configuration, has no
+  AI/notebook/search-editor results, no replace preview, no
+  multi-selection/context menus, and does not watch the filesystem; edits to
+  the active editor schedule a debounced re-search instead.
 - Folder opening follows the workspace model: a directory argument stat'd from
   the CLI becomes a `Workspace` folder through
   `src/vs/platform/workspace/common/workspace.zig` and
@@ -119,9 +123,10 @@ Notes for the Zig 0.17 port:
   Down, PageUp/PageDown, Ctrl-Home/Ctrl-End navigate, Enter accepts, Escape or
   an outside click closes, the wheel scrolls the list, and clicking a row
   accepts it. The workspace file index is built lazily while the picker is
-  open, skips `.git`, `.hg`, `.svn`, `node_modules`, `.zig-cache`, `zig-cache`
-  and `zig-out`, does not follow symlinks, does not honor `.gitignore` or
-  `search.exclude`, and caps at 100,000 files. Matching uses the ported
+  open, honors `.gitignore`/`.ignore` through the same ported `IgnoreFile`,
+  skips `.git`, `.hg`, `.svn`, `node_modules`, `.zig-cache`, `zig-cache` and
+  `zig-out`, does not follow symlinks, does not honor `search.exclude`, and
+  caps at 100,000 files. Matching uses the ported
   `filters.fuzzyScore` scorer; the browser `fuzzyScorer.ts` path-aware scorer
   and its identity/prefix boosts are not ported. Symbol (`@`), go-to-line
   (`:`), link and help providers, absolute/relative path queries, open-to-side,

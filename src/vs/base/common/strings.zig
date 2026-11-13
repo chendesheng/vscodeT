@@ -240,6 +240,35 @@ test "startsWithUTF8BOM" {
     try std.testing.expectEqual(true, startsWithUTF8BOM("\xef\xbb\xbfHello"));
 }
 
+/// ASCII case-insensitive equality, mirroring upstream `equalsIgnoreCase`.
+pub fn equalsIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (std.ascii.toLower(left) != std.ascii.toLower(right)) return false;
+    }
+    return true;
+}
+
+test "equalsIgnoreCase" {
+    try std.testing.expect(equalsIgnoreCase("", ""));
+    try std.testing.expect(equalsIgnoreCase("abc", "ABC"));
+    try std.testing.expect(!equalsIgnoreCase("abc", "ab"));
+    try std.testing.expect(!equalsIgnoreCase("abc", "abd"));
+}
+
+/// ASCII case-insensitive prefix test, mirroring upstream `startsWithIgnoreCase`.
+pub fn startsWithIgnoreCase(str: []const u8, candidate: []const u8) bool {
+    return candidate.len <= str.len and equalsIgnoreCase(str[0..candidate.len], candidate);
+}
+
+test "startsWithIgnoreCase" {
+    try std.testing.expect(startsWithIgnoreCase("", ""));
+    try std.testing.expect(startsWithIgnoreCase("Hello", "He"));
+    try std.testing.expect(startsWithIgnoreCase("Hello", "he"));
+    try std.testing.expect(!startsWithIgnoreCase("Hello", "hello world"));
+    try std.testing.expect(!startsWithIgnoreCase("Hello", "Lo"));
+}
+
 pub fn escapeNewLine(str: []const u8, allocator: Allocator) ![]const u8 {
     var result = ArrayList(u8).init(allocator);
     for (str) |ch| {

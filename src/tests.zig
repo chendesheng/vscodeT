@@ -3,6 +3,7 @@ comptime {
     _ = @import("./vs/base/common/comparers.zig");
     _ = @import("./vs/workbench/services/search/common/search.zig");
     _ = @import("./vs/workbench/services/search/common/searchService.zig");
+    _ = @import("./vs/workbench/services/search/common/ignoreFile.zig");
     _ = @import("./vs/workbench/services/search/common/replace.zig");
     _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
     _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/searchModel.zig");
@@ -13,6 +14,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/searchResult.zig");
     _ = @import("./vs/workbench/contrib/search/browser/replaceService.zig");
     _ = @import("./vs/workbench/services/search/test/common/search.test.zig");
+    _ = @import("./vs/workbench/services/search/test/common/ignoreFile.test.zig");
     _ = @import("./vs/workbench/contrib/search/test/browser/searchResult.test.zig");
     _ = @import("./tui/searchWidget.zig");
     _ = @import("./tui/searchView.zig");

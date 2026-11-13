@@ -2,9 +2,11 @@
 //
 // Upstream Go to File is backed by `ISearchService.fileSearch`, which uses the
 // search process, `.gitignore` and `search.exclude`. The terminal has no
-// search service, so this adapter walks the workspace folders lazily with
-// `std.Io.Dir`. It uses a fixed exclude list, skips symbolic links and caps
-// the index; `.gitignore` and `search.exclude` are not honored.
+// search process, so this adapter walks the workspace folders lazily with
+// `std.Io.Dir`. It honors `.gitignore`/`.ignore` through the ported
+// `IgnoreFile` (nested files inherit their parent, so negations work), keeps a
+// fixed exclude list for version control metadata and Zig build output, skips
+// symbolic links and caps the index. `search.exclude` is not honored.
 //
 // Matching uses the ported `filters.fuzzyScore` subsequence scorer rather
 // than the browser `fuzzyScorer.ts` path-aware scorer. Every whitespace-
@@ -18,6 +20,8 @@ const Io = std.Io;
 const filters = @import("../vs/base/common/filters.zig");
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
+const ignore_file_module = @import("../vs/workbench/services/search/common/ignoreFile.zig");
+const IgnoreFile = ignore_file_module.IgnoreFile;
 const anything = @import("../vs/workbench/contrib/search/browser/anythingQuickAccess.zig");
 const FileMatch = anything.FileMatch;
 const RecentFile = anything.RecentFile;
@@ -38,6 +42,14 @@ const Entry = struct {
     description: []u8,
 };
 
+const QueueEntry = struct {
+    path: []u8,
+    /// Ignore chain that applies to the directory's children.
+    ignore: ?*const IgnoreFile = null,
+};
+
+pub const max_ignore_file_size: usize = 1024 * 1024;
+
 pub const WorkspaceFileIndex = struct {
     pub const MAX_ENTRIES = 100_000;
 
@@ -45,7 +57,9 @@ pub const WorkspaceFileIndex = struct {
     io: Io,
     workspace: *WorkspaceContextService,
     entries: std.array_list.Managed(Entry),
-    queue: std.array_list.Managed([]u8),
+    queue: std.array_list.Managed(QueueEntry),
+    /// Owns every ignore file loaded during the walk.
+    ignore_files: std.array_list.Managed(*IgnoreFile),
     queue_index: usize = 0,
     started: bool = false,
     done: bool = false,
@@ -64,7 +78,8 @@ pub const WorkspaceFileIndex = struct {
             .io = io,
             .workspace = workspace,
             .entries = std.array_list.Managed(Entry).init(allocator),
-            .queue = std.array_list.Managed([]u8).init(allocator),
+            .queue = std.array_list.Managed(QueueEntry).init(allocator),
+            .ignore_files = std.array_list.Managed(*IgnoreFile).init(allocator),
         };
         return self;
     }
@@ -73,6 +88,7 @@ pub const WorkspaceFileIndex = struct {
         self.clear();
         self.entries.deinit();
         self.queue.deinit();
+        self.ignore_files.deinit();
         self.allocator.destroy(self);
     }
 
@@ -84,8 +100,10 @@ pub const WorkspaceFileIndex = struct {
     fn clear(self: *WorkspaceFileIndex) void {
         for (self.entries.items) |entry| freeEntry(self.allocator, entry);
         self.entries.clearRetainingCapacity();
-        for (self.queue.items) |path| self.allocator.free(path);
+        for (self.queue.items) |entry| self.allocator.free(entry.path);
         self.queue.clearRetainingCapacity();
+        for (self.ignore_files.items) |ignore_file| ignore_file.deinit();
+        self.ignore_files.clearRetainingCapacity();
         self.queue_index = 0;
         self.started = false;
         self.done = false;
@@ -101,7 +119,7 @@ pub const WorkspaceFileIndex = struct {
         self.started = true;
         for (self.workspace.getWorkspace().folders.items) |*folder| {
             const copy = self.allocator.dupe(u8, folder.resource) catch continue;
-            self.queue.append(copy) catch {
+            self.queue.append(.{ .path = copy }) catch {
                 self.allocator.free(copy);
                 continue;
             };
@@ -119,12 +137,8 @@ pub const WorkspaceFileIndex = struct {
         var processed: usize = 0;
         while (processed < max_directories and self.queue_index < self.queue.items.len) : (processed += 1) {
             // `scanDirectory` appends to `queue`, which may reallocate it; copy
-            // the path before scanning so the slice cannot dangle.
-            const directory = self.allocator.dupe(u8, self.queue.items[self.queue_index]) catch {
-                self.queue_index += 1;
-                continue;
-            };
-            defer self.allocator.free(directory);
+            // the entry before scanning so the slice cannot dangle.
+            const directory = self.queue.items[self.queue_index];
             self.queue_index += 1;
             self.scanDirectory(directory) catch {};
             if (self.entries.items.len >= self.max_entries) {
@@ -142,37 +156,73 @@ pub const WorkspaceFileIndex = struct {
     fn compactQueue(self: *WorkspaceFileIndex) void {
         if (self.queue_index == 0) return;
         if (self.queue_index < self.queue.items.len) return;
-        for (self.queue.items) |path| self.allocator.free(path);
+        for (self.queue.items) |entry| self.allocator.free(entry.path);
         self.queue.clearRetainingCapacity();
+        for (self.ignore_files.items) |ignore_file| ignore_file.deinit();
+        self.ignore_files.clearRetainingCapacity();
         self.queue_index = 0;
     }
 
-    fn scanDirectory(self: *WorkspaceFileIndex, directory: []const u8) !void {
-        var dir = Io.Dir.cwd().openDir(self.io, directory, .{ .iterate = true }) catch return;
+    fn scanDirectory(self: *WorkspaceFileIndex, queued: QueueEntry) !void {
+        var dir = Io.Dir.cwd().openDir(self.io, queued.path, .{ .iterate = true }) catch return;
         defer dir.close(self.io);
+
+        // The ignore file of this directory excludes its children.
+        const ignore = try self.loadIgnoreFiles(queued.path, queued.ignore);
 
         var iterator = dir.iterate();
         while (try iterator.next(self.io)) |entry| {
             if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
-            const path = try std.fs.path.join(self.allocator, &.{ directory, entry.name });
+            const path = try std.fs.path.join(self.allocator, &.{ queued.path, entry.name });
             defer self.allocator.free(path);
 
             switch (entry.kind) {
                 .sym_link => continue,
                 .directory => {
                     if (isExcludedDirectory(entry.name)) continue;
+                    // `isPathIncludedInTraversal` does not check the parent
+                    // directories; the walk already did when it descended.
+                    if (!ignore_file_module.isPathIncluded(ignore, path, true)) continue;
                     const copy = self.allocator.dupe(u8, path) catch continue;
-                    self.queue.append(copy) catch {
+                    self.queue.append(.{ .path = copy, .ignore = ignore }) catch {
                         self.allocator.free(copy);
                         continue;
                     };
                 },
                 .file => {
+                    if (!ignore_file_module.isPathIncluded(ignore, path, false)) continue;
                     try self.addEntry(path, entry.name);
                 },
                 else => continue,
             }
         }
+    }
+
+    /// Loads `<directory>/.gitignore` and then `<directory>/.ignore` on top of
+    /// `parent` and returns the innermost ignore file.
+    fn loadIgnoreFiles(
+        self: *WorkspaceFileIndex,
+        directory: []const u8,
+        parent: ?*const IgnoreFile,
+    ) !?*const IgnoreFile {
+        var current = parent;
+        for (ignore_file_module.ignore_file_names) |name| {
+            const path = try std.fs.path.join(self.allocator, &.{ directory, name });
+            defer self.allocator.free(path);
+            const contents = Io.Dir.cwd().readFileAlloc(
+                self.io,
+                path,
+                self.allocator,
+                .limited(max_ignore_file_size),
+            ) catch continue;
+            defer self.allocator.free(contents);
+
+            const ignore_file = try IgnoreFile.init(self.allocator, contents, directory, current, false);
+            errdefer ignore_file.deinit();
+            try self.ignore_files.append(ignore_file);
+            current = ignore_file;
+        }
+        return current;
     }
 
     fn addEntry(self: *WorkspaceFileIndex, path: []const u8, name: []const u8) !void {
@@ -392,6 +442,16 @@ test "WorkspaceFileIndex: lazy walk, excludes and search" {
         defer file.close(io);
         try file.writeStreamingAll(io, "ignored");
     }
+    {
+        var file = try tmp.dir.createFile(io, ".gitignore", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "ignored-by-ignore-file.txt\n");
+    }
+    {
+        var file = try tmp.dir.createFile(io, "ignored-by-ignore-file.txt", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "ignored");
+    }
 
     const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
     defer context.deinit();
@@ -406,7 +466,8 @@ test "WorkspaceFileIndex: lazy walk, excludes and search" {
     try std.testing.expect(index.entries.items.len >= 2);
     var found_ignored = false;
     for (index.entries.items) |entry| {
-        if (std.mem.indexOf(u8, entry.path, ".git") != null) found_ignored = true;
+        if (std.mem.indexOf(u8, entry.path, "/.git/") != null) found_ignored = true;
+        if (std.mem.endsWith(u8, entry.path, "ignored-by-ignore-file.txt")) found_ignored = true;
     }
     try std.testing.expect(!found_ignored);
 

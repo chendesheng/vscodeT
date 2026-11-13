@@ -7,8 +7,12 @@
 // streaming contract through an incremental job: each `step` scans a bounded
 // number of files and returns owned file matches.
 //
-// Fixed excludes replace `.gitignore`/`search.exclude` configuration; symlinks,
-// binary files, invalid UTF-8 and files larger than 10 MB are skipped.
+// `.gitignore` and `.ignore` files are honored through the ported `IgnoreFile`:
+// every directory's ignore file inherits the enclosing one, so negations and
+// nested ignore files behave like git. Fixed excludes for version control
+// metadata and Zig build output remain, `search.exclude`/`files.exclude`
+// configuration is not ported, and symlinks, binary files, invalid UTF-8 and
+// files larger than 10 MB are skipped.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -24,6 +28,9 @@ const FileContentProvider = search.FileContentProvider;
 const ISearchJob = search.ISearchJob;
 const ISearchService = search.ISearchService;
 const glob = @import("../../../../base/common/glob.zig").GlobList;
+const ignore_file_module = @import("ignoreFile.zig");
+const IgnoreFile = ignore_file_module.IgnoreFile;
+const ignore_file_names = ignore_file_module.ignore_file_names;
 const workspace_context = @import("../../../services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const text_model_search = @import("../../../../editor/common/model/textModelSearch.zig");
@@ -35,6 +42,7 @@ const WordCharacterClassifier = @import("../../../../editor/common/core/wordChar
 
 pub const MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 100_000;
+pub const MAX_IGNORE_FILE_SIZE: usize = 1024 * 1024;
 
 const excluded_directories = [_][]const u8{
     ".git",         ".hg",        ".svn",
@@ -46,6 +54,9 @@ const QueueEntry = struct {
     path: []u8,
     root_index: usize,
     is_file: bool,
+    /// Ignore chain that applies to the entry itself, i.e. the chain of the
+    /// directory that contains it.
+    ignore: ?*const IgnoreFile = null,
 };
 
 const extra_root_sentinel = std.math.maxInt(usize);
@@ -99,6 +110,9 @@ const SearchJob = struct {
     include_list: glob,
     exclude_list: glob,
     queue: std.array_list.Managed(QueueEntry),
+    /// Owns every ignore file loaded during the walk; a child points at its
+    /// parent, so the chain stays valid until the job is deinitialized.
+    ignore_files: std.array_list.Managed(*IgnoreFile),
     queue_index: usize = 0,
     done: bool = false,
     cancelled: bool = false,
@@ -128,6 +142,7 @@ const SearchJob = struct {
             .include_list = try glob.init(service.allocator, query.include_pattern),
             .exclude_list = try glob.init(service.allocator, query.exclude_pattern),
             .queue = std.array_list.Managed(QueueEntry).init(service.allocator),
+            .ignore_files = std.array_list.Managed(*IgnoreFile).init(service.allocator),
         };
         if (query.is_word_match) {
             self.word_classifier = try WordCharacterClassifier.init(service.allocator, DefaultWordSeparators);
@@ -139,6 +154,8 @@ const SearchJob = struct {
             self.include_list.deinit();
             self.exclude_list.deinit();
             self.queue.deinit();
+            for (self.ignore_files.items) |ignore_file| ignore_file.deinit();
+            self.ignore_files.deinit();
         }
 
         // Explicit extra files first; workspace folders follow. This mirrors
@@ -150,24 +167,35 @@ const SearchJob = struct {
             if (self.isInsideWorkspace(path)) continue;
             if (added_extras.contains(path)) continue;
             try added_extras.put(path, {});
-            try self.enqueue(path, extra_root_sentinel, true);
+            try self.enqueue(path, extra_root_sentinel, true, null);
         }
         for (query.folder_queries, 0..) |folder_query, index| {
-            try self.enqueue(folder_query.folder, index, false);
+            try self.enqueue(folder_query.folder, index, false, null);
         }
 
         if (self.queue.items.len == 0) self.done = true;
         return self;
     }
 
-    fn enqueue(self: *SearchJob, path: []const u8, root_index: usize, is_file: bool) !void {
+    fn enqueue(
+        self: *SearchJob,
+        path: []const u8,
+        root_index: usize,
+        is_file: bool,
+        ignore: ?*const IgnoreFile,
+    ) !void {
         if (self.queue.items.len >= MAX_ENTRIES) {
             self.limit_hit = true;
             return;
         }
         const copy = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(copy);
-        try self.queue.append(.{ .path = copy, .root_index = root_index, .is_file = is_file });
+        try self.queue.append(.{
+            .path = copy,
+            .root_index = root_index,
+            .is_file = is_file,
+            .ignore = ignore,
+        });
     }
 
     fn isInsideWorkspace(self: *const SearchJob, path: []const u8) bool {
@@ -208,6 +236,8 @@ const SearchJob = struct {
     fn deinit(self: *SearchJob) void {
         for (self.queue.items) |entry| self.allocator.free(entry.path);
         self.queue.deinit();
+        for (self.ignore_files.items) |ignore_file| ignore_file.deinit();
+        self.ignore_files.deinit();
         self.include_list.deinit();
         self.exclude_list.deinit();
         self.search_data.regex.deinit();
@@ -265,6 +295,9 @@ const SearchJob = struct {
         var dir = Io.Dir.cwd().openDir(self.io, entry.path, .{ .iterate = true }) catch return;
         defer dir.close(self.io);
 
+        // The ignore file of this directory excludes its children.
+        const ignore = try self.loadIgnoreFiles(entry.path, entry.ignore);
+
         var iterator = dir.iterate();
         while (iterator.next(self.io) catch null) |child| {
             if (std.mem.eql(u8, child.name, ".") or std.mem.eql(u8, child.name, "..")) continue;
@@ -278,12 +311,52 @@ const SearchJob = struct {
                 .sym_link => continue,
                 .directory => {
                     if (isExcludedDirectory(child.name)) continue;
-                    try self.enqueue(path, entry.root_index, false);
+                    // `isPathIncludedInTraversal` does not check the parent
+                    // directories; the walk already did when it descended.
+                    if (!ignore_file_module.isPathIncluded(ignore, path, true)) continue;
+                    try self.enqueue(path, entry.root_index, false, ignore);
                 },
-                .file => try self.enqueue(path, entry.root_index, true),
+                .file => {
+                    if (!ignore_file_module.isPathIncluded(ignore, path, false)) continue;
+                    try self.enqueue(path, entry.root_index, true, ignore);
+                },
                 else => continue,
             }
         }
+    }
+
+    /// Loads `<directory>/.gitignore` and then `<directory>/.ignore` on top of
+    /// `parent` and returns the innermost ignore file, which applies to the
+    /// contents of `directory`.
+    fn loadIgnoreFiles(
+        self: *SearchJob,
+        directory: []const u8,
+        parent: ?*const IgnoreFile,
+    ) !?*const IgnoreFile {
+        var current = parent;
+        for (ignore_file_names) |name| {
+            const path = try std.fs.path.join(self.allocator, &.{ directory, name });
+            defer self.allocator.free(path);
+            const contents = Io.Dir.cwd().readFileAlloc(
+                self.io,
+                path,
+                self.allocator,
+                .limited(MAX_IGNORE_FILE_SIZE),
+            ) catch continue;
+            defer self.allocator.free(contents);
+
+            const ignore_file = try IgnoreFile.init(
+                self.allocator,
+                contents,
+                directory,
+                current,
+                false,
+            );
+            errdefer ignore_file.deinit();
+            try self.ignore_files.append(ignore_file);
+            current = ignore_file;
+        }
+        return current;
     }
 
     fn searchFile(self: *SearchJob, allocator: Allocator, entry: QueueEntry) !?SearchFileResult {
@@ -649,4 +722,78 @@ fn replaceOwned(allocator: Allocator, field: *[]u8, value: []const u8) !void {
     const copy = try allocator.dupe(u8, value);
     allocator.free(field.*);
     field.* = copy;
+}
+
+fn writeTestFile(tmp: *std.testing.TmpDir, io: Io, path: []const u8, contents: []const u8) !void {
+    if (std.fs.path.dirname(path)) |directory| try tmp.dir.createDirPath(io, directory);
+    var file = try tmp.dir.createFile(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, contents);
+}
+
+test "SearchService: honors .gitignore and .ignore files" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestFile(&tmp, io, "kept.txt", "alpha\n");
+    try writeTestFile(&tmp, io, "ignored.txt", "alpha\n");
+    try writeTestFile(&tmp, io, "other.txt", "alpha\n");
+    try writeTestFile(&tmp, io, ".gitignore", "ignored.txt\n");
+    try writeTestFile(&tmp, io, ".ignore", "other.txt\n");
+    try writeTestFile(&tmp, io, "sub/kept.txt", "alpha\n");
+    try writeTestFile(&tmp, io, "sub/ignored.txt", "alpha\n");
+    try writeTestFile(&tmp, io, "sub/more.txt", "alpha\n");
+    // A nested ignore file re-includes the file its parent ignores and adds a
+    // pattern of its own.
+    try writeTestFile(&tmp, io, "sub/.gitignore", "!ignored.txt\nmore.txt\n");
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    var service = SearchService.init(allocator, io, context, .{
+        .context = undefined,
+        .read = null,
+        .extra_files = null,
+        .free_paths = null,
+    });
+
+    var q = try TextQuery.init(allocator, "alpha", &.{root}, "", "", &.{});
+    defer q.deinit();
+
+    var job = try service.startTextSearch(&q);
+    defer job.deinit(job.context);
+
+    var found = std.StringHashMap(void).init(allocator);
+    defer found.deinit();
+    while (true) {
+        const step = try job.step(job.context, allocator, 32);
+        defer {
+            for (step.results) |*result| result.deinit();
+            allocator.free(step.results);
+        }
+        for (step.results) |result| {
+            var relative = result.resource;
+            if (std.mem.startsWith(u8, relative, root)) {
+                relative = relative[root.len..];
+                if (relative.len > 0 and relative[0] == '/') relative = relative[1..];
+            }
+            try found.put(try allocator.dupe(u8, relative), {});
+        }
+        if (step.done) break;
+    }
+    defer {
+        var keys = found.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+    }
+
+    try std.testing.expect(found.contains("kept.txt"));
+    try std.testing.expect(found.contains("sub/kept.txt"));
+    try std.testing.expect(found.contains("sub/ignored.txt"));
+    try std.testing.expect(!found.contains("ignored.txt"));
+    try std.testing.expect(!found.contains("other.txt"));
+    try std.testing.expect(!found.contains("sub/more.txt"));
 }

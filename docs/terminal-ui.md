@@ -589,8 +589,9 @@ Library constraints:
   cursor while it is open. `Ctrl-P` opens Go to File, `>` switches to the
   command provider, and `Alt-P` opens the command provider directly because a
   terminal cannot distinguish `Ctrl-Shift-P`. The workspace file index is a
-  TUI adapter (`src/tui/fileIndex.zig`) because there is no search service or
-  `.gitignore` handling in this port. Icons, buttons, keybinding labels,
+  TUI adapter (`src/tui/fileIndex.zig`) that walks the workspace instead of
+  calling the search process, but it honors `.gitignore`/`.ignore` through the
+  same ported `IgnoreFile`. Icons, buttons, keybinding labels,
   virtualized lists, symbol/go-to-line/link providers and the browser
   `fuzzyScorer.ts` path-aware scorer are not ported.
 - Content widgets use the terminal adaptation of upstream `IContentWidget`: the
@@ -767,7 +768,12 @@ Library constraints:
 - The Search panel is split into a portable search service/tree and a terminal
   view. `searchService.zig` walks workspace folders in bounded steps, reads
   open-editor content through a host callback, applies the ported regex/word
-  matcher and streams owned file matches. `searchTreeModel` ports the result
+  matcher and streams owned file matches. `ignoreFile.zig` ports upstream's
+  `IgnoreFile`, and the search walk plus the quick-open index build a
+  per-directory ignore chain from `.gitignore`/`.ignore`, including nested
+  files, directory-only patterns and `!` negations. `glob.zig` grew the
+  pattern language that port needs: `**`, `?`, `{}` groups, `[...]` character
+  classes, `trimForExclusions` and `ignoreCase`. `searchTreeModel` ports the result
   hierarchy, replacement pattern and change events. `src/tui/searchWidget.zig`
   renders the input/replace/details rows on a `ui.Surface`;
   `src/tui/searchView.zig` owns focus, mouse routing, the flattened result
@@ -775,7 +781,8 @@ Library constraints:
   `rangeHighlight` model decoration through `View.setSearchHighlights`.
   Remaining gaps are the browser tree's compression/virtualization,
   multi-selection, drag/drop, context menus, AI/notebook/search-editor results,
-  `.gitignore`/`search.exclude` handling, replace preview and Settings view.
+  `search.exclude`/`files.exclude` configuration, replace preview and Settings
+  view.
 
 ## 9. POC acceptance
 
