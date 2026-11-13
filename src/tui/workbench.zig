@@ -24,6 +24,7 @@ const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
 const FileEditorSerializer = @import("./editorInput.zig").FileEditorSerializer;
 const editor_factory = @import("../vs/workbench/common/editor/editorFactory.zig");
 const Editor = @import("./editor.zig").Editor;
+const TextEdit = @import("./editor.zig").TextEdit;
 const View = @import("./view.zig").View;
 const ViewCell = @import("./view.zig").Cell;
 const tab_bar = @import("./tabBar.zig");
@@ -38,10 +39,23 @@ const QuickAccessService = quick_access_mod.QuickAccessService;
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const ActivityBar = activity_bar_mod.ActivityBar;
+const search_view_mod = @import("./searchView.zig");
+const SearchView = search_view_mod.SearchView;
+const search_service_mod = @import("../vs/workbench/services/search/common/searchService.zig");
+const SearchService = search_service_mod.SearchService;
+const search_types = @import("../vs/workbench/services/search/common/search.zig");
+const FileContentProvider = search_types.FileContentProvider;
+const replace_service_mod = @import("../vs/workbench/contrib/search/browser/replaceService.zig");
+const ReplaceService = replace_service_mod.ReplaceService;
+const replace_types = replace_service_mod;
+const tree = @import("../vs/workbench/contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
 const group_mod = @import("../vs/workbench/common/editor/editorGroupModel.zig");
 const editor_groups = @import("../vs/workbench/services/editor/common/editorGroupsService.zig");
 const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
+const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
+const Range = @import("../vs/editor/common/core/range.zig").Range;
+const SearchOption = @import("./searchWidget.zig").Option;
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = enum { horizontal, vertical };
@@ -110,6 +124,9 @@ pub const Workbench = struct {
     layout: *LayoutNode,
     frame: ui.Frame,
     sidebar: ?*Sidebar = null,
+    search_view: ?*SearchView = null,
+    search_service: ?*SearchService = null,
+    search_replace: ?*ReplaceService = null,
     sidebar_visible: bool = false,
     sidebar_width: usize = 28,
     activity_bar: ActivityBar = .{},
@@ -141,6 +158,9 @@ pub const Workbench = struct {
         self.quit_armed = false;
         self.focus = .editor;
         self.sidebar = null;
+        self.search_view = null;
+        self.search_service = null;
+        self.search_replace = null;
         self.sidebar_visible = false;
         self.sidebar_width = 28;
         self.activity_bar = .{};
@@ -202,6 +222,9 @@ pub const Workbench = struct {
         self.quit_armed = false;
         self.focus = .editor;
         self.sidebar = null;
+        self.search_view = null;
+        self.search_service = null;
+        self.search_replace = null;
         self.sidebar_visible = false;
         self.sidebar_width = 28;
         self.activity_bar = .{};
@@ -275,6 +298,9 @@ pub const Workbench = struct {
         self.quit_armed = false;
         self.focus = .editor;
         self.sidebar = null;
+        self.search_view = null;
+        self.search_service = null;
+        self.search_replace = null;
         self.sidebar_visible = false;
         self.sidebar_width = 28;
         self.activity_bar = .{};
@@ -382,6 +408,20 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
             .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
+            .{ .id = "workbench.action.findInFiles", .label = "Find in Files", .category = "Search", .context = self, .run = commandFindInFiles },
+            .{ .id = "workbench.action.replaceInFiles", .label = "Replace in Files", .category = "Search", .context = self, .run = commandReplaceInFiles },
+            .{ .id = "toggleSearchCaseSensitive", .label = "Toggle Case Sensitive", .category = "Search", .context = self, .run = commandToggleSearchCase },
+            .{ .id = "toggleSearchWholeWord", .label = "Toggle Whole Word", .category = "Search", .context = self, .run = commandToggleSearchWholeWord },
+            .{ .id = "toggleSearchRegex", .label = "Toggle Regex", .category = "Search", .context = self, .run = commandToggleSearchRegex },
+            .{ .id = "toggleSearchPreserveCase", .label = "Toggle Preserve Case", .category = "Search", .context = self, .run = commandToggleSearchPreserveCase },
+            .{ .id = "search.action.focusNextSearchResult", .label = "Focus Next Search Result", .category = "Search", .context = self, .run = commandSearchNext },
+            .{ .id = "search.action.focusPreviousSearchResult", .label = "Focus Previous Search Result", .category = "Search", .context = self, .run = commandSearchPrevious },
+            .{ .id = "search.action.remove", .label = "Dismiss Search Result", .category = "Search", .context = self, .run = commandSearchRemove },
+            .{ .id = "search.action.replace", .label = "Replace", .category = "Search", .context = self, .run = commandSearchReplace },
+            .{ .id = "search.action.replaceAllInFile", .label = "Replace All in File", .category = "Search", .context = self, .run = commandSearchReplace },
+            .{ .id = "search.action.replaceAllInFolder", .label = "Replace All in Folder", .category = "Search", .context = self, .run = commandSearchReplace },
+            .{ .id = "search.action.clearSearchResults", .label = "Clear Search Results", .category = "Search", .context = self, .run = commandSearchClear },
+            .{ .id = "workbench.action.search.toggleQueryDetails", .label = "Toggle Search Details", .category = "Search", .context = self, .run = commandSearchDetails },
             .{ .id = "actions.find", .label = "Find", .context = self, .requires_editor = true, .run = commandFind },
             .{ .id = "editor.action.startFindReplaceAction", .label = "Replace", .context = self, .requires_editor = true, .run = commandReplace },
             .{ .id = "editor.action.commentLine", .label = "Toggle Line Comment", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleLineComment },
@@ -436,6 +476,40 @@ pub const Workbench = struct {
         return self.quick_access.isOpen();
     }
 
+    pub fn pollSearch(self: *Workbench, now_ms: i64) bool {
+        if (self.search_view) |view| return view.tick(now_ms);
+        return false;
+    }
+
+    pub fn searchWantsTick(self: *const Workbench) bool {
+        if (self.search_view) |view| return view.wantsTick();
+        return false;
+    }
+
+    pub fn onSearchEditorChanged(self: *Workbench) void {
+        if (self.search_view) |view| {
+            view.onEditorChanged(self.activeEditorInfo());
+        }
+    }
+
+    fn activeEditorInfo(self: *Workbench) ?search_view_mod.EditorInfo {
+        const tab = self.activeTab() orelse return null;
+        return .{ .path = tab.editor.path, .version = tab.editor.model.getVersionId() };
+    }
+
+    pub fn findInFiles(self: *Workbench) !void {
+        try self.showActivity(1);
+        if (self.search_view) |view| {
+            try view.seedFromSelection();
+            view.focus();
+        }
+    }
+
+    pub fn replaceInFiles(self: *Workbench) !void {
+        try self.showActivity(1);
+        if (self.search_view) |view| view.focusReplace();
+    }
+
     pub fn deinit(self: *Workbench) void {
         self.quick_access.deinit();
         self.commands.deinit();
@@ -444,6 +518,7 @@ pub const Workbench = struct {
         // inputs/emitters are destroyed.
         self.service.deinit();
         if (self.sidebar) |sidebar| sidebar.deinit();
+        self.destroySearch();
         self.workspace.deinit();
         for (self.panes.items) |pane| {
             for (pane.tabs.items) |tab| tab.deinit();
@@ -535,6 +610,7 @@ pub const Workbench = struct {
             sidebar.deinit();
             self.sidebar = null;
         }
+        self.destroySearch();
         self.workspace.deinit();
         self.workspace = replacement;
         try self.quick_access.setWorkspace(self.workspace);
@@ -548,19 +624,74 @@ pub const Workbench = struct {
     }
 
     pub fn initSidebarFromWorkspace(self: *Workbench) !void {
-        if (self.sidebar != null) return;
-        self.sidebar = try Sidebar.init(self.allocator, self.io, self.workspace);
+        if (self.sidebar == null) {
+            self.sidebar = try Sidebar.init(self.allocator, self.io, self.workspace);
+        }
+        if (self.search_view == null) try self.initSearchFromWorkspace();
         self.sidebar_visible = true;
-        self.active_activity = 0;
+        if (self.active_activity >= self.activity_bar.count()) self.active_activity = 0;
         self.layoutAll();
+    }
+
+    fn initSearchFromWorkspace(self: *Workbench) !void {
+        self.destroySearch();
+        const service = try self.allocator.create(SearchService);
+        errdefer self.allocator.destroy(service);
+        service.* = SearchService.init(self.allocator, self.io, self.workspace, .{
+            .context = self,
+            .read = searchReadFile,
+            .extra_files = searchExtraFiles,
+            .free_paths = searchFreePaths,
+        });
+        const replace = try self.allocator.create(ReplaceService);
+        errdefer self.allocator.destroy(replace);
+        replace.* = ReplaceService.init(self.allocator, .{
+            .context = self,
+            .apply_edits = searchApplyEdits,
+            .save_file = searchSaveFile,
+        });
+        const view = try SearchView.init(
+            self.allocator,
+            self.workspace,
+            service.interface(),
+            replace,
+            .{
+                .context = self,
+                .open_match = searchOpenMatch,
+                .highlight_range = searchHighlightRange,
+                .read_file = searchReadFile,
+                .extra_files = searchExtraFiles,
+                .free_paths = searchFreePaths,
+                .apply_edits = searchApplyEdits,
+                .save_file = searchSaveFile,
+                .active_selection_text = searchActiveSelectionText,
+                .active_editor = searchActiveEditorInfo,
+            },
+        );
+        errdefer view.deinit();
+        self.search_service = service;
+        self.search_replace = replace;
+        self.search_view = view;
+    }
+
+    fn destroySearch(self: *Workbench) void {
+        if (self.search_view) |view| view.deinit();
+        self.search_view = null;
+        if (self.search_replace) |replace| self.allocator.destroy(replace);
+        self.search_replace = null;
+        if (self.search_service) |service| self.allocator.destroy(service);
+        self.search_service = null;
     }
 
     pub fn showActivity(self: *Workbench, index: usize) !void {
         if (index >= self.activity_bar.count()) return;
-        if (self.sidebar == null) try self.initSidebarFromWorkspace();
+        if (self.sidebar == null or self.search_view == null) try self.initSidebarFromWorkspace();
         self.active_activity = index;
         self.sidebar_visible = true;
         self.focus = .sidebar;
+        if (index == 1) {
+            if (self.search_view) |view| view.focus();
+        }
         self.layoutAll();
     }
 
@@ -578,10 +709,14 @@ pub const Workbench = struct {
     pub fn focusSidebar(self: *Workbench) void {
         if (!self.sidebarShown()) return;
         self.focus = .sidebar;
+        if (self.active_activity == 1) {
+            if (self.search_view) |view| view.focus();
+        }
     }
 
     pub fn focusEditor(self: *Workbench) void {
         self.focus = .editor;
+        if (self.search_view) |view| view.blur();
     }
 
     fn layoutAll(self: *Workbench) void {
@@ -1015,11 +1150,25 @@ pub const Workbench = struct {
             return true;
         }
 
+        // A normal terminal cannot distinguish Ctrl-Shift-F from Ctrl-F, so
+        // the TUI exposes Find in Files as Alt-F.
+        if (event.mods.alt and !event.mods.ctrl and !event.mods.shift and event.key == .char) {
+            const ch = event.key.char;
+            if (ch == 'f' or ch == 'F') {
+                try self.showActivity(1);
+                if (self.search_view) |view| {
+                    view.seedFromSelection() catch {};
+                    view.focus();
+                }
+                return true;
+            }
+        }
+
         if (self.focus != .sidebar or !self.sidebarShown()) return false;
-        if (self.sidebar == null) return false;
 
         if (event.key == .escape) {
-            self.focus = .editor;
+            self.focusEditor();
+            if (self.activeTab()) |tab| tab.view.focusEditor();
             return true;
         }
 
@@ -1035,12 +1184,28 @@ pub const Workbench = struct {
             }
         }
 
+        if (self.active_activity == 1) {
+            if (self.search_view) |view| {
+                switch (view.handleKey(event)) {
+                    .handled => return true,
+                    .focus_editor => {
+                        self.focusEditor();
+                        if (self.activeTab()) |tab| tab.view.focusEditor();
+                        return true;
+                    },
+                    .unhandled => return true,
+                }
+            }
+            return true;
+        }
+
         if (self.active_activity != 0) {
             if (event.key == .up) try self.showActivity(@mod(self.active_activity + self.activity_bar.count() - 1, self.activity_bar.count()));
             if (event.key == .down) try self.showActivity(@mod(self.active_activity + 1, self.activity_bar.count()));
             return true;
         }
 
+        if (self.sidebar == null) return false;
         switch (try self.sidebar.?.handleKey(event)) {
             .open => |path| {
                 try self.openPath(path);
@@ -1065,6 +1230,10 @@ pub const Workbench = struct {
 
         if (event.x > activity_width + self.sidebarWidth()) return false;
         if (event.kind == .down) self.focus = .sidebar;
+        if (self.active_activity == 1) {
+            if (self.search_view) |view| _ = view.handleMouse(event);
+            return true;
+        }
         if (self.active_activity != 0) return true;
 
         const sidebar = self.sidebar orelse return false;
@@ -1079,6 +1248,9 @@ pub const Workbench = struct {
 
     pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (self.sidebarShown() and event.x <= activity_width + self.sidebarWidth()) return false;
+        if (event.kind == .down) {
+            if (self.search_view) |view| view.blur();
+        }
         const pane = self.paneAt(event.x, event.y) orelse return false;
         if (ui.cell.snap(pane.rect.y) != event.y) {
             if (pane.tabs.items.len > 0 and event.kind == .down) {
@@ -1120,6 +1292,10 @@ pub const Workbench = struct {
             if (self.active_activity == 0) {
                 if (self.sidebar) |sidebar| {
                     try sidebar.render(&self.frame.next, self.sidebarRect(), focused);
+                }
+            } else if (self.active_activity == 1) {
+                if (self.search_view) |view| {
+                    try view.render(&self.frame.next, self.sidebarRect());
                 }
             } else {
                 self.renderPlaceholder(self.sidebarRect(), focused);
@@ -1208,7 +1384,7 @@ pub const Workbench = struct {
             .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }),
         };
         const header = if (self.active_activity == 1) " SEARCH " else " SETTINGS ";
-        const title = if (self.active_activity == 1) "Search view is not ported yet" else "Settings view is not ported yet";
+        const title = "Settings view is not ported yet";
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
         const header_style = ui.cell.PaintStyle{
             .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
@@ -1507,6 +1683,234 @@ fn commandWordHighlightPrevious(context: *anyopaque) anyerror!void {
     tab.controllers.?.word_highlighter.moveBack();
 }
 
+fn searchOpenMatch(context: *anyopaque, path: []const u8, range: ?Range) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.openPath(path);
+    self.focus = .editor;
+    if (self.activeTab()) |tab| {
+        if (range) |value| try tab.editor.setSelection(value);
+        tab.view.focusEditor();
+    }
+    if (range) |value| searchHighlightRange(context, path, value) else searchHighlightRange(context, path, null);
+}
+
+fn searchHighlightRange(context: *anyopaque, path: []const u8, range: ?Range) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    for (self.panes.items) |pane| {
+        for (pane.tabs.items) |tab| {
+            if (range != null and std.mem.eql(u8, tab.editor.path, path)) {
+                const decorations = [_]editorBrowser.Decoration{.{ .range = range.?, .kind = .search_range_highlight }};
+                tab.view.setSearchHighlights(&decorations) catch {};
+            } else {
+                tab.view.setSearchHighlights(&.{}) catch {};
+            }
+        }
+    }
+}
+
+fn searchReadFile(context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?[]u8 {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    for (self.panes.items) |pane| {
+        for (pane.tabs.items) |tab| {
+            if (!std.mem.eql(u8, tab.editor.path, path)) continue;
+            var value = try tab.editor.model.getValue(null, false);
+            return try value.toOwnedSlice();
+        }
+    }
+    _ = allocator;
+    return null;
+}
+
+fn searchExtraFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    var paths = std.array_list.Managed([]u8).init(allocator);
+    errdefer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit();
+    }
+    for (self.panes.items) |pane| {
+        for (pane.tabs.items) |tab| {
+            if (self.workspace.isInsideWorkspace(tab.editor.path)) continue;
+            var duplicate = false;
+            for (paths.items) |existing| {
+                if (std.mem.eql(u8, existing, tab.editor.path)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) try paths.append(try allocator.dupe(u8, tab.editor.path));
+        }
+    }
+    return try paths.toOwnedSlice();
+}
+
+fn searchFreePaths(_: *anyopaque, allocator: Allocator, paths: [][]u8) void {
+    for (paths) |path| allocator.free(path);
+    allocator.free(paths);
+}
+
+fn searchApplyEdits(context: *anyopaque, path: []const u8, edits: []const replace_types.Edit) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    for (self.panes.items) |pane| {
+        for (pane.tabs.items) |tab| {
+            if (!std.mem.eql(u8, tab.editor.path, path)) continue;
+            const converted = try self.allocator.alloc(TextEdit, edits.len);
+            defer self.allocator.free(converted);
+            for (edits, 0..) |edit, index| {
+                converted[index] = .{ .range = edit.range, .text = edit.text };
+            }
+            try tab.editor.applyTextEdits(converted, &.{});
+            return;
+        }
+    }
+    return applyClosedFileEdits(self, path, edits);
+}
+
+fn applyClosedFileEdits(self: *Workbench, path: []const u8, edits: []const replace_types.Edit) !void {
+    const content = try Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(64 * 1024 * 1024));
+    defer self.allocator.free(content);
+
+    var starts = std.array_list.Managed(usize).init(self.allocator);
+    defer starts.deinit();
+    var bom_len: usize = 0;
+    if (content.len >= 3 and content[0] == 0xef and content[1] == 0xbb and content[2] == 0xbf) bom_len = 3;
+    try starts.append(bom_len);
+    for (content, 0..) |ch, index| {
+        if (ch == '\n' and index + 1 <= content.len) try starts.append(index + 1);
+    }
+
+    const Resolved = struct { start: usize, end: usize, text: []const u8 };
+    var resolved = std.array_list.Managed(Resolved).init(self.allocator);
+    defer resolved.deinit();
+    for (edits) |edit| {
+        const start = offsetAt(starts.items, edit.range.startLineNumber, edit.range.startColumn);
+        const end = offsetAt(starts.items, edit.range.endLineNumber, edit.range.endColumn);
+        try resolved.append(.{ .start = @min(start, content.len), .end = @min(end, content.len), .text = edit.text });
+    }
+    std.sort.heap(Resolved, resolved.items, {}, struct {
+        fn lessThan(_: void, a: Resolved, b: Resolved) bool {
+            return a.start > b.start;
+        }
+    }.lessThan);
+
+    var buffer = std.array_list.Managed(u8).init(self.allocator);
+    defer buffer.deinit();
+    try buffer.appendSlice(content);
+    for (resolved.items) |edit| {
+        if (edit.end < edit.start or edit.end > buffer.items.len) continue;
+        try buffer.replaceRange(edit.start, edit.end - edit.start, edit.text);
+    }
+    try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = buffer.items });
+}
+
+fn offsetAt(starts: []const usize, line: usize, column: usize) usize {
+    if (starts.len == 0) return 0;
+    const index = @min(line -| 1, starts.len - 1);
+    return starts[index] + (column -| 1);
+}
+
+fn searchSaveFile(context: *anyopaque, path: []const u8) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    for (self.panes.items) |pane| {
+        for (pane.tabs.items) |tab| {
+            if (std.mem.eql(u8, tab.editor.path, path)) {
+                try tab.editor.save();
+                return;
+            }
+        }
+    }
+}
+
+fn searchActiveSelectionText(context: *anyopaque, allocator: Allocator) anyerror!?[]u8 {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return null;
+    const selections = try tab.editor.getSelections();
+    defer self.allocator.free(selections);
+    for (selections) |selection| {
+        if (selection.isEmpty()) continue;
+        var value = try tab.editor.model.getValueInRange(Range.init(
+            selection.startLineNumber,
+            selection.startColumn,
+            selection.endLineNumber,
+            selection.endColumn,
+        ), null);
+        return try value.toOwnedSlice();
+    }
+    _ = allocator;
+    return null;
+}
+
+fn searchActiveEditorInfo(context: *anyopaque) ?search_view_mod.EditorInfo {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.activeEditorInfo();
+}
+
+fn commandFindInFiles(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.findInFiles();
+}
+
+fn commandReplaceInFiles(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.replaceInFiles();
+}
+
+fn ensureSearch(context: *anyopaque) !*SearchView {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showActivity(1);
+    return self.search_view.?;
+}
+
+fn commandToggleSearchCase(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandToggle(.match_case);
+}
+
+fn commandToggleSearchWholeWord(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandToggle(.whole_word);
+}
+
+fn commandToggleSearchRegex(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandToggle(.regex);
+}
+
+fn commandToggleSearchPreserveCase(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandToggle(.preserve_case);
+}
+
+fn commandSearchNext(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandFocusNext();
+}
+
+fn commandSearchPrevious(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandFocusPrevious();
+}
+
+fn commandSearchRemove(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandRemove();
+}
+
+fn commandSearchReplace(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandReplace();
+}
+
+fn commandSearchClear(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandClear();
+}
+
+fn commandSearchDetails(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandToggleDetails();
+}
+
 fn drawPlainText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []const u8, paint: ui.cell.PaintStyle) void {
     var col = x;
     var offset: usize = 0;
@@ -1756,6 +2160,123 @@ test "Workbench: sidebar renders and opens a file" {
     try std.testing.expect(workbench.sidebar_visible);
 }
 
+test "Workbench: workspace search streams results and opens a match" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "search_me.txt", "alpha beta\ngamma alpha\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while ((view.model.isSearching() or view.wantsTick()) and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const rendered = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "SEARCH") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "alpha") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "2 results in 1 files") != null);
+}
+
+test "Workbench: opening a search match selects its range" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "open_me.txt", "alpha beta\ngamma alpha\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while (view.model.isSearching() and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expect(view.rows.items.len > 0);
+
+    var match_row: ?usize = null;
+    for (view.rows.items, 0..) |row, index| {
+        switch (row) {
+            .match => {
+                match_row = index;
+                break;
+            },
+            else => {},
+        }
+    }
+    view.selected = match_row.?;
+    view.results_focused = true;
+    const enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expectEqual(@as(@TypeOf(view.handleKey(&enter)), .handled), view.handleKey(&enter));
+    const tab = workbench.activeTab().?;
+    const selections = try tab.editor.getSelections();
+    defer allocator.free(selections);
+    try std.testing.expectEqual(@as(usize, 1), selections.len);
+    try std.testing.expectEqual(@as(usize, 1), selections[0].startLineNumber);
+    try std.testing.expectEqual(@as(usize, 1), selections[0].startColumn);
+    try std.testing.expectEqual(@as(usize, 1), selections[0].endLineNumber);
+    try std.testing.expectEqual(@as(usize, 6), selections[0].endColumn);
+}
+
+test "Workbench: search replace all updates an open editor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "replace_me.txt", "alpha beta\ngamma alpha\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.widget.setValue(.replace, "omega");
+    view.model.setReplaceString("omega") catch {};
+    try view.startSearch();
+    var guard: usize = 0;
+    while (view.model.isSearching() and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
+    view.commandReplaceAll();
+
+    const tab = workbench.activeTab().?;
+    var content = try tab.editor.model.getValue(null, false);
+    defer content.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, content.items, "omega beta") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content.items, "gamma omega") != null);
+}
+
 test "Workbench: activity bar switches view containers" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -1781,7 +2302,7 @@ test "Workbench: activity bar switches view containers" {
     defer out.deinit();
     try workbench.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "SEARCH") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "Search view is not ported") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "No results") != null or std.mem.indexOf(u8, out.written(), "Search") != null);
 
     const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 3 };
     try std.testing.expect(workbench.handleSidebarMouse(&settings_click));

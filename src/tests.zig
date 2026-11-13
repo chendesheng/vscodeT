@@ -1,4 +1,21 @@
 comptime {
+    _ = @import("./vs/base/common/glob.zig");
+    _ = @import("./vs/base/common/comparers.zig");
+    _ = @import("./vs/workbench/services/search/common/search.zig");
+    _ = @import("./vs/workbench/services/search/common/searchService.zig");
+    _ = @import("./vs/workbench/services/search/common/replace.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/searchModel.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/match.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/fileMatch.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/folderMatch.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/textSearchHeading.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/searchTreeModel/searchResult.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/replaceService.zig");
+    _ = @import("./vs/workbench/services/search/test/common/search.test.zig");
+    _ = @import("./vs/workbench/contrib/search/test/browser/searchResult.test.zig");
+    _ = @import("./tui/searchWidget.zig");
+    _ = @import("./tui/searchView.zig");
     _ = @import("./tui/preview.zig");
     _ = @import("./tui/editorInput.zig");
     _ = @import("./tui/tabBar.zig");

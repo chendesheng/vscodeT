@@ -759,11 +759,23 @@ Library constraints:
   and sidebar column and offsets the editor split root; a click or Enter on a
   file calls `Workbench.openPath`. Directory resolution is synchronous and
   only the visible rows are painted; the async data tree/loading placeholders
-  and list virtualization of the browser tree are not ported. `src/tui/activityBar.zig` switches fixed Explorer,
-  Search and Settings containers (the latter two are placeholders). This is
-  not the browser `ExplorerView`/tree widget or registered view-container
-  service port; file watching, resizing, context menus and real Search/Settings
-  views are not ported.
+  and list virtualization of the browser tree are not ported.
+  `src/tui/activityBar.zig` switches fixed Explorer, Search and Settings
+  containers; Settings remains a placeholder. This is not the browser
+  `ExplorerView`/tree widget or registered view-container service port; file
+  watching, resizing and context menus are not ported.
+- The Search panel is split into a portable search service/tree and a terminal
+  view. `searchService.zig` walks workspace folders in bounded steps, reads
+  open-editor content through a host callback, applies the ported regex/word
+  matcher and streams owned file matches. `searchTreeModel` ports the result
+  hierarchy, replacement pattern and change events. `src/tui/searchWidget.zig`
+  renders the input/replace/details rows on a `ui.Surface`;
+  `src/tui/searchView.zig` owns focus, mouse routing, the flattened result
+  rows and the replace/open callbacks. Completed match selections write a
+  `rangeHighlight` model decoration through `View.setSearchHighlights`.
+  Remaining gaps are the browser tree's compression/virtualization,
+  multi-selection, drag/drop, context menus, AI/notebook/search-editor results,
+  `.gitignore`/`search.exclude` handling, replace preview and Settings view.
 
 ## 9. POC acceptance
 

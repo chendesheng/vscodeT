@@ -76,8 +76,12 @@ pub fn freeWordClassifierCache() void {
 }
 
 pub fn getMapForWordSeparators(allocator: Allocator, wordSeparators: []const u8) !*WordCharacterClassifier {
+    // The cache is process-lifetime by design; it must not retain an allocator
+    // owned by a short-lived editor or test.
+    _ = allocator;
+    const cache_allocator = std.heap.page_allocator;
     if (wordClassifierCache == null) {
-        wordClassifierCache = std.StringHashMap(WordCharacterClassifier).init(allocator);
+        wordClassifierCache = std.StringHashMap(WordCharacterClassifier).init(cache_allocator);
     }
 
     if (wordClassifierCache) |*cache| {
@@ -85,9 +89,9 @@ pub fn getMapForWordSeparators(allocator: Allocator, wordSeparators: []const u8)
 
         // Callers pass transient editor-owned slices, so the cache must own its
         // keys; a borrowed key would dangle after the editor is destroyed.
-        const key = try allocator.dupe(u8, wordSeparators);
-        errdefer allocator.free(key);
-        const classifier = try WordCharacterClassifier.init(allocator, wordSeparators);
+        const key = try cache_allocator.dupe(u8, wordSeparators);
+        errdefer cache_allocator.free(key);
+        const classifier = try WordCharacterClassifier.init(cache_allocator, wordSeparators);
         errdefer {
             var owned = classifier;
             owned.deinit();

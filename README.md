@@ -68,11 +68,28 @@ Notes for the Zig 0.17 port:
   directories resolve only when expanded. `Ctrl-B` toggles the side panel and
   `Escape` returns focus to the editor.
 - A minimal activity bar (`src/tui/activityBar.zig`) switches between Explorer,
-  Search and Settings containers. Explorer is wired to the file tree; Search
-  and Settings are placeholders until their contributions are ported.
+  Search and Settings containers. Explorer is wired to the file tree and Search
+  to the workspace text-search panel; Settings remains a placeholder.
   `Alt-1..3` switches containers while the side panel has focus. The width is
   fixed for now; there is no registered activity-bar/view-container service,
   file watching, context menu or drag-and-drop.
+- The Search panel (`src/tui/searchView.zig` and `src/tui/searchWidget.zig`) is
+  a plain-text workspace search over
+  `src/vs/workbench/services/search/common/searchService.zig` and the ported
+  search result tree. `Alt-F` opens it (Ctrl-Shift-F is indistinguishable from
+  Ctrl-F in a normal terminal), `Ctrl-R` toggles replace, `Alt-D` toggles the
+  files-to-include/exclude rows, and `Tab` cycles the inputs. Matching options
+  are `Alt-C` (case), `Alt-W` (whole word), `Alt-R` (regex) and `Alt-P`
+  (preserve case). `Enter` opens a match or toggles a folder/file; `Left`/
+  `Right` collapse/expand; `Delete` dismisses; `Alt-Enter` replaces the
+  selection and `Ctrl-Alt-Enter` replaces all. Results stream incrementally
+  and are grouped as Text Results -> workspace/nested folder -> file -> line.
+  The implementation skips symlinks, binary/invalid-UTF-8 files, files over
+  10 MB and the usual `.git`/`node_modules` build directories. It does not
+  honor `.gitignore` or `search.exclude`, has no AI/notebook/search-editor
+  results, no replace preview, no multi-selection/context menus, and does not
+  watch the filesystem; edits to the active editor schedule a debounced
+  re-search instead.
 - Folder opening follows the workspace model: a directory argument stat'd from
   the CLI becomes a `Workspace` folder through
   `src/vs/platform/workspace/common/workspace.zig` and

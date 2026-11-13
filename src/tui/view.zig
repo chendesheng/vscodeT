@@ -83,6 +83,7 @@ const word_text_options = makeDecorationOptions("wordHighlightText", .Center, ov
 const word_options = makeDecorationOptions("wordHighlight", .Center, overview_word_color, 0);
 const word_strong_options = makeDecorationOptions("wordHighlightStrong", .Center, overview_word_strong_color, 0);
 const hover_options = makeDecorationOptions("hoverHighlight", null, null, 0);
+const search_range_options = makeDecorationOptions("rangeHighlight", null, null, 1);
 
 fn makeDecorationOptions(
     comptime class_name: []const u8,
@@ -111,6 +112,7 @@ fn decorationOptions(kind: editorBrowser.DecorationKind, show_in_overview: bool)
         .word_highlight_text => &word_text_options,
         .word_highlight => &word_options,
         .word_highlight_strong => &word_strong_options,
+        .search_range_highlight => &search_range_options,
     };
 }
 
@@ -142,6 +144,7 @@ const DecorationOwner = struct {
     const bracket: usize = 2;
     const word: usize = 3;
     const hover: usize = 4;
+    const search: usize = 5;
 };
 
 const CellFlag = struct {
@@ -159,6 +162,7 @@ const CellFlag = struct {
     const snippet_placeholder: u16 = 1 << 10;
     const finish_snippet_placeholder: u16 = 1 << 11;
     const value_set_replacement: u16 = 1 << 12;
+    const search_range_highlight: u16 = 1 << 13;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -180,6 +184,7 @@ const word_highlight_strong_background = [3]u8{ 8, 61, 91 };
 /// no alpha, so these are composited over the dark editor background.
 const snippet_placeholder_background = [3]u8{ 52, 58, 68 };
 const finish_snippet_placeholder_background = [3]u8{ 66, 56, 42 };
+const search_range_highlight_background = [3]u8{ 48, 54, 66 };
 
 /// Overview-ruler marker colors. Cells have no alpha, so the translucent
 /// upstream theme colors are composited over the dark editor background.
@@ -348,6 +353,11 @@ pub const View = struct {
     /// Sets (or clears, with an empty slice) the word-occurrence highlights.
     pub fn setWordHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
         try self.replaceModelDecorations(DecorationOwner.word, decorations);
+    }
+
+    /// Sets the range highlighted by the Search view.
+    pub fn setSearchHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
+        try self.replaceModelDecorations(DecorationOwner.search, decorations);
     }
 
     pub fn clearDecorations(self: *View) !void {
@@ -1658,6 +1668,9 @@ fn appendRuns(
         var style = tokenStyle(part);
         if (cell < flags.len) {
             const flag = flags[cell];
+            if (flag & CellFlag.search_range_highlight != 0) {
+                style.background = color(search_range_highlight_background);
+            }
             if (flag & CellFlag.word_highlight_text != 0) {
                 style.background = color(word_highlight_background);
             } else if (flag & CellFlag.word_highlight != 0) {
@@ -1822,6 +1835,7 @@ fn decorationBit(class_name: []const u8) ?u16 {
     if (std.mem.eql(u8, class_name, "snippet-placeholder")) return CellFlag.snippet_placeholder;
     if (std.mem.eql(u8, class_name, "finish-snippet-placeholder")) return CellFlag.finish_snippet_placeholder;
     if (std.mem.eql(u8, class_name, "valueSetReplacement")) return CellFlag.value_set_replacement;
+    if (std.mem.eql(u8, class_name, "rangeHighlight")) return CellFlag.search_range_highlight;
     return null;
 }
 

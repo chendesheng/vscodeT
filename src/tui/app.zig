@@ -230,6 +230,7 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
+        if (workbench.pollSearch(now_ms)) needs_render = true;
         var timeout: i32 = 250;
         if (workbench.activeTab()) |active| {
             try active.ensureControllers();
@@ -253,6 +254,7 @@ pub fn main(init: std.process.Init) !void {
             if (needs_render) timeout = 0;
         }
         if (workbench.quickAccessWantsTick()) timeout = 0;
+        if (workbench.searchWantsTick()) timeout = 0;
 
         const ready = try tui.pollInput(timeout);
         var resized = false;
@@ -267,6 +269,7 @@ pub fn main(init: std.process.Init) !void {
             if (resized or needs_render) {
                 if (workbench.activeTab()) |current| {
                     current.onEditorChanged(now_ms);
+                    workbench.onSearchEditorChanged();
                     try current.view.refresh();
                 }
                 try workbench.render(out);
@@ -347,6 +350,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (workbench.activeTab()) |current| {
             current.onEditorChanged(time_compat.milliTimestamp());
+            workbench.onSearchEditorChanged();
             try current.view.refresh();
         }
         try tui.hideCursor(out);
