@@ -45,6 +45,10 @@ zig build example-hello    # colors, bold, backgrounds, inline text runs
 zig build example-list     # rows, alternating backgrounds, right-aligned columns
 zig build example-layout   # absolute + percent layout, left/center/right text
 zig build example-flex     # flex row/column, wrap, grow, gaps, auto margins
+zig build example-flex-toolbar # grow spacer, justify-content, auto margins, order
+zig build example-flex-cards   # wrapping cards with gap and align-content
+zig build example-flex-columns # nested column/row flex, growing panels, footer
+zig build example-flex-reverse # row-reverse, column-reverse, wrap-reverse
 zig build example-overflow # visible vs hidden/clip for text and absolute children
 zig build example-borders  # margin, padding and border boxes, nested absolute child
 zig build example-table    # bordered table with aligned columns

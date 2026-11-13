@@ -34,18 +34,17 @@ fn build(
     _: ?*anyopaque,
     doc: *ui.Document,
     parent: *ui.Node,
-    _: common.Size,
+    size: common.Size,
 ) !void {
     const root = try common.addBox(doc, parent, .{
         .position = .absolute,
-        .left = .{ .cells = 0 },
-        .top = .{ .cells = 0 },
-        .width = .{ .percent = 100 },
-        .height = .{ .percent = 100 },
+        .left = .{ .cells = 1 },
+        .top = .{ .cells = 1 },
+        .width = .{ .cells = @floatFromInt(size.width -| 2) },
+        .height = .{ .cells = @floatFromInt(size.height -| 2) },
         .display = .flex,
         .flex_direction = .column,
         .gap = .{ .row = 1 },
-        .padding = .all(1),
         .background = background,
     });
 
