@@ -182,6 +182,30 @@ pub const CellGrid = struct {
         }
     }
 
+    /// Copies a rectangle from `source` into this grid. Used by the TUI
+    /// workbench to composite an editor pane below the tab strip.
+    pub fn blit(
+        self: *CellGrid,
+        source: *const CellGrid,
+        dest_col: usize,
+        dest_row: usize,
+        width: usize,
+        height: usize,
+    ) void {
+        if (dest_col >= self.cols or dest_row >= self.rows) return;
+        const copy_width = @min(width, @min(source.cols, self.cols - dest_col));
+        const copy_height = @min(height, @min(source.rows, self.rows - dest_row));
+        var row: usize = 0;
+        while (row < copy_height) : (row += 1) {
+            const source_start = row * source.cols;
+            const dest_start = (dest_row + row) * self.cols + dest_col;
+            @memcpy(self.cluster[dest_start .. dest_start + copy_width], source.cluster[source_start .. source_start + copy_width]);
+            @memcpy(self.fg[dest_start .. dest_start + copy_width], source.fg[source_start .. source_start + copy_width]);
+            @memcpy(self.bg[dest_start .. dest_start + copy_width], source.bg[source_start .. source_start + copy_width]);
+            @memcpy(self.attrs[dest_start .. dest_start + copy_width], source.attrs[source_start .. source_start + copy_width]);
+        }
+    }
+
     pub fn rowHasContent(self: *const CellGrid, row: usize) bool {
         if (row >= self.rows) return false;
         const start = row * self.cols;

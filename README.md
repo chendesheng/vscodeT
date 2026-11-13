@@ -10,7 +10,7 @@ brew install oniguruma
 sudo apt install libonig-dev
 
 zig build        # build the TUI editor
-zig build run -- <file>   # run the TUI editor on a file
+zig build run -- <file>...   # run the TUI editor on one or more files
 zig build run -- --preview <file>   # read-only terminal UI preview
 zig build test   # run the editor and ui library tests
 ```
@@ -44,6 +44,16 @@ Notes for the Zig 0.17 port:
   text boxes), whole-cell layout with margin/padding/border boxes and
   box-drawing borders, and a double-buffered cell renderer that emits only an
   ANSI frame diff. It does not import editor code.
+- Multi-file editing uses the ported workbench editor-group model
+  (`src/vs/workbench/common/editor/editorGroupModel.zig`) with a terminal tab
+  strip (`src/tui/tabBar.zig`, `src/tui/workbench.zig`). Each tab keeps its own
+  `Editor`, `View` and lazy editor contributions; only the active view is
+  composited under the tab row, so switching tabs preserves scroll position and
+  decorations. `Ctrl-W` closes the active tab (a dirty tab asks
+  for a second `Ctrl-W`), `Ctrl-PgUp`/`Ctrl-PgDn` switch tabs, `Alt-1..9`
+  activates a tab by position, `Ctrl-S` saves and `Ctrl-Q` quits (a second
+  `Ctrl-Q` is required while any tab is dirty). `--preview` remains a
+  single-file mode.
 - The editor is rendered through the library (`src/tui/view.zig`): text,
   syntax colors, right-aligned line numbers, wrapped-line markers, selections,
   the current line, a hardware cursor and the status row. The
@@ -362,6 +372,18 @@ Editor contributions:
 - `src/vs/editor/common/commands/commandRunner.zig` executes a batch of
   `ICommand`s, including multi-selection commands, and maps their resulting
   selections.
+- The workbench editor-group model is ported at
+  `src/vs/workbench/common/editor/editorGroupModel.zig` with an
+  `EditorInput` base at `src/vs/workbench/common/editor/editorInput.zig`:
+  ordered editors, MRU order, preview/pinned/sticky/transient state,
+  multi-selection, close-next selection, lock, clone, and dirty/label/
+  capability/will-dispose re-emission. The upstream `editorGroupModel.test.ts`
+  cases for this behavior are ported. Serialization/deserialization (needs the
+  editor factory registry), side-by-side/diff inputs, editor splitting and
+  tab drag-and-drop are not ported yet; the model keeps the upstream
+  serialized-group types for that follow-up. The terminal shell is a single
+  editor group with a composited tab row; there is no file picker yet, so the
+  initial tabs come from the command line.
 - Known limitations: `MoveLinesCommand` does not yet implement VS Code's
   `Full` auto-indent branch (plain line moves only); line sorting is bytewise
   rather than locale-aware; the overview-ruler/scrollbar column is

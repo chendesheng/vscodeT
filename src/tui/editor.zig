@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
+const Emitter = @import("../vs/base/common/event.zig").Emitter;
 
 const Position = @import("../vs/editor/common/core/position.zig").Position;
 const Range = @import("../vs/editor/common/core/range.zig").Range;
@@ -140,6 +141,11 @@ pub const Editor = struct {
     multicursor_session: ?multicursor.SearchSession,
     after_edit: AfterEditComputer,
     saved_version: u32,
+    /// Last observed dirty state. Content changes and saves fire
+    /// `on_did_change_dirty` only when this flips, so tab labels can follow
+    /// the editor without polling.
+    dirty_state: bool,
+    on_did_change_dirty: Emitter(void),
     screen_width: usize,
     screen_height: usize,
     gutter_width: usize,
@@ -151,6 +157,7 @@ pub const Editor = struct {
     status: [MAX_STATUS]u8,
     status_len: usize,
     quit_armed: bool,
+    close_tab_armed: bool,
     prev_edit_operation_type: EditOperationType,
     pending_selection: [8]Selection,
     pending_selection_count: usize,
@@ -269,6 +276,8 @@ pub const Editor = struct {
             .multicursor_session = null,
             .after_edit = .{ .model = model },
             .saved_version = model.getAlternativeVersionId(),
+            .dirty_state = false,
+            .on_did_change_dirty = Emitter(void).init(allocator),
             .screen_width = @max(width, 1),
             .screen_height = @max(height, 1),
             .gutter_width = gutter,
@@ -277,6 +286,7 @@ pub const Editor = struct {
             .status = undefined,
             .status_len = 0,
             .quit_armed = false,
+            .close_tab_armed = false,
             .prev_edit_operation_type = .Other,
             .pending_selection = undefined,
             .pending_selection_count = 0,
@@ -326,6 +336,7 @@ pub const Editor = struct {
         self.allocator.destroy(self.language_service);
         self.codec.deinit();
         self.allocator.destroy(self.codec);
+        self.on_did_change_dirty.deinit();
         self.allocator.free(self.path);
     }
 
@@ -341,6 +352,16 @@ pub const Editor = struct {
                 self.pending_selection_count = count;
             }
         }
+        self.refreshDirtyState();
+    }
+
+    /// Recomputes the dirty bit and emits the change event when it flips.
+    /// Called after content changes and saves.
+    pub fn refreshDirtyState(self: *Editor) void {
+        const dirty = self.isDirty();
+        if (dirty == self.dirty_state) return;
+        self.dirty_state = dirty;
+        self.on_did_change_dirty.fire({}) catch {};
     }
 
     fn cursorsRef(self: *Editor) *CursorCollection {
@@ -1734,6 +1755,7 @@ pub const Editor = struct {
         }
 
         self.saved_version = self.model.getAlternativeVersionId();
+        self.refreshDirtyState();
         self.setMessage("Saved {s}", .{self.path});
     }
 
@@ -1747,6 +1769,21 @@ pub const Editor = struct {
 
     pub fn clearQuitArmed(self: *Editor) void {
         self.quit_armed = false;
+    }
+
+    /// Asks before closing this editor's tab, mirroring the dirty check of the
+    /// workbench's editor-part close. The first request arms; the second
+    /// returns true.
+    pub fn requestCloseTab(self: *Editor) bool {
+        if (!self.isDirty()) return true;
+        if (self.close_tab_armed) return true;
+        self.close_tab_armed = true;
+        self.setMessage("Unsaved changes: Ctrl-W again to close, Ctrl-S to save", .{});
+        return false;
+    }
+
+    pub fn clearCloseTabArmed(self: *Editor) void {
+        self.close_tab_armed = false;
     }
 };
 

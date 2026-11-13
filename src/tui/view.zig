@@ -757,6 +757,16 @@ pub const View = struct {
         self.surface.document().blur();
     }
 
+    /// Paints into the view's own frame without writing ANSI. The multi-file
+    /// workbench composites this grid below the tab strip.
+    pub fn paint(self: *View) !void {
+        try self.surface.paintFrame();
+    }
+
+    pub fn grid(self: *View) *const ui.CellGrid {
+        return self.surface.grid();
+    }
+
     pub fn render(self: *View, writer: *std.Io.Writer) !void {
         try self.surface.render(writer, .{ .synchronized = true });
     }

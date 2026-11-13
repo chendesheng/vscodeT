@@ -73,6 +73,16 @@ pub const Surface = struct {
         return self.frame.present();
     }
 
+    /// Lays out the current tree and paints it into the next frame without
+    /// encoding ANSI. Hosts that composite several surfaces use this and read
+    /// `grid()` afterwards; `render` is the one-surface convenience.
+    pub fn paintFrame(self: *Surface) !void {
+        try self.ensureLayout();
+        self.frame.begin();
+        paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
+        self.frame.swap();
+    }
+
     /// Lays out the current tree, paints it, diffs it against the previous
     /// frame and writes the ANSI delta. An unchanged frame writes nothing.
     pub fn render(self: *Surface, writer: *std.Io.Writer, options: RenderOptions) !void {

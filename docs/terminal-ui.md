@@ -715,6 +715,16 @@ Library constraints:
 - Long lines are clipped (no horizontal scrolling); wrapping uses the existing
   projection/wrapping column.
 - The old `src/tui/screen.zig`/`render.zig` path is gone.
+- Multi-file editing keeps one `View` per tab and composites the active view's
+  cell grid below a one-row tab strip in `src/tui/workbench.zig`. This is a
+  terminal adaptation of the workbench editor part: `EditorGroupModel` owns
+  tab order/MRU/preview/pinned/sticky state, `FileEditorInput` exposes each
+  editor's path/dirty/save state, and `Tab` keeps one persistent
+  view/contribution set per file. `ui.Surface.paintFrame` paints without
+  encoding ANSI and `ui.CellGrid.blit` copies the pane grid into the shell
+  frame, so switching tabs reuses the one double-buffered frame diff instead of
+  clearing the screen. Each tab keeps its scroll position and decorations. The shell is a single editor group: splitting, tab
+  drag/drop, overflow menus and persisted tab state are not ported.
 
 ## 9. POC acceptance
 

@@ -1,0 +1,238 @@
+// One terminal editor tab: an `Editor`, its `View`, the `FileEditorInput`
+// that represents it in the ported `EditorGroupModel`, and the editor
+// contributions that live on that view.
+//
+// Controllers are created lazily when a tab is first activated. That keeps
+// opening N files cheap and avoids constructing hover/suggest/find widgets for
+// tabs that were never shown, while the view/widget instances stay stable for
+// the lifetime of the tab (unlike re-creating them on every switch).
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
+const ui = @import("ui");
+const Editor = @import("./editor.zig").Editor;
+const View = @import("./view.zig").View;
+const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
+const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
+const word_character_classifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig");
+const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
+const Position = @import("../vs/editor/common/core/position.zig").Position;
+const Range = @import("../vs/editor/common/core/range.zig").Range;
+const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
+const time_compat = @import("../vs/base/common/timeCompat.zig");
+const languages = @import("../vs/editor/common/languages.zig");
+const hoverTypes = @import("../vs/editor/contrib/hover/browser/hoverTypes.zig");
+const ContentHoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+const MarkdownHoverParticipant = @import("../vs/editor/contrib/hover/browser/markdownHoverParticipant.zig").MarkdownHoverParticipant;
+const WordHighlighterContribution = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+const SuggestController = @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestController;
+const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
+const TuiHoverProvider = @import("./hoverProvider.zig").TuiHoverProvider;
+const completion = @import("../vs/editor/common/languages/completion.zig");
+
+pub const Tab = struct {
+    allocator: Allocator,
+    editor: *Editor,
+    view: *View,
+    input: *FileEditorInput,
+    controllers: ?*Controllers = null,
+
+    pub fn init(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Tab {
+        const self = try allocator.create(Tab);
+        errdefer allocator.destroy(self);
+
+        const editor = try Editor.create(allocator, io, path, width, height);
+        errdefer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+
+        const view = try View.init(allocator, editor);
+        errdefer view.deinit();
+
+        const input = try FileEditorInput.init(allocator, editor);
+        errdefer input.deinit();
+
+        self.* = .{
+            .allocator = allocator,
+            .editor = editor,
+            .view = view,
+            .input = input,
+        };
+        return self;
+    }
+
+    /// Creates the editor contributions on first activation. The tab must have
+    /// been attached to a view before any key/mouse event is routed to it.
+    pub fn ensureControllers(self: *Tab) !void {
+        if (self.controllers != null) return;
+
+        const controllers = try Controllers.init(self.allocator, self.editor, self.view);
+        errdefer controllers.deinit();
+
+        try self.view.addOverlayWidget(controllers.find.widget().interface());
+        try self.view.addContentWidget(controllers.hover.widget().contentWidget());
+        try self.view.addContentWidget(controllers.suggest.widgetInterface());
+
+        self.controllers = controllers;
+        controllers.word_highlighter.onEditorChanged(time_compat.milliTimestamp());
+    }
+
+    pub fn onEditorChanged(self: *Tab, now_ms: i64) void {
+        if (self.controllers) |controllers| {
+            controllers.find.onEditorChanged();
+            controllers.word_highlighter.onEditorChanged(now_ms);
+            _ = controllers.suggest.onEditorChanged() catch {};
+        }
+    }
+
+    pub fn refresh(self: *Tab) !void {
+        try self.view.refresh();
+    }
+
+    pub fn deinit(self: *Tab) void {
+        if (self.controllers) |controllers| {
+            controllers.deinit();
+            self.controllers = null;
+        }
+        self.view.deinit();
+        self.input.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
+/// The per-tab editor contributions. Mirrors the construction order in the
+/// single-editor app so the find/hover/word/suggest behavior is identical.
+pub const Controllers = struct {
+    allocator: Allocator,
+    find_sink: View.ModelDecorationSink,
+    hover_sink: View.ModelDecorationSink,
+    word_sink: View.ModelDecorationSink,
+
+    find: *FindController,
+    hover_provider: TuiHoverProvider,
+    hover_providers: [1]languages.HoverProvider,
+    hover_participant: MarkdownHoverParticipant,
+    participants: [1]hoverTypes.IEditorHoverParticipant,
+    hover: *ContentHoverController,
+    word_highlighter: *WordHighlighterContribution,
+    word_provider: WordBasedCompletionProvider,
+    completion_providers: [1]completion.CompletionItemProvider,
+    suggest: *SuggestController,
+
+    pub fn init(allocator: Allocator, editor: *Editor, view: *View) !*Controllers {
+        const self = try allocator.create(Controllers);
+        errdefer allocator.destroy(self);
+
+        self.allocator = allocator;
+
+        self.find_sink = .{ .model = editor.model, .owner = 1 };
+        self.find = try FindController.init(allocator, editor, .{
+            .context = self.find_sink.context(),
+            .set = View.ModelDecorationSink.set,
+        });
+        errdefer self.find.deinit();
+
+        self.hover_sink = .{ .model = editor.model, .owner = 4 };
+        self.word_sink = .{ .model = editor.model, .owner = 3 };
+
+        self.hover_provider = TuiHoverProvider.init(allocator);
+        errdefer self.hover_provider.deinit();
+        self.hover_providers = .{self.hover_provider.interface()};
+
+        self.hover_participant = MarkdownHoverParticipant.init(allocator, editor.model, &self.hover_providers);
+        errdefer self.hover_participant.deinit();
+        self.participants = .{self.hover_participant.interface()};
+
+        self.hover = try ContentHoverController.init(allocator, editor.model, &self.participants, .{}, .{
+            .context = view,
+            .decoration_context = self.hover_sink.context(),
+            .text_height = viewTextHeight,
+            .visible_row_of = viewVisibleRowOf,
+            .request_frame = viewRequestFrame,
+            .focus_editor = viewFocusEditor,
+            .set_hover_decoration = setHoverModelDecoration,
+            .coordinates = .{
+                .context = view,
+                .model_column_at_view_line_start = viewModelColumnAtViewLineStart,
+            },
+        });
+        errdefer self.hover.deinit();
+
+        self.word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
+            .context = view,
+            .decoration_context = self.word_sink.context(),
+            .has_text_focus = viewHasEditorFocus,
+            .set_decorations = View.ModelDecorationSink.set,
+            .request_frame = viewRequestFrame,
+        }, .{});
+        errdefer self.word_highlighter.deinit();
+
+        self.word_provider = WordBasedCompletionProvider.init();
+        self.completion_providers = .{self.word_provider.interface()};
+
+        self.suggest = try SuggestController.init(allocator, editor, &self.completion_providers, .{
+            .context = view,
+            .text_height = viewTextHeight,
+            .visible_row_of = viewVisibleRowOf,
+            .request_frame = viewRequestFrame,
+            .focus_editor = viewFocusEditor,
+            .has_editor_focus = viewHasEditorFocus,
+        });
+        errdefer self.suggest.deinit();
+
+        return self;
+    }
+
+    pub fn deinit(self: *Controllers) void {
+        self.suggest.deinit();
+        self.word_highlighter.deinit();
+        self.hover.deinit();
+        self.hover_participant.deinit();
+        self.hover_provider.deinit();
+        self.find.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
+fn viewTextHeight(context: *anyopaque) usize {
+    const view: *View = @ptrCast(@alignCast(context));
+    return view.editor.textHeight();
+}
+
+fn viewVisibleRowOf(context: *anyopaque, position: Position) ?usize {
+    const view: *View = @ptrCast(@alignCast(context));
+    return view.visibleRowOf(position);
+}
+
+fn viewRequestFrame(_: *anyopaque) void {}
+
+fn viewFocusEditor(context: *anyopaque) void {
+    const view: *View = @ptrCast(@alignCast(context));
+    view.focusEditor();
+}
+
+fn viewHasEditorFocus(context: *anyopaque) bool {
+    const view: *View = @ptrCast(@alignCast(context));
+    return view.hasEditorFocus();
+}
+
+fn setHoverModelDecoration(context: *anyopaque, range: ?Range) void {
+    if (range) |value| {
+        const decorations = [_]editorBrowser.Decoration{
+            .{ .range = value, .kind = .hover_highlight },
+        };
+        View.ModelDecorationSink.set(context, &decorations);
+    } else {
+        View.ModelDecorationSink.set(context, &.{});
+    }
+}
+
+fn viewModelColumnAtViewLineStart(context: *anyopaque, position: Position) usize {
+    const view: *View = @ptrCast(@alignCast(context));
+    const view_position = view.editor.viewPositionOfModelPosition(position);
+    const data = view.editor.viewLineData(view_position.lineNumber) catch return 1;
+    return view.editor.modelColumnOfViewPosition(view_position.lineNumber, data.minColumn);
+}

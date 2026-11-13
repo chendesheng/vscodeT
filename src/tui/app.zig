@@ -7,6 +7,7 @@ const input = ui.input;
 const Editor = @import("./editor.zig").Editor;
 const View = @import("./view.zig").View;
 const Preview = @import("./preview.zig").Preview;
+const Workbench = @import("./workbench.zig").Workbench;
 const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
 const word_character_classifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
@@ -24,20 +25,27 @@ const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browse
 const TuiHoverProvider = @import("./hoverProvider.zig").TuiHoverProvider;
 const ArrayList = std.array_list.Managed;
 
-const Args = struct {
-    path: []const u8,
-    preview: bool,
-};
-
-fn parseArgs(args: std.process.Args) !Args {
+/// Parses the path list. `--preview` is only valid with a single path.
+/// Returns whether preview mode was requested.
+fn parseArgs(args: std.process.Args, paths: *ArrayList([]const u8)) !bool {
     var it = args.iterate();
     _ = it.next(); // executable name
-    const first = it.next() orelse return error.NoPathProvided;
-    if (std.mem.eql(u8, first, "--preview")) {
-        const path = it.next() orelse return error.NoPathProvided;
-        return .{ .path = path, .preview = true };
+
+    var preview = false;
+    var first = true;
+    while (it.next()) |arg| {
+        if (first and std.mem.eql(u8, arg, "--preview")) {
+            preview = true;
+            first = false;
+            continue;
+        }
+        first = false;
+        try paths.append(arg);
     }
-    return .{ .path = first, .preview = false };
+
+    if (paths.items.len == 0) return error.NoPathProvided;
+    if (preview and paths.items.len != 1) return error.TooManyPathsForPreview;
+    return preview;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -47,8 +55,11 @@ pub fn main(init: std.process.Init) !void {
     // release it before the safe allocator checks for leaks on exit.
     defer word_character_classifier.freeWordClassifierCache();
 
-    const args = parseArgs(init.minimal.args) catch {
-        std.debug.print("usage: zig <file>\n       zig --preview <file>\n", .{});
+    var paths = ArrayList([]const u8).init(allocator);
+    defer paths.deinit();
+
+    const preview = parseArgs(init.minimal.args, &paths) catch {
+        std.debug.print("usage: zig <file>...\n       zig --preview <file>\n", .{});
         return;
     };
 
@@ -76,79 +87,21 @@ pub fn main(init: std.process.Init) !void {
     try tui.installSigWinch();
 
     var size = try tui.getTerminalSize();
-    var editor = try Editor.create(allocator, io, args.path, size.width, size.height);
-    defer {
-        editor.deinit();
-        allocator.destroy(editor);
-    }
 
-    if (args.preview) {
+    if (preview) {
+        var editor = try Editor.create(allocator, io, paths.items[0], size.width, size.height);
+        defer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
         try runPreview(allocator, out, editor, size);
         return;
     }
 
-    const view = try View.init(allocator, editor);
-    defer view.deinit();
+    const workbench = try Workbench.init(allocator, io, paths.items, size.width, size.height);
+    defer workbench.deinit();
 
-    var find_sink = View.ModelDecorationSink{ .model = editor.model, .owner = 1 };
-    const find = try FindController.init(allocator, editor, .{
-        .context = find_sink.context(),
-        .set = View.ModelDecorationSink.set,
-    });
-    defer find.deinit();
-    try view.addOverlayWidget(find.widget().interface());
-
-    // Hover contribution: the markdown participant renders provider results and
-    // line-decoration hover messages; the TUI provider stands in for language
-    // extensions.
-    var tui_hover_provider = TuiHoverProvider.init(allocator);
-    defer tui_hover_provider.deinit();
-    const hover_providers = [_]languages.HoverProvider{tui_hover_provider.interface()};
-    var hover_participant = MarkdownHoverParticipant.init(allocator, editor.model, &hover_providers);
-    defer hover_participant.deinit();
-    const participants = [_]hoverTypes.IEditorHoverParticipant{hover_participant.interface()};
-    var hover_sink = View.ModelDecorationSink{ .model = editor.model, .owner = 4 };
-    const hover = try ContentHoverController.init(allocator, editor.model, &participants, .{}, .{
-        .context = view,
-        .decoration_context = hover_sink.context(),
-        .text_height = viewTextHeight,
-        .visible_row_of = viewVisibleRowOf,
-        .request_frame = viewRequestFrame,
-        .focus_editor = viewFocusEditor,
-        .set_hover_decoration = setHoverModelDecoration,
-        .coordinates = .{
-            .context = view,
-            .model_column_at_view_line_start = viewModelColumnAtViewLineStart,
-        },
-    });
-    defer hover.deinit();
-    try view.addContentWidget(hover.widget().contentWidget());
-
-    // Word occurrence highlighting follows the caret/selection. The textual
-    // provider stands in for language highlight providers.
-    var word_sink = View.ModelDecorationSink{ .model = editor.model, .owner = 3 };
-    const word_highlighter = try WordHighlighterContribution.init(allocator, editor, .{
-        .context = view,
-        .decoration_context = word_sink.context(),
-        .has_text_focus = viewHasEditorFocus,
-        .set_decorations = View.ModelDecorationSink.set,
-        .request_frame = viewRequestFrame,
-    }, .{});
-    defer word_highlighter.deinit();
-    word_highlighter.onEditorChanged(time_compat.milliTimestamp());
-
-    var word_provider = WordBasedCompletionProvider.init();
-    const completion_providers = [_]@import("../vs/editor/common/languages/completion.zig").CompletionItemProvider{word_provider.interface()};
-    const suggest = try SuggestController.init(allocator, editor, &completion_providers, .{
-        .context = view,
-        .text_height = viewTextHeight,
-        .visible_row_of = viewVisibleRowOf,
-        .request_frame = viewRequestFrame,
-        .focus_editor = viewFocusEditor,
-        .has_editor_focus = viewHasEditorFocus,
-    });
-    defer suggest.deinit();
-    try view.addContentWidget(suggest.widgetInterface());
+    try workbench.activeTab().?.ensureControllers();
 
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
@@ -156,44 +109,50 @@ pub fn main(init: std.process.Init) !void {
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
 
-    var is_pasting = false;
-    try view.render(out);
-    try syncCursor(out, view);
+    try workbench.render(out);
+    try workbench.syncCursor(out);
     try out.flush();
 
     var needs_render = false;
     while (true) {
+        const active = workbench.activeTab() orelse return;
+        try active.ensureControllers();
+        const controllers = active.controllers.?;
+
         const now_ms = time_compat.milliTimestamp();
-        if (editor.inPlaceReplaceTick(now_ms)) needs_render = true;
-        if (hover.onTick(now_ms)) needs_render = true;
-        if (word_highlighter.onTick(now_ms)) needs_render = true;
-        if (try suggest.onTick(now_ms)) needs_render = true;
-        var timeout = hover.pollTimeout(now_ms, 250);
-        if (editor.inPlaceReplacePollTimeout(now_ms)) |replace_timeout| {
+        if (active.editor.inPlaceReplaceTick(now_ms)) needs_render = true;
+        if (controllers.hover.onTick(now_ms)) needs_render = true;
+        if (controllers.word_highlighter.onTick(now_ms)) needs_render = true;
+        if (try controllers.suggest.onTick(now_ms)) needs_render = true;
+
+        var timeout = controllers.hover.pollTimeout(now_ms, 250);
+        if (active.editor.inPlaceReplacePollTimeout(now_ms)) |replace_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(replace_timeout, 250))));
         }
-        if (word_highlighter.pollTimeout(now_ms)) |word_timeout| {
+        if (controllers.word_highlighter.pollTimeout(now_ms)) |word_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(word_timeout, 250))));
         }
-        if (suggest.pollTimeout(now_ms)) |suggest_timeout| {
+        if (controllers.suggest.pollTimeout(now_ms)) |suggest_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(suggest_timeout, 250))));
         }
         if (needs_render) timeout = 0;
+
         const ready = try tui.pollInput(timeout);
         var resized = false;
         if (try tui.resizedSize()) |new_size| {
             size = new_size;
-            editor.setViewport(size.width, size.height);
-            try view.resize();
+            try workbench.resize(size.width, size.height);
             try tui.clearScreen(out);
             resized = true;
         }
 
         if (!ready) {
             if (resized or needs_render) {
-                try view.refresh();
-                try view.render(out);
-                try syncCursor(out, view);
+                const current = workbench.activeTab() orelse return;
+                current.onEditorChanged(now_ms);
+                try current.view.refresh();
+                try workbench.render(out);
+                try workbench.syncCursor(out);
                 try out.flush();
                 needs_render = false;
             }
@@ -209,22 +168,66 @@ pub fn main(init: std.process.Init) !void {
         for (events.items) |*item| {
             switch (item.*) {
                 .key => |*event| {
-                    if (try handleKeyEvent(view, hover, word_highlighter, find, suggest, editor, event, &is_pasting, now_ms)) return;
+                    const current = workbench.activeTab() orelse return;
+                    try current.ensureControllers();
+
+                    if (isCtrlQ(event.*)) {
+                        if (workbench.requestQuit()) return;
+                        continue;
+                    }
+                    workbench.clearQuitArmed();
+
+                    switch (try workbench.handleTabKey(event)) {
+                        .quit => return,
+                        .handled => continue,
+                        .unhandled => current.editor.clearCloseTabArmed(),
+                    }
+
+                    const tab_controllers = current.controllers.?;
+                    if (try handleKeyEvent(
+                        current.view,
+                        tab_controllers.hover,
+                        tab_controllers.word_highlighter,
+                        tab_controllers.find,
+                        tab_controllers.suggest,
+                        current.editor,
+                        event,
+                        &workbench.is_pasting,
+                        now_ms,
+                    )) return;
                 },
                 .mouse => |*event| {
-                    handleMouseEvent(view, hover, find, suggest, editor, event) catch |err| {
-                        editor.setMessage("mouse failed: {s}", .{@errorName(err)});
+                    if (workbench.handleTabMouse(event)) continue;
+                    workbench.clearQuitArmed();
+
+                    const current = workbench.activeTab() orelse return;
+                    if (event.kind == .down) current.editor.clearCloseTabArmed();
+                    const tab_controllers = current.controllers orelse blk: {
+                        try current.ensureControllers();
+                        break :blk current.controllers.?;
+                    };
+                    var adjusted = event.*;
+                    adjusted.y -|= 1;
+                    handleMouseEvent(
+                        current.view,
+                        tab_controllers.hover,
+                        tab_controllers.find,
+                        tab_controllers.suggest,
+                        current.editor,
+                        &adjusted,
+                    ) catch |err| {
+                        current.editor.setMessage("mouse failed: {s}", .{@errorName(err)});
                     };
                 },
             }
         }
 
-        word_highlighter.onEditorChanged(time_compat.milliTimestamp());
-        _ = try suggest.onEditorChanged();
-        try view.refresh();
+        const current = workbench.activeTab() orelse return;
+        current.onEditorChanged(time_compat.milliTimestamp());
+        try current.view.refresh();
         try tui.hideCursor(out);
-        try view.render(out);
-        try syncCursor(out, view);
+        try workbench.render(out);
+        try workbench.syncCursor(out);
         try out.flush();
         needs_render = false;
     }

@@ -1,5 +1,9 @@
 comptime {
     _ = @import("./tui/preview.zig");
+    _ = @import("./tui/editorInput.zig");
+    _ = @import("./tui/tabBar.zig");
+    _ = @import("./tui/tab.zig");
+    _ = @import("./tui/workbench.zig");
     _ = @import("./tui/hoverProvider.zig");
     _ = @import("./vs/base/common/cache.zig");
     _ = @import("./vs/base/common/event.zig");
@@ -295,4 +299,5 @@ comptime {
     _ = @import("./vs/editor/contrib/snippet/test/browser/snippetSession.test.zig");
     _ = @import("./vs/editor/contrib/smartSelect/test/browser/smartSelect.test.zig");
     _ = @import("./vs/editor/contrib/inPlaceReplace/test/browser/inPlaceReplace.test.zig");
+    _ = @import("./vs/workbench/test/browser/parts/editor/editorGroupModel.test.zig");
 }
