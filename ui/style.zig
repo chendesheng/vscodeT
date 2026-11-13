@@ -58,6 +58,91 @@ pub const Overflow = enum { visible, hidden, clip };
 pub const TextAlign = enum { left, center, right };
 pub const Visibility = enum { visible, hidden };
 
+/// A margin edge is either a fixed cell length or `auto`; auto margins absorb
+/// free space in a flex line (css-flexbox-1 §8.1) and center a definite-width
+/// block horizontally.
+pub const MarginEdge = union(enum) {
+    cells: f64,
+    auto,
+
+    /// The numeric value, with `auto` resolved to zero. Callers that care
+    /// about auto margins check `isAuto` first.
+    pub fn resolve(self: MarginEdge) f64 {
+        return switch (self) {
+            .cells => |value| value,
+            .auto => 0,
+        };
+    }
+
+    pub fn isAuto(self: MarginEdge) bool {
+        return self == .auto;
+    }
+};
+
+/// Space outside the border box. Unlike `Edges`, each side can be `auto`.
+pub const Margin = struct {
+    top: MarginEdge = .{ .cells = 0 },
+    right: MarginEdge = .{ .cells = 0 },
+    bottom: MarginEdge = .{ .cells = 0 },
+    left: MarginEdge = .{ .cells = 0 },
+
+    pub fn all(value: f64) Margin {
+        return .{
+            .top = .{ .cells = value },
+            .right = .{ .cells = value },
+            .bottom = .{ .cells = value },
+            .left = .{ .cells = value },
+        };
+    }
+
+    /// Numeric horizontal margins, with auto counted as zero.
+    pub fn horizontal(self: Margin) f64 {
+        return self.left.resolve() + self.right.resolve();
+    }
+
+    /// Numeric vertical margins, with auto counted as zero.
+    pub fn vertical(self: Margin) f64 {
+        return self.top.resolve() + self.bottom.resolve();
+    }
+
+    pub fn hasAuto(self: Margin) bool {
+        return self.top.isAuto() or self.right.isAuto() or
+            self.bottom.isAuto() or self.left.isAuto();
+    }
+};
+
+/// Row and column gaps between flex lines and flex items, in cells.
+pub const Gap = struct {
+    row: f64 = 0,
+    column: f64 = 0,
+
+    pub fn all(value: f64) Gap {
+        return .{ .row = value, .column = value };
+    }
+};
+
+pub const FlexDirection = enum { row, row_reverse, column, column_reverse };
+pub const FlexWrap = enum { nowrap, wrap, wrap_reverse };
+pub const JustifyContent = enum {
+    flex_start,
+    center,
+    flex_end,
+    space_between,
+    space_around,
+    space_evenly,
+};
+pub const AlignItems = enum { stretch, flex_start, center, flex_end, baseline };
+pub const AlignSelf = enum { auto, stretch, flex_start, center, flex_end, baseline };
+pub const AlignContent = enum {
+    stretch,
+    flex_start,
+    center,
+    flex_end,
+    space_between,
+    space_around,
+    space_evenly,
+};
+
 pub const Style = struct {
     position: Position = .static,
     top: Dimension = .auto,
@@ -68,8 +153,9 @@ pub const Style = struct {
     width: Dimension = .auto,
     height: Dimension = .auto,
 
-    /// Space outside the border box. Negative margins are allowed.
-    margin: Edges = .{},
+    /// Space outside the border box. Negative margins are allowed; `auto`
+    /// margins absorb free space in a flex line or center a block.
+    margin: Margin = .{},
     /// Space between the border and the content box.
     padding: Edges = .{},
     /// Border widths. Zero by default; with `border_style == .single` they are
@@ -82,6 +168,22 @@ pub const Style = struct {
     overflow: Overflow = .visible,
     text_align: TextAlign = .left,
     visibility: Visibility = .visible,
+
+    flex_direction: FlexDirection = .row,
+    flex_wrap: FlexWrap = .nowrap,
+    justify_content: JustifyContent = .flex_start,
+    align_items: AlignItems = .stretch,
+    align_self: AlignSelf = .auto,
+    align_content: AlignContent = .stretch,
+    flex_grow: f64 = 0,
+    flex_shrink: f64 = 1,
+    /// The initial main size. `auto` falls back to the item's main-axis
+    /// `width`/`height`, then to its content size.
+    flex_basis: Dimension = .auto,
+    /// Order-modified document order for flex items. Lower values lay out and
+    /// paint first; equal values keep document order.
+    order: i32 = 0,
+    gap: Gap = .{},
 
     color: ?Color = null,
     background: ?Color = null,
@@ -152,4 +254,19 @@ test "Rect intersects and clamps" {
     try std.testing.expectEqual(@as(f64, 3), r.y);
     try std.testing.expectEqual(@as(f64, 5), r.w);
     try std.testing.expectEqual(@as(f64, 2), r.h);
+}
+
+test "Margin and Gap helpers" {
+    const margin = Margin.all(2);
+    try std.testing.expectEqual(@as(f64, 4), margin.horizontal());
+    try std.testing.expectEqual(@as(f64, 4), margin.vertical());
+    try std.testing.expect(!margin.hasAuto());
+
+    const auto_margin = Margin{ .left = .auto, .right = .auto };
+    try std.testing.expect(auto_margin.hasAuto());
+    try std.testing.expectEqual(@as(f64, 0), auto_margin.left.resolve());
+
+    const gap = Gap.all(1);
+    try std.testing.expectEqual(@as(f64, 1), gap.row);
+    try std.testing.expectEqual(@as(f64, 1), gap.column);
 }

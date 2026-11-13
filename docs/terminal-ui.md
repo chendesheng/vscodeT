@@ -280,7 +280,7 @@ DOM + Style (dom.zig)
    ↓ mutation notifications
 BoxTree (box.zig)
    ↓ layoutTree
-formatting contexts (layout.zig): block, absolute, flex (next)
+formatting contexts (layout.zig): block, inline, flex, absolute
    ↓
 paint (paint.zig) + geometry copied back to DOM rects
 ```
@@ -317,10 +317,27 @@ their children are promoted into the parent's formatting context.
 
 `layoutTree(tree, doc)` sets the viewport, solves the box tree, and copies the
 rects back to DOM `Element.rect`/`Text.rect` for the measurement boundary. The
-current solver handles block flow, absolute positioning, the
-margin/padding/border box model and one line of inline text per anonymous inline
-box. Flex is the next formatting context; the box tree
-already produces its items.
+solver is a two-pass whole-tree layout: in-flow block, inline and flex boxes are
+solved first, then every out-of-flow box is placed once its containing block has
+final geometry.
+
+The block pass stacks children, supports horizontal auto margins, and derives
+auto content height from the children. Inline flow remains one line per
+anonymous inline run, but inline-level elements now lay out their own content
+(including `inline-block` and `inline-flex`) and the run advances by the tallest
+child. The flex pass follows css-flexbox-1 §9 and TermDOM's `layoutsolver` shape:
+it resolves a flex basis per item (border-box main size), breaks lines for a
+definite main axis, runs the grow/shrink freeze loop, measures item cross sizes,
+computes line and container sizes, and positions items with `justify-content`,
+`align-content`, `align-items`/`align-self`, gaps and auto margins. Reverse
+directions mirror margin boxes, and `wrap-reverse` mirrors lines. Items are
+re-laid at their final origins so descendants and absolute children get final
+absolute coordinates. `order` is applied once by stable-sorting the flex
+container's derived children, so layout, paint order and hit testing agree.
+
+The solver uses a temporary arena per pass for flex items and lines; `layoutTree`
+is therefore fallible. There is no min/max sizing or automatic min-content floor,
+so a shrunken item can overflow its neighbour unless `overflow` clips it.
 
 The box tree owns invalidation. DOM mutation APIs notify the attached
 `MutationObserver`. Structural, style and text changes all set `needs_rebuild`
@@ -512,20 +529,27 @@ Public surface for the POC:
   `removeEventListener`, `focus`, `blur`, `isFocusable`.
 - `Style`: `position` (static/relative/absolute/fixed), `top/right/bottom/left`,
   `width/height` (`auto | cells | percent`), `display`
-  (block/inline/inline-block/none), `overflow` (visible/hidden/clip),
-  `text_align`, `white_space`, `color`, `background`, `bold`, `italic`,
-  `underline`, `strikethrough`, `dim`, `reverse`, `visibility`, `z_index`,
-  `translate_x/y`, plus `margin`, `padding`, `border`, `border_style` and
-  `border_color`. `width`/`height` are content-box sizes; padding, border and
-  margin expand outward.
+  (block/inline/inline-block/flex/inline-flex/contents/none), `overflow`
+  (visible/hidden/clip), `text_align`, `visibility`, `color`, `background`,
+  `bold`, `italic`, `underline`, `strikethrough`, `dim`, `reverse`, `z_index`,
+  `translate_x/y`, plus `margin` (`Margin` with per-side auto), `padding`,
+  `border`, `border_style` and `border_color`. Flex adds `flex_direction`,
+  `flex_wrap`, `justify_content`, `align_items`, `align_self`, `align_content`,
+  `flex_grow`, `flex_shrink`, `flex_basis`, `order` and `gap` (`Gap.all`).
+  `width`/`height` are content-box sizes; padding, border and margin expand
+  outward.
 - Measurement: not implemented yet; tests read `Surface.grid()` directly. The
   `getBoundingClientRect`/`offsetWidth` boundary comes with the view parts.
 - Layout: absolute positioning against the nearest positioned ancestor using
   `left`/`top`, with the margin box anchored there (right/bottom anchoring and
-  auto margins are not implemented); inline text flow; percentage sizes
-  resolved against the containing content box; `text_align`; clipping to the
-  padding box; `display:none`; backgrounds paint the border box. Auto width
-  fills the containing block. No flexbox/grid or margin collapsing in the POC.
+  absolute auto margins are not implemented); block flow with content-derived
+  auto height and horizontal auto margins; single-line inline flow; percentage
+  sizes resolved against the containing content box; `text_align`; clipping to
+  the padding box; `display:none`; backgrounds paint the border box. Auto width
+  fills the containing block for a block-level box and shrink-wraps for an
+  inline-level box. Flex containers cover row/column direction, wrap,
+  grow/shrink/basis, justify/align, gap, order and auto margins. No grid, table
+  layout, CSS text wrapping or margin collapsing in the POC.
 - Rendering: `Surface.render` = layout -> paint into the next grid -> diff against
   the previous grid -> ANSI to the writer. Tests read `Surface.grid()` instead of
   parsing ANSI.
@@ -810,11 +834,17 @@ Library constraints:
   `ScrollbarState` tests include the upstream cases and a one-row minimum.
 - Library unit tests cover: tree linking/invariants, box-tree derivation
   (viewport root, principal/text boxes, anonymous inline/flex items,
-  `display: contents`/`none`, mutation invalidation), absolute/percent/auto layout,
-  clipping, right alignment, wide characters, tabs, cell painting, frame diff
-  (changed cell, vanished cell, unchanged frame), first-row erase and a small
-  ANSI golden. Event tests cover capture/target/bubble order, propagation and
-  default prevention, focus event order and `related_target`, tabindex
+  `display: contents`/`none`, order sorting, mutation invalidation),
+  absolute/percent/auto layout, flex direction/reverse, justify-content, wrap and
+  align-content, grow/shrink/basis, gaps, align-items/align-self/baseline, auto
+  margins, order stability, content-derived auto sizes, nested flex,
+  out-of-flow children, inline-flex and flex painting, a set of cases ported
+  from Taffy's flexbox fixtures (basis/grow/shrink, reverse directions,
+  justify/align, gap and align-content wrapping), clipping, right
+  alignment, wide characters, tabs, cell painting, frame diff (changed cell,
+  vanished cell, unchanged frame), first-row erase and a small ANSI golden.
+  Event tests cover capture/target/bubble order, propagation and default
+  prevention, focus event order and `related_target`, tabindex
   traversal, hidden/focusability checks, silent focus clearing on removal,
   mouse hit-testing, press-to-focus, wheel cancellation, and the terminal
   decoder (control keys, modifiers, paste, lone Escape, SGR mouse).
@@ -827,8 +857,8 @@ Library constraints:
 
 1. Full `viewLineRenderer` port + `CharacterMapping` and the upstream
    `viewLineRenderer.test.ts` cases (canonical part comparison).
-2. Flex formatting context over the box tree: direction, wrap, grow/shrink/basis,
-   justify/align, gap, order and auto margins; then an anonymous-flex-item pass.
+2. Flex follow-ups: min/max sizing, the automatic min-content floor for
+   shrinking items, and CSS text wrapping inside flex items.
 3. `ViewLayout`/`Scrollable` + `IViewModel`/`IViewLayout` interfaces + a
    temporary `TuiViewModel` adapter + view-event bridge.
 4. `viewLayer`, `viewPart`, `renderingContext`, `viewOverlays`,
@@ -864,8 +894,8 @@ Library constraints:
 
 ## 12. Deferred / explicit limitations
 
-- No CSS, HTML, `innerHTML`, flexbox/grid, transitions, opacity compositing,
-  borders/radii.
+- No CSS, HTML, `innerHTML`, grid or table layout, transitions, opacity
+  compositing, borders/radii.
 - No RTL/bidi visual reordering, grapheme segmentation, combining-mark cell
   composition, ligatures, or terminal width negotiation (mode 2027) in the POC.
 - Mouse press/release, click, idle and button-held motion and wheel are in.
@@ -891,11 +921,17 @@ Library constraints:
 - No row damage bands or terminal scroll shift in the POC; full grid diff only.
 - The in-place-replace decoration is rendered as an underline in the
   bracket-match color; terminal cells cannot draw the browser's 2 px outline.
-- No margin collapsing, auto margins, right/bottom anchoring, multi-cell/rounded
-  border styles, background-clip or z-index paint ordering yet. Borders are
-  repeated single-line box-drawing glyphs.
-- No flex/grid formatting contexts, table boxes or incremental box reuse yet;
-  the box tree is rebuilt from the DOM when mutations invalidate it, then solved whole.
+- No margin collapsing, right/bottom anchoring, auto margins on absolute boxes,
+  multi-cell/rounded border styles, background-clip or z-index paint ordering
+  yet. Borders are repeated single-line box-drawing glyphs.
+- Flex is in, but without `min-width`/`min-height`/`max-width`/`max-height`, an
+  automatic min-content floor, percentage gaps, CSS text wrapping, inline line
+  breaking, or `justify-content: stretch`. Baseline alignment is approximated by
+  the first text row and falls back to flex-start under `wrap-reverse`.
+  `position: fixed` still resolves like `absolute`. Inline-level boxes are laid on one line; the tallest child grows
+  the line box, but the line never wraps.
+- No grid formatting contexts, table boxes or incremental box reuse yet; the
+  box tree is rebuilt from the DOM when mutations invalidate it, then solved whole.
 - No JS interop, WebIDL, shadow DOM, custom elements, HTML parsing, or the full
   DOM API; only the node/tree/attribute subset above.
 - The `ui/` name, module name and exact style field set are provisional;

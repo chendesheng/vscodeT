@@ -318,6 +318,14 @@ fn collectChildren(
     }
 
     try flushRun(tree, parent, run);
+
+    // CSS `order` reorders flex items for layout, painting and hit testing.
+    // The sort is stable, so equal orders keep document order.
+    if (flex) std.mem.sort(*LayoutBox, parent.children.items, {}, flexOrderLessThan);
+}
+
+fn flexOrderLessThan(_: void, a: *LayoutBox, b: *LayoutBox) bool {
+    return a.style.order < b.style.order;
 }
 
 fn flushRun(
@@ -348,6 +356,19 @@ fn flushRun(
     style.translate_x = 0;
     style.translate_y = 0;
     style.display = if (flex) .block else .inline_;
+    // Flex properties are not inherited; an anonymous box is not a flex
+    // container and an anonymous flex item has no order of its own.
+    style.flex_direction = .row;
+    style.flex_wrap = .nowrap;
+    style.justify_content = .flex_start;
+    style.align_items = .stretch;
+    style.align_self = .auto;
+    style.align_content = .stretch;
+    style.flex_grow = 0;
+    style.flex_shrink = 1;
+    style.flex_basis = .auto;
+    style.order = 0;
+    style.gap = .{};
 
     const box = try allocator.create(LayoutBox);
     box.* = .{
@@ -516,4 +537,36 @@ test "BoxTree: style, text and tree mutations rebuild" {
     tree.clearNeedsLayout();
     _ = try root.appendChild(try doc.createText("z"));
     try std.testing.expect(tree.needs_rebuild);
+}
+
+test "BoxTree: flex order sorts children stably" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{ .display = .flex });
+    doc.setRoot(root);
+
+    const first = try doc.createElement(.div);
+    first.setStyle(.{ .order = 2 });
+    _ = try root.appendChild(first);
+
+    const second = try doc.createElement(.div);
+    second.setStyle(.{ .order = 0 });
+    _ = try root.appendChild(second);
+
+    const third = try doc.createElement(.div);
+    third.setStyle(.{ .order = 0 });
+    _ = try root.appendChild(third);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+
+    const children = tree.find(root).?.children.items;
+    try std.testing.expectEqual(@as(usize, 3), children.len);
+    try std.testing.expectEqual(second, children[0].owner.?);
+    try std.testing.expectEqual(third, children[1].owner.?);
+    try std.testing.expectEqual(first, children[2].owner.?);
 }

@@ -30,6 +30,7 @@ pub fn build(b: *std.Build) void {
         .{ .step = "example-hello", .path = "examples/hello.zig", .description = "Run the hello example" },
         .{ .step = "example-list", .path = "examples/list.zig", .description = "Run the list example" },
         .{ .step = "example-layout", .path = "examples/layout.zig", .description = "Run the layout example" },
+        .{ .step = "example-flex", .path = "examples/flex.zig", .description = "Run the flex layout example" },
         .{ .step = "example-overflow", .path = "examples/overflow.zig", .description = "Run the overflow example" },
         .{ .step = "example-borders", .path = "examples/borders.zig", .description = "Run the borders example" },
         .{ .step = "example-table", .path = "examples/table.zig", .description = "Run the table example" },

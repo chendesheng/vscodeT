@@ -22,7 +22,7 @@ pub fn paintDocument(doc: *dom.Document, grid: *CellGrid) !void {
     var tree = try box.BoxTree.init(doc.allocator);
     defer tree.deinit();
     try tree.rebuild(doc);
-    layout.layoutTree(&tree, doc);
+    try layout.layoutTree(&tree, doc);
     paintTree(&tree, doc, grid);
 }
 
@@ -511,4 +511,45 @@ test "paint: overflow hidden clips text and absolute children to the padding box
     defer visible.deinit();
     try paintDocument(&doc, &visible);
     try std.testing.expectEqual(@as(u32, 't'), visible.cluster[visible.index(11, 1)]);
+}
+
+test "paint: flex row items and gaps" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 8, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 8 },
+        .height = .{ .cells = 2 },
+        .display = .flex,
+        .gap = .{ .column = 1 },
+    });
+    doc.setRoot(root);
+
+    const first = try commonBox(&doc, root, .{
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .background = .{ .r = 10, .g = 20, .b = 30 },
+    });
+    _ = try first.appendChild(try doc.createText("a"));
+
+    const second = try commonBox(&doc, root, .{
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .background = .{ .r = 40, .g = 50, .b = 60 },
+    });
+    _ = try second.appendChild(try doc.createText("b"));
+
+    var grid = try CellGrid.init(allocator, 8, 2);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    try std.testing.expectEqual(@as(u32, 'a'), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, 'b'), grid.cluster[grid.index(4, 0)]);
+    try std.testing.expectEqual(cell.packColor(.{ .r = 10, .g = 20, .b = 30 }), grid.bg[0]);
+    try std.testing.expectEqual(cell.packColor(.{ .r = 40, .g = 50, .b = 60 }), grid.bg[grid.index(4, 0)]);
+    // The one-column gap keeps the root background.
+    try std.testing.expectEqual(@as(u32, 0), grid.bg[grid.index(3, 0)]);
 }

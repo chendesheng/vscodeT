@@ -126,7 +126,7 @@ pub const Surface = struct {
             try self.box_tree.rebuild(&self.doc);
         }
         if (self.box_tree.needs_layout) {
-            layout.layoutTree(self.box_tree, &self.doc);
+            try layout.layoutTree(self.box_tree, &self.doc);
         }
     }
 };

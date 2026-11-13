@@ -12,6 +12,7 @@ const common = @import("common.zig");
 const hello = @import("hello.zig");
 const list = @import("list.zig");
 const layout = @import("layout.zig");
+const flex = @import("flex.zig");
 const overflow = @import("overflow.zig");
 const borders = @import("borders.zig");
 const table = @import("table.zig");
@@ -34,6 +35,7 @@ const entries = [_]Entry{
     .{ .title = "hello", .open = hello.helloExample },
     .{ .title = "list", .open = list.listExample },
     .{ .title = "layout", .open = layout.layoutExample },
+    .{ .title = "flex", .open = flex.flexExample },
     .{ .title = "overflow", .open = overflow.overflowExample },
     .{ .title = "borders", .open = borders.bordersExample },
     .{ .title = "table", .open = table.tableExample },

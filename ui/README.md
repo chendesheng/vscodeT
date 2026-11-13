@@ -15,9 +15,16 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   dirty flag.
 - A whole-cell layout pass with the CSS box model: content `width`/`height`,
   margin, padding and border widths, single-line box-drawing borders, and
-  absolute `left`/`top` anchoring the margin box. Backgrounds paint the border
-  box and `overflow: hidden` clips to the padding box. Flex formatting contexts,
-  margin collapsing and right/bottom anchoring are next.
+  absolute `left`/`top` anchoring the margin box. Block flow, single-line inline
+  flow and flex formatting contexts share the derived tree. Backgrounds paint
+  the border box and `overflow: hidden` clips to the padding box.
+- Flex containers support `flex_direction`, `flex_wrap`, `justify_content`,
+  `align_items`/`align_self`/`align_content`, `flex_grow`, `flex_shrink`,
+  `flex_basis`, `order`, `gap`, auto margins and content-derived auto sizes.
+  Bare text in a flex container becomes an anonymous flex item. `order` sorts
+  the derived box children, so layout, paint order and hit testing agree.
+  There is no min/max sizing, CSS text wrapping, grid or table layout, and
+  inline flow does not break across lines yet; see the limitations below.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
 - Keyboard and mouse events and focus: per-node listeners with
   capture/target/bubble, `Document.activeElement`, `focus`/`blur` plus
@@ -37,6 +44,7 @@ cd ui
 zig build example-hello    # colors, bold, backgrounds, inline text runs
 zig build example-list     # rows, alternating backgrounds, right-aligned columns
 zig build example-layout   # absolute + percent layout, left/center/right text
+zig build example-flex     # flex row/column, wrap, grow, gaps, auto margins
 zig build example-overflow # visible vs hidden/clip for text and absolute children
 zig build example-borders  # margin, padding and border boxes, nested absolute child
 zig build example-table    # bordered table with aligned columns
@@ -190,6 +198,42 @@ terminal focus reports.
 the cell through the visible window (wide characters choose the nearest
 boundary). Clicking a find toggle or its `All` button runs that control; the
 widget tracks the hovered control and clears it when idle motion leaves the bar.
+
+## Flex layout
+
+```zig
+const bar = try doc.createElement(.div);
+bar.setStyle(.{
+    .display = .flex,
+    .gap = .{ .column = 1 },
+    .padding = .all(1),
+});
+_ = try bar.appendChild(try doc.createText("left"));
+
+const spacer = try doc.createElement(.div);
+spacer.setStyle(.{ .flex_grow = 1 });
+_ = try bar.appendChild(spacer);
+
+_ = try bar.appendChild(try doc.createText("right"));
+```
+
+Several flex tests are ported from
+[Taffy](https://github.com/DioxusLabs/taffy)'s flexbox fixtures (MIT), adapted
+to this library's unrounded cell geometry and content-box sizes.
+
+`Style.margin` uses `Margin` rather than `Edges` so a side can be `.auto`.
+Auto main-axis margins absorb free space in a flex line, and auto cross-axis
+margins center an item; horizontal auto margins also center a definite-width
+block in block flow. `Margin.all`, `Gap.all`, `ui.Margin` and `ui.Gap` are
+exported for the common cases.
+
+Flex limitations: there is no `min-width`/`min-height`/`max-width`/`max-height`
+or automatic min-content floor, so shrunk items can overlap unless `overflow`
+clips them; percentages are supported for sizes and `flex_basis`, not gaps;
+text never wraps across lines; inline flow is a single line; baseline alignment
+uses the first text row and falls back to flex-start under `wrap-reverse`;
+`position: fixed` resolves like `absolute`; and there is no grid, table layout
+or z-index compositing.
 
 ## Input boxes and rebuilt trees
 
