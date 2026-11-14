@@ -64,8 +64,13 @@ pub const MouseRouter = struct {
                 self.press = .{ .x = event.x, .y = event.y };
                 self.moved = false;
             },
-            .move => if (event.button == .left and self.press != null) {
-                self.moved = true;
+            // Touchscreens often report a held-button motion event for a tap.
+            // Only leaving the pressed cell starts a drag, so same-cell jitter
+            // still produces the synthetic click on release.
+            .move => if (event.button == .left) {
+                if (self.press) |pressed| {
+                    if (event.x != pressed.x or event.y != pressed.y) self.moved = true;
+                }
             },
             .up => if (event.button == .left) {
                 if (self.press) |pressed| {

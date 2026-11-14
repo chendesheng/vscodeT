@@ -281,13 +281,26 @@ const App = struct {
         const left = (cols -| width) / 2;
         const card_top: usize = 1;
         const card_height = rows -| 3;
-        const footer_y = if (card_height >= 10) card_height - 2 else card_height -| 1;
-        const list_top: usize = 8;
+        // With an on-screen keyboard the terminal can shrink to a handful of
+        // rows. Compact mode keeps only the title, input, toggle and footer.
+        const compact = card_height < 7;
         const row_width = width -| 4;
-        self.list_rows = (footer_y -| list_top) -| 1;
+        const show_footer = if (compact) card_height >= 5 else card_height >= 7;
+        const show_toggle = self.todos.items.len > 0 and
+            (if (compact) card_height >= 4 else card_height >= 7);
+        const show_list = !compact and card_height >= 9;
+        // At narrow widths the count and long filter row do not fit together.
+        // Use a second centered filter row with shorter labels instead.
+        const narrow_footer = !compact and row_width < 46;
+        const filters_visible = show_footer and !compact and row_width >= 18;
+        const short_filters = row_width < 28;
+        const footer_height: usize = if (narrow_footer and filters_visible) 2 else 1;
+        self.list_rows = if (show_list)
+            card_height -| (8 + (footer_height - 1))
+        else
+            0;
 
-        const filters_visible = width >= 40;
-        const clear_visible = self.completedCount() > 0 and width >= 58;
+        const clear_visible = show_footer and self.completedCount() > 0 and row_width >= 61;
         if (!filters_visible) {
             switch (self.focus) {
                 .filter_button => self.focus = .input,
@@ -297,6 +310,18 @@ const App = struct {
         if (!clear_visible) {
             switch (self.focus) {
                 .clear_completed => self.focus = .input,
+                else => {},
+            }
+        }
+        if (!show_toggle) {
+            switch (self.focus) {
+                .toggle_all => self.focus = .input,
+                else => {},
+            }
+        }
+        if (self.list_rows == 0) {
+            switch (self.focus) {
+                .item => self.focus = .input,
                 else => {},
             }
         }
@@ -318,30 +343,38 @@ const App = struct {
             .top = .{ .cells = @floatFromInt(card_top) },
             .width = .{ .cells = @floatFromInt(width) },
             .height = .{ .cells = @floatFromInt(card_height) },
+            .display = .flex,
+            .flex_direction = .column,
             .background = panel,
             .overflow = .hidden,
         });
 
         _ = try common.addLabel(doc, card, "todos", .{
-            .position = .absolute,
-            .left = .{ .cells = 2 },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(width -| 4) },
+            .width = .{ .cells = @floatFromInt(row_width) },
             .height = .{ .cells = 1 },
+            .margin = .{ .left = .{ .cells = 2 } },
+            .flex_shrink = 0,
         }, .{ .color = foreground, .bold = true });
 
-        const subtitle = if (self.editing != null)
-            "editing - Enter saves, Esc cancels"
-        else
-            "ui package TodoMVC - input, list and buttons";
-        _ = try common.addLabel(doc, card, subtitle, .{
-            .position = .absolute,
-            .left = .{ .cells = 2 },
-            .top = .{ .cells = 1 },
-            .width = .{ .cells = @floatFromInt(width -| 4) },
-            .height = .{ .cells = 1 },
-            .overflow = .hidden,
-        }, .{ .color = dim });
+        if (!compact) {
+            const subtitle = if (self.editing != null)
+                "editing - Enter saves, Esc cancels"
+            else
+                "ui package TodoMVC - input, list and buttons";
+            _ = try common.addLabel(doc, card, subtitle, .{
+                .width = .{ .cells = @floatFromInt(row_width) },
+                .height = .{ .cells = 1 },
+                .margin = .{ .left = .{ .cells = 2 } },
+                .flex_shrink = 0,
+                .overflow = .hidden,
+            }, .{ .color = dim });
+        }
+
+        if (!compact) {
+            const gap = try doc.createElement(.div);
+            gap.setStyle(.{ .height = .{ .cells = 1 }, .flex_shrink = 0 });
+            _ = try card.appendChild(gap);
+        }
 
         const input_focused = switch (self.focus) {
             .input => true,
@@ -349,16 +382,16 @@ const App = struct {
         };
         self.input.focused = input_focused;
         const input_frame = try common.addBox(doc, card, .{
-            .position = .absolute,
-            .left = .{ .cells = 2 },
-            .top = .{ .cells = 3 },
+            .position = .relative,
             .width = .{ .cells = @floatFromInt(row_width) },
-            .height = .{ .cells = 2 },
+            .height = .{ .cells = 1 },
+            .margin = .{ .left = .{ .cells = 2 } },
             .border = .{ .bottom = 1 },
             .border_style = .single,
             .border_color = if (input_focused) accent else dim,
             .background = input_background,
             .overflow = .hidden,
+            .flex_shrink = 0,
         });
         const input_node = try self.input.build(doc, row_width);
         _ = try input_frame.appendChild(input_node);
@@ -370,18 +403,18 @@ const App = struct {
 
         var focus_node: ?*ui.Node = if (input_focused) input_node else null;
 
-        if (self.todos.items.len > 0) {
+        if (show_toggle) {
             const toggle_focused = switch (self.focus) {
                 .toggle_all => true,
                 else => false,
             };
             const toggle_row = try common.addBox(doc, card, .{
-                .position = .absolute,
-                .left = .{ .cells = 2 },
-                .top = .{ .cells = 6 },
+                .position = .relative,
                 .width = .{ .cells = @floatFromInt(row_width) },
                 .height = .{ .cells = 1 },
+                .margin = .{ .left = .{ .cells = 2 } },
                 .background = if (toggle_focused) focus_background else null,
+                .flex_shrink = 0,
             });
             toggle_row.asElement().focusable = true;
             const toggle_ctx = try self.newAction(doc, .toggle_all, 0, .all);
@@ -421,11 +454,12 @@ const App = struct {
 
         if (self.list_rows > 0) {
             const list = try common.addBox(doc, card, .{
-                .position = .absolute,
-                .left = .{ .cells = 2 },
-                .top = .{ .cells = @floatFromInt(list_top) },
                 .width = .{ .cells = @floatFromInt(row_width) },
-                .height = .{ .cells = @floatFromInt(self.list_rows) },
+                .margin = .{ .left = .{ .cells = 2 }, .top = .{ .cells = 1 } },
+                .display = .flex,
+                .flex_direction = .column,
+                .flex_grow = 1,
+                .position = .relative,
                 .overflow = .hidden,
             });
             try list.addEventListener(.{ .context = self, .wheel = onListWheel });
@@ -439,11 +473,8 @@ const App = struct {
                     .all => "No todos.",
                 };
                 _ = try common.addLabel(doc, list, empty_text, .{
-                    .position = .absolute,
-                    .left = .{ .cells = 0 },
-                    .top = .{ .cells = 0 },
-                    .width = .{ .cells = @floatFromInt(row_width) },
                     .height = .{ .cells = 1 },
+                    .flex_shrink = 0,
                     .overflow = .hidden,
                 }, .{ .color = dim });
             } else {
@@ -455,18 +486,15 @@ const App = struct {
                     if (slot < self.scroll) continue;
                     if (slot >= self.scroll + self.list_rows) break;
 
-                    const row_y = slot - self.scroll;
                     const row_focused = switch (self.focus) {
                         .item => |focused_index| focused_index == index,
                         else => false,
                     };
                     const row_selected = if (self.selected) |selected| selected == index else false;
                     const row = try common.addBox(doc, list, .{
-                        .position = .absolute,
-                        .left = .{ .cells = 0 },
-                        .top = .{ .cells = @floatFromInt(row_y) },
-                        .width = .{ .cells = @floatFromInt(row_width) },
+                        .position = .relative,
                         .height = .{ .cells = 1 },
+                        .flex_shrink = 0,
                         .background = if (row_focused)
                             focus_background
                         else if (row_selected)
@@ -540,38 +568,90 @@ const App = struct {
             active,
             if (active == 1) "" else "s",
         }) catch "";
-        _ = try common.addLabel(doc, card, count_text, .{
-            .position = .absolute,
-            .left = .{ .cells = 2 },
-            .top = .{ .cells = @floatFromInt(footer_y) },
-            .width = .{ .cells = 18 },
-            .height = .{ .cells = 1 },
-            .overflow = .hidden,
-        }, .{ .color = dim });
-
-        if (filters_visible) {
-            const filters = [_]struct { filter: Filter, label: []const u8 }{
-                .{ .filter = .all, .label = "[All]" },
-                .{ .filter = .active, .label = "[Active]" },
-                .{ .filter = .completed, .label = "[Completed]" },
-            };
-            var total_width: usize = 0;
-            for (filters, 0..) |entry, i| {
-                total_width += entry.label.len;
-                if (i + 1 < filters.len) total_width += 2;
-            }
-            var x = 2 + (row_width -| total_width) / 2;
-            for (filters) |entry| {
-                const button = try self.addButton(doc, card, x, footer_y, entry.label.len, entry.label, .filter, 0, entry.filter, self.filter == entry.filter);
-                if (self.controlFocused(.filter, 0, entry.filter)) focus_node = button;
-                x += entry.label.len + 2;
-            }
+        if (show_footer and !show_list) {
+            // No scrolling list at this height; a growing gap keeps the footer
+            // at the bottom while the card grows.
+            const grow = try doc.createElement(.div);
+            grow.setStyle(.{ .flex_grow = 1 });
+            _ = try card.appendChild(grow);
         }
 
-        if (clear_visible) {
-            const clear_x = width -| 17;
-            const button = try self.addButton(doc, card, clear_x, footer_y, 15, "Clear completed", .clear_completed, 0, .all, false);
-            if (self.controlFocused(.clear_completed, 0, .all)) focus_node = button;
+        if (show_footer) {
+            const footer = try common.addBox(doc, card, .{
+                .width = .{ .cells = @floatFromInt(row_width) },
+                .height = .{ .cells = @floatFromInt(footer_height) },
+                .margin = .{ .left = .{ .cells = 2 } },
+                .display = .flex,
+                .flex_direction = .column,
+                .flex_shrink = 0,
+            });
+            const top = try common.addBox(doc, footer, .{
+                .height = .{ .cells = 1 },
+                .display = .flex,
+                .align_items = .center,
+                .flex_shrink = 0,
+            });
+            _ = try common.addLabel(doc, top, count_text, .{
+                .width = .{ .cells = 18 },
+                .height = .{ .cells = 1 },
+                .flex_shrink = 0,
+                .overflow = .hidden,
+            }, .{ .color = dim });
+
+            const filters = [_]struct { filter: Filter, label: []const u8, short: []const u8 }{
+                .{ .filter = .all, .label = "[All]", .short = "[All]" },
+                .{ .filter = .active, .label = "[Active]", .short = "[Act]" },
+                .{ .filter = .completed, .label = "[Completed]", .short = "[Done]" },
+            };
+
+            if (!narrow_footer) {
+                const left_gap = try doc.createElement(.div);
+                left_gap.setStyle(.{ .flex_grow = 1 });
+                _ = try top.appendChild(left_gap);
+
+                if (filters_visible) {
+                    const group = try common.addBox(doc, top, .{
+                        .display = .flex,
+                        .gap = .{ .column = 2 },
+                        .flex_shrink = 0,
+                    });
+                    for (filters) |entry| {
+                        const button = try self.addButton(doc, group, entry.label.len, entry.label, .filter, 0, entry.filter, self.filter == entry.filter);
+                        if (self.controlFocused(.filter, 0, entry.filter)) focus_node = button;
+                    }
+                }
+
+                const right_gap = try doc.createElement(.div);
+                right_gap.setStyle(.{ .flex_grow = 1 });
+                _ = try top.appendChild(right_gap);
+
+                if (clear_visible) {
+                    const button = try self.addButton(doc, top, 15, "Clear completed", .clear_completed, 0, .all, false);
+                    if (self.controlFocused(.clear_completed, 0, .all)) focus_node = button;
+                }
+            } else if (filters_visible) {
+                const left_gap = try doc.createElement(.div);
+                left_gap.setStyle(.{ .flex_grow = 1 });
+                _ = try top.appendChild(left_gap);
+
+                const filter_row = try common.addBox(doc, footer, .{
+                    .height = .{ .cells = 1 },
+                    .display = .flex,
+                    .align_items = .center,
+                    .justify_content = .center,
+                    .flex_shrink = 0,
+                });
+                const group = try common.addBox(doc, filter_row, .{
+                    .display = .flex,
+                    .gap = .{ .column = if (short_filters) 1 else 2 },
+                    .flex_shrink = 0,
+                });
+                for (filters) |entry| {
+                    const label = if (short_filters) entry.short else entry.label;
+                    const button = try self.addButton(doc, group, label.len, label, .filter, 0, entry.filter, self.filter == entry.filter);
+                    if (self.controlFocused(.filter, 0, entry.filter)) focus_node = button;
+                }
+            }
         }
 
         if (rows > 0) {
@@ -603,8 +683,6 @@ const App = struct {
         self: *App,
         doc: *ui.Document,
         parent: *ui.Node,
-        x: usize,
-        y: usize,
         width: usize,
         label: []const u8,
         control: Control,
@@ -614,13 +692,11 @@ const App = struct {
     ) !*ui.Node {
         const focused = self.controlFocused(control, index, filter);
         const box = try common.addBox(doc, parent, .{
-            .position = .absolute,
-            .left = .{ .cells = @floatFromInt(x) },
-            .top = .{ .cells = @floatFromInt(y) },
             .width = .{ .cells = @floatFromInt(width) },
             .height = .{ .cells = 1 },
             .background = if (focused) focus_background else if (active) accent else null,
             .overflow = .hidden,
+            .flex_shrink = 0,
         });
         _ = try common.addText(doc, box, label, .{
             .color = if (focused or active) white else dim,
