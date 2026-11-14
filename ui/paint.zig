@@ -63,7 +63,11 @@ fn paintBox(
 
             const own = mergeStyle(inherited, style);
             if (style.background != null or style.reverse) {
-                grid.fillRect(rect.x, rect.y, rect.w, rect.h, own);
+                // An ancestor's overflow clip cuts everything this box paints, so
+                // a child background must not paint into the gutter outside the
+                // padding edge the way its text already is cut.
+                const fill = Rect.intersect(rect, clip);
+                grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
             }
 
             const border = style_mod.borderWidths(style);
@@ -449,6 +453,8 @@ test "paint: overflow hidden clips text and absolute children to the padding box
     var doc = try dom.Document.init(allocator, .{ .cols = 14, .rows = 5 });
     defer doc.deinit();
 
+    const child_fill = style_mod.Color{ .r = 60, .g = 86, .b = 130 };
+
     const root = try doc.createElement(.div);
     root.setStyle(.{
         .position = .absolute,
@@ -478,6 +484,7 @@ test "paint: overflow hidden clips text and absolute children to the padding box
         .top = .{ .cells = 0 },
         .width = .{ .cells = 8 },
         .height = .{ .cells = 1 },
+        .background = child_fill,
     });
     _ = try container.appendChild(child);
     _ = try child.appendChild(try doc.createText("childtext"));
@@ -495,6 +502,30 @@ test "paint: overflow hidden clips text and absolute children to the padding box
     try std.testing.expectEqual(@as(u32, 'c'), grid.cluster[grid.index(6, 1)]);
     try std.testing.expect(grid.cluster[grid.index(10, 1)] != 't');
     try std.testing.expect(grid.cluster[grid.index(11, 1)] == 0);
+    // Its background is clipped with it: neither the border cell nor the
+    // gutter past the padding edge keeps the child's fill.
+    try std.testing.expectEqual(cell.packColor(child_fill), grid.bg[grid.index(6, 1)]);
+    try std.testing.expectEqual(cell.packColor(child_fill), grid.bg[grid.index(9, 1)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.bg[grid.index(10, 1)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.bg[grid.index(11, 1)]);
+
+    // `clip` cuts the same padding box as `hidden`.
+    container.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 1 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 1 },
+        .padding = style_mod.Edges.all(1),
+        .border = style_mod.Edges.all(1),
+        .overflow = .clip,
+    });
+    var clipped = try CellGrid.init(allocator, 14, 5);
+    defer clipped.deinit();
+    try paintDocument(&doc, &clipped);
+    try std.testing.expectEqual(cell.packColor(child_fill), clipped.bg[clipped.index(9, 1)]);
+    try std.testing.expectEqual(@as(u32, 0), clipped.bg[clipped.index(10, 1)]);
+    try std.testing.expectEqual(@as(u32, 0), clipped.bg[clipped.index(11, 1)]);
 
     // With overflow visible the child paints past the border and padding.
     container.setStyle(.{
@@ -511,6 +542,7 @@ test "paint: overflow hidden clips text and absolute children to the padding box
     defer visible.deinit();
     try paintDocument(&doc, &visible);
     try std.testing.expectEqual(@as(u32, 't'), visible.cluster[visible.index(11, 1)]);
+    try std.testing.expectEqual(cell.packColor(child_fill), visible.bg[visible.index(11, 1)]);
 }
 
 test "paint: flex row items and gaps" {
