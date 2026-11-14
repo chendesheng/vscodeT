@@ -313,10 +313,19 @@ const App = struct {
         const compact = card_height < 7;
         const row_width = width -| 4;
         self.row_text_width = row_width -| 8;
+        const subtitle = if (!compact) (if (self.editing != null)
+            "editing - Enter saves, Esc cancels"
+        else
+            "ui package TodoMVC - input, list and buttons") else "";
+        const subtitle_rows = if (!compact)
+            wrappedRows(doc, subtitle, row_width)
+        else
+            0;
+        const subtitle_extra = subtitle_rows -| 1;
         const show_footer = if (compact) card_height >= 5 else card_height >= 7;
         const show_toggle = self.todos.items.len > 0 and
             (if (compact) card_height >= 4 else card_height >= 7);
-        const show_list = !compact and card_height >= 9;
+        const show_list = !compact and card_height >= 9 + subtitle_extra;
         // At narrow widths the count and long filter row do not fit together.
         // Use a second centered filter row with shorter labels instead.
         const narrow_footer = !compact and row_width < 46;
@@ -324,7 +333,7 @@ const App = struct {
         const short_filters = row_width < 28;
         const footer_height: usize = if (narrow_footer and filters_visible) 2 else 1;
         self.list_rows = if (show_list)
-            card_height -| (8 + (footer_height - 1))
+            card_height -| (8 + (footer_height - 1) + subtitle_extra)
         else
             0;
 
@@ -385,17 +394,17 @@ const App = struct {
         }, .{ .color = foreground, .bold = true });
 
         if (!compact) {
-            const subtitle = if (self.editing != null)
-                "editing - Enter saves, Esc cancels"
-            else
-                "ui package TodoMVC - input, list and buttons";
             _ = try common.addLabel(doc, card, subtitle, .{
                 .width = .{ .cells = @floatFromInt(row_width) },
-                .height = .{ .cells = 1 },
+                .height = .{ .cells = @floatFromInt(subtitle_rows) },
                 .margin = .{ .left = .{ .cells = 2 } },
                 .flex_shrink = 0,
+                .white_space = .normal,
                 .overflow = .hidden,
-            }, .{ .color = dim });
+            }, .{
+                .color = dim,
+                .white_space = .normal,
+            });
         }
 
         if (!compact) {

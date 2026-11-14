@@ -81,7 +81,7 @@ sequences; `example-mouse` shows selection, hover and wheel scrolling, while
 highlights the hovered zone. `example-todo` is a standalone TodoMVC scene with
 its own input loop: add todos through `ui.InputBox`, toggle rows, edit a
 focused row, filter All/Active/Completed, clear completed and toggle all.
-Long todo text wraps and the list window scrolls in row cells.
+The subtitle and long todo text wrap, and the list window scrolls in row cells.
 
 `zig build examples` opens the fullscreen gallery instead of running all
 examples in sequence: a side navigation menu on the left and the selected
