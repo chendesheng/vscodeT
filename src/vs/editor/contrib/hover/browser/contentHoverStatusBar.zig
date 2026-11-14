@@ -129,6 +129,10 @@ pub const EditorHoverStatusBar = struct {
             .top = .{ .cells = @floatFromInt(top) },
             .width = .{ .percent = 100 },
             .height = .{ .cells = 1 },
+            .display = .flex,
+            .align_items = .center,
+            .gap = .{ .column = 1 },
+            .padding = .{ .left = 1 },
             .background = background,
             .color = foreground,
             .overflow = .hidden,
@@ -146,11 +150,8 @@ pub const EditorHoverStatusBar = struct {
             const action_node = try doc.createElement(.div);
             action_node.asElement().focusable = false;
             action_node.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = @floatFromInt(column) },
-                .top = .{ .cells = 0 },
-                .width = .{ .cells = @floatFromInt(label_width) },
                 .height = .{ .cells = 1 },
+                .flex_shrink = 0,
                 .color = if (action.enabled) action_color else foreground,
             });
             const text = try doc.createText(label);

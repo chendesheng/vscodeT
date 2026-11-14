@@ -195,27 +195,59 @@ pub const SuggestWidget = struct {
             .top = .{ .cells = 0 },
             .width = .{ .percent = 100 },
             .height = .{ .percent = 100 },
+            .display = .flex,
+            .flex_direction = .column,
             .background = background,
             .overflow = .hidden,
         });
+
+        // Upstream uses a one-cell border around the suggest list. The
+        // terminal widget reserves the same space with fixed flex spacers.
+        const top = try doc.createElement(.div);
+        top.setStyle(.{ .height = .{ .cells = 1 }, .flex_shrink = 0 });
+        _ = try root.appendChild(top);
 
         const count = self.itemCount();
         const visible = self.visibleRows();
         if (count == 0) {
             const message = try doc.createElement(.div);
             message.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = 1 },
-                .top = .{ .cells = 1 },
-                .width = .{ .cells = @floatFromInt(list_width -| 2) },
                 .height = .{ .cells = 1 },
+                .padding = .{ .left = 1 },
+                .overflow = .hidden,
             });
             const text = try doc.createText(if (self.model.isLoading()) "Loading…" else "No suggestions");
             text.setStyle(.{ .color = dim_foreground });
             _ = try message.appendChild(text);
             _ = try root.appendChild(message);
+
+            const rest = try doc.createElement(.div);
+            rest.setStyle(.{ .flex_grow = 1 });
+            _ = try root.appendChild(rest);
             return root;
         }
+
+        // `.suggest-widget` is a flex column: border row, body, border row.
+        const body = try doc.createElement(.div);
+        body.setStyle(.{
+            .display = .flex,
+            .align_items = .flex_start,
+            .height = .{ .cells = @floatFromInt(visible + 1) },
+            .flex_grow = 1,
+            .overflow = .hidden,
+        });
+        _ = try root.appendChild(body);
+
+        const list = try doc.createElement(.div);
+        list.setStyle(.{
+            .position = .relative,
+            .width = .{ .cells = @floatFromInt(list_width) },
+            .height = .{ .cells = @floatFromInt(visible) },
+            .display = .flex,
+            .flex_direction = .column,
+            .overflow = .hidden,
+        });
+        _ = try body.appendChild(list);
 
         const selection = if (self.model.completionModel()) |model| model.selection else 0;
         const model = self.model.completionModel().?;
@@ -225,23 +257,25 @@ pub const SuggestWidget = struct {
             if (index >= model.filtered.items.len) break;
             const item = model.filtered.items[index];
             const selected = index == selection;
+
+            // Upstream's `.monaco-list-row > .contents > .main` is a flex row
+            // with a fixed icon, a growing label and a right-aligned detail.
             const row_node = try doc.createElement(.div);
             row_node.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = 0 },
-                .top = .{ .cells = @floatFromInt(row + border_cells) },
-                .width = .{ .cells = @floatFromInt(list_width) },
                 .height = .{ .cells = 1 },
+                .display = .flex,
+                .align_items = .center,
+                .gap = .{ .column = 1 },
+                .padding = .{ .left = 1, .right = 1 },
+                .overflow = .hidden,
                 .background = if (selected) selected_background else null,
             });
 
             const kind = try doc.createElement(.div);
             kind.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = 1 },
-                .top = .{ .cells = 0 },
                 .width = .{ .cells = 2 },
                 .height = .{ .cells = 1 },
+                .flex_shrink = 0,
             });
             const kind_text = try doc.createText(kindLetter(item.kind));
             kind_text.setStyle(.{ .color = if (selected) selected_foreground else dim_foreground });
@@ -250,11 +284,9 @@ pub const SuggestWidget = struct {
 
             const label = try doc.createElement(.div);
             label.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = 4 },
-                .top = .{ .cells = 0 },
-                .width = .{ .cells = @floatFromInt(list_width -| 6) },
                 .height = .{ .cells = 1 },
+                .flex_grow = 1,
+                .flex_basis = .{ .cells = 0 },
                 .overflow = .hidden,
             });
             const label_text = try doc.createText(item.label);
@@ -265,11 +297,9 @@ pub const SuggestWidget = struct {
             if (item.detail) |detail| {
                 const detail_node = try doc.createElement(.div);
                 detail_node.setStyle(.{
-                    .position = .absolute,
-                    .left = .{ .cells = @floatFromInt(list_width / 2) },
-                    .top = .{ .cells = 0 },
-                    .width = .{ .cells = @floatFromInt(list_width -| list_width / 2 -| 2) },
+                    .width = .{ .cells = @floatFromInt(@max(list_width / 2, 1)) },
                     .height = .{ .cells = 1 },
+                    .flex_shrink = 0,
                     .text_align = .right,
                     .overflow = .hidden,
                 });
@@ -286,7 +316,7 @@ pub const SuggestWidget = struct {
                 .mouse_down = onRowDown,
                 .wheel = onWheel,
             });
-            _ = try root.appendChild(row_node);
+            _ = try list.appendChild(row_node);
         }
 
         if (count > visible) {
@@ -294,9 +324,9 @@ pub const SuggestWidget = struct {
             bar.setStyle(.{
                 .position = .absolute,
                 .left = .{ .cells = @floatFromInt(list_width -| 1) },
-                .top = .{ .cells = @floatFromInt(border_cells) },
+                .top = .{ .cells = 0 },
                 .width = .{ .cells = 1 },
-                .height = .{ .cells = @floatFromInt(visible) },
+                .height = .{ .percent = 100 },
             });
             const thumb_row = if (count > 1)
                 @min(visible - 1, self.scroll_top * visible / @max(count, 1))
@@ -314,56 +344,59 @@ pub const SuggestWidget = struct {
             });
             _ = try span.appendChild(text);
             _ = try bar.appendChild(span);
-            _ = try root.appendChild(bar);
+            _ = try list.appendChild(bar);
         }
 
         if (details) |docs| {
             if (list_width < width_value) {
+                // Upstream's `.suggest-details` sits beside the list; the
+                // terminal separator is a one-cell left border.
                 const separator = try doc.createElement(.div);
                 separator.setStyle(.{
-                    .position = .absolute,
-                    .left = .{ .cells = @floatFromInt(list_width) },
-                    .top = .{ .cells = 0 },
                     .width = .{ .cells = 1 },
-                    .height = .{ .percent = 100 },
+                    .height = .{ .cells = @floatFromInt(visible + 1) },
+                    .flex_shrink = 0,
+                    .border = .{ .left = 1 },
+                    .border_color = dim_foreground,
                 });
-                const sep_text = try doc.createText("│");
-                sep_text.setStyle(.{ .color = dim_foreground });
-                _ = try separator.appendChild(sep_text);
-                _ = try root.appendChild(separator);
+                _ = try body.appendChild(separator);
 
-                const panel_width = width_value -| list_width -| 2;
+                const panel = try doc.createElement(.div);
+                panel.setStyle(.{
+                    .display = .flex,
+                    .flex_direction = .column,
+                    .height = .{ .cells = @floatFromInt(visible + 1) },
+                    .flex_grow = 1,
+                    .padding = .{ .right = 1 },
+                    .overflow = .hidden,
+                });
+                _ = try body.appendChild(panel);
+
                 const header = try doc.createElement(.div);
                 header.setStyle(.{
-                    .position = .absolute,
-                    .left = .{ .cells = @floatFromInt(list_width + 1) },
-                    .top = .{ .cells = border_cells },
-                    .width = .{ .cells = @floatFromInt(panel_width) },
                     .height = .{ .cells = 1 },
+                    .flex_shrink = 0,
                     .overflow = .hidden,
                 });
                 const header_text = try doc.createText(if (self.model.selectedItem()) |item| item.label else "");
                 header_text.setStyle(.{ .color = foreground, .bold = true });
                 _ = try header.appendChild(header_text);
-                _ = try root.appendChild(header);
+                _ = try panel.appendChild(header);
 
                 var line_number: usize = 0;
                 var lines = std.mem.splitScalar(u8, docs, '\n');
                 while (lines.next()) |line| {
-                    if (line_number + border_cells + 1 >= height(context)) break;
+                    if (line_number >= visible) break;
                     const line_node = try doc.createElement(.div);
                     line_node.setStyle(.{
-                        .position = .absolute,
-                        .left = .{ .cells = @floatFromInt(list_width + 1) },
-                        .top = .{ .cells = @floatFromInt(border_cells + 1 + line_number) },
-                        .width = .{ .cells = @floatFromInt(panel_width) },
                         .height = .{ .cells = 1 },
+                        .flex_shrink = 0,
                         .overflow = .hidden,
                     });
                     const text = try doc.createText(line);
                     text.setStyle(.{ .color = dim_foreground });
                     _ = try line_node.appendChild(text);
-                    _ = try root.appendChild(line_node);
+                    _ = try panel.appendChild(line_node);
                     line_number += 1;
                 }
             }

@@ -30,11 +30,8 @@ const foreground = ui.Color{ .r = 230, .g = 230, .b = 230 };
 const dim_foreground = ui.Color{ .r = 140, .g = 140, .b = 150 };
 const hover_background = ui.Color{ .r = 72, .g = 72, .b = 92 };
 
-const label_x: usize = 1;
-const input_x: usize = 6;
 const count_width: usize = 10;
 const toggles_width: usize = 12;
-const wide_reserve: usize = count_width + toggles_width + 2;
 
 const FocusField = enum { find, replace };
 
@@ -195,6 +192,8 @@ pub const FindWidget = struct {
             .top = .{ .cells = 0 },
             .width = .{ .percent = 100 },
             .height = .{ .percent = 100 },
+            .display = .flex,
+            .flex_direction = .column,
             .overflow = .hidden,
             .background = background,
             .color = foreground,
@@ -212,22 +211,17 @@ pub const FindWidget = struct {
             });
         }
 
-        try appendLabel(doc, root, label_x, 0, "Find");
-
-        const reserved = if (width_cells > input_x + wide_reserve) wide_reserve else 0;
-        var input_width = if (width_cells > input_x + reserved)
-            width_cells - input_x - reserved
-        else
-            width_cells -| input_x;
-        input_width = @max(input_width, 1);
-
+        // The find row mirrors upstream's `.find-part` flex row: label, the
+        // growing input, the match count and the option toggles.
+        const wide = width_cells > 30;
+        const find_row = try appendRow(doc, root, false);
+        _ = try appendLabel(doc, find_row, "Find", 4);
+        const find_width = if (wide) width_cells -| 30 else width_cells -| 6;
         const find_node = try self.buildInput(
             doc,
-            root,
+            find_row,
             &self.find_input,
-            input_x,
-            0,
-            input_width,
+            @max(find_width, 1),
             self.focused and self.focus_field == .find,
         );
         try find_node.addEventListener(.{
@@ -237,31 +231,29 @@ pub const FindWidget = struct {
         });
 
         var replace_node: ?*ui.Node = null;
-        if (reserved > 0) {
-            const count_x = (width_cells -| toggles_width) -| count_width;
+        if (wide) {
             var count_buffer: [16]u8 = undefined;
             const count = formatCount(&count_buffer, self.state);
-            try appendRightAligned(doc, root, count_x, count_width, 0, count, .{
+            _ = try appendRightAligned(doc, find_row, count, count_width, .{
                 .color = dim_foreground,
             });
 
-            const toggles_x = width_cells - toggles_width;
-            self.appendToggle(doc, root, toggles_x, 0, "Aa", self.state.matchCase(), .match_case);
-            self.appendToggle(doc, root, toggles_x + 3, 0, "ab", self.state.wholeWord(), .whole_word);
-            self.appendToggle(doc, root, toggles_x + 6, 0, ".*", self.state.isRegex(), .regex);
-            self.appendToggle(doc, root, toggles_x + 9, 0, "Sel", self.state.search_scope != null, .scope);
+            const toggles = try appendToggleGroup(doc, find_row);
+            self.appendToggle(doc, toggles, "Aa", self.state.matchCase(), .match_case);
+            self.appendToggle(doc, toggles, "ab", self.state.wholeWord(), .whole_word);
+            self.appendToggle(doc, toggles, ".*", self.state.isRegex(), .regex);
+            self.appendToggle(doc, toggles, "Sel", self.state.search_scope != null, .scope);
         }
 
         if (self.state.is_replace_revealed) {
-            try appendLabel(doc, root, label_x, 1, "Repl");
-
-            const replace_width = @max(@as(usize, 1), width_cells -| input_x -| 6);
+            // `.replace-part` is the second flex row.
+            const replace_row = try appendRow(doc, root, true);
+            _ = try appendLabel(doc, replace_row, "Repl", 4);
+            const replace_width = @max(@as(usize, 1), width_cells -| 11);
             replace_node = try self.buildInput(
                 doc,
-                root,
+                replace_row,
                 &self.replace_input,
-                input_x,
-                1,
                 replace_width,
                 self.focused and self.focus_field == .replace,
             );
@@ -271,8 +263,7 @@ pub const FindWidget = struct {
                 .blur = onBlur,
             });
 
-            const all_x = width_cells -| 4;
-            self.appendReplaceAll(doc, root, all_x, 1);
+            _ = try self.appendReplaceAll(doc, replace_row);
         }
 
         self.focus_node_value = if (self.focus_field == .replace)
@@ -288,26 +279,25 @@ pub const FindWidget = struct {
         doc: *ui.Document,
         parent: *ui.Node,
         input: *ui.InputBox,
-        x: usize,
-        y: usize,
         width_cells: usize,
         focused: bool,
     ) !*ui.Node {
         _ = self;
-        const container = try doc.createElement(.div);
-        container.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = @floatFromInt(x) },
-            .top = .{ .cells = @floatFromInt(y) },
-            .width = .{ .cells = @floatFromInt(width_cells) },
+        // The input box itself remains a zero-origin, 100%-wide absolute child;
+        // the relative flex holder owns the cell width flex computes for it.
+        const holder = try doc.createElement(.div);
+        holder.setStyle(.{
+            .position = .relative,
             .height = .{ .cells = 1 },
+            .flex_grow = 1,
+            .flex_basis = .{ .cells = 0 },
             .overflow = .hidden,
         });
 
         input.focused = focused;
         const node = try input.build(doc, width_cells);
-        _ = try container.appendChild(node);
-        _ = try parent.appendChild(container);
+        _ = try holder.appendChild(node);
+        _ = try parent.appendChild(holder);
         return node;
     }
 
@@ -315,8 +305,6 @@ pub const FindWidget = struct {
         self: *FindWidget,
         doc: *ui.Document,
         parent: *ui.Node,
-        x: usize,
-        y: usize,
         text: []const u8,
         active: bool,
         control: Control,
@@ -330,11 +318,9 @@ pub const FindWidget = struct {
         });
         const holder = doc.createElement(.div) catch return;
         holder.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = @floatFromInt(x) },
-            .top = .{ .cells = @floatFromInt(y) },
             .width = .{ .cells = @floatFromInt(text.len) },
             .height = .{ .cells = 1 },
+            .flex_shrink = 0,
         });
         _ = holder.appendChild(node) catch return;
         _ = parent.appendChild(holder) catch {};
@@ -350,25 +336,21 @@ pub const FindWidget = struct {
         self: *FindWidget,
         doc: *ui.Document,
         parent: *ui.Node,
-        x: usize,
-        y: usize,
-    ) void {
+    ) !void {
         const hovered = self.hover_control != null and self.hover_control.? == .replace_all;
-        const node = doc.createText("All") catch return;
+        const node = try doc.createText("All");
         node.setStyle(.{
             .color = if (hovered) foreground else dim_foreground,
             .background = if (hovered) hover_background else null,
         });
-        const holder = doc.createElement(.div) catch return;
+        const holder = try doc.createElement(.div);
         holder.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = @floatFromInt(x) },
-            .top = .{ .cells = @floatFromInt(y) },
             .width = .{ .cells = 3 },
             .height = .{ .cells = 1 },
+            .flex_shrink = 0,
         });
-        _ = holder.appendChild(node) catch return;
-        _ = parent.appendChild(holder) catch {};
+        _ = try holder.appendChild(node);
+        _ = try parent.appendChild(holder);
         self.control_nodes[@backingInt(Control.replace_all)] = holder;
         holder.addEventListener(.{
             .context = self,
@@ -513,37 +495,50 @@ fn formatCount(buffer: *[16]u8, state: *FindReplaceState) []const u8 {
     }) catch "0/0";
 }
 
-fn appendLabel(doc: *ui.Document, parent: *ui.Node, x: usize, y: usize, text: []const u8) !void {
+fn appendRow(doc: *ui.Document, parent: *ui.Node, right_padding: bool) !*ui.Node {
+    const row = try doc.createElement(.div);
+    row.setStyle(.{
+        .height = .{ .cells = 1 },
+        .display = .flex,
+        .align_items = .center,
+        .gap = .{ .column = 1 },
+        .padding = if (right_padding)
+            ui.Edges{ .left = 1, .right = 1 }
+        else
+            ui.Edges{ .left = 1 },
+        .overflow = .hidden,
+    });
+    _ = try parent.appendChild(row);
+    return row;
+}
+
+fn appendLabel(doc: *ui.Document, parent: *ui.Node, text: []const u8, width_cells: usize) !*ui.Node {
     const holder = try doc.createElement(.div);
     holder.setStyle(.{
-        .position = .absolute,
-        .left = .{ .cells = @floatFromInt(x) },
-        .top = .{ .cells = @floatFromInt(y) },
-        .width = .{ .cells = @floatFromInt(text.len) },
+        .width = .{ .cells = @floatFromInt(width_cells) },
         .height = .{ .cells = 1 },
+        .flex_shrink = 0,
+        .overflow = .hidden,
     });
     const node = try doc.createText(text);
     node.setStyle(.{ .color = dim_foreground });
     _ = try holder.appendChild(node);
     _ = try parent.appendChild(holder);
+    return holder;
 }
 
 fn appendRightAligned(
     doc: *ui.Document,
     parent: *ui.Node,
-    x: usize,
-    width_cells: usize,
-    y: usize,
     text: []const u8,
+    width_cells: usize,
     style: ui.Style,
 ) !void {
     const holder = try doc.createElement(.div);
     holder.setStyle(.{
-        .position = .absolute,
-        .left = .{ .cells = @floatFromInt(x) },
-        .top = .{ .cells = @floatFromInt(y) },
         .width = .{ .cells = @floatFromInt(width_cells) },
         .height = .{ .cells = 1 },
+        .flex_shrink = 0,
         .text_align = .right,
         .overflow = .hidden,
     });
@@ -551,6 +546,18 @@ fn appendRightAligned(
     node.setStyle(style);
     _ = try holder.appendChild(node);
     _ = try parent.appendChild(holder);
+}
+
+fn appendToggleGroup(doc: *ui.Document, parent: *ui.Node) !*ui.Node {
+    const group = try doc.createElement(.div);
+    group.setStyle(.{
+        .width = .{ .cells = toggles_width },
+        .height = .{ .cells = 1 },
+        .display = .flex,
+        .flex_shrink = 0,
+    });
+    _ = try parent.appendChild(group);
+    return group;
 }
 
 fn isWithin(target: ?*ui.Node, ancestor: ?*ui.Node) bool {

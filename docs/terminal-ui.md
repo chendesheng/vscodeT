@@ -339,6 +339,12 @@ The solver uses a temporary arena per pass for flex items and lines; `layoutTree
 is therefore fallible. There is no min/max sizing or automatic min-content floor,
 so a shrunken item can overflow its neighbour unless `overflow` clips it.
 
+Ported widgets use flex where upstream does: the find bar is a flex column with
+one row per input, the suggest widget is a flex column with flex rows and a
+flex list/detail split, and the hover status bar is a flex row. The
+terminal-specific list windowing, scrollbar, hit targets and hover scrolling
+remain manual.
+
 The box tree owns invalidation. DOM mutation APIs notify the attached
 `MutationObserver`. Structural, style and text changes all set `needs_rebuild`
 (and `needs_layout`): boxes copy the direct `Style` and text data when they are
