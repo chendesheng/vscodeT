@@ -120,6 +120,18 @@ const Gallery = struct {
         }
     }
 
+    /// Resizes the surface and rebuilds the sidebar and the selected scene when
+    /// the terminal viewport changed.
+    fn resizeIfNeeded(self: *Gallery) !bool {
+        const size = common.terminalSize();
+        const doc = self.surface.document();
+        if (size.width == doc.cols and size.height == doc.rows) return false;
+        try self.surface.resize(size.width, size.height);
+        self.ensureVisible();
+        try self.rebuild();
+        return true;
+    }
+
     fn sidebarCells(self: *const Gallery) usize {
         return @min(sidebar_width, self.surface.document().cols);
     }
@@ -360,14 +372,27 @@ const Gallery = struct {
         try self.surface.render(out, .{});
         try out.flush();
 
-        var fds = [_]std.posix.pollfd{.{
-            .fd = std.posix.STDIN_FILENO,
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        }};
+        const resize_fd = try common.resizeWatcherFd();
+        var fds = [_]std.posix.pollfd{
+            .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = resize_fd, .events = std.posix.POLL.IN, .revents = 0 },
+        };
         while (!self.quit) {
-            const ready = (std.posix.poll(&fds, -1) catch 0) > 0;
-            if (!ready) continue;
+            _ = std.posix.poll(&fds, -1) catch continue;
+            const stdin_ready =
+                (fds[0].revents & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0;
+
+            if ((fds[1].revents & std.posix.POLL.IN) != 0) {
+                common.drainResizeWatcher(resize_fd);
+                if (try self.resizeIfNeeded()) {
+                    self.hovered = null;
+                    self.router = .{};
+                    try self.surface.render(out, .{});
+                    try out.flush();
+                }
+            }
+
+            if (!stdin_ready) continue;
 
             var bytes: [1024]u8 = undefined;
             const n = std.posix.read(std.posix.STDIN_FILENO, &bytes) catch 0;

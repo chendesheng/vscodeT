@@ -528,7 +528,11 @@ const cells = surface.grid(); // read-only CellGrid for tests
 Public surface for the POC:
 
 - `Surface`: allocator, `Document`, viewport, color depth, tab size, width
-  callback, `render(writer, options)`.
+  callback, `render(writer, options)`, and `resize(cols, rows)`. Resize
+  reallocates the double buffer, updates the document viewport, invalidates the
+  box tree and forces the next frame to clear. The host owns terminal resize
+  detection (`SIGWINCH`; the examples relay it through a self-pipe) and rebuilds
+  any tree that captured the old size.
 - `Document`: root, viewport, tab size, node creation/ownership,
   `activeElement`, `focus`, `blur`, `moveFocus`, `dispatchKey`.
 - `Node`: tree navigation/mutation, direct styles, `addEventListener` /

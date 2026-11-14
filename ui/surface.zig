@@ -73,6 +73,27 @@ pub const Surface = struct {
         return self.frame.present();
     }
 
+    /// Reallocates the double buffers for a new terminal viewport and marks the
+    /// box tree dirty. The caller owns the document and should rebuild (or
+    /// adjust) its tree afterwards; the next layout pass resolves percentages
+    /// and absolute geometry against the new size. The following frame clears
+    /// the terminal because a resize may have reflowed the old contents.
+    pub fn resize(self: *Surface, cols: usize, rows: usize) !void {
+        const new_cols = @max(cols, 1);
+        const new_rows = @max(rows, 1);
+        if (new_cols == self.doc.cols and new_rows == self.doc.rows) return;
+
+        var frame = try frame_mod.Frame.init(self.allocator, new_cols, new_rows);
+        errdefer frame.deinit();
+        self.frame.deinit();
+        self.frame = frame;
+        self.doc.cols = new_cols;
+        self.doc.rows = new_rows;
+        self.box_tree.needs_rebuild = true;
+        self.box_tree.needs_layout = true;
+        self.first_frame = true;
+    }
+
     /// Lays out the current tree and paints it into the next frame without
     /// encoding ANSI. Hosts that composite several surfaces use this and read
     /// `grid()` afterwards; `render` is the one-surface convenience.
@@ -130,6 +151,52 @@ pub const Surface = struct {
         }
     }
 };
+
+test "Surface: resize replaces the frame and re-solves layout" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 4, .rows = 2 });
+    defer surface.deinit();
+
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+    });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("x"));
+
+    var first: std.Io.Writer.Allocating = .init(allocator);
+    defer first.deinit();
+    try surface.render(&first.writer, .{});
+    try std.testing.expectEqual(@as(usize, 4), surface.grid().cols);
+    try std.testing.expectEqual(@as(usize, 2), surface.grid().rows);
+    try std.testing.expectEqual(@as(f64, 4), root.asElement().rect.w);
+    try std.testing.expect(!surface.first_frame);
+
+    // Same size is a no-op.
+    try surface.resize(4, 2);
+    try std.testing.expectEqual(@as(usize, 4), doc.cols);
+
+    try surface.resize(8, 3);
+    try std.testing.expectEqual(@as(usize, 8), doc.cols);
+    try std.testing.expectEqual(@as(usize, 3), doc.rows);
+    try std.testing.expectEqual(@as(usize, 8), surface.grid().cols);
+    try std.testing.expectEqual(@as(usize, 3), surface.grid().rows);
+    try std.testing.expect(surface.first_frame);
+
+    var second: std.Io.Writer.Allocating = .init(allocator);
+    defer second.deinit();
+    try surface.render(&second.writer, .{});
+    try std.testing.expect(std.mem.startsWith(u8, second.written(), "\x1b[2J\x1b[H"));
+    try std.testing.expectEqual(@as(f64, 8), root.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 3), root.asElement().rect.h);
+
+    const row = try surface.grid().rowText(allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expectEqualStrings("x", row);
+}
 
 test "Surface: text, diff and resize-free redraw" {
     const allocator = std.testing.allocator;

@@ -43,6 +43,7 @@ pub fn build(b: *std.Build) void {
         .{ .step = "example-focus", .path = "examples/focus.zig", .description = "Run the interactive focus example" },
         .{ .step = "example-mouse", .path = "examples/mouse.zig", .description = "Run the interactive mouse example" },
         .{ .step = "example-mouse-events", .path = "examples/mouse_events.zig", .description = "Run the interactive mouse event log" },
+        .{ .step = "example-todo", .path = "examples/todo.zig", .description = "Run the interactive TodoMVC example" },
     };
 
     const all_examples = b.step("examples", "Open the fullscreen examples gallery");

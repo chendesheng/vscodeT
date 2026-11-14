@@ -154,10 +154,11 @@ Notes for the Zig 0.17 port:
   `docs/terminal-ui.md` §4.4.
 - The library's tests are part of `zig build test`; when working inside `ui/`,
   `cd ui && zig build test` runs them directly. Examples live in `ui/examples/`
-  and are all fullscreen. `cd ui && zig build examples` opens the gallery with a
-  side navigation menu; individual `example-hello`, `example-list`,
-  `example-overflow`, `example-focus`, `example-mouse`, `example-mouse-events`
-  steps still run one scene directly.
+  and are all fullscreen. They install a `SIGWINCH` self-pipe and resize their
+  surface and scene when the terminal viewport changes. `cd ui && zig build examples` opens the gallery with a
+  side navigation menu; individual steps (`example-hello`, `example-list`,
+  `example-overflow`, `example-focus`, `example-mouse`, `example-mouse-events`,
+  `example-todo`) still run one scene directly.
 
 Tokenizer status:
 

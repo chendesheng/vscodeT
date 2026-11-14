@@ -87,162 +87,245 @@ pub const MouseRouter = struct {
     }
 };
 
+var resize_read_fd: std.posix.fd_t = -1;
+var resize_write_fd: std.posix.fd_t = -1;
+
+fn onResizeSignal(_: std.posix.SIG) callconv(.c) void {
+    if (resize_write_fd >= 0) {
+        _ = std.posix.system.write(resize_write_fd, "x", 1);
+    }
+}
+
+/// Installs a `SIGWINCH` handler and returns the read end of a self-pipe. The
+/// handler writes a byte from async-signal context; an event loop polls both
+/// stdin and this descriptor, drains it on wakeup, and re-queries `TIOCGWINSZ`.
+/// The descriptor and handler live for the rest of the process.
+pub fn resizeWatcherFd() !std.posix.fd_t {
+    if (resize_read_fd >= 0) return resize_read_fd;
+    const fds = try std.Io.Threaded.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
+    resize_read_fd = fds[0];
+    resize_write_fd = fds[1];
+
+    var action: std.posix.Sigaction = .{
+        .handler = .{ .handler = onResizeSignal },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.WINCH, &action, null);
+    return resize_read_fd;
+}
+
+/// Empties the self-pipe after a `SIGWINCH` wakeup.
+pub fn drainResizeWatcher(fd: std.posix.fd_t) void {
+    var buffer: [64]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(fd, &buffer) catch return;
+        if (n == 0) return;
+    }
+}
+
 /// Creates a fullscreen surface, builds `example` under a full-size root and
-/// runs the static presenter (wait for `q`).
+/// runs the static presenter (wait for `q`). The scene is rebuilt when the
+/// terminal resizes.
 pub fn runStatic(allocator: std.mem.Allocator, example: Example) !void {
-    var surface = try fullscreenSurface(allocator);
-    defer surface.deinit();
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
-        .position = .absolute,
-        .left = .{ .cells = 0 },
-        .top = .{ .cells = 0 },
-        .width = .{ .percent = 100 },
-        .height = .{ .percent = 100 },
-    });
-    doc.setRoot(root);
-    try example.build(example.context, doc, root, .{
-        .width = doc.cols,
-        .height = doc.rows,
-    });
-    try present(&surface, allocator);
+    var runner = try Runner.init(allocator, example);
+    defer runner.deinit();
+    try runner.runStatic();
 }
 
-/// Same setup, but runs the interactive loop (keys, mouse, hover).
+/// Same setup, but runs the interactive loop (keys, mouse, hover). The scene is
+/// rebuilt when the terminal resizes, with the pointer gesture state reset.
 pub fn runInteractive(allocator: std.mem.Allocator, example: Example) !void {
-    var surface = try fullscreenSurface(allocator);
-    defer surface.deinit();
-    const doc = surface.document();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
-        .position = .absolute,
-        .left = .{ .cells = 0 },
-        .top = .{ .cells = 0 },
-        .width = .{ .percent = 100 },
-        .height = .{ .percent = 100 },
-    });
-    doc.setRoot(root);
-    try example.build(example.context, doc, root, .{
-        .width = doc.cols,
-        .height = doc.rows,
-    });
-    try presentInteractive(&surface, allocator);
+    var runner = try Runner.init(allocator, example);
+    defer runner.deinit();
+    try runner.runInteractive();
 }
 
-/// Draws the example on the alternate screen and waits for `q` (or Ctrl-Q),
-/// then restores the terminal. When stdin is a pipe the bytes are decoded the
-/// same way, so a demo can be driven non-interactively; EOF exits.
-pub fn present(surface: *ui.Surface, allocator: std.mem.Allocator) !void {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var buffer: [8192]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(io, &buffer);
-    const out = &stdout.interface;
+const Runner = struct {
+    allocator: std.mem.Allocator,
+    example: Example,
+    surface: ui.Surface,
 
-    try out.writeAll("\x1b[?1049h\x1b[?25l");
-    defer {
+    fn init(allocator: std.mem.Allocator, example: Example) !Runner {
+        var surface = try fullscreenSurface(allocator);
+        errdefer surface.deinit();
+        var runner = Runner{
+            .allocator = allocator,
+            .example = example,
+            .surface = surface,
+        };
+        try runner.rebuildScene();
+        return runner;
+    }
+
+    fn deinit(self: *Runner) void {
+        self.surface.deinit();
+    }
+
+    fn rebuildScene(self: *Runner) !void {
+        const doc = self.surface.document();
+        doc.clear();
+        const root = try doc.createElement(.div);
+        root.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = 0 },
+            .top = .{ .cells = 0 },
+            .width = .{ .percent = 100 },
+            .height = .{ .percent = 100 },
+        });
+        doc.setRoot(root);
+        try self.example.build(self.example.context, doc, root, .{
+            .width = doc.cols,
+            .height = doc.rows,
+        });
+    }
+
+    /// Recreates the surface frame and rebuilds the scene when the terminal
+    /// viewport changed. Returns true when a new frame was produced.
+    fn resizeIfNeeded(self: *Runner) !bool {
+        const size = terminalSize();
+        const doc = self.surface.document();
+        if (size.width == doc.cols and size.height == doc.rows) return false;
+        try self.surface.resize(size.width, size.height);
+        try self.rebuildScene();
+        return true;
+    }
+
+    fn enterScreen(out: *std.Io.Writer, mouse: bool) !void {
+        try out.writeAll("\x1b[?1049h\x1b[?25l");
+        if (mouse) try out.writeAll("\x1b[?1003h\x1b[?1006h");
+    }
+
+    fn leaveScreen(out: *std.Io.Writer, mouse: bool) void {
+        if (mouse) out.writeAll("\x1b[?1006l\x1b[?1003l") catch {};
         out.writeAll("\x1b[?25h\x1b[?1049l") catch {};
         out.flush() catch {};
     }
 
-    const orig_termios = enableRawMode(io);
-    defer {
-        if (orig_termios) |orig| disableRawMode(orig) catch {};
-    }
+    /// Draws the example on the alternate screen and waits for `q` (or Ctrl-Q),
+    /// then restores the terminal. When stdin is a pipe the bytes are decoded the
+    /// same way, so a demo can be driven non-interactively; EOF exits.
+    fn runStatic(self: *Runner) !void {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var buffer: [8192]u8 = undefined;
+        var stdout = std.Io.File.stdout().writer(io, &buffer);
+        const out = &stdout.interface;
 
-    try surface.render(out, .{});
-    try out.flush();
+        try enterScreen(out, false);
+        defer leaveScreen(out, false);
 
-    try waitForQ(allocator);
-}
-
-fn waitForQ(allocator: std.mem.Allocator) !void {
-    var fds = [_]std.posix.pollfd{.{
-        .fd = std.posix.STDIN_FILENO,
-        .events = std.posix.POLL.IN,
-        .revents = 0,
-    }};
-    while (true) {
-        const ready = (std.posix.poll(&fds, -1) catch 0) > 0;
-        if (!ready) continue;
-
-        var bytes: [512]u8 = undefined;
-        const n = std.posix.read(std.posix.STDIN_FILENO, &bytes) catch 0;
-        if (n == 0) return;
-
-        var events = try ui.input.decodeKeys(allocator, bytes[0..n]);
-        defer events.deinit(allocator);
-        for (events.items) |event| {
-            const q = switch (event.key) {
-                .text => |text| std.mem.indexOfScalar(u8, text, 'q') != null,
-                .char => |ch| ch == 'q',
-                else => false,
-            };
-            if (q) return;
+        const orig_termios = enableRawMode(io);
+        defer {
+            if (orig_termios) |orig| disableRawMode(orig) catch {};
         }
-    }
-}
 
-/// Interactive example loop for keyboard and mouse demos: enters the alternate
-/// screen, requests all-motion SGR mouse reports, dispatches every decoded event through
-/// the document (hit-testing mouse events with `Surface.elementFromPoint`) and
-/// redraws after each batch. `q` and Ctrl-Q quit; EOF exits.
-///
-/// The example owns all behavior in listeners: press-to-focus, click/drag,
-/// wheel handling and status updates. This loop only wires terminal input to the
-/// same `ui` APIs an application uses.
-pub fn presentInteractive(surface: *ui.Surface, allocator: std.mem.Allocator) !void {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var buffer: [8192]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(io, &buffer);
-    const out = &stdout.interface;
+        try self.surface.render(out, .{});
+        try out.flush();
 
-    try out.writeAll("\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h");
-    defer {
-        out.writeAll("\x1b[?1006l\x1b[?1003l\x1b[?25h\x1b[?1049l") catch {};
-        out.flush() catch {};
-    }
+        const resize_fd = try resizeWatcherFd();
+        var fds = [_]std.posix.pollfd{
+            .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = resize_fd, .events = std.posix.POLL.IN, .revents = 0 },
+        };
+        while (true) {
+            _ = std.posix.poll(&fds, -1) catch continue;
+            const stdin_ready =
+                (fds[0].revents & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0;
 
-    const orig_termios = enableRawMode(io);
-    defer {
-        if (orig_termios) |orig| disableRawMode(orig) catch {};
-    }
+            if ((fds[1].revents & std.posix.POLL.IN) != 0) {
+                drainResizeWatcher(resize_fd);
+                if (try self.resizeIfNeeded()) {
+                    try self.surface.render(out, .{});
+                    try out.flush();
+                }
+            }
 
-    try surface.render(out, .{});
-    try out.flush();
+            if (!stdin_ready) continue;
 
-    var router = MouseRouter{};
-    var fds = [_]std.posix.pollfd{.{
-        .fd = std.posix.STDIN_FILENO,
-        .events = std.posix.POLL.IN,
-        .revents = 0,
-    }};
-    while (true) {
-        const ready = (std.posix.poll(&fds, -1) catch 0) > 0;
-        if (!ready) continue;
+            var bytes: [512]u8 = undefined;
+            const n = std.posix.read(std.posix.STDIN_FILENO, &bytes) catch 0;
+            if (n == 0) return;
 
-        var bytes: [1024]u8 = undefined;
-        const n = std.posix.read(std.posix.STDIN_FILENO, &bytes) catch 0;
-        if (n == 0) return;
-
-        var items = try ui.input.decode(allocator, bytes[0..n]);
-        defer items.deinit(allocator);
-
-        const doc = surface.document();
-        for (items.items) |*item| {
-            switch (item.*) {
-                .key => |*key| {
-                    if (isQuitKey(key.*)) return;
-                    _ = doc.dispatchKey(key.key, key.mods);
-                },
-                .mouse => |*mouse| try router.dispatch(surface, mouse),
+            var events = try ui.input.decodeKeys(self.allocator, bytes[0..n]);
+            defer events.deinit(self.allocator);
+            for (events.items) |event| {
+                if (isQuitKey(event)) return;
             }
         }
-
-        try surface.render(out, .{});
-        try out.flush();
     }
-}
+
+    /// Interactive example loop for keyboard and mouse demos: enters the
+    /// alternate screen, requests all-motion SGR mouse reports, dispatches
+    /// every decoded event through the document (hit-testing mouse events with
+    /// `Surface.elementFromPoint`) and redraws after each batch. `q` and Ctrl-Q
+    /// quit; EOF exits. A terminal resize rebuilds the scene and drops the
+    /// in-progress press state.
+    ///
+    /// The example owns all behavior in listeners: press-to-focus, click/drag,
+    /// wheel handling and status updates. This loop only wires terminal input to
+    /// the same `ui` APIs an application uses.
+    fn runInteractive(self: *Runner) !void {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var buffer: [8192]u8 = undefined;
+        var stdout = std.Io.File.stdout().writer(io, &buffer);
+        const out = &stdout.interface;
+
+        try enterScreen(out, true);
+        defer leaveScreen(out, true);
+
+        const orig_termios = enableRawMode(io);
+        defer {
+            if (orig_termios) |orig| disableRawMode(orig) catch {};
+        }
+
+        try self.surface.render(out, .{});
+        try out.flush();
+
+        var router = MouseRouter{};
+        const resize_fd = try resizeWatcherFd();
+        var fds = [_]std.posix.pollfd{
+            .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = resize_fd, .events = std.posix.POLL.IN, .revents = 0 },
+        };
+        while (true) {
+            _ = std.posix.poll(&fds, -1) catch continue;
+            const stdin_ready =
+                (fds[0].revents & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0;
+
+            if ((fds[1].revents & std.posix.POLL.IN) != 0) {
+                drainResizeWatcher(resize_fd);
+                if (try self.resizeIfNeeded()) {
+                    router = .{};
+                    try self.surface.render(out, .{});
+                    try out.flush();
+                }
+            }
+
+            if (!stdin_ready) continue;
+
+            var bytes: [1024]u8 = undefined;
+            const n = std.posix.read(std.posix.STDIN_FILENO, &bytes) catch 0;
+            if (n == 0) return;
+
+            var items = try ui.input.decode(self.allocator, bytes[0..n]);
+            defer items.deinit(self.allocator);
+
+            const doc = self.surface.document();
+            for (items.items) |*item| {
+                switch (item.*) {
+                    .key => |*key| {
+                        if (isQuitKey(key.*)) return;
+                        _ = doc.dispatchKey(key.key, key.mods);
+                    },
+                    .mouse => |*mouse| try router.dispatch(&self.surface, mouse),
+                }
+            }
+
+            try self.surface.render(out, .{});
+            try out.flush();
+        }
+    }
+};
 
 fn isQuitKey(event: ui.KeyEvent) bool {
     if (event.mods.ctrl) {

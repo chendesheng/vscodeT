@@ -57,17 +57,24 @@ zig build example-styling  # text attributes, truecolor, background swatches
 zig build example-focus    # interactive: Tab/Shift-Tab, Enter, activeElement
 zig build example-mouse    # interactive: hover/click/drag a list, wheel scrolling
 zig build example-mouse-events # interactive: hover/down/move/up/click/wheel log
+zig build example-todo     # interactive: TodoMVC input, list, filters and buttons
 zig build examples         # fullscreen gallery with a side navigation menu
 ```
 
 Every example fills the terminal (80x24 when stdout is not a TTY), draws on the
-alternate screen and waits for `q` (or Ctrl-Q) to exit. Input is read from
-stdin, so a pipe can drive an example too; EOF exits. The focus example handles
-Tab/Shift-Tab and Enter. The two mouse examples request SGR mouse reports (mode
+alternate screen and reads input from stdin, so a pipe can drive an example
+too; EOF exits. Examples that use the shared presenter wait for `q` (or
+Ctrl-Q) to exit; `example-todo` owns its loop, so `q` is text and Ctrl-Q exits.
+The examples install a `SIGWINCH` handler backed by a self-pipe: hiding a
+software keyboard or rotating the device wakes the loop, re-queries the
+terminal size, calls `Surface.resize` and rebuilds the scene at the new
+viewport. The focus example handles Tab/Shift-Tab and Enter. The two mouse examples request SGR mouse reports (mode
 1003/1006), so they accept real terminal input or piped `CSI < b ; x ; y M/m`
 sequences; `example-mouse` shows selection, hover and wheel scrolling, while
 `example-mouse-events` logs every mouse event with its hit-tested target and
-highlights the hovered zone.
+highlights the hovered zone. `example-todo` is a standalone TodoMVC scene with
+its own input loop: add todos through `ui.InputBox`, toggle rows, edit a
+focused row, filter All/Active/Completed, clear completed and toggle all.
 
 `zig build examples` opens the fullscreen gallery instead of running all
 examples in sequence: a side navigation menu on the left and the selected
@@ -120,6 +127,13 @@ pub fn main() !void {
     try stdout.interface.flush();
 }
 ```
+
+`Surface.resize(cols, rows)` reallocates the double buffer, updates the
+document viewport and invalidates the box tree; the next layout pass resolves
+percentages and absolute geometry against the new size, and the next `render`
+clears the terminal. Rebuild the tree (or update the parts whose build captured
+the old size) after resizing. The library itself has no resize event: the host
+handles `SIGWINCH` and calls `resize`, as `ui/examples/common.zig` does.
 
 Text nodes are inline content. Position and size belong to the parent element;
 use a box with a text child (as the examples do) rather than setting
