@@ -80,6 +80,58 @@ pub fn main() !void {
     try app.rebuild(&surface);
     try app.run(&surface);
 }
+pub fn todoGalleryExample(allocator: Allocator) !common.Example {
+    const app = try allocator.create(App);
+    errdefer allocator.destroy(app);
+    app.* = .{
+        .allocator = allocator,
+        .input = ui.InputBox.init(allocator),
+    };
+    app.configure();
+    errdefer app.deinit();
+    try app.seed();
+    return .{
+        .title = "todo",
+        .context = app,
+        .build = galleryBuild,
+        .deinit = galleryDeinit,
+        .wants_keys = true,
+        .rebuild_after_event = true,
+    };
+}
+
+fn galleryBuild(
+    context: ?*anyopaque,
+    doc: *ui.Document,
+    parent: *ui.Node,
+    size: common.Size,
+) !void {
+    const app: *App = @ptrCast(@alignCast(context orelse return));
+    const root = try createRoot(doc);
+    _ = try parent.appendChild(root);
+    try app.buildTree(doc, root, size.width, size.height);
+}
+
+fn galleryDeinit(context: ?*anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(context orelse return));
+    const allocator = app.allocator;
+    app.deinit();
+    allocator.destroy(app);
+}
+
+fn createRoot(doc: *ui.Document) !*ui.Node {
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+        .background = background,
+        .overflow = .hidden,
+    });
+    return root;
+}
 
 fn isCtrlQ(event: ui.KeyEvent) bool {
     return event.mods.ctrl and switch (event.key) {
@@ -113,7 +165,7 @@ const App = struct {
 
     fn configure(self: *App) void {
         self.input.placeholder = "What needs to be done?";
-        self.input.placeholder_when_focused = true;
+        self.input.placeholder_when_focused = false;
         self.input.color = foreground;
         self.input.placeholder_color = dim;
         self.input.selection_background = accent;
@@ -216,23 +268,14 @@ const App = struct {
     fn rebuild(self: *App, surface: *ui.Surface) !void {
         const doc = surface.document();
         doc.clear();
+        const root = try createRoot(doc);
+        doc.setRoot(root);
+        try self.buildTree(doc, root, doc.cols, doc.rows);
+    }
+
+    fn buildTree(self: *App, doc: *ui.Document, root: *ui.Node, cols: usize, rows: usize) !void {
         self.rebuilding = true;
         defer self.rebuilding = false;
-
-        const cols = doc.cols;
-        const rows = doc.rows;
-
-        const root = try doc.createElement(.div);
-        root.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .percent = 100 },
-            .height = .{ .percent = 100 },
-            .background = background,
-            .overflow = .hidden,
-        });
-        doc.setRoot(root);
 
         const width = @min(cols -| 4, 74);
         const left = (cols -| width) / 2;

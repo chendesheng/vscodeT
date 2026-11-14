@@ -25,6 +25,7 @@ const styling = @import("styling.zig");
 const focus = @import("focus.zig");
 const mouse = @import("mouse.zig");
 const mouse_events = @import("mouse_events.zig");
+const todo = @import("todo.zig");
 
 const sidebar_width = 16;
 const items_top = 2;
@@ -52,6 +53,7 @@ const entries = [_]Entry{
     .{ .title = "focus", .open = focus.focusExample },
     .{ .title = "mouse", .open = mouse.mouseExample },
     .{ .title = "mouse events", .open = mouse_events.mouseEventsExample },
+    .{ .title = "todo", .open = todo.todoGalleryExample },
 };
 
 const sidebar_background = common.rgb(22, 22, 30);
@@ -227,7 +229,11 @@ const Gallery = struct {
         }
 
         if (rows > 1) {
-            _ = try common.addLabel(doc, nav, "up/down q quit", .{
+            const hint = if (self.scene) |scene|
+                if (scene.wants_keys) "alt-up/dn ^Q" else "up/down q quit"
+            else
+                "up/down q quit";
+            _ = try common.addLabel(doc, nav, hint, .{
                 .position = .absolute,
                 .left = .{ .cells = 1 },
                 .top = .{ .cells = @floatFromInt(rows - 1) },
@@ -285,6 +291,21 @@ const Gallery = struct {
         if (ctrl_q) {
             self.quit = true;
             return false;
+        }
+
+        // Scenes with their own keyboard focus (currently TodoMVC) receive the
+        // key before the gallery's scene navigation. Alt+Up/Down still switches
+        // scenes so the keyboard is not trapped by a text input.
+        const alt_nav = event.mods.alt and switch (event.key) {
+            .up, .down, .page_up, .page_down, .home, .end => true,
+            else => false,
+        };
+        if (self.scene) |scene| {
+            if (scene.wants_keys and !alt_nav) {
+                self.surface.document().dispatchEvent(event);
+                if (scene.rebuild_after_event) try self.rebuild();
+                return true;
+            }
         }
 
         switch (event.key) {
@@ -349,6 +370,9 @@ const Gallery = struct {
         }
 
         try self.router.dispatch(self.surface, event);
+        if (self.scene) |scene| {
+            if (scene.rebuild_after_event and event.kind != .move) try self.rebuild();
+        }
         return true;
     }
 

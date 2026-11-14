@@ -38,6 +38,12 @@ pub const Example = struct {
         size: Size,
     ) anyerror!void,
     deinit: ?*const fn (context: ?*anyopaque) void = null,
+    /// Gallery scenes that own a keyboard focus (text input, tree/list focus)
+    /// receive decoded keys instead of the gallery's scene navigation.
+    wants_keys: bool = false,
+    /// Rebuild the gallery after each handled key or mouse action, for scenes
+    /// whose listeners mutate state instead of updating node styles in place.
+    rebuild_after_event: bool = false,
 };
 
 /// Hit-tests a pointer event, dispatches it to the document and synthesizes a

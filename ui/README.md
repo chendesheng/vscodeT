@@ -79,10 +79,11 @@ focused row, filter All/Active/Completed, clear completed and toggle all.
 `zig build examples` opens the fullscreen gallery instead of running all
 examples in sequence: a side navigation menu on the left and the selected
 example in the content area. Up/Down, PageUp/PageDown, Home/End and the wheel
-move the selection; hover/click selects a menu item; `q`/Ctrl-Q quits. Mouse
-events over the content go to the example, so the mouse demos remain
-interactive there; run an individual `example-*` step for the full keyboard
-interaction of a scene.
+move the selection; hover/click selects a menu item; `q`/Ctrl-Q quits. Scenes
+that own keyboard focus (TodoMVC) receive keys in the gallery too; while one is
+selected, Alt+Up/Down switches scenes and Ctrl-Q quits. Mouse events over the
+content go to the example, so the mouse demos remain interactive there; run an
+individual `example-*` step for a scene without the gallery chrome.
 
 ## Minimal use
 
