@@ -700,9 +700,17 @@ Library constraints:
   cells by `hoverMarkdownRenderer.zig`; there is no HTML/CSS engine, so links
   show their URL in dim text, tables/images fall back to plain text, and raw
   HTML is ignored.
-- `ui/inputbox.zig` is the terminal single-line input: UTF-8 buffer, byte
-  caret, block caret cell, placeholder, editing keys and `on_change` /
-  `on_enter` / `on_escape` callbacks. It is the base for the find bar.
+- `ui/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
+  `(anchor, cursor)` selection with keyboard/mouse extension and selection
+  paint, shell-like word movement/deletion, Ctrl+A, clipboard hooks
+  (`on_copy`/`on_paste`; the library does no clipboard IO), snapshot
+  undo/redo, caret-follow horizontal scrolling with wheel and drag-edge
+  scrolling, enable/disable, and the upstream
+  `select`/`getSelection`/`isSelectionAtEnd`/`insertAtCursor` shape.
+  Placeholder, `on_change`/`on_enter`/`on_escape` and the block caret are
+  unchanged. Up/Down and Tab stay host-owned; history, validation messages and
+  action bars remain host concerns. Terminal limits: no double-click word
+  selection (reports carry no click counts) and no grapheme/IME segmentation.
 - `src/vs/editor/contrib/find/browser/replacePattern.zig` and
   `src/vs/base/common/search.zig` port the replace-string parser and
   case-preserving replacement, with the upstream test cases.
@@ -900,14 +908,19 @@ Library constraints:
   composition, ligatures, or terminal width negotiation (mode 2027) in the POC.
 - Mouse press/release, click, idle and button-held motion and wheel are in.
   Hover is widget state derived from idle motion: find toggles/`All` highlight,
-  and the input box maps clicks to its byte caret. CSS-style `:hover`,
-  enter/leave events, double/triple click counts, context menus, middle-click
-  paste, legacy X10 reports, terminal focus reporting, drag auto-scroll and
-  generic `overflow: auto` scrolling are not. IME, scheduler and
-  `Range`/`Selection` are
-  still absent. Keyboard events and focus are in; key release/repeat, CSI
-  u/kitty reports are not. Focus events have no capture pass and there are no
-  `:focus`-style selectors; focus is explicit state plus listeners.
+  and the input box maps clicks/drags to its byte selection. CSS-style
+  `:hover`, enter/leave events, double/triple click counts, context menus,
+  middle-click paste, legacy X10 reports, terminal focus reporting, editor
+  drag auto-scroll and generic `overflow: auto` scrolling are not. IME,
+  scheduler and `Range`/`Selection` are still absent. Keyboard events and
+  focus are in; key release/repeat, CSI u/kitty reports are not. Focus events
+  have no capture pass and there are no `:focus`-style selectors; focus is
+  explicit state plus listeners.
+- The one-line input has no system clipboard (host hooks only), no
+  double-click word selection, no horizontal scrollbar and no validation
+  message/context view; history (`HistoryInputBox`) stays host-owned. Its
+  selection and editing are codepoint based, so combining marks/graphemes are
+  not grouped.
 - The editor scrollbar/overview ruler is a right-aligned 1.5-cell strip with
   three half-cell marker lanes; the 1.5-cell thumb covers markers on its rows
   and resolves its top/bottom edges to half-cell quadrants. It has no pixel

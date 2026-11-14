@@ -255,11 +255,47 @@ var event = ui.KeyEvent{ .key = .{ .text = "query" } };
 _ = input.handleKey(&event);              // true when the input consumed it
 ```
 
-It owns a UTF-8 buffer and byte caret, paints a block caret (an inverted cell)
-instead of using the hardware cursor, and handles text, Backspace, Delete,
-Left/Right, Home/End, Enter and Escape. Up/Down and Tab are left to the host.
-A left click or held-button drag maps the pointer cell to the byte caret;
-`handleMouse` is public for hosts that want to route pointer events themselves.
+It owns a UTF-8 buffer, a byte caret and an `(anchor, cursor)` selection, and
+paints a block caret (an inverted cell) instead of using the hardware cursor.
+The selection is rendered as a background/reverse run and replaces the caret
+while non-empty:
+
+```zig
+input.select(.{ .start = 1, .end = 4 }); // select(null)/selectAll() selects all
+const range = input.getSelection().?;    // normalized byte offsets
+_ = input.isSelectionAtEnd();
+try input.insertAtCursor("replacement"); // replaces the selection
+```
+
+Editing keys: text and bracketed paste insert (replacing the selection);
+Backspace/Delete remove the selection, one codepoint, or one word with Ctrl or
+Alt; Left/Right move by codepoint or word; Home/End; Shift extends the
+selection; Ctrl+A selects all. Ctrl+Z undoes, Ctrl+Y (and Ctrl+Shift+Z when the
+terminal reports it) redoes. Up/Down, Tab, PageUp/PageDown and Insert are left
+to the host. Enter and Escape call `on_enter`/`on_escape`.
+
+The terminal has no system clipboard, so Ctrl+C/Ctrl+X call `on_copy` and
+Ctrl+V calls `on_paste`; without those hooks the chords are safe no-ops. The
+host writes/reads the real clipboard (for example OSC 52):
+
+```zig
+input.callback_context = self;
+input.on_copy = onCopy; // fn (?*anyopaque, []const u8) void
+input.on_paste = onPaste; // fn (?*anyopaque) ?[]const u8
+```
+
+A left click places the caret, a held-button drag selects (Shift-click extends),
+and dragging past an edge scrolls the window. The visible window follows the
+caret; a horizontal wheel (`delta_x`, including Shift+wheel) or
+`scrollBy(doc, cells)` scrolls it manually and is re-armed by the next edit.
+`selection_background`/`selection_foreground` theme the selection (reverse video
+when no background is set). `setEnabled(false)`/`disable()` makes the box
+non-focusable, dim and keyless; `enable()` restores it.
+
+There is no double-click word selection (terminal reports carry no click
+counts), no grapheme/IME segmentation (selection is codepoint based), and no
+scrollbar, validation message or browser action bar; hover, history and
+validation remain host concerns.
 
 A view that rebuilds its tree every frame can reuse the same document and the
 renderer's previous grid: `Document.clear()` drops the arena, root and focus

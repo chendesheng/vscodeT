@@ -116,7 +116,10 @@ Notes for the Zig 0.17 port:
   between the find and replace inputs, Alt-C/Alt-W/Alt-R toggle match case,
   whole word and regex, Alt-P toggles preserve case, Alt-L limits the search to
   the current selection(s), Alt-Enter selects all matches, and Ctrl-Alt-Enter
-  replaces all. The bar shows the match position/count and option state.
+  replaces all. The bar shows the match position/count and option state. The
+  find, search and quick-open inputs share the completed `InputBox` editing
+  behavior: Shift selection, Ctrl-A, word-wise movement/deletion, undo/redo,
+  mouse drag selection and caret-follow horizontal scrolling.
 - Quick open is wired through `src/tui/quickAccess.zig`: `Ctrl-P` opens
   "Go to File" with recent editors first and workspace files as the query is
   typed, and typing `>` switches to the command selector. The command selector
