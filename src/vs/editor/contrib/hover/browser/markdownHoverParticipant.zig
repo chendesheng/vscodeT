@@ -457,6 +457,7 @@ fn appendRow(doc: *ui.Document, parent: *ui.Node, row: usize) !*ui.Node {
         .top = .{ .cells = @floatFromInt(row) },
         .width = .{ .percent = 100 },
         .height = .{ .cells = 1 },
+        .white_space = .pre,
     });
     _ = try parent.appendChild(node);
     return node;

@@ -6,20 +6,26 @@
 //!
 //! Supported box model: content box (`width`/`height`), padding, border and
 //! margin, with absolute `left`/`top` anchoring the margin box, block flow,
-//! single-line inline flow, and flex formatting contexts. The flex pass follows
+//! inline text flow, and flex formatting contexts. The flex pass follows
 //! css-flexbox-1 §9 and TermDOM's `layoutsolver` shape (direction, wrap,
 //! grow/shrink/basis, justify/align, gap, order and auto margins); it is a
 //! reimplementation in Zig over this library's box tree.
 //!
-//! There is no min/max sizing, CSS text wrapping, grid, table boxes or
-//! incremental box reuse yet. Flex items shrink to a zero content size rather
-//! than to an automatic min-content floor. `position: fixed` still resolves
-//! like `absolute`, as it did before flex was added.
+//! Inline text flow lives in `text_layout.zig`: UAX #14 line breaking, the
+//! `white-space` family, `word-break`/`overflow-wrap`, line alignment and
+//! fragments. This file only collects leaves and places atomic inline boxes.
+//!
+//! There is no min/max sizing, grid, table boxes or incremental box reuse yet.
+//! Flex items shrink to a zero content size rather than to an automatic
+//! min-content floor. `position: fixed` still resolves like `absolute`, as it
+//! did before flex was added.
 
 const std = @import("std");
 const box = @import("box.zig");
 const dom = @import("dom.zig");
+const linebreak = @import("linebreak.zig");
 const style_mod = @import("style.zig");
+const text_layout = @import("text_layout.zig");
 
 pub const Rect = style_mod.Rect;
 pub const Style = style_mod.Style;
@@ -41,11 +47,13 @@ pub fn layoutDocument(doc: *dom.Document) !void {
 }
 
 pub fn layoutTree(tree: *BoxTree, doc: *dom.Document) LayoutError!void {
+    _ = tree.scratch.reset(.retain_capacity);
     var ctx = LayoutContext{
         .doc = doc,
-        .arena = std.heap.ArenaAllocator.init(doc.allocator),
+        .allocator = tree.scratch.allocator(),
+        .tables = try linebreak.LineBreakTables.init(tree.scratch.allocator()),
     };
-    defer ctx.arena.deinit();
+    defer ctx.tables.deinit();
 
     const viewport = Rect{
         .x = 0,
@@ -88,11 +96,8 @@ const Size = struct {
 
 const LayoutContext = struct {
     doc: *dom.Document,
-    arena: std.heap.ArenaAllocator,
-
-    fn allocator(self: *LayoutContext) std.mem.Allocator {
-        return self.arena.allocator();
-    }
+    allocator: std.mem.Allocator,
+    tables: linebreak.LineBreakTables,
 };
 
 const ResolvedMargins = struct {
@@ -218,11 +223,350 @@ fn zeroBox(current: *LayoutBox) void {
     current.content_rect = .{};
 }
 
-fn layoutText(doc: *const dom.Document, current: *LayoutBox, x: f64, y: f64) void {
-    const width: f64 = @floatFromInt(doc.measureText(current.text orelse ""));
-    current.rect = .{ .x = x, .y = y, .w = width, .h = 1 };
-    current.padding_rect = current.rect;
-    current.content_rect = current.rect;
+const LeafList = std.ArrayList(text_layout.Leaf);
+
+fn appendTextLeaf(ctx: *LayoutContext, current: *LayoutBox, leaves: *LeafList) !void {
+    // A flex/table probe may have run this box before. The authoritative
+    // fragments are the ones the placing pass writes.
+    current.text_fragments = &.{};
+    current.has_text_layout = true;
+    current.rect = .{};
+    current.padding_rect = .{};
+    current.content_rect = .{};
+    try leaves.append(ctx.allocator, .{ .text = .{
+        .box = current,
+        .data = current.text orelse "",
+        .text_style = current.text_style,
+    } });
+}
+
+fn measureAtomic(
+    ctx: *LayoutContext,
+    child: *LayoutBox,
+    available_width: f64,
+    owner_height: ?f64,
+) LayoutError!text_layout.AtomicLeaf {
+    const margin = resolveMargins(child.style.margin);
+    const padding = child.style.padding.nonNegative();
+    const border = style_mod.borderWidths(child.style);
+    const extra_width = padding.horizontal() + border.horizontal();
+    const inner = @max(0, available_width - margin.horizontal() - extra_width);
+    const content = resolveDimension(child.style.width, available_width) orelse
+        @max(0, @min(contentMaxWidth(ctx, child), inner));
+    const size = try layoutElement(
+        ctx,
+        child,
+        0,
+        0,
+        .{
+            .width = inner,
+            .width_sizing = .shrink_to_fit,
+            .height_sizing = .indefinite,
+            .owner_width = available_width,
+            .owner_height = owner_height,
+        },
+        .{ .width = content },
+    );
+    return .{
+        .box = child,
+        .width = size.width + margin.horizontal(),
+        .height = size.height,
+        .baseline = firstBaseline(child),
+        .margin_left = margin.left,
+        .margin_right = margin.right,
+    };
+}
+
+fn edgeWidth(style: style_mod.Style, side: text_layout.EdgeSide) f64 {
+    const margin = resolveMargins(style.margin);
+    const padding = style.padding.nonNegative();
+    const border = style_mod.borderWidths(style);
+    return switch (side) {
+        .start => @max(0, margin.left + padding.left + border.left),
+        .end => @max(0, margin.right + padding.right + border.right),
+    };
+}
+
+/// Collects the leaves of an inline run. Text stays text; a non-atomic
+/// `display: inline_` box contributes start/end edges and flattens its
+/// children so its text breaks across lines. Inline blocks/flex boxes are
+/// atomic inline items.
+fn collectInlineLeaves(
+    ctx: *LayoutContext,
+    parent: *LayoutBox,
+    available_width: f64,
+    owner_height: ?f64,
+    leaves: *LeafList,
+) LayoutError!void {
+    for (parent.children.items) |child| {
+        if (child.style.display == .none or child.style.display == .contents) {
+            zeroBox(child);
+            continue;
+        }
+        if (isOutOfFlow(child.style)) continue;
+        switch (child.kind) {
+            .text => try appendTextLeaf(ctx, child, leaves),
+            .element, .anonymous_flex_item, .anonymous_inline => {
+                const inline_box = child.displayInline();
+                if (inline_box) {
+                    child.rect = .{};
+                    child.padding_rect = .{};
+                    child.content_rect = .{};
+                    child.text_fragments = &.{};
+                    child.has_text_layout = false;
+                    child.inline_fragments = &.{};
+                    const start_width = if (child.style.display == .inline_)
+                        edgeWidth(child.style, .start)
+                    else
+                        0;
+                    if (start_width > 0) {
+                        try leaves.append(ctx.allocator, .{ .edge = .{
+                            .box = child,
+                            .margin = resolveMargins(child.style.margin).left,
+                            .border = style_mod.borderWidths(child.style).left,
+                            .padding = child.style.padding.nonNegative().left,
+                            .side = .start,
+                        } });
+                    }
+                    try collectInlineLeaves(ctx, child, available_width, owner_height, leaves);
+                    const end_width = if (child.style.display == .inline_)
+                        edgeWidth(child.style, .end)
+                    else
+                        0;
+                    if (end_width > 0) {
+                        try leaves.append(ctx.allocator, .{ .edge = .{
+                            .box = child,
+                            .margin = resolveMargins(child.style.margin).right,
+                            .border = style_mod.borderWidths(child.style).right,
+                            .padding = child.style.padding.nonNegative().right,
+                            .side = .end,
+                        } });
+                    }
+                } else {
+                    const atomic = try measureAtomic(ctx, child, available_width, owner_height);
+                    try leaves.append(ctx.allocator, .{ .atomic = atomic });
+                }
+            },
+            .initial_containing_block => {},
+        }
+    }
+}
+
+fn addTextFragment(ctx: *LayoutContext, node_box: *LayoutBox, fragment: box.TextFragment) !void {
+    const old = node_box.text_fragments;
+    const next = try ctx.allocator.alloc(box.TextFragment, old.len + 1);
+    @memcpy(next[0..old.len], old);
+    next[old.len] = fragment;
+    node_box.text_fragments = next;
+}
+
+fn addInlineFragment(ctx: *LayoutContext, node_box: *LayoutBox, fragment: box.InlineFragment) !void {
+    const old = node_box.inline_fragments;
+    const next = try ctx.allocator.alloc(box.InlineFragment, old.len + 1);
+    @memcpy(next[0..old.len], old);
+    next[old.len] = fragment;
+    node_box.inline_fragments = next;
+}
+
+const InlineExtent = struct {
+    box: *LayoutBox,
+    min_x: f64,
+    max_x: f64,
+};
+
+fn placeInlineFragments(ctx: *LayoutContext, run: *LayoutBox, wrapped: text_layout.Wrapped) !void {
+    for (wrapped.lines) |line| {
+        var extents: std.ArrayList(InlineExtent) = .empty;
+        defer extents.deinit(ctx.allocator);
+        for (line.segments) |segment| {
+            if (segment.kind == .edge) continue;
+            const left = segment.x;
+            const right = segment.x + segment.width;
+            var ancestor = segment.box.parent;
+            while (ancestor) |current| : (ancestor = current.parent) {
+                if (current == run) break;
+                // Fragmented wrappers (including anonymous runs inside an
+                // inline element) still need a non-empty box so the painter
+                // descends into their fragments.
+                current.rect = unionRect(current.rect, .{
+                    .x = segment.x,
+                    .y = segment.y,
+                    .w = segment.width,
+                    .h = 1,
+                });
+                if (current.kind != .element or current.style.display != .inline_) continue;
+                var found = false;
+                for (extents.items) |*extent| {
+                    if (extent.box != current) continue;
+                    extent.min_x = @min(extent.min_x, left);
+                    extent.max_x = @max(extent.max_x, right);
+                    found = true;
+                    break;
+                }
+                if (!found) {
+                    try extents.append(ctx.allocator, .{
+                        .box = current,
+                        .min_x = left,
+                        .max_x = right,
+                    });
+                }
+            }
+        }
+        for (extents.items) |extent| {
+            const padding = extent.box.style.padding.nonNegative();
+            const border = style_mod.borderWidths(extent.box.style);
+            const rect = style_mod.Rect{
+                .x = extent.min_x - padding.left - border.left,
+                .y = line.y - padding.top - border.top,
+                .w = @max(0, extent.max_x - extent.min_x) + padding.horizontal() + border.horizontal(),
+                .h = line.height + padding.vertical() + border.vertical(),
+            };
+            try addInlineFragment(ctx, extent.box, .{
+                .x = rect.x,
+                .y = rect.y,
+                .w = rect.w,
+                .h = rect.h,
+            });
+            extent.box.rect = unionRect(extent.box.rect, rect);
+            extent.box.padding_rect = extent.box.rect.inset(border);
+            extent.box.content_rect = extent.box.padding_rect.inset(padding);
+        }
+    }
+}
+
+fn applyWrapped(
+    ctx: *LayoutContext,
+    run: *LayoutBox,
+    wrapped: text_layout.Wrapped,
+    x: f64,
+    y: f64,
+    available_width: f64,
+) LayoutError!f64 {
+    for (wrapped.lines) |line| {
+        for (line.segments) |segment| {
+            switch (segment.kind) {
+                .text => {
+                    try addTextFragment(ctx, segment.box, .{
+                        .text = segment.text,
+                        .x = segment.x,
+                        .y = segment.y,
+                        .width = segment.width,
+                    });
+                    const current = segment.box;
+                    current.rect = unionRect(current.rect, .{
+                        .x = segment.x,
+                        .y = segment.y,
+                        .w = segment.width,
+                        .h = 1,
+                    });
+                    current.padding_rect = current.rect;
+                    current.content_rect = current.rect;
+                },
+                .atomic => {
+                    const child = segment.box;
+                    const padding = child.style.padding.nonNegative();
+                    const border = style_mod.borderWidths(child.style);
+                    const content_width = @max(0, segment.width -
+                        padding.horizontal() - border.horizontal());
+                    _ = try layoutElement(
+                        ctx,
+                        child,
+                        segment.x,
+                        segment.y,
+                        .{
+                            .width = available_width,
+                            .width_sizing = .indefinite,
+                            .height_sizing = .indefinite,
+                            .owner_width = available_width,
+                            .owner_height = null,
+                        },
+                        .{ .width = content_width },
+                    );
+                },
+                .edge => {},
+            }
+        }
+    }
+
+    try placeInlineFragments(ctx, run, wrapped);
+
+    if (run.kind != .text) {
+        run.rect = .{
+            .x = x,
+            .y = y,
+            .w = if (wrapped.wrapped) available_width else wrapped.max_line_width,
+            .h = wrapped.height,
+        };
+        run.padding_rect = run.rect;
+        run.content_rect = run.rect;
+    }
+    return wrapped.height;
+}
+
+fn layoutInlineRun(
+    ctx: *LayoutContext,
+    run: *LayoutBox,
+    x: f64,
+    y: f64,
+    available_width: f64,
+    owner_height: ?f64,
+) LayoutError!f64 {
+    var leaves: LeafList = .empty;
+    defer leaves.deinit(ctx.allocator);
+    try collectInlineLeaves(ctx, run, available_width, owner_height, &leaves);
+    if (leaves.items.len == 0) {
+        zeroBox(run);
+        return 0;
+    }
+    const wrapped = try text_layout.layoutRun(.{
+        .allocator = ctx.allocator,
+        .doc = ctx.doc,
+        .tables = &ctx.tables,
+        .text_style = run.text_style,
+        .text_align = run.style.text_align,
+        .max_width = available_width,
+        .tab_size = ctx.doc.tab_size,
+        .origin_x = x,
+        .origin_y = y,
+    }, leaves.items);
+    return applyWrapped(ctx, run, wrapped, x, y, available_width);
+}
+
+fn layoutTextContent(
+    ctx: *LayoutContext,
+    current: *LayoutBox,
+    x: f64,
+    y: f64,
+    available_width: f64,
+    owner_height: ?f64,
+    text_align: style_mod.TextAlign,
+) LayoutError!f64 {
+    var leaves: LeafList = .empty;
+    defer leaves.deinit(ctx.allocator);
+    _ = owner_height;
+    try appendTextLeaf(ctx, current, &leaves);
+    const wrapped = try text_layout.layoutRun(.{
+        .allocator = ctx.allocator,
+        .doc = ctx.doc,
+        .tables = &ctx.tables,
+        .text_style = current.text_style,
+        .text_align = text_align,
+        .max_width = available_width,
+        .tab_size = ctx.doc.tab_size,
+        .origin_x = x,
+        .origin_y = y,
+    }, leaves.items);
+    return applyWrapped(ctx, current, wrapped, x, y, available_width);
+}
+
+fn unionRect(a: style_mod.Rect, b: style_mod.Rect) style_mod.Rect {
+    if (a.w <= 0 or a.h <= 0) return b;
+    if (b.w <= 0 or b.h <= 0) return a;
+    const left = @min(a.x, b.x);
+    const top = @min(a.y, b.y);
+    const right = @max(a.right(), b.right());
+    const bottom = @max(a.bottom(), b.bottom());
+    return .{ .x = left, .y = top, .w = right - left, .h = bottom - top };
 }
 
 /// Max-content width of the box's content (excluding padding, border and
@@ -231,7 +575,12 @@ fn layoutText(doc: *const dom.Document, current: *LayoutBox, x: f64, y: f64) voi
 fn contentMaxWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
     switch (current.kind) {
         .initial_containing_block => return 0,
-        .text => return @floatFromInt(ctx.doc.measureText(current.text orelse "")),
+        .text => return text_layout.maxContentWidth(
+            ctx.doc,
+            current.text orelse "",
+            current.text_style,
+            ctx.doc.tab_size,
+        ),
         .anonymous_inline => {
             var total: f64 = 0;
             for (current.children.items) |child| {
@@ -284,7 +633,12 @@ fn contributesToFlow(current: *const LayoutBox) bool {
 fn outerMaxWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
     switch (current.kind) {
         .initial_containing_block => return 0,
-        .text => return @floatFromInt(ctx.doc.measureText(current.text orelse "")),
+        .text => return text_layout.maxContentWidth(
+            ctx.doc,
+            current.text orelse "",
+            current.text_style,
+            ctx.doc.tab_size,
+        ),
         .anonymous_inline => return contentMaxWidth(ctx, current),
         .element, .anonymous_flex_item => {
             const padding = current.style.padding.nonNegative();
@@ -307,69 +661,6 @@ fn flexItemOuterWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 
         else => contentMaxWidth(ctx, current),
     };
     return content + padding.horizontal() + border.horizontal() + margin.horizontal();
-}
-
-fn layoutInlineRun(
-    ctx: *LayoutContext,
-    run: *LayoutBox,
-    x: f64,
-    y: f64,
-    available_width: f64,
-    owner_height: ?f64,
-) LayoutError!f64 {
-    const width = contentMaxWidth(ctx, run);
-    const offset = alignOffset(run.style.text_align, available_width, width);
-
-    var cursor = x + offset;
-    var height: f64 = 1;
-    for (run.children.items) |child| {
-        if (child.style.display == .none or child.style.display == .contents) {
-            zeroBox(child);
-            continue;
-        }
-        if (isOutOfFlow(child.style)) continue;
-        switch (child.kind) {
-            .text => {
-                layoutText(ctx.doc, child, cursor, y);
-                cursor += child.rect.w;
-            },
-            .element, .anonymous_flex_item, .anonymous_inline => {
-                const margin = resolveMargins(child.style.margin);
-                const remaining = @max(0, x + available_width - cursor);
-                const constraints = Constraints{
-                    .width = remaining,
-                    .width_sizing = .shrink_to_fit,
-                    .height_sizing = .indefinite,
-                    .owner_width = available_width,
-                    .owner_height = owner_height,
-                };
-                const relative_x = if (child.style.position == .relative)
-                    resolveDimension(child.style.left, available_width) orelse 0
-                else
-                    0;
-                const relative_y = if (child.style.position == .relative)
-                    resolveDimension(child.style.top, owner_height orelse 0) orelse 0
-                else
-                    0;
-                const size = try layoutElement(
-                    ctx,
-                    child,
-                    cursor + margin.left + relative_x + child.style.translate_x,
-                    y + margin.top + relative_y + child.style.translate_y,
-                    constraints,
-                    .{},
-                );
-                cursor += margin.left + size.width + margin.right;
-                height = @max(height, margin.top + size.height + margin.bottom);
-            },
-            .initial_containing_block => {},
-        }
-    }
-
-    run.rect = .{ .x = x + offset, .y = y, .w = width, .h = height };
-    run.padding_rect = run.rect;
-    run.content_rect = run.rect;
-    return height;
 }
 
 fn layoutBlockChildren(
@@ -398,8 +689,15 @@ fn layoutBlockChildren(
                 );
             },
             .text => {
-                layoutText(ctx.doc, child, content.x, block_y);
-                block_y += 1;
+                block_y += try layoutTextContent(
+                    ctx,
+                    child,
+                    content.x,
+                    block_y,
+                    content.w,
+                    owner_height,
+                    parent.style.text_align,
+                );
             },
             .element, .anonymous_flex_item => {
                 const margin = resolveMargins(child.style.margin);
@@ -732,7 +1030,7 @@ fn layoutFlex(
     const main_reverse = axisIsReverse(style);
     const cross_reverse = style.flex_wrap == .wrap_reverse;
     const wrap = style.flex_wrap != .nowrap;
-    const allocator = ctx.allocator();
+    const allocator = ctx.allocator;
     const main_gap_value = mainGap(style);
     const cross_gap_value = crossGap(style);
     const inner_main_defined: ?f64 = if (row) content.w else height_defined;
@@ -1413,6 +1711,45 @@ test "layout: wide text uses the width callback" {
     try std.testing.expectEqual(@as(f64, 3), text.asText().rect.w);
 }
 
+test "layout: normal text wraps and grows auto height" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 8 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 20 },
+        .height = .{ .cells = 8 },
+    });
+    doc.setRoot(root);
+
+    const line = try doc.createElement(.div);
+    line.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 5 },
+    });
+    _ = try root.appendChild(line);
+    const text = try doc.createText("one two three");
+    _ = try line.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const text_box = tree.find(text).?;
+    try std.testing.expectEqual(@as(usize, 3), text_box.text_fragments.len);
+    try std.testing.expectEqualStrings("one", text_box.text_fragments[0].text);
+    try std.testing.expectEqualStrings("two", text_box.text_fragments[1].text);
+    try std.testing.expectEqualStrings("three", text_box.text_fragments[2].text);
+    try std.testing.expectEqual(@as(f64, 0), text_box.text_fragments[0].y);
+    try std.testing.expectEqual(@as(f64, 1), text_box.text_fragments[1].y);
+    try std.testing.expectEqual(@as(f64, 2), text_box.text_fragments[2].y);
+    try std.testing.expectEqual(@as(f64, 5), line.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 3), line.asElement().rect.h);
+}
+
 fn testBox(doc: *dom.Document, parent: *dom.Node, style: Style) !*dom.Node {
     const node = try doc.createElement(.div);
     node.setStyle(style);
@@ -1866,7 +2203,6 @@ test "layout: baseline aligns first text lines" {
     const plain = try testBox(&doc, root, .{ .width = .{ .cells = 2 } });
     const plain_text = try testText(&doc, plain, "b", .{});
     try layoutDocument(&doc);
-
     try std.testing.expectEqual(@as(f64, 1), padded_text.asText().rect.y);
     try std.testing.expectEqual(@as(f64, 1), plain_text.asText().rect.y);
 }
@@ -2165,6 +2501,87 @@ test "layout: wrap-reverse aligns items from the cross-start edge" {
 
 fn expectClose(expected: f64, actual: f64) !void {
     try std.testing.expectApproxEqAbs(expected, actual, 0.001);
+}
+
+test "layout: flex item shrinks and wraps its text" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 8 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 5 },
+        .display = .flex,
+    });
+    doc.setRoot(root);
+
+    const item = try testBox(&doc, root, .{ .flex_shrink = 1 });
+    const text = try doc.createText("one two three");
+    _ = try item.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const text_box = tree.find(text).?;
+    try std.testing.expectEqual(@as(f64, 5), item.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 3), item.asElement().rect.h);
+    try std.testing.expectEqual(@as(usize, 3), text_box.text_fragments.len);
+    try std.testing.expectEqual(@as(f64, 2), text_box.text_fragments[2].y);
+}
+
+test "layout: nowrap flex item keeps one line and overflows" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 8 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 5 },
+        .display = .flex,
+    });
+    doc.setRoot(root);
+
+    const item = try testBox(&doc, root, .{ .flex_shrink = 1, .white_space = .nowrap });
+    const text = try doc.createText("one two three");
+    _ = try item.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const text_box = tree.find(text).?;
+    try std.testing.expectEqual(@as(usize, 1), text_box.text_fragments.len);
+    try std.testing.expectEqual(@as(f64, 13), text_box.rect.w);
+    try std.testing.expectEqual(@as(f64, 1), item.asElement().rect.h);
+}
+
+test "layout: an unbreakable word overflows instead of splitting" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 8 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 5 },
+    });
+    doc.setRoot(root);
+    const text = try doc.createText("abcdefghij");
+    _ = try root.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const text_box = tree.find(text).?;
+    try std.testing.expectEqual(@as(usize, 1), text_box.text_fragments.len);
+    try std.testing.expectEqual(@as(f64, 10), text_box.rect.w);
 }
 
 test "taffy flex: basis and grow, row" {
@@ -2617,4 +3034,179 @@ test "taffy flex: column with auto height sizes to its content" {
     try expectClose(0, a.asElement().rect.y);
     try expectClose(10, b.asElement().rect.y);
     try expectClose(20, c.asElement().rect.y);
+}
+
+test "layout: elementFromPoint hits later wrapped lines" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 4 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 10 },
+        .height = .{ .cells = 4 },
+    });
+    doc.setRoot(root);
+
+    const line = try doc.createElement(.div);
+    line.setStyle(.{ .width = .{ .cells = 5 } });
+    _ = try root.appendChild(line);
+    _ = try line.appendChild(try doc.createText("one two three"));
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    try std.testing.expectEqual(line, tree.elementFromPoint(0, 0).?);
+    try std.testing.expectEqual(line, tree.elementFromPoint(0, 1).?);
+    try std.testing.expectEqual(line, tree.elementFromPoint(0, 2).?);
+    try std.testing.expectEqual(root, tree.elementFromPoint(0, 3).?);
+}
+
+test "layout: non-atomic inline elements fragment across wrapped lines" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 12, .rows = 6 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 5 },
+    });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("foo "));
+
+    const span = try doc.createElement(.span);
+    span.setStyle(.{ .display = .inline_ });
+    _ = try root.appendChild(span);
+    const inner = try doc.createText("bar baz");
+    _ = try span.appendChild(inner);
+    _ = try root.appendChild(try doc.createText(" qux"));
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const span_box = tree.find(span).?;
+    const inner_box = tree.find(inner).?;
+    try std.testing.expectEqual(@as(usize, 2), span_box.inline_fragments.len);
+    try std.testing.expectEqual(@as(usize, 2), inner_box.text_fragments.len);
+    try std.testing.expectEqualStrings("bar", inner_box.text_fragments[0].text);
+    try std.testing.expectEqualStrings("baz", inner_box.text_fragments[1].text);
+    try std.testing.expectEqual(@as(f64, 2), span_box.rect.h);
+}
+
+test "layout: bare text in a flex container wraps as its anonymous item" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 8 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 5 },
+        .display = .flex,
+    });
+    doc.setRoot(root);
+    const text = try doc.createText("one two three");
+    _ = try root.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const text_box = tree.find(text).?;
+    try std.testing.expectEqual(@as(usize, 3), text_box.text_fragments.len);
+    try std.testing.expectEqual(@as(f64, 3), root.asElement().rect.h);
+}
+
+test "layout: text-align aligns each wrapped line independently" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 12, .rows = 4 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 3 },
+        .text_align = .center,
+    });
+    doc.setRoot(root);
+    const text = try doc.createText("a bb");
+    _ = try root.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const fragments = tree.find(text).?.text_fragments;
+    try std.testing.expectEqual(@as(usize, 2), fragments.len);
+    try std.testing.expectEqual(@as(f64, 1), fragments[0].x);
+    try std.testing.expectEqual(@as(f64, 0.5), fragments[1].x);
+}
+
+test "layout: flex column item auto height follows wrapped text" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 8 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 5 },
+        .display = .flex,
+        .flex_direction = .column,
+    });
+    doc.setRoot(root);
+    const item = try testBox(&doc, root, .{});
+    const text = try doc.createText("one two three");
+    _ = try item.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const text_box = tree.find(text).?;
+    try std.testing.expectEqual(@as(usize, 3), text_box.text_fragments.len);
+    try std.testing.expectEqual(@as(f64, 5), item.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 3), item.asElement().rect.h);
+    try std.testing.expectEqual(@as(f64, 3), root.asElement().rect.h);
+}
+
+test "layout: inline element padding joins the line and fragment box" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 12, .rows = 4 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 6 },
+    });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("x "));
+
+    const span = try doc.createElement(.span);
+    span.setStyle(.{
+        .display = .inline_,
+        .padding = .{ .left = 1, .right = 1 },
+    });
+    _ = try root.appendChild(span);
+    _ = try span.appendChild(try doc.createText("abcd"));
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const span_box = tree.find(span).?;
+    try std.testing.expectEqual(@as(usize, 1), span_box.inline_fragments.len);
+    try std.testing.expectEqual(@as(f64, 6), span_box.inline_fragments[0].w);
+    try std.testing.expectEqual(@as(f64, 1), span_box.inline_fragments[0].y);
 }

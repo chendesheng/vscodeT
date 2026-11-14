@@ -52,7 +52,13 @@ fn paintBox(
             // background of its own sits on whatever the cell already shows;
             // this is what lets a transparent label over a filled panel keep
             // the panel color instead of punching a hole with the root's.
-            drawText(doc, grid, current.text orelse "", current.rect.x, current.rect.y, own, current.style.background == null, clip);
+            if (!current.has_text_layout) {
+                drawText(doc, grid, current.text orelse "", current.rect.x, current.rect.y, own, current.style.background == null, clip);
+            } else {
+                for (current.text_fragments) |fragment| {
+                    drawText(doc, grid, fragment.text, fragment.x, fragment.y, own, current.style.background == null, clip);
+                }
+            }
         },
         .initial_containing_block, .element, .anonymous_inline, .anonymous_flex_item => {
             const style = current.style;
@@ -62,16 +68,31 @@ fn paintBox(
             if (rect.isEmpty()) return;
 
             const own = mergeStyle(inherited, style);
-            if (style.background != null or style.reverse) {
-                // An ancestor's overflow clip cuts everything this box paints, so
-                // a child background must not paint into the gutter outside the
-                // padding edge the way its text already is cut.
-                const fill = Rect.intersect(rect, clip);
-                grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
-            }
-
             const border = style_mod.borderWidths(style);
-            drawBorder(grid, rect, border, style.border_color, own, clip);
+            if (current.inline_fragments.len > 0) {
+                for (current.inline_fragments) |fragment| {
+                    const fragment_rect = Rect{
+                        .x = fragment.x,
+                        .y = fragment.y,
+                        .w = fragment.w,
+                        .h = fragment.h,
+                    };
+                    if (style.background != null or style.reverse) {
+                        const fill = Rect.intersect(fragment_rect, clip);
+                        grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
+                    }
+                    drawBorder(grid, fragment_rect, border, style.border_color, own, clip);
+                }
+            } else {
+                if (style.background != null or style.reverse) {
+                    // An ancestor's overflow clip cuts everything this box paints, so
+                    // a child background must not paint into the gutter outside the
+                    // padding edge the way its text already is cut.
+                    const fill = Rect.intersect(rect, clip);
+                    grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
+                }
+                drawBorder(grid, rect, border, style.border_color, own, clip);
+            }
 
             const child_clip = switch (style.overflow) {
                 .visible => clip,
@@ -584,4 +605,127 @@ test "paint: flex row items and gaps" {
     try std.testing.expectEqual(cell.packColor(.{ .r = 40, .g = 50, .b = 60 }), grid.bg[grid.index(4, 0)]);
     // The one-column gap keeps the root background.
     try std.testing.expectEqual(@as(u32, 0), grid.bg[grid.index(3, 0)]);
+}
+
+test "paint: multiple text nodes keep their own positions" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 6, .rows = 1 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 1 },
+        .white_space = .pre,
+    });
+    doc.setRoot(root);
+    const a = try doc.createText("hi");
+    _ = try root.appendChild(a);
+    const b = try doc.createText(" ");
+    b.setStyle(.{ .reverse = true });
+    _ = try root.appendChild(b);
+    var grid = try CellGrid.init(allocator, 6, 1);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+    const row = try grid.rowText(allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expectEqualStrings("hi ", row);
+}
+
+test "paint: wrapped text paints every line" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 8, .rows = 3 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 8 },
+        .height = .{ .cells = 3 },
+    });
+    doc.setRoot(root);
+    const line = try doc.createElement(.div);
+    line.setStyle(.{ .width = .{ .cells = 5 } });
+    _ = try root.appendChild(line);
+    _ = try line.appendChild(try doc.createText("one two three"));
+
+    var grid = try CellGrid.init(allocator, 8, 3);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    const first = try grid.rowText(allocator, 0);
+    defer allocator.free(first);
+    const second = try grid.rowText(allocator, 1);
+    defer allocator.free(second);
+    const third = try grid.rowText(allocator, 2);
+    defer allocator.free(third);
+    try std.testing.expectEqualStrings("one", first);
+    try std.testing.expectEqualStrings("two", second);
+    try std.testing.expectEqualStrings("three", third);
+}
+
+test "paint: inline element background follows each fragment" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 4 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 5 },
+    });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("foo "));
+
+    const span = try doc.createElement(.span);
+    span.setStyle(.{
+        .display = .inline_,
+        .background = .{ .r = 40, .g = 50, .b = 60 },
+    });
+    _ = try root.appendChild(span);
+    _ = try span.appendChild(try doc.createText("bar baz"));
+    _ = try root.appendChild(try doc.createText(" qux"));
+
+    var grid = try CellGrid.init(allocator, 10, 4);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    const fill = cell.packColor(.{ .r = 40, .g = 50, .b = 60 });
+    try std.testing.expectEqual(fill, grid.bg[grid.index(0, 1)]);
+    try std.testing.expectEqual(fill, grid.bg[grid.index(0, 2)]);
+    try std.testing.expectEqual(@as(u32, 'b'), grid.cluster[grid.index(0, 1)]);
+    try std.testing.expectEqual(@as(u32, 'b'), grid.cluster[grid.index(0, 2)]);
+}
+
+test "paint: overflow hidden clips wrapped continuation lines" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 6, .rows = 3 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 3 },
+    });
+    doc.setRoot(root);
+    const line = try doc.createElement(.div);
+    line.setStyle(.{
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .overflow = .hidden,
+    });
+    _ = try root.appendChild(line);
+    _ = try line.appendChild(try doc.createText("one two three"));
+
+    var grid = try CellGrid.init(allocator, 6, 3);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    const first = try grid.rowText(allocator, 0);
+    defer allocator.free(first);
+    const second = try grid.rowText(allocator, 1);
+    defer allocator.free(second);
+    try std.testing.expectEqualStrings("one", first);
+    try std.testing.expectEqualStrings("", second);
 }

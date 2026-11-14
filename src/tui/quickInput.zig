@@ -146,6 +146,7 @@ pub const QuickPickWidget = struct {
             .top = .{ .cells = 0 },
             .width = .{ .percent = 100 },
             .height = .{ .cells = 1 },
+            .white_space = .pre,
             .overflow = .hidden,
             .background = background,
             .color = foreground,

@@ -1,6 +1,6 @@
 //! TodoMVC in the terminal: add a todo with the single-line `ui.InputBox`,
 //! toggle rows, filter All/Active/Completed, clear completed, toggle all and
-//! edit a focused row.
+//! edit a focused row. Long todo text wraps across multiple rows.
 //!
 //! Everything except the input is a plain `ui` tree: the rows and buttons are
 //! focusable nodes with key, click and focus listeners, and the footer buttons
@@ -150,6 +150,28 @@ fn consumeMouse(event: *ui.MouseEvent) void {
     event.preventDefault();
 }
 
+/// The number of one-cell rows a normal-flow todo occupies at `width`.
+/// Words wrap at spaces; a word wider than the row overflows on one line, as
+/// the UI engine's default white-space does.
+fn wrappedRows(doc: *const ui.Document, text: []const u8, width: usize) usize {
+    if (width == 0) return 1;
+    var rows: usize = 1;
+    var used: usize = 0;
+    var words = std.mem.tokenizeAny(u8, text, " \t\r\n");
+    while (words.next()) |word| {
+        const word_width = doc.measureText(word);
+        if (used == 0) {
+            used = word_width;
+        } else if (used + 1 + word_width <= width) {
+            used += 1 + word_width;
+        } else {
+            rows += 1;
+            used = word_width;
+        }
+    }
+    return rows;
+}
+
 const App = struct {
     allocator: Allocator,
     input: ui.InputBox,
@@ -160,6 +182,7 @@ const App = struct {
     editing: ?usize = null,
     scroll: usize = 0,
     list_rows: usize = 0,
+    row_text_width: usize = 0,
     reveal: bool = true,
     rebuilding: bool = false,
 
@@ -183,6 +206,10 @@ const App = struct {
 
     fn seed(self: *App) !void {
         _ = try self.addTodo("Read the ui package README", true);
+        _ = try self.addTodo(
+            "Wrap this long todo across multiple lines so the list stays readable",
+            false,
+        );
         _ = try self.addTodo("Try the single-line input", false);
         _ = try self.addTodo("Build a TodoMVC scene", false);
         self.selected = 0;
@@ -285,6 +312,7 @@ const App = struct {
         // rows. Compact mode keeps only the title, input, toggle and footer.
         const compact = card_height < 7;
         const row_width = width -| 4;
+        self.row_text_width = row_width -| 8;
         const show_footer = if (compact) card_height >= 5 else card_height >= 7;
         const show_toggle = self.todos.items.len > 0 and
             (if (compact) card_height >= 4 else card_height >= 7);
@@ -329,8 +357,8 @@ const App = struct {
         self.normalize();
         if (self.reveal) {
             switch (self.focus) {
-                .item => |index| self.revealIndex(index),
-                else => if (self.selected) |index| self.revealIndex(index),
+                .item => |index| self.revealIndex(doc, index),
+                else => if (self.selected) |index| self.revealIndex(doc, index),
             }
             self.reveal = false;
         }
@@ -479,12 +507,15 @@ const App = struct {
                 }, .{ .color = dim });
             } else {
                 var visible_pos: usize = 0;
+                var used_rows: usize = 0;
                 for (self.todos.items, 0..) |todo, index| {
                     if (!self.matches(index)) continue;
                     const slot = visible_pos;
                     visible_pos += 1;
                     if (slot < self.scroll) continue;
-                    if (slot >= self.scroll + self.list_rows) break;
+                    const row_height = wrappedRows(doc, todo.text.items, self.row_text_width);
+                    if (used_rows > 0 and used_rows + row_height > self.list_rows) break;
+                    if (used_rows >= self.list_rows) break;
 
                     const row_focused = switch (self.focus) {
                         .item => |focused_index| focused_index == index,
@@ -493,7 +524,7 @@ const App = struct {
                     const row_selected = if (self.selected) |selected| selected == index else false;
                     const row = try common.addBox(doc, list, .{
                         .position = .relative,
-                        .height = .{ .cells = 1 },
+                        .height = .{ .cells = @floatFromInt(row_height) },
                         .flex_shrink = 0,
                         .background = if (row_focused)
                             focus_background
@@ -532,8 +563,9 @@ const App = struct {
                         .position = .absolute,
                         .left = .{ .cells = 4 },
                         .top = .{ .cells = 0 },
-                        .width = .{ .cells = @floatFromInt(row_width -| 8) },
-                        .height = .{ .cells = 1 },
+                        .width = .{ .cells = @floatFromInt(self.row_text_width) },
+                        .height = .{ .cells = @floatFromInt(row_height) },
+                        .white_space = .normal,
                         .overflow = .hidden,
                     }, .{
                         .color = if (todo.completed)
@@ -544,6 +576,7 @@ const App = struct {
                             foreground,
                         .strikethrough = todo.completed,
                         .bold = row_focused,
+                        .white_space = .normal,
                     });
 
                     const remove = try common.addBox(doc, row, .{
@@ -558,6 +591,8 @@ const App = struct {
                     });
                     const remove_ctx = try self.newAction(doc, .delete, index, .all);
                     try remove.addEventListener(.{ .context = remove_ctx, .click = onActionClick });
+                    used_rows += row_height;
+                    if (used_rows >= self.list_rows) break;
                 }
             }
         }
@@ -974,13 +1009,43 @@ const App = struct {
         self.reveal = true;
     }
 
-    fn revealIndex(self: *App, index: usize) void {
+    fn revealIndex(self: *App, doc: *const ui.Document, index: usize) void {
         if (self.list_rows == 0) return;
         const position = self.visiblePosition(index) orelse return;
-        if (position < self.scroll) self.scroll = position;
-        if (position >= self.scroll + self.list_rows) {
-            self.scroll = position - self.list_rows + 1;
+        if (position < self.scroll) {
+            self.scroll = position;
+            return;
         }
+        // A wrapped row is taller than one cell, so keep moving the window
+        // forward until the focused row fits (or it is the only row).
+        var start = self.scroll;
+        while (start < position and !self.rowVisibleFrom(doc, start, position)) {
+            start += 1;
+        }
+        self.scroll = start;
+    }
+
+    fn rowVisibleFrom(
+        self: *const App,
+        doc: *const ui.Document,
+        start: usize,
+        target: usize,
+    ) bool {
+        var slot: usize = 0;
+        var rows: usize = 0;
+        for (self.todos.items, 0..) |todo, index| {
+            if (!self.matches(index)) continue;
+            if (slot < start) {
+                slot += 1;
+                continue;
+            }
+            const height = wrappedRows(doc, todo.text.items, self.row_text_width);
+            if (slot == target) return rows + height <= self.list_rows;
+            if (rows + height > self.list_rows) return false;
+            rows += height;
+            slot += 1;
+        }
+        return false;
     }
 
     fn matches(self: *const App, index: usize) bool {
@@ -1036,7 +1101,7 @@ const App = struct {
     }
 
     fn maxScroll(self: *const App) usize {
-        return self.visibleCount() -| self.list_rows;
+        return self.visibleCount() -| 1;
     }
 };
 

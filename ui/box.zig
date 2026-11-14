@@ -31,12 +31,34 @@ pub const Kind = enum {
     text,
 };
 
+/// One painted line of a text box. `text` points into the layout pass's
+/// processed-text arena, which lives until the next solve.
+pub const TextFragment = struct {
+    text: []const u8 = "",
+    x: f64 = 0,
+    y: f64 = 0,
+    width: f64 = 0,
+};
+
+/// One laid-out fragment of a non-atomic inline element. A fragmented inline
+/// element can span several lines, so its background and border paint per
+/// fragment instead of from one union rect.
+pub const InlineFragment = struct {
+    x: f64 = 0,
+    y: f64 = 0,
+    w: f64 = 0,
+    h: f64 = 1,
+};
+
 pub const LayoutBox = struct {
     kind: Kind,
     /// The DOM element/text node this box was generated from. Null for the
     /// viewport and anonymous boxes.
     owner: ?*dom.Node = null,
     style: style_mod.Style = .{},
+    /// Inherited text properties, resolved from the direct styles on the way
+    /// down the box tree.
+    text_style: style_mod.TextStyle = .{},
     parent: ?*LayoutBox = null,
     children: std.ArrayList(*LayoutBox) = .empty,
     /// Border box.
@@ -47,15 +69,35 @@ pub const LayoutBox = struct {
     content_rect: style_mod.Rect = .{},
     /// Text content for a `.text` box.
     text: ?[]const u8 = null,
+    /// Painted line fragments for a `.text` box. Populated by the layout pass
+    /// that places the box; empty means "paint the whole text at `rect`".
+    text_fragments: []const TextFragment = &.{},
+    /// Whether the layout pass has computed `text_fragments` for this text box
+    /// (an empty slice then means the text paints nothing).
+    has_text_layout: bool = false,
+    /// Per-line border boxes for a fragmented non-atomic inline element.
+    inline_fragments: []const InlineFragment = &.{},
     /// Set when this box or something it contains needs layout. The current
     /// pass solves the whole tree but clears the bits at the end, so the flag
     /// is ready for the incremental pass.
     needs_layout: bool = true,
+
+    pub fn displayInline(self: *const LayoutBox) bool {
+        return switch (self.kind) {
+            .element => self.style.display == .inline_,
+            .anonymous_inline => true,
+            else => false,
+        };
+    }
 };
 
 pub const BoxTree = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
+    /// Per-solve scratch: processed text, break lists, line boxes and text
+    /// fragments. It is reset at the start of every layout pass and stays alive
+    /// through paint and hit testing.
+    scratch: std.heap.ArenaAllocator,
     root: *LayoutBox,
     node_boxes: std.AutoHashMapUnmanaged(*dom.Node, *LayoutBox) = .empty,
     /// A structure, style or text change needs the boxes rebuilt from the DOM.
@@ -75,6 +117,7 @@ pub const BoxTree = struct {
         return .{
             .allocator = allocator,
             .arena = arena,
+            .scratch = std.heap.ArenaAllocator.init(allocator),
             .root = root,
         };
     }
@@ -87,6 +130,7 @@ pub const BoxTree = struct {
     }
 
     pub fn deinit(self: *BoxTree) void {
+        self.scratch.deinit();
         self.arena.deinit();
     }
 
@@ -131,9 +175,13 @@ pub const BoxTree = struct {
         var next = BoxTree{
             .allocator = self.allocator,
             .arena = std.heap.ArenaAllocator.init(self.allocator),
+            .scratch = std.heap.ArenaAllocator.init(self.allocator),
             .root = undefined,
         };
-        errdefer next.arena.deinit();
+        errdefer {
+            next.scratch.deinit();
+            next.arena.deinit();
+        }
 
         const allocator = next.arena.allocator();
         const root = try allocator.create(LayoutBox);
@@ -160,6 +208,8 @@ pub const BoxTree = struct {
             }
         }
 
+        self.scratch.deinit();
+        self.scratch = next.scratch;
         self.arena.deinit();
         self.arena = next.arena;
         self.root = next.root;
@@ -173,6 +223,17 @@ fn hitTestBox(current: *const LayoutBox, x: f64, y: f64, clip: style_mod.Rect) ?
     switch (current.kind) {
         .text => {
             if (!rectContains(clip, x, y)) return null;
+            if (current.has_text_layout) {
+                for (current.text_fragments) |fragment| {
+                    if (rectContains(clip, x, y) and rectContains(.{
+                        .x = fragment.x,
+                        .y = fragment.y,
+                        .w = fragment.width,
+                        .h = 1,
+                    }, x, y)) return current.owner;
+                }
+                return null;
+            }
             if (!rectContains(current.rect, x, y)) return null;
             return current.owner;
         },
@@ -200,8 +261,19 @@ fn hitTestBox(current: *const LayoutBox, x: f64, y: f64, clip: style_mod.Rect) ?
             }
 
             if (current.owner) |owner| {
-                if (current.kind == .element and rectContains(current.rect, x, y)) {
-                    return owner;
+                if (current.kind == .element) {
+                    if (current.inline_fragments.len > 0) {
+                        for (current.inline_fragments) |fragment| {
+                            if (rectContains(.{
+                                .x = fragment.x,
+                                .y = fragment.y,
+                                .w = fragment.w,
+                                .h = fragment.h,
+                            }, x, y)) return owner;
+                        }
+                    } else if (rectContains(current.rect, x, y)) {
+                        return owner;
+                    }
                 }
             }
             return null;
@@ -243,6 +315,7 @@ fn createElementBox(
         .kind = .element,
         .owner = node,
         .style = element.style,
+        .text_style = style_mod.TextStyle.resolve(parent.text_style, element.style),
         .parent = parent,
     };
     try tree.node_boxes.put(allocator, node, box);
@@ -256,6 +329,7 @@ fn createTextBox(tree: *BoxTree, parent: *LayoutBox, node: *dom.Node, text: *dom
         .kind = .text,
         .owner = node,
         .style = text.style,
+        .text_style = style_mod.TextStyle.resolve(parent.text_style, text.style),
         .text = text.data,
         .parent = parent,
     };
@@ -374,9 +448,11 @@ fn flushRun(
     box.* = .{
         .kind = if (flex) .anonymous_flex_item else .anonymous_inline,
         .style = style,
+        .text_style = parent.text_style,
         .parent = parent,
     };
     try box.children.appendSlice(allocator, run.items);
+    for (box.children.items) |child| child.parent = box;
     try parent.children.append(allocator, box);
     run.clearRetainingCapacity();
 }
@@ -569,4 +645,28 @@ test "BoxTree: flex order sorts children stably" {
     try std.testing.expectEqual(second, children[0].owner.?);
     try std.testing.expectEqual(third, children[1].owner.?);
     try std.testing.expectEqual(first, children[2].owner.?);
+}
+
+test "BoxTree: text styles inherit from ancestors and can be overridden" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{ .white_space = .nowrap, .word_break = .keep_all });
+    doc.setRoot(root);
+    const plain = try doc.createText("a");
+    _ = try root.appendChild(plain);
+    const override = try doc.createText("b");
+    override.setStyle(.{ .white_space = .pre, .word_break = .break_all });
+    _ = try root.appendChild(override);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+
+    try std.testing.expectEqual(style_mod.WhiteSpace.nowrap, tree.find(plain).?.text_style.white_space);
+    try std.testing.expectEqual(style_mod.WordBreak.keep_all, tree.find(plain).?.text_style.word_break);
+    try std.testing.expectEqual(style_mod.WhiteSpace.pre, tree.find(override).?.text_style.white_space);
+    try std.testing.expectEqual(style_mod.WordBreak.break_all, tree.find(override).?.text_style.word_break);
 }

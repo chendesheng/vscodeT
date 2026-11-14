@@ -290,6 +290,7 @@ pub const SearchWidget = struct {
             .top = .{ .cells = @floatFromInt(y) },
             .width = .{ .cells = @floatFromInt(width) },
             .height = .{ .cells = 1 },
+            .white_space = .pre,
             .overflow = .hidden,
         });
         const node = try box.build(doc, width);
@@ -321,6 +322,7 @@ pub const SearchWidget = struct {
             .top = .{ .cells = @floatFromInt(y) },
             .width = .{ .cells = @floatFromInt(text.len) },
             .height = .{ .cells = 1 },
+            .white_space = .pre,
         });
         _ = holder.appendChild(node) catch return;
         _ = parent.appendChild(holder) catch return;
@@ -400,6 +402,7 @@ fn appendTextAt(doc: *ui.Document, parent: *ui.Node, x: usize, y: usize, text: [
         .top = .{ .cells = @floatFromInt(y) },
         .width = .{ .cells = @floatFromInt(text.len) },
         .height = .{ .cells = 1 },
+        .white_space = .pre,
     });
     _ = try holder.appendChild(node);
     _ = try parent.appendChild(holder);

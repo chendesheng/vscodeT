@@ -15,16 +15,21 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   dirty flag.
 - A whole-cell layout pass with the CSS box model: content `width`/`height`,
   margin, padding and border widths, single-line box-drawing borders, and
-  absolute `left`/`top` anchoring the margin box. Block flow, single-line inline
-  flow and flex formatting contexts share the derived tree. Backgrounds paint
-  the border box and `overflow: hidden` clips to the padding box.
+  absolute `left`/`top` anchoring the margin box. Block flow, inline text flow
+  and flex formatting contexts share the derived tree. Backgrounds paint the
+  border box and `overflow: hidden` clips to the padding box.
+- CSS-style text flow: UAX #14 line breaking (Unicode 17 data), the
+  `white-space` family, `word-break`/`overflow-wrap`, per-line `text-align`,
+  hanging spaces, tabs and wide cells. Text boxes carry painted line fragments;
+  non-atomic inline elements fragment across lines and paint their background
+  and border per fragment. See “Text wrapping” below.
 - Flex containers support `flex_direction`, `flex_wrap`, `justify_content`,
   `align_items`/`align_self`/`align_content`, `flex_grow`, `flex_shrink`,
   `flex_basis`, `order`, `gap`, auto margins and content-derived auto sizes.
   Bare text in a flex container becomes an anonymous flex item. `order` sorts
   the derived box children, so layout, paint order and hit testing agree.
-  There is no min/max sizing, CSS text wrapping, grid or table layout, and
-  inline flow does not break across lines yet; see the limitations below.
+  There is no min/max sizing, grid or table layout; inline line boxes follow
+  CSS text flow and wrap at UAX #14 opportunities. See the limitations below.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
 - Keyboard and mouse events and focus: per-node listeners with
   capture/target/bubble, `Document.activeElement`, `focus`/`blur` plus
@@ -50,6 +55,7 @@ zig build example-flex-cards   # wrapping cards with gap and align-content
 zig build example-flex-columns # nested column/row flex, growing panels, footer
 zig build example-flex-reverse # row-reverse, column-reverse, wrap-reverse
 zig build example-overflow # visible vs hidden/clip for text and absolute children
+zig build example-wrap    # normal/nowrap/pre text flow, alignment and overflow
 zig build example-borders  # margin, padding and border boxes, nested absolute child
 zig build example-table    # bordered table with aligned columns
 zig build example-tree     # box-drawing file tree
@@ -57,7 +63,7 @@ zig build example-styling  # text attributes, truecolor, background swatches
 zig build example-focus    # interactive: Tab/Shift-Tab, Enter, activeElement
 zig build example-mouse    # interactive: hover/click/drag a list, wheel scrolling
 zig build example-mouse-events # interactive: hover/down/move/up/click/wheel log
-zig build example-todo     # interactive: TodoMVC input, list, filters and buttons
+zig build example-todo     # interactive: TodoMVC input, wrapped list, filters and buttons
 zig build examples         # fullscreen gallery with a side navigation menu
 ```
 
@@ -75,6 +81,7 @@ sequences; `example-mouse` shows selection, hover and wheel scrolling, while
 highlights the hovered zone. `example-todo` is a standalone TodoMVC scene with
 its own input loop: add todos through `ui.InputBox`, toggle rows, edit a
 focused row, filter All/Active/Completed, clear completed and toggle all.
+Long todo text wraps and the list window scrolls in row cells.
 
 `zig build examples` opens the fullscreen gallery instead of running all
 examples in sequence: a side navigation menu on the left and the selected
@@ -249,10 +256,64 @@ exported for the common cases.
 Flex limitations: there is no `min-width`/`min-height`/`max-width`/`max-height`
 or automatic min-content floor, so shrunk items can overlap unless `overflow`
 clips them; percentages are supported for sizes and `flex_basis`, not gaps;
-text never wraps across lines; inline flow is a single line; baseline alignment
-uses the first text row and falls back to flex-start under `wrap-reverse`;
-`position: fixed` resolves like `absolute`; and there is no grid, table layout
-or z-index compositing.
+baseline alignment uses the first text row and falls back to flex-start under
+`wrap-reverse`; `position: fixed` resolves like `absolute`; and there is no
+grid, table layout or z-index compositing. Text inside flex items wraps at the
+item's resolved content width.
+
+## Text wrapping and white space
+
+Text is inline content and wraps at Unicode line-break opportunities unless its
+style says otherwise. `white_space` is inherited from the containing box and
+can be overridden on a text node:
+
+```zig
+const paragraph = try doc.createElement(.div);
+paragraph.setStyle(.{
+    .width = .{ .cells = 40 },
+    .white_space = .normal,      // the initial value
+});
+_ = try paragraph.appendChild(try doc.createText(
+    "long prose wraps at spaces; supercalifragilisticexpialidocious overflows",
+));
+
+const chrome = try doc.createElement(.div);
+chrome.setStyle(.{
+    .width = .{ .cells = 40 },
+    .height = .{ .cells = 1 },
+    .overflow = .hidden,
+    .white_space = .nowrap,      // collapse spaces, do not wrap
+});
+_ = try chrome.appendChild(try doc.createText("single-line label"));
+
+const code = try doc.createElement(.div);
+code.setStyle(.{ .white_space = .pre }); // preserve spaces and newlines
+_ = try code.appendChild(try doc.createText("  indented\n    block"));
+```
+
+Supported values: `normal`, `nowrap`, `pre`, `pre_wrap`, `pre_line` and
+`break_spaces`. `word_break` (`normal`, `break_all`, `keep_all`, `break_word`)
+and `overflow_wrap` (`normal`, `break_word`, `anywhere`) control whether an
+unbreakable word may be split; the defaults let it overflow, matching CSS. A
+word with no break opportunity is never silently truncated by the layout pass;
+`overflow: hidden`/`clip` does the clipping.
+
+Auto widths use rendered max-content width; block auto height grows by the
+number of lines. Wrapped continuation lines are aligned independently by
+`text_align`, trailing spaces hang, and tabs expand to the document tab size.
+Text fragments and inline-element fragments are allocated in the box tree's
+per-solve scratch arena, so they stay valid through paint and hit testing and
+are released on the next solve.
+
+The editor view keeps its own VS Code view-model soft wrapping; its line boxes
+use `white_space = .pre` so the already-wrapped code text preserves spaces and
+is not wrapped a second time. Single-line chrome (gutter, status bar, find,
+suggest and hover rows, input boxes) uses `pre` explicitly.
+
+Remaining text limits: no bidi reordering, grapheme-cluster segmentation,
+CSS `line-height`, `text-indent`, `vertical-align` beyond the baseline
+approximation, or `<br>`; forced breaks come from newlines under preserving
+modes. The UAX #14 tables cover Unicode 17.0.0.
 
 ## Input boxes and rebuilt trees
 
@@ -327,4 +388,6 @@ zig build test
 ```
 
 The root repository's `zig build test` also runs `ui/tests.zig`, so the library
-tests stay part of the main suite.
+tests stay part of the main suite. The text suite includes the checked-in UAX
+#14 conformance subset and the VS Code-derived wrapping cases (tabs, wide
+cells, CJK/Kinsoku, punctuation and `keepAll`).

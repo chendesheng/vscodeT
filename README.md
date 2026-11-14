@@ -44,10 +44,12 @@ Notes for the Zig 0.17 port:
 - `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with direct
   styles (no CSS), a derived layout box tree (viewport, principal, anonymous and
   text boxes), whole-cell layout with margin/padding/border boxes and
-  box-drawing borders, block/inline/flex formatting contexts, and a
-  double-buffered cell renderer that emits only an ANSI frame diff. Flex
-  supports direction, wrap, grow/shrink/basis, justify/align, gap, order, auto
-  margins and content-derived auto sizes. It does not import editor code.
+  box-drawing borders, block/inline/flex formatting contexts, CSS white-space
+  and UAX #14 text wrapping, and a double-buffered cell renderer that emits only
+  an ANSI frame diff. Flex supports direction, wrap, grow/shrink/basis,
+  justify/align, gap, order, auto margins and content-derived auto sizes. Text
+  fragments and inline-element fragments paint per line. It does not import
+  editor code.
 - Multi-file editing uses the ported workbench editor-group model
   (`src/vs/workbench/common/editor/editorGroupModel.zig`) with a terminal tab
   strip (`src/tui/tabBar.zig`, `src/tui/workbench.zig`). Each tab keeps its own
@@ -228,7 +230,10 @@ TUI editor:
 - The app edits through `TextModel` (not `PieceTreeTextBuffer` directly) and uses
   the ported wrapping stack.
 - Text soft-wraps at the terminal width. Wrapped continuation lines are indented
-  (`WrappingIndent.Same`) and marked with an arrow in the gutter.
+  (`WrappingIndent.Same`) and marked with an arrow in the gutter. The generic
+  `ui` text engine (UAX #14, `white-space`, line fragments) wraps widget and
+  prose text; editor line boxes stay `pre` so the view-model wrapping is not
+  applied twice.
 - `q` is ordinary text. Quit with `Ctrl-Q` (press twice if there are unsaved
   changes); save with `Ctrl-S`; undo/redo with `Ctrl-Z`/`Ctrl-Y`.
 - Navigation: arrows, `Shift`+arrows for selection, `Ctrl`+left/right for words,

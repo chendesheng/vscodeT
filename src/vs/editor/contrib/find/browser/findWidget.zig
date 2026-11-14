@@ -289,6 +289,7 @@ pub const FindWidget = struct {
         holder.setStyle(.{
             .position = .relative,
             .height = .{ .cells = 1 },
+            .white_space = .pre,
             .flex_grow = 1,
             .flex_basis = .{ .cells = 0 },
             .overflow = .hidden,
@@ -320,6 +321,7 @@ pub const FindWidget = struct {
         holder.setStyle(.{
             .width = .{ .cells = @floatFromInt(text.len) },
             .height = .{ .cells = 1 },
+            .white_space = .pre,
             .flex_shrink = 0,
         });
         _ = holder.appendChild(node) catch return;
@@ -347,6 +349,7 @@ pub const FindWidget = struct {
         holder.setStyle(.{
             .width = .{ .cells = 3 },
             .height = .{ .cells = 1 },
+            .white_space = .pre,
             .flex_shrink = 0,
         });
         _ = try holder.appendChild(node);
@@ -499,6 +502,7 @@ fn appendRow(doc: *ui.Document, parent: *ui.Node, right_padding: bool) !*ui.Node
     const row = try doc.createElement(.div);
     row.setStyle(.{
         .height = .{ .cells = 1 },
+        .white_space = .pre,
         .display = .flex,
         .align_items = .center,
         .gap = .{ .column = 1 },
@@ -517,6 +521,7 @@ fn appendLabel(doc: *ui.Document, parent: *ui.Node, text: []const u8, width_cell
     holder.setStyle(.{
         .width = .{ .cells = @floatFromInt(width_cells) },
         .height = .{ .cells = 1 },
+        .white_space = .pre,
         .flex_shrink = 0,
         .overflow = .hidden,
     });
@@ -538,6 +543,7 @@ fn appendRightAligned(
     holder.setStyle(.{
         .width = .{ .cells = @floatFromInt(width_cells) },
         .height = .{ .cells = 1 },
+        .white_space = .pre,
         .flex_shrink = 0,
         .text_align = .right,
         .overflow = .hidden,
@@ -553,6 +559,7 @@ fn appendToggleGroup(doc: *ui.Document, parent: *ui.Node) !*ui.Node {
     group.setStyle(.{
         .width = .{ .cells = toggles_width },
         .height = .{ .cells = 1 },
+        .white_space = .pre,
         .display = .flex,
         .flex_shrink = 0,
     });

@@ -389,7 +389,11 @@ pub fn addText(
     style: ui.Style,
 ) !*ui.Node {
     const node = try doc.createText(value);
-    node.setStyle(style);
+    var text_style = style;
+    // Demo text runs are preformatted one-liners unless a scene opts into
+    // flow or wrapping.
+    if (text_style.white_space == null) text_style.white_space = .pre;
+    node.setStyle(text_style);
     _ = try parent.appendChild(node);
     return node;
 }
@@ -403,7 +407,9 @@ pub fn addLabel(
     box_style: ui.Style,
     text_style: ui.Style,
 ) !*ui.Node {
-    const box = try addBox(doc, parent, box_style);
+    var label_style = box_style;
+    if (label_style.white_space == null) label_style.white_space = .pre;
+    const box = try addBox(doc, parent, label_style);
     _ = try addText(doc, box, value, text_style);
     return box;
 }

@@ -322,10 +322,13 @@ solved first, then every out-of-flow box is placed once its containing block has
 final geometry.
 
 The block pass stacks children, supports horizontal auto margins, and derives
-auto content height from the children. Inline flow remains one line per
-anonymous inline run, but inline-level elements now lay out their own content
-(including `inline-block` and `inline-flex`) and the run advances by the tallest
-child. The flex pass follows css-flexbox-1 §9 and TermDOM's `layoutsolver` shape:
+auto content height from the children. Inline flow is a line-breaking pass:
+`ui/text_layout.zig` collects text and atomic inline leaves, renders CSS white
+space, finds UAX #14 breaks (`ui/linebreak.zig`), builds line boxes and writes
+line fragments back to the text boxes. Non-atomic `display: inline_` boxes are
+flattened into start/end edges and their text joins the outer run; their border
+boxes fragment per line. `inline-block`/`inline-flex` boxes remain atomic inline
+items and lay out their own content. The flex pass follows css-flexbox-1 §9 and TermDOM's `layoutsolver` shape:
 it resolves a flex basis per item (border-box main size), breaks lines for a
 definite main axis, runs the grow/shrink freeze loop, measures item cross sizes,
 computes line and container sizes, and positions items with `justify-content`,
@@ -335,9 +338,29 @@ re-laid at their final origins so descendants and absolute children get final
 absolute coordinates. `order` is applied once by stable-sorting the flex
 container's derived children, so layout, paint order and hit testing agree.
 
-The solver uses a temporary arena per pass for flex items and lines; `layoutTree`
-is therefore fallible. There is no min/max sizing or automatic min-content floor,
-so a shrunken item can overflow its neighbour unless `overflow` clips it.
+The solver uses a per-solve scratch arena on the box tree for flex items, lines,
+processed text and fragments; `layoutTree` is therefore fallible. Fragments stay
+valid through paint and hit testing until the next solve. There is no min/max
+sizing or automatic min-content floor, so a shrunken item can overflow its
+neighbour unless `overflow` clips it.
+
+### 5.2.1 Text flow
+
+`ui/text_layout.zig` is the CSS text pipeline: `renderLeaf`/`processWhitespace`
+implement the `white-space` family (collapse/trim boundaries, hanging spaces,
+tabs, preserving newlines), `findBreaks` wraps UAX #14 opportunities with
+`word-break`/`overflow-wrap` and `nowrap`-leaf filtering, and `buildLines` is a
+port of TermDOM's binary-search line builder. The full UAX #14 rule set and
+Unicode 17 tables live in `ui/linebreak.zig`/`ui/linebreak_tables.zig`; the
+checker includes the upstream conformance subset and VS Code-derived cases for
+tabs, wide cells, CJK/Kinsoku, punctuation and `keepAll`.
+
+VS Code's `MonospaceLineBreaksComputer` remains the editor reference for the
+editor-only wrapping features (injected text, continuation indent, incremental
+break reuse); the TUI editor keeps using the ported view-model wrapping and its
+line boxes are `pre`, so edge text is not wrapped twice. Single-line chrome in
+the TUI and ported widgets is `pre` as well, preserving literal spacing. The
+generic `ui` engine follows CSS/TermDOM instead.
 
 Ported widgets use flex where upstream does: the find bar is a flex column with
 one row per input, the suggest widget is a flex column with flex rows and a
@@ -540,7 +563,9 @@ Public surface for the POC:
 - `Style`: `position` (static/relative/absolute/fixed), `top/right/bottom/left`,
   `width/height` (`auto | cells | percent`), `display`
   (block/inline/inline-block/flex/inline-flex/contents/none), `overflow`
-  (visible/hidden/clip), `text_align`, `visibility`, `color`, `background`,
+  (visible/hidden/clip), `text_align`, `white_space`
+  (normal/nowrap/pre/pre_wrap/pre_line/break_spaces), `word_break`,
+  `overflow_wrap`, `visibility`, `color`, `background`,
   `bold`, `italic`, `underline`, `strikethrough`, `dim`, `reverse`, `z_index`,
   `translate_x/y`, plus `margin` (`Margin` with per-side auto), `padding`,
   `border`, `border_style` and `border_color`. Flex adds `flex_direction`,
@@ -553,13 +578,16 @@ Public surface for the POC:
 - Layout: absolute positioning against the nearest positioned ancestor using
   `left`/`top`, with the margin box anchored there (right/bottom anchoring and
   absolute auto margins are not implemented); block flow with content-derived
-  auto height and horizontal auto margins; single-line inline flow; percentage
-  sizes resolved against the containing content box; `text_align`; clipping to
-  the padding box; `display:none`; backgrounds paint the border box. Auto width
-  fills the containing block for a block-level box and shrink-wraps for an
-  inline-level box. Flex containers cover row/column direction, wrap,
-  grow/shrink/basis, justify/align, gap, order and auto margins. No grid, table
-  layout, CSS text wrapping or margin collapsing in the POC.
+  auto height and horizontal auto margins; UAX #14 inline flow with
+  `white-space`, `word-break`/`overflow-wrap`, per-line `text_align`, hanging
+  spaces, tabs and wide cells; percentage sizes resolved against the containing
+  content box; clipping to the padding box; `display:none`; backgrounds paint
+  the border box. Auto width fills the containing block for a block-level box
+  and shrink-wraps for an inline-level box. Text and non-atomic inline elements
+  store per-line fragments for paint and hit testing. Flex containers cover
+  row/column direction, wrap, grow/shrink/basis, justify/align, gap, order and
+  auto margins; text wraps at each item's resolved content width. No grid,
+  table layout or margin collapsing in the POC.
 - Rendering: `Surface.render` = layout -> paint into the next grid -> diff against
   the previous grid -> ANSI to the writer. Tests read `Surface.grid()` instead of
   parsing ANSI.
@@ -861,6 +889,10 @@ Library constraints:
   justify/align, gap and align-content wrapping), clipping, right
   alignment, wide characters, tabs, cell painting, frame diff (changed cell,
   vanished cell, unchanged frame), first-row erase and a small ANSI golden.
+  Text-flow tests cover UAX #14 conformance (>2500 Unicode cases), white-space
+  modes and boundary trimming, hanging spaces, tabs and wide cells,
+  word-break/overflow-wrap, per-line alignment, long-word overflow, per-leaf
+  overrides, inline-element fragmentation, and multi-line paint/hit testing.
   Event tests cover capture/target/bubble order, propagation and default
   prevention, focus event order and `related_target`, tabindex
   traversal, hidden/focusability checks, silent focus clearing on removal,
@@ -875,8 +907,8 @@ Library constraints:
 
 1. Full `viewLineRenderer` port + `CharacterMapping` and the upstream
    `viewLineRenderer.test.ts` cases (canonical part comparison).
-2. Flex follow-ups: min/max sizing, the automatic min-content floor for
-   shrinking items, and CSS text wrapping inside flex items.
+2. Flex follow-ups: min/max sizing and the automatic min-content floor for
+   shrinking items.
 3. `ViewLayout`/`Scrollable` + `IViewModel`/`IViewLayout` interfaces + a
    temporary `TuiViewModel` adapter + view-event bridge.
 4. `viewLayer`, `viewPart`, `renderingContext`, `viewOverlays`,
@@ -948,11 +980,16 @@ Library constraints:
   multi-cell/rounded border styles, background-clip or z-index paint ordering
   yet. Borders are repeated single-line box-drawing glyphs.
 - Flex is in, but without `min-width`/`min-height`/`max-width`/`max-height`, an
-  automatic min-content floor, percentage gaps, CSS text wrapping, inline line
-  breaking, or `justify-content: stretch`. Baseline alignment is approximated by
-  the first text row and falls back to flex-start under `wrap-reverse`.
-  `position: fixed` still resolves like `absolute`. Inline-level boxes are laid on one line; the tallest child grows
-  the line box, but the line never wraps.
+  automatic min-content floor, percentage gaps or `justify-content: stretch`.
+  Baseline alignment is approximated by the first text row and falls back to
+  flex-start under `wrap-reverse`. `position: fixed` still resolves like
+  `absolute`.
+- Text flow covers UAX #14 line breaking, the `white-space` family,
+  `word-break`/`overflow-wrap`, hanging spaces and non-atomic inline
+  fragmentation. It has no bidi reordering, grapheme-cluster segmentation, CSS
+  `line-height`/`text-indent`/`vertical-align`, `<br>` elements, or font-aware
+  shaping; forced breaks come from newlines under preserving white-space
+  modes.
 - No grid formatting contexts, table boxes or incremental box reuse yet; the
   box tree is rebuilt from the DOM when mutations invalidate it, then solved whole.
 - No JS interop, WebIDL, shadow DOM, custom elements, HTML parsing, or the full

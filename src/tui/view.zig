@@ -998,6 +998,7 @@ pub const View = struct {
                         .top = .{ .cells = row_cells },
                         .width = .{ .cells = @floatFromInt(gutter - 1) },
                         .height = .{ .cells = 1 },
+                        .white_space = .pre,
                         .text_align = .right,
                     });
                     const tilde = try doc.createText("~");
@@ -1023,6 +1024,7 @@ pub const View = struct {
                 .top = .{ .cells = row_cells },
                 .width = .{ .cells = @floatFromInt(gutter - 1) },
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .text_align = .right,
             });
 
@@ -1047,6 +1049,7 @@ pub const View = struct {
                 .top = .{ .cells = row_cells },
                 .width = .{ .cells = @floatFromInt(text_width) },
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .overflow = .hidden,
                 .background = if (is_cursor_line) color(current_line_background) else null,
             });
@@ -1117,6 +1120,7 @@ pub const View = struct {
                         .top = .{ .cells = 0 },
                         .width = .{ .cells = 1 },
                         .height = .{ .cells = 1 },
+                        .white_space = .pre,
                     });
                     const glyph = try doc.createText("│");
                     glyph.setStyle(.{ .color = color(spec.color) });
@@ -1299,6 +1303,7 @@ pub const View = struct {
                 .top = .{ .cells = @floatFromInt(row) },
                 .width = .{ .cells = @floatFromInt(column_width) },
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .color = color(marker_color),
             });
             const glyph = try doc.createText(glyph_text);
@@ -1613,6 +1618,7 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
         .top = .{ .cells = status_row },
         .width = .{ .percent = 100 },
         .height = .{ .cells = 1 },
+        .white_space = .pre,
         .overflow = .hidden,
         .reverse = true,
     });
@@ -2078,6 +2084,7 @@ const TestOverlay = struct {
             .top = .{ .cells = 0 },
             .width = .{ .percent = 100 },
             .height = .{ .cells = 1 },
+            .white_space = .pre,
             .reverse = true,
         });
         _ = try node.appendChild(try doc.createText("test"));
@@ -2186,6 +2193,7 @@ const TestContentWidget = struct {
             .top = .{ .cells = 0 },
             .width = .{ .percent = 100 },
             .height = .{ .cells = 1 },
+            .white_space = .pre,
             .reverse = true,
         });
         _ = try node.appendChild(try doc.createText("HOVER"));

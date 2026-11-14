@@ -58,6 +58,56 @@ pub const Overflow = enum { visible, hidden, clip };
 pub const TextAlign = enum { left, center, right };
 pub const Visibility = enum { visible, hidden };
 
+/// CSS `white-space` values, a subset supported by the terminal text engine.
+/// `normal` is the initial value and wraps; the preserving values keep their
+/// own spaces, the collapsing values fold ASCII whitespace runs to one space.
+pub const WhiteSpace = enum { normal, nowrap, pre, pre_wrap, pre_line, break_spaces };
+
+/// CSS `word-break`. `keep_all` suppresses soft wrapping for the text it
+/// styles; `break_all` and `break_word` allow breaking inside a word.
+pub const WordBreak = enum { normal, break_all, keep_all, break_word };
+
+/// CSS `overflow-wrap`: whether an otherwise unbreakable word may be broken to
+/// avoid overflowing its line.
+pub const OverflowWrap = enum { normal, break_word, anywhere };
+
+/// The inherited text properties resolved for a box. `Style` keeps the
+/// optional overrides; a layout box stores the result so text and nested
+/// inline boxes inherit the nearest declaration.
+pub const TextStyle = struct {
+    white_space: WhiteSpace = .normal,
+    word_break: WordBreak = .normal,
+    overflow_wrap: OverflowWrap = .normal,
+
+    pub fn resolve(parent: TextStyle, own: Style) TextStyle {
+        return .{
+            .white_space = own.white_space orelse parent.white_space,
+            .word_break = own.word_break orelse parent.word_break,
+            .overflow_wrap = own.overflow_wrap orelse parent.overflow_wrap,
+        };
+    }
+
+    pub fn preservesSpaces(self: TextStyle) bool {
+        return switch (self.white_space) {
+            .pre, .pre_wrap, .break_spaces => true,
+            else => false,
+        };
+    }
+
+    pub fn preservesNewlines(self: TextStyle) bool {
+        return switch (self.white_space) {
+            .pre, .pre_wrap, .pre_line, .break_spaces => true,
+            else => false,
+        };
+    }
+
+    pub fn suppressesWrap(self: TextStyle) bool {
+        return self.white_space == .nowrap or
+            self.white_space == .pre or
+            self.word_break == .keep_all;
+    }
+};
+
 /// A margin edge is either a fixed cell length or `auto`; auto margins absorb
 /// free space in a flex line (css-flexbox-1 §8.1) and center a definite-width
 /// block horizontally.
@@ -168,6 +218,12 @@ pub const Style = struct {
     overflow: Overflow = .visible,
     text_align: TextAlign = .left,
     visibility: Visibility = .visible,
+
+    /// Inherited text-flow properties. `null` inherits the resolved value of
+    /// the parent box; the viewport root resolves them to the initial values.
+    white_space: ?WhiteSpace = null,
+    word_break: ?WordBreak = null,
+    overflow_wrap: ?OverflowWrap = null,
 
     flex_direction: FlexDirection = .row,
     flex_wrap: FlexWrap = .nowrap,

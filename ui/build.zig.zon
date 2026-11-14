@@ -17,9 +17,13 @@
         "input.zig",
         "inputbox.zig",
         "layout.zig",
+        "linebreak.zig",
+        "linebreak_tables.zig",
         "paint.zig",
         "style.zig",
         "surface.zig",
+        "text_layout.zig",
+        "testdata/linebreak-test.txt",
         "tests.zig",
     },
 }

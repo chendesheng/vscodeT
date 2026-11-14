@@ -213,6 +213,7 @@ pub const SuggestWidget = struct {
             const message = try doc.createElement(.div);
             message.setStyle(.{
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .padding = .{ .left = 1 },
                 .overflow = .hidden,
             });
@@ -263,6 +264,7 @@ pub const SuggestWidget = struct {
             const row_node = try doc.createElement(.div);
             row_node.setStyle(.{
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .display = .flex,
                 .align_items = .center,
                 .gap = .{ .column = 1 },
@@ -275,6 +277,7 @@ pub const SuggestWidget = struct {
             kind.setStyle(.{
                 .width = .{ .cells = 2 },
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .flex_shrink = 0,
             });
             const kind_text = try doc.createText(kindLetter(item.kind));
@@ -285,6 +288,7 @@ pub const SuggestWidget = struct {
             const label = try doc.createElement(.div);
             label.setStyle(.{
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .flex_grow = 1,
                 .flex_basis = .{ .cells = 0 },
                 .overflow = .hidden,
@@ -299,6 +303,7 @@ pub const SuggestWidget = struct {
                 detail_node.setStyle(.{
                     .width = .{ .cells = @floatFromInt(@max(list_width / 2, 1)) },
                     .height = .{ .cells = 1 },
+                    .white_space = .pre,
                     .flex_shrink = 0,
                     .text_align = .right,
                     .overflow = .hidden,
@@ -341,6 +346,7 @@ pub const SuggestWidget = struct {
                 .top = .{ .cells = @floatFromInt(thumb_row) },
                 .width = .{ .cells = 1 },
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
             });
             _ = try span.appendChild(text);
             _ = try bar.appendChild(span);
@@ -375,6 +381,7 @@ pub const SuggestWidget = struct {
                 const header = try doc.createElement(.div);
                 header.setStyle(.{
                     .height = .{ .cells = 1 },
+                    .white_space = .pre,
                     .flex_shrink = 0,
                     .overflow = .hidden,
                 });
@@ -390,6 +397,7 @@ pub const SuggestWidget = struct {
                     const line_node = try doc.createElement(.div);
                     line_node.setStyle(.{
                         .height = .{ .cells = 1 },
+                        .white_space = .pre,
                         .flex_shrink = 0,
                         .overflow = .hidden,
                     });

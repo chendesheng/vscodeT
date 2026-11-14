@@ -184,6 +184,7 @@ pub const Preview = struct {
                     .top = .{ .cells = top },
                     .width = .{ .cells = @floatFromInt(gutter - 1) },
                     .height = .{ .cells = 1 },
+                    .white_space = .pre,
                     .text_align = .right,
                 });
                 const tilde = try doc.createText("~");
@@ -204,6 +205,7 @@ pub const Preview = struct {
                 .top = .{ .cells = top },
                 .width = .{ .cells = @floatFromInt(gutter - 1) },
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .text_align = .right,
             });
 
@@ -228,6 +230,7 @@ pub const Preview = struct {
                 .top = .{ .cells = top },
                 .width = .{ .cells = @floatFromInt(text_width) },
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .overflow = .hidden,
             });
 
@@ -265,6 +268,7 @@ pub const Preview = struct {
                 .top = .{ .cells = status_row },
                 .width = .{ .percent = 100 },
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .overflow = .hidden,
                 .reverse = true,
             });

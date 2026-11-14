@@ -18,6 +18,7 @@ const flex_cards = @import("flex_cards.zig");
 const flex_columns = @import("flex_columns.zig");
 const flex_reverse = @import("flex_reverse.zig");
 const overflow = @import("overflow.zig");
+const wrap = @import("wrap.zig");
 const borders = @import("borders.zig");
 const table = @import("table.zig");
 const tree = @import("tree.zig");
@@ -46,6 +47,7 @@ const entries = [_]Entry{
     .{ .title = "flex columns", .open = flex_columns.flexColumnsExample },
     .{ .title = "flex reverse", .open = flex_reverse.flexReverseExample },
     .{ .title = "overflow", .open = overflow.overflowExample },
+    .{ .title = "wrap", .open = wrap.wrapExample },
     .{ .title = "borders", .open = borders.bordersExample },
     .{ .title = "table", .open = table.tableExample },
     .{ .title = "tree", .open = tree.treeExample },

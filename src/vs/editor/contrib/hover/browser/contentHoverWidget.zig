@@ -409,6 +409,7 @@ pub const ContentHoverWidget = struct {
                 .top = .{ .cells = @floatFromInt(row) },
                 .width = .{ .cells = 1 },
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .color = scrollbar_color,
             });
             const is_thumb = row >= thumb_top and row < thumb_top + thumb_height;

@@ -269,6 +269,7 @@ pub const InputBox = struct {
             .height = .{ .cells = 1 },
             .overflow = .hidden,
             .color = self.color,
+            .white_space = .pre,
             .dim = !self.enabled,
         });
         try root.addEventListener(.{ .context = self, .key_down = onKey });

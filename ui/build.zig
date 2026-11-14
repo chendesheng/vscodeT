@@ -36,6 +36,7 @@ pub fn build(b: *std.Build) void {
         .{ .step = "example-flex-columns", .path = "examples/flex_columns.zig", .description = "Run the nested flex column example" },
         .{ .step = "example-flex-reverse", .path = "examples/flex_reverse.zig", .description = "Run the flex reverse-direction example" },
         .{ .step = "example-overflow", .path = "examples/overflow.zig", .description = "Run the overflow example" },
+        .{ .step = "example-wrap", .path = "examples/wrap.zig", .description = "Run the text wrapping example" },
         .{ .step = "example-borders", .path = "examples/borders.zig", .description = "Run the borders example" },
         .{ .step = "example-table", .path = "examples/table.zig", .description = "Run the table example" },
         .{ .step = "example-tree", .path = "examples/tree.zig", .description = "Run the tree example" },

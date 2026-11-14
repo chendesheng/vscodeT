@@ -8,7 +8,9 @@ comptime {
     _ = @import("input.zig");
     _ = @import("inputbox.zig");
     _ = @import("layout.zig");
+    _ = @import("linebreak.zig");
     _ = @import("paint.zig");
     _ = @import("style.zig");
     _ = @import("surface.zig");
+    _ = @import("text_layout.zig");
 }

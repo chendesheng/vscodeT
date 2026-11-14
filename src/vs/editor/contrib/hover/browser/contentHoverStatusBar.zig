@@ -129,6 +129,7 @@ pub const EditorHoverStatusBar = struct {
             .top = .{ .cells = @floatFromInt(top) },
             .width = .{ .percent = 100 },
             .height = .{ .cells = 1 },
+            .white_space = .pre,
             .display = .flex,
             .align_items = .center,
             .gap = .{ .column = 1 },
@@ -151,6 +152,7 @@ pub const EditorHoverStatusBar = struct {
             action_node.asElement().focusable = false;
             action_node.setStyle(.{
                 .height = .{ .cells = 1 },
+                .white_space = .pre,
                 .flex_shrink = 0,
                 .color = if (action.enabled) action_color else foreground,
             });
