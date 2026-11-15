@@ -117,13 +117,18 @@ fn build(
     const wrapped = try common.addBox(doc, wrap_demo, .{
         .display = .flex,
         .flex_wrap = .wrap_reverse,
+        .align_content = .flex_start,
         .gap = .all(1),
         .flex_grow = 1,
+        .overflow = .hidden,
         .background = raised,
     });
     for ([_][]const u8{ "1", "2", "3", "4", "5", "6" }) |label| {
         _ = try common.addLabel(doc, wrapped, label, .{
-            .width = .{ .cells = 8 },
+            // Two items fit per line at every terminal width; 40% + gap + 40%
+            // stays inside the container, so wrap-reverse cannot spill upward
+            // over the heading or the row above.
+            .width = .{ .percent = 40 },
             .height = .{ .cells = 2 },
             .background = accent,
             .text_align = .center,

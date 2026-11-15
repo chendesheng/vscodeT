@@ -47,19 +47,25 @@ fn build(
         .background = background,
     });
 
+    const compact = size.width < 48;
     const header = try common.addBox(doc, root, .{
         .height = .{ .cells = 1 },
         .display = .flex,
         .align_items = .center,
         .justify_content = .space_between,
+        .gap = .{ .column = 1 },
+        .overflow = .hidden,
     });
-    _ = try common.addLabel(doc, header, "flex columns", .{ .height = .{ .cells = 1 } }, .{
-        .color = foreground,
-        .bold = true,
-    });
-    _ = try common.addLabel(doc, header, "nested column + row flex", .{
+    _ = try common.addLabel(doc, header, "flex columns", .{
         .height = .{ .cells = 1 },
-    }, .{ .color = dim });
+        .flex_shrink = 0,
+    }, .{ .color = foreground, .bold = true });
+    if (!compact) {
+        _ = try common.addLabel(doc, header, "nested column + row flex", .{
+            .height = .{ .cells = 1 },
+            .overflow = .hidden,
+        }, .{ .color = dim });
+    }
 
     const body = try common.addBox(doc, root, .{
         .display = .flex,
@@ -67,7 +73,8 @@ fn build(
     });
 
     const sidebar = try common.addBox(doc, body, .{
-        .width = .{ .cells = 20 },
+        .width = .{ .cells = if (compact) 16 else 20 },
+        .flex_shrink = 0,
         .display = .flex,
         .flex_direction = .column,
         .gap = .{ .row = 1 },
@@ -82,10 +89,11 @@ fn build(
             .height = .{ .cells = 1 },
         }, .{ .color = dim });
     }
-    _ = try common.addLabel(doc, sidebar, "margin-top: auto", .{
+    _ = try common.addLabel(doc, sidebar, "auto margin", .{
         .height = .{ .cells = 1 },
         .margin = .{ .top = .auto },
         .background = raised,
+        .overflow = .hidden,
     }, .{ .color = green });
 
     const main_panel = try common.addBox(doc, body, .{
@@ -105,17 +113,20 @@ fn build(
         .display = .flex,
         .gap = .{ .column = 1 },
     });
-    for ([_][]const u8{ "flex-grow: 1", "flex-grow: 1", "flex-grow: 1" }) |label| {
+    const panel_label = if (compact) "grow" else "flex-grow: 1";
+    for (0..3) |_| {
         const panel_box = try common.addBox(doc, panels, .{
             .display = .flex,
             .flex_direction = .column,
             .justify_content = .center,
             .align_items = .center,
             .flex_grow = 1,
+            .overflow = .hidden,
             .background = raised,
         });
-        _ = try common.addLabel(doc, panel_box, label, .{
+        _ = try common.addLabel(doc, panel_box, panel_label, .{
             .height = .{ .cells = 1 },
+            .overflow = .hidden,
         }, .{ .color = foreground });
     }
 
@@ -123,8 +134,9 @@ fn build(
         .height = .{ .cells = 1 },
     }, .{ .color = dim });
 
-    _ = try common.addLabel(doc, root, "footer · margin-top: auto", .{
+    _ = try common.addLabel(doc, root, if (compact) "footer · auto" else "footer · margin-top: auto", .{
         .height = .{ .cells = 1 },
+        .overflow = .hidden,
         .margin = .{ .top = .auto },
         .background = accent,
     }, .{ .color = foreground, .bold = true });
