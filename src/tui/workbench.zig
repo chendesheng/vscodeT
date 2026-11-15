@@ -46,6 +46,8 @@ const quick_access_mod = @import("./quickAccess.zig");
 const QuickAccessService = quick_access_mod.QuickAccessService;
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
+const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
+const ConfigurationService = configuration_mod.ConfigurationService;
 const ActivityBar = activity_bar_mod.ActivityBar;
 const search_view_mod = @import("./searchView.zig");
 const SearchView = search_view_mod.SearchView;
@@ -167,6 +169,8 @@ pub const Workbench = struct {
     activity_bar: ActivityBar = .{},
     active_activity: usize = 0,
     workspace: *WorkspaceContextService,
+    configuration: ?*ConfigurationService,
+    user_settings_path: ?[]u8,
     history: HistoryService,
     commands: CommandRegistry,
     quick_access: *QuickAccessService,
@@ -207,6 +211,8 @@ pub const Workbench = struct {
         self.activity_bar = .{};
         self.active_activity = 0;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
+        self.configuration = null;
+        self.user_settings_path = null;
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
@@ -277,6 +283,8 @@ pub const Workbench = struct {
         self.activity_bar = .{};
         self.active_activity = 0;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
+        self.configuration = null;
+        self.user_settings_path = null;
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
@@ -359,6 +367,8 @@ pub const Workbench = struct {
         self.activity_bar = .{};
         self.active_activity = 0;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
+        self.configuration = null;
+        self.user_settings_path = null;
 
         self.service = try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, data, registry, .{});
         errdefer self.service.deinit();
@@ -572,6 +582,8 @@ pub const Workbench = struct {
         self.service.deinit();
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.destroySearch();
+        if (self.configuration) |configuration| configuration.deinit();
+        if (self.user_settings_path) |path| self.allocator.free(path);
         self.workspace.deinit();
         for (self.panes.items) |pane| {
             for (pane.tabs.items) |tab| tab.deinit();
@@ -664,9 +676,36 @@ pub const Workbench = struct {
             self.sidebar = null;
         }
         self.destroySearch();
+        if (self.configuration) |configuration| {
+            configuration.deinit();
+            self.configuration = null;
+        }
         self.workspace.deinit();
         self.workspace = replacement;
+        try self.ensureConfiguration();
         try self.quick_access.setWorkspace(self.workspace);
+    }
+
+    /// Sets the user settings file before the Explorer/configuration service is
+    /// created. The app derives it from `XDG_CONFIG_HOME`/`HOME`.
+    pub fn setUserSettingsPath(self: *Workbench, path: ?[]const u8) !void {
+        if (self.user_settings_path) |old| self.allocator.free(old);
+        self.user_settings_path = if (path) |value| try self.allocator.dupe(u8, value) else null;
+        if (self.configuration) |configuration| {
+            configuration.deinit();
+            self.configuration = null;
+            try self.ensureConfiguration();
+        }
+    }
+
+    fn ensureConfiguration(self: *Workbench) !void {
+        if (self.configuration != null) return;
+        self.configuration = try ConfigurationService.init(
+            self.allocator,
+            self.io,
+            self.workspace,
+            .{ .user_settings_path = self.user_settings_path },
+        );
     }
 
     /// Test/standalone helper: set a single-folder workspace and open the
@@ -677,8 +716,14 @@ pub const Workbench = struct {
     }
 
     pub fn initSidebarFromWorkspace(self: *Workbench) !void {
+        try self.ensureConfiguration();
         if (self.sidebar == null) {
-            self.sidebar = try Sidebar.init(self.allocator, self.io, self.workspace);
+            self.sidebar = try Sidebar.init(
+                self.allocator,
+                self.io,
+                self.workspace,
+                self.configuration.?,
+            );
         }
         if (self.search_view == null) try self.initSearchFromWorkspace();
         self.sidebar_visible = true;

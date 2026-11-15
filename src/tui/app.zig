@@ -58,6 +58,25 @@ fn parseArgs(args: std.process.Args, paths: *ArrayList([]const u8)) !Args {
     return parsed;
 }
 
+/// User settings live outside the workspace. `VSCODE_TEXTBUFFER_USER_SETTINGS`
+/// overrides the XDG/HOME default so tests and alternate profiles can point at
+/// a specific file; a missing file simply produces no user scope.
+fn defaultUserSettingsPath(
+    allocator: std.mem.Allocator,
+    environ: *const std.process.Environ.Map,
+) !?[]u8 {
+    if (environ.get("VSCODE_TEXTBUFFER_USER_SETTINGS")) |path| {
+        return try allocator.dupe(u8, path);
+    }
+    if (environ.get("XDG_CONFIG_HOME")) |xdg| {
+        return try std.fs.path.join(allocator, &.{ xdg, "vscode-textbuffer", "settings.json" });
+    }
+    if (environ.get("HOME")) |home| {
+        return try std.fs.path.join(allocator, &.{ home, ".config", "vscode-textbuffer", "settings.json" });
+    }
+    return null;
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
@@ -196,6 +215,10 @@ pub fn main(init: std.process.Init) !void {
     }
     defer workbench.deinit();
     workbench.setCellBorders(border_probe.supported);
+
+    const user_settings_path = try defaultUserSettingsPath(allocator, init.environ_map);
+    defer if (user_settings_path) |path| allocator.free(path);
+    try workbench.setUserSettingsPath(user_settings_path);
 
     if (args.session) |session_path| {
         defer {

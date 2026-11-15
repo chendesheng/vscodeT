@@ -76,6 +76,11 @@ comptime {
     _ = @import("./vs/workbench/contrib/files/test/browser/explorerModel.test.zig");
     _ = @import("./vs/workbench/services/views/common/viewContainerModel.zig");
     _ = @import("./vs/workbench/services/workspaces/common/workspaceContextService.zig");
+    _ = @import("./vs/platform/configuration/common/configuration.zig");
+    _ = @import("./vs/platform/configuration/common/configurationModels.zig");
+    _ = @import("./vs/platform/configuration/common/configurationRegistry.zig");
+    _ = @import("./vs/workbench/services/configuration/browser/configurationService.zig");
+    _ = @import("./vs/workbench/services/configuration/test/browser/configurationService.test.zig");
     _ = @import("./vs/workbench/services/views/test/browser/viewContainerModel.test.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeBase.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBufferBuilder.zig");

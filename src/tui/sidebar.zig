@@ -6,6 +6,16 @@
 //! visible rows directly into the workbench cell grid. Expansion state and the
 //! visible-row projection are view state, as they are in the browser tree.
 //!
+//! Like the browser `FilesFilter`, directory resolution applies `files.exclude`
+//! and, when `explorer.excludeGitIgnore` is enabled, drops entries matched by
+//! `.gitignore`/`.ignore` through the ported `IgnoreFile`; nested ignore files
+//! inherit the enclosing chain and `!` negations work. The TUI default for
+//! `explorer.excludeGitIgnore` is on, unlike upstream's off default, because
+//! the Explorer hid those entries before the configuration service existed.
+//! `files.exclude` `when` clauses, exception-leading folders and the
+//! visible-editor exception are not ported; ignore files themselves stay
+//! visible so they can be edited.
+//!
 //! The file service, file watching, activity bar and view-container system are
 //! not ported yet; the sidebar root is the current working directory.
 
@@ -15,6 +25,11 @@ const Io = std.Io;
 const ui = @import("ui");
 const explorer = @import("../vs/workbench/contrib/files/common/explorerModel.zig");
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
+const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
+const ignore_file_module = @import("../vs/workbench/services/search/common/ignoreFile.zig");
+const glob = @import("../vs/base/common/glob.zig");
+const IgnoreFile = ignore_file_module.IgnoreFile;
+const ConfigurationService = configuration_mod.ConfigurationService;
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const ExplorerModel = explorer.ExplorerModel;
 const ExplorerItem = explorer.ExplorerItem;
@@ -22,10 +37,193 @@ const ExplorerItem = explorer.ExplorerItem;
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
 
+const max_ignore_file_size: usize = 1024 * 1024;
+
 const Visible = struct {
     item: *ExplorerItem,
     depth: usize,
 };
+
+/// Applies the Explorer's `files.exclude` expression and, when enabled, one
+/// ignore chain per resolved directory. Both settings are resource-scoped, so
+/// each workspace root gets its own root filter; the ignore-chain map is keyed
+/// by the directory whose children are being resolved, mirroring upstream's
+/// per-root ignore tree.
+const FilesFilter = struct {
+    allocator: Allocator,
+    io: Io,
+    configuration: *ConfigurationService,
+    /// Owns every ignore file loaded while resolving directories.
+    files: std.array_list.Managed(*IgnoreFile),
+    /// Directory item -> ignore chain that applies to its children.
+    chains: std.AutoHashMap(*ExplorerItem, ?*const IgnoreFile),
+    /// Workspace root -> `files.exclude`/`explorer.excludeGitIgnore` values.
+    roots: std.AutoHashMap(*ExplorerItem, *RootFilter),
+
+    const RootFilter = struct {
+        files_exclude: glob.GlobList,
+        exclude_git_ignore: bool,
+    };
+
+    fn init(
+        allocator: Allocator,
+        io: Io,
+        configuration: *ConfigurationService,
+    ) FilesFilter {
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .configuration = configuration,
+            .files = std.array_list.Managed(*IgnoreFile).init(allocator),
+            .chains = std.AutoHashMap(*ExplorerItem, ?*const IgnoreFile).init(allocator),
+            .roots = std.AutoHashMap(*ExplorerItem, *RootFilter).init(allocator),
+        };
+    }
+
+    fn deinit(self: *FilesFilter) void {
+        var roots = self.roots.valueIterator();
+        while (roots.next()) |filter| {
+            filter.*.files_exclude.deinit();
+            self.allocator.destroy(filter.*);
+        }
+        self.roots.deinit();
+        for (self.files.items) |ignore_file| ignore_file.deinit();
+        self.files.deinit();
+        self.chains.deinit();
+    }
+
+    /// Reads `<directory>/.gitignore` and `.ignore` on top of the enclosing
+    /// directory's chain and records the chain for `directory`'s children.
+    fn prepare(self: *FilesFilter, directory: *ExplorerItem) !void {
+        const root_filter = try self.rootFilter(directory.root());
+        if (!root_filter.exclude_git_ignore or self.chains.contains(directory)) return;
+
+        var current: ?*const IgnoreFile = null;
+        if (directory.parent) |parent| {
+            if (self.chains.get(parent)) |chain| current = chain;
+        }
+
+        for (ignore_file_module.ignore_file_names) |name| {
+            const path = try std.fs.path.join(self.allocator, &.{ directory.resource, name });
+            defer self.allocator.free(path);
+            const contents = Io.Dir.cwd().readFileAlloc(
+                self.io,
+                path,
+                self.allocator,
+                .limited(max_ignore_file_size),
+            ) catch continue;
+            defer self.allocator.free(contents);
+
+            const ignore_file = try IgnoreFile.init(
+                self.allocator,
+                contents,
+                directory.resource,
+                current,
+                false,
+            );
+            errdefer ignore_file.deinit();
+            try self.files.append(ignore_file);
+            current = ignore_file;
+        }
+
+        try self.chains.put(directory, current);
+    }
+
+    fn isVisible(self: *FilesFilter, item: *ExplorerItem) bool {
+        if (item.parent == null) return true;
+
+        const root_filter = self.rootFilter(item.root()) catch return true;
+        // Upstream always shows `.gitignore` so the user can edit the file that
+        // hides its siblings; this port reads `.ignore` too, so it stays
+        // visible for the same reason.
+        if (root_filter.exclude_git_ignore and isIgnoreFile(item.name)) return true;
+
+        const relative = relativePath(item);
+        if (relative.len > 0 and root_filter.files_exclude.matches(relative)) return false;
+        if (!root_filter.exclude_git_ignore) return true;
+
+        const parent = item.parent orelse return true;
+        const chain = self.chains.get(parent) orelse return true;
+        return ignore_file_module.isPathIncluded(chain, item.resource, item.is_directory);
+    }
+
+    fn rootFilter(self: *FilesFilter, root: *ExplorerItem) !*RootFilter {
+        if (self.roots.get(root)) |filter| return filter;
+
+        const filter = try self.allocator.create(RootFilter);
+        errdefer self.allocator.destroy(filter);
+        filter.* = .{
+            .files_exclude = try buildFilesExclude(self.allocator, self.configuration, root.resource),
+            .exclude_git_ignore = getBoolForResource(
+                self.configuration,
+                "explorer.excludeGitIgnore",
+                root.resource,
+                true,
+            ),
+        };
+        errdefer filter.files_exclude.deinit();
+        try self.roots.put(root, filter);
+        return filter;
+    }
+};
+
+fn isIgnoreFile(name: []const u8) bool {
+    return std.mem.eql(u8, name, ".gitignore") or std.mem.eql(u8, name, ".ignore");
+}
+
+fn getBoolForResource(
+    configuration: *ConfigurationService,
+    section: []const u8,
+    resource: []const u8,
+    default: bool,
+) bool {
+    const value = configuration.getValue(section, .{ .resource = resource }) orelse return default;
+    return switch (value.*) {
+        .bool => |inner| inner,
+        else => default,
+    };
+}
+
+/// The `files.exclude` object is an ordered glob expression: `true` enables a
+/// pattern, `false` disables it, and a leading `!` marks an exception.
+fn buildFilesExclude(
+    allocator: Allocator,
+    configuration: *ConfigurationService,
+    resource: []const u8,
+) !glob.GlobList {
+    const value = configuration.getValue("files.exclude", .{ .resource = resource }) orelse
+        return glob.GlobList.init(allocator, "");
+
+    var expression = std.array_list.Managed(u8).init(allocator);
+    defer expression.deinit();
+    if (value.* == .object) {
+        var iterator = value.object.iterator();
+        while (iterator.next()) |entry| {
+            const enabled = switch (entry.value_ptr.*) {
+                .bool => |inner| inner,
+                .object => true,
+                else => false,
+            };
+            if (!enabled) continue;
+            if (expression.items.len > 0) try expression.append(',');
+            try expression.appendSlice(entry.key_ptr.*);
+        }
+    }
+    return glob.GlobList.init(allocator, expression.items);
+}
+
+fn relativePath(item: *ExplorerItem) []const u8 {
+    const root = item.root();
+    if (item == root) return "";
+    const resource = item.resource;
+    const root_resource = root.resource;
+    if (std.mem.startsWith(u8, resource, root_resource)) {
+        var index = root_resource.len;
+        if (index < resource.len and resource[index] == '/') index += 1;
+        return resource[index..];
+    }
+    return resource;
+}
 
 const header_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 200, .g = 200, .b = 200 }),
@@ -58,6 +256,7 @@ pub const Sidebar = struct {
     model: *ExplorerModel,
     visible: std.array_list.Managed(Visible),
     expanded: std.AutoHashMap(*ExplorerItem, void),
+    files_filter: FilesFilter,
     /// Upstream the Explorer uses the single root itself as the tree input in
     /// a folder workspace, so the root row is hidden and its children are the
     /// top-level rows. Multi-root workspaces show the root rows.
@@ -66,7 +265,12 @@ pub const Sidebar = struct {
     scroll: usize = 0,
     last_rect: ui.Rect = .{},
 
-    pub fn init(allocator: Allocator, io: Io, context: *WorkspaceContextService) !*Sidebar {
+    pub fn init(
+        allocator: Allocator,
+        io: Io,
+        context: *WorkspaceContextService,
+        configuration: *ConfigurationService,
+    ) !*Sidebar {
         const self = try allocator.create(Sidebar);
         errdefer allocator.destroy(self);
 
@@ -76,7 +280,11 @@ pub const Sidebar = struct {
             .model = try ExplorerModel.init(allocator, io, context),
             .visible = std.array_list.Managed(Visible).init(allocator),
             .expanded = std.AutoHashMap(*ExplorerItem, void).init(allocator),
+            .files_filter = FilesFilter.init(allocator, io, configuration),
         };
+        errdefer self.files_filter.deinit();
+        errdefer self.expanded.deinit();
+        errdefer self.visible.deinit();
         errdefer self.model.deinit();
 
         self.show_roots = context.getWorkbenchState() != .FOLDER or self.model.roots.items.len != 1;
@@ -99,6 +307,7 @@ pub const Sidebar = struct {
     }
 
     pub fn deinit(self: *Sidebar) void {
+        self.files_filter.deinit();
         self.expanded.deinit();
         self.visible.deinit();
         self.model.deinit();
@@ -107,6 +316,25 @@ pub const Sidebar = struct {
 
     fn loadChildren(self: *Sidebar, item: *ExplorerItem) !void {
         item.fetchChildren(self.io, .FilesFirst) catch {};
+        try self.files_filter.prepare(item);
+        self.dropIgnoredChildren(item);
+    }
+
+    /// Removes resolved children excluded by `files.exclude` or the directory's
+    /// ignore chain. Upstream's `FilesFilter` decides this while visiting tree
+    /// entries; the terminal sidebar resolves a whole directory at once, so it
+    /// prunes the model before the visible-row projection runs.
+    fn dropIgnoredChildren(self: *Sidebar, item: *ExplorerItem) void {
+        var index: usize = 0;
+        while (index < item.children.items.len) {
+            const child = item.children.items[index];
+            if (self.files_filter.isVisible(child)) {
+                index += 1;
+                continue;
+            }
+            item.removeChild(child);
+            child.destroy();
+        }
     }
 
     pub fn isExpanded(self: *const Sidebar, item: *ExplorerItem) bool {
@@ -373,7 +601,9 @@ test "sidebar: lists directories first and toggles" {
 
     const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
     defer context.deinit();
-    const sidebar = try Sidebar.init(allocator, io, context);
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
 
     try std.testing.expectEqual(@as(usize, 4), sidebar.count());
@@ -401,7 +631,9 @@ test "sidebar: enter on a file returns its path" {
 
     const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
     defer context.deinit();
-    const sidebar = try Sidebar.init(allocator, io, context);
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
 
     const action = try sidebar.handleKey(&.{ .key = .enter });
@@ -426,7 +658,9 @@ test "sidebar: renders rows and handles clicks" {
 
     const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
     defer context.deinit();
-    const sidebar = try Sidebar.init(allocator, io, context);
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
 
     var grid = try CellGrid.init(allocator, 24, 5);
@@ -465,7 +699,9 @@ test "sidebar: multi-root workspace shows root rows" {
 
     const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{ root_a, root_b });
     defer context.deinit();
-    const sidebar = try Sidebar.init(allocator, io, context);
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
 
     try std.testing.expectEqual(@as(usize, 3), sidebar.count());
@@ -478,4 +714,191 @@ test "sidebar: multi-root workspace shows root rows" {
     const row = try grid.rowText(allocator, 2);
     defer allocator.free(row);
     try std.testing.expect(std.mem.startsWith(u8, row, "  "));
+}
+
+test "sidebar: hides gitignored files and folders" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "ignored_dir");
+    var inside = try tmp.dir.createFile(io, "ignored_dir/inside.txt", .{});
+    try inside.writeStreamingAll(io, "x");
+    inside.close(io);
+    var ignored = try tmp.dir.createFile(io, "ignored.txt", .{});
+    try ignored.writeStreamingAll(io, "x");
+    ignored.close(io);
+    var ignored_by_ignore = try tmp.dir.createFile(io, "from-ignore.txt", .{});
+    try ignored_by_ignore.writeStreamingAll(io, "x");
+    ignored_by_ignore.close(io);
+    var kept = try tmp.dir.createFile(io, "kept.txt", .{});
+    try kept.writeStreamingAll(io, "x");
+    kept.close(io);
+    var gitignore = try tmp.dir.createFile(io, ".gitignore", .{});
+    try gitignore.writeStreamingAll(io, "ignored.txt\nignored_dir/\n");
+    gitignore.close(io);
+    var ignore = try tmp.dir.createFile(io, ".ignore", .{});
+    try ignore.writeStreamingAll(io, "from-ignore.txt\n");
+    ignore.close(io);
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), sidebar.count());
+    try std.testing.expectEqualStrings(".gitignore", sidebar.visible.items[0].item.name);
+    try std.testing.expectEqualStrings(".ignore", sidebar.visible.items[1].item.name);
+    try std.testing.expectEqualStrings("kept.txt", sidebar.visible.items[2].item.name);
+}
+
+test "sidebar: nested ignore files inherit and can negate" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "sub");
+    var root_ignore = try tmp.dir.createFile(io, ".gitignore", .{});
+    try root_ignore.writeStreamingAll(io, "*.log\n");
+    root_ignore.close(io);
+    var sub_ignore = try tmp.dir.createFile(io, "sub/.gitignore", .{});
+    try sub_ignore.writeStreamingAll(io, "!keep.log\n");
+    sub_ignore.close(io);
+    var kept = try tmp.dir.createFile(io, "sub/keep.log", .{});
+    try kept.writeStreamingAll(io, "x");
+    kept.close(io);
+    var dropped = try tmp.dir.createFile(io, "sub/drop.log", .{});
+    try dropped.writeStreamingAll(io, "x");
+    dropped.close(io);
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), sidebar.count());
+    try std.testing.expectEqualStrings("sub", sidebar.visible.items[0].item.name);
+    try std.testing.expectEqualStrings(".gitignore", sidebar.visible.items[1].item.name);
+
+    sidebar.selected = 0;
+    try std.testing.expectEqual(Action.handled, try sidebar.handleKey(&.{ .key = .right }));
+
+    try std.testing.expectEqual(@as(usize, 4), sidebar.count());
+    try std.testing.expectEqualStrings("sub", sidebar.visible.items[0].item.name);
+    try std.testing.expectEqualStrings(".gitignore", sidebar.visible.items[1].item.name);
+    try std.testing.expectEqualStrings("keep.log", sidebar.visible.items[2].item.name);
+    try std.testing.expectEqualStrings(".gitignore", sidebar.visible.items[3].item.name);
+}
+
+test "sidebar: files.exclude hides VCS metadata by default" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".git");
+    try tmp.dir.createDirPath(io, "src");
+    var readme = try tmp.dir.createFile(io, "README.md", .{});
+    try readme.writeStreamingAll(io, "x");
+    readme.close(io);
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), sidebar.count());
+    try std.testing.expectEqualStrings("src", sidebar.visible.items[0].item.name);
+    try std.testing.expectEqualStrings("README.md", sidebar.visible.items[1].item.name);
+}
+
+test "sidebar: settings control files.exclude and excludeGitIgnore" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".vscode");
+    var settings = try tmp.dir.createFile(io, ".vscode/settings.json", .{});
+    try settings.writeStreamingAll(
+        io,
+        "{\"explorer.excludeGitIgnore\": false, \"files.exclude\": {\"**/kept.txt\": true}}",
+    );
+    settings.close(io);
+    try tmp.dir.createDirPath(io, ".git");
+    var ignore = try tmp.dir.createFile(io, ".gitignore", .{});
+    try ignore.writeStreamingAll(io, "ignored.txt\n");
+    ignore.close(io);
+    var ignored = try tmp.dir.createFile(io, "ignored.txt", .{});
+    try ignored.writeStreamingAll(io, "x");
+    ignored.close(io);
+    var kept = try tmp.dir.createFile(io, "kept.txt", .{});
+    try kept.writeStreamingAll(io, "x");
+    kept.close(io);
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), sidebar.count());
+    try std.testing.expectEqualStrings(".vscode", sidebar.visible.items[0].item.name);
+    try std.testing.expectEqualStrings(".gitignore", sidebar.visible.items[1].item.name);
+    try std.testing.expectEqualStrings("ignored.txt", sidebar.visible.items[2].item.name);
+}
+
+test "sidebar: files.exclude can re-enable a default exclusion" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".vscode");
+    var settings = try tmp.dir.createFile(io, ".vscode/settings.json", .{});
+    try settings.writeStreamingAll(io, "{\"files.exclude\": {\"**/.git\": false}}");
+    settings.close(io);
+    try tmp.dir.createDirPath(io, ".git");
+    try tmp.dir.createDirPath(io, "src");
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), sidebar.count());
+    try std.testing.expectEqualStrings(".git", sidebar.visible.items[0].item.name);
+    try std.testing.expectEqualStrings(".vscode", sidebar.visible.items[1].item.name);
+    try std.testing.expectEqualStrings("src", sidebar.visible.items[2].item.name);
 }

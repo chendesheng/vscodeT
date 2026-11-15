@@ -76,8 +76,39 @@ Notes for the Zig 0.17 port:
   model. In a single-folder workspace the folder is the tree input, so its
   children are the top-level rows; a multi-root workspace shows root rows and
   expands the first five roots, matching the Explorer view's default. Deeper
-  directories resolve only when expanded. `Ctrl-B` toggles the side panel and
+  directories resolve only when expanded. Directory resolution hides entries
+  matched by `.gitignore`/`.ignore` through the ported `IgnoreFile`
+  (`src/vs/workbench/services/search/common/ignoreFile.zig`), including nested
+  ignore files and `!` negations; the ignore files themselves stay visible.
+  `files.exclude` (including VS Code's default `**/.git`, `**/.svn`, `**/.hg`,
+  `**/.jj`, `**/.DS_Store` and `**/Thumbs.db`) is applied per workspace root,
+  and `explorer.excludeGitIgnore` controls the ignore-file filtering. The TUI
+  default for that setting is on, unlike upstream's off default, because the
+  Explorer hid ignored entries before the configuration service existed;
+  workspace settings can turn it off. `Ctrl-B` toggles the side panel and
   `Escape` returns focus to the editor.
+- The configuration service (`src/vs/workbench/services/configuration/browser/configurationService.zig`)
+  resolves defaults, user settings, the workspace file's `settings` block and
+  each folder's `.vscode/settings.json`, in that precedence order. It uses the
+  ported `ConfigurationModel`/`ConfigurationRegistry` and accepts JSONC
+  comments and trailing commas. User settings default to
+  `$XDG_CONFIG_HOME/vscode-textbuffer/settings.json` (or
+  `$HOME/.config/vscode-textbuffer/settings.json`); set
+  `VSCODE_TEXTBUFFER_USER_SETTINGS` to override the path. Settings are read at
+  startup or explicit `reload`. Not ported yet:
+  - file watching and automatic settings reload (the terminal has no file
+    watcher/file service);
+  - `updateValue` and settings editing (needs the JSONC-preserving configuration
+    editing service);
+  - language override blocks such as `[typescript]` (override models are not
+    ported);
+  - policy, application, remote and profile scopes (those services do not exist
+    in the terminal workbench);
+  - trusted-workspace filtering and restricted settings (no workspace-trust
+    service);
+  - `files.exclude` `when` clauses and exception-leading folders (`glob.zig`
+    does not port the traversal/exception metadata);
+  - the Settings editor/view, which remains a placeholder.
 - A minimal activity bar (`src/tui/activityBar.zig`) switches between Explorer,
   Search and Settings containers. Explorer is wired to the file tree and Search
   to the workspace text-search panel; Settings remains a placeholder.
@@ -101,9 +132,9 @@ Notes for the Zig 0.17 port:
   directory-only patterns and `!` negations behave like git. It still skips
   symlinks, binary/invalid-UTF-8 files, files over 10 MB and version control
   metadata (`.git`/`.hg`/`.svn`) plus `node_modules` and Zig build output. It
-  does not honor `search.exclude`/`files.exclude` configuration, has no
-  AI/notebook/search-editor results, no replace preview, no
-  multi-selection/context menus, and does not watch the filesystem; edits to
+  does not honor `search.exclude` or the Explorer's `files.exclude`
+  configuration, has no AI/notebook/search-editor results, no replace preview,
+  no multi-selection/context menus, and does not watch the filesystem; edits to
   the active editor schedule a debounced re-search instead.
 - Folder opening follows the workspace model: a directory argument stat'd from
   the CLI becomes a `Workspace` folder through

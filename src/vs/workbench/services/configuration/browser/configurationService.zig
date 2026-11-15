@@ -1,0 +1,338 @@
+// Port of the workspace-aware configuration service in
+// `src/vs/workbench/services/configuration/browser/configurationService.ts`.
+//
+// The terminal workbench has no profile, remote, policy, application or
+// extension-host services, so this port resolves the scopes it can read:
+// registered defaults, one user settings file, the workspace file's `settings`
+// block, and each workspace folder's `.vscode/settings.json`. Folder settings
+// override workspace settings, which override user settings, which override
+// defaults. `getValue`/`inspect` expose the same precedence through
+// `ConfigurationModel`.
+//
+// Settings files are read with VS Code's JSONC allowances (comments and
+// trailing commas). File watching, `updateValue` (setting editing), language
+// override identifiers (`[typescript]` blocks), policy/application/remote
+// scopes and trusted-workspace filtering are not ported; call `reload` after a
+// settings file changes.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+const configuration = @import("../../../../platform/configuration/common/configuration.zig");
+const configurationModels = @import("../../../../platform/configuration/common/configurationModels.zig");
+const registry_mod = @import("../../../../platform/configuration/common/configurationRegistry.zig");
+const workspace_context = @import("../../workspaces/common/workspaceContextService.zig");
+const event = @import("../../../../base/common/event.zig");
+
+const ConfigurationModel = configurationModels.ConfigurationModel;
+const ConfigurationRegistry = registry_mod.ConfigurationRegistry;
+const WorkspaceContextService = workspace_context.WorkspaceContextService;
+const Emitter = event.Emitter;
+
+pub const max_settings_file_size: usize = 10 * 1024 * 1024;
+
+pub const Value = configuration.Value;
+pub const Overrides = configuration.Overrides;
+pub const Change = configuration.Change;
+
+pub const Options = struct {
+    /// Absolute path to the user settings file. When null only defaults and
+    /// workspace/folder settings are read.
+    user_settings_path: ?[]const u8 = null,
+};
+
+pub const ConfigurationService = struct {
+    allocator: Allocator,
+    io: Io,
+    workspace: *WorkspaceContextService,
+    user_settings_path: ?[]u8,
+
+    registry: *ConfigurationRegistry,
+    defaults: ConfigurationModel,
+    user: ConfigurationModel,
+    workspace_model: ConfigurationModel,
+    folders: std.StringHashMap(*ConfigurationModel),
+    workspace_consolidated: ConfigurationModel,
+    folder_consolidated: std.StringHashMap(*ConfigurationModel),
+
+    change_emitter: Emitter(configuration.Change),
+
+    pub fn init(
+        allocator: Allocator,
+        io: Io,
+        workspace: *WorkspaceContextService,
+        options: Options,
+    ) !*ConfigurationService {
+        const self = try allocator.create(ConfigurationService);
+        errdefer allocator.destroy(self);
+
+        const registry = try ConfigurationRegistry.init(allocator);
+        errdefer registry.deinit();
+        try registry.registerDefaultsJson(registry_mod.tui_defaults_json);
+
+        const user_settings_path = if (options.user_settings_path) |path|
+            try allocator.dupe(u8, path)
+        else
+            null;
+        errdefer if (user_settings_path) |path| allocator.free(path);
+
+        self.* = .{
+            .allocator = allocator,
+            .io = io,
+            .workspace = workspace,
+            .user_settings_path = user_settings_path,
+            .registry = registry,
+            .defaults = try ConfigurationModel.initEmpty(allocator),
+            .user = try ConfigurationModel.initEmpty(allocator),
+            .workspace_model = try ConfigurationModel.initEmpty(allocator),
+            .folders = std.StringHashMap(*ConfigurationModel).init(allocator),
+            .workspace_consolidated = try ConfigurationModel.initEmpty(allocator),
+            .folder_consolidated = std.StringHashMap(*ConfigurationModel).init(allocator),
+            .change_emitter = Emitter(configuration.Change).init(allocator),
+        };
+        errdefer self.deinit();
+
+        try self.load();
+        return self;
+    }
+
+    pub fn deinit(self: *ConfigurationService) void {
+        self.change_emitter.deinit();
+        deinitFolderModels(self.allocator, &self.folder_consolidated);
+        deinitFolderModels(self.allocator, &self.folders);
+        self.workspace_consolidated.deinit();
+        self.workspace_model.deinit();
+        self.user.deinit();
+        self.defaults.deinit();
+        self.registry.deinit();
+        if (self.user_settings_path) |path| self.allocator.free(path);
+        self.allocator.destroy(self);
+    }
+
+    /// Reloads every settings file and emits `onDidChangeConfiguration`.
+    /// The terminal has no file watcher, so the host calls this explicitly.
+    pub fn reload(self: *ConfigurationService) !void {
+        try self.load();
+    }
+
+    pub fn onDidChangeConfiguration(
+        self: *ConfigurationService,
+        ctx: anytype,
+        callback: fn (change: configuration.Change, ctx: @TypeOf(ctx)) anyerror!void,
+    ) !void {
+        _ = try self.change_emitter.listen(ctx, callback);
+    }
+
+    /// Reads all scopes into temporary models first, so a failed read leaves
+    /// the previously loaded configuration intact.
+    fn load(self: *ConfigurationService) !void {
+        var new_defaults = try self.registry.buildDefaultModel(self.allocator);
+        errdefer new_defaults.deinit();
+        var new_user = try self.readModel(self.user_settings_path);
+        errdefer new_user.deinit();
+        var new_workspace = try self.readWorkspaceModel();
+        errdefer new_workspace.deinit();
+
+        var new_folders = std.StringHashMap(*ConfigurationModel).init(self.allocator);
+        errdefer deinitFolderModels(self.allocator, &new_folders);
+        for (self.workspace.getWorkspace().folders.items) |folder| {
+            const model = try self.allocator.create(ConfigurationModel);
+            errdefer self.allocator.destroy(model);
+            model.* = try self.readFolderModel(folder.resource);
+            errdefer model.deinit();
+            try new_folders.put(folder.resource, model);
+        }
+
+        var new_workspace_consolidated = try mergeModels(
+            self.allocator,
+            &.{ &new_defaults, &new_user, &new_workspace },
+        );
+        errdefer new_workspace_consolidated.deinit();
+
+        var new_folder_consolidated = std.StringHashMap(*ConfigurationModel).init(self.allocator);
+        errdefer deinitFolderModels(self.allocator, &new_folder_consolidated);
+        var folder_iterator = new_folders.iterator();
+        while (folder_iterator.next()) |entry| {
+            const consolidated = try self.allocator.create(ConfigurationModel);
+            errdefer self.allocator.destroy(consolidated);
+            consolidated.* = try mergeModels(
+                self.allocator,
+                &.{ &new_defaults, &new_user, &new_workspace, entry.value_ptr.* },
+            );
+            errdefer consolidated.deinit();
+            try new_folder_consolidated.put(entry.key_ptr.*, consolidated);
+        }
+
+        // Commit. No fallible operations follow, so the errdefers above do not
+        // run after the old models are released.
+        self.defaults.deinit();
+        self.defaults = new_defaults;
+        self.user.deinit();
+        self.user = new_user;
+        self.workspace_model.deinit();
+        self.workspace_model = new_workspace;
+
+        deinitFolderModels(self.allocator, &self.folders);
+        self.folders = new_folders;
+        deinitFolderModels(self.allocator, &self.folder_consolidated);
+        self.folder_consolidated = new_folder_consolidated;
+        self.workspace_consolidated.deinit();
+        self.workspace_consolidated = new_workspace_consolidated;
+
+        self.fireChangeEvent();
+    }
+
+    /// Returns the effective value for `section`, or a folder-specific value
+    /// when `overrides.resource` names a workspace folder. The pointer is owned
+    /// by the service and stays valid until the next reload.
+    pub fn getValue(
+        self: *const ConfigurationService,
+        section: []const u8,
+        overrides: configuration.Overrides,
+    ) ?*const Value {
+        const model = self.effectiveModel(overrides) orelse return null;
+        return model.getValue(section);
+    }
+
+    /// Convenience for boolean settings such as `explorer.excludeGitIgnore`.
+    pub fn getBool(self: *const ConfigurationService, section: []const u8, default: bool) bool {
+        const value = self.getValue(section, .{}) orelse return default;
+        return switch (value.*) {
+            .bool => |inner| inner,
+            else => default,
+        };
+    }
+
+    pub fn inspect(
+        self: *const ConfigurationService,
+        section: []const u8,
+        overrides: configuration.Overrides,
+    ) configuration.ConfigurationValue {
+        const folder_model = self.folderModel(overrides.resource);
+        const effective = self.effectiveModel(overrides) orelse &self.workspace_consolidated;
+        return .{
+            .default = self.defaults.getValue(section),
+            .user = self.user.getValue(section),
+            .workspace = self.workspace_model.getValue(section),
+            .workspace_folder = if (folder_model) |model| model.getValue(section) else null,
+            .value = effective.getValue(section),
+        };
+    }
+
+    pub fn keys(self: *const ConfigurationService) configuration.Keys {
+        return .{
+            .default = self.defaults.getKeys(),
+            .user = self.user.getKeys(),
+            .workspace = self.workspace_model.getKeys(),
+            .workspace_folder = &.{},
+        };
+    }
+
+    fn effectiveModel(self: *const ConfigurationService, overrides: configuration.Overrides) ?*const ConfigurationModel {
+        if (self.folderConsolidated(overrides.resource)) |model| return model;
+        return &self.workspace_consolidated;
+    }
+
+    fn folderModel(self: *const ConfigurationService, resource: ?[]const u8) ?*const ConfigurationModel {
+        const path = resource orelse return null;
+        const folder = self.workspace.getWorkspaceFolder(path) orelse return null;
+        return self.folders.get(folder.resource);
+    }
+
+    fn folderConsolidated(self: *const ConfigurationService, resource: ?[]const u8) ?*const ConfigurationModel {
+        const path = resource orelse return null;
+        const folder = self.workspace.getWorkspaceFolder(path) orelse return null;
+        return self.folder_consolidated.get(folder.resource);
+    }
+
+    fn readModel(self: *ConfigurationService, path: ?[]const u8) !ConfigurationModel {
+        const value = path orelse return ConfigurationModel.initEmpty(self.allocator);
+        const text = (try self.readSettingsFile(value)) orelse return ConfigurationModel.initEmpty(self.allocator);
+        defer self.allocator.free(text);
+        return ConfigurationModel.fromJson(self.allocator, text);
+    }
+
+    fn readWorkspaceModel(self: *ConfigurationService) !ConfigurationModel {
+        const path = self.workspace.getWorkspace().configuration orelse
+            return ConfigurationModel.initEmpty(self.allocator);
+        const text = (try self.readSettingsFile(path)) orelse
+            return ConfigurationModel.initEmpty(self.allocator);
+        defer self.allocator.free(text);
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const sanitized = try configurationModels.stripJsonc(arena.allocator(), text);
+        const raw = std.json.parseFromSliceLeaky(Value, arena.allocator(), sanitized, .{
+            .duplicate_field_behavior = .use_last,
+        }) catch return ConfigurationModel.initEmpty(self.allocator);
+        if (raw != .object) return ConfigurationModel.initEmpty(self.allocator);
+        const settings = raw.object.get("settings") orelse
+            return ConfigurationModel.initEmpty(self.allocator);
+        return ConfigurationModel.fromValue(self.allocator, settings);
+    }
+
+    fn readFolderModel(self: *ConfigurationService, folder: []const u8) !ConfigurationModel {
+        const path = try std.fs.path.join(self.allocator, &.{ folder, ".vscode", "settings.json" });
+        defer self.allocator.free(path);
+        const text = (try self.readSettingsFile(path)) orelse
+            return ConfigurationModel.initEmpty(self.allocator);
+        defer self.allocator.free(text);
+        return ConfigurationModel.fromJson(self.allocator, text);
+    }
+
+    fn readSettingsFile(self: *ConfigurationService, path: []const u8) !?[]u8 {
+        return Io.Dir.cwd().readFileAlloc(
+            self.io,
+            path,
+            self.allocator,
+            .limited(max_settings_file_size),
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+    }
+
+    fn fireChangeEvent(self: *ConfigurationService) void {
+        var affected_keys = std.array_list.Managed([]const u8).init(self.allocator);
+        defer affected_keys.deinit();
+
+        for (self.defaults.getKeys()) |key| appendUnique(&affected_keys, key) catch return;
+        for (self.user.getKeys()) |key| appendUnique(&affected_keys, key) catch return;
+        for (self.workspace_model.getKeys()) |key| appendUnique(&affected_keys, key) catch return;
+        var iterator = self.folders.valueIterator();
+        while (iterator.next()) |model| {
+            for (model.*.getKeys()) |key| appendUnique(&affected_keys, key) catch return;
+        }
+
+        self.change_emitter.fire(.{
+            .source = .USER,
+            .keys = affected_keys.items,
+        }) catch {};
+    }
+};
+
+fn appendUnique(list: *std.array_list.Managed([]const u8), key: []const u8) !void {
+    for (list.items) |existing| {
+        if (std.mem.eql(u8, existing, key)) return;
+    }
+    try list.append(key);
+}
+
+fn mergeModels(
+    allocator: Allocator,
+    models: []const *const ConfigurationModel,
+) !ConfigurationModel {
+    return ConfigurationModel.merge(allocator, models);
+}
+
+fn deinitFolderModels(
+    allocator: Allocator,
+    map: *std.StringHashMap(*ConfigurationModel),
+) void {
+    var iterator = map.valueIterator();
+    while (iterator.next()) |model| {
+        model.*.deinit();
+        allocator.destroy(model.*);
+    }
+    map.deinit();
+}

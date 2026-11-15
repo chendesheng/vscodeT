@@ -902,7 +902,15 @@ Library constraints:
   resolution, directories-first ordering, expand/collapse, selection and
   scroll. A single-folder workspace uses the folder as the tree input, so its
   children are top-level rows; multi-root workspaces show roots and expand the
-  first five by default. The workbench reserves a fixed left activity column
+  first five by default. Directory resolution drops entries excluded by
+  `.gitignore`/`.ignore` through the ported `IgnoreFile`, including nested
+  files and `!` negations; ignore files themselves stay visible.
+  `files.exclude` is applied per root (including VS Code's default VCS/OS
+  metadata patterns), and `explorer.excludeGitIgnore` controls the ignore-file
+  filtering. The TUI default for that setting is on rather than upstream's off,
+  because the Explorer hid ignored entries before the configuration service
+  existed; a workspace setting can disable it.
+  The workbench reserves a fixed left activity column
   and sidebar column and offsets the editor split root; a click or Enter on a
   file calls `Workbench.openPath`. Directory resolution is synchronous and
   only the visible rows are painted; the async data tree/loading placeholders
@@ -927,8 +935,30 @@ Library constraints:
   `rangeHighlight` model decoration through `View.setSearchHighlights`.
   Remaining gaps are the browser tree's compression/virtualization,
   multi-selection, drag/drop, context menus, AI/notebook/search-editor results,
-  `search.exclude`/`files.exclude` configuration, replace preview and Settings
-  view.
+  `search.exclude` configuration, replace preview and Settings view.
+- Configuration lives in
+  `src/vs/workbench/services/configuration/browser/configurationService.zig`,
+  over the platform `configuration.zig`, `configurationModels.zig` and
+  `configurationRegistry.zig` ports. It reads defaults, a user settings file,
+  the workspace file's `settings` object and each folder's
+  `.vscode/settings.json`, with folder > workspace > user > defaults precedence.
+  Settings JSON accepts comments and trailing commas. The service exposes
+  `getValue`, `inspect`, `keys`, `reload` and a change emitter.
+  Not ported in this configuration-service port:
+  - file watching and automatic reload; the terminal has no file-watcher or
+    file-service layer, so the host must call `reload`;
+  - `updateValue` and settings editing; these need the JSONC-preserving
+    configuration-editing service, which is not ported;
+  - language override blocks (`[typescript]`); `ConfigurationModel` keeps the
+    blocks but does not resolve override identifiers;
+  - policy, application, remote and profile scopes; the corresponding
+    services do not exist in the terminal workbench;
+  - trusted-workspace filtering and restricted settings; there is no
+    workspace-trust service;
+  - `files.exclude` `when` clauses and exception-leading folders; `glob.zig`
+    does not port upstream's sibling clauses or exception traversal metadata;
+  - the browser Settings editor/view; the activity-bar Settings container
+    remains a placeholder.
 
 ## 9. POC acceptance
 
