@@ -417,7 +417,7 @@ One `CellGrid` per frame, as parallel typed arrays:
 | `fg` | `u32` | packed RGB; `0` = terminal default |
 | `bg` | `u32` | packed RGB; `0` = terminal default |
 | `attrs` | `u16` | bold, dim, italic, underline/double, strikethrough, overline, inverse, blink, plus glyph width |
-| `border` | `u32` | optional box-drawing edge encoding; empty for the editor POC |
+| `border` | `u16` | interned cell-border set id; `0` = none. The id points into a table shared by the frame's two grids. |
 
 - Wide glyphs set their width and leave the continuation cell `cluster = 0`.
 - Grapheme interning keeps a cell 32 bits even for multi-codepoint clusters.
@@ -471,6 +471,10 @@ The encoder follows TermDOM's `generateANSI`:
   individually.
 - Emit a style reset plus the needed SGR attributes when the style changes
   (the escape cache and truly minimal diffs are a later optimization).
+- Before a cell whose border set changed, emit the cell-border pen: clear the
+  old segments and set the new groups. SGR 0 clears the pen, so a style reset
+  re-emits it; every changed row starts with SGR 0 before `EL`, which makes the
+  erase clear the row's borders.
 - Reset style at the end of a row that used any.
 - The first time a row has content, emit `\r` + erase-to-line-end (`EL`) before
   painting, so a shortened line does not leave a stale tail.
@@ -504,10 +508,69 @@ supported) and secondary cursors should be cell runs; this keeps IME viable.
 
 The host passes `measure_width: fn (u21) u2` so the renderer agrees with the
 editor's `CursorColumns.nextVisibleColumn` for CJK and emoji. Color depth and
-synchronized-output support are `Surface` options; probing the terminal (mode
-2027, DECRQSS, cell pixel size) is a later addition. The POC assumes truecolor
-and a terminal that accepts synchronized output (both are ignored safely if
-not).
+synchronized-output support are `Surface` options. Cell-border support is the
+one probed capability: `src/tui/cellBorders.zig` sends the DCS query followed
+by DA1 and returns the answer, and the host calls `Surface.setCellBorders`.
+Mode 2027, DECRQSS and cell pixel size remain later additions. The POC assumes
+truecolor and a terminal that accepts synchronized output (both are ignored
+safely if not).
+
+### 6.8 Cell borders
+
+The renderer implements the draft cell-border protocol
+(`DCS 1 + b cell-border`, version 1) behind a capability probe. On the wire the
+`b` final byte is followed immediately by the payload: `ESC P 1 + b` then
+`cell-border;...`, with no separator space. The model is in
+`ui/cell_border.zig`: twelve segment bits, a stroke (width in 1/256 cell,
+colour, placement, layer, line style, priority), disjoint segment groups, and
+an interned set table. `ui/cell.zig` adds a parallel `u16` id plane to
+`CellGrid`; `Frame` owns one table shared by both buffers so ids compare across
+the diff.
+
+When support is present, box derivation copies the requested border widths to
+`LayoutBox.cell_border` and zeroes `style.border`. Layout therefore does not
+reserve cells, and the painter puts centred strokes on the box's outer-edge
+cells instead of writing `┌ ─ ┐` glyphs. Two adjacent boxes set their own side
+of a shared edge; the terminal merges the centred strokes. Paint order still
+decides which box owns a cell's glyph and background, but border segments from
+different boxes combine in the cell's set. Text and background writes preserve
+the border attribute (the terminal semantics), so an overlay that covers a
+bordered cell calls `CellGrid.clearBordersRect` for its rectangle; the quick
+pick does this over split dividers.
+
+Without support, nothing changes: border widths take part in layout, `drawBorder`
+writes single-line box-drawing glyphs into the reserved cells, and the border
+plane stays empty. This is still the default, so a terminal or multiplexer that
+discards the query keeps the old rendering. Widgets that size themselves with
+`border_width * 2` (the hover and suggest content widgets) have not opted into
+the cell-border path yet; the workbench does.
+
+The workbench uses the article's pane chrome. Each editor pane's border box
+(tab row plus editor content) gets a full outline on its own cells, so no gutter
+is reserved; adjacent panes set opposite cells of the shared boundary and the
+terminal merges them. The active pane's stroke carries `priority=1` and the
+focus colour, so a supporting terminal preserves its whole outline on shared
+edges no matter which neighbour was painted first; with priority unsupported it
+falls back to the protocol's width/position tie-break. The pane divider is also
+the sash hit zone: a left-button drag updates the split ratio (clamped to a
+10-column/3-row minimum), and closing the last tab in a pane removes the group
+from the split tree and promotes its sibling, mirroring Grid branch demotion.
+Dragging a tab moves it between groups: dropping in a pane's middle moves it
+there, and dropping on an edge splits that pane in that direction and moves the
+tab into the new group. While dragging, the target pane gets a bright outline
+(with cell borders; the glyph fallback has no drag indicator).
+The full N-ary `Grid` branch model is not ported; the terminal keeps a binary
+oriented split tree, which represents the same guillotine tilings.
+
+Limitations of the current wire encoder: it emits solid strokes only, with
+square joints, `placement=1` and `layer=0`. `Set` carries joint flags and the
+wire encoder carries the line-style and priority fields, but the painter never
+sets joints and rounded joints, the `outside` fill, double/dashed/dotted
+strokes and shared-edge `priority` are not emitted yet.
+Between cells the encoder clears only the segments whose stroke disappears and
+then sets the changed groups, so moving along a rectangle edge emits one small
+command per cell rather than a full set. Joints are always square, so no joint
+state needs clearing.
 
 ## 7. Library API (POC slice)
 
@@ -987,8 +1050,10 @@ Library constraints:
 - The in-place-replace decoration is rendered as an underline in the
   bracket-match color; terminal cells cannot draw the browser's 2 px outline.
 - No margin collapsing, right/bottom anchoring, auto margins on absolute boxes,
-  multi-cell/rounded border styles, background-clip or z-index paint ordering
-  yet. Borders are repeated single-line box-drawing glyphs.
+  background-clip or z-index paint ordering yet. Without cell-border support,
+  borders are repeated single-line box-drawing glyphs; with support they are
+  solid centred strokes (rounded joints, double/dashed/dotted styles and the
+  outside fill are not painted yet).
 - Flex is in, but without `min-width`/`min-height`/`max-width`/`max-height`, an
   automatic min-content floor, percentage gaps or `justify-content: stretch`.
   Baseline alignment is approximated by the first text row and falls back to

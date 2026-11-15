@@ -3,10 +3,12 @@
 //! The process follows TermDOM's `generateANSI`: walk the diff row-major, move
 //! the cursor only forward, erase a changed row before repainting it, and emit
 //! only the cells that are not empty. A row that did not change is skipped
-//! entirely, so an idle frame writes nothing.
+//! entirely, so an idle frame writes nothing. A cell-border set on a cell is
+//! emitted as the terminal's border pen around that cell's glyph.
 
 const std = @import("std");
 const cell = @import("cell.zig");
+const cell_border = @import("cell_border.zig");
 
 const CellGrid = cell.CellGrid;
 const ColorDepth = cell.ColorDepth;
@@ -82,7 +84,7 @@ fn encodeRow(
     var col = grid.cols;
     while (col > 0) {
         col -= 1;
-        if (grid.cluster[start + col] != 0) {
+        if (grid.cluster[start + col] != 0 or grid.border[start + col] != 0) {
             last = col;
             has_last = true;
             break;
@@ -92,6 +94,7 @@ fn encodeRow(
 
     var current = PaintStyle{};
     var any_style = false;
+    var current_pen: u16 = 0;
     col = 0;
     while (col <= last) : (col += 1) {
         const index = start + col;
@@ -100,15 +103,20 @@ fn encodeRow(
 
         if (cluster == 0) {
             // Continuation of the wide glyph on the previous column: the glyph
-            // already advanced the cursor over this cell.
+            // already advanced the cursor over this cell. A border that differs
+            // on the continuation cell cannot be applied without reprinting the
+            // glyph, so it is dropped here.
             if (width == 0 and col > 0 and grid.widthAt(col - 1, row) == 2) continue;
-            // An empty gap inside the painted run: keep the cursor aligned.
-            try emitStyle(allocator, out, &current, &any_style, grid, index, depth);
+            // An empty gap inside the painted run, or a border-only cell. The
+            // space carries the border pen onto the cell.
+            try emitStyle(allocator, out, &current, &any_style, grid, index, depth, &current_pen);
+            try emitBorderPen(allocator, out, grid, index, &current_pen);
             try out.append(allocator, ' ');
             continue;
         }
 
-        try emitStyle(allocator, out, &current, &any_style, grid, index, depth);
+        try emitStyle(allocator, out, &current, &any_style, grid, index, depth, &current_pen);
+        try emitBorderPen(allocator, out, grid, index, &current_pen);
         if (cluster >= 0x20 and cluster <= 0x7e) {
             try out.append(allocator, @intCast(cluster));
         } else {
@@ -121,7 +129,26 @@ fn encodeRow(
         }
     }
 
-    if (any_style) try out.appendSlice(allocator, "\x1b[0m");
+    if (any_style or current_pen != 0) try out.appendSlice(allocator, "\x1b[0m");
+}
+
+/// Emits the border pen for a cell when it differs from the current pen. A pen
+/// is a rendition state like SGR: every cell written while it is set takes it,
+/// and SGR 0 clears it. Only segments whose stroke changes or disappears are
+/// touched, per the protocol's application guidance.
+fn emitBorderPen(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    grid: *const CellGrid,
+    index: usize,
+    current_pen: *u16,
+) !void {
+    const wanted = grid.border[index];
+    if (wanted == current_pen.*) return;
+    const before = if (current_pen.* == 0) cell_border.Set.empty() else grid.borders.get(current_pen.*).*;
+    const after = if (wanted == 0) cell_border.Set.empty() else grid.borders.get(wanted).*;
+    try cell_border.appendPenDiff(out, allocator, before, after);
+    current_pen.* = wanted;
 }
 
 fn emitStyle(
@@ -132,6 +159,7 @@ fn emitStyle(
     grid: *const CellGrid,
     index: usize,
     depth: ColorDepth,
+    current_pen: *u16,
 ) !void {
     const wanted = PaintStyle{
         .fg = grid.fg[index],
@@ -141,6 +169,7 @@ fn emitStyle(
     if (current.eql(wanted) and (any_style.* or PaintStyle.eql(wanted, .{}))) return;
 
     try out.appendSlice(allocator, "\x1b[0m");
+    current_pen.* = 0;
     if (wanted.fg != 0) try writeColor(allocator, out, wanted.fg, true, depth);
     if (wanted.bg != 0) try writeColor(allocator, out, wanted.bg, false, depth);
 
@@ -279,6 +308,44 @@ test "ansi: a vanished cell erases its row" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[1;1H") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[K") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "x") == null);
+}
+
+test "ansi: cell borders ride the pen on changed cells" {
+    const allocator = std.testing.allocator;
+    var next = try CellGrid.init(allocator, 3, 1);
+    defer next.deinit();
+
+    const blue = cell_border.Stroke{ .width = 64, .color = .{ .rgb = .{ .r = 0x7a, .g = 0xa2, .b = 0xf7 } } };
+    next.addBorder(0, 0, cell_border.Segment.top, blue);
+    next.putCodepoint(1, 0, 'x', 1, .{ .fg = cell.packColor(.{ .r = 255, .g = 255, .b = 255 }) });
+    next.addBorder(2, 0, cell_border.Segment.left, blue);
+
+    const out = try encode(allocator, null, &next, .{ .synchronized = false });
+    defer allocator.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1bP1+bcell-border;pen;3;64;7aa2f7;1;0\x1b\\") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[1;1H") != null);
+    // The border-only cells are written as spaces carrying the pen.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b\\ ") != null);
+    try std.testing.expect(std.mem.endsWith(u8, out, "\x1b[0m"));
+}
+
+test "ansi: a border change repaints an otherwise identical row" {
+    const allocator = std.testing.allocator;
+    var prev = try CellGrid.init(allocator, 2, 1);
+    defer prev.deinit();
+    var next = try CellGrid.init(allocator, 2, 1);
+    defer next.deinit();
+
+    prev.putCodepoint(0, 0, 'x', 1, .{});
+    next.putCodepoint(0, 0, 'x', 1, .{});
+    prev.addBorder(0, 0, cell_border.Segment.top, .{ .color = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } });
+    next.addBorder(0, 0, cell_border.Segment.top, .{ .color = .{ .rgb = .{ .r = 4, .g = 5, .b = 6 } } });
+
+    const out = try encode(allocator, &prev, &next, .{ .synchronized = false });
+    defer allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "040506") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "x") != null);
 }
 
 test "ansi: synchronized output wraps only non-empty frames" {

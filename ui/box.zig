@@ -65,6 +65,11 @@ pub const LayoutBox = struct {
     rect: style_mod.Rect = .{},
     /// Border box inset by the border widths.
     padding_rect: style_mod.Rect = .{},
+    /// Border widths to paint when the terminal supports cell borders. In that
+    /// mode `style.border` is zeroed during box derivation, so the border does
+    /// not consume layout cells; this copy keeps the requested edges and
+    /// widths for the painter.
+    cell_border: style_mod.Edges = .{},
     /// Padding box inset by the padding: the content box.
     content_rect: style_mod.Rect = .{},
     /// Text content for a `.text` box.
@@ -105,6 +110,10 @@ pub const BoxTree = struct {
     /// The rebuilt boxes need the layout solved. Per-box `needs_layout` records
     /// which subtrees are dirty; the current pass still solves all.
     needs_layout: bool = true,
+    /// The terminal implements the cell-border protocol. Borders paint as cell
+    /// attributes on the box edge and do not reserve cells, so `width`,
+    /// `height`, padding and content geometry ignore the border widths.
+    cell_borders: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) !BoxTree {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -177,6 +186,7 @@ pub const BoxTree = struct {
             .arena = std.heap.ArenaAllocator.init(self.allocator),
             .scratch = std.heap.ArenaAllocator.init(self.allocator),
             .root = undefined,
+            .cell_borders = self.cell_borders,
         };
         errdefer {
             next.scratch.deinit();
@@ -318,6 +328,12 @@ fn createElementBox(
         .text_style = style_mod.TextStyle.resolve(parent.text_style, element.style),
         .parent = parent,
     };
+    if (tree.cell_borders) {
+        // Keep the requested border for paint, but take it out of the box model
+        // so the border line sits on the box edge without reserving a cell.
+        box.cell_border = style_mod.borderWidths(element.style);
+        box.style.border = .{};
+    }
     try tree.node_boxes.put(allocator, node, box);
     return box;
 }

@@ -97,6 +97,15 @@ pub const QuickPickWidget = struct {
         const layout = self.computeLayout(picker, grid.cols, grid.rows);
         if (layout.width == 0 or layout.height == 0) return layout;
 
+        // The picker is an overlay: it must not inherit a split divider's cell
+        // border on cells it covers.
+        grid.clearBordersRect(
+            @floatFromInt(layout.x),
+            @floatFromInt(layout.y),
+            @floatFromInt(layout.width),
+            @floatFromInt(layout.height),
+        );
+
         self.syncInput(picker);
         try self.renderInput(grid, layout);
         self.renderList(picker, grid, layout);

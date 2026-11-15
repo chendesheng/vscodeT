@@ -7,6 +7,7 @@
 pub const ansi = @import("ansi.zig");
 pub const box = @import("box.zig");
 pub const cell = @import("cell.zig");
+pub const cell_border = @import("cell_border.zig");
 pub const dom = @import("dom.zig");
 pub const event = @import("event.zig");
 pub const frame = @import("frame.zig");

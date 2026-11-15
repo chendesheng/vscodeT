@@ -5,20 +5,29 @@
 //! rows instead of repainting them.
 
 const std = @import("std");
+const cell_border = @import("cell_border.zig");
 const CellGrid = @import("cell.zig").CellGrid;
 
 pub const Frame = struct {
     allocator: std.mem.Allocator,
+    /// One table for both buffers: a border id means the same set in `prev`
+    /// and `next`, so the frame diff can compare ids directly.
+    borders: *cell_border.Table,
     prev: CellGrid,
     next: CellGrid,
     have_prev: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, cols: usize, rows: usize) !Frame {
-        var prev = try CellGrid.init(allocator, cols, rows);
+        const borders = try allocator.create(cell_border.Table);
+        borders.* = .{};
+        errdefer allocator.destroy(borders);
+
+        var prev = try CellGrid.initWithTable(allocator, cols, rows, borders);
         errdefer prev.deinit();
-        const next = try CellGrid.init(allocator, cols, rows);
+        const next = try CellGrid.initWithTable(allocator, cols, rows, borders);
         return .{
             .allocator = allocator,
+            .borders = borders,
             .prev = prev,
             .next = next,
         };
@@ -27,6 +36,7 @@ pub const Frame = struct {
     pub fn deinit(self: *Frame) void {
         self.prev.deinit();
         self.next.deinit();
+        self.allocator.destroy(self.borders);
     }
 
     pub fn begin(self: *Frame) void {

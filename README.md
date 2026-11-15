@@ -43,13 +43,18 @@ Notes for the Zig 0.17 port:
 
 - `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with direct
   styles (no CSS), a derived layout box tree (viewport, principal, anonymous and
-  text boxes), whole-cell layout with margin/padding/border boxes and
-  box-drawing borders, block/inline/flex formatting contexts, CSS white-space
+  text boxes), whole-cell layout with margin/padding/border boxes and borders
+  that paint as cell-edge attributes under the draft cell-border protocol (with
+  box-drawing fallback), block/inline/flex formatting contexts, CSS white-space
   and UAX #14 text wrapping, and a double-buffered cell renderer that emits only
   an ANSI frame diff. Flex supports direction, wrap, grow/shrink/basis,
   justify/align, gap, order, auto margins and content-derived auto sizes. Text
-  fragments and inline-element fragments paint per line. It does not import
-  editor code.
+  fragments and inline-element fragments paint per line. On startup the TUI
+  probes the draft cell-border protocol; when the terminal supports it, every
+  editor pane is outlined on its own cell edges (active pane on top by
+  priority), adjacent outlines merge, and panes are resized by dragging the
+  sash between them. Without support the glyph fallback keeps the gutter and
+  box-drawing dividers. It does not import editor code.
 - Multi-file editing uses the ported workbench editor-group model
   (`src/vs/workbench/common/editor/editorGroupModel.zig`) with a terminal tab
   strip (`src/tui/tabBar.zig`, `src/tui/workbench.zig`). Each tab keeps its own
@@ -58,8 +63,10 @@ Notes for the Zig 0.17 port:
   decorations. `Ctrl-W` closes the active tab (a dirty tab asks
   for a second `Ctrl-W`), `Ctrl-PgUp`/`Ctrl-PgDn` switch tabs, `Alt-1..9`
   activates a tab by position, `Ctrl-S` saves and `Ctrl-Q` quits (a second
-  `Ctrl-Q` is required while any tab is dirty). `--preview` remains a
-  single-file mode.
+  `Ctrl-Q` is required while any tab is dirty). Empty groups collapse out of
+  the split tree when their last tab closes, the divider between panes is a
+  draggable sash, and dragging a tab into another pane (or onto its edge)
+  retiles the editor part. `--preview` remains a single-file mode.
 - A terminal Explorer sidebar (`src/tui/sidebar.zig`) sits left of the editor
   area over the ported `ExplorerModel`
   (`src/vs/workbench/contrib/files/common/explorerModel.zig`). It lists the
@@ -388,8 +395,8 @@ Editor contributions:
   marker/glyph/color-picker/inlay-hint hover participants (no marker service,
   glyph margin, color picker or inlay hints), hover verbosity actions (no
   command/keybinding service), the copy button (no clipboard plumbing),
-  accessible hover views (no screen-reader/accessible-view service), sash
-  resizing and horizontal scrolling, status-bar actions (the bar renders
+  accessible hover views (no screen-reader/accessible-view service),
+  horizontal scrolling, status-bar actions (the bar renders
   labels but no participant adds one), and a keyboard "show hover" command (no
   keybinding registry). Hover over the empty area *after* a line needs
   sub-cell horizontal distances, so only a zero-cell distance (the first cell
@@ -478,12 +485,15 @@ Editor contributions:
   `src/vs/workbench/services/editor/common/editorGroupsService.zig` provides
   group creation/removal, active-group MRU ordering, typed `openEditor`
   resolution with `revealIfOpen`/`revealIfVisible`/`ForceReveal`/`Singleton`,
-  and multi-group serialization. `src/tui/workbench.zig` renders a binary split
-  tree with a tab row per group and composites every pane into one frame;
-  `Alt-\` splits horizontally, `Alt-Shift-\` vertically, `Ctrl-Alt-Left` /
-  `Ctrl-Alt-Right` switch groups, and clicking a group activates it. A split
-  moves the active tab into the new group (independent view state for one
-  shared model still needs the model/view split).
+  and multi-group serialization. `src/tui/workbench.zig` renders an oriented
+  split tree (a terminal adaptation of VS Code's `Grid`) with a tab row per
+  group and composites every pane into one frame. With cell borders each pane
+  is outlined and the active pane's outline wins shared edges; the divider is
+  a draggable sash, and a tab can be dragged into another pane or onto an edge
+  to tile a new group. `Alt-\` splits horizontally, `Alt-Shift-\` vertically,
+  `Ctrl-Alt-Left` / `Ctrl-Alt-Right` switch groups, and clicking a group
+  activates it. A split moves the active tab into the new group (independent
+  view state for one shared model still needs the model/view split).
 - Serialization/restore is ported at the model and TUI boundaries:
   `src/vs/workbench/common/editor/editorFactory.zig` holds the editor
   serializer registry, `EditorGroupModel.serialize`/`deserialize` rebuilds the
@@ -493,7 +503,8 @@ Editor contributions:
   missing file falls back to the given paths. Split positions are restored as
   equal horizontal splits. Dirty working copies are not persisted because the
   working-copy backup service is not ported. Side-by-side/diff inputs, settings
-  editors and tab drag-and-drop are still not ported. Quick open searches
+  editors are still not ported; tab drag-and-drop moves tabs between groups
+  but does not reorder them within one strip. Quick open searches
   workspace files and the TUI command table; extension-contributed commands and
   files outside the workspace are not reachable through it yet.
 - Known limitations: `MoveLinesCommand` does not yet implement VS Code's

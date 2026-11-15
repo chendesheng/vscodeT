@@ -3,10 +3,13 @@
 //! There is no cascade and no CSS: each box carries the `Style` it was built
 //! with, and anonymous boxes carry the inherited style of their container.
 //! Text boxes own the text runs; element boxes own backgrounds and clipping.
+//! Borders paint as single-line box-drawing glyphs, or as cell-border protocol
+//! attributes on the box edge when the terminal supports them.
 
 const std = @import("std");
 const box = @import("box.zig");
 const cell = @import("cell.zig");
+const cell_border = @import("cell_border.zig");
 const dom = @import("dom.zig");
 const layout = @import("layout.zig");
 const style_mod = @import("style.zig");
@@ -33,7 +36,7 @@ pub fn paintTree(tree: *const box.BoxTree, doc: *const dom.Document, grid: *Cell
         .w = @floatFromInt(doc.cols),
         .h = @floatFromInt(doc.rows),
     };
-    paintBox(doc, tree.root, grid, .{}, viewport);
+    paintBox(doc, tree.root, grid, .{}, viewport, tree.cell_borders);
 }
 
 fn paintBox(
@@ -42,6 +45,7 @@ fn paintBox(
     grid: *CellGrid,
     inherited: PaintStyle,
     clip: Rect,
+    cell_borders: bool,
 ) void {
     if (clip.isEmpty()) return;
 
@@ -81,7 +85,11 @@ fn paintBox(
                         const fill = Rect.intersect(fragment_rect, clip);
                         grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
                     }
-                    drawBorder(grid, fragment_rect, border, style.border_color, own, clip);
+                    if (cell_borders) {
+                        drawCellBorder(grid, fragment_rect, current.cell_border, style.border_style, style.border_color, own, clip);
+                    } else {
+                        drawBorder(grid, fragment_rect, border, style.border_color, own, clip);
+                    }
                 }
             } else {
                 if (style.background != null or style.reverse) {
@@ -91,7 +99,11 @@ fn paintBox(
                     const fill = Rect.intersect(rect, clip);
                     grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
                 }
-                drawBorder(grid, rect, border, style.border_color, own, clip);
+                if (cell_borders) {
+                    drawCellBorder(grid, rect, current.cell_border, style.border_style, style.border_color, own, clip);
+                } else {
+                    drawBorder(grid, rect, border, style.border_color, own, clip);
+                }
             }
 
             const child_clip = switch (style.overflow) {
@@ -100,7 +112,7 @@ fn paintBox(
             };
 
             for (current.children.items) |child| {
-                paintBox(doc, child, grid, own, child_clip);
+                paintBox(doc, child, grid, own, child_clip, cell_borders);
             }
         },
     }
@@ -184,6 +196,87 @@ fn drawBorder(
             putBorderGlyph(grid, col, row, '│', paint, clip);
         }
     }
+}
+
+/// Cell-border mode: paint the border as terminal cell attributes on the box's
+/// outer edges instead of box-drawing glyphs. Nothing is written to the glyph
+/// plane, so the border shares its cells with text and costs no layout space.
+/// The placement is centred, which lets two adjacent boxes merge a shared edge
+/// in the terminal.
+fn drawCellBorder(
+    grid: *CellGrid,
+    rect: Rect,
+    border: style_mod.Edges,
+    border_style: style_mod.BorderStyle,
+    border_color: ?style_mod.Color,
+    inherited: PaintStyle,
+    clip: Rect,
+) void {
+    if (border_style == .none) return;
+    if (border.left <= 0 and border.right <= 0 and border.top <= 0 and border.bottom <= 0) return;
+
+    const x0 = cell.snap(rect.x);
+    const y0 = cell.snap(rect.y);
+    const x1 = cell.snap(rect.right());
+    const y1 = cell.snap(rect.bottom());
+    if (x1 <= x0 or y1 <= y0) return;
+
+    if (border.top > 0) {
+        const stroke = cellBorderStroke(border.top, border_color, inherited);
+        var col = x0;
+        while (col < x1) : (col += 1) addCellBorder(grid, col, y0, cell_border.Segment.top, stroke, clip);
+    }
+    if (border.bottom > 0) {
+        const stroke = cellBorderStroke(border.bottom, border_color, inherited);
+        var col = x0;
+        while (col < x1) : (col += 1) addCellBorder(grid, col, y1 - 1, cell_border.Segment.bottom, stroke, clip);
+    }
+    if (border.left > 0) {
+        const stroke = cellBorderStroke(border.left, border_color, inherited);
+        var row = y0;
+        while (row < y1) : (row += 1) addCellBorder(grid, x0, row, cell_border.Segment.left, stroke, clip);
+    }
+    if (border.right > 0) {
+        const stroke = cellBorderStroke(border.right, border_color, inherited);
+        var row = y0;
+        while (row < y1) : (row += 1) addCellBorder(grid, x1 - 1, row, cell_border.Segment.right, stroke, clip);
+    }
+}
+
+fn cellBorderStroke(
+    width_cells: f64,
+    border_color: ?style_mod.Color,
+    inherited: PaintStyle,
+) cell_border.Stroke {
+    // One cell of CSS border maps to the protocol demo's 16/256-cell stroke;
+    // a 4-cell border reaches the protocol's 1/4-cell width cap.
+    const units = @round(width_cells * 16);
+    const width: u8 = @intFromFloat(std.math.clamp(units, 1, 64));
+    const color: cell_border.ColorValue = if (border_color) |value|
+        .{ .rgb = value }
+    else if (inherited.fg != 0)
+        .{ .rgb = cell.unpackColor(inherited.fg) }
+    else
+        .default_fg;
+    return .{
+        .width = width,
+        .color = color,
+        .placement = .centered,
+        .layer = .below_text,
+    };
+}
+
+fn addCellBorder(
+    grid: *CellGrid,
+    col: usize,
+    row: usize,
+    mask: u12,
+    stroke: cell_border.Stroke,
+    clip: Rect,
+) void {
+    if (col < cell.snap(clip.x) or row < cell.snap(clip.y)) return;
+    if (col >= cell.snap(clip.right()) or row >= cell.snap(clip.bottom())) return;
+    grid.addBorder(col, row, mask, stroke);
 }
 
 fn putBorderGlyph(
@@ -399,6 +492,49 @@ test "paint: border box and box-drawing glyphs" {
     try std.testing.expectEqual(@as(u32, '└'), grid.cluster[4 * 9]);
     try std.testing.expectEqual(@as(u32, '┘'), grid.cluster[4 * 9 + 6]);
     try std.testing.expectEqual(cell.packColor(.{ .r = 200, .g = 200, .b = 200 }), grid.fg[0]);
+}
+
+test "paint: cell borders are attributes on the box edge, not glyphs" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 6, .rows = 3 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .border = .all(1),
+        .border_color = .{ .r = 200, .g = 100, .b = 50 },
+    });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("abc"));
+
+    var tree = try box.BoxTree.init(allocator);
+    defer tree.deinit();
+    tree.cell_borders = true;
+    try tree.rebuild(&doc);
+    try layout.layoutTree(&tree, &doc);
+
+    var grid = try CellGrid.init(allocator, 6, 3);
+    defer grid.deinit();
+    paintTree(&tree, &doc, &grid);
+
+    // The border consumes no cells: the 3x1 content box is the whole border box.
+    try std.testing.expectEqual(@as(u32, 'a'), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, 'b'), grid.cluster[1]);
+    try std.testing.expectEqual(@as(u32, 'c'), grid.cluster[2]);
+
+    const corner = grid.borderSetAt(0, 0);
+    var mask: u12 = 0;
+    for (corner.groups[0..corner.count]) |group| mask |= group.mask;
+    try std.testing.expectEqual(cell_border.Segment.top | cell_border.Segment.bottom | cell_border.Segment.left, mask);
+    for (corner.groups[0..corner.count]) |group| {
+        try std.testing.expect(group.stroke.color.eql(.{ .rgb = .{ .r = 200, .g = 100, .b = 50 } }));
+        try std.testing.expectEqual(cell_border.Placement.centered, group.stroke.placement);
+    }
 }
 
 test "paint: transparent text keeps the background underneath it" {

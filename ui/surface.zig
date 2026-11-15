@@ -18,6 +18,10 @@ pub const Options = struct {
     tab_size: usize = 4,
     color_depth: ColorDepth = .rgb,
     measure_width: *const fn (u21) u2 = dom.defaultMeasureWidth,
+    /// The terminal implements the cell-border protocol. Hosts set this after
+    /// probing the terminal; when false, borders keep their box-drawing
+    /// fallback and reserve layout cells.
+    cell_borders: bool = false,
 };
 
 pub const RenderOptions = struct {
@@ -46,6 +50,7 @@ pub const Surface = struct {
 
         const box_tree = try box.BoxTree.create(allocator);
         errdefer box_tree.destroy();
+        box_tree.cell_borders = options.cell_borders;
         doc.setObserver(box_tree.observer());
         errdefer doc.setObserver(null);
 
@@ -67,6 +72,20 @@ pub const Surface = struct {
 
     pub fn document(self: *Surface) *dom.Document {
         return &self.doc;
+    }
+
+    /// Switches between cell borders and the box-drawing fallback. The box tree
+    /// is rebuilt because border widths take part in layout only in fallback
+    /// mode; the first render after a change repaints affected rows.
+    pub fn setCellBorders(self: *Surface, enabled: bool) void {
+        if (self.box_tree.cell_borders == enabled) return;
+        self.box_tree.cell_borders = enabled;
+        self.box_tree.needs_rebuild = true;
+        self.box_tree.needs_layout = true;
+    }
+
+    pub fn cellBorders(self: *const Surface) bool {
+        return self.box_tree.cell_borders;
     }
 
     pub fn grid(self: *Surface) *const cell.CellGrid {
@@ -378,4 +397,100 @@ test "Surface: elementFromPoint clips and lets visible overflow through" {
         .overflow = .visible,
     });
     try std.testing.expectEqual(spill, (try surface.elementFromPoint(5, 0)).?);
+}
+
+test "Surface: cell borders paint edges and fall back to glyphs" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{
+        .cols = 6,
+        .rows = 3,
+        .cell_borders = true,
+    });
+    defer surface.deinit();
+
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .border = .all(1),
+        .border_color = .{ .r = 9, .g = 8, .b = 7 },
+    });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("abc"));
+
+    try surface.paintFrame();
+    const grid = surface.grid();
+    // The border contributes no layout cells, so the text starts at the edge.
+    try std.testing.expectEqual(@as(u32, 'a'), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, 'c'), grid.cluster[2]);
+    const set = grid.borderSetAt(0, 0);
+    try std.testing.expect(set.count > 0);
+    try std.testing.expect(grid.borderIdAt(2, 0) != 0);
+
+    // Disabling the protocol puts the glyph fallback back into the layout.
+    surface.setCellBorders(false);
+    try std.testing.expect(!surface.cellBorders());
+    try surface.paintFrame();
+    try std.testing.expectEqual(@as(u32, '┌'), surface.grid().cluster[0]);
+    try std.testing.expectEqual(@as(u32, 0), surface.grid().borderIdAt(0, 0));
+}
+
+test "Surface: cell-border render uses the pen and drops box glyphs" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{
+        .cols = 6,
+        .rows = 3,
+        .cell_borders = true,
+    });
+    defer surface.deinit();
+
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .border = .all(1),
+        .border_color = .{ .r = 0x7a, .g = 0xa2, .b = 0xf7 },
+    });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("abc"));
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try surface.render(&out.writer, .{ .synchronized = false });
+    const rendered = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1bP1+bcell-border;pen;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "7aa2f7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "┌") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "c") != null);
+
+    // The fallback path still reserves cells and writes glyphs.
+    var fallback = try Surface.init(allocator, .{ .cols = 6, .rows = 3 });
+    defer fallback.deinit();
+    const fallback_doc = fallback.document();
+    const fallback_root = try fallback_doc.createElement(.div);
+    fallback_root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .border = .all(1),
+    });
+    fallback_doc.setRoot(fallback_root);
+    _ = try fallback_root.appendChild(try fallback_doc.createText("abc"));
+
+    var fallback_out: std.Io.Writer.Allocating = .init(allocator);
+    defer fallback_out.deinit();
+    try fallback.render(&fallback_out.writer, .{ .synchronized = false });
+    try std.testing.expect(std.mem.indexOf(u8, fallback_out.written(), "┌") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fallback_out.written(), "cell-border") == null);
 }

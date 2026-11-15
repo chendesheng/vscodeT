@@ -9,6 +9,7 @@
 //! cell; a wide glyph's continuation cells store `cluster = 0`, width 0.
 
 const std = @import("std");
+const cell_border = @import("cell_border.zig");
 const style = @import("style.zig");
 
 pub const Attr = struct {
@@ -50,6 +51,8 @@ pub fn unpackColor(value: u32) style.Color {
 
 pub const ColorDepth = enum { ansi, ansi256, rgb };
 
+const no_border: cell_border.Set = .{ .groups = undefined, .count = 0 };
+
 pub const CellGrid = struct {
     allocator: std.mem.Allocator,
     cols: usize,
@@ -59,8 +62,38 @@ pub const CellGrid = struct {
     fg: []u32,
     bg: []u32,
     attrs: []u16,
+    /// Interned cell-border set id per cell; 0 is no border. The ANSI writer
+    /// turns a change of this plane into a border pen around the glyph.
+    border: []u16,
+    borders: *cell_border.Table,
+    owns_borders: bool,
 
     pub fn init(allocator: std.mem.Allocator, cols: usize, rows: usize) !CellGrid {
+        const table = try allocator.create(cell_border.Table);
+        table.* = .{};
+        errdefer allocator.destroy(table);
+        var grid = try initInternal(allocator, cols, rows, table);
+        grid.owns_borders = true;
+        return grid;
+    }
+
+    /// Initialises a grid on a table owned by the caller. Double-buffered
+    /// frames share one table so border ids are comparable across buffers.
+    pub fn initWithTable(
+        allocator: std.mem.Allocator,
+        cols: usize,
+        rows: usize,
+        table: *cell_border.Table,
+    ) !CellGrid {
+        return initInternal(allocator, cols, rows, table);
+    }
+
+    fn initInternal(
+        allocator: std.mem.Allocator,
+        cols: usize,
+        rows: usize,
+        table: *cell_border.Table,
+    ) !CellGrid {
         const c = @max(cols, 1);
         const r = @max(rows, 1);
         const size = c * r;
@@ -72,6 +105,8 @@ pub const CellGrid = struct {
         errdefer allocator.free(bg);
         const attrs = try allocator.alloc(u16, size);
         errdefer allocator.free(attrs);
+        const border = try allocator.alloc(u16, size);
+        errdefer allocator.free(border);
 
         var grid = CellGrid{
             .allocator = allocator,
@@ -81,6 +116,9 @@ pub const CellGrid = struct {
             .fg = fg,
             .bg = bg,
             .attrs = attrs,
+            .border = border,
+            .borders = table,
+            .owns_borders = false,
         };
         grid.clear();
         return grid;
@@ -91,6 +129,8 @@ pub const CellGrid = struct {
         self.allocator.free(self.fg);
         self.allocator.free(self.bg);
         self.allocator.free(self.attrs);
+        self.allocator.free(self.border);
+        if (self.owns_borders) self.allocator.destroy(self.borders);
     }
 
     pub fn clear(self: *CellGrid) void {
@@ -98,6 +138,7 @@ pub const CellGrid = struct {
         @memset(self.fg, 0);
         @memset(self.bg, 0);
         @memset(self.attrs, 0);
+        @memset(self.border, 0);
     }
 
     pub fn index(self: *const CellGrid, col: usize, row: usize) usize {
@@ -106,6 +147,40 @@ pub const CellGrid = struct {
 
     pub fn widthAt(self: *const CellGrid, col: usize, row: usize) usize {
         return (self.attrs[self.index(col, row)] & Attr.width_mask) >> Attr.width_shift;
+    }
+
+    pub fn borderIdAt(self: *const CellGrid, col: usize, row: usize) u16 {
+        if (col >= self.cols or row >= self.rows) return 0;
+        return self.border[self.index(col, row)];
+    }
+
+    pub fn borderSetAt(self: *const CellGrid, col: usize, row: usize) *const cell_border.Set {
+        const id = self.borderIdAt(col, row);
+        if (id == 0) return &no_border;
+        return self.borders.get(id);
+    }
+
+    /// Sets the border id of one cell. Painting goes through `addBorder`; this
+    /// is the primitive used by compositing and tests.
+    pub fn setBorderId(self: *CellGrid, col: usize, row: usize, id: u16) void {
+        if (col >= self.cols or row >= self.rows) return;
+        self.border[self.index(col, row)] = id;
+    }
+
+    /// Assigns `mask` to `stroke`, keeping any segments this cell already has
+    /// from other boxes. The table returns 0 when it is full, which drops the
+    /// border rather than failing the paint pass.
+    pub fn addBorder(
+        self: *CellGrid,
+        col: usize,
+        row: usize,
+        mask: u12,
+        stroke: cell_border.Stroke,
+    ) void {
+        if (col >= self.cols or row >= self.rows) return;
+        const i = self.index(col, row);
+        const current = if (self.border[i] == 0) cell_border.Set.empty() else self.borders.get(self.border[i]).*;
+        self.border[i] = self.borders.intern(current.with(mask, stroke));
     }
 
     fn put(
@@ -182,6 +257,22 @@ pub const CellGrid = struct {
         }
     }
 
+    /// Removes cell borders from a rectangle without touching glyphs or
+    /// colors. Overlays such as a quick pick must call this where they paint,
+    /// because the normal text/background primitives preserve a parent's
+    /// border attribute (the terminal draws a pen-set border under/over text).
+    pub fn clearBordersRect(self: *CellGrid, x: f64, y: f64, w: f64, h: f64) void {
+        if (w <= 0 or h <= 0) return;
+        const left = @min(self.cols, snap(x));
+        const top = @min(self.rows, snap(y));
+        const right = @min(self.cols, snap(x + w));
+        const bottom = @min(self.rows, snap(y + h));
+        var row = top;
+        while (row < bottom) : (row += 1) {
+            @memset(self.border[row * self.cols + left .. row * self.cols + right], 0);
+        }
+    }
+
     /// Copies a rectangle from `source` into this grid. Used by the TUI
     /// workbench to composite an editor pane below the tab strip.
     pub fn blit(
@@ -203,14 +294,22 @@ pub const CellGrid = struct {
             @memcpy(self.fg[dest_start .. dest_start + copy_width], source.fg[source_start .. source_start + copy_width]);
             @memcpy(self.bg[dest_start .. dest_start + copy_width], source.bg[source_start .. source_start + copy_width]);
             @memcpy(self.attrs[dest_start .. dest_start + copy_width], source.attrs[source_start .. source_start + copy_width]);
+            if (self.borders == source.borders) {
+                @memcpy(self.border[dest_start .. dest_start + copy_width], source.border[source_start .. source_start + copy_width]);
+            } else {
+                var col: usize = 0;
+                while (col < copy_width) : (col += 1) {
+                    self.border[dest_start + col] = self.borders.remap(source.borders, source.border[source_start + col]);
+                }
+            }
         }
     }
 
     pub fn rowHasContent(self: *const CellGrid, row: usize) bool {
         if (row >= self.rows) return false;
         const start = row * self.cols;
-        for (self.cluster[start .. start + self.cols]) |c| {
-            if (c != 0) return true;
+        for (self.cluster[start .. start + self.cols], self.border[start .. start + self.cols]) |c, border| {
+            if (c != 0 or border != 0) return true;
         }
         return false;
     }
@@ -219,7 +318,16 @@ pub const CellGrid = struct {
         return a.cluster[a_index] == b.cluster[b_index] and
             a.fg[a_index] == b.fg[b_index] and
             a.bg[a_index] == b.bg[b_index] and
-            a.attrs[a_index] == b.attrs[b_index];
+            a.attrs[a_index] == b.attrs[b_index] and
+            sameBorder(a, a_index, b, b_index);
+    }
+
+    fn sameBorder(a: *const CellGrid, a_index: usize, b: *const CellGrid, b_index: usize) bool {
+        const a_id = a.border[a_index];
+        const b_id = b.border[b_index];
+        if (a_id == b_id and a.borders == b.borders) return true;
+        if (a_id == 0 or b_id == 0) return a_id == b_id;
+        return a.borders.get(a_id).eql(b.borders.get(b_id).*);
     }
 
     /// Extracts a row as UTF-8, for tests and debugging.
@@ -282,6 +390,75 @@ test "CellGrid clears a vanished cell" {
     b.clear();
     try std.testing.expect(!CellGrid.sameCell(&a, 0, &b, 0));
     try std.testing.expectEqual(@as(u32, 0), b.cluster[0]);
+}
+
+test "CellGrid keeps cell borders across text and background paints" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 1, 1);
+    defer grid.deinit();
+
+    const stroke = cell_border.Stroke{ .color = .{ .rgb = .{ .r = 10, .g = 20, .b = 30 } } };
+    grid.addBorder(0, 0, cell_border.Segment.left, stroke);
+    const id = grid.borderIdAt(0, 0);
+    try std.testing.expect(id != 0);
+
+    grid.putCodepoint(0, 0, 'x', 1, .{});
+    grid.fillRect(0, 0, 1, 1, .{});
+    try std.testing.expectEqual(id, grid.borderIdAt(0, 0));
+    try std.testing.expect(grid.borderSetAt(0, 0).eql(grid.borders.get(id).*));
+
+    grid.clear();
+    try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(0, 0));
+}
+
+test "CellGrid blit remaps border sets into the destination table" {
+    const allocator = std.testing.allocator;
+    var source = try CellGrid.init(allocator, 1, 1);
+    defer source.deinit();
+    var dest = try CellGrid.init(allocator, 2, 1);
+    defer dest.deinit();
+
+    const stroke = cell_border.Stroke{ .width = 16, .color = .default_fg };
+    source.addBorder(0, 0, cell_border.Segment.bottom, stroke);
+    dest.blit(&source, 1, 0, 1, 1);
+
+    try std.testing.expect(dest.borderIdAt(0, 0) == 0);
+    const copied = dest.borderSetAt(1, 0);
+    try std.testing.expectEqual(@as(u3, 1), copied.count);
+    try std.testing.expectEqual(cell_border.Segment.bottom, copied.groups[0].mask);
+    try std.testing.expect(dest.borders.get(dest.borderIdAt(1, 0)).eql(source.borders.get(source.borderIdAt(0, 0)).*));
+}
+
+test "CellGrid sameCell sees border changes" {
+    const allocator = std.testing.allocator;
+    var a = try CellGrid.init(allocator, 1, 1);
+    defer a.deinit();
+    var b = try CellGrid.init(allocator, 1, 1);
+    defer b.deinit();
+
+    a.putCodepoint(0, 0, 'x', 1, .{});
+    b.putCodepoint(0, 0, 'x', 1, .{});
+    try std.testing.expect(CellGrid.sameCell(&a, 0, &b, 0));
+
+    b.addBorder(0, 0, cell_border.Segment.top, .{});
+    try std.testing.expect(!CellGrid.sameCell(&a, 0, &b, 0));
+}
+
+test "CellGrid clearBordersRect leaves the glyphs alone" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 3, 1);
+    defer grid.deinit();
+
+    grid.putCodepoint(1, 0, 'x', 1, .{});
+    grid.addBorder(0, 0, cell_border.Segment.top, .{});
+    grid.addBorder(1, 0, cell_border.Segment.top, .{});
+    grid.addBorder(2, 0, cell_border.Segment.top, .{});
+
+    grid.clearBordersRect(0, 0, 2, 1);
+    try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(0, 0));
+    try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(1, 0));
+    try std.testing.expect(grid.borderIdAt(2, 0) != 0);
+    try std.testing.expectEqual(@as(u32, 'x'), grid.cluster[1]);
 }
 
 test "packColor distinguishes black from default" {

@@ -1,11 +1,19 @@
 //! The multi-file terminal workbench: an editor-part-like shell over the
 //! ported editor-groups service and `EditorGroupModel`.
 //!
-//! Layout is the terminal adaptation of the workbench editor part: every group
-//! gets a tab row and an editor pane, groups are arranged in a binary split
-//! tree, and the workbench composites all visible panes into one frame before
-//! encoding a single ANSI diff. Each tab owns a persistent `View`, so
-//! switching tabs or groups keeps scroll position and decorations.
+//! Layout is the terminal adaptation of the workbench editor part and of
+//! `vs/base/browser/ui/grid`: every group gets a tab row and an editor pane,
+//! groups are arranged in an oriented split tree, and the workbench composites
+//! all visible panes into one frame before encoding a single ANSI diff. Each
+//! tab owns a persistent `View`, so switching tabs or groups keeps scroll
+//! position and decorations. The port keeps Grid's branch-demotion behavior
+//! when a group empties, its sash resize, and tab drag/drop into a group or
+//! onto a pane edge; the full N-ary branch model is not ported yet.
+//!
+//! With cell-border support the panes use the article's chrome: each pane is
+//! outlined on its own cell edges, the active pane's outline has priority 1,
+//! and adjacent outlines merge into shared dividers. The glyph fallback keeps
+//! the one-cell gutter and box-drawing divider instead.
 //!
 //! A split currently moves the active tab into the new group (the terminal
 //! equivalent of "move editor to group"); upstream `splitEditor` duplicates the
@@ -60,6 +68,23 @@ const SearchOption = @import("./searchWidget.zig").Option;
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = enum { horizontal, vertical };
 pub const Focus = enum { editor, sidebar };
+
+/// Pane chrome for the terminal editor part. The active pane's outline uses
+/// the focused border colour and priority 1, so it wins a shared edge in a
+/// terminal that implements cell-border priority merging; inactive panes are
+/// dim. The stroke width is 1/8 cell, matching the article's thin outlines.
+const inactive_pane_border = ui.Color{ .r = 70, .g = 70, .b = 70 };
+const active_pane_border = ui.Color{ .r = 0x4d, .g = 0x9b, .b = 0xd6 };
+const pane_border_width: u8 = 32;
+const min_pane_width: usize = 10;
+const min_pane_height: usize = 3;
+
+/// A tab drag can drop in the middle of a pane (move into that group) or on an
+/// edge (split that pane and move into the new group), mirroring the drop
+/// locations of VS Code's grid.
+const DropZone = enum { center, left, right, top, bottom };
+const DropTarget = struct { pane: *GroupPane, zone: DropZone };
+const PendingTabDrag = struct { pane: *GroupPane, tab: *Tab, x: usize, y: usize };
 
 const LayoutNode = struct {
     kind: union(enum) {
@@ -123,6 +148,16 @@ pub const Workbench = struct {
     panes: std.array_list.Managed(*GroupPane),
     layout: *LayoutNode,
     frame: ui.Frame,
+    /// The terminal implements the cell-border protocol: split gutters are
+    /// zero-width, panes get shared-edge outlines, and the dividers are sashes.
+    cell_borders: bool = false,
+    /// The split whose boundary is being dragged, if any.
+    active_sash: ?*LayoutNode = null,
+    /// Tab drag state: pending until the pointer moves, then a live drop target.
+    pending_tab_drag: ?PendingTabDrag = null,
+    drag_tab: ?*Tab = null,
+    drag_source_pane: ?*GroupPane = null,
+    drag_target: ?DropTarget = null,
     sidebar: ?*Sidebar = null,
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
@@ -156,6 +191,12 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
+        self.cell_borders = false;
+        self.active_sash = null;
+        self.pending_tab_drag = null;
+        self.drag_tab = null;
+        self.drag_source_pane = null;
+        self.drag_target = null;
         self.focus = .editor;
         self.sidebar = null;
         self.search_view = null;
@@ -220,6 +261,12 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
+        self.cell_borders = false;
+        self.active_sash = null;
+        self.pending_tab_drag = null;
+        self.drag_tab = null;
+        self.drag_source_pane = null;
+        self.drag_target = null;
         self.focus = .editor;
         self.sidebar = null;
         self.search_view = null;
@@ -296,6 +343,12 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
+        self.cell_borders = false;
+        self.active_sash = null;
+        self.pending_tab_drag = null;
+        self.drag_tab = null;
+        self.drag_source_pane = null;
+        self.drag_target = null;
         self.focus = .editor;
         self.sidebar = null;
         self.search_view = null;
@@ -753,7 +806,7 @@ pub const Workbench = struct {
             .leaf => |pane| pane.rect = rect,
             .split => |split| {
                 if (split.direction == .horizontal) {
-                    const gap: f64 = if (rect.w >= 6) 1 else 0;
+                    const gap = self.paneGap(split.direction, rect);
                     const available = @max(rect.w - gap, 0);
                     const first_width = @floor(available * split.ratio);
                     const first = ui.Rect{ .x = rect.x, .y = rect.y, .w = first_width, .h = rect.h };
@@ -766,7 +819,7 @@ pub const Workbench = struct {
                     self.computeLayout(split.first, first);
                     self.computeLayout(split.second, second);
                 } else {
-                    const gap: f64 = if (rect.h >= 6) 1 else 0;
+                    const gap = self.paneGap(split.direction, rect);
                     const available = @max(rect.h - gap, 0);
                     const first_height = @floor(available * split.ratio);
                     const first = ui.Rect{ .x = rect.x, .y = rect.y, .w = rect.w, .h = first_height };
@@ -781,6 +834,66 @@ pub const Workbench = struct {
                 }
             },
         }
+    }
+
+    /// Gutter cells between two panes. Cell borders need none: both panes put
+    /// a centred stroke on their own side of the shared edge. The glyph
+    /// fallback needs one divider column/row when there is room.
+    fn paneGap(self: *const Workbench, direction: SplitDirection, rect: ui.Rect) f64 {
+        if (self.cell_borders) return 0;
+        return switch (direction) {
+            .horizontal => if (rect.w >= 6) 1 else 0,
+            .vertical => if (rect.h >= 6) 1 else 0,
+        };
+    }
+
+    /// Removes a leaf from the split tree and promotes its sibling, the
+    /// terminal equivalent of Grid's branch demotion when the last view leaves
+    /// a group. The root leaf is kept: the workbench always has one group.
+    fn removePaneFromLayout(self: *Workbench, target: *GroupPane) bool {
+        if (self.layout.kind == .leaf) return false;
+        return self.removePaneFromNode(self.layout, target);
+    }
+
+    fn removePaneFromNode(self: *Workbench, node: *LayoutNode, target: *GroupPane) bool {
+        switch (node.kind) {
+            .leaf => return false,
+            .split => |*split| {
+                const first_matches = split.first.kind == .leaf and split.first.kind.leaf == target;
+                const second_matches = split.second.kind == .leaf and split.second.kind.leaf == target;
+                if (first_matches or second_matches) {
+                    const keep = if (first_matches) split.second else split.first;
+                    const removed = if (first_matches) split.first else split.second;
+                    self.allocator.destroy(removed);
+                    // Promote the sibling into this node, then release only the
+                    // sibling container: its children now belong to `node`.
+                    node.* = keep.*;
+                    self.allocator.destroy(keep);
+                    return true;
+                }
+                return self.removePaneFromNode(split.first, target) or
+                    self.removePaneFromNode(split.second, target);
+            },
+        }
+    }
+
+    /// Removes an empty pane from the grid and the editor-group service,
+    /// promoting its sibling. The last group is kept so the workbench always
+    /// has a target for the next editor.
+    fn collapseEmptyPane(self: *Workbench, pane: *GroupPane) void {
+        if (pane.tabs.items.len != 0 or self.service.count() <= 1) return;
+        self.active_sash = null;
+        if (!self.removePaneFromLayout(pane)) return;
+        self.service.removeGroup(pane.group) catch {};
+        for (self.panes.items, 0..) |candidate, index| {
+            if (candidate == pane) {
+                _ = self.panes.orderedRemove(index);
+                break;
+            }
+        }
+        pane.deinit();
+        self.allocator.destroy(pane);
+        self.layoutAll();
     }
 
     fn replaceLeaf(self: *Workbench, target: *GroupPane, replacement: *LayoutNode) bool {
@@ -959,6 +1072,8 @@ pub const Workbench = struct {
 
     /// Splits the active group and moves the active tab into the new group.
     pub fn splitActive(self: *Workbench, direction: SplitDirection) !void {
+        self.active_sash = null;
+        self.clearTabDrag();
         const source = self.activePane() orelse return;
         const tab = source.activeTab() orelse return;
 
@@ -1004,6 +1119,8 @@ pub const Workbench = struct {
     }
 
     pub fn closeActive(self: *Workbench) !bool {
+        self.active_sash = null;
+        self.clearTabDrag();
         const pane = self.activePane() orelse return false;
         const tab = pane.activeTab() orelse return false;
 
@@ -1023,12 +1140,20 @@ pub const Workbench = struct {
         if (pane.tabs.items.len == 0) {
             const groups = try self.service.getGroups(self.allocator, .MOST_RECENTLY_ACTIVE);
             defer self.allocator.free(groups);
+            var next_group: ?*editor_groups.EditorGroup = null;
             for (groups) |group| {
                 if (group == pane.group) continue;
                 const candidate = self.paneForGroup(group) orelse continue;
                 if (candidate.tabs.items.len == 0) continue;
-                self.service.activateGroup(group);
+                next_group = group;
                 break;
+            }
+
+            // Collapse the empty group out of the grid when another group can
+            // take focus; the last group stays so the workbench keeps a view.
+            if (next_group) |group| {
+                self.service.activateGroup(group);
+                self.collapseEmptyPane(pane);
             }
         }
 
@@ -1144,6 +1269,253 @@ pub const Workbench = struct {
         return null;
     }
 
+    /// The split boundary under a cell, if any. With cell borders the shared
+    /// edge is between two cells, so both adjacent columns/rows are in the hit
+    /// zone; the glyph fallback only has the divider cell.
+    fn dividerAt(self: *const Workbench, x: usize, y: usize) ?*LayoutNode {
+        return self.findDivider(self.layout, x, y);
+    }
+
+    fn findDivider(self: *const Workbench, node: *LayoutNode, x: usize, y: usize) ?*LayoutNode {
+        switch (node.kind) {
+            .leaf => return null,
+            .split => |split| {
+                const rect = node.rect;
+                if (split.direction == .horizontal) {
+                    const edge = ui.cell.snap(split.first.rect.right());
+                    const on_edge = x == edge or (self.cell_borders and x + 1 == edge);
+                    if (on_edge and y >= ui.cell.snap(rect.y) and y < ui.cell.snap(rect.bottom())) {
+                        return node;
+                    }
+                } else {
+                    const edge = ui.cell.snap(split.first.rect.bottom());
+                    const on_edge = y == edge or (self.cell_borders and y + 1 == edge);
+                    if (on_edge and x >= ui.cell.snap(rect.x) and x < ui.cell.snap(rect.right())) {
+                        return node;
+                    }
+                }
+                return self.findDivider(split.first, x, y) orelse self.findDivider(split.second, x, y);
+            },
+        }
+    }
+
+    /// Starts, updates and ends a sash drag. Called before tab and editor mouse
+    /// handling; a drag consumes every event until the button is released.
+    pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        if (self.drag_tab != null or self.pending_tab_drag != null) return false;
+        if (self.active_sash) |split| {
+            switch (event.kind) {
+                .move => {
+                    if (event.button == .left) {
+                        self.resizeSash(split, event.x, event.y);
+                    } else {
+                        self.active_sash = null;
+                    }
+                    return true;
+                },
+                .up, .click => {
+                    self.resizeSash(split, event.x, event.y);
+                    self.active_sash = null;
+                    return true;
+                },
+                .down => return true,
+                .wheel => return false,
+            }
+        }
+
+        if (self.quick_access.isOpen()) return false;
+        if (event.kind != .down or event.button != .left) {
+            // Keep the editor from treating a click on the sash as a caret
+            // placement; hover motion over the line is also consumed.
+            return event.kind != .wheel and self.dividerAt(event.x, event.y) != null;
+        }
+
+        const split = self.dividerAt(event.x, event.y) orelse return false;
+        self.active_sash = split;
+        return true;
+    }
+
+    fn resizeSash(self: *Workbench, node: *LayoutNode, x: usize, y: usize) void {
+        const split = switch (node.kind) {
+            .split => |*value| value,
+            .leaf => return,
+        };
+        const rect = node.rect;
+        const gap = self.paneGap(split.direction, rect);
+        if (split.direction == .horizontal) {
+            const available = rect.w - gap;
+            if (available < 2 * min_pane_width) return;
+            const target = @as(f64, @floatFromInt(x)) - rect.x;
+            const clamped = std.math.clamp(
+                target,
+                @as(f64, @floatFromInt(min_pane_width)),
+                available - @as(f64, @floatFromInt(min_pane_width)),
+            );
+            split.ratio = clamped / available;
+        } else {
+            const available = rect.h - gap;
+            if (available < 2 * min_pane_height) return;
+            const target = @as(f64, @floatFromInt(y)) - rect.y;
+            const clamped = std.math.clamp(
+                target,
+                @as(f64, @floatFromInt(min_pane_height)),
+                available - @as(f64, @floatFromInt(min_pane_height)),
+            );
+            split.ratio = clamped / available;
+        }
+        self.layoutAll();
+    }
+
+    fn orderedTabAt(self: *Workbench, pane: *GroupPane, index: usize) ?*Tab {
+        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
+        defer ordered.deinit();
+        orderedTabs(pane, self.allocator, &ordered) catch return null;
+        if (index >= ordered.items.len) return null;
+        return ordered.items[index];
+    }
+
+    /// Called before the sash, overlay and editor routing so a live tab drag
+    /// owns the pointer for its whole gesture, even across pane boundaries.
+    pub fn handleTabDragMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        if (self.drag_tab == null) return false;
+        switch (event.kind) {
+            .move => self.updateDragTarget(event),
+            .up => self.finishTabDrag(),
+            .click, .down => self.clearTabDrag(),
+            .wheel => return false,
+        }
+        return true;
+    }
+
+    fn clearTabDrag(self: *Workbench) void {
+        self.pending_tab_drag = null;
+        self.drag_tab = null;
+        self.drag_source_pane = null;
+        self.drag_target = null;
+    }
+
+    fn updateDragTarget(self: *Workbench, event: *const ui.MouseEvent) void {
+        self.drag_target = null;
+        const pane = self.paneAt(event.x, event.y) orelse return;
+        const x0 = ui.cell.snap(pane.rect.x);
+        const y0 = ui.cell.snap(pane.rect.y);
+        const width = ui.cell.snap(pane.rect.right()) -| x0;
+        const height = ui.cell.snap(pane.rect.bottom()) -| y0;
+        if (width == 0 or height == 0) return;
+        const rel_x = event.x -| x0;
+        const rel_y = event.y -| y0;
+        const zone: DropZone = if (rel_y * 4 < height)
+            .top
+        else if (rel_y * 4 >= height * 3)
+            .bottom
+        else if (rel_x * 4 < width)
+            .left
+        else if (rel_x * 4 >= width * 3)
+            .right
+        else
+            .center;
+        self.drag_target = .{ .pane = pane, .zone = zone };
+    }
+
+    fn finishTabDrag(self: *Workbench) void {
+        const tab = self.drag_tab;
+        const source = self.drag_source_pane;
+        const target = self.drag_target;
+        self.clearTabDrag();
+        if (tab == null or source == null or target == null) return;
+        self.dropTab(source.?, tab.?, target.?.pane, target.?.zone) catch |err| {
+            if (self.activeTab()) |active| {
+                active.editor.setMessage("tile: {s}", .{@errorName(err)});
+            }
+        };
+    }
+
+    fn moveTabToPane(self: *Workbench, source: *GroupPane, dest: *GroupPane, tab: *Tab) !void {
+        _ = try source.group.model.closeEditor(&tab.input.base, .MOVE, false);
+        for (source.tabs.items, 0..) |candidate, index| {
+            if (candidate == tab) {
+                _ = source.tabs.orderedRemove(index);
+                break;
+            }
+        }
+        try dest.tabs.append(tab);
+        _ = try dest.group.model.openEditor(&tab.input.base, .{ .pinned = true, .active = true });
+        self.service.activateGroup(dest.group);
+        try tab.ensureControllers();
+        tab.view.focusEditor();
+        self.focus = .editor;
+    }
+
+    fn dropTab(self: *Workbench, source: *GroupPane, tab: *Tab, target: *GroupPane, zone: DropZone) !void {
+        if (zone == .center) {
+            if (source == target) return;
+            // The target group may already show this input; moving would
+            // create a second Tab for one model.
+            if (target.tabForInput(&tab.input.base) != null) return;
+            try self.moveTabToPane(source, target, tab);
+            self.collapseEmptyPane(source);
+            self.layoutAll();
+            return;
+        }
+
+        const direction: SplitDirection = switch (zone) {
+            .left, .right => .horizontal,
+            .top, .bottom => .vertical,
+            .center => unreachable,
+        };
+        const new_first = zone == .left or zone == .top;
+        const new_group = try self.service.addGroup(target.group, switch (zone) {
+            .left => .LEFT,
+            .right => .RIGHT,
+            .top => .UP,
+            .bottom => .DOWN,
+            .center => unreachable,
+        });
+        const new_pane = try self.createPane(new_group);
+        try self.moveTabToPane(source, new_pane, tab);
+
+        // Insert before collapsing the source: if source and target are
+        // siblings, collapsing first would promote and destroy the target leaf.
+        const target_leaf = self.findLeaf(self.layout, target) orelse return error.LayoutLeafMissing;
+        const new_leaf = try self.createLeaf(new_pane);
+        const split = try self.createSplit(
+            direction,
+            if (new_first) new_leaf else target_leaf,
+            if (new_first) target_leaf else new_leaf,
+        );
+        if (!self.replaceLeaf(target, split)) return error.LayoutLeafMissing;
+        self.service.activateGroup(new_group);
+        self.collapseEmptyPane(source);
+        self.layoutAll();
+    }
+
+    fn renderDropTarget(self: *Workbench, target: DropTarget) void {
+        if (!self.cell_borders) return;
+        const stroke = ui.cell_border.Stroke{
+            .width = 64,
+            .color = .{ .rgb = .{ .r = 0xe5, .g = 0xc0, .b = 0x7b } },
+            .placement = .centered,
+            .layer = .above_text,
+            .priority = 3,
+        };
+        const rect = target.pane.rect;
+        const x0 = ui.cell.snap(rect.x);
+        const y0 = ui.cell.snap(rect.y);
+        const x1 = ui.cell.snap(rect.right());
+        const y1 = ui.cell.snap(rect.bottom());
+        if (x1 <= x0 or y1 <= y0) return;
+        var col = x0;
+        while (col < x1) : (col += 1) {
+            self.frame.next.addBorder(col, y0, ui.cell_border.Segment.top, stroke);
+            self.frame.next.addBorder(col, y1 - 1, ui.cell_border.Segment.bottom, stroke);
+        }
+        var row = y0;
+        while (row < y1) : (row += 1) {
+            self.frame.next.addBorder(x0, row, ui.cell_border.Segment.left, stroke);
+            self.frame.next.addBorder(x1 - 1, row, ui.cell_border.Segment.right, stroke);
+        }
+    }
+
     pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         if (isCtrlChar(event, 'b')) {
             try self.toggleSidebar();
@@ -1248,7 +1620,22 @@ pub const Workbench = struct {
 
     pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (self.sidebarShown() and event.x <= activity_width + self.sidebarWidth()) return false;
+
+        if (self.pending_tab_drag) |pending| {
+            if (event.kind == .move and event.button == .left and
+                (event.x -| pending.x) + (event.y -| pending.y) >= 3)
+            {
+                self.drag_tab = pending.tab;
+                self.drag_source_pane = pending.pane;
+                self.pending_tab_drag = null;
+                self.updateDragTarget(event);
+                return true;
+            }
+            if (event.kind == .up or event.kind == .click) self.pending_tab_drag = null;
+        }
+
         if (event.kind == .down) {
+            self.pending_tab_drag = null;
             if (self.search_view) |view| view.blur();
         }
         const pane = self.paneAt(event.x, event.y) orelse return false;
@@ -1262,7 +1649,16 @@ pub const Workbench = struct {
         if (event.kind == .down and pane.tabs.items.len > 0) {
             self.service.activateGroup(pane.group);
             if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
+                const tab = self.orderedTabAt(pane, index);
                 self.activateIndex(index) catch {};
+                if (tab) |value| {
+                    self.pending_tab_drag = .{
+                        .pane = pane,
+                        .tab = value,
+                        .x = event.x,
+                        .y = event.y,
+                    };
+                }
             }
         }
         return true;
@@ -1314,7 +1710,15 @@ pub const Workbench = struct {
         for (self.panes.items) |pane| {
             try self.renderPane(pane);
         }
-        self.renderDividers(self.layout);
+        if (self.cell_borders) {
+            // Each pane is outlined on its own cell edges. Adjacent panes put
+            // strokes on opposite cells of the shared boundary and the
+            // terminal merges them into one line, so no gutter is needed.
+            for (self.panes.items) |pane| self.renderPaneBorder(pane);
+            if (self.drag_target) |target| self.renderDropTarget(target);
+        } else {
+            self.renderDividers(self.layout);
+        }
         try self.quick_access.render(&self.frame.next);
 
         const encoded = try ui.ansi.encode(
@@ -1424,6 +1828,38 @@ pub const Workbench = struct {
         }
     }
 
+    /// Article-style pane chrome: a full outline around the pane's border box
+    /// (tab row and editor content). The active pane uses the focus colour with
+    /// priority 1, so a supporting terminal keeps its outline on shared edges
+    /// regardless of neighbour order; inactive panes stay dim.
+    fn renderPaneBorder(self: *Workbench, pane: *GroupPane) void {
+        const active = self.focus == .editor and pane.group == self.service.activeGroup();
+        const stroke = ui.cell_border.Stroke{
+            .width = pane_border_width,
+            .color = .{ .rgb = if (active) active_pane_border else inactive_pane_border },
+            .placement = .centered,
+            .layer = .below_text,
+            .priority = if (active) 1 else 0,
+        };
+        const rect = pane.rect;
+        const x0 = ui.cell.snap(rect.x);
+        const y0 = ui.cell.snap(rect.y);
+        const x1 = ui.cell.snap(rect.right());
+        const y1 = ui.cell.snap(rect.bottom());
+        if (x1 <= x0 or y1 <= y0) return;
+
+        var col = x0;
+        while (col < x1) : (col += 1) {
+            self.frame.next.addBorder(col, y0, ui.cell_border.Segment.top, stroke);
+            self.frame.next.addBorder(col, y1 - 1, ui.cell_border.Segment.bottom, stroke);
+        }
+        var row = y0;
+        while (row < y1) : (row += 1) {
+            self.frame.next.addBorder(x0, row, ui.cell_border.Segment.left, stroke);
+            self.frame.next.addBorder(x1 - 1, row, ui.cell_border.Segment.right, stroke);
+        }
+    }
+
     pub fn cursorCell(self: *Workbench) ?ViewCell {
         if (self.quick_access.isOpen()) return null;
         if (self.focus == .sidebar) return null;
@@ -1437,6 +1873,8 @@ pub const Workbench = struct {
     }
 
     pub fn resize(self: *Workbench, cols: usize, rows: usize) !void {
+        self.active_sash = null;
+        self.clearTabDrag();
         const new_cols = @max(cols, 1);
         const new_rows = @max(rows, 1);
         if (new_cols == self.cols and new_rows == self.rows) {
@@ -1454,6 +1892,14 @@ pub const Workbench = struct {
         self.frame = replacement;
         previous.deinit();
 
+        self.layoutAll();
+    }
+
+    /// Hosts call this after the terminal capability probe. Cell borders keep
+    /// the split gutters from consuming a column/row; the fallback keeps them.
+    pub fn setCellBorders(self: *Workbench, enabled: bool) void {
+        if (self.cell_borders == enabled) return;
+        self.cell_borders = enabled;
         self.layoutAll();
     }
 
@@ -2017,6 +2463,228 @@ test "Workbench: split moves the active tab into a second group" {
     try workbench.splitActive(.vertical);
     try std.testing.expectEqual(@as(usize, 3), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+}
+
+test "Workbench: cell borders remove the split gutter" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "border_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "border_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+
+    const first = workbench.panes.items[0];
+    const second = workbench.panes.items[1];
+    // The fallback reserves one gutter column between the panes.
+    try std.testing.expectEqual(ui.cell.snap(first.rect.right()) + 1, ui.cell.snap(second.rect.x));
+
+    workbench.setCellBorders(true);
+    try std.testing.expectEqual(ui.cell.snap(first.rect.right()), ui.cell.snap(second.rect.x));
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const grid = &workbench.frame.prev;
+    const left_edge = ui.cell.snap(first.rect.right()) - 1;
+    const right_edge = ui.cell.snap(second.rect.x);
+    const row: usize = 2;
+    try std.testing.expect(grid.borderIdAt(left_edge, row) != 0);
+    try std.testing.expect(grid.borderIdAt(right_edge, row) != 0);
+
+    var left_mask: u12 = 0;
+    for (grid.borderSetAt(left_edge, row).groups[0..grid.borderSetAt(left_edge, row).count]) |group| left_mask |= group.mask;
+    try std.testing.expect((left_mask & ui.cell_border.Segment.right) != 0);
+    var right_mask: u12 = 0;
+    for (grid.borderSetAt(right_edge, row).groups[0..grid.borderSetAt(right_edge, row).count]) |group| right_mask |= group.mask;
+    try std.testing.expect((right_mask & ui.cell_border.Segment.left) != 0);
+
+    // Every pane is outlined; the active pane uses the focus colour and
+    // priority 1 so it wins a merged shared edge.
+    const active_set = grid.borderSetAt(ui.cell.snap(second.rect.x), ui.cell.snap(second.rect.y));
+    var active_priority: u4 = 0;
+    var active_color: ui.Color = .{ .r = 0, .g = 0, .b = 0 };
+    for (active_set.groups[0..active_set.count]) |group| {
+        if ((group.mask & ui.cell_border.Segment.top) != 0) {
+            active_priority = group.stroke.priority;
+            if (group.stroke.color == .rgb) active_color = group.stroke.color.rgb;
+        }
+    }
+    try std.testing.expectEqual(@as(u4, 1), active_priority);
+    try std.testing.expect(active_color.eql(active_pane_border));
+
+    const inactive_set = grid.borderSetAt(ui.cell.snap(first.rect.x), ui.cell.snap(first.rect.y));
+    var inactive_priority: u4 = 9;
+    var inactive_color: ui.Color = .{ .r = 0, .g = 0, .b = 0 };
+    for (inactive_set.groups[0..inactive_set.count]) |group| {
+        if ((group.mask & ui.cell_border.Segment.top) != 0) {
+            inactive_priority = group.stroke.priority;
+            if (group.stroke.color == .rgb) inactive_color = group.stroke.color.rgb;
+        }
+    }
+    try std.testing.expectEqual(@as(u4, 0), inactive_priority);
+    try std.testing.expect(inactive_color.eql(inactive_pane_border));
+}
+
+test "Workbench: sash drag resizes the split" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "sash_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "sash_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+    workbench.setCellBorders(true);
+
+    try std.testing.expectEqual(@as(usize, 25), ui.cell.snap(workbench.layout.kind.split.first.rect.w));
+    const boundary = ui.cell.snap(workbench.layout.kind.split.first.rect.right());
+
+    var down = ui.MouseEvent{ .kind = .down, .x = boundary, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&down));
+    try std.testing.expect(workbench.active_sash != null);
+
+    var move = ui.MouseEvent{ .kind = .move, .x = 30, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&move));
+    try std.testing.expectEqual(@as(f64, 0.6), workbench.layout.kind.split.ratio);
+    try std.testing.expectEqual(@as(usize, 30), ui.cell.snap(workbench.layout.kind.split.first.rect.w));
+
+    var up = ui.MouseEvent{ .kind = .up, .x = 30, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&up));
+    try std.testing.expect(workbench.active_sash == null);
+}
+
+test "Workbench: closing the last tab collapses the empty group" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "collapse_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "collapse_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), workbench.panes.items.len);
+
+    _ = try workbench.closeActive();
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 1), workbench.panes.items.len);
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expectEqual(@as(usize, 50), ui.cell.snap(workbench.layout.rect.w));
+}
+
+test "Workbench: dragging a tab into a pane moves it there" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "drag_move_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "drag_move_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const source = workbench.panes.items[1];
+    const target = workbench.panes.items[0];
+    const tab_x = source.hits.items[0].start;
+    const tab_y = ui.cell.snap(source.rect.y);
+    var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .left };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+
+    var move = ui.MouseEvent{
+        .kind = .move,
+        .x = ui.cell.snap(target.rect.x) + ui.cell.snap(target.rect.w) / 2,
+        .y = ui.cell.snap(target.rect.y) + ui.cell.snap(target.rect.h) / 2,
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&move));
+    try std.testing.expect(workbench.drag_tab != null);
+
+    var up = move;
+    up.kind = .up;
+    try std.testing.expect(workbench.handleTabDragMouse(&up));
+
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 1), workbench.panes.items.len);
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+}
+
+test "Workbench: dropping a tab on a pane edge tiles a new pane" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "drag_split_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "drag_split_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    workbench.setCellBorders(true);
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.panes.items[0];
+    const tab_x = pane.hits.items[0].start;
+    const tab_y = ui.cell.snap(pane.rect.y);
+    var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .left };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+
+    var move = ui.MouseEvent{
+        .kind = .move,
+        .x = ui.cell.snap(pane.rect.right()) - 1,
+        .y = ui.cell.snap(pane.rect.y) + ui.cell.snap(pane.rect.h) / 2,
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&move));
+    try std.testing.expect(workbench.drag_target != null);
+    try std.testing.expectEqual(DropZone.right, workbench.drag_target.?.zone);
+
+    var up = move;
+    up.kind = .up;
+    try std.testing.expect(workbench.handleTabDragMouse(&up));
+
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), workbench.panes.items.len);
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    const first = workbench.panes.items[0];
+    const second = workbench.panes.items[1];
+    try std.testing.expectEqual(ui.cell.snap(first.rect.right()), ui.cell.snap(second.rect.x));
 }
 
 test "Workbench: openPath reveals an already-open file in another group" {

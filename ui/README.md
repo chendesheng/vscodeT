@@ -14,7 +14,9 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   `needs_rebuild` / `needs_layout`. There is no document-level revision or
   dirty flag.
 - A whole-cell layout pass with the CSS box model: content `width`/`height`,
-  margin, padding and border widths, single-line box-drawing borders, and
+  margin, padding and border widths, box-drawing borders with an optional
+  cell-border protocol path (the host probes the terminal; unsupported
+  terminals keep the glyph fallback and its reserved cells), and
   absolute `left`/`top` anchoring the margin box. Block flow, inline text flow
   and flex formatting contexts share the derived tree. Backgrounds paint the
   border box and `overflow: hidden` clips to the padding box.
@@ -140,6 +142,22 @@ pub fn main() !void {
     try stdout.interface.flush();
 }
 ```
+
+### Cell borders
+
+`Surface` can paint borders as terminal cell attributes instead of box-drawing
+glyphs, using the draft `DCS 1 + b cell-border` protocol. The terminal must be
+probed by the host: `src/tui/cellBorders.zig` sends the query followed by DA1.
+Set `Options.cell_borders` or call `surface.setCellBorders(true)` once support
+is known. In that mode border widths leave the box model (they no longer
+reserve cells), and `paint.zig` puts centred strokes on the box's outer-edge
+cells. Two adjacent boxes merge their shared edge in the terminal.
+
+Without support, or with the option off, nothing changes: borders reserve cells
+and `paint.zig` writes single-line box-drawing glyphs. The wire encoder emits
+solid centred strokes below text; rounded joints, double/dashed/dotted lines and
+the outside fill are stored in the model but not painted yet. A terminal that
+does not understand the DCS ignores it, so the probe result is the only switch.
 
 `Surface.resize(cols, rows)` reallocates the double buffer, updates the
 document viewport and invalidates the box tree; the next layout pass resolves

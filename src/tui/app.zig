@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const posix = std.posix;
 const tui = @import("./tui.zig");
+const cellBorders = @import("./cellBorders.zig");
 const ui = @import("ui");
 const input = ui.input;
 const Editor = @import("./editor.zig").Editor;
@@ -110,6 +111,11 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // Probe once, inside the alternate screen, before the first frame: the
+    // answer decides whether borders reserve cells or paint on cell edges.
+    const border_probe = try cellBorders.probe(allocator, out);
+    defer border_probe.deinit(allocator);
+
     var folders = ArrayList([]u8).init(allocator);
     defer {
         for (folders.items) |folder| allocator.free(folder);
@@ -189,6 +195,7 @@ pub fn main(init: std.process.Init) !void {
         workbench = try Workbench.init(allocator, io, files.items, size.width, size.height);
     }
     defer workbench.deinit();
+    workbench.setCellBorders(border_probe.supported);
 
     if (args.session) |session_path| {
         defer {
@@ -218,6 +225,7 @@ pub fn main(init: std.process.Init) !void {
 
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
+    if (border_probe.leftover) |leftover| try input_buffer.appendSlice(leftover);
 
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
@@ -256,7 +264,7 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.quickAccessWantsTick()) timeout = 0;
         if (workbench.searchWantsTick()) timeout = 0;
 
-        const ready = try tui.pollInput(timeout);
+        const ready = input_buffer.items.len != 0 or try tui.pollInput(timeout);
         var resized = false;
         if (try tui.resizedSize()) |new_size| {
             size = new_size;
@@ -280,10 +288,13 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        input_buffer.clearRetainingCapacity();
-        const bytes = try tui.readFd(posix.STDIN_FILENO, &input_buffer);
+        // Leftover bytes from the capability probe are processed before a new
+        // read; both the border reply and DA1 are ignored by the decoder.
+        if (input_buffer.items.len == 0) {
+            _ = try tui.readFd(posix.STDIN_FILENO, &input_buffer);
+        }
 
-        var events = try input.decode(allocator, bytes);
+        var events = try input.decode(allocator, input_buffer.items);
         defer events.deinit(allocator);
 
         for (events.items) |*item| {
@@ -322,6 +333,8 @@ pub fn main(init: std.process.Init) !void {
                     )) return;
                 },
                 .mouse => |*event| {
+                    if (workbench.handleTabDragMouse(event)) continue;
+                    if (workbench.handleSashMouse(event)) continue;
                     if (workbench.handleQuickAccessMouse(event)) continue;
                     if (workbench.handleSidebarMouse(event)) continue;
                     if (workbench.handleTabMouse(event)) continue;
@@ -347,6 +360,7 @@ pub fn main(init: std.process.Init) !void {
                 },
             }
         }
+        input_buffer.clearRetainingCapacity();
 
         if (workbench.activeTab()) |current| {
             current.onEditorChanged(time_compat.milliTimestamp());

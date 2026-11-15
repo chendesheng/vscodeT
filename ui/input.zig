@@ -142,6 +142,11 @@ const State = enum {
     esc_parameter_intermediate,
     esc_intermediate,
     bracketed_paste,
+    /// A Device Control String (`ESC P ... ST`). Terminal replies such as the
+    /// cell-border capability answer arrive this way and must not become keys.
+    dcs,
+    /// An Operating System Command (`ESC ] ... BEL|ST`); replies are swallowed.
+    osc,
 };
 
 fn tokenize(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Token) {
@@ -168,6 +173,17 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Toke
             .esc => {
                 if (chr == '[') {
                     state = .esc_parameter;
+                    last_pos = pos + 1;
+                } else if (chr == 'P' and
+                    pos + 15 < input.len and
+                    std.mem.startsWith(u8, input[pos + 1 ..], "1+bcell-border;"))
+                {
+                    // Only swallow the reply to our own query; a bare `ESC P`
+                    // is Alt-Shift-P and must stay a key event.
+                    state = .dcs;
+                    last_pos = pos + 1;
+                } else if (chr == ']' and pos + 1 < input.len and std.ascii.isDigit(input[pos + 1])) {
+                    state = .osc;
                     last_pos = pos + 1;
                 } else if (chr == '/') {
                     // Terminals send `ESC /` for Alt+/; `/` is otherwise an
@@ -238,6 +254,26 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Toke
                     last_pos = pos + 1;
                 }
             },
+            .dcs => {
+                if (chr == 0x9c) {
+                    state = .normal;
+                    last_pos = pos + 1;
+                } else if (chr == ESC and pos + 1 < input.len and input[pos + 1] == '\\') {
+                    state = .normal;
+                    pos += 1;
+                    last_pos = pos + 1;
+                }
+            },
+            .osc => {
+                if (chr == 0x07 or chr == 0x9c) {
+                    state = .normal;
+                    last_pos = pos + 1;
+                } else if (chr == ESC and pos + 1 < input.len and input[pos + 1] == '\\') {
+                    state = .normal;
+                    pos += 1;
+                    last_pos = pos + 1;
+                }
+            },
         }
         pos += 1;
     }
@@ -245,6 +281,8 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Toke
     switch (state) {
         // A lone ESC has no following byte to close a sequence; report the key.
         .esc => try result.append(allocator, .{ .string = input[pos - 1 .. pos] }),
+        // Unterminated replies are dropped whole rather than typed as text.
+        .dcs, .osc => {},
         else => {
             if (last_pos < pos) {
                 try result.append(allocator, .{ .string = input[last_pos..pos] });
@@ -462,6 +500,39 @@ test "input: bracketed paste" {
     try std.testing.expect(events.items[0].key == .paste_start);
     try std.testing.expectEqualStrings("hello", events.items[1].key.text);
     try std.testing.expect(events.items[2].key == .paste_end);
+}
+
+test "input: terminal DCS and OSC replies are ignored" {
+    const allocator = std.testing.allocator;
+    // The cell-border capability answer plus DA1 must never surface as keys,
+    // and text after them must still decode.
+    var events = try decodeKeys(
+        allocator,
+        "\x1bP1+bcell-border;ok;1;pen,rect\x1b\\\x1b[?62;22ca",
+    );
+    defer events.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expectEqualStrings("a", events.items[0].key.text);
+
+    var osc = try decodeKeys(allocator, "\x1b]11;rgb:0000/0000/0000\x07b");
+    defer osc.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), osc.items.len);
+    try std.testing.expectEqualStrings("b", osc.items[0].key.text);
+}
+
+test "input: DCS filtering does not swallow Alt-Shift-P or Alt-]" {
+    const allocator = std.testing.allocator;
+    var alt_p = try decodeKeys(allocator, "\x1bP");
+    defer alt_p.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), alt_p.items.len);
+    try std.testing.expectEqual(@as(u21, 'P'), alt_p.items[0].key.char);
+    try std.testing.expect(alt_p.items[0].mods.alt);
+
+    var alt_bracket = try decodeKeys(allocator, "\x1b]");
+    defer alt_bracket.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), alt_bracket.items.len);
+    try std.testing.expectEqual(@as(u21, ']'), alt_bracket.items[0].key.char);
+    try std.testing.expect(alt_bracket.items[0].mods.alt);
 }
 
 test "input: utf-8 text runs and lone escape" {
