@@ -20,6 +20,7 @@
         "linebreak.zig",
         "linebreak_tables.zig",
         "paint.zig",
+        "scroll_view.zig",
         "style.zig",
         "surface.zig",
         "text_layout.zig",

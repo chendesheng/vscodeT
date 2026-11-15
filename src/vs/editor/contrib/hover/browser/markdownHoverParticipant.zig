@@ -1,6 +1,7 @@
 // Port of `src/vs/editor/contrib/hover/browser/markdownHoverParticipant.ts`.
 //
-// Terminal adaptation: hover contents are rendered to `ui` nodes by
+// Terminal adaptation: hover contents are parsed by the pinned `markdown-zig`
+// CommonMark + GFM package and rendered to `ui` nodes by
 // `hoverMarkdownRenderer.zig` instead of the DOM markdown renderer. Providers
 // are called through the existing `getHover.zig` aggregation; async hover
 // computation is synchronous in this port.
@@ -19,7 +20,6 @@ const ui = @import("ui");
 const Range = @import("../../../common/core/range.zig").Range;
 const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
-const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const languages = @import("../../../common/languages.zig");
 const IMarkdownString = languages.IMarkdownString;
 const Hover = languages.Hover;
@@ -388,7 +388,7 @@ fn heightRenderedMarkdown(context: *const anyopaque, width: usize) usize {
     for (state.contents, 0..) |content, content_index| {
         if (content_index > 0) rows += 1;
         for (content.lines) |line| {
-            if (line.rule) {
+            if (line.rule or line.no_wrap) {
                 rows += 1;
                 continue;
             }
@@ -423,9 +423,25 @@ fn buildRenderedMarkdown(
             if (line.rule) {
                 const rule_row = try appendRow(doc, parent, row);
                 row += 1;
-                const text = try doc.createText(try repeat(allocator, "─", width));
-                text.setStyle(.{ .color = rule_color });
-                _ = try rule_row.appendChild(text);
+                for (line.spans) |span| {
+                    if (span.text.len == 0) continue;
+                    const prefix = try doc.createText(span.text);
+                    prefix.setStyle(span.style);
+                    _ = try rule_row.appendChild(prefix);
+                }
+                const rule_width = width -| line.indent;
+                if (rule_width > 0) {
+                    const text = try doc.createText(try repeat(allocator, "─", rule_width));
+                    text.setStyle(.{ .color = rule_color });
+                    _ = try rule_row.appendChild(text);
+                }
+                continue;
+            }
+
+            if (line.no_wrap) {
+                const line_row = try appendRow(doc, parent, row);
+                row += 1;
+                try appendClippedSpans(doc, line_row, line.spans, width);
                 continue;
             }
 
@@ -433,9 +449,20 @@ fn buildRenderedMarkdown(
             for (rows, 0..) |wrapped, index| {
                 const line_row = try appendRow(doc, parent, row);
                 row += 1;
-                if (index > 0 and line.indent > 0) {
-                    const indent_text = try doc.createText(try spaces(allocator, line.indent));
-                    _ = try line_row.appendChild(indent_text);
+                if (index > 0) {
+                    var continuation_width: usize = 0;
+                    for (line.continuation) |span| {
+                        if (span.text.len == 0) continue;
+                        const prefix = try doc.createText(span.text);
+                        prefix.setStyle(span.style);
+                        _ = try line_row.appendChild(prefix);
+                        continuation_width += markdown.textWidth(span.text);
+                    }
+                    const padding = line.indent -| continuation_width;
+                    if (padding > 0) {
+                        const indent_text = try doc.createText(try spaces(allocator, padding));
+                        _ = try line_row.appendChild(indent_text);
+                    }
                 }
                 for (wrapped) |span| {
                     if (span.text.len == 0) continue;
@@ -461,6 +488,25 @@ fn appendRow(doc: *ui.Document, parent: *ui.Node, row: usize) !*ui.Node {
     });
     _ = try parent.appendChild(node);
     return node;
+}
+
+fn appendClippedSpans(
+    doc: *ui.Document,
+    row: *ui.Node,
+    spans: []const markdown.Span,
+    width: usize,
+) !void {
+    var used: usize = 0;
+    for (spans) |span| {
+        if (used >= width) break;
+        if (span.text.len == 0) continue;
+        const take = markdown.splitAtWidth(span.text, width - used);
+        if (take == 0) break;
+        const text = try doc.createText(span.text[0..take]);
+        text.setStyle(span.style);
+        _ = try row.appendChild(text);
+        used += markdown.textWidth(span.text[0..take]);
+    }
 }
 fn spaces(allocator: Allocator, count: usize) ![]const u8 {
     const result = try allocator.alloc(u8, count);
@@ -547,7 +593,7 @@ fn wrapLine(allocator: Allocator, line: markdown.Line, width: usize) ![]const []
             limit -| @min(line.indent, limit - 1);
         var remaining = token.text;
         while (remaining.len > 0) {
-            const split = splitAtWidth(remaining, split_limit);
+            const split = markdown.splitAtWidth(remaining, split_limit);
             if (split == 0) break;
             try row.append(.{ .text = remaining[0..split], .style = token.style });
             remaining = remaining[split..];
@@ -580,20 +626,6 @@ fn tokenize(tokens: *ArrayList(Token), span: markdown.Span) !void {
             .is_space = space,
         });
     }
-}
-
-fn splitAtWidth(text: []const u8, width: usize) usize {
-    var offset: usize = 0;
-    var cells: usize = 0;
-    while (offset < text.len) {
-        const decoded = ui.dom.decodeAt(text, offset);
-        if (decoded.len == 0) break;
-        const next = CursorColumns.nextVisibleColumn(decoded.cp, cells, 1);
-        if (next > width) break;
-        cells = next;
-        offset += decoded.len;
-    }
-    return offset;
 }
 
 fn accessibleText(allocator: Allocator, contents: []const markdown.Content) ![]const u8 {

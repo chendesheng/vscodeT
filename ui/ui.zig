@@ -14,6 +14,7 @@ pub const input = @import("input.zig");
 pub const inputbox = @import("inputbox.zig");
 pub const layout = @import("layout.zig");
 pub const paint = @import("paint.zig");
+pub const scroll_view = @import("scroll_view.zig");
 pub const style = @import("style.zig");
 pub const surface = @import("surface.zig");
 
@@ -33,6 +34,7 @@ pub const FlexWrap = style.FlexWrap;
 pub const FocusDirection = event.FocusDirection;
 pub const Gap = style.Gap;
 pub const InputBox = inputbox.InputBox;
+pub const ScrollView = scroll_view.ScrollView;
 pub const FocusEvent = event.FocusEvent;
 pub const Frame = frame.Frame;
 pub const JustifyContent = style.JustifyContent;

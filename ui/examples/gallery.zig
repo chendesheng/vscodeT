@@ -21,6 +21,7 @@ const overflow = @import("overflow.zig");
 const wrap = @import("wrap.zig");
 const borders = @import("borders.zig");
 const table = @import("table.zig");
+const markdown = @import("markdown.zig");
 const tree = @import("tree.zig");
 const styling = @import("styling.zig");
 const focus = @import("focus.zig");
@@ -50,6 +51,7 @@ const entries = [_]Entry{
     .{ .title = "wrap", .open = wrap.wrapExample },
     .{ .title = "borders", .open = borders.bordersExample },
     .{ .title = "table", .open = table.tableExample },
+    .{ .title = "markdown", .open = markdown.markdownExample },
     .{ .title = "tree", .open = tree.treeExample },
     .{ .title = "styling", .open = styling.stylingExample },
     .{ .title = "focus", .open = focus.focusExample },

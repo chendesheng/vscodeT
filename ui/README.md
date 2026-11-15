@@ -30,6 +30,10 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   the derived box children, so layout, paint order and hit testing agree.
   There is no min/max sizing, grid or table layout; inline line boxes follow
   CSS text flow and wrap at UAX #14 opportunities. See the limitations below.
+- A reusable `ScrollView` for content that can overflow: a clipped viewport,
+  whole-cell translated content, a proportional scrollbar and wheel handling.
+  There is no CSS `overflow: scroll`; list-style windowing and editor scrolling
+  keep their own view-model state.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
 - Keyboard and mouse events and focus: per-node listeners with
   capture/target/bubble, `Document.activeElement`, `focus`/`blur` plus
@@ -58,6 +62,7 @@ zig build example-overflow # visible vs hidden/clip for text and absolute childr
 zig build example-wrap    # normal/nowrap/pre text flow, alignment and overflow
 zig build example-borders  # margin, padding and border boxes, nested absolute child
 zig build example-table    # bordered table with aligned columns
+zig build example-markdown # rendered markdown with a scrollbar: headings, lists, code and a table
 zig build example-tree     # box-drawing file tree
 zig build example-styling  # text attributes, truecolor, background swatches
 zig build example-focus    # interactive: Tab/Shift-Tab, Enter, activeElement
@@ -260,6 +265,12 @@ baseline alignment uses the first text row and falls back to flex-start under
 `wrap-reverse`; `position: fixed` resolves like `absolute`; and there is no
 grid, table layout or z-index compositing. Text inside flex items wraps at the
 item's resolved content width.
+
+Scrolling is opt-in: `ui.ScrollView` handles arbitrary content with a clipped
+viewport, translated content and a proportional scrollbar. There is no
+layout-level `overflow: scroll`/`auto` on every element yet; that would move
+scroll state into the box tree, clip automatically, paint scrollbars and add a
+wheel default action.
 
 ## Text wrapping and white space
 

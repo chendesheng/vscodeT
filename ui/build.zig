@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
         .{ .step = "example-wrap", .path = "examples/wrap.zig", .description = "Run the text wrapping example" },
         .{ .step = "example-borders", .path = "examples/borders.zig", .description = "Run the borders example" },
         .{ .step = "example-table", .path = "examples/table.zig", .description = "Run the table example" },
+        .{ .step = "example-markdown", .path = "examples/markdown.zig", .description = "Run the markdown example" },
         .{ .step = "example-tree", .path = "examples/tree.zig", .description = "Run the tree example" },
         .{ .step = "example-styling", .path = "examples/styling.zig", .description = "Run the styling example" },
         .{ .step = "example-focus", .path = "examples/focus.zig", .description = "Run the interactive focus example" },

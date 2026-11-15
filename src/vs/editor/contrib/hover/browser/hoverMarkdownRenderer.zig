@@ -1,22 +1,28 @@
 //! Terminal renderer for hover markdown.
 //!
 //! Upstream renders hover contents with `IMarkdownRendererService`
-//! (`src/vs/platform/markdown/browser/markdownRenderer.ts`), i.e. markdown-it
-//! plus an HTML sanitizer, and lays the result out with CSS. The terminal has
-//! no HTML or CSS engine, so this file renders the same contents to styled
-//! cells. The observable structure of hover markdown is kept: paragraphs,
-//! headings, lists, block quotes, fenced code blocks, horizontal rules,
-//! emphasis, inline code and links.
+//! (`src/vs/platform/markdown/browser/markdownRenderer.ts`), which is a
+//! VS Code-owned wrapper around the vendored marked parser: it applies custom
+//! renderers, converts the result to HTML, sanitizes it and inserts it into the
+//! DOM. The terminal has no HTML or CSS engine, so this file parses with the
+//! pinned third-party `markdown-zig` CommonMark + GFM library (`mdast`) and
+//! renders the same structure to styled cells. The observable structure of
+//! hover markdown is kept: paragraphs, headings, nested and task lists, block
+//! quotes, fenced and indented code blocks, tables, thematic breaks, emphasis,
+//! strikethrough, inline code and links.
 //!
 //! Terminal substitutions, documented in `README.md` and
 //! `docs/terminal-ui.md`:
 //!  * a link renders its text underlined and, when the URL differs, the URL in
 //!    dim text because cells cannot open a link;
-//!  * tables and images render as their plain text;
-//!  * raw HTML is ignored (there is no sanitizer/HTML renderer);
+//!  * images render their alt text (there is no image protocol);
+//!  * tables render as box-drawing grids with width-capped columns;
+//!  * raw HTML is dropped (there is no sanitizer/HTML renderer);
 //!  * a soft line break is preserved instead of being joined into the
 //!    paragraph, because hover contents in the TUI are already line-oriented;
-//!  * a tab is expanded to four spaces so cell width and painted width agree.
+//!  * a tab is expanded to four spaces so cell width and painted width agree;
+//!  * one blank line separates sibling blocks, substituting for the margins of
+//!    the browser's block elements.
 //!
 //! Strings are copied into the renderer's arena, so callers may drop the
 //! markdown string after `parse` returns.
@@ -25,7 +31,12 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const ui = @import("ui");
+const markdown = @import("markdown");
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
+
+const Node = markdown.Node;
+const NodeData = markdown.NodeData;
+const Align = markdown.node.Align;
 
 const tab_width: usize = 4;
 const text_color = ui.Color{ .r = 204, .g = 204, .b = 204 };
@@ -36,6 +47,20 @@ const link_color = ui.Color{ .r = 55, .g = 148, .b = 255 };
 const heading_color = ui.Color{ .r = 235, .g = 235, .b = 235 };
 const rule_color = ui.Color{ .r = 90, .g = 90, .b = 90 };
 
+/// Nesting guards. `markdown-zig` already bounds block nesting at 512; the
+/// renderer caps its own recursion so a hostile document cannot exhaust the
+/// terminal stack while painting.
+const max_block_depth: usize = 64;
+const max_inline_depth: usize = 64;
+
+/// Tables are laid out without knowing the hover width. Columns are capped so
+/// a single long cell cannot make the natural width unbounded; the participant
+/// clips a table that is still wider than the hover box.
+const max_table_column_width: usize = 24;
+const max_table_width: usize = 96;
+
+const RenderError = Allocator.Error;
+
 pub const Span = struct {
     text: []const u8,
     style: ui.Style = .{},
@@ -43,10 +68,16 @@ pub const Span = struct {
 
 pub const Line = struct {
     spans: []Span = &.{},
-    /// Cells kept for the continuation of a wrapped list item or quote.
+    /// Prefix spans repeated on wrapped continuation rows (block-quote bars,
+    /// list indentation). Empty for unindented prose.
+    continuation: []Span = &.{},
+    /// Cells kept for the continuation of a wrapped line. For a rule line this
+    /// is the width of `spans`; the widget draws the rule after the prefix.
     indent: usize = 0,
     /// A horizontal rule; the widget draws it to the available width.
     rule: bool = false,
+    /// A table row: keep it on one physical row and clip it instead of wrapping.
+    no_wrap: bool = false,
 
     pub fn width(self: Line) usize {
         var cells: usize = 0;
@@ -70,68 +101,122 @@ pub const Content = struct {
     }
 };
 
-pub fn parse(parent: Allocator, markdown: []const u8) !Content {
+const Definition = struct {
+    url: []const u8,
+    title: ?[]const u8,
+};
+
+const Context = struct {
+    prefix: []const u8 = "",
+    prefix_style: ui.Style = .{},
+};
+
+pub fn parse(parent: Allocator, source: []const u8) !Content {
     var arena = std.heap.ArenaAllocator.init(parent);
     errdefer arena.deinit();
     const allocator = arena.allocator();
+
+    const root = markdown.parse(allocator, source, .{ .gfm = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // Invalid UTF-8 and pathological nesting are not worth failing a
+        // hover over; keep the text readable instead.
+        else => {
+            const fallback_lines = try plainText(allocator, source);
+            return .{ .arena = arena, .lines = fallback_lines };
+        },
+    };
+
+    var definitions = std.StringHashMap(Definition).init(allocator);
+    try collectDefinitions(&definitions, root);
+
     var lines = std.array_list.Managed(Line).init(allocator);
-
-    var iterator = std.mem.splitScalar(u8, markdown, '\n');
-    while (iterator.next()) |raw| {
-        const line = try expandTabs(allocator, std.mem.trimEnd(u8, raw, "\r"));
-        const trimmed = std.mem.trim(u8, line, " \t");
-
-        if (fenceStart(trimmed)) |fence| {
-            try parseCodeBlock(allocator, &lines, &iterator, fence);
-            continue;
-        }
-        if (trimmed.len == 0) {
-            try lines.append(.{});
-            continue;
-        }
-        if (headingText(trimmed)) |heading| {
-            var spans = std.array_list.Managed(Span).init(allocator);
-            var style = ui.Style{ .bold = true, .color = heading_color };
-            if (heading.level == 1) style.underline = true;
-            try parseInline(allocator, &spans, heading.text, style);
-            try lines.append(.{ .spans = try spans.toOwnedSlice() });
-            continue;
-        }
-        if (isRule(trimmed)) {
-            try lines.append(.{ .rule = true });
-            continue;
-        }
-        if (quoteText(trimmed)) |quote| {
-            var spans = std.array_list.Managed(Span).init(allocator);
-            try spans.append(.{ .text = "│ ", .style = .{ .dim = true, .color = rule_color } });
-            try parseInline(allocator, &spans, quote, .{ .color = text_color });
-            try lines.append(.{ .spans = try spans.toOwnedSlice(), .indent = 2 });
-            continue;
-        }
-        if (listItem(trimmed)) |item| {
-            var spans = std.array_list.Managed(Span).init(allocator);
-            const marker = if (item.bullet)
-                "• "
-            else
-                try std.fmt.allocPrint(allocator, "{s}. ", .{item.number});
-            try spans.append(.{ .text = marker, .style = .{ .color = text_color } });
-            try parseInline(allocator, &spans, item.text, .{ .color = text_color });
-            try lines.append(.{ .spans = try spans.toOwnedSlice(), .indent = textWidth(marker) });
-            continue;
-        }
-
-        var spans = std.array_list.Managed(Span).init(allocator);
-        try parseInline(allocator, &spans, line, .{ .color = text_color });
-        try lines.append(.{ .spans = try spans.toOwnedSlice() });
-    }
-
-    return .{ .arena = arena, .lines = try lines.toOwnedSlice() };
+    try renderBlocks(allocator, &lines, &definitions, root, .{}, true, 0);
+    const owned_lines = try lines.toOwnedSlice();
+    return .{ .arena = arena, .lines = owned_lines };
 }
 
-fn expandTabs(allocator: Allocator, line: []const u8) ![]u8 {
-    if (std.mem.indexOfScalar(u8, line, '\t') == null) return allocator.dupe(u8, line);
+fn plainText(allocator: Allocator, source: []const u8) ![]Line {
+    var lines = std.array_list.Managed(Line).init(allocator);
+    var iterator = std.mem.splitScalar(u8, source, '\n');
+    while (iterator.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        const expanded = try expandTabs(allocator, line);
+        var spans = std.array_list.Managed(Span).init(allocator);
+        if (expanded.len > 0) {
+            try spans.append(.{ .text = expanded, .style = .{ .color = text_color } });
+        }
+        try lines.append(.{ .spans = spans.items });
+    }
+    return lines.items;
+}
+
+fn collectDefinitions(definitions: *std.StringHashMap(Definition), node: *const Node) RenderError!void {
+    if (node.data == .definition) {
+        const definition = node.data.definition;
+        const entry = try definitions.getOrPut(definition.identifier);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .{ .url = definition.url, .title = definition.title };
+        }
+    }
+    var child = node.first_child;
+    while (child) |current| : (child = current.next) {
+        try collectDefinitions(definitions, current);
+    }
+}
+
+fn makeLine(
+    allocator: Allocator,
+    ctx: Context,
+    spans: []const Span,
+    extra_indent: usize,
+    rule: bool,
+    no_wrap: bool,
+) !Line {
+    var all = std.array_list.Managed(Span).init(allocator);
+    var continuation = std.array_list.Managed(Span).init(allocator);
+    if (ctx.prefix.len > 0) {
+        const prefix = Span{ .text = ctx.prefix, .style = ctx.prefix_style };
+        try all.append(prefix);
+        try continuation.append(prefix);
+    }
+    try all.appendSlice(spans);
+    return .{
+        .spans = try all.toOwnedSlice(),
+        .continuation = try continuation.toOwnedSlice(),
+        .indent = textWidth(ctx.prefix) + extra_indent,
+        .rule = rule,
+        .no_wrap = no_wrap,
+    };
+}
+
+fn prependSpan(allocator: Allocator, line: *Line, text: []const u8, style: ui.Style) !void {
+    if (text.len == 0) return;
+    const spans = try allocator.alloc(Span, line.spans.len + 1);
+    spans[0] = .{ .text = text, .style = style };
+    @memcpy(spans[1..], line.spans);
+    line.spans = spans;
+}
+
+fn prependContinuation(allocator: Allocator, line: *Line, text: []const u8, style: ui.Style) !void {
+    if (text.len == 0) return;
+    const spans = try allocator.alloc(Span, line.continuation.len + 1);
+    spans[0] = .{ .text = text, .style = style };
+    @memcpy(spans[1..], line.continuation);
+    line.continuation = spans;
+}
+
+fn spaces(allocator: Allocator, count: usize) ![]const u8 {
+    const result = try allocator.alloc(u8, count);
+    @memset(result, ' ');
+    return result;
+}
+
+fn expandTabs(allocator: Allocator, text: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, text, '\t') == null) {
+        return try allocator.dupe(u8, text);
+    }
     var out = std.array_list.Managed(u8).init(allocator);
-    for (line) |ch| {
+    for (text) |ch| {
         if (ch == '\t') {
             try out.appendNTimes(' ', tab_width);
         } else {
@@ -141,308 +226,581 @@ fn expandTabs(allocator: Allocator, line: []const u8) ![]u8 {
     return try out.toOwnedSlice();
 }
 
-const Fence = struct {
-    marker: u8,
-    count: usize,
-};
-
-fn fenceStart(trimmed: []const u8) ?Fence {
-    if (trimmed.len < 3) return null;
-    const marker = trimmed[0];
-    if (marker != '`' and marker != '~') return null;
-    var count: usize = 0;
-    while (count < trimmed.len and trimmed[count] == marker) count += 1;
-    if (count < 3) return null;
-    return .{ .marker = marker, .count = count };
-}
-
-fn isFenceEnd(trimmed: []const u8, fence: Fence) bool {
-    if (trimmed.len < fence.count) return false;
-    var count: usize = 0;
-    while (count < trimmed.len and trimmed[count] == fence.marker) count += 1;
-    return count >= fence.count and std.mem.trim(u8, trimmed[count..], " \t").len == 0;
-}
-
-fn parseCodeBlock(
+fn renderBlocks(
     allocator: Allocator,
-    lines: *std.array_list.Managed(Line),
-    iterator: anytype,
-    fence: Fence,
+    out: *std.array_list.Managed(Line),
+    definitions: *const std.StringHashMap(Definition),
+    parent: *const Node,
+    ctx: Context,
+    separate_blocks: bool,
+    depth: usize,
+) RenderError!void {
+    if (depth > max_block_depth) return;
+    var emitted: usize = 0;
+    var child = parent.first_child;
+    while (child) |node| : (child = node.next) {
+        var block_lines = std.array_list.Managed(Line).init(allocator);
+        try renderBlock(allocator, &block_lines, definitions, node, ctx, depth);
+        if (block_lines.items.len == 0) continue;
+        if (emitted > 0 and separate_blocks) {
+            try out.append(try makeLine(allocator, ctx, &.{}, 0, false, false));
+        }
+        try out.appendSlice(block_lines.items);
+        emitted += 1;
+    }
+}
+
+fn renderBlock(
+    allocator: Allocator,
+    out: *std.array_list.Managed(Line),
+    definitions: *const std.StringHashMap(Definition),
+    node: *const Node,
+    ctx: Context,
+    depth: usize,
+) RenderError!void {
+    if (depth > max_block_depth) return;
+    switch (node.data) {
+        .paragraph => try renderParagraph(allocator, out, definitions, node, ctx, depth),
+        .heading => try renderHeading(allocator, out, definitions, node, ctx, depth),
+        .code => try renderCode(allocator, out, node, ctx),
+        .thematic_break => try out.append(try makeLine(allocator, ctx, &.{}, 0, true, false)),
+        .blockquote => try renderQuote(allocator, out, definitions, node, ctx, depth),
+        .list => try renderList(allocator, out, definitions, node, ctx, depth),
+        .table => try renderTable(allocator, out, definitions, node, ctx, depth),
+        .footnote_definition => try renderFootnoteDefinition(allocator, out, definitions, node, ctx, depth),
+        .html, .definition, .yaml, .toml, .math => {},
+        .mdx_flow_expression, .mdx_text_expression, .mdx_jsx_flow_element, .mdx_jsx_text_element => {},
+        else => {},
+    }
+}
+
+fn renderParagraph(
+    allocator: Allocator,
+    out: *std.array_list.Managed(Line),
+    definitions: *const std.StringHashMap(Definition),
+    node: *const Node,
+    ctx: Context,
+    depth: usize,
 ) !void {
+    var builder = InlineBuilder.init(allocator, ctx, out);
+    try renderInlineChildren(allocator, &builder, node, .{ .color = text_color }, definitions, depth);
+    try builder.finish();
+}
+
+fn renderHeading(
+    allocator: Allocator,
+    out: *std.array_list.Managed(Line),
+    definitions: *const std.StringHashMap(Definition),
+    node: *const Node,
+    ctx: Context,
+    depth: usize,
+) !void {
+    var style = ui.Style{ .bold = true, .color = heading_color };
+    if (node.data.heading.depth == 1) style.underline = true;
+    var builder = InlineBuilder.init(allocator, ctx, out);
+    try renderInlineChildren(allocator, &builder, node, style, definitions, depth);
+    try builder.finish();
+}
+
+fn renderCode(
+    allocator: Allocator,
+    out: *std.array_list.Managed(Line),
+    node: *const Node,
+    ctx: Context,
+) !void {
+    const code = node.data.code;
+    var value = code.value;
+    if (std.mem.endsWith(u8, value, "\n")) value = value[0 .. value.len - 1];
+    if (value.len == 0) return;
+
+    var iterator = std.mem.splitScalar(u8, value, '\n');
     while (iterator.next()) |raw| {
-        const line = try expandTabs(allocator, std.mem.trimEnd(u8, raw, "\r"));
-        if (isFenceEnd(std.mem.trim(u8, line, " \t"), fence)) return;
-        var spans = std.array_list.Managed(Span).init(allocator);
-        const text = try std.fmt.allocPrint(allocator, "  {s}", .{line});
-        try spans.append(.{
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        const expanded = try expandTabs(allocator, line);
+        const text = try std.mem.concat(allocator, u8, &.{ "  ", expanded });
+        const spans = try allocator.alloc(Span, 1);
+        spans[0] = .{
             .text = text,
             .style = .{ .color = code_block_color, .background = code_background },
-        });
-        try lines.append(.{ .spans = try spans.toOwnedSlice() });
-    }
-}
-
-const Heading = struct {
-    level: usize,
-    text: []const u8,
-};
-
-fn headingText(trimmed: []const u8) ?Heading {
-    var level: usize = 0;
-    while (level < trimmed.len and trimmed[level] == '#') level += 1;
-    if (level == 0 or level > 6 or level >= trimmed.len or trimmed[level] != ' ') return null;
-    return .{ .level = level, .text = std.mem.trim(u8, trimmed[level + 1 ..], " \t") };
-}
-
-fn isRule(trimmed: []const u8) bool {
-    if (trimmed.len < 3) return false;
-    const marker = trimmed[0];
-    if (marker != '-' and marker != '*' and marker != '_') return false;
-    for (trimmed) |ch| {
-        if (ch == ' ' or ch == '\t') continue;
-        if (ch != marker) return false;
-    }
-    return true;
-}
-
-fn quoteText(trimmed: []const u8) ?[]const u8 {
-    if (trimmed.len == 0 or trimmed[0] != '>') return null;
-    return std.mem.trimStart(u8, trimmed[1..], " ");
-}
-
-const ListItem = struct {
-    bullet: bool,
-    number: []const u8,
-    text: []const u8,
-};
-
-fn listItem(trimmed: []const u8) ?ListItem {
-    if (trimmed.len >= 2) {
-        const marker = trimmed[0];
-        if ((marker == '-' or marker == '*' or marker == '+') and trimmed[1] == ' ') {
-            return .{ .bullet = true, .number = "", .text = std.mem.trimStart(u8, trimmed[2..], " ") };
-        }
-    }
-    var digits: usize = 0;
-    while (digits < trimmed.len and std.ascii.isDigit(trimmed[digits])) digits += 1;
-    if (digits > 0 and digits + 1 < trimmed.len and
-        (trimmed[digits] == '.' or trimmed[digits] == ')') and trimmed[digits + 1] == ' ')
-    {
-        return .{
-            .bullet = false,
-            .number = trimmed[0..digits],
-            .text = std.mem.trimStart(u8, trimmed[digits + 2 ..], " "),
         };
+        try out.append(try makeLine(allocator, ctx, spans, 0, false, false));
     }
-    return null;
 }
 
-/// Parses inline markdown into styled spans. Delimiters are matched only when
-/// a closing delimiter exists later on the same line, which keeps literal
-/// `*`/`_` in prose readable.
-fn parseInline(allocator: Allocator, spans: *std.array_list.Managed(Span), text: []const u8, base: ui.Style) Allocator.Error!void {
-    var plain = std.array_list.Managed(u8).init(allocator);
-    var index: usize = 0;
+fn renderQuote(
+    allocator: Allocator,
+    out: *std.array_list.Managed(Line),
+    definitions: *const std.StringHashMap(Definition),
+    node: *const Node,
+    ctx: Context,
+    depth: usize,
+) RenderError!void {
+    const prefix = try std.mem.concat(allocator, u8, &.{ ctx.prefix, "│ " });
+    const child_ctx = Context{
+        .prefix = prefix,
+        .prefix_style = .{ .dim = true, .color = rule_color },
+    };
+    var lines = std.array_list.Managed(Line).init(allocator);
+    try renderBlocks(allocator, &lines, definitions, node, child_ctx, true, depth + 1);
+    if (lines.items.len == 0) {
+        try out.append(try makeLine(allocator, child_ctx, &.{}, 0, false, false));
+    } else {
+        try out.appendSlice(lines.items);
+    }
+}
 
-    while (index < text.len) {
-        if (try parseInlineToken(allocator, spans, &plain, text, &index, base)) continue;
-
-        if (try flushEntity(&plain, text[index..])) |consumed| {
-            index += consumed;
+fn renderList(
+    allocator: Allocator,
+    out: *std.array_list.Managed(Line),
+    definitions: *const std.StringHashMap(Definition),
+    node: *const Node,
+    ctx: Context,
+    depth: usize,
+) RenderError!void {
+    const list = node.data.list;
+    var item_index: usize = 0;
+    var child = node.first_child;
+    while (child) |item| : (child = item.next) {
+        if (item.data != .list_item) {
+            // markdown-zig can keep a block that follows the list (for example
+            // a block quote) as a child of the list container. Render it as a
+            // sibling block after the items instead of dropping it.
+            var extra_lines = std.array_list.Managed(Line).init(allocator);
+            try renderBlock(allocator, &extra_lines, definitions, item, ctx, depth);
+            if (extra_lines.items.len == 0) continue;
+            if (out.items.len > 0) {
+                try out.append(try makeLine(allocator, ctx, &.{}, 0, false, false));
+            }
+            try out.appendSlice(extra_lines.items);
             continue;
         }
-        const decoded = ui.dom.decodeAt(text, index);
-        if (decoded.len == 0) break;
-        try plain.appendSlice(text[index .. index + decoded.len]);
-        index += decoded.len;
+
+        if (item_index > 0 and list.spread) {
+            try out.append(try makeLine(allocator, ctx, &.{}, 0, false, false));
+        }
+
+        const item_data = item.data.list_item;
+        const marker: []const u8 = if (item_data.checked) |checked|
+            (if (checked) "[x] " else "[ ] ")
+        else if (list.ordered)
+            try std.fmt.allocPrint(allocator, "{d}. ", .{(list.start orelse 1) + item_index})
+        else
+            "• ";
+        const marker_width = textWidth(marker);
+        const marker_style = ui.Style{ .color = text_color };
+
+        var item_lines = std.array_list.Managed(Line).init(allocator);
+        try renderBlocks(allocator, &item_lines, definitions, item, ctx, list.spread, depth + 1);
+
+        if (item_lines.items.len == 0) {
+            const spans = try allocator.alloc(Span, 1);
+            spans[0] = .{ .text = marker, .style = marker_style };
+            try out.append(try makeLine(allocator, ctx, spans, marker_width, false, false));
+            item_index += 1;
+            continue;
+        }
+
+        const marker_spaces = try spaces(allocator, marker_width);
+        const first_is_list = item.first_child != null and item.first_child.?.data == .list;
+        if (first_is_list) {
+            // A list item may start directly with a nested list. Put the outer
+            // marker on its own line so the nested marker is not doubled.
+            const marker_spans = try allocator.alloc(Span, 1);
+            marker_spans[0] = .{ .text = marker, .style = marker_style };
+            try out.append(try makeLine(allocator, ctx, marker_spans, marker_width, false, false));
+            for (item_lines.items) |*line| {
+                try prependSpan(allocator, line, marker_spaces, .{});
+                try prependContinuation(allocator, line, marker_spaces, .{});
+                line.indent += marker_width;
+            }
+        } else {
+            for (item_lines.items, 0..) |*line, line_index| {
+                if (line_index == 0) {
+                    try prependSpan(allocator, line, marker, marker_style);
+                } else {
+                    try prependSpan(allocator, line, marker_spaces, .{});
+                }
+                try prependContinuation(allocator, line, marker_spaces, .{});
+                line.indent += marker_width;
+            }
+        }
+
+        try out.appendSlice(item_lines.items);
+        item_index += 1;
     }
-    try flushPlain(allocator, spans, &plain, base);
 }
 
-fn parseInlineToken(
+fn renderFootnoteDefinition(
     allocator: Allocator,
-    spans: *std.array_list.Managed(Span),
-    plain: *std.array_list.Managed(u8),
-    text: []const u8,
-    index: *usize,
-    base: ui.Style,
-) Allocator.Error!bool {
-    const rest = text[index.*..];
-
-    if (rest.len >= 2 and rest[0] == '\\' and rest[1] != '\n') {
-        try flushPlain(allocator, spans, plain, base);
-        const decoded = ui.dom.decodeAt(text, index.* + 1);
-        try spans.append(.{ .text = try allocator.dupe(u8, text[index.* + 1 .. index.* + 1 + decoded.len]), .style = base });
-        index.* += 1 + decoded.len;
-        return true;
-    }
-
-    if (rest[0] == '`') {
-        var run: usize = 0;
-        while (run < rest.len and rest[run] == '`') run += 1;
-        const open = index.* + run;
-        if (findBacktickClose(text, open, run)) |close| {
-            try flushPlain(allocator, spans, plain, base);
-            var content = text[open..close];
-            if (content.len >= 2 and content[0] == ' ' and content[content.len - 1] == ' ') {
-                content = content[1 .. content.len - 1];
-            }
-            var style = base;
-            style.color = code_color;
-            try spans.append(.{ .text = try allocator.dupe(u8, content), .style = style });
-            index.* = close + run;
-            return true;
-        }
-    }
-
-    if (rest.len >= 2 and (std.mem.startsWith(u8, rest, "**") or std.mem.startsWith(u8, rest, "__"))) {
-        const marker = rest[0..2];
-        if (findClosingDelimiter(text, index.* + 2, marker)) |close| {
-            try flushPlain(allocator, spans, plain, base);
-            var style = base;
-            style.bold = true;
-            try parseInline(allocator, spans, text[index.* + 2 .. close], style);
-            index.* = close + 2;
-            return true;
-        }
-    }
-
-    if (rest.len >= 2 and std.mem.startsWith(u8, rest, "~~")) {
-        if (findClosingDelimiter(text, index.* + 2, "~~")) |close| {
-            try flushPlain(allocator, spans, plain, base);
-            var style = base;
-            style.strikethrough = true;
-            try parseInline(allocator, spans, text[index.* + 2 .. close], style);
-            index.* = close + 2;
-            return true;
-        }
-    }
-
-    if (rest[0] == '*' or rest[0] == '_') {
-        const marker = rest[0];
-        const inside_word = marker == '_' and index.* > 0 and std.ascii.isAlphanumeric(text[index.* - 1]);
-        if (!inside_word and index.* + 1 < text.len and text[index.* + 1] != ' ') {
-            if (findClosingEmphasis(text, index.* + 1, marker)) |close| {
-                if (close > index.* + 1) {
-                    try flushPlain(allocator, spans, plain, base);
-                    var style = base;
-                    style.italic = true;
-                    try parseInline(allocator, spans, text[index.* + 1 .. close], style);
-                    index.* = close + 1;
-                    return true;
-                }
-            }
-        }
-    }
-
-    if (rest.len >= 2 and rest[0] == '!' and rest[1] == '[') {
-        if (std.mem.indexOfScalarPos(u8, text, index.* + 2, ']')) |close| {
-            if (close + 1 < text.len and text[close + 1] == '(') {
-                if (std.mem.indexOfScalarPos(u8, text, close + 2, ')')) |close_url| {
-                    try flushPlain(allocator, spans, plain, base);
-                    try spans.append(.{
-                        .text = try allocator.dupe(u8, text[index.* + 2 .. close]),
-                        .style = .{ .dim = true, .color = text_color },
-                    });
-                    index.* = close_url + 1;
-                    return true;
-                }
-            }
-        }
-    }
-
-    if (rest.len >= 2 and rest[0] == '[') {
-        if (std.mem.indexOfScalarPos(u8, text, index.* + 1, ']')) |close_text| {
-            if (close_text + 1 < text.len and text[close_text + 1] == '(') {
-                if (std.mem.indexOfScalarPos(u8, text, close_text + 2, ')')) |close_url| {
-                    try flushPlain(allocator, spans, plain, base);
-                    var style = base;
-                    style.color = link_color;
-                    style.underline = true;
-                    try parseInline(allocator, spans, text[index.* + 1 .. close_text], style);
-                    const url = text[close_text + 2 .. close_url];
-                    const label = text[index.* + 1 .. close_text];
-                    if (!std.mem.eql(u8, url, label)) {
-                        try spans.append(.{
-                            .text = try std.fmt.allocPrint(allocator, " ({s})", .{url}),
-                            .style = .{ .dim = true, .color = link_color },
-                        });
-                    }
-                    index.* = close_url + 1;
-                    return true;
-                }
-            }
-        }
-    }
-
-    if (rest[0] == '<') {
-        if (std.mem.indexOfScalarPos(u8, text, index.* + 1, '>')) |close| {
-            try flushPlain(allocator, spans, plain, base);
-            // Raw HTML has no renderer in the terminal; drop the tag and keep
-            // the text outside it.
-            index.* = close + 1;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-fn findBacktickClose(text: []const u8, from: usize, run: usize) ?usize {
-    var index = from;
-    while (index < text.len) : (index += 1) {
-        if (text[index] != '`') continue;
-        var count: usize = 0;
-        while (index + count < text.len and text[index + count] == '`') count += 1;
-        if (count == run) return index;
-        index += count - 1;
-    }
-    return null;
-}
-
-fn findClosingDelimiter(text: []const u8, from: usize, marker: []const u8) ?usize {
-    var index = from;
-    while (index + marker.len <= text.len) : (index += 1) {
-        if (std.mem.startsWith(u8, text[index..], marker)) return index;
-    }
-    return null;
-}
-
-fn findClosingEmphasis(text: []const u8, from: usize, marker: u8) ?usize {
-    var index = from;
-    while (index < text.len) : (index += 1) {
-        if (text[index] != marker) continue;
-        if (index == from) continue;
-        if (text[index - 1] == ' ') continue;
-        // An underscore inside a word is an identifier, not emphasis.
-        if (marker == '_' and index + 1 < text.len and std.ascii.isAlphanumeric(text[index + 1])) continue;
-        return index;
-    }
-    return null;
-}
-
-fn flushPlain(allocator: Allocator, spans: *std.array_list.Managed(Span), plain: *std.array_list.Managed(u8), base: ui.Style) Allocator.Error!void {
-    if (plain.items.len == 0) return;
-    try spans.append(.{ .text = try allocator.dupe(u8, plain.items), .style = base });
-    plain.clearRetainingCapacity();
-}
-
-fn flushEntity(plain: *std.array_list.Managed(u8), rest: []const u8) Allocator.Error!?usize {
-    const entities = [_]struct { source: []const u8, value: []const u8 }{
-        .{ .source = "&amp;", .value = "&" },
-        .{ .source = "&lt;", .value = "<" },
-        .{ .source = "&gt;", .value = ">" },
-        .{ .source = "&quot;", .value = "\"" },
-        .{ .source = "&#39;", .value = "'" },
-        .{ .source = "&nbsp;", .value = " " },
+    out: *std.array_list.Managed(Line),
+    definitions: *const std.StringHashMap(Definition),
+    node: *const Node,
+    ctx: Context,
+    depth: usize,
+) RenderError!void {
+    const definition = node.data.footnote_definition;
+    const prefix = try std.fmt.allocPrint(allocator, "{s}[^{s}]: ", .{ ctx.prefix, definition.label });
+    const child_ctx = Context{
+        .prefix = prefix,
+        .prefix_style = .{ .dim = true, .color = text_color },
     };
-    for (entities) |entity| {
-        if (std.mem.startsWith(u8, rest, entity.source)) {
-            try plain.appendSlice(entity.value);
-            return entity.source.len;
+    var lines = std.array_list.Managed(Line).init(allocator);
+    try renderBlocks(allocator, &lines, definitions, node, child_ctx, false, depth + 1);
+    if (lines.items.len == 0) {
+        try out.append(try makeLine(allocator, child_ctx, &.{}, 0, false, false));
+    } else {
+        try out.appendSlice(lines.items);
+    }
+}
+
+const Cell = struct {
+    spans: []Span,
+    width: usize,
+};
+
+fn renderTable(
+    allocator: Allocator,
+    out: *std.array_list.Managed(Line),
+    definitions: *const std.StringHashMap(Definition),
+    node: *const Node,
+    ctx: Context,
+    depth: usize,
+) RenderError!void {
+    const alignments = node.data.table.align_;
+
+    var rows = std.array_list.Managed([]Cell).init(allocator);
+    var row_node = node.first_child;
+    while (row_node) |row| : (row_node = row.next) {
+        if (row.data != .table_row) continue;
+        var cells = std.array_list.Managed(Cell).init(allocator);
+        var cell_node = row.first_child;
+        while (cell_node) |cell| : (cell_node = cell.next) {
+            if (cell.data != .table_cell) continue;
+            var scratch = std.array_list.Managed(Line).init(allocator);
+            var builder = InlineBuilder.init(allocator, .{}, &scratch);
+            builder.replace_newline = true;
+            try renderInlineChildren(allocator, &builder, cell, .{ .color = text_color }, definitions, depth);
+            const spans = try builder.takeSpans();
+            try cells.append(.{ .spans = spans, .width = spansWidth(spans) });
+        }
+        try rows.append(try cells.toOwnedSlice());
+    }
+
+    if (rows.items.len == 0) return;
+    const column_count = rows.items[0].len;
+    if (column_count == 0) return;
+
+    var widths = try allocator.alloc(usize, column_count);
+    @memset(widths, 1);
+    for (rows.items) |row| {
+        for (row, 0..) |cell, column| {
+            if (column >= column_count) break;
+            widths[column] = @max(widths[column], @min(cell.width, max_table_column_width));
         }
     }
-    return null;
+    shrinkTable(widths);
+
+    try out.append(try makeLine(allocator, ctx, try borderSpans(allocator, "┌", "┬", "┐", widths), 0, false, true));
+    try out.append(try makeLine(allocator, ctx, try rowSpans(allocator, rows.items[0], widths, alignments, true), 0, false, true));
+    try out.append(try makeLine(allocator, ctx, try borderSpans(allocator, "├", "┼", "┤", widths), 0, false, true));
+    for (rows.items[1..]) |row| {
+        try out.append(try makeLine(allocator, ctx, try rowSpans(allocator, row, widths, alignments, false), 0, false, true));
+    }
+    try out.append(try makeLine(allocator, ctx, try borderSpans(allocator, "└", "┴", "┘", widths), 0, false, true));
+}
+
+fn spansWidth(spans: []const Span) usize {
+    var width: usize = 0;
+    for (spans) |span| width += textWidth(span.text);
+    return width;
+}
+
+fn tableWidth(widths: []const usize) usize {
+    var total: usize = 1; // left border
+    for (widths) |width| total += width + 2; // one space on each side
+    total += widths.len - 1; // column separators
+    total += 1; // right border
+    return total;
+}
+
+fn shrinkTable(widths: []usize) void {
+    while (tableWidth(widths) > max_table_width) {
+        var widest: ?usize = null;
+        var widest_width: usize = 1;
+        for (widths, 0..) |width, index| {
+            if (width > widest_width) {
+                widest_width = width;
+                widest = index;
+            }
+        }
+        const index = widest orelse break;
+        widths[index] -= 1;
+    }
+}
+
+fn borderSpans(
+    allocator: Allocator,
+    left: []const u8,
+    middle: []const u8,
+    right: []const u8,
+    widths: []const usize,
+) ![]Span {
+    var text = std.array_list.Managed(u8).init(allocator);
+    try text.appendSlice(left);
+    for (widths, 0..) |width, index| {
+        var count: usize = 0;
+        while (count < width + 2) : (count += 1) try text.appendSlice("─");
+        if (index + 1 < widths.len) try text.appendSlice(middle);
+    }
+    try text.appendSlice(right);
+
+    const spans = try allocator.alloc(Span, 1);
+    spans[0] = .{ .text = try text.toOwnedSlice(), .style = .{ .color = rule_color } };
+    return spans;
+}
+
+fn rowSpans(
+    allocator: Allocator,
+    cells: []const Cell,
+    widths: []const usize,
+    alignments: []const Align,
+    header: bool,
+) ![]Span {
+    const border_style = ui.Style{ .color = rule_color };
+    var spans = std.array_list.Managed(Span).init(allocator);
+    try spans.append(.{ .text = "│", .style = border_style });
+
+    for (widths, 0..) |width, column| {
+        const cell = if (column < cells.len) cells[column] else Cell{ .spans = &.{}, .width = 0 };
+        const clipped = try truncateSpans(allocator, cell.spans, width);
+        const clipped_width = spansWidth(clipped);
+        const padding = width -| clipped_width;
+        const alignment: Align = if (column < alignments.len) alignments[column] else .none;
+        const left_padding = switch (alignment) {
+            .right => padding,
+            .center => padding / 2,
+            else => 0,
+        };
+        const right_padding = padding - left_padding;
+
+        try spans.append(.{ .text = " ", .style = border_style });
+        if (left_padding > 0) {
+            try spans.append(.{ .text = try spaces(allocator, left_padding), .style = .{ .color = text_color } });
+        }
+        for (clipped) |span| {
+            var style = span.style;
+            if (header) style.bold = true;
+            try spans.append(.{ .text = span.text, .style = style });
+        }
+        if (right_padding > 0) {
+            try spans.append(.{ .text = try spaces(allocator, right_padding), .style = .{ .color = text_color } });
+        }
+        try spans.append(.{ .text = " ", .style = border_style });
+        try spans.append(.{ .text = "│", .style = border_style });
+    }
+
+    return try spans.toOwnedSlice();
+}
+
+fn truncateSpans(allocator: Allocator, spans: []const Span, limit: usize) ![]Span {
+    var result = std.array_list.Managed(Span).init(allocator);
+    var used: usize = 0;
+    for (spans) |span| {
+        if (used >= limit) break;
+        const remaining = limit - used;
+        const take = splitAtWidth(span.text, remaining);
+        if (take == 0) break;
+        if (take < span.text.len) {
+            // Reserve one cell for the ellipsis so a truncated cell ends in
+            // "…" instead of silently losing its last glyph.
+            const reserve: usize = if (remaining > 1) 1 else 0;
+            const cut = splitAtWidth(span.text, remaining - reserve);
+            if (cut > 0) {
+                try result.append(.{ .text = span.text[0..cut], .style = span.style });
+                used += textWidth(span.text[0..cut]);
+            }
+            if (reserve == 1 and used < limit) {
+                try result.append(.{ .text = "…", .style = .{ .dim = true, .color = text_color } });
+            }
+            break;
+        }
+        try result.append(span);
+        used += textWidth(span.text);
+    }
+    return try result.toOwnedSlice();
+}
+
+const InlineBuilder = struct {
+    allocator: Allocator,
+    ctx: Context,
+    out: *std.array_list.Managed(Line),
+    replace_newline: bool = false,
+    spans: std.array_list.Managed(Span),
+
+    fn init(allocator: Allocator, ctx: Context, out: *std.array_list.Managed(Line)) InlineBuilder {
+        return .{
+            .allocator = allocator,
+            .ctx = ctx,
+            .out = out,
+            .spans = std.array_list.Managed(Span).init(allocator),
+        };
+    }
+
+    fn appendText(self: *InlineBuilder, text: []const u8, style: ui.Style) !void {
+        var index: usize = 0;
+        while (index < text.len) {
+            if (std.mem.indexOfScalarPos(u8, text, index, '\n')) |line_end| {
+                if (line_end > index) try self.appendChunk(text[index..line_end], style);
+                try self.newline();
+                index = line_end + 1;
+                continue;
+            }
+            try self.appendChunk(text[index..], style);
+            return;
+        }
+    }
+
+    fn appendChunk(self: *InlineBuilder, text: []const u8, style: ui.Style) !void {
+        const expanded = try expandTabs(self.allocator, text);
+        if (expanded.len == 0) return;
+        try self.spans.append(.{ .text = expanded, .style = style });
+    }
+
+    fn newline(self: *InlineBuilder) !void {
+        if (self.replace_newline) {
+            try self.spans.append(.{ .text = " ", .style = .{ .color = text_color } });
+            return;
+        }
+        try self.flush();
+    }
+
+    fn flush(self: *InlineBuilder) !void {
+        try self.out.append(try makeLine(self.allocator, self.ctx, self.spans.items, 0, false, false));
+        self.spans.clearRetainingCapacity();
+    }
+
+    fn finish(self: *InlineBuilder) !void {
+        if (self.spans.items.len == 0 and self.out.items.len > 0) return;
+        try self.flush();
+    }
+
+    fn takeSpans(self: *InlineBuilder) ![]Span {
+        return try self.spans.toOwnedSlice();
+    }
+};
+
+fn renderInlineChildren(
+    allocator: Allocator,
+    builder: *InlineBuilder,
+    node: *const Node,
+    style: ui.Style,
+    definitions: *const std.StringHashMap(Definition),
+    depth: usize,
+) RenderError!void {
+    if (depth > max_inline_depth) return;
+    var child = node.first_child;
+    while (child) |current| : (child = current.next) {
+        try renderInline(allocator, builder, current, style, definitions, depth + 1);
+    }
+}
+
+fn renderInline(
+    allocator: Allocator,
+    builder: *InlineBuilder,
+    node: *const Node,
+    style: ui.Style,
+    definitions: *const std.StringHashMap(Definition),
+    depth: usize,
+) RenderError!void {
+    if (depth > max_inline_depth) return;
+    switch (node.data) {
+        .text => |text| try builder.appendText(text, style),
+        .emphasis => {
+            var nested = style;
+            nested.italic = true;
+            try renderInlineChildren(allocator, builder, node, nested, definitions, depth);
+        },
+        .strong => {
+            var nested = style;
+            nested.bold = true;
+            try renderInlineChildren(allocator, builder, node, nested, definitions, depth);
+        },
+        .delete => {
+            var nested = style;
+            nested.strikethrough = true;
+            try renderInlineChildren(allocator, builder, node, nested, definitions, depth);
+        },
+        .inline_code => |code| try builder.appendText(code, withColor(style, code_color)),
+        .link => |link| {
+            var link_style = style;
+            link_style.color = link_color;
+            link_style.underline = true;
+            try renderInlineChildren(allocator, builder, node, link_style, definitions, depth);
+            try appendLinkUrl(allocator, builder, node, link.url);
+        },
+        .link_reference => |reference| {
+            if (definitions.get(reference.identifier)) |definition| {
+                var link_style = style;
+                link_style.color = link_color;
+                link_style.underline = true;
+                try renderInlineChildren(allocator, builder, node, link_style, definitions, depth);
+                try appendLinkUrl(allocator, builder, node, definition.url);
+            } else {
+                try renderInlineChildren(allocator, builder, node, style, definitions, depth);
+            }
+        },
+        .image => |image| {
+            if (image.alt.len > 0) {
+                try builder.appendText(image.alt, .{ .dim = true, .color = text_color });
+            }
+        },
+        .image_reference => |image| {
+            if (image.alt.len > 0) {
+                try builder.appendText(image.alt, .{ .dim = true, .color = text_color });
+            }
+        },
+        .break_ => try builder.newline(),
+        .footnote_reference => |reference| {
+            const text = try std.fmt.allocPrint(allocator, "[^{s}]", .{reference.label});
+            try builder.appendText(text, .{ .dim = true, .color = text_color });
+        },
+        .inline_math => |math| try builder.appendText(math, withColor(style, code_color)),
+        .html, .mdx_text_expression, .mdx_jsx_text_element => {},
+        else => try renderInlineChildren(allocator, builder, node, style, definitions, depth),
+    }
+}
+
+fn withColor(style: ui.Style, color: ui.Color) ui.Style {
+    var result = style;
+    result.color = color;
+    return result;
+}
+
+fn appendLinkUrl(
+    allocator: Allocator,
+    builder: *InlineBuilder,
+    node: *const Node,
+    url: []const u8,
+) !void {
+    var label = std.array_list.Managed(u8).init(allocator);
+    try flattenText(&label, node);
+    if (std.mem.eql(u8, url, label.items)) return;
+    const suffix = try std.fmt.allocPrint(allocator, " ({s})", .{url});
+    try builder.appendText(suffix, .{ .dim = true, .color = link_color });
+}
+
+fn flattenText(out: *std.array_list.Managed(u8), node: *const Node) RenderError!void {
+    switch (node.data) {
+        .text => |text| try out.appendSlice(text),
+        .inline_code => |code| try out.appendSlice(code),
+        .image => |image| try out.appendSlice(image.alt),
+        .break_ => try out.append(' '),
+        else => {},
+    }
+    var child = node.first_child;
+    while (child) |current| : (child = current.next) {
+        try flattenText(out, current);
+    }
 }
 
 pub fn textWidth(text: []const u8) usize {
@@ -457,44 +815,259 @@ pub fn textWidth(text: []const u8) usize {
     return width;
 }
 
-test "markdown: headings, lists, code and inline styles" {
+/// Byte offset of the largest prefix of `text` that fits in `width` cells.
+pub fn splitAtWidth(text: []const u8, width: usize) usize {
+    var offset: usize = 0;
+    var cells: usize = 0;
+    while (offset < text.len) {
+        const decoded = ui.dom.decodeAt(text, offset);
+        if (decoded.len == 0) break;
+        const next = CursorColumns.nextVisibleColumn(decoded.cp, cells, 1);
+        if (next > width) break;
+        cells = next;
+        offset += decoded.len;
+    }
+    return offset;
+}
+
+fn findLine(content: *const Content, needle: []const u8) ?Line {
+    for (content.lines) |line| {
+        for (line.spans) |span| {
+            if (std.mem.indexOf(u8, span.text, needle) != null) return line;
+        }
+    }
+    return null;
+}
+
+fn lineContains(allocator: Allocator, line: Line, needle: []const u8) bool {
+    var text = std.array_list.Managed(u8).init(allocator);
+    defer text.deinit();
+    for (line.spans) |span| text.appendSlice(span.text) catch return false;
+    return std.mem.indexOf(u8, text.items, needle) != null;
+}
+
+fn findTextLine(allocator: Allocator, content: *const Content, needle: []const u8) ?Line {
+    for (content.lines) |line| {
+        if (lineContains(allocator, line, needle)) return line;
+    }
+    return null;
+}
+
+test "markdown: headings, nested lists and code blocks" {
     const testing = std.testing;
     var content = try parse(testing.allocator,
         \\# Title
-        \\- **bold** and *italic* with `code`
-        \\> quoted
+        \\- one
+        \\  - nested
+        \\- [x] done
+        \\- [ ] todo
         \\```zig
         \\const x = 1;
         \\```
     );
     defer content.deinit();
 
-    try testing.expectEqual(@as(usize, 4), content.lines.len);
-    try testing.expect(content.lines[0].spans[0].style.bold);
-    try testing.expectEqualStrings("• ", content.lines[1].spans[0].text);
-    try testing.expectEqualStrings("│ ", content.lines[2].spans[0].text);
-    try testing.expect(std.mem.indexOf(u8, content.lines[3].spans[0].text, "const x = 1;") != null);
-    try testing.expectEqual(code_background, content.lines[3].spans[0].style.background.?);
+    const heading = findLine(&content, "Title").?;
+    try testing.expect(heading.spans[0].style.bold);
+    try testing.expect(heading.spans[0].style.underline);
+
+    try testing.expect(findTextLine(testing.allocator, &content, "• nested") != null);
+    try testing.expect(findTextLine(testing.allocator, &content, "• one") != null);
+    try testing.expect(findTextLine(testing.allocator, &content, "[x] done") != null);
+    try testing.expect(findTextLine(testing.allocator, &content, "[ ] todo") != null);
+
+    const code = findTextLine(testing.allocator, &content, "const x = 1;").?;
+    try testing.expectEqual(code_background, code.spans[0].style.background.?);
 }
 
-test "markdown: links render their text and dim URL" {
+test "markdown: GFM table renders a clipped box grid" {
     const testing = std.testing;
-    var content = try parse(testing.allocator, "see [docs](https://example.com) now");
+    var content = try parse(testing.allocator,
+        \\| name | value |
+        \\|:-----|------:|
+        \\| alpha | 1 |
+        \\| beta | this-value-is-too-long-for-the-column-cap |
+    );
     defer content.deinit();
 
-    const line = content.lines[0];
-    try testing.expectEqual(@as(usize, 4), line.spans.len);
-    try testing.expectEqualStrings("see ", line.spans[0].text);
-    try testing.expectEqualStrings("docs", line.spans[1].text);
-    try testing.expect(line.spans[1].style.underline);
-    try testing.expectEqualStrings(" (https://example.com)", line.spans[2].text);
-    try testing.expectEqualStrings(" now", line.spans[3].text);
+    try testing.expect(findLine(&content, "┌") != null);
+    try testing.expect(findLine(&content, "┬") != null);
+    try testing.expect(findLine(&content, "├") != null);
+    try testing.expect(findLine(&content, "└") != null);
+    try testing.expect(findLine(&content, "name") != null);
+    try testing.expect(findLine(&content, "alpha") != null);
+
+    const header = findLine(&content, "name").?;
+    try testing.expect(header.no_wrap);
+    var saw_bold = false;
+    for (header.spans) |span| {
+        if (std.mem.indexOf(u8, span.text, "name") != null) saw_bold = span.style.bold;
+    }
+    try testing.expect(saw_bold);
+    try testing.expect(findLine(&content, "alpha").?.no_wrap);
+    try testing.expect(findTextLine(testing.allocator, &content, "…") != null);
 }
 
-test "markdown: identifiers keep their underscores" {
+test "markdown: thematic breaks keep their block prefix" {
     const testing = std.testing;
-    var content = try parse(testing.allocator, "call foo_bar_baz now");
+    var content = try parse(testing.allocator,
+        \\---
+        \\
+        \\> ---
+    );
     defer content.deinit();
-    try testing.expectEqual(@as(usize, 1), content.lines[0].spans.len);
-    try testing.expect(!content.lines[0].spans[0].style.italic);
+
+    var saw_top_level = false;
+    var saw_quoted = false;
+    for (content.lines) |line| {
+        if (!line.rule) continue;
+        if (line.indent == 0 and line.spans.len == 0) saw_top_level = true;
+        if (line.indent == 2 and line.spans.len == 1 and std.mem.eql(u8, line.spans[0].text, "│ ")) saw_quoted = true;
+    }
+    try testing.expect(saw_top_level);
+    try testing.expect(saw_quoted);
+}
+
+test "markdown: setext headings and indented code" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator,
+        \\Heading
+        \\=======
+        \\
+        \\    indented code
+    );
+    defer content.deinit();
+
+    const heading = findLine(&content, "Heading").?;
+    try testing.expect(heading.spans[0].style.bold);
+    try testing.expect(heading.spans[0].style.underline);
+
+    const code = findLine(&content, "indented code").?;
+    try testing.expectEqual(code_background, code.spans[0].style.background.?);
+}
+
+test "markdown: links, autolinks and reference links" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator,
+        \\see [docs](https://example.com) and <https://example.org>
+        \\
+        \\[ref][id]
+        \\
+        \\[id]: https://example.net
+    );
+    defer content.deinit();
+
+    const link_line = findTextLine(testing.allocator, &content, "docs").?;
+    var saw_url = false;
+    for (link_line.spans) |span| {
+        if (std.mem.indexOf(u8, span.text, "(https://example.com)") != null) saw_url = span.style.dim;
+    }
+    try testing.expect(saw_url);
+
+    const autolink = findTextLine(testing.allocator, &content, "https://example.org").?;
+    var url_spans: usize = 0;
+    for (autolink.spans) |span| {
+        if (std.mem.indexOf(u8, span.text, "https://example.org") != null) url_spans += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), url_spans);
+
+    const reference = findTextLine(testing.allocator, &content, "ref").?;
+    var saw_reference_url = false;
+    for (reference.spans) |span| {
+        if (std.mem.indexOf(u8, span.text, "(https://example.net)") != null) saw_reference_url = true;
+    }
+    try testing.expect(saw_reference_url);
+}
+
+test "markdown: images use alt text and raw HTML is dropped" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator,
+        \\![alt text](https://example.com/x.png)
+        \\
+        \\<span>hidden?</span> visible
+        \\
+        \\<div>block html</div>
+    );
+    defer content.deinit();
+
+    try testing.expect(findLine(&content, "alt text") != null);
+    try testing.expect(findLine(&content, "visible") != null);
+    try testing.expect(findLine(&content, "hidden?") != null);
+    try testing.expect(findLine(&content, "block html") == null);
+}
+
+test "markdown: soft breaks, tabs, entities and escapes" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator, "first\nsecond\n\nA\tB &amp; C \\*literal\\*");
+    defer content.deinit();
+
+    try testing.expect(findLine(&content, "first") != null);
+    try testing.expect(findLine(&content, "second") != null);
+    try testing.expect(findTextLine(testing.allocator, &content, "A    B") != null);
+    try testing.expect(findTextLine(testing.allocator, &content, "& C *literal*") != null);
+}
+
+test "markdown: invalid UTF-8 falls back to text" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator, "ok \xff bad");
+    defer content.deinit();
+    try testing.expect(content.lines.len > 0);
+}
+
+test "markdown: many blank-separated paragraphs" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator, "one\n\ntwo\n\nthree\n\nfour\n\nfive\n\nsix\n\nseven\n\neight\n\nnine\n\nten");
+    defer content.deinit();
+    try testing.expect(content.lines.len >= 10);
+}
+
+test "markdown: empty and definition-only input render nothing" {
+    const testing = std.testing;
+
+    var empty = try parse(testing.allocator, "");
+    defer empty.deinit();
+    try testing.expectEqual(@as(usize, 0), empty.lines.len);
+
+    var definitions = try parse(testing.allocator, "[id]: https://example.com");
+    defer definitions.deinit();
+    try testing.expectEqual(@as(usize, 0), definitions.lines.len);
+}
+
+test "markdown: quote and list continuations keep their prefix" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator,
+        \\> quoted text
+        \\
+        \\- listed text
+    );
+    defer content.deinit();
+
+    const quote = findLine(&content, "quoted").?;
+    try testing.expectEqual(@as(usize, 2), quote.indent);
+    var quote_continuation = std.array_list.Managed(u8).init(testing.allocator);
+    defer quote_continuation.deinit();
+    for (quote.continuation) |span| try quote_continuation.appendSlice(span.text);
+    try testing.expectEqualStrings("│ ", quote_continuation.items);
+
+    const list = findTextLine(testing.allocator, &content, "listed").?;
+    try testing.expectEqual(@as(usize, 2), list.indent);
+    var list_continuation = std.array_list.Managed(u8).init(testing.allocator);
+    defer list_continuation.deinit();
+    for (list.continuation) |span| try list_continuation.appendSlice(span.text);
+    try testing.expectEqualStrings("  ", list_continuation.items);
+}
+
+test "markdown: blockquote after a list is not dropped" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator, "- item\n\n> quote");
+    defer content.deinit();
+    try testing.expect(findLine(&content, "quote") != null);
+}
+
+test "markdown: splitAtWidth keeps UTF-8 intact" {
+    const testing = std.testing;
+    const text = "a宽b";
+    const split = splitAtWidth(text, 3);
+    try testing.expect(std.unicode.utf8ValidateSlice(text[0..split]));
+    try testing.expectEqual(@as(usize, 3), textWidth(text[0..split]));
 }

@@ -43,6 +43,11 @@
         .ui = .{
             .path = "ui",
         },
+        // CommonMark + GFM Markdown parser used by the hover markdown renderer.
+        .markdown_zig = .{
+            .url = "https://github.com/taggon/markdown-zig/archive/85bcc67eecc51253c75b0e92eddaedc6b2b2676d.tar.gz",
+            .hash = "markdown_zig-0.1.0-CgtizKttDgCpgI50MVPx17vN9PdqTPRuKy-Z4uBQ8A-2",
+        },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding

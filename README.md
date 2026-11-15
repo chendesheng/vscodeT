@@ -224,6 +224,23 @@ TextMate tokenization:
   and foreground color IDs.
 - Languages without a TextMate mapping continue to use the null tokenizer.
 
+Markdown:
+
+- Hover markdown is parsed by the pinned `taggon/markdown-zig` package
+  (commit `85bcc67`, MIT), a CommonMark + GFM parser that produces mdast. The
+  terminal renderer in
+  `src/vs/editor/contrib/hover/browser/hoverMarkdownRenderer.zig` maps that
+  tree to styles and cells: paragraphs, headings, nested/ordered/task lists,
+  block quotes, fenced and indented code, thematic breaks, GFM tables,
+  emphasis, strikethrough, inline code, links/autolinks and images.
+- Terminal substitutions: a link shows its text underlined and, when the URL
+  differs, the URL in dim text because cells cannot open a link; images show
+  their alt text (there is no image protocol); tables render as box-drawing
+  grids with width-capped columns; raw HTML is dropped (there is no HTML
+  sanitizer or renderer); one blank line separates sibling blocks in place of
+  browser margins; tabs expand to four spaces. MDX, math and frontmatter are
+  disabled; there is no clickable-link or image support.
+
 
 TUI editor:
 
@@ -359,8 +376,10 @@ Editor contributions:
   modes), the terminal content widget (bordered, sized and clamped to the text
   area, line scrolling with wheel/arrows/PageUp/PageDown/Home/End, click to
   focus, Escape to close), and the markdown participant. Hover contents are
-  markdown-rendered to styled cells by
-  `markdownHoverRenderer.zig`; the hovered range is painted through the same
+  parsed by the pinned `taggon/markdown-zig` CommonMark + GFM parser (commit
+  `85bcc67`, MIT) and rendered to styled cells by `markdownHoverRenderer.zig`;
+  tables, nested/task lists, setext and indented code, autolinks and reference
+  links are supported. The hovered range is painted through the same
   `LineDecoration.filter`/`extractWrapped` path as find and bracket highlights
   (`hoverHighlight`). The app registers a TUI-local provider
   (`src/tui/hoverProvider.zig`) that reports the word, language and token type,

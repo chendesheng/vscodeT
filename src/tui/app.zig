@@ -1133,6 +1133,115 @@ test "app: hovering a word shows the rendered markdown hover" {
     try std.testing.expect(view.surface.document().active_element == null);
 }
 
+test "app: hover renders a GFM table and task list" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "value here", "test.zig", 72, 60);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
+    const CancellationToken = @import("../vs/base/common/cancellation.zig").CancellationToken;
+    const Provider = struct {
+        contents: [1]languages.IMarkdownString = .{.{ .value =
+        \\| name | value |
+        \\|---|---|
+        \\| alpha | 1 |
+        \\
+        \\- [x] done
+        \\
+        \\> A quote that wraps in the hover box should keep its left border on both rows.
+        }},
+        range: Range = .{ .startLineNumber = 1, .startColumn = 1, .endLineNumber = 1, .endColumn = 6 },
+
+        fn provide(
+            context: *anyopaque,
+            _: *TextModel,
+            _: Position,
+            _: CancellationToken,
+            _: ?*const languages.HoverContext,
+        ) anyerror!?languages.Hover {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return .{ .contents = &self.contents, .range = self.range };
+        }
+    };
+    var provider = Provider{};
+    const providers = [_]languages.HoverProvider{.{
+        .context = &provider,
+        .provide_hover = Provider.provide,
+    }};
+
+    var participant = MarkdownHoverParticipant.init(allocator, editor.model, &providers);
+    defer participant.deinit();
+    const participants = [_]hoverTypes.IEditorHoverParticipant{participant.interface()};
+
+    const hover = try ContentHoverController.init(allocator, editor.model, &participants, .{}, .{
+        .context = view,
+        .text_height = viewTextHeight,
+        .visible_row_of = viewVisibleRowOf,
+        .request_frame = viewRequestFrame,
+        .focus_editor = viewFocusEditor,
+        .set_hover_decoration = viewSetHoverDecoration,
+        .coordinates = .{
+            .context = view,
+            .model_column_at_view_line_start = viewModelColumnAtViewLineStart,
+        },
+    });
+    defer hover.deinit();
+    try view.addContentWidget(hover.widget().contentWidget());
+
+    const target = editorBrowser.MouseTarget{
+        .type = .content_text,
+        .position = Position.init(1, 3),
+        .range = Range.init(1, 1, 1, 6),
+        .mouse_column = 3,
+    };
+    hover.onMouseMove(.{ .target = target, .x = 2, .y = 0 });
+    const now = time_compat.milliTimestamp();
+    _ = hover.onTick(now + 1000);
+    _ = hover.onTick(now + 2000);
+    try std.testing.expect(hover.isVisible());
+
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const box = view.content_entries.items[0];
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, '┌'), grid.cluster[grid.index(box.left, box.top)]);
+    try std.testing.expectEqual(@as(u32, '┘'), grid.cluster[grid.index(box.left + box.width - 1, box.top + box.height - 1)]);
+
+    var found_table = false;
+    var found_cell = false;
+    var found_task = false;
+    var found_quote_continuation = false;
+    for (0..grid.rows) |row| {
+        const text = try grid.rowText(allocator, row);
+        defer allocator.free(text);
+        if (std.mem.indexOf(u8, text, "┌") != null) found_table = true;
+        if (std.mem.indexOf(u8, text, "alpha") != null) found_cell = true;
+        if (std.mem.indexOf(u8, text, "[x] done") != null) found_task = true;
+        if (std.mem.indexOf(u8, text, "both rows") != null and
+            std.mem.indexOf(u8, text, "││") != null)
+        {
+            found_quote_continuation = true;
+        }
+    }
+    try std.testing.expect(found_table);
+    try std.testing.expect(found_cell);
+    try std.testing.expect(found_task);
+    try std.testing.expect(found_quote_continuation);
+
+    hover.hideContentHover();
+    try view.refresh();
+}
+
 test "app: long hover content scrolls without moving the editor" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

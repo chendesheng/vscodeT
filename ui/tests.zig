@@ -10,6 +10,7 @@ comptime {
     _ = @import("layout.zig");
     _ = @import("linebreak.zig");
     _ = @import("paint.zig");
+    _ = @import("scroll_view.zig");
     _ = @import("style.zig");
     _ = @import("surface.zig");
     _ = @import("text_layout.zig");

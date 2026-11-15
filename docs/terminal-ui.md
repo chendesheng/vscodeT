@@ -365,8 +365,8 @@ generic `ui` engine follows CSS/TermDOM instead.
 Ported widgets use flex where upstream does: the find bar is a flex column with
 one row per input, the suggest widget is a flex column with flex rows and a
 flex list/detail split, and the hover status bar is a flex row. The
-terminal-specific list windowing, scrollbar, hit targets and hover scrolling
-remain manual.
+terminal-specific list windowing, hit targets and hover scrolling remain
+manual; the generic `ui.ScrollView` covers arbitrary overflowing content.
 
 The box tree owns invalidation. DOM mutation APIs notify the attached
 `MutationObserver`. Structural, style and text changes all set `needs_rebuild`
@@ -573,6 +573,13 @@ Public surface for the POC:
   `flex_grow`, `flex_shrink`, `flex_basis`, `order` and `gap` (`Gap.all`).
   `width`/`height` are content-box sizes; padding, border and margin expand
   outward.
+- `ScrollView`: a manual scroll view built from those primitives. `init`
+  creates a clipped viewport, a translated content box and a proportional
+  scrollbar; the caller appends cells to `contentNode()` and passes explicit
+  viewport/content heights. The wheel scrolls it. There is no CSS
+  `overflow: scroll`/`auto`; list windowing and editor/hover scrolling keep
+  their own view-model state. A layout-level `overflow: scroll`/`auto` for
+  every box is future work; it would move scroll state into the box tree.
 - Measurement: not implemented yet; tests read `Surface.grid()` directly. The
   `getBoundingClientRect`/`offsetWidth` boundary comes with the view parts.
 - Layout: absolute positioning against the nearest positioned ancestor using
@@ -734,10 +741,13 @@ Library constraints:
   event loop polls with the nearest deadline and calls `onTick`), the wrapper
   picks range anchors, `contentHoverRendered.zig` builds participant rows and
   the `hoverHighlight` decoration, and `contentHoverWidget.zig` renders the
-  bordered, scrollable box as a content widget. Markdown is rendered to styled
-  cells by `hoverMarkdownRenderer.zig`; there is no HTML/CSS engine, so links
-  show their URL in dim text, tables/images fall back to plain text, and raw
-  HTML is ignored.
+  bordered, scrollable box as a content widget. Markdown is parsed by the
+  pinned `taggon/markdown-zig` CommonMark + GFM package (commit `85bcc67`,
+  MIT) and rendered to styled cells by `hoverMarkdownRenderer.zig`; there is
+  no HTML/CSS engine, so links show their URL in dim text, images show their
+  alt text, tables render as width-capped box-drawing grids, and raw HTML is
+  ignored. Nested/task lists, setext/indented code, autolinks and reference
+  links are supported; wide table rows are clipped to the hover width.
 - `ui/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
   `(anchor, cursor)` selection with keyboard/mouse extension and selection
   paint, shell-like word movement/deletion, Ctrl+A, clipboard hooks

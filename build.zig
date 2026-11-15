@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) void {
     const textmate = textmateModule(b, textmate_dep, target, optimize, onig);
     const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
     const ui = ui_dep.module("ui");
+    const markdown = markdownModule(b, target, optimize);
 
     // We will also create a module for our other entry point, 'main.zig'.
     const exe = b.addExecutable(.{
@@ -34,6 +35,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("oniguruma", onig);
     exe.root_module.addImport("textmate", textmate);
     exe.root_module.addImport("ui", ui);
+    exe.root_module.addImport("markdown", markdown);
     addOnigLibraryPath(b, exe.root_module);
     exe.root_module.linkSystemLibrary("onig", .{});
 
@@ -60,7 +62,28 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    setupTests(b, target, optimize, onig, textmate, ui);
+    setupTests(b, target, optimize, onig, textmate, ui, markdown);
+}
+
+/// Builds the markdown module from the pinned CommonMark + GFM package.
+///
+/// The upstream package exposes no Zig module and its own build script also
+/// builds its CLI and test executables. Only the parser and its `entities`
+/// module are needed here, so the module is wired from the package sources.
+fn markdownModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) *std.Build.Module {
+    const dep = b.dependency("markdown_zig", .{ .target = target, .optimize = optimize });
+    const entities = b.createModule(.{
+        .root_source_file = dep.path("src/entities.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const module = b.createModule(.{
+        .root_source_file = dep.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addImport("entities", entities);
+    return module;
 }
 
 /// Installs a textmate module backed by this build's oniguruma module.
@@ -151,7 +174,7 @@ fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module) void {
     }
 }
 
-fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, textmate: *std.Build.Module, ui: *std.Build.Module) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module) void {
     const test_step = b.step("test", "Run all tests");
 
     const tests = b.addTest(.{
@@ -165,6 +188,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     tests.root_module.addImport("oniguruma", onig);
     tests.root_module.addImport("textmate", textmate);
     tests.root_module.addImport("ui", ui);
+    tests.root_module.addImport("markdown", markdown);
     addOnigLibraryPath(b, tests.root_module);
     tests.root_module.linkSystemLibrary("onig", .{});
 
