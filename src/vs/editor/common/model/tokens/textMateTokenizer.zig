@@ -254,6 +254,12 @@ fn metadataForScope(metadata_: TokenMetadata, scope: []const u8) TokenMetadata {
         metadata.foreground = 7;
     } else if (std.mem.startsWith(u8, scope, "invalid")) {
         metadata.foreground = 7;
+    } else if (std.mem.startsWith(u8, scope, "markup.inline.raw") or
+        std.mem.startsWith(u8, scope, "punctuation.definition.raw"))
+    {
+        // Dark+ colors inline code with the string color. Backticks have a
+        // separate punctuation scope in the grammar, so map both.
+        metadata.foreground = 6;
     } else if (std.mem.startsWith(u8, scope, "keyword") or std.mem.startsWith(u8, scope, "storage")) {
         metadata.foreground = 8;
     } else if (std.mem.startsWith(u8, scope, "constant")) {
@@ -291,7 +297,6 @@ test "textmate tokenizer: state survives lines" {
     try std.testing.expect(line2.getCount() > 1);
 }
 
-
 test "textmate tokenizer: token text and foreground stay aligned" {
     const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
     var ctx = try TestModel.init(std.testing.allocator, "const std = @import(\"std\");", "zig");
@@ -323,6 +328,27 @@ test "textmate tokenizer: token text and foreground stay aligned" {
         }
     }
     try std.testing.expect(saw_const and saw_std_variable and saw_string and saw_import);
+}
+
+test "textmate tokenizer: markdown inline raw scopes use the string color" {
+    const line = "a `code` span";
+    const captures = [_]tm.ParseCapture{
+        .{ .start = 0, .end = line.len, .scope = "text.html.markdown" },
+        .{ .start = 0, .end = line.len, .scope = "meta.paragraph.markdown" },
+        .{ .start = 2, .end = 8, .scope = "markup.inline.raw.string.markdown" },
+        .{ .start = 2, .end = 3, .scope = "punctuation.definition.raw.markdown" },
+        .{ .start = 7, .end = 8, .scope = "punctuation.definition.raw.markdown" },
+    };
+    const tokens = try tokensFromCaptures(std.testing.allocator, &captures, line.len);
+    defer std.testing.allocator.free(tokens);
+
+    try std.testing.expectEqual(@as(usize, 3), tokens.len);
+    try std.testing.expectEqual(@as(u32, 0), tokens[0].endOffset);
+    try std.testing.expectEqual(TokenMetadata.default.foreground, tokens[0].metadata.foreground);
+    try std.testing.expectEqual(@as(u32, 2), tokens[1].endOffset);
+    try std.testing.expectEqual(@as(u9, 6), tokens[1].metadata.foreground);
+    try std.testing.expectEqual(@as(u32, 8), tokens[2].endOffset);
+    try std.testing.expectEqual(TokenMetadata.default.foreground, tokens[2].metadata.foreground);
 }
 
 test "textmate tokenizer: token cache shifts after inserting a line above" {

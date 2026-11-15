@@ -259,7 +259,8 @@ TextMate tokenization:
   `typescript`, `python`, `rust`, `go`, `c`, `cpp`, `java`, `html`, `css`,
   `scss`, `markdown`, `yaml`, `toml`, and `shellscript`/`bash`.
 - TextMate scopes are mapped to token types (`comment`, `string`, `regexp`)
-  and foreground color IDs.
+  and foreground color IDs. Markdown inline code (`markup.inline.raw`) and its
+  backticks use the string color, matching the Dark+ theme.
 - Languages without a TextMate mapping continue to use the null tokenizer.
 
 Markdown:
