@@ -55,6 +55,7 @@ fn build(
         .align_items = .center,
         .gap = .{ .column = 2 },
         .padding = .{ .left = 1, .right = 1 },
+        .overflow = .hidden,
         .background = panel,
     });
 
@@ -75,19 +76,24 @@ fn build(
         .height = .{ .cells = 1 },
     }, .{ .color = dim });
 
-    // Body: a fixed sidebar and a growing content column.
+    // Body: a fixed sidebar and a growing content column. The sidebar keeps
+    // its width and clips its labels so they cannot paint into the content.
+    const narrow = size.width < 64;
     const body = try common.addBox(doc, root, .{
         .display = .flex,
         .flex_grow = 1,
         .gap = .{ .column = 1 },
+        .overflow = .hidden,
     });
 
     const sidebar = try common.addBox(doc, body, .{
         .width = .{ .cells = 18 },
+        .flex_shrink = 0,
         .display = .flex,
         .flex_direction = .column,
         .gap = .{ .row = 1 },
         .padding = .all(1),
+        .overflow = .hidden,
         .background = panel,
     });
     _ = try common.addLabel(doc, sidebar, "explorer", .{
@@ -105,6 +111,7 @@ fn build(
         .flex_grow = 1,
         .gap = .{ .row = 1 },
         .padding = .all(1),
+        .overflow = .hidden,
         .background = panel,
     });
 
@@ -136,9 +143,11 @@ fn build(
         .padding = .all(1),
         .background = raised,
         .flex_grow = 1,
+        .overflow = .hidden,
     });
-    _ = try common.addLabel(doc, card, "auto margins push this footer down", .{
+    _ = try common.addLabel(doc, card, if (narrow) "auto margin footer" else "auto margins push this footer down", .{
         .height = .{ .cells = 1 },
+        .overflow = .hidden,
     }, .{ .color = dim });
     _ = try common.addLabel(doc, card, "flex: 1 1 auto", .{
         .height = .{ .cells = 1 },

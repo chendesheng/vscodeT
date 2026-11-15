@@ -45,7 +45,7 @@ fn build(
     context: ?*anyopaque,
     doc: *ui.Document,
     parent: *ui.Node,
-    size: common.Size,
+    _: common.Size,
 ) !void {
     const app: *App = @ptrCast(@alignCast(context orelse return));
     app.doc = doc;
@@ -57,40 +57,32 @@ fn build(
         .top = .{ .cells = 0 },
         .width = .{ .percent = 100 },
         .height = .{ .percent = 100 },
+        .display = .flex,
+        .flex_direction = .column,
         .background = common.rgb(16, 16, 22),
     });
 
     _ = try common.addLabel(doc, root, "keyboard focus", .{
-        .position = .absolute,
-        .left = .{ .cells = 3 },
-        .top = .{ .cells = 0 },
-        .width = .{ .cells = 50 },
         .height = .{ .cells = 1 },
+        .margin = .{ .left = .{ .cells = 3 } },
+        .flex_shrink = 0,
     }, .{
         .color = common.rgb(255, 255, 255),
         .bold = true,
     });
 
-    const status_bar = try common.addBox(doc, root, .{
-        .position = .absolute,
-        .left = .{ .cells = 0 },
-        .top = .{ .cells = @floatFromInt(size.height -| 1) },
-        .width = .{ .percent = 100 },
-        .height = .{ .cells = 1 },
-        .background = common.rgb(40, 40, 52),
-    });
-    app.status = try common.addText(doc, status_bar, "", .{
-        .color = common.rgb(220, 220, 235),
+    const list = try common.addBox(doc, root, .{
+        .display = .flex,
+        .flex_direction = .column,
+        .flex_grow = 1,
+        .margin = .{ .left = .{ .cells = 3 }, .right = .{ .cells = 3 }, .top = .{ .cells = 1 } },
+        .overflow = .hidden,
     });
 
     inline for (labels, 0..) |label, i| {
-        const top: f64 = @floatFromInt(2 + i * 3);
-        const node = try common.addBox(doc, root, .{
-            .position = .absolute,
-            .left = .{ .cells = 3 },
-            .top = .{ .cells = top },
-            .width = .{ .cells = 50 },
+        const node = try common.addBox(doc, list, .{
             .height = .{ .cells = 1 },
+            .flex_shrink = 0,
             .border = ui.Edges.all(1),
             .border_color = common.rgb(70, 70, 90),
             .background = common.rgb(28, 28, 38),
@@ -109,6 +101,16 @@ fn build(
         try node.addEventListener(app.items[i].listener());
         try node.addEventListener(app.items[i].focusListener());
     }
+
+    const status_bar = try common.addBox(doc, root, .{
+        .width = .{ .percent = 100 },
+        .height = .{ .cells = 1 },
+        .flex_shrink = 0,
+        .background = common.rgb(40, 40, 52),
+    });
+    app.status = try common.addText(doc, status_bar, "", .{
+        .color = common.rgb(220, 220, 235),
+    });
 
     try root.addEventListener(.{ .context = app, .key_down = App.onRootKey });
     _ = doc.focus(app.items[0].node);
