@@ -351,6 +351,41 @@ test "textmate tokenizer: markdown inline raw scopes use the string color" {
     try std.testing.expectEqual(TokenMetadata.default.foreground, tokens[2].metadata.foreground);
 }
 
+test "textmate tokenizer: markdown does not break later tokenization" {
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
+
+    var html = try TestModel.init(std.testing.allocator, "<div>hi</div>", "html");
+    defer html.deinit();
+    html.model.forceTokenization(1);
+    var html_tokens = try html.model.tokenization().getLineTokens(1);
+    defer html_tokens.deinit();
+    try std.testing.expect(html_tokens.getCount() > 0);
+
+    var markdown = try TestModel.init(std.testing.allocator, "a `code` span", "markdown");
+    defer markdown.deinit();
+    markdown.model.forceTokenization(1);
+    var markdown_tokens = try markdown.model.tokenization().getLineTokens(1);
+    defer markdown_tokens.deinit();
+
+    // Parsing markdown lazily loads the HTML derivative grammar. Its wildcard
+    // injection selector used to spin the package's scope-selector evaluator,
+    // hanging every tokenizer used afterwards.
+    var zig = try TestModel.init(std.testing.allocator, "const x = 1;", "zig");
+    defer zig.deinit();
+    zig.model.forceTokenization(1);
+    var tokens = try zig.model.tokenization().getLineTokens(1);
+    defer tokens.deinit();
+
+    var saw_const = false;
+    for (0..tokens.getCount()) |i| {
+        if (std.mem.eql(u8, tokens.getTokenText(i), "const")) {
+            saw_const = true;
+            try std.testing.expectEqual(@as(u9, 8), tokens.getForeground(i));
+        }
+    }
+    try std.testing.expect(saw_const);
+}
+
 test "textmate tokenizer: token cache shifts after inserting a line above" {
     const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
     const Range = @import("../../core/range.zig").Range;

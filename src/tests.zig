@@ -111,6 +111,7 @@ comptime {
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/bracketPairsTests.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/astTests.zig");
     _ = @import("./vs/editor/common/model/tokens/textMateTokenizer.zig");
+    _ = @import("./support/textmateScopes.zig");
     _ = @import("./vs/editor/test/common/languages/languageSupportTests.zig");
     _ = @import("./vs/editor/common/model/utils.zig");
     _ = @import("./vs/editor/common/core/cursorColumns.zig");
