@@ -9,7 +9,8 @@
 //! renders the same structure to styled cells. The observable structure of
 //! hover markdown is kept: paragraphs, headings, nested and task lists, block
 //! quotes, fenced and indented code blocks, tables, thematic breaks, emphasis,
-//! strikethrough, inline code and links.
+//! strikethrough, inline code and links. Fenced code blocks are tokenized with
+//! the editor's TextMate grammars when the fence language is known.
 //!
 //! Terminal substitutions, documented in `README.md` and
 //! `docs/terminal-ui.md`:
@@ -33,6 +34,10 @@ const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 const markdown = @import("markdown");
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
+const IState = @import("../../../common/languages.zig").IState;
+const TokenPacked = @import("../../../common/tokens/lineTokens.zig").TokenPacked;
+const TokenMetadata = @import("../../../common/encodedTokenAttributes.zig").TokenMetadata;
+const textMateTokenizer = @import("../../../common/model/tokens/textMateTokenizer.zig");
 
 const Node = markdown.Node;
 const NodeData = markdown.NodeData;
@@ -109,9 +114,21 @@ const Definition = struct {
 const Context = struct {
     prefix: []const u8 = "",
     prefix_style: ui.Style = .{},
+    /// Language used for a fenced code block without an info string.
+    code_fence_fallback_language: []const u8 = "plaintext",
+};
+
+pub const ParseOptions = struct {
+    /// Upstream falls back to the editor's language when a fence has no info
+    /// string. The participant supplies the model language here.
+    code_fence_fallback_language: []const u8 = "plaintext",
 };
 
 pub fn parse(parent: Allocator, source: []const u8) !Content {
+    return parseWithOptions(parent, source, .{});
+}
+
+pub fn parseWithOptions(parent: Allocator, source: []const u8, options: ParseOptions) !Content {
     var arena = std.heap.ArenaAllocator.init(parent);
     errdefer arena.deinit();
     const allocator = arena.allocator();
@@ -130,7 +147,9 @@ pub fn parse(parent: Allocator, source: []const u8) !Content {
     try collectDefinitions(&definitions, root);
 
     var lines = std.array_list.Managed(Line).init(allocator);
-    try renderBlocks(allocator, &lines, &definitions, root, .{}, true, 0);
+    try renderBlocks(allocator, &lines, &definitions, root, .{
+        .code_fence_fallback_language = options.code_fence_fallback_language,
+    }, true, 0);
     const owned_lines = try lines.toOwnedSlice();
     return .{ .arena = arena, .lines = owned_lines };
 }
@@ -307,24 +326,180 @@ fn renderCode(
     out: *std.array_list.Managed(Line),
     node: *const Node,
     ctx: Context,
-) !void {
+) RenderError!void {
     const code = node.data.code;
     var value = code.value;
     if (std.mem.endsWith(u8, value, "\n")) value = value[0 .. value.len - 1];
     if (value.len == 0) return;
 
+    const language = resolveCodeFenceLanguage(code.lang, ctx.code_fence_fallback_language);
+    const support_opt = textMateTokenizer.create(allocator, language) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
+    defer if (support_opt) |support| support.dispose();
+
+    var state: ?IState = null;
+    if (support_opt) |support| {
+        state = support.getInitialState(allocator) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => null,
+        };
+    }
+    var use_highlight = state != null;
+
     var iterator = std.mem.splitScalar(u8, value, '\n');
     while (iterator.next()) |raw| {
         const line = std.mem.trimEnd(u8, raw, "\r");
         const expanded = try expandTabs(allocator, line);
-        const text = try std.mem.concat(allocator, u8, &.{ "  ", expanded });
-        const spans = try allocator.alloc(Span, 1);
-        spans[0] = .{
-            .text = text,
-            .style = .{ .color = code_block_color, .background = code_background },
-        };
-        try out.append(try makeLine(allocator, ctx, spans, 0, false, false));
+        if (use_highlight) {
+            const support = support_opt.?;
+            const result = support.tokenizeEncoded(allocator, expanded, false, state.?) catch {
+                use_highlight = false;
+                try appendPlainCodeLine(allocator, out, ctx, expanded);
+                continue;
+            };
+            state = result.endState;
+            try appendHighlightedCodeLine(allocator, out, ctx, expanded, result.tokens);
+        } else {
+            try appendPlainCodeLine(allocator, out, ctx, expanded);
+        }
     }
+}
+
+fn appendPlainCodeLine(
+    allocator: Allocator,
+    out: *std.array_list.Managed(Line),
+    ctx: Context,
+    expanded: []const u8,
+) !void {
+    const text = try std.mem.concat(allocator, u8, &.{ "  ", expanded });
+    const spans = try allocator.alloc(Span, 1);
+    spans[0] = .{ .text = text, .style = codeBlockStyle() };
+    try out.append(try makeLine(allocator, ctx, spans, 0, false, false));
+}
+
+fn appendHighlightedCodeLine(
+    allocator: Allocator,
+    out: *std.array_list.Managed(Line),
+    ctx: Context,
+    expanded: []const u8,
+    tokens: []const TokenPacked,
+) !void {
+    var spans = std.array_list.Managed(Span).init(allocator);
+    try spans.append(.{ .text = "  ", .style = codeBlockStyle() });
+
+    var start: usize = 0;
+    for (tokens, 0..) |token, index| {
+        const next = if (index + 1 < tokens.len) tokens[index + 1].endOffset else expanded.len;
+        const end = @min(@max(start, next), expanded.len);
+        if (end > start) {
+            try spans.append(.{
+                .text = expanded[start..end],
+                .style = tokenStyle(token.metadata),
+            });
+        }
+        start = end;
+    }
+    if (start < expanded.len) {
+        try spans.append(.{ .text = expanded[start..], .style = codeBlockStyle() });
+    }
+
+    try out.append(try makeLine(allocator, ctx, try spans.toOwnedSlice(), 0, false, false));
+}
+
+fn codeBlockStyle() ui.Style {
+    return .{ .color = code_block_color, .background = code_background };
+}
+
+fn tokenStyle(metadata: TokenMetadata) ui.Style {
+    return .{
+        .color = tokenColor(metadata.foreground) orelse code_block_color,
+        .background = code_background,
+        .bold = metadata.fontStyle.bold,
+        .italic = metadata.fontStyle.italic,
+        .underline = metadata.fontStyle.underline,
+        .strikethrough = metadata.fontStyle.strikethrough,
+    };
+}
+
+/// Same dark-theme token palette as `src/tui/theme.zig`. Kept here instead of
+/// importing the TUI layer, which editor code must not depend on.
+fn tokenColor(foreground: u9) ?ui.Color {
+    const rgb = switch (foreground) {
+        5 => [3]u8{ 106, 153, 85 }, // comment
+        6 => [3]u8{ 206, 145, 120 }, // string
+        7 => [3]u8{ 209, 105, 105 }, // regexp/invalid
+        8 => [3]u8{ 197, 134, 192 }, // keyword/storage
+        9 => [3]u8{ 181, 206, 168 }, // constant
+        10 => [3]u8{ 220, 220, 170 }, // function
+        11 => [3]u8{ 78, 201, 176 }, // type
+        12 => [3]u8{ 156, 220, 254 }, // variable
+        else => return null,
+    };
+    return .{ .r = rgb[0], .g = rgb[1], .b = rgb[2] };
+}
+
+fn resolveCodeFenceLanguage(raw: ?[]const u8, fallback: []const u8) []const u8 {
+    const raw_trimmed = if (raw) |value| std.mem.trim(u8, value, " \t\r\n") else "";
+    const source = if (raw_trimmed.len == 0) fallback else raw_trimmed;
+    const trimmed = std.mem.trim(u8, source, " \t\r\n");
+    if (trimmed.len == 0) return "plaintext";
+    var end: usize = 0;
+    while (end < trimmed.len and trimmed[end] != ' ' and trimmed[end] != '\t') : (end += 1) {}
+    const name = trimmed[0..end];
+
+    const aliases = .{
+        .{ "zig", "zig" },
+        .{ "json", "json" },
+        .{ "jsonc", "jsonc" },
+        .{ "javascript", "javascript" },
+        .{ "js", "javascript" },
+        .{ "mjs", "javascript" },
+        .{ "cjs", "javascript" },
+        .{ "jsx", "javascriptreact" },
+        .{ "javascriptreact", "javascriptreact" },
+        .{ "typescript", "typescript" },
+        .{ "ts", "typescript" },
+        .{ "mts", "typescript" },
+        .{ "cts", "typescript" },
+        .{ "tsx", "typescriptreact" },
+        .{ "typescriptreact", "typescriptreact" },
+        .{ "python", "python" },
+        .{ "py", "python" },
+        .{ "python3", "python" },
+        .{ "rust", "rust" },
+        .{ "rs", "rust" },
+        .{ "go", "go" },
+        .{ "golang", "go" },
+        .{ "c", "c" },
+        .{ "h", "c" },
+        .{ "cpp", "cpp" },
+        .{ "c++", "cpp" },
+        .{ "cc", "cpp" },
+        .{ "cxx", "cpp" },
+        .{ "hpp", "cpp" },
+        .{ "java", "java" },
+        .{ "html", "html" },
+        .{ "htm", "html" },
+        .{ "css", "css" },
+        .{ "scss", "scss" },
+        .{ "markdown", "markdown" },
+        .{ "md", "markdown" },
+        .{ "mdown", "markdown" },
+        .{ "yaml", "yaml" },
+        .{ "yml", "yaml" },
+        .{ "toml", "toml" },
+        .{ "shellscript", "shellscript" },
+        .{ "sh", "shellscript" },
+        .{ "bash", "shellscript" },
+        .{ "shell", "shellscript" },
+        .{ "zsh", "shellscript" },
+    };
+    inline for (aliases) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry[0], name)) return entry[1];
+    }
+    return "plaintext";
 }
 
 fn renderQuote(
@@ -339,6 +514,7 @@ fn renderQuote(
     const child_ctx = Context{
         .prefix = prefix,
         .prefix_style = .{ .dim = true, .color = rule_color },
+        .code_fence_fallback_language = ctx.code_fence_fallback_language,
     };
     var lines = std.array_list.Managed(Line).init(allocator);
     try renderBlocks(allocator, &lines, definitions, node, child_ctx, true, depth + 1);
@@ -443,6 +619,7 @@ fn renderFootnoteDefinition(
     const child_ctx = Context{
         .prefix = prefix,
         .prefix_style = .{ .dim = true, .color = text_color },
+        .code_fence_fallback_language = ctx.code_fence_fallback_language,
     };
     var lines = std.array_list.Managed(Line).init(allocator);
     try renderBlocks(allocator, &lines, definitions, node, child_ctx, false, depth + 1);
@@ -1012,6 +1189,65 @@ test "markdown: invalid UTF-8 falls back to text" {
     var content = try parse(testing.allocator, "ok \xff bad");
     defer content.deinit();
     try testing.expect(content.lines.len > 0);
+}
+
+test "markdown: fenced code uses TextMate token colors" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator,
+        \\```zig
+        \\const answer = 42; // comment
+        \\```
+    );
+    defer content.deinit();
+
+    var saw_keyword = false;
+    var saw_comment = false;
+    for (content.lines) |line| {
+        for (line.spans) |span| {
+            if (span.style.background == null) continue;
+            const color = span.style.color orelse continue;
+            if (color.r == 197 and color.g == 134 and color.b == 192) saw_keyword = true;
+            if (color.r == 106 and color.g == 153 and color.b == 85) saw_comment = true;
+        }
+    }
+    try testing.expect(saw_keyword);
+    try testing.expect(saw_comment);
+}
+
+test "markdown: unknown fenced language stays plain" {
+    const testing = std.testing;
+    var content = try parse(testing.allocator,
+        \\```not-a-language
+        \\const answer = 42;
+        \\```
+    );
+    defer content.deinit();
+
+    for (content.lines) |line| {
+        for (line.spans) |span| {
+            if (span.style.background == null) continue;
+            try testing.expectEqual(code_block_color, span.style.color.?);
+        }
+    }
+}
+
+test "markdown: fenced code fallback language highlights" {
+    const testing = std.testing;
+    var content = try parseWithOptions(testing.allocator,
+        \\```
+        \\const answer = 42;
+        \\```
+    , .{ .code_fence_fallback_language = "zig" });
+    defer content.deinit();
+
+    var saw_keyword = false;
+    for (content.lines) |line| {
+        for (line.spans) |span| {
+            const color = span.style.color orelse continue;
+            if (color.r == 197 and color.g == 134 and color.b == 192) saw_keyword = true;
+        }
+    }
+    try testing.expect(saw_keyword);
 }
 
 test "markdown: many blank-separated paragraphs" {

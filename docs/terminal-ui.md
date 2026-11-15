@@ -810,7 +810,10 @@ Library constraints:
   no HTML/CSS engine, so links show their URL in dim text, images show their
   alt text, tables render as width-capped box-drawing grids, and raw HTML is
   ignored. Nested/task lists, setext/indented code, autolinks and reference
-  links are supported; wide table rows are clipped to the hover width.
+  links are supported; wide table rows are clipped to the hover width. Fenced
+  code blocks use the editor's TextMate tokenizer: the fence info string is
+  resolved through common aliases, a missing language falls back to the editor
+  model language, and unknown languages render plain.
 - `ui/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
   `(anchor, cursor)` selection with keyboard/mouse extension and selection
   paint, shell-like word movement/deletion, Ctrl+A, clipboard hooks

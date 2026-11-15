@@ -1150,7 +1150,7 @@ test "app: hovering a word shows the rendered markdown hover" {
 test "app: hover renders a GFM table and task list" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "value here", "test.zig", 72, 60);
+    const editor = try Editor.createFromText(allocator, io, "value here", "test.zig", 72, 80);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -1170,6 +1170,10 @@ test "app: hover renders a GFM table and task list" {
         \\- [x] done
         \\
         \\> A quote that wraps in the hover box should keep its left border on both rows.
+        \\
+        \\```zig
+        \\const answer = 42;
+        \\```
         }},
         range: Range = .{ .startLineNumber = 1, .startColumn = 1, .endLineNumber = 1, .endColumn = 6 },
 
@@ -1235,6 +1239,11 @@ test "app: hover renders a GFM table and task list" {
     var found_cell = false;
     var found_task = false;
     var found_quote_continuation = false;
+    const keyword_color = ui.cell.packColor(.{ .r = 197, .g = 134, .b = 192 });
+    var found_keyword = false;
+    for (grid.fg) |foreground| {
+        if (foreground == keyword_color) found_keyword = true;
+    }
     for (0..grid.rows) |row| {
         const text = try grid.rowText(allocator, row);
         defer allocator.free(text);
@@ -1251,6 +1260,7 @@ test "app: hover renders a GFM table and task list" {
     try std.testing.expect(found_cell);
     try std.testing.expect(found_task);
     try std.testing.expect(found_quote_continuation);
+    try std.testing.expect(found_keyword);
 
     hover.hideContentHover();
     try view.refresh();

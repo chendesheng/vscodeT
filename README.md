@@ -239,7 +239,11 @@ Markdown:
   `src/vs/editor/contrib/hover/browser/hoverMarkdownRenderer.zig` maps that
   tree to styles and cells: paragraphs, headings, nested/ordered/task lists,
   block quotes, fenced and indented code, thematic breaks, GFM tables,
-  emphasis, strikethrough, inline code, links/autolinks and images.
+  emphasis, strikethrough, inline code, links/autolinks and images. Fenced
+  code blocks are tokenized with the same TextMate grammars as the editor; the
+  fence info string resolves through common aliases (`js`, `ts`, `py`, `sh`,
+  ...), a fence without a language falls back to the editor's language, and an
+  unknown language renders as plain code.
 - Terminal substitutions: a link shows its text underlined and, when the URL
   differs, the URL in dim text because cells cannot open a link; images show
   their alt text (there is no image protocol); tables render as box-drawing

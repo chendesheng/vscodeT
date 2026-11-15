@@ -317,7 +317,9 @@ pub const MarkdownHoverParticipant = struct {
             var contents = ArrayList(markdown.Content).init(allocator);
             for (hover.contents) |content| {
                 if (isEmptyMarkdownString(content.value)) continue;
-                try contents.append(try markdown.parse(allocator, content.value));
+                try contents.append(try markdown.parseWithOptions(allocator, content.value, .{
+                    .code_fence_fallback_language = self.model.getLanguageId(),
+                }));
             }
             if (contents.items.len == 0) continue;
 
