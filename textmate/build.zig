@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    inspect_module.addImport("c_onig", onig);
+    inspect_module.addImport("vscode_textmate", module);
     const inspect_exe = b.addExecutable(.{
         .name = "textmate-inspect",
         .root_module = inspect_module,

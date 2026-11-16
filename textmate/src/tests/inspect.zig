@@ -7,13 +7,13 @@
 // Prints the live rule stack after every line, including each state's rule
 // debug name, rule id and stack-instance id.
 const std = @import("std");
-const textmate_main = @import("../main.zig");
-const parseRawGrammar = @import("../parseRawGrammar.zig");
-const rawGrammar = @import("../rawGrammar.zig");
-const theme = @import("../theme.zig");
-const onigLib = @import("../onigLib.zig");
-const debug = @import("../debug.zig");
-const grammar_module = @import("../grammar/grammar.zig");
+const vscode_textmate = @import("vscode_textmate");
+const textmate_main = vscode_textmate.main;
+const parseRawGrammar = vscode_textmate.parseRawGrammar;
+const rawGrammar = vscode_textmate.rawGrammar;
+const onigLib = vscode_textmate.onigLib;
+const debug = vscode_textmate.debug;
+const grammar_module = vscode_textmate.grammar;
 const Allocator = std.mem.Allocator;
 
 fn noLoad(_: *anyopaque, _: []const u8) anyerror!?*rawGrammar.RawGrammar {
