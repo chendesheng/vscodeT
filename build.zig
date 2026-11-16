@@ -123,7 +123,6 @@ const textmate_zig_sources = [_][]const u8{
     "src/atoms.zig",
     "src/config.zig",
     "src/grammar.zig",
-    "src/parser.zig",
     "src/root.zig",
     "src/strings.zig",
     "src/theme.zig",
@@ -143,11 +142,11 @@ const textmate_zig_sources = [_][]const u8{
     "src/pkg/oniguruma/types.zig",
 };
 
-/// Copies the package sources into the build cache so `scopes.zig` can be
-/// replaced. The package evaluator never advances past selector characters it
-/// does not understand (the bundled HTML grammars use `*` wildcards), which
-/// hangs tokenization once such a grammar has been loaded. See
-/// `src/support/textmateScopes.zig`.
+/// Copies the package sources into the build cache so `scopes.zig` and
+/// `parser.zig` can be replaced. The evaluator spins on wildcard selectors and
+/// the parser's zero-width baseline drops markdown inline scopes on list
+/// continuation lines. See `src/support/textmateScopes.zig` and
+/// `src/support/textmateParser.zig`.
 fn patchedTextmateSources(b: *std.Build, dep: *std.Build.Dependency) std.Build.LazyPath {
     const sources = b.addWriteFiles();
     _ = sources.addCopyDirectory(dep.path("src/resources"), "resources", .{
@@ -156,6 +155,7 @@ fn patchedTextmateSources(b: *std.Build, dep: *std.Build.Dependency) std.Build.L
     inline for (textmate_zig_sources) |path| {
         _ = sources.addCopyFile(dep.path(path), path["src/".len..]);
     }
+    _ = sources.add("parser.zig", @embedFile("src/support/textmateParser.zig"));
     _ = sources.add("scopes.zig", @embedFile("src/support/textmateScopes.zig"));
     return sources.getDirectory();
 }

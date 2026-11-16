@@ -280,6 +280,10 @@ TextMate tokenization:
   (`src/support/textmateScopes.zig`) so grammars with wildcard injection
   selectors (for example the HTML grammars loaded while parsing markdown)
   cannot spin the tokenizer. The selectors are still evaluated.
+- The pinned parser is replaced at build time (`src/support/textmateParser.zig`)
+  with one fix: the zero-width cycle baseline is taken after the `while` rules
+  run. Otherwise markdown list continuation lines can drop their inline-code
+  scopes.
 - Theme selectors that combine a parent scope with a target (`a b`) or exclude
   a scope (`a - b`) are reduced to the target scope; the terminal theme trie
   matches one scope at a time.

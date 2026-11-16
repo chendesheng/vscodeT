@@ -176,7 +176,6 @@ const TextMateSupport = struct {
         self.processor.state = &next.state;
         self.parser.processor = &self.processor;
         try self.parser.parseLine(&next.state, block, input.first_line);
-
         return .{
             .tokens = try tokensFromCaptures(
                 allocator,

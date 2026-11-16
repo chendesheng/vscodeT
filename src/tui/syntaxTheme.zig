@@ -352,3 +352,35 @@ test "syntax theme: every supported language highlights inside a fence" {
         try std.testing.expect(varied);
     }
 }
+
+test "syntax theme: markdown list continuation keeps inline code" {
+    var theme: SyntaxTheme = undefined;
+    try theme.init(std.testing.allocator);
+    defer theme.deinit();
+
+    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    const text =
+        "- Multi-file editing uses the ported workbench editor-group model\n" ++
+        "  (`src/vs/workbench/common/editor/editorGroupModel.zig`) with a terminal tab\n" ++
+        "  strip (`src/tui/tabBar.zig`, `src/tui/workbench.zig`). Each tab keeps its own\n" ++
+        "  `Editor`, `View` and lazy editor contributions; only the active view is\n" ++
+        "  decorations. `Ctrl-W` closes the active tab (a dirty tab asks\n";
+    var model = try TestModel.init(std.testing.allocator, text, "markdown");
+    defer model.deinit();
+    model.model.forceTokenization(5);
+
+    const inline_rgb = [3]u8{ 206, 145, 120 };
+    var line_number: usize = 2;
+    while (line_number <= 5) : (line_number += 1) {
+        var tokens = try model.model.tokenization().getLineTokens(line_number);
+        defer tokens.deinit();
+        var has_inline = false;
+        for (0..tokens.getCount()) |i| {
+            const color = theme.theme.getColorMap()[tokens.getForeground(i)];
+            if (color.r == inline_rgb[0] and color.g == inline_rgb[1] and color.b == inline_rgb[2]) {
+                has_inline = true;
+            }
+        }
+        try std.testing.expect(has_inline);
+    }
+}
