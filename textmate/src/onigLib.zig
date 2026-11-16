@@ -202,9 +202,27 @@ pub const OnigScanner = struct {
                 &error_info,
             );
             if (status != c.ONIG_NORMAL) {
-                return error.OnigCompileError;
+                // The system Oniguruma may be older than the one bundled by
+                // vscode-oniguruma and reject a grammar pattern it cannot
+                // parse. `textmate.zig` skipped such patterns; preserve that
+                // resilience by installing a never-matching placeholder.
+                const placeholder = "(?!)";
+                var placeholder_regex: c.OnigRegex = null;
+                var placeholder_error: c.OnigErrorInfo = undefined;
+                const placeholder_status = c.onig_new(
+                    &placeholder_regex,
+                    placeholder.ptr,
+                    placeholder.ptr + placeholder.len,
+                    c.ONIG_OPTION_CAPTURE_GROUP,
+                    @ptrCast(@alignCast(c.ONIG_ENCODING_UTF8())),
+                    @ptrCast(@alignCast(c.ONIG_SYNTAX_RUBY())),
+                    &placeholder_error,
+                );
+                if (placeholder_status != c.ONIG_NORMAL) return error.OnigCompileError;
+                regexes[i] = placeholder_regex;
+            } else {
+                regexes[i] = regex;
             }
-            regexes[i] = regex;
             regions[i] = c.onig_region_new();
             created += 1;
         }

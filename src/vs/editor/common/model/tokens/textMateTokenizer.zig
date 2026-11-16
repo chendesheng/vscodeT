@@ -1,8 +1,14 @@
+// TextMate tokenization backed by the faithful `vscode_textmate` port.
+//
+// The port works in UTF-16 code units; this adapter converts token starts to
+// UTF-8 byte offsets for the editor and keeps the editor's existing Dark+
+// `TokenTheme`/TokenMetadata pipeline.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
-const UnmanagedList = std.ArrayList;
-const tm = @import("textmate");
+const tm = @import("vscode_textmate");
+const tm_main = tm.main;
+const tm_raw = tm.rawGrammar;
 const languages = @import("../../languages.zig");
 const IState = languages.IState;
 const ITokenizationSupport = languages.ITokenizationSupport;
@@ -15,60 +21,49 @@ const toStandardTokenType = tokenization.toStandardTokenType;
 const vscode_syntax = @import("vscode-syntax");
 
 var initialized = false;
-var markdown_fences_installed = false;
+var onig_lib: tm_main.OnigLib = undefined;
+var registry: ?*tm_main.Registry = null;
+var fence_grammar: ?*tm_raw.RawGrammar = null;
+var loader_context: u8 = 0;
 
 fn ensureInitialized() !void {
     if (initialized) return;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    try tm.oni.init(&.{tm.oni.Encoding.utf8});
-    try tm.GrammarLibrary.initLibrary(io, std.heap.page_allocator);
-    try tm.GrammarLibrary.getLibrary().?.addEmbeddedGrammars();
-    try registerVscodeGrammars();
+    onig_lib = tm_main.OnigLib.init(std.heap.page_allocator);
+    registry = try tm_main.Registry.init(std.heap.page_allocator, .{
+        .onig_lib = onig_lib.interface(),
+        .context = &loader_context,
+        .load_grammar = loadGrammar,
+    });
     initialized = true;
 }
 
-/// Replaces the pinned package's grammar definitions with the VS Code checkout's
-/// files for the languages that ship one. The package grammar stays in use for
-/// languages without a VS Code grammar and for grammars reached through includes.
-fn registerVscodeGrammars() !void {
-    const library = tm.GrammarLibrary.getLibrary().?;
-    const GrammarInfo = @TypeOf(library.grammars.items[0]);
-    for (vscode_syntax.grammars) |grammar| {
-        var index: usize = 0;
-        while (index < library.grammars.items.len) {
-            const scope = std.mem.sliceTo(&library.grammars.items[index].scope_name, 0);
-            if (std.mem.eql(u8, scope, grammar.scope)) {
-                _ = library.grammars.swapRemove(index);
-                continue;
-            }
-            index += 1;
-        }
-
-        var info = GrammarInfo{};
-        @memcpy(info.name[0..grammar.scope.len], grammar.scope);
-        @memcpy(info.scope_name[0..grammar.scope.len], grammar.scope);
-        info.id = @intFromPtr(grammar.data.ptr);
-        info.embedded_file = grammar.data;
-        try library.grammars.append(library.allocator, info);
-    }
+fn loadGrammar(_: *anyopaque, scope: []const u8) anyerror!?*tm_raw.RawGrammar {
+    const data = vscode_syntax.dataForScope(scope) orelse return null;
+    const raw = try std.heap.page_allocator.create(tm_raw.RawGrammar);
+    errdefer std.heap.page_allocator.destroy(raw);
+    raw.* = try tm.parseRawGrammar.parseRawGrammar(std.heap.page_allocator, data, "embedded.json");
+    if (std.mem.eql(u8, scope, "text.html.markdown")) try installMarkdownCodeFences(raw);
+    return raw;
 }
 
-/// Adds fenced-code patterns for every supported language to the markdown
-/// grammar. VS Code's grammar has a fixed fence list, so languages outside it
-/// (such as Zig and TOML) would otherwise stay plain. The patterns are
-/// prepended because the parser stops at the first pattern matching a line.
-fn installMarkdownCodeFences(markdown: *tm.Grammar) !void {
-    if (markdown_fences_installed) return;
-    const library = tm.GrammarLibrary.getLibrary().?;
-    const fence = library.grammarFromScopeName("markdown.code.fences") catch return;
-    const root = markdown.syntax orelse return;
-    const patterns = if (root.patterns) |*value| value else return;
-    const fence_root = fence.syntax orelse return;
-    const fence_patterns = if (fence_root.patterns) |*value| value else return;
-    for (fence_patterns.items) |pattern| {
-        try patterns.insert(markdown.arena.allocator(), 0, pattern);
+/// Prepend the supported-language fence patterns to VS Code's markdown
+/// grammar. The fence grammar is kept alive for the lifetime of the process
+/// because its rule objects are linked into the markdown grammar.
+fn installMarkdownCodeFences(markdown: *tm_raw.RawGrammar) !void {
+    if (fence_grammar == null) {
+        const fence_data = vscode_syntax.dataForScope("markdown.code.fences") orelse return;
+        const raw = try std.heap.page_allocator.create(tm_raw.RawGrammar);
+        raw.* = try tm.parseRawGrammar.parseRawGrammar(std.heap.page_allocator, fence_data, "embedded.json");
+        fence_grammar = raw;
     }
-    markdown_fences_installed = true;
+
+    const fence_patterns = fence_grammar.?.root.getArray("patterns") orelse return;
+    const markdown_patterns = markdown.root.getArray("patterns") orelse &.{};
+    const allocator = markdown.arena.allocator();
+    const combined = try allocator.alloc(tm_raw.Value, fence_patterns.len + markdown_patterns.len);
+    @memcpy(combined[0..fence_patterns.len], fence_patterns);
+    @memcpy(combined[fence_patterns.len..], markdown_patterns);
+    try markdown.root.put(allocator, "patterns", .{ .array = combined });
 }
 
 fn grammarScope(languageId: []const u8) ?[]const u8 {
@@ -103,19 +98,14 @@ fn grammarScope(languageId: []const u8) ?[]const u8 {
 }
 
 const TextMateState = struct {
-    state: tm.ParseState,
+    stack: ?*tm_main.StateStack = null,
     first_line: bool,
     pub const vtable = IState.VTable{ .clone = clone, .equals = equals };
 
     fn clone(ctx: *anyopaque, allocator: Allocator) anyerror!IState {
         const self: *TextMateState = @ptrCast(@alignCast(ctx));
         const result = try allocator.create(TextMateState);
-        result.first_line = self.first_line;
-        result.state = try tm.ParseState.init(self.state.owner, allocator, self.state.owner.lang.syntax.?);
-        var packs: UnmanagedList(tm.StateContextPack) = .empty;
-        defer packs.deinit(allocator);
-        try self.state.owner.serialize(&self.state, &packs);
-        try self.state.owner.deserialize(&result.state, &packs);
+        result.* = .{ .stack = self.stack, .first_line = self.first_line };
         return .{ .context = result, .vtable = &vtable };
     }
 
@@ -124,35 +114,25 @@ const TextMateState = struct {
         if (other.vtable != &vtable) return false;
         const b: *TextMateState = @ptrCast(@alignCast(other.context));
         if (self.first_line != b.first_line) return false;
-        if (self.state.stack.items.len != b.state.stack.items.len) return false;
-        for (self.state.stack.items, b.state.stack.items) |a, c| {
-            const pa = @constCast(&a).serialize(self.state.owner);
-            const pc = @constCast(&c).serialize(b.state.owner);
-            if (pa.syntax != pc.syntax or pa.anchor_start != pc.anchor_start or pa.start != pc.start or pa.rx_end != pc.rx_end or pa.rx_while != pc.rx_while) return false;
-        }
-        return true;
+        if (self.stack == null or b.stack == null) return self.stack == null and b.stack == null;
+        return self.stack.?.equals(b.stack.?);
     }
 };
 
 const TextMateSupport = struct {
     allocator: Allocator,
-    parser: *tm.Parser,
-    processor: tm.Processor,
+    grammar: *tm_main.IGrammar,
     language_id: []u8,
 
     pub fn deinit(self: *TextMateSupport) void {
-        self.processor.deinit();
-        self.parser.deinit();
-        self.allocator.destroy(self.parser);
         self.allocator.free(self.language_id);
         self.allocator.destroy(self);
     }
 
     fn getInitialState(ctx: *anyopaque, allocator: Allocator) anyerror!IState {
-        const self: *TextMateSupport = @ptrCast(@alignCast(ctx));
+        _ = ctx;
         const state = try allocator.create(TextMateState);
-        state.first_line = true;
-        state.state = try self.parser.initState();
+        state.* = .{ .stack = null, .first_line = true };
         return .{ .context = state, .vtable = &TextMateState.vtable };
     }
 
@@ -160,27 +140,16 @@ const TextMateSupport = struct {
         _ = hasEOL;
         const self: *TextMateSupport = @ptrCast(@alignCast(ctx));
         const input: *TextMateState = @ptrCast(@alignCast(state.context));
+        const previous = if (input.first_line) null else input.stack;
+        const result = try self.grammar.tokenizeLine(line, previous, 0);
+
         const next = try allocator.create(TextMateState);
-        next.first_line = false;
-        next.state = try tm.ParseState.init(self.parser, allocator, self.parser.lang.syntax.?);
-        var packs: UnmanagedList(tm.StateContextPack) = .empty;
-        defer packs.deinit(allocator);
-        try self.parser.serialize(&input.state, &packs);
-        try self.parser.deserialize(&next.state, &packs);
-
-        const block = try allocator.alloc(u8, line.len + 1);
-        defer allocator.free(block);
-        @memcpy(block[0..line.len], line);
-        block[line.len] = '\n';
-
-        self.processor.state = &next.state;
-        self.parser.processor = &self.processor;
-        try self.parser.parseLine(&next.state, block, input.first_line);
+        next.* = .{ .stack = result.rule_stack, .first_line = false };
         return .{
-            .tokens = try tokensFromCaptures(
+            .tokens = try tokensFromScopes(
                 allocator,
-                self.processor.captures.items,
-                line.len,
+                line,
+                result.tokens,
                 tokenization.getActiveTokenTheme(),
             ),
             .endState = .{ .context = next, .vtable = &TextMateState.vtable },
@@ -209,41 +178,24 @@ fn defaultMetadata() TokenMetadata {
 pub fn create(allocator: Allocator, languageId: []const u8) !?ITokenizationSupport {
     const scope = grammarScope(languageId) orelse return null;
     try ensureInitialized();
-    const grammar = tm.GrammarLibrary.getLibrary().?.grammarFromScopeName(scope) catch return null;
-    if (std.mem.eql(u8, languageId, "markdown")) try installMarkdownCodeFences(grammar);
-    const parser = try allocator.create(tm.Parser);
-    errdefer allocator.destroy(parser);
-    parser.* = try tm.Parser.init(allocator, grammar);
-    errdefer parser.deinit();
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var processor = try tm.NullProcessor.init(io, allocator);
-    errdefer processor.deinit();
+    const grammar = (try registry.?.loadGrammarWithEmbeddedLanguages(scope, 0, &.{})) orelse return null;
+
     const context = try allocator.create(TextMateSupport);
     context.* = .{
         .allocator = allocator,
-        .parser = parser,
-        .processor = processor,
+        .grammar = grammar,
         .language_id = try allocator.dupe(u8, languageId),
     };
     return .{ .context = context, .vtable = &TextMateSupport.vtable };
 }
 
-test "textmate tokenizer: VS Code grammars replace the package grammars" {
+test "textmate tokenizer: VS Code grammars and fallbacks are available" {
     if (vscode_syntax.scopeForLanguage("jsonc") == null) return error.SkipZigTest;
     try std.testing.expectEqualStrings("source.json.comments", grammarScope("jsonc").?);
     try std.testing.expectEqualStrings("source.js.jsx", grammarScope("javascriptreact").?);
+    try std.testing.expect(vscode_syntax.dataForScope("source.json.comments") != null);
+    try std.testing.expect(vscode_syntax.dataForScope("source.zig") != null);
     try ensureInitialized();
-
-    const library = tm.GrammarLibrary.getLibrary().?;
-    var found = false;
-    for (library.grammars.items) |item| {
-        const scope = std.mem.sliceTo(&item.scope_name, 0);
-        if (std.mem.eql(u8, scope, "source.json.comments")) {
-            try std.testing.expect(item.embedded_file != null);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
 }
 
 test "textmate tokenizer: zig grammar produces scopes" {
@@ -259,10 +211,10 @@ test "textmate tokenizer: zig grammar produces scopes" {
 }
 
 pub fn ensureTokenizer(languageId: []const u8) void {
-    const registry = &@import("../../tokenizationRegistry.zig").TokenizationRegistry.instance;
-    if (registry.get(languageId) != null) return;
+    const registry_instance = &@import("../../tokenizationRegistry.zig").TokenizationRegistry.instance;
+    if (registry_instance.get(languageId) != null) return;
     const support = create(std.heap.page_allocator, languageId) catch return orelse return;
-    registry.register(languageId, support) catch support.dispose();
+    registry_instance.register(languageId, support) catch support.dispose();
 }
 
 test "textmate tokenizer: integrated through TextModel" {
@@ -279,55 +231,59 @@ test "textmate tokenizer: integrated through TextModel" {
     try std.testing.expect(found_comment);
 }
 
-fn tokensFromCaptures(
+const Utf16Cursor = struct {
+    text: []const u8,
+    byte_index: usize = 0,
+    utf16_index: usize = 0,
+
+    fn advanceTo(self: *Utf16Cursor, target: usize) usize {
+        if (target <= self.utf16_index) return self.byte_index;
+        while (self.byte_index < self.text.len) {
+            const byte = self.text[self.byte_index];
+            const length = std.unicode.utf8ByteSequenceLength(byte) catch 1;
+            const end = @min(self.byte_index + length, self.text.len);
+            const codepoint = std.unicode.utf8Decode(self.text[self.byte_index..end]) catch 0xFFFD;
+            const width: usize = if (codepoint > 0xFFFF) 2 else 1;
+            if (self.utf16_index + width > target) break;
+            self.utf16_index += width;
+            self.byte_index = end;
+        }
+        return self.byte_index;
+    }
+};
+
+fn tokensFromScopes(
     allocator: Allocator,
-    captures: []const tm.ParseCapture,
-    lineLen: usize,
+    line: []const u8,
+    tokens: []const tm_main.IToken,
     theme: ?*tokenization.TokenTheme,
 ) ![]TokenPacked {
-    var cutPoints = ArrayList(usize).init(allocator);
-    defer cutPoints.deinit();
-    try cutPoints.append(0);
-    try cutPoints.append(lineLen);
-    for (captures) |cap| {
-        const start = @min(cap.start, lineLen);
-        const end = @min(cap.end, lineLen);
-        if (start < end) {
-            try cutPoints.append(start);
-            try cutPoints.append(end);
-        }
-    }
-    std.sort.heap(usize, cutPoints.items, {}, std.sort.asc(usize));
-
-    var tokens = ArrayList(TokenPacked).init(allocator);
-    errdefer tokens.deinit();
+    var result = ArrayList(TokenPacked).init(allocator);
+    errdefer result.deinit();
     const root_rule = if (theme) |active| active._match("") else null;
-    var i: usize = 0;
-    while (i + 1 < cutPoints.items.len) : (i += 1) {
-        const start = cutPoints.items[i];
-        const end = cutPoints.items[i + 1];
-        if (start >= end) continue;
+    var cursor = Utf16Cursor{ .text = line };
+
+    for (tokens) |token| {
+        if (token.end_index <= token.start_index) continue;
+        const start = cursor.advanceTo(token.start_index);
         var metadata = defaultMetadata();
-        for (captures) |cap| {
-            if (cap.start > start or end > cap.end) continue;
-            const token_type = toStandardTokenType(cap.scope);
+        for (token.scopes) |scope| {
+            const token_type = toStandardTokenType(scope);
             if (token_type != .Other) metadata.tokenType = token_type;
             if (theme) |active| {
-                applyThemeRule(&metadata, active, cap.scope, root_rule.?);
+                applyThemeRule(&metadata, active, scope, root_rule.?);
             } else {
-                metadata = metadataForScope(metadata, cap.scope);
+                metadata = metadataForScope(metadata, scope);
             }
         }
-        // The tokenization pipeline converts start offsets to end offsets
-        // (`LineTokens.convertToEndOffset`), so emit the segment start here.
-        if (tokens.items.len > 0 and tokens.items[tokens.items.len - 1].metadata == metadata) {
+        if (result.items.len > 0 and result.items[result.items.len - 1].metadata == metadata) {
             // Keep the previous token's start offset; conversion extends it.
         } else {
-            try tokens.append(.{ .endOffset = @intCast(start), .metadata = metadata });
+            try result.append(.{ .endOffset = @intCast(start), .metadata = metadata });
         }
     }
-    if (tokens.items.len == 0) try tokens.append(.{ .endOffset = 0, .metadata = defaultMetadata() });
-    return try tokens.toOwnedSlice();
+    if (result.items.len == 0) try result.append(.{ .endOffset = 0, .metadata = defaultMetadata() });
+    return result.toOwnedSlice();
 }
 
 fn applyThemeRule(
@@ -443,14 +399,19 @@ test "textmate tokenizer: token text and foreground stay aligned" {
 
 test "textmate tokenizer: markdown inline raw scopes use the string color" {
     const line = "a `code` span";
-    const captures = [_]tm.ParseCapture{
-        .{ .start = 0, .end = line.len, .scope = "text.html.markdown" },
-        .{ .start = 0, .end = line.len, .scope = "meta.paragraph.markdown" },
-        .{ .start = 2, .end = 8, .scope = "markup.inline.raw.string.markdown" },
-        .{ .start = 2, .end = 3, .scope = "punctuation.definition.raw.markdown" },
-        .{ .start = 7, .end = 8, .scope = "punctuation.definition.raw.markdown" },
+    const root_scopes = [_][]const u8{ "text.html.markdown", "meta.paragraph.markdown" };
+    const raw_scopes = [_][]const u8{
+        "text.html.markdown",
+        "meta.paragraph.markdown",
+        "markup.inline.raw.string.markdown",
+        "punctuation.definition.raw.markdown",
     };
-    const tokens = try tokensFromCaptures(std.testing.allocator, &captures, line.len, null);
+    const segments = [_]tm_main.IToken{
+        .{ .start_index = 0, .end_index = 2, .scopes = &root_scopes },
+        .{ .start_index = 2, .end_index = 8, .scopes = &raw_scopes },
+        .{ .start_index = 8, .end_index = 13, .scopes = &root_scopes },
+    };
+    const tokens = try tokensFromScopes(std.testing.allocator, line, &segments, null);
     defer std.testing.allocator.free(tokens);
 
     try std.testing.expectEqual(@as(usize, 3), tokens.len);
@@ -478,9 +439,6 @@ test "textmate tokenizer: markdown does not break later tokenization" {
     var markdown_tokens = try markdown.model.tokenization().getLineTokens(1);
     defer markdown_tokens.deinit();
 
-    // Parsing markdown lazily loads the HTML derivative grammar. Its wildcard
-    // injection selector used to spin the package's scope-selector evaluator,
-    // hanging every tokenizer used afterwards.
     var zig = try TestModel.init(std.testing.allocator, "const x = 1;", "zig");
     defer zig.deinit();
     zig.model.forceTokenization(1);

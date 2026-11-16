@@ -43,9 +43,11 @@ state that in the comment and keep the behavioral contract intact.
 - Token indices are UTF-16 code units, matching vscode-textmate; only
   `OnigString` converts at the Oniguruma boundary. Do not replace this with
   UTF-8 byte offsets.
-- The engine is complete, but the editor still uses the pinned `textmate.zig`
-  dependency. Do not wire the package into the editor until the integration
-  step is done deliberately behind `ITokenizationSupport`.
+- The editor uses this package through `ITokenizationSupport` in
+  `src/vs/editor/common/model/tokens/textMateTokenizer.zig`. The old
+  `textmate.zig` dependency has been removed; do not reintroduce it. Keep the
+  editor's adapter boundary explicit: the port works in UTF-16 code units,
+  while editor text and token offsets are UTF-8 bytes.
 
 ## Standalone UI library
 

@@ -16,12 +16,12 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const onig = onigModule(b, target, optimize);
-    const textmate_dep = b.dependency("textmate", .{ .target = target, .optimize = optimize });
-    const textmate = textmateModule(b, textmate_dep, target, optimize, onig);
+    const vscode_textmate_dep = b.dependency("vscode_textmate", .{ .target = target, .optimize = optimize });
+    const vscode_textmate = vscode_textmate_dep.module("vscode_textmate");
     const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
     const ui = ui_dep.module("ui");
     const markdown = markdownModule(b, target, optimize);
-    const vscode_syntax = vscodeSyntaxAssets(b, target, optimize, textmate_dep);
+    const vscode_syntax = vscodeSyntaxAssets(b, target, optimize);
 
     // We will also create a module for our other entry point, 'main.zig'.
     const exe = b.addExecutable(.{
@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.root_module.addImport("oniguruma", onig);
-    exe.root_module.addImport("textmate", textmate);
+    exe.root_module.addImport("vscode_textmate", vscode_textmate);
     exe.root_module.addImport("ui", ui);
     exe.root_module.addImport("markdown", markdown);
     exe.root_module.addImport("vscode-syntax", vscode_syntax);
@@ -64,7 +64,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    setupTests(b, target, optimize, onig, textmate, ui, markdown, vscode_syntax);
+    setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax);
 }
 
 /// Builds the markdown module from the pinned CommonMark + GFM package.
@@ -85,34 +85,6 @@ fn markdownModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .optimize = optimize,
     });
     module.addImport("entities", entities);
-    return module;
-}
-
-/// Installs a textmate module backed by this build's oniguruma module.
-///
-/// The upstream textmate package hardcodes the macOS Homebrew prefix in its
-/// own build script. Wiring the package's sources here keeps the dependency
-/// but lets both Linux and macOS find oniguruma through `onigModule`.
-fn textmateModule(
-    b: *std.Build,
-    dep: *std.Build.Dependency,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.Optimize,
-    onig: *std.Build.Module,
-) *std.Build.Module {
-    const onig_wrapper = b.createModule(.{
-        .root_source_file = dep.path("src/pkg/oniguruma/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    onig_wrapper.addImport("c_onig", onig);
-
-    const module = b.createModule(.{
-        .root_source_file = dep.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    module.addImport("oniguruma", onig_wrapper);
     return module;
 }
 
@@ -160,7 +132,6 @@ fn vscodeSyntaxAssets(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.Optimize,
-    textmate_dep: *std.Build.Dependency,
 ) *std.Build.Module {
     const files = b.addWriteFiles();
     var source = std.array_list.Managed(u8).init(b.allocator);
@@ -191,11 +162,41 @@ fn vscodeSyntaxAssets(
     );
     source.appendSlice(
         \\    .{ .language = "", .scope = "markdown.code.fences", .data = @embedFile("grammars/markdown-code-fences.tmLanguage.json") },
+        \\
+    ) catch @panic("OOM");
+
+    // Languages without a usable VS Code grammar use vendored fallback
+    // grammars under `src/support/grammars`.
+    const fallback_grammars = [_]VscodeGrammar{
+        .{ .language = "zig", .scope = "source.zig", .path = "src/support/grammars/zig.json" },
+        .{ .language = "toml", .scope = "source.toml", .path = "src/support/grammars/toml.json" },
+        .{ .language = "yaml", .scope = "source.yaml", .path = "src/support/grammars/yaml.json" },
+    };
+    for (fallback_grammars) |grammar| {
+        const file_name = std.fs.path.basename(grammar.path);
+        const dest = std.fmt.allocPrint(b.allocator, "grammars/{s}", .{file_name}) catch @panic("OOM");
+        _ = files.addCopyFile(.{ .cwd_relative = grammar.path }, dest);
+        const line = std.fmt.allocPrint(
+            b.allocator,
+            "    .{{ .language = \"{s}\", .scope = \"{s}\", .data = @embedFile(\"{s}\") }},\n",
+            .{ grammar.language, grammar.scope, dest },
+        ) catch @panic("OOM");
+        source.appendSlice(line) catch @panic("OOM");
+    }
+
+    source.appendSlice(
         \\};
         \\
         \\pub fn scopeForLanguage(language: []const u8) ?[]const u8 {
         \\    inline for (grammars) |grammar| {
         \\        if (grammar.language.len > 0 and std.mem.eql(u8, grammar.language, language)) return grammar.scope;
+        \\    }
+        \\    return null;
+        \\}
+        \\
+        \\pub fn dataForScope(scope: []const u8) ?[]const u8 {
+        \\    inline for (grammars) |grammar| {
+        \\        if (std.mem.eql(u8, grammar.scope, scope)) return grammar.data;
         \\    }
         \\    return null;
         \\}
@@ -218,7 +219,7 @@ fn vscodeSyntaxAssets(
             \\
         ) catch @panic("OOM");
     } else {
-        _ = files.addCopyFile(textmate_dep.path("src/resources/themes/dark-plus.json"), "themes/dark_plus.json");
+        _ = files.addCopyFile(.{ .cwd_relative = "src/support/themes/dark-plus.json" }, "themes/dark_plus.json");
         source.appendSlice(
             \\pub const dark_plus = @embedFile("themes/dark_plus.json");
             \\pub fn themeData(name: []const u8) ?[]const u8 {
@@ -297,7 +298,7 @@ fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module) void {
     }
 }
 
-fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, vscode_textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module) void {
     const test_step = b.step("test", "Run all tests");
 
     const tests = b.addTest(.{
@@ -309,7 +310,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         }),
     });
     tests.root_module.addImport("oniguruma", onig);
-    tests.root_module.addImport("textmate", textmate);
+    tests.root_module.addImport("vscode_textmate", vscode_textmate);
     tests.root_module.addImport("ui", ui);
     tests.root_module.addImport("markdown", markdown);
     tests.root_module.addImport("vscode-syntax", vscode_syntax);

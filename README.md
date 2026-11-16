@@ -22,8 +22,9 @@ Notes for the Zig 0.17 port:
 - `@cImport` was removed in Zig 0.17, so `oniguruma.h` is translated by the
   build system (`addTranslateC`) and imported as the `oniguruma` module. The
   build searches the standard Homebrew and Linux prefixes for the header and
-  library; `textmate` is wired from its package sources so its macOS-only
-  build script is not used.
+  library. The editor tokenizer uses the standalone `vscode_textmate` package
+  in `textmate/`; Zig/TOML/YAML fallback grammars and the fallback Dark+ theme
+  are vendored under `src/support/`.
 - `std.io` was replaced by the `std.Io` reader/writer interfaces; the app
   receives its `Io` instance through `std.process.Init`.
 - `std.ArrayList` is unmanaged in Zig 0.17. This port currently uses the
@@ -253,16 +254,19 @@ View model:
 
 TextMate tokenization:
 
-- The `textmate.zig` fork (`chendesheng/textmate.zig`, commit `bcef1f2`) is
-  used for language tokenization as a pinned Zig package dependency.
+- Tokenization runs on the standalone `vscode_textmate` port in `textmate/`,
+  wired through `ITokenizationSupport` in
+  `src/vs/editor/common/model/tokens/textMateTokenizer.zig`. The old
+  `textmate.zig` package dependency has been removed.
 - Supported language IDs include `zig`, `json`, `javascript`,
   `typescript`, `python`, `rust`, `go`, `c`, `cpp`, `java`, `html`, `css`,
   `scss`, `markdown`, `yaml`, `toml`, and `shellscript`/`bash`.
 - Languages that ship a grammar in the upstream checkout use VS Code's
   originals, embedded from `../vscode/extensions/*/syntaxes/*.tmLanguage.json`
-  at build time (`vscode-syntax`). `zig`, `toml` and `yaml` keep the pinned
-  package's grammars (the current VS Code YAML grammar does not tokenize with
-  this parser); the package is also the fallback when the checkout is absent.
+  at build time (`vscode-syntax`). `zig`, `toml` and `yaml` use vendored
+  fallback grammars in `src/support/grammars` (the current VS Code YAML
+  grammar does not tokenize with this parser). The vendored Dark+ theme is the
+  fallback when the checkout is absent.
 - Token colors come from VS Code's Dark+ theme
   (`theme-defaults/themes/dark_plus.json` and its `dark_vs.json` include).
   `TokenTheme` resolves the `tokenColors` rules (foreground and
@@ -276,16 +280,13 @@ TextMate tokenization:
   fence grammar (`src/support/markdownCodeFences.tmLanguage.json`), including
   aliases such as `js`, `ts`, `py`, `rs`, `yml`, `md`, `sh` and `c++`. VS
   Code's built-in fence list does not cover Zig or TOML.
-- The pinned `textmate.zig` dependency includes upstream fixes for wildcard
-  scope selectors and the parser's zero-width cycle baseline. No local
-  substitutions of the dependency's parser or evaluator are carried.
 - A faithful Zig port of `microsoft/vscode-textmate` lives in `textmate/`,
-  with the reference checkout at `../vscode-textmate`. It now covers the
-  engine and all upstream test suites, including the first-mate/suite1
-  tokenization fixtures and all 14×72 theme fixtures. The editor still uses
-  `textmate.zig`; wiring the port behind `ITokenizationSupport` is the
-  remaining integration step. See `textmate/README.md` for the source map,
-  UTF-16 index contract and porting notes.
+  with the reference checkout at `../vscode-textmate`. It covers the engine
+  and all upstream test suites, including the first-mate/suite1 tokenization
+  fixtures and all 14×72 theme fixtures. It is the editor's tokenizer and
+  converts UTF-16 token boundaries to the editor's UTF-8 offsets at the
+  adapter boundary. See `textmate/README.md` for the source map, UTF-16 index
+  contract and porting notes.
 - Theme selectors that combine a parent scope with a target (`a b`) or exclude
   a scope (`a - b`) are reduced to the target scope; the terminal theme trie
   matches one scope at a time.

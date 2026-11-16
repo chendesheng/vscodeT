@@ -7,9 +7,9 @@ the TextMate engine used by VS Code.
 - Reference checkout: `../vscode-textmate`
 - Pinned version: **9.3.2** (commit `5fc1758`, package.json version `9.3.2`)
 - Zig: 0.17
-- Status: **complete port of the engine and its upstream test suites**. The
-  editor still uses the pinned `textmate.zig` dependency until integration is
-  done; that is the remaining step, not a missing engine feature.
+- Status: **complete port of the engine and its upstream test suites**, and
+  the editor's active tokenizer. The old `textmate.zig` dependency has been
+  removed.
 
 The package is standalone: it does not import anything from `src/`. It is a
 path dependency named `vscode_textmate` in the root `build.zig.zon`.
@@ -158,20 +158,22 @@ the live stack depth rather than by the number of lines.
       assertions; debug/CI runtime).
 - [x] `cd textmate && zig build test` passes.
 - [x] The package is covered by `zig build test` from the repository root.
-- [ ] Replace the editor's pinned `textmate.zig` dependency with this package
-      behind `ITokenizationSupport` and remove the old dependency.
+- [x] Replace the editor's `textmate.zig` dependency with this package behind
+      `ITokenizationSupport` and remove the old dependency.
+- [x] Vendor the Zig/TOML/YAML fallback grammars and fallback Dark+ theme.
 
-## Integration notes
+## Editor integration
 
-When wiring this package into the editor:
-
-- The editor currently stores UTF-8 line text. Convert at the tokenization
-  boundary or keep a UTF-16 view; token indices are UTF-16 code units.
-- `tokenizeLine2` results are scratch-owned until the next call. Copy tokens
-  or consume them before tokenizing the next line.
-- The editor's existing `TokenTheme`/Dark+ mapping can be replaced by
-  `Theme`/`ColorMap` once the editor is ready to use scratch-arena state
-  stacks.
+- `src/vs/editor/common/model/tokens/textMateTokenizer.zig` owns the adapter.
+  It uses the editor's existing Dark+ `TokenTheme`/`TokenMetadata` pipeline and
+  converts the port's UTF-16 token starts to UTF-8 byte offsets.
+- One process-wide `Registry` loads grammars from `vscode-syntax` assets plus
+  the vendored Zig/TOML/YAML fallbacks. Markdown fences are prepended to the
+  raw markdown grammar before compilation.
+- `TokenizeLine*` results are scratch-owned until the next call; the adapter
+  consumes them immediately.
+- The editor's existing `TokenTheme`/`ColorMap` remains authoritative for the
+  terminal palette; the port's own `Theme` is not used by the editor yet.
 
 ## License
 
