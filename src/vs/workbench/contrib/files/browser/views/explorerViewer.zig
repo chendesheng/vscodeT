@@ -13,9 +13,9 @@
 //   replaces the browser's asynchronous `processIgnoreFile` and file watcher;
 // - the open-editor exception is an optional callback because the terminal
 //   Explorer does not import the editor service;
-// - `files.exclude` sibling clauses (`{ when: ... }`) are not ported, matching
-//   the documented `glob.zig` limitation. Object values are treated as enabled
-//   patterns, like the old TUI filter did.
+// - `files.exclude` sibling clauses (`{ when: ... }`) are evaluated through
+//   the `hasSibling` query, like upstream; the terminal query reads the
+//   parent's resolved children.
 //
 // `ExplorerDelegate`, `ExplorerDataSource` and `FilesRenderer` from the same
 // upstream file are not part of this port; the terminal tree owns row
@@ -201,6 +201,7 @@ pub const FilesFilter = struct {
             false;
 
         var hidden_context = HiddenContext{ .filter = self, .item = item };
+        var sibling_context = SiblingContext{ .parent = parent };
         const result = glob.evaluateExcludeTreeEntry(&root_filter.parsed, .{
             .path = relativePath(item),
             .basename = item.name,
@@ -208,6 +209,10 @@ pub const FilesFilter = struct {
             .is_parent_excluded = parent_excluded,
             .is_hidden = if (root_filter.exclude_git_ignore)
                 .{ .context = &hidden_context, .callback = isHiddenCallback }
+            else
+                null,
+            .has_sibling = if (parent != null)
+                .{ .context = &sibling_context, .callback = hasSiblingCallback }
             else
                 null,
         });
@@ -288,6 +293,16 @@ const HiddenContext = struct {
     item: *ExplorerItem,
 };
 
+const SiblingContext = struct {
+    parent: ?*ExplorerItem,
+};
+
+fn hasSiblingCallback(context: *anyopaque, name: []const u8) bool {
+    const sibling: *SiblingContext = @ptrCast(@alignCast(context));
+    const parent = sibling.parent orelse return false;
+    return parent.getChild(name) != null;
+}
+
 fn isHiddenCallback(context: *anyopaque) bool {
     const hidden: *HiddenContext = @ptrCast(@alignCast(context));
     return hidden.filter.isGitIgnored(hidden.item);
@@ -312,8 +327,8 @@ fn getBoolForResource(
 
 /// The `files.exclude` object is an ordered expression: `true` enables a
 /// pattern, `false` disables it, and a leading `!` marks an exception.
-/// Object values are sibling clauses upstream; this port treats them as
-/// enabled because `when` clauses are not supported by `glob.zig`.
+/// Object values are sibling clauses: `{ when: "..." }` becomes an
+/// `ExcludeEntry.when` and is evaluated with the sibling query.
 fn buildExcludeEntries(
     allocator: Allocator,
     configuration: *ConfigurationService,
@@ -327,15 +342,23 @@ fn buildExcludeEntries(
     if (value.* == .object) {
         var iterator = value.object.iterator();
         while (iterator.next()) |entry| {
-            const enabled = switch (entry.value_ptr.*) {
-                .bool => |inner| inner,
-                .object => true,
-                else => false,
-            };
-            try entries.append(.{
-                .pattern = entry.key_ptr.*,
-                .enabled = enabled,
-            });
+            switch (entry.value_ptr.*) {
+                .object => |clause| {
+                    const when = if (clause.get("when")) |when_value| switch (when_value) {
+                        .string => |text| text,
+                        else => null,
+                    } else null;
+                    try entries.append(.{
+                        .pattern = entry.key_ptr.*,
+                        .when = when,
+                    });
+                },
+                .bool => |enabled| try entries.append(.{
+                    .pattern = entry.key_ptr.*,
+                    .enabled = enabled,
+                }),
+                else => {},
+            }
         }
     }
     return entries.toOwnedSlice();

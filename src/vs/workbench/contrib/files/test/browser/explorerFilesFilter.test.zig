@@ -238,3 +238,46 @@ test "FilesFilter: configuration changes invalidate cached root filters" {
     filter.updateConfiguration();
     try std.testing.expect(filter.filter(dist, .visible));
 }
+
+test "FilesFilter: files.exclude sibling clauses use the resolved siblings" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".vscode");
+    try writeFile(&tmp, io, ".vscode/settings.json",
+        \\{
+        \\  "files.exclude": {
+        \\    "*.js": { "when": "$(basename).ts" },
+        \\    "!keep.js": true
+        \\  },
+        \\  "explorer.excludeGitIgnore": false
+        \\}
+    );
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = try absoluteRoot(&tmp, io, &root_buffer);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root_path});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+
+    const root = try ExplorerItem.create(allocator, root_path, "root", null, true);
+    defer root.destroy();
+    const keep_js = try createChild(allocator, root, "keep.js", false);
+    _ = try createChild(allocator, root, "keep.ts", false);
+    const drop_js = try createChild(allocator, root, "drop.js", false);
+    _ = try createChild(allocator, root, "drop.ts", false);
+    const other_js = try createChild(allocator, root, "other.js", false);
+
+    var filter = FilesFilter.init(allocator, io, configuration);
+    defer filter.deinit();
+
+    try std.testing.expect(filter.filter(keep_js, .visible));
+    try std.testing.expect(!keep_js.is_excluded);
+    try std.testing.expect(!filter.filter(drop_js, .visible));
+    try std.testing.expect(drop_js.is_excluded);
+    try std.testing.expect(filter.filter(other_js, .visible));
+    try std.testing.expect(!other_js.is_excluded);
+}

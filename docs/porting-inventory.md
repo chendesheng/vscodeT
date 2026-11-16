@@ -26,8 +26,9 @@ P1 and P2 are implemented.
 - `FilesFilter` moved to
   `src/vs/workbench/contrib/files/browser/views/explorerViewer.zig`.
 - `glob.zig` gained `parseExcludeExpression`, exception segmentation,
-  `evaluateExcludeTreeEntry`, `couldExceptionMatchBeneath` and the upstream
-  exclusion test suite; exception-leading folders and `!` exceptions now work.
+  `evaluateExcludeTreeEntry`, `couldExceptionMatchBeneath`, sibling `when`
+  clauses and the upstream exclusion test suite; exception-leading folders,
+  `!` exceptions and sibling clauses now work.
 - `src/tui/sidebar.zig` was deleted; its `Action` moved to
   `src/tui/explorerTreeSidebar.zig`, and the live tree uses the upstream
   filter.
@@ -40,6 +41,9 @@ P1 and P2 are implemented.
 - `src/tui/activityBar.zig` is now the terminal view over the activity model.
 - `src/tui/workbench.zig` uses the activity model, sidebar model, layout model
   and status-bar model/part for its shell state.
+- The Search activity publishes its current match count through the activity
+  service; the activity-bar view paints the first badge character in the
+  rail's rightmost cell.
 - Ported model tests are registered in `src/tests.zig`.
 
 The table in §7 is the pre-P1/P2 snapshot, so its `sidebar.zig` row and its
@@ -371,23 +375,22 @@ bookkeeping from `workbench.zig`. What remains is the part layout/visibility
 model and the terminal compositor. P2 targets the model; the compositor and
 cell painting stay in the terminal.
 
-### 8.5 Explorer (`sidebar.zig`, `explorerTreeSidebar.zig`)
+### 8.5 Explorer (`explorerViewer.zig`, `explorerTreeSidebar.zig`)
 
-`sidebar.zig` has two layers:
+P1 moved the filter and removed the old view:
 
-- `FilesFilter` (52-245): configuration, `files.exclude`, `.gitignore`/
-  `.ignore` chains, per-root filters. This is upstream
-  `FilesFilter` (`workbench/contrib/files/browser/views/explorerViewer.ts:1177`) and should move there.
-- `Sidebar` (253-948): a complete direct-painted Explorer view that the live
-  workbench does not use. `workbench.zig` imports
-  `explorerTreeSidebar.zig`, which imports only `FilesFilter` and `Action`
-  from `sidebar.zig`. The legacy view is dead code and should be deleted.
+- `FilesFilter` now lives in
+  `workbench/contrib/files/browser/views/explorerViewer.zig`, with the
+  configuration, `files.exclude`, `.gitignore`/`.ignore` chains and per-root
+  filters.
+- The old direct-painted `Sidebar` and `src/tui/sidebar.zig` were deleted;
+  `Action` moved to `explorerTreeSidebar.zig`, which is the live tree view.
 
-The upstream filter also evaluates exclusion exceptions and tracks folders
-that lead to exceptions. `base/common/glob.ts` has `parseExcludeExpression` (735) and
-`evaluateExcludeTreeEntry` (817); the TUI does not port the traversal/exception
-metadata (README, configuration section). The upstream test
-`workbench/contrib/files/test/browser/explorerFilesFilter.test.ts` covers exactly this behavior.
+The upstream filter evaluates exclusion exceptions and tracks folders that
+lead to exceptions. `base/common/glob.zig` now ports
+`parseExcludeExpression`, `evaluateExcludeTreeEntry`, sibling `when` clauses
+and exception-leading-folder handling; `explorerFilesFilter.test.zig` covers
+the behavior.
 
 `explorerTreeSidebar.zig` renders through the ported compressed tree. Its
 renderer callback (`renderRow`) is the terminal equivalent of `FilesRenderer`

@@ -153,6 +153,12 @@ pub const SearchView = struct {
         self.allocator.destroy(self);
     }
 
+    /// Number of current search matches, used as the activity-bar badge
+    /// source while a search is populated.
+    pub fn matchCount(self: *const SearchView) usize {
+        return self.model.result.count();
+    }
+
     pub fn focus(self: *SearchView) void {
         self.panel_focused = true;
         self.results_focused = false;

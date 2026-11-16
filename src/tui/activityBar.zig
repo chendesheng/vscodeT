@@ -2,15 +2,20 @@
 // `src/vs/workbench/browser/parts/activitybar/activitybarPart.zig` model.
 //
 // The model owns the activity entries, order, visibility, active container and
-// compact width. This file only maps the model's activities to terminal cells
-// and performs row hit testing; that is the same split as upstream's
+// compact width. This file maps the model's activities to terminal cells and
+// performs row hit testing; that is the same split as upstream's
 // `ActivitybarPart` view versus the view-container/activity services.
+//
+// Badges are terminal-adapted: the rail is three cells wide, so the first
+// character of the container's first badge description is painted in the
+// rightmost cell of the activity row.
 
 const std = @import("std");
 const ui = @import("ui");
 const activitybar = @import("../vs/workbench/browser/parts/activitybar/activitybarPart.zig");
 const ActivityBarPart = activitybar.ActivityBarPart;
 const Activity = activitybar.Activity;
+const ActivityService = @import("../vs/workbench/services/activity/browser/activityService.zig").ActivityService;
 
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
@@ -34,6 +39,7 @@ pub fn hitAt(part: *const ActivityBarPart, x: usize, y: usize, rect: ui.Rect) ?u
 
 pub fn render(
     part: *const ActivityBarPart,
+    service: ?*const ActivityService,
     grid: *CellGrid,
     rect: ui.Rect,
     active: usize,
@@ -54,6 +60,7 @@ pub fn render(
         .fg = ui.cell.packColor(.{ .r = 245, .g = 245, .b = 245 }),
         .bg = ui.cell.packColor(.{ .r = 45, .g = 45, .b = 50 }),
     };
+    const badge_foreground = ui.cell.packColor(.{ .r = 250, .g = 200, .b = 80 });
     grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), base);
 
     var visible_index: usize = 0;
@@ -68,6 +75,18 @@ pub fn render(
         const glyph_width = ui.dom.defaultMeasureWidth(activity.glyph);
         const col = x + (width -| glyph_width) / 2;
         grid.putCodepoint(col, row, activity.glyph, glyph_width, paint);
+        if (service) |activity_service| {
+            if (activity_service.getContainerBadgeDescription(activity.id)) |description| {
+                if (description.len > 0 and width > 0) {
+                    const badge_col = x + width - 1;
+                    grid.putCodepoint(badge_col, row, description[0], 1, .{
+                        .fg = badge_foreground,
+                        .bg = paint.bg,
+                        .attrs = ui.cell.Attr.bold,
+                    });
+                }
+            }
+        }
         visible_index += 1;
     }
 
@@ -100,8 +119,19 @@ test "activityBar: draws the active entry from the model" {
     for (default_activities) |activity| try part.addActivity(activity);
     try part.setVisible(true);
 
-    render(&part, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true);
+    render(&part, null, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true);
     const row = try grid.rowText(allocator, 2);
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "F") != null);
+
+    var service = ActivityService.init(allocator);
+    defer service.deinit();
+    try service.showViewContainerActivity("search", .{
+        .id = "search.results",
+        .badge = .{ .description = "7" },
+    });
+    render(&part, &service, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true);
+    const badge_row = try grid.rowText(allocator, 2);
+    defer allocator.free(badge_row);
+    try std.testing.expect(std.mem.indexOf(u8, badge_row, "7") != null);
 }

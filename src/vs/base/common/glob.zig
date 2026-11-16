@@ -133,6 +133,9 @@ pub const Expression = struct {
 pub const ExcludeEntry = struct {
     pattern: []const u8,
     enabled: bool = true,
+    /// Upstream sibling clause (`{ when: '$(basename).ts' }`). The pattern is
+    /// enabled only when a sibling matching the substituted clause exists.
+    when: ?[]const u8 = null,
 };
 
 /// Mirrors upstream `isExcludeException`.
@@ -161,7 +164,8 @@ pub fn getExcludeExceptions(allocator: Allocator, entries: []const ExcludeEntry)
         list.deinit();
     }
     for (entries) |entry| {
-        if (!entry.enabled or !isExcludeException(entry.pattern)) continue;
+        if (!entry.enabled or entry.when != null) continue;
+        if (!isExcludeException(entry.pattern)) continue;
         const raw = std.mem.trim(u8, entry.pattern, " \t\r\n");
         var pattern = std.mem.trim(u8, raw[1..], " \t\r\n");
         pattern = std.mem.trimEnd(u8, pattern, "/\\");
@@ -213,11 +217,19 @@ fn isInSkippedFolder(path: []const u8, skipped: []const []const u8) bool {
 pub const ParsedExcludeExpression = struct {
     arena: std.heap.ArenaAllocator,
     matches_exclude: Expression,
+    /// Entries with a sibling clause. They are evaluated with the caller's
+    /// `hasSibling` query, mirroring upstream `ParsedExpressionPattern`.
+    sibling_rules: []const SiblingRule = &.{},
     exception_expression: Expression = Expression.empty,
     exception_patterns: []const Pattern = &.{},
     exceptions: []const []const u8 = &.{},
     skipped_folders: []const []const u8 = &.{},
     has_exceptions: bool = false,
+
+    pub const SiblingRule = struct {
+        patterns: []const Pattern,
+        when: []const u8,
+    };
 
     pub fn init(
         allocator: Allocator,
@@ -229,11 +241,20 @@ pub const ParsedExcludeExpression = struct {
         const arena_allocator = arena.allocator();
 
         var exclude_patterns = std.array_list.Managed([]const u8).init(arena_allocator);
+        var sibling_rules = std.array_list.Managed(SiblingRule).init(arena_allocator);
         for (entries) |entry| {
             if (!entry.enabled) continue;
             const pattern = std.mem.trim(u8, entry.pattern, " \t\r\n");
             if (pattern.len == 0 or isExcludeException(pattern)) continue;
-            try exclude_patterns.append(try arena_allocator.dupe(u8, pattern));
+            if (entry.when) |when| {
+                const rule_expression = try Expression.init(arena_allocator, &.{pattern}, options);
+                try sibling_rules.append(.{
+                    .patterns = rule_expression.patterns,
+                    .when = try arena_allocator.dupe(u8, when),
+                });
+            } else {
+                try exclude_patterns.append(try arena_allocator.dupe(u8, pattern));
+            }
         }
         const matches_exclude = try Expression.init(arena_allocator, exclude_patterns.items, options);
         const exceptions = try getExcludeExceptions(arena_allocator, entries);
@@ -241,6 +262,7 @@ pub const ParsedExcludeExpression = struct {
             return .{
                 .arena = arena,
                 .matches_exclude = matches_exclude,
+                .sibling_rules = sibling_rules.items,
             };
         }
 
@@ -271,6 +293,7 @@ pub const ParsedExcludeExpression = struct {
         return .{
             .arena = arena,
             .matches_exclude = matches_exclude,
+            .sibling_rules = sibling_rules.items,
             .exception_expression = exception_expression,
             .exception_patterns = exception_patterns_expression.patterns,
             .exceptions = exceptions,
@@ -285,8 +308,37 @@ pub const ParsedExcludeExpression = struct {
 
     /// Matches the exclude patterns only, ignoring exceptions.
     pub fn matchesExclude(self: *const ParsedExcludeExpression, path: []const u8, basename: ?[]const u8) bool {
-        _ = basename;
-        return self.matches_exclude.matches(path);
+        return self.matchesExcludeWithSiblings(path, basename, null);
+    }
+
+    /// Matches the exclude patterns and sibling clauses. A sibling clause is
+    /// enabled only when `has_sibling` accepts the clause with
+    /// `$(basename)` replaced by the path basename without its extension.
+    pub fn matchesExcludeWithSiblings(
+        self: *const ParsedExcludeExpression,
+        path: []const u8,
+        basename: ?[]const u8,
+        has_sibling: ?HasSibling,
+    ) bool {
+        if (self.matches_exclude.matches(path)) return true;
+        if (self.sibling_rules.len == 0) return false;
+        const query = has_sibling orelse return false;
+        const base = basename orelse pathBasename(path);
+        const name = nameWithoutExtension(base);
+        var clause_buffer: [1024]u8 = undefined;
+        for (self.sibling_rules) |rule| {
+            var pattern_matches = false;
+            for (rule.patterns) |pattern| {
+                if (pattern.matches(path)) {
+                    pattern_matches = true;
+                    break;
+                }
+            }
+            if (!pattern_matches) continue;
+            const clause = substituteSiblingClause(rule.when, name, &clause_buffer) orelse continue;
+            if (query.callback(query.context, clause)) return true;
+        }
+        return false;
     }
 
     /// Whether the path, or one of its parents, is carved out by an exception.
@@ -300,7 +352,16 @@ pub const ParsedExcludeExpression = struct {
     /// Matches like upstream `parseExcludeExpression(...).matches`: a path is
     /// excluded only when it matches an exclude pattern and is not excepted.
     pub fn matches(self: *const ParsedExcludeExpression, path: []const u8, basename: ?[]const u8) bool {
-        if (!self.matchesExclude(path, basename)) return false;
+        return self.matchesWithSiblings(path, basename, null);
+    }
+
+    pub fn matchesWithSiblings(
+        self: *const ParsedExcludeExpression,
+        path: []const u8,
+        basename: ?[]const u8,
+        has_sibling: ?HasSibling,
+    ) bool {
+        if (!self.matchesExcludeWithSiblings(path, basename, has_sibling)) return false;
         return !self.isExcepted(path, basename);
     }
 
@@ -359,6 +420,41 @@ fn couldMatchBeneathSegments(
     return couldMatchBeneathSegments(segments, matcher_index + 1, path, end + 1, ignore_case);
 }
 
+fn pathBasename(path: []const u8) []const u8 {
+    var index = path.len;
+    while (index > 0) : (index -= 1) {
+        if (isSeparator(path[index - 1])) return path[index..];
+    }
+    return path;
+}
+
+fn nameWithoutExtension(basename: []const u8) []const u8 {
+    const dot = std.mem.lastIndexOfScalar(u8, basename, '.') orelse return basename;
+    if (dot == 0) return basename;
+    return basename[0..dot];
+}
+
+/// Replaces every `$(basename)` in the clause. Returns null when the result
+/// would not fit in the caller's buffer.
+fn substituteSiblingClause(when: []const u8, name: []const u8, buffer: []u8) ?[]const u8 {
+    var source: usize = 0;
+    var target: usize = 0;
+    while (source < when.len) {
+        if (std.mem.startsWith(u8, when[source..], "$(basename)")) {
+            if (target + name.len > buffer.len) return null;
+            @memcpy(buffer[target .. target + name.len], name);
+            target += name.len;
+            source += "$(basename)".len;
+        } else {
+            if (target >= buffer.len) return null;
+            buffer[target] = when[source];
+            target += 1;
+            source += 1;
+        }
+    }
+    return buffer[0..target];
+}
+
 /// Optional callbacks used by `evaluateExcludeTreeEntry`, mirroring the
 /// upstream `hasSibling` and `isHidden` entry hooks.
 pub const IsHidden = struct {
@@ -392,10 +488,9 @@ pub fn evaluateExcludeTreeEntry(
     parsed: *const ParsedExcludeExpression,
     entry: ExcludeTreeEntry,
 ) ExcludeTreeResult {
-    _ = entry.has_sibling;
     const hidden = if (entry.is_hidden) |hook| hook.callback(hook.context) else false;
     const matched = entry.is_parent_excluded or
-        parsed.matchesExclude(entry.path, entry.basename) or hidden;
+        parsed.matchesExcludeWithSiblings(entry.path, entry.basename, entry.has_sibling) or hidden;
     const is_excluded = matched and !parsed.isExcepted(entry.path, entry.basename);
     return .{
         .is_excluded = is_excluded,
@@ -1210,4 +1305,26 @@ test "glob: expressions without exceptions parse unchanged" {
     try std.testing.expect(!parsed.has_exceptions);
     try std.testing.expect(parsed.matches("a/node_modules", null));
     try std.testing.expect(!parsed.matches("a/src", null));
+}
+
+test "glob: sibling clauses are subject to exceptions" {
+    var parsed = try parseExcludeExpression(std.testing.allocator, &.{
+        .{ .pattern = "**/*.js", .when = "$(basename).ts" },
+        .{ .pattern = "!keep.js" },
+    }, .{});
+    defer parsed.deinit();
+
+    var context: u8 = 0;
+    const query = HasSibling{
+        .context = &context,
+        .callback = struct {
+            fn callback(_: *anyopaque, name: []const u8) bool {
+                return std.mem.eql(u8, name, "keep.ts") or std.mem.eql(u8, name, "drop.ts");
+            }
+        }.callback,
+    };
+
+    try std.testing.expect(!parsed.matchesWithSiblings("keep.js", "keep.js", query));
+    try std.testing.expect(parsed.matchesWithSiblings("drop.js", "drop.js", query));
+    try std.testing.expect(!parsed.matchesWithSiblings("other.js", "other.js", query));
 }

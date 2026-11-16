@@ -55,6 +55,30 @@ pub const ActivityService = struct {
         try self.on_did_change_activity.fire(.{ .container = view_container_id });
     }
 
+    /// Replaces an activity with the same id in a container. Used by live
+    /// badge sources (for example the search result count).
+    pub fn setViewContainerActivity(self: *ActivityService, view_container_id: []const u8, activity: Activity) !void {
+        const result = try self.by_id.getOrPut(view_container_id);
+        if (!result.found_existing) result.value_ptr.* = std.array_list.Managed(Activity).init(self.allocator);
+        for (result.value_ptr.items) |*existing| {
+            if (std.mem.eql(u8, existing.id, activity.id)) {
+                existing.* = activity;
+                try self.on_did_change_activity.fire(.{ .container = view_container_id });
+                return;
+            }
+        }
+        try result.value_ptr.append(activity);
+        try self.on_did_change_activity.fire(.{ .container = view_container_id });
+    }
+
+    /// First badge description for a container. The slice is borrowed from the
+    /// registered activity. Used by the terminal activity-bar view.
+    pub fn getContainerBadgeDescription(self: *const ActivityService, view_container_id: []const u8) ?[]const u8 {
+        const list = self.by_id.get(view_container_id) orelse return null;
+        if (list.items.len == 0) return null;
+        return list.items[0].badge.description;
+    }
+
     pub fn getViewContainerActivities(self: *const ActivityService, allocator: Allocator, view_container_id: []const u8) ![]Activity {
         const list = self.by_id.get(view_container_id) orelse return allocator.alloc(Activity, 0);
         return allocator.dupe(Activity, list.items);

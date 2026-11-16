@@ -149,9 +149,6 @@ console API for raw mode, sizing and input polling.
     in the terminal workbench);
   - trusted-workspace filtering and restricted settings (no workspace-trust
     service);
-  - `files.exclude` `when` clauses (`glob.zig` does not port upstream's
-    sibling-clause evaluation; plain `!` exceptions and exception-leading
-    folders are supported);
   - the Settings editor/view, which remains a placeholder.
 - The file watcher (`src/vs/platform/files/...`) ports the VS Code service and
   the Linux/macOS/Windows backends: `common/files.zig` and
@@ -177,8 +174,10 @@ console API for raw mode, sizing and input polling.
   (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`), the
   activity service model
   (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
-  terminal view (`src/tui/activityBar.zig`). The service has no badge source in
-  the terminal workbench yet; it is ready for view contributions. It switches between
+  terminal view (`src/tui/activityBar.zig`). The Search activity shows a badge
+  with the current match count; the service also supports view and global
+  badges. It
+  switches between
   Explorer, Search and Settings containers; Explorer is wired to the file tree
   and Search to the workspace text-search panel, while Settings remains a
   placeholder. `Alt-1..3` switches containers while the side panel has focus.

@@ -119,6 +119,12 @@ test "ActivityService: view container and global activities" {
     defer std.testing.allocator.free(accounts);
     try std.testing.expectEqual(@as(usize, 0), accounts.len);
 
+    try service.setViewContainerActivity("explorer", .{
+        .id = "explorer.badge",
+        .badge = .{ .description = "4" },
+    });
+    try std.testing.expectEqualStrings("4", service.getContainerBadgeDescription("explorer").?);
+
     service.removeActivity("explorer", "explorer.badge");
     const after_remove = try service.getViewContainerActivities(std.testing.allocator, "explorer");
     defer std.testing.allocator.free(after_remove);

@@ -55,6 +55,7 @@ const SidebarPart = @import("../vs/workbench/browser/parts/sidebar/sidebarPart.z
 const LayoutModel = @import("../vs/workbench/browser/layout.zig").LayoutModel;
 const StatusbarModel = @import("../vs/workbench/browser/parts/statusbar/statusbarModel.zig").StatusbarModel;
 const StatusbarPart = @import("../vs/workbench/browser/parts/statusbar/statusbarPart.zig").StatusbarPart;
+const ActivityService = @import("../vs/workbench/services/activity/browser/activityService.zig").ActivityService;
 const history_mod = @import("../vs/workbench/services/history/common/history.zig");
 const HistoryService = history_mod.HistoryService;
 const commands_mod = @import("./commands.zig");
@@ -136,7 +137,10 @@ pub const Workbench = struct {
     sidebar_part: SidebarPart,
     statusbar: StatusbarModel,
     statusbar_part: StatusbarPart,
+    activity_service: ActivityService,
     status_editor_buf: [768]u8 = undefined,
+    search_badge_buf: [32]u8 = undefined,
+    search_badge_count: usize = 0,
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
     settings_watcher: ?*SettingsWatcher = null,
@@ -372,6 +376,8 @@ pub const Workbench = struct {
         self.statusbar = StatusbarModel.init(self.allocator);
         errdefer self.statusbar.deinit();
         self.statusbar_part = StatusbarPart.init(&self.statusbar);
+        self.activity_service = ActivityService.init(self.allocator);
+        errdefer self.activity_service.deinit();
 
         try self.layout_model.setSize(.sidebar, 28);
         try self.layout_model.setVisible(.sidebar, false);
@@ -404,6 +410,7 @@ pub const Workbench = struct {
     }
 
     fn deinitShellModels(self: *Workbench) void {
+        self.activity_service.deinit();
         self.statusbar.deinit();
         self.sidebar_part.deinit();
         self.activity_bar_part.deinit();
@@ -1464,6 +1471,24 @@ pub const Workbench = struct {
         return adjusted;
     }
 
+    /// Publishes the search result count as the Search activity badge. This
+    /// is the first live activity-service badge source in the terminal
+    /// workbench; view containers without a source have no badge.
+    fn syncSearchActivity(self: *Workbench) void {
+        const count = if (self.search_view) |view| view.matchCount() else 0;
+        if (self.search_badge_count == count) return;
+        self.search_badge_count = count;
+        if (count == 0) {
+            self.activity_service.removeActivity("search", "search.results");
+            return;
+        }
+        const text = std.fmt.bufPrint(&self.search_badge_buf, "{d}", .{count}) catch "?";
+        self.activity_service.setViewContainerActivity("search", .{
+            .id = "search.results",
+            .badge = .{ .description = text },
+        }) catch {};
+    }
+
     /// Rebuilds the workbench status row from the ported `StatusbarModel`.
     /// The model owns alignment/priority; the active editor view receives the
     /// final left and right strings.
@@ -1496,11 +1521,12 @@ pub const Workbench = struct {
     }
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
+        self.syncSearchActivity();
         self.frame.begin();
 
         if (self.sidebarShown()) {
             const focused = self.focus == .sidebar;
-            activity_bar_mod.render(&self.activity_bar_part, &self.frame.next, self.activityRect(), self.activeActivity(), focused);
+            activity_bar_mod.render(&self.activity_bar_part, &self.activity_service, &self.frame.next, self.activityRect(), self.activeActivity(), focused);
             const active_id = self.activity_bar_part.active_id orelse "";
             if (std.mem.eql(u8, active_id, "explorer")) {
                 if (self.sidebar) |sidebar| {

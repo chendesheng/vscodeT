@@ -936,8 +936,10 @@ Library constraints:
   (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`), the
   activity service model
   (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
-  terminal view (`src/tui/activityBar.zig`). The service has no badge source in
-  the terminal workbench yet; it is ready for view contributions. It switches fixed Explorer,
+  terminal view (`src/tui/activityBar.zig`). The Search activity shows a badge
+  with the current match count; the service also supports view and global
+  badges. It
+  switches fixed Explorer,
   Search and Settings containers; Settings remains a placeholder. The model
   owns activity order, visibility, the active container and compact width.
   There is still no registered view-container contribution registry; live
@@ -979,9 +981,6 @@ Library constraints:
     services do not exist in the terminal workbench;
   - trusted-workspace filtering and restricted settings; there is no
     workspace-trust service;
-  - `files.exclude` `when` clauses; `glob.zig` does not port upstream's
-    sibling-clause evaluation. Plain `!` exceptions and exception-leading
-    folders are supported;
   - the browser Settings editor/view; the activity-bar Settings container
     remains a placeholder.
 
