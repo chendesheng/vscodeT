@@ -276,14 +276,9 @@ TextMate tokenization:
   fence grammar (`src/support/markdownCodeFences.tmLanguage.json`), including
   aliases such as `js`, `ts`, `py`, `rs`, `yml`, `md`, `sh` and `c++`. VS
   Code's built-in fence list does not cover Zig or TOML.
-- The pinned package's scope-selector evaluator is replaced at build time
-  (`src/support/textmateScopes.zig`) so grammars with wildcard injection
-  selectors (for example the HTML grammars loaded while parsing markdown)
-  cannot spin the tokenizer. The selectors are still evaluated.
-- The pinned parser is replaced at build time (`src/support/textmateParser.zig`)
-  with one fix: the zero-width cycle baseline is taken after the `while` rules
-  run. Otherwise markdown list continuation lines can drop their inline-code
-  scopes.
+- The pinned `textmate.zig` dependency includes upstream fixes for wildcard
+  scope selectors and the parser's zero-width cycle baseline. No local
+  substitutions of the dependency's parser or evaluator are carried.
 - Theme selectors that combine a parent scope with a target (`a b`) or exclude
   a scope (`a - b`) are reduced to the target scope; the terminal theme trie
   matches one scope at a time.

@@ -100,64 +100,20 @@ fn textmateModule(
     optimize: std.builtin.Optimize,
     onig: *std.Build.Module,
 ) *std.Build.Module {
-    const sources = patchedTextmateSources(b, dep);
     const onig_wrapper = b.createModule(.{
-        .root_source_file = sources.path(b, "pkg/oniguruma/main.zig"),
+        .root_source_file = dep.path("src/pkg/oniguruma/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     onig_wrapper.addImport("c_onig", onig);
 
     const module = b.createModule(.{
-        .root_source_file = sources.path(b, "root.zig"),
+        .root_source_file = dep.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     module.addImport("oniguruma", onig_wrapper);
     return module;
-}
-
-/// Zig sources from the pinned `textmate` package that `root.zig` reaches.
-const textmate_zig_sources = [_][]const u8{
-    "src/ansi_terminal.zig",
-    "src/atoms.zig",
-    "src/config.zig",
-    "src/grammar.zig",
-    "src/root.zig",
-    "src/strings.zig",
-    "src/theme.zig",
-    "src/processor/dump_processor.zig",
-    "src/processor/processor.zig",
-    "src/processor/render_console.zig",
-    "src/processor/render_html.zig",
-    "src/resources/embedded.zig",
-    "src/resources/resources.zig",
-    "src/pkg/oniguruma/c.zig",
-    "src/pkg/oniguruma/errors.zig",
-    "src/pkg/oniguruma/init.zig",
-    "src/pkg/oniguruma/main.zig",
-    "src/pkg/oniguruma/regex.zig",
-    "src/pkg/oniguruma/region.zig",
-    "src/pkg/oniguruma/testing.zig",
-    "src/pkg/oniguruma/types.zig",
-};
-
-/// Copies the package sources into the build cache so `scopes.zig` and
-/// `parser.zig` can be replaced. The evaluator spins on wildcard selectors and
-/// the parser's zero-width baseline drops markdown inline scopes on list
-/// continuation lines. See `src/support/textmateScopes.zig` and
-/// `src/support/textmateParser.zig`.
-fn patchedTextmateSources(b: *std.Build, dep: *std.Build.Dependency) std.Build.LazyPath {
-    const sources = b.addWriteFiles();
-    _ = sources.addCopyDirectory(dep.path("src/resources"), "resources", .{
-        .exclude_extensions = &.{".zig"},
-    });
-    inline for (textmate_zig_sources) |path| {
-        _ = sources.addCopyFile(dep.path(path), path["src/".len..]);
-    }
-    _ = sources.add("parser.zig", @embedFile("src/support/textmateParser.zig"));
-    _ = sources.add("scopes.zig", @embedFile("src/support/textmateScopes.zig"));
-    return sources.getDirectory();
 }
 
 const VscodeGrammar = struct {

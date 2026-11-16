@@ -37,8 +37,8 @@
     // internet connectivity.
     .dependencies = .{
         .textmate = .{
-            .url = "https://github.com/chendesheng/textmate.zig/archive/55ea72f.tar.gz",
-            .hash = "textmate-0.0.0-dDtH-5PkygDB_gq-1fIDZQ9sTK7jGyMbYWXezOhRLRKg",
+            .url = "https://github.com/chendesheng/textmate.zig/archive/bcef1f2ba0624c0aad3a583e268cd0db45bde6ee.tar.gz",
+            .hash = "textmate-0.0.0-dDtH-0X2ygBpxYRxOWdR2BNH2ltcFV_KXGAbkiepUx_x",
         },
         .ui = .{
             .path = "ui",
