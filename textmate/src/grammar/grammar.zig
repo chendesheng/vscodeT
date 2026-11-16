@@ -465,7 +465,9 @@ pub const Grammar = struct {
             time_limit,
         );
 
-        const persistent_stack = (try copyStateStack(self.arena.allocator(), outcome.stack)).?;
+        var copy_context = CopyContext.init(self.allocator);
+        defer copy_context.deinit();
+        const persistent_stack = (try copyStateStack(&copy_context, self.arena.allocator(), outcome.stack)).?;
 
         return .{
             .line_length = line_length,
@@ -762,10 +764,32 @@ fn mergeAttributes(
     );
 }
 
-fn copyScopeStack(allocator: Allocator, source: *const theme.ScopeStack) !*theme.ScopeStack {
+const CopyContext = struct {
+    attributed: std.AutoHashMap(*AttributedScopeStack, *AttributedScopeStack),
+    scopes: std.AutoHashMap(*const theme.ScopeStack, *theme.ScopeStack),
+
+    fn init(allocator: Allocator) CopyContext {
+        return .{
+            .attributed = std.AutoHashMap(*AttributedScopeStack, *AttributedScopeStack).init(allocator),
+            .scopes = std.AutoHashMap(*const theme.ScopeStack, *theme.ScopeStack).init(allocator),
+        };
+    }
+
+    fn deinit(self: *CopyContext) void {
+        self.attributed.deinit();
+        self.scopes.deinit();
+    }
+};
+
+fn copyScopeStack(
+    context: *CopyContext,
+    allocator: Allocator,
+    source: *const theme.ScopeStack,
+) !*theme.ScopeStack {
     if (source.persistent) return @constCast(source);
+    if (context.scopes.get(source)) |existing| return existing;
     const parent: ?*const theme.ScopeStack = if (source.parent) |parent_node|
-        try copyScopeStack(allocator, parent_node)
+        try copyScopeStack(context, allocator, parent_node)
     else
         null;
     const result = try allocator.create(theme.ScopeStack);
@@ -774,18 +798,21 @@ fn copyScopeStack(allocator: Allocator, source: *const theme.ScopeStack) !*theme
         .scope_name = try allocator.dupe(u8, source.scope_name),
         .persistent = true,
     };
+    try context.scopes.put(source, result);
     return result;
 }
 
 fn copyAttributedStack(
+    context: *CopyContext,
     allocator: Allocator,
     source: ?*AttributedScopeStack,
 ) !?*AttributedScopeStack {
     const stack = source orelse return null;
     if (stack.persistent) return stack;
+    if (context.attributed.get(stack)) |existing| return existing;
 
-    const parent = try copyAttributedStack(allocator, stack.parent);
-    const path = try copyScopeStack(allocator, stack.scope_path);
+    const parent = try copyAttributedStack(context, allocator, stack.parent);
+    const path = try copyScopeStack(context, allocator, stack.scope_path);
     const names = try allocator.alloc([]const u8, stack.scope_names.len);
     for (stack.scope_names, 0..) |name, index| names[index] = try allocator.dupe(u8, name);
     const font = if (stack.font_attributes) |font_attributes| blk: {
@@ -804,22 +831,24 @@ fn copyAttributedStack(
         .scope_names = names,
         .persistent = true,
     };
+    try context.attributed.put(stack, result);
     return result;
 }
 
 fn copyStateStack(
+    context: *CopyContext,
     allocator: Allocator,
     source: ?*StateStackImpl,
 ) !?*StateStackImpl {
     const stack = source orelse return null;
     if (stack.persistent) return stack;
 
-    const parent = try copyStateStack(allocator, stack.parent);
-    const name_scopes = try copyAttributedStack(allocator, stack.name_scopes_list);
+    const parent = try copyStateStack(context, allocator, stack.parent);
+    const name_scopes = try copyAttributedStack(context, allocator, stack.name_scopes_list);
     const content_scopes = if (stack.content_name_scopes_list == stack.name_scopes_list)
         name_scopes
     else
-        try copyAttributedStack(allocator, stack.content_name_scopes_list);
+        try copyAttributedStack(context, allocator, stack.content_name_scopes_list);
     const end_rule = if (stack.end_rule) |rule_source| try allocator.dupe(u8, rule_source) else null;
 
     const result = try allocator.create(StateStackImpl);
