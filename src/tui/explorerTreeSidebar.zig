@@ -44,6 +44,20 @@ const selected_dir_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 220, .g = 235, .b = 255 }),
     .bg = selected_style.bg,
 };
+const unfocused_selection_style = PaintStyle{
+    .fg = text_style.fg,
+    .bg = ui.cell.packColor(.{ .r = 45, .g = 48, .b = 58 }),
+};
+const unfocused_dir_selection_style = PaintStyle{
+    .fg = dir_style.fg,
+    .bg = unfocused_selection_style.bg,
+};
+const scrollbar_track_style = PaintStyle{
+    .bg = ui.cell.packColor(.{ .r = 30, .g = 32, .b = 40 }),
+};
+const scrollbar_thumb_style = PaintStyle{
+    .bg = ui.cell.packColor(.{ .r = 105, .g = 108, .b = 122 }),
+};
 
 pub const Action = sidebar_mod.Action;
 
@@ -315,13 +329,46 @@ pub const Sidebar = struct {
         drawText(grid, x + 1, y, width - 2, header, header_style);
 
         if (height <= 1) return;
+        const rows = height - 1;
+        const content_rows = self.tree_view.count();
+        const show_scrollbar = width > 1 and content_rows > rows;
+        const list_width = if (show_scrollbar) width - 1 else width;
         self.tree_view.setFocus(focused);
         self.tree_view.render(grid, .{
             .x = @floatFromInt(x),
             .y = @floatFromInt(y + 1),
-            .w = @floatFromInt(width),
-            .h = @floatFromInt(height - 1),
+            .w = @floatFromInt(list_width),
+            .h = @floatFromInt(rows),
         });
+
+        if (show_scrollbar) {
+            const scrollbar_x = x + width - 1;
+            grid.fillRect(
+                @floatFromInt(scrollbar_x),
+                @floatFromInt(y + 1),
+                1,
+                @floatFromInt(rows),
+                scrollbar_track_style,
+            );
+            const thumb_height = @max(1, @as(usize, @intFromFloat(@round(
+                @as(f64, @floatFromInt(rows * rows)) / @as(f64, @floatFromInt(content_rows)),
+            ))));
+            const max_scroll = @as(f64, @floatFromInt(content_rows - rows));
+            const thumb_top = if (max_scroll <= 0)
+                0
+            else
+                @as(usize, @intFromFloat(@round(
+                    @as(f64, @floatFromInt(rows - thumb_height)) *
+                        self.tree_view.widget.view.scroll_top / max_scroll,
+                )));
+            grid.fillRect(
+                @floatFromInt(scrollbar_x),
+                @floatFromInt(y + 1 + thumb_top),
+                1,
+                @floatFromInt(thumb_height),
+                scrollbar_thumb_style,
+            );
+        }
     }
 };
 
@@ -330,7 +377,10 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const TreeModel.N
     const item = node.element orelse return;
     const selected = row.selected;
     const paint = if (selected)
-        (if (item.is_directory) selected_dir_style else selected_style)
+        (if (item.is_directory)
+            (if (row.focused) selected_dir_style else unfocused_dir_selection_style)
+        else
+            (if (row.focused) selected_style else unfocused_selection_style))
     else if (item.is_directory)
         dir_style
     else
@@ -462,6 +512,7 @@ test "explorer tree sidebar: wheel scrolls the tree viewport" {
     var grid = try ui.CellGrid.init(allocator, 24, 6);
     defer grid.deinit();
     try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 6 }, true);
+    try std.testing.expect(grid.bg[grid.index(23, 1)] != 0);
     const before = sidebar.tree_view.widget.view.scroll_top;
 
     const wheel = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 2, .delta_y = 1 };
