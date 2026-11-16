@@ -20,6 +20,26 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
+      - name: Check out VS Code syntax and theme assets
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/microsoft/vscode.git ../vscode
+          git -C ../vscode fetch --depth 1 origin e31c2e52f563620846caab877103f630ea361b9c
+          git -C ../vscode sparse-checkout set \
+            extensions/json/syntaxes \
+            extensions/javascript/syntaxes \
+            extensions/typescript-basics/syntaxes \
+            extensions/python/syntaxes \
+            extensions/rust/syntaxes \
+            extensions/go/syntaxes \
+            extensions/cpp/syntaxes \
+            extensions/java/syntaxes \
+            extensions/html/syntaxes \
+            extensions/css/syntaxes \
+            extensions/scss/syntaxes \
+            extensions/markdown-basics/syntaxes \
+            extensions/shellscript/syntaxes \
+            extensions/theme-defaults/themes
+          git -C ../vscode checkout --detach FETCH_HEAD
       - name: Install oniguruma
         run: |
           sudo apt-get update
@@ -37,6 +57,26 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
+      - name: Check out VS Code syntax and theme assets
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/microsoft/vscode.git ../vscode
+          git -C ../vscode fetch --depth 1 origin e31c2e52f563620846caab877103f630ea361b9c
+          git -C ../vscode sparse-checkout set \
+            extensions/json/syntaxes \
+            extensions/javascript/syntaxes \
+            extensions/typescript-basics/syntaxes \
+            extensions/python/syntaxes \
+            extensions/rust/syntaxes \
+            extensions/go/syntaxes \
+            extensions/cpp/syntaxes \
+            extensions/java/syntaxes \
+            extensions/html/syntaxes \
+            extensions/css/syntaxes \
+            extensions/scss/syntaxes \
+            extensions/markdown-basics/syntaxes \
+            extensions/shellscript/syntaxes \
+            extensions/theme-defaults/themes
+          git -C ../vscode checkout --detach FETCH_HEAD
       - name: Install oniguruma
         run: brew install oniguruma
       - name: Build
@@ -53,9 +93,9 @@ jobs:
         with:
           version: 0.17.1
       - name: Compile watcher tests
-        run: zig build check-watcher
+        run: zig build check-watcher -Dwatcher-only=true
       - name: Run watcher tests
-        run: zig build test-watcher --summary all
+        run: zig build test-watcher -Dwatcher-only=true --summary all
 
   cross-compile:
     name: Cross-compile watcher for Windows and macOS
@@ -66,6 +106,6 @@ jobs:
         with:
           version: 0.17.1
       - name: Windows backend
-        run: zig build check-watcher -Dtarget=x86_64-windows
+        run: zig build check-watcher -Dwatcher-only=true -Dtarget=x86_64-windows
       - name: macOS backend
-        run: zig build check-watcher -Dtarget=aarch64-macos
+        run: zig build check-watcher -Dwatcher-only=true -Dtarget=aarch64-macos

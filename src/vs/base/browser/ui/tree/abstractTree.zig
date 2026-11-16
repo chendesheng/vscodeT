@@ -1,9 +1,11 @@
 // Port of the core view behavior of `src/vs/base/browser/ui/tree/abstractTree.ts`.
 //
 // Terminal adaptation: rows are painted through `ListWidget` into a CellGrid
-// instead of DOM rows. The tree owns the rendered-node projection, collapse and
-// selection keys, focus and activation. Filtering, async nodes, drag/drop,
-// context menus and the browser accessibility layer are not ported yet.
+// instead of DOM rows. `AbstractTreeForModel` keeps the view model-agnostic so
+// `CompressibleObjectTree` can drive it with `CompressedObjectTreeModel`, the
+// same composition as upstream's `CompressibleObjectTree extends ObjectTree`.
+// Filtering, async nodes, drag/drop, context menus and the browser
+// accessibility layer are not ported yet.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -12,7 +14,13 @@ const list_widget = @import("../list/listWidget.zig");
 const object_tree = @import("./objectTreeModel.zig");
 
 pub fn AbstractTree(comptime T: type) type {
-    const Model = object_tree.ObjectTreeModel(T);
+    return AbstractTreeForModel(T, object_tree.ObjectTreeModel(T));
+}
+
+/// View over any model exposing `Node`, `collectRendered` and
+/// `setCollapsedElement`. This mirrors upstream `AbstractTree`'s use of the
+/// `ITreeModel` contract instead of a concrete object model.
+pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
     const Node = Model.Node;
 
     return struct {
@@ -39,8 +47,8 @@ pub fn AbstractTree(comptime T: type) type {
             allocator: std.mem.Allocator,
             model: *Model,
             renderer: Renderer,
-        ) !*AbstractTree(T) {
-            const self = try allocator.create(AbstractTree(T));
+        ) !*AbstractTreeForModel(T, Model) {
+            const self = try allocator.create(AbstractTreeForModel(T, Model));
             errdefer allocator.destroy(self);
             self.* = .{
                 .allocator = allocator,
@@ -62,7 +70,7 @@ pub fn AbstractTree(comptime T: type) type {
             return self;
         }
 
-        pub fn deinit(self: *AbstractTree(T)) void {
+        pub fn deinit(self: *AbstractTreeForModel(T, Model)) void {
             self.rendered.deinit();
             self.widget.deinit();
             self.allocator.destroy(self);
@@ -79,30 +87,30 @@ pub fn AbstractTree(comptime T: type) type {
         }
 
         fn renderCallback(context: *anyopaque, row: *const list.Row, element: list.Element) void {
-            const self: *AbstractTree(T) = @ptrCast(@alignCast(context));
+            const self: *AbstractTreeForModel(T, Model) = @ptrCast(@alignCast(context));
             const node: *const Node = @ptrCast(@alignCast(element));
             self.renderer.render(self.renderer.context, row, node);
         }
 
-        pub fn setFocus(self: *AbstractTree(T), focus: bool) void {
+        pub fn setFocus(self: *AbstractTreeForModel(T, Model), focus: bool) void {
             self.widget.setFocus(focus);
         }
 
-        pub fn focused(self: *const AbstractTree(T)) bool {
+        pub fn focused(self: *const AbstractTreeForModel(T, Model)) bool {
             return self.widget.focused;
         }
 
-        pub fn count(self: *const AbstractTree(T)) usize {
+        pub fn count(self: *const AbstractTreeForModel(T, Model)) usize {
             return self.widget.count();
         }
 
-        pub fn selection(self: *AbstractTree(T)) ?*Node {
+        pub fn selection(self: *AbstractTreeForModel(T, Model)) ?*Node {
             const index = self.widget.selection() orelse return null;
             if (index >= self.rendered.items.len) return null;
             return self.rendered.items[index];
         }
 
-        pub fn setSelectionNode(self: *AbstractTree(T), node: ?*Node) void {
+        pub fn setSelectionNode(self: *AbstractTreeForModel(T, Model), node: ?*Node) void {
             if (node) |value| {
                 for (self.rendered.items, 0..) |candidate, index| {
                     if (candidate == value) {
@@ -115,7 +123,7 @@ pub fn AbstractTree(comptime T: type) type {
         }
 
         /// Rebuilds the rendered row projection after a model mutation.
-        pub fn refresh(self: *AbstractTree(T)) !void {
+        pub fn refresh(self: *AbstractTreeForModel(T, Model)) !void {
             const selected = self.selection();
             self.rendered.clearRetainingCapacity();
             try self.model.collectRendered(&self.rendered);
@@ -142,18 +150,18 @@ pub fn AbstractTree(comptime T: type) type {
             }
         }
 
-        pub fn render(self: *AbstractTree(T), grid: *ui.CellGrid, rect: ui.Rect) void {
+        pub fn render(self: *AbstractTreeForModel(T, Model), grid: *ui.CellGrid, rect: ui.Rect) void {
             self.widget.render(grid, rect);
         }
 
-        pub fn handleKey(self: *AbstractTree(T), event: *const ui.KeyEvent) bool {
+        pub fn handleKey(self: *AbstractTreeForModel(T, Model), event: *const ui.KeyEvent) bool {
             if (!self.widget.focused) return false;
             switch (event.key) {
                 .left => {
                     const node = self.selection() orelse return true;
                     const element = node.element orelse return true;
                     if (node.collapsible and !node.collapsed) {
-                        _ = self.model.setCollapsed(element, true, false) catch {};
+                        _ = self.model.setCollapsedElement(element, true, false) catch {};
                         self.refresh() catch {};
                     } else if (node.parent) |parent| {
                         if (parent.element != null) self.setSelectionNode(parent);
@@ -164,7 +172,7 @@ pub fn AbstractTree(comptime T: type) type {
                     const node = self.selection() orelse return true;
                     const element = node.element orelse return true;
                     if (node.collapsible and node.collapsed) {
-                        _ = self.model.setCollapsed(element, false, false) catch {};
+                        _ = self.model.setCollapsedElement(element, false, false) catch {};
                         self.refresh() catch {};
                     } else if (node.children.items.len > 0) {
                         self.setSelectionNode(node.children.items[0]);
@@ -175,17 +183,17 @@ pub fn AbstractTree(comptime T: type) type {
             }
         }
 
-        pub fn handleMouse(self: *AbstractTree(T), event: *const ui.MouseEvent) bool {
+        pub fn handleMouse(self: *AbstractTreeForModel(T, Model), event: *const ui.MouseEvent) bool {
             return self.widget.handleMouse(event);
         }
 
-        pub fn selectedElement(self: *AbstractTree(T)) ?T {
+        pub fn selectedElement(self: *AbstractTreeForModel(T, Model)) ?T {
             const node = self.selection() orelse return null;
             return node.element;
         }
 
         pub fn setActivateHandler(
-            self: *AbstractTree(T),
+            self: *AbstractTreeForModel(T, Model),
             context: ?*anyopaque,
             handler: *const fn (context: ?*anyopaque, element: T) void,
         ) void {
@@ -196,7 +204,7 @@ pub fn AbstractTree(comptime T: type) type {
         }
 
         fn activateCallback(context: ?*anyopaque, _: usize) void {
-            const self: *AbstractTree(T) = @ptrCast(@alignCast(context orelse return));
+            const self: *AbstractTreeForModel(T, Model) = @ptrCast(@alignCast(context orelse return));
             const node = self.selection() orelse return;
             if (node.element) |element| {
                 if (self.on_activate) |handler| handler(self.selection_context, element);

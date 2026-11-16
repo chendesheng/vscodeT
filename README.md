@@ -15,7 +15,7 @@ zig build run -- <file>...   # open files in an empty workspace
 zig build run -- --session <file> [<folder>] [<file>...]  # restore/save the tab session
 zig build run -- --preview <file>   # read-only terminal UI preview
 zig build test   # run the editor and ui library tests
-zig build test-watcher   # run the file-watcher tests without the TUI
+zig build test-watcher -Dwatcher-only=true   # run the file-watcher tests without the TUI
 ```
 
 Notes for the Zig 0.17 port:
@@ -37,8 +37,12 @@ Notes for the Zig 0.17 port:
 GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`
 suite on Linux (inotify) and macOS (kqueue), the watcher-only suite on Windows
 (`ReadDirectoryChangesW`), and cross-compiles the watcher-only test root for
-`x86_64-windows` and `aarch64-macos` on Linux. The Windows job cannot run the
-full TUI suite because the terminal layer is POSIX-only.
+`x86_64-windows` and `aarch64-macos` on Linux. The Linux and macOS jobs check
+out the pinned upstream VS Code grammar and theme assets into `../vscode`, so the
+tokenizer/theme tests run against the real assets instead of the fallback
+theme. The Windows job cannot run the full TUI suite because the terminal layer
+is POSIX-only; it and the cross-compile job use `-Dwatcher-only=true`, which
+skips the oniguruma-dependent editor build.
 
 ## Design docs
 
@@ -150,9 +154,9 @@ full TUI suite because the terminal layer is POSIX-only.
   automatic settings reload; Explorer and Search still do not refresh on
   external changes. `src/tui/settingsWatcher.zig` owns the settings requests
   and `src/tui/app.zig` polls the watcher's fd alongside stdin.
-  `zig build test-watcher` runs the watcher-only suite;
-  `zig build check-watcher -Dtarget=x86_64-windows` and
-  `zig build check-watcher -Dtarget=aarch64-macos` type-check the other
+  `zig build test-watcher -Dwatcher-only=true` runs the watcher-only suite;
+  `zig build check-watcher -Dwatcher-only=true -Dtarget=x86_64-windows` and
+  `zig build check-watcher -Dwatcher-only=true -Dtarget=aarch64-macos` type-check the other
   platform backends without the POSIX TUI.
 - A minimal activity bar (`src/tui/activityBar.zig`) switches between Explorer,
   Search and Settings containers. Explorer is wired to the file tree and Search

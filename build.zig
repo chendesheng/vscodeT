@@ -15,57 +15,56 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const onig = onigModule(b, target, optimize);
+    const watcher_only = b.option(bool, "watcher-only", "Build only the file-watcher tests") orelse false;
 
-    const vscode_textmate_dep = b.dependency("vscode_textmate", .{ .target = target, .optimize = optimize });
-    const vscode_textmate = vscode_textmate_dep.module("vscode_textmate");
-    const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
-    const ui = ui_dep.module("ui");
-    const markdown = markdownModule(b, target, optimize);
-    const vscode_syntax = vscodeSyntaxAssets(b, target, optimize);
+    if (!watcher_only) {
+        const onig = onigModule(b, target, optimize);
 
-    // We will also create a module for our other entry point, 'main.zig'.
-    const exe = b.addExecutable(.{
-        .name = "zig",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
+        const vscode_textmate_dep = b.dependency("vscode_textmate", .{ .target = target, .optimize = optimize });
+        const vscode_textmate = vscode_textmate_dep.module("vscode_textmate");
+        const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
+        const ui = ui_dep.module("ui");
+        const markdown = markdownModule(b, target, optimize);
+        const vscode_syntax = vscodeSyntaxAssets(b, target, optimize);
 
-    exe.root_module.addImport("oniguruma", onig);
-    exe.root_module.addImport("vscode_textmate", vscode_textmate);
-    exe.root_module.addImport("ui", ui);
-    exe.root_module.addImport("markdown", markdown);
-    exe.root_module.addImport("vscode-syntax", vscode_syntax);
-    addOnigLibraryPath(b, exe.root_module);
-    exe.root_module.linkSystemLibrary("onig", .{});
+        // We will also create a module for our other entry point, 'main.zig'.
+        const exe = b.addExecutable(.{
+            .name = "zig",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
 
-    // This declares intent for the executable to be installed into the
-    // standard location when the user invokes the "install" step (the default
-    // step when running `zig build`).
-    b.installArtifact(exe);
+        exe.root_module.addImport("oniguruma", onig);
+        exe.root_module.addImport("vscode_textmate", vscode_textmate);
+        exe.root_module.addImport("ui", ui);
+        exe.root_module.addImport("markdown", markdown);
+        exe.root_module.addImport("vscode-syntax", vscode_syntax);
+        addOnigLibraryPath(b, exe.root_module);
+        exe.root_module.linkSystemLibrary("onig", .{});
 
-    // This *creates* a Run step in the build graph, to be executed when another
-    // step is evaluated that depends on it. The next line below will establish
-    // such a dependency.
-    const run_cmd = b.addRunArtifact(exe);
-    run_cmd.addPassthruArgs();
+        // This declares intent for the executable to be installed into the
+        // standard location when the user invokes the "install" step (the default
+        // step when running `zig build`).
+        b.installArtifact(exe);
 
-    // By making the run step depend on the install step, it will be run from the
-    // installation directory rather than directly from within the cache directory.
-    // This is not necessary, however, if the application depends on other installed
-    // files, this ensures they will be present and in the expected location.
-    // run_cmd.step.dependOn(b.getInstallStep());
+        // This *creates* a Run step in the build graph, to be executed when another
+        // step is evaluated that depends on it. The next line below will establish
+        // such a dependency.
+        const run_cmd = b.addRunArtifact(exe);
+        run_cmd.addPassthruArgs();
 
-    // This creates a build step. It will be visible in the `zig build --help` menu,
-    // and can be selected like this: `zig build run`
-    // This will evaluate the `run` step rather than the default, which is "install".
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
+        // This creates a build step. It will be visible in the `zig build --help` menu,
+        // and can be selected like this: `zig build run`
+        const run_step = b.step("run", "Run the app");
+        run_step.dependOn(&run_cmd.step);
 
-    setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax);
+        setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax);
+    }
+
+    setupWatcherTests(b, target, optimize);
 }
 
 /// Builds the markdown module from the pinned CommonMark + GFM package.
@@ -299,6 +298,26 @@ fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module) void {
     }
 }
 
+fn setupWatcherTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) void {
+    // Watcher-only tests: compile and run without the POSIX TUI. This root is
+    // also used to cross-check the Linux/macOS/Windows backends on a host that
+    // cannot run the other targets' tests.
+    const watcher_tests = b.addTest(.{
+        .name = "watcher_tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/watcher_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_watcher_tests = b.addRunArtifact(watcher_tests);
+    const watcher_test_step = b.step("test-watcher", "Run file-watcher tests");
+    watcher_test_step.dependOn(&run_watcher_tests.step);
+
+    const check_watcher_step = b.step("check-watcher", "Compile the file-watcher tests without running them");
+    check_watcher_step.dependOn(&watcher_tests.step);
+}
+
 fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, vscode_textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module) void {
     const test_step = b.step("test", "Run all tests");
 
@@ -340,24 +359,6 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     });
     const run_ui_tests = b.addRunArtifact(ui_tests);
     test_step.dependOn(&run_ui_tests.step);
-
-    // Watcher-only tests: compile and run without the POSIX TUI. This root is
-    // also used to cross-check the Linux/macOS/Windows backends on a host that
-    // cannot run the other targets' tests.
-    const watcher_tests = b.addTest(.{
-        .name = "watcher_tests",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/watcher_tests.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    const run_watcher_tests = b.addRunArtifact(watcher_tests);
-    const watcher_test_step = b.step("test-watcher", "Run file-watcher tests");
-    watcher_test_step.dependOn(&run_watcher_tests.step);
-
-    const check_watcher_step = b.step("check-watcher", "Compile the file-watcher tests without running them");
-    check_watcher_step.dependOn(&watcher_tests.step);
 
     const vscode_textmate_dep = b.dependency("vscode_textmate", .{
         .target = target,
