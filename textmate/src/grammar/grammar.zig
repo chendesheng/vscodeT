@@ -105,6 +105,7 @@ pub const Grammar = struct {
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
     token_arena: std.heap.ArenaAllocator,
+    line_arena: std.heap.ArenaAllocator,
     root_scope_name: ScopeName,
     root_id: RuleId = -1,
     last_rule_id: usize = 0,
@@ -128,6 +129,7 @@ pub const Grammar = struct {
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .token_arena = std.heap.ArenaAllocator.init(allocator),
+            .line_arena = std.heap.ArenaAllocator.init(allocator),
             .root_scope_name = options.scope_name,
             .included_grammars = std.StringHashMap(*Object).init(allocator),
             .grammar_repository = options.repository,
@@ -140,6 +142,7 @@ pub const Grammar = struct {
         };
         errdefer self.arena.deinit();
         errdefer self.token_arena.deinit();
+        errdefer self.line_arena.deinit();
 
         const arena = self.arena.allocator();
         self.grammar = try initGrammar(arena, options.grammar, null);
@@ -184,6 +187,7 @@ pub const Grammar = struct {
         for (self.matcher_sets.items) |set| set.deinit();
         self.rule_id2desc.deinit(self.arena.allocator());
         self.included_grammars.deinit();
+        self.line_arena.deinit();
         self.token_arena.deinit();
         self.arena.deinit();
         const allocator = self.allocator;
@@ -395,7 +399,9 @@ pub const Grammar = struct {
         time_limit: i64,
     ) !InternalResult {
         _ = self.token_arena.reset(.retain_capacity);
+        _ = self.line_arena.reset(.retain_capacity);
         const scratch = self.token_arena.allocator();
+        const line_alloc = self.line_arena.allocator();
 
         if (self.root_id == -1) {
             const helper = self.ruleFactoryHelper();
@@ -405,7 +411,6 @@ pub const Grammar = struct {
 
         var stack = prev_state;
         const is_first_line = stack == null or stack == StateStackImpl.NULL;
-        const persistent = self.arena.allocator();
         if (is_first_line) {
             const raw_default_metadata = self.basic_scope_attributes_provider.getDefaultAttributes();
             const default_style = self.theme_provider.getDefaults();
@@ -418,19 +423,19 @@ pub const Grammar = struct {
                 default_style.foreground_id,
                 default_style.background_id,
             );
-            const font_attribute = try persistent.create(FontAttribute);
+            const font_attribute = try line_alloc.create(FontAttribute);
             font_attribute.* = .{
                 .font_family = default_style.font_family,
                 .font_size = default_style.font_size,
                 .line_height = default_style.line_height,
             };
             const root_rule = self.getRule(self.root_id);
-            const root_scope_name = (try root_rule.getName(persistent, null, null)) orelse null;
+            const root_scope_name = (try root_rule.getName(line_alloc, null, null)) orelse null;
             const scope_list = if (root_scope_name) |name|
-                try AttributedScopeStack.createRootAndLookUpScopeName(persistent, self, name, default_metadata, font_attribute)
+                try AttributedScopeStack.createRootAndLookUpScopeName(line_alloc, self, name, default_metadata, font_attribute)
             else
-                try AttributedScopeStack.createRoot(persistent, "unknown", default_metadata, font_attribute);
-            stack = try StateStackImpl.create(persistent, null, self.root_id, -1, -1, false, null, scope_list, scope_list);
+                try AttributedScopeStack.createRoot(line_alloc, "unknown", default_metadata, font_attribute);
+            stack = try StateStackImpl.create(line_alloc, null, self.root_id, -1, -1, false, null, scope_list, scope_list);
         } else {
             stack.?.reset();
         }
@@ -460,10 +465,12 @@ pub const Grammar = struct {
             time_limit,
         );
 
+        const persistent_stack = (try copyStateStack(self.arena.allocator(), outcome.stack)).?;
+
         return .{
             .line_length = line_length,
             .token_handler = token_handler,
-            .rule_stack = outcome.stack,
+            .rule_stack = persistent_stack,
             .stopped_early = outcome.stopped_early,
         };
     }
@@ -550,6 +557,7 @@ pub const AttributedScopeStack = struct {
     font_attributes: ?*FontAttribute,
     style_attributes: ?theme.StyleAttributes,
     scope_names: []const []const u8,
+    persistent: bool = false,
 
     pub fn createRoot(
         allocator: Allocator,
@@ -599,6 +607,7 @@ pub const AttributedScopeStack = struct {
             .font_attributes = font_attributes,
             .style_attributes = style_attributes,
             .scope_names = scope_names,
+            .persistent = false,
         };
         return result;
     }
@@ -613,7 +622,7 @@ pub const AttributedScopeStack = struct {
         for (content_name_scopes_list) |frame| {
             for (frame.scope_names) |scope_name| {
                 const node = try allocator.create(theme.ScopeStack);
-                node.* = .{ .parent = current_path, .scope_name = scope_name };
+                node.* = .{ .parent = current_path, .scope_name = scope_name, .persistent = true };
                 current_path = node;
             }
             const names = try appendScopeName(allocator, if (current) |list| list.scope_names else &.{}, frame.scope_names);
@@ -626,6 +635,7 @@ pub const AttributedScopeStack = struct {
                 null,
                 names,
             );
+            current.?.persistent = true;
         }
         return current;
     }
@@ -752,6 +762,82 @@ fn mergeAttributes(
     );
 }
 
+fn copyScopeStack(allocator: Allocator, source: *const theme.ScopeStack) !*theme.ScopeStack {
+    if (source.persistent) return @constCast(source);
+    const parent: ?*const theme.ScopeStack = if (source.parent) |parent_node|
+        try copyScopeStack(allocator, parent_node)
+    else
+        null;
+    const result = try allocator.create(theme.ScopeStack);
+    result.* = .{
+        .parent = parent,
+        .scope_name = try allocator.dupe(u8, source.scope_name),
+        .persistent = true,
+    };
+    return result;
+}
+
+fn copyAttributedStack(
+    allocator: Allocator,
+    source: ?*AttributedScopeStack,
+) !?*AttributedScopeStack {
+    const stack = source orelse return null;
+    if (stack.persistent) return stack;
+
+    const parent = try copyAttributedStack(allocator, stack.parent);
+    const path = try copyScopeStack(allocator, stack.scope_path);
+    const names = try allocator.alloc([]const u8, stack.scope_names.len);
+    for (stack.scope_names, 0..) |name, index| names[index] = try allocator.dupe(u8, name);
+    const font = if (stack.font_attributes) |font_attributes| blk: {
+        const copied = try allocator.create(FontAttribute);
+        copied.* = font_attributes.*;
+        break :blk copied;
+    } else null;
+
+    const result = try allocator.create(AttributedScopeStack);
+    result.* = .{
+        .parent = parent,
+        .scope_path = path,
+        .token_attributes = stack.token_attributes,
+        .font_attributes = font,
+        .style_attributes = stack.style_attributes,
+        .scope_names = names,
+        .persistent = true,
+    };
+    return result;
+}
+
+fn copyStateStack(
+    allocator: Allocator,
+    source: ?*StateStackImpl,
+) !?*StateStackImpl {
+    const stack = source orelse return null;
+    if (stack.persistent) return stack;
+
+    const parent = try copyStateStack(allocator, stack.parent);
+    const name_scopes = try copyAttributedStack(allocator, stack.name_scopes_list);
+    const content_scopes = if (stack.content_name_scopes_list == stack.name_scopes_list)
+        name_scopes
+    else
+        try copyAttributedStack(allocator, stack.content_name_scopes_list);
+    const end_rule = if (stack.end_rule) |rule_source| try allocator.dupe(u8, rule_source) else null;
+
+    const result = try allocator.create(StateStackImpl);
+    result.* = .{
+        .parent = parent,
+        .rule_id = stack.rule_id,
+        .enter_pos = stack.enter_pos,
+        .anchor_pos = stack.anchor_pos,
+        .begin_rule_captured_eol = stack.begin_rule_captured_eol,
+        .end_rule = end_rule,
+        .name_scopes_list = name_scopes,
+        .content_name_scopes_list = content_scopes,
+        .depth = stack.depth,
+        .persistent = true,
+    };
+    return result;
+}
+
 pub const StateStackImpl = struct {
     parent: ?*StateStackImpl,
     rule_id: RuleId,
@@ -762,6 +848,7 @@ pub const StateStackImpl = struct {
     name_scopes_list: ?*AttributedScopeStack,
     content_name_scopes_list: ?*AttributedScopeStack,
     depth: usize,
+    persistent: bool = false,
 
     pub fn create(
         allocator: Allocator,
@@ -785,6 +872,7 @@ pub const StateStackImpl = struct {
             .name_scopes_list = name_scopes_list,
             .content_name_scopes_list = content_name_scopes_list,
             .depth = if (parent) |node| node.depth + 1 else 1,
+            .persistent = false,
         };
         return result;
     }
@@ -800,6 +888,7 @@ pub const StateStackImpl = struct {
         .name_scopes_list = null,
         .content_name_scopes_list = null,
         .depth = 1,
+        .persistent = true,
     };
 
     pub fn equals(self: *const StateStackImpl, other: *const StateStackImpl) bool {
@@ -933,7 +1022,7 @@ pub const StateStackImpl = struct {
             frame.name_scopes_list,
         );
         const content = try AttributedScopeStack.fromExtension(allocator, names, frame.content_name_scopes_list);
-        return create(
+        const result = try create(
             allocator,
             self,
             frame.rule_id,
@@ -944,6 +1033,8 @@ pub const StateStackImpl = struct {
             names,
             content,
         );
+        result.persistent = true;
+        return result;
     }
 };
 

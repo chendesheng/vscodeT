@@ -46,7 +46,7 @@ pub fn tokenizeString(
     check_while_conditions: bool,
     time_limit: i64,
 ) anyerror!TokenizeStringResult {
-    const allocator = g.arena.allocator();
+    const allocator = g.line_arena.allocator();
     const line_length = line_text.utf16_len;
 
     var stack = stack_arg;
@@ -372,7 +372,7 @@ fn handleCaptures(
 ) anyerror!void {
     if (captures.len == 0) return;
 
-    const allocator = g.arena.allocator();
+    const allocator = g.line_arena.allocator();
     const len = @min(captures.len, capture_indices.len);
     var local_stack: std.ArrayList(LocalStackElement) = .empty;
     defer local_stack.deinit(g.token_arena.allocator());

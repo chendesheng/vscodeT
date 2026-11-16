@@ -51,9 +51,8 @@ path dependency named `vscode_textmate` in the root `build.zig.zon`.
 The upstream `test-cases/` fixtures are copied unchanged and include the
 first-mate/suite1 tokenization suites and 14 themes × 72 theme fixtures.
 `themes.test.ts`'s `test2.ts` timing probe is ported but skipped by default: it
-has no assertions, runs over a 54k-line file with an unbounded upstream
-timeout, and the grammar arena currently retains state/scope stacks for the
-lifetime of a grammar (see the limitation below).
+has no assertions and runs over a 54k-line file with an unbounded upstream
+timeout, which is too slow for the debug test suite on small CI machines.
 
 ## Building and testing
 
@@ -103,11 +102,13 @@ deliberate adaptations are:
   are stored on the object; grammar files are deep-cloned before compilation
   just like `initGrammar`.
 - **Allocators and ownership.** Constructors take explicit allocators. A
-  `Grammar` owns an arena for its cloned grammar, rules, scope stacks and
-  state stacks. `tokenizeLine*` uses a scratch arena reset per call, so its
-  returned tokens are valid until the next tokenization on that grammar.
-  `RawGrammar`/`Theme` own their arenas and expose `deinit`; `StackDiff` has
-  `deinit`.
+  `Grammar` owns a persistent arena for its cloned grammar, rules and the live
+  state stacks, plus per-call scratch arenas. Tokenization allocates scope and
+  state nodes in a line arena and copies only the reachable end-of-line stack
+  into the persistent arena; the line arena is reset on the next call. Returned
+  tokens are therefore valid until the next tokenization on that grammar, and
+  memory does not grow with the number of lines. `RawGrammar`/`Theme` own their
+  arenas and expose `deinit`; `StackDiff` has `deinit`.
 - **No JavaScript GC.** Rule objects, matcher sets and scanner caches have
   explicit ownership. `Grammar.deinit` disposes compiled scanners and matcher
   sets.
@@ -125,15 +126,16 @@ deliberate adaptations are:
 - **Font attribute cache.** The behavior of `FontAttribute` is ported without
   the static cache; the observable token/font output is identical.
 
-### Known limitation: long single-file tokenization
+### Memory model
 
-`Grammar` allocates state stacks and attributed scope stacks in its arena and
-keeps them until `Grammar.deinit`. That is fine for the editor's line-by-line
-use and for all upstream correctness fixtures, but a single very large file
-(the upstream `test2.ts` benchmark) grows memory with the number of lines.
-The integration step should reclaim these allocations, for example by copying
-only the live end-of-line stack into a persistent arena and resetting a
-per-tokenization arena.
+Each `tokenizeLine*` call resets a line arena. Scope stacks, state stacks and
+dynamic end/while regex sources created during that call live there. At the
+end of the call, only the nodes reachable from the returned `ruleStack` that
+are not already persistent are copied into the grammar arena (`persistent`
+flags on state/scope nodes stop the copy at the previous line's live stack).
+The next call resets the line arena, so token text/scopes from the previous
+result must be consumed before then. This keeps long-file memory bounded by
+the live stack depth rather than by the number of lines.
 
 ## Definition of done
 
@@ -143,7 +145,7 @@ per-tokenization arena.
 - [x] The first-mate, suite1 and while tokenization fixtures pass.
 - [x] All theme unit tests and all 14×72 theme fixtures pass.
 - [x] The 54k-line timing benchmark is ported but skipped by default (no
-      assertions; avoids unbounded memory use in debug/CI runs).
+      assertions; debug/CI runtime).
 - [x] `cd textmate && zig build test` passes.
 - [x] The package is covered by `zig build test` from the repository root.
 - [ ] Replace the editor's pinned `textmate.zig` dependency with this package

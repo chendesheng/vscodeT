@@ -135,6 +135,10 @@ pub const StyleAttributes = struct {
 pub const ScopeStack = struct {
     parent: ?*const ScopeStack,
     scope_name: ScopeName,
+    /// Set for nodes owned by a grammar's persistent arena. Tokenization
+    /// copies live stacks out of its per-line arena until it reaches such a
+    /// node.
+    persistent: bool = false,
 
     pub fn push(self: *const ScopeStack, allocator: Allocator, scope_name: ScopeName) !*ScopeStack {
         const result = try allocator.create(ScopeStack);
