@@ -1047,6 +1047,7 @@ pub const Workbench = struct {
         );
 
         const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
         if (!opened.result.is_new) {
             input.deinit();
             if (pane.tabForInput(opened.result.editor)) |tab| {
@@ -1654,6 +1655,10 @@ pub const Workbench = struct {
         if (self.active_activity != 0) return true;
 
         const sidebar = self.sidebar orelse return false;
+        if (event.kind == .wheel) {
+            _ = sidebar.handleMouse(event);
+            return true;
+        }
         if (event.kind == .down) {
             if (sidebar.handleClick(event.x, event.y) catch null) |path| {
                 self.openPath(path) catch {};
@@ -3109,6 +3114,32 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     _ = try workbench.handleQuickAccessKey(&enter);
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+}
+
+test "Workbench: opening a file reveals it in the Explorer" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "src");
+    var file = try tmp.dir.createFile(io, "src/revealed.txt", .{});
+    try file.writeStreamingAll(io, "revealed");
+    file.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const path = try std.fmt.allocPrint(allocator, "{s}/src/revealed.txt", .{root});
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.openPath(path);
+
+    const selected = workbench.sidebar.?.selectedNode().?;
+    try std.testing.expectEqualStrings("revealed.txt", selected.name);
+    try std.testing.expect(workbench.sidebar.?.isExpanded(selected.parent.?));
 }
 
 test "Workbench: quick open renders and an outside click only closes it" {

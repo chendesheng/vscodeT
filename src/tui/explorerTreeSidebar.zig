@@ -205,6 +205,11 @@ pub const Sidebar = struct {
         return .none;
     }
 
+    /// Routes wheel and other pointer events to the ported tree viewport.
+    pub fn handleMouse(self: *Sidebar, event: *const ui.MouseEvent) bool {
+        return self.tree_view.handleMouse(event);
+    }
+
     pub fn handleClick(self: *Sidebar, x: usize, y: usize) !?[]const u8 {
         const rect = self.last_rect;
         const left = ui.cell.snap(rect.x);
@@ -230,6 +235,51 @@ pub const Sidebar = struct {
         const node = self.tree_view.selection() orelse return null;
         const item = node.element orelse return null;
         return self.toggle(item);
+    }
+
+    /// Reveals a resource like VS Code's `explorer.autoReveal`: expands lazy
+    /// ancestors, then selects and scrolls to the item without moving focus.
+    pub fn revealPath(self: *Sidebar, path: []const u8) !void {
+        const folder = self.model.context.getWorkspaceFolder(path) orelse return;
+        var root: ?*ExplorerItem = null;
+        for (self.model.roots.items) |candidate| {
+            if (std.mem.eql(u8, candidate.resource, folder.resource)) {
+                root = candidate;
+                break;
+            }
+        }
+        const root_item = root orelse return;
+        const relative = std.mem.trimStart(u8, path[root_item.resource.len..], "/\\");
+        if (relative.len == 0) {
+            if (self.show_roots) self.selectElement(root_item);
+            return;
+        }
+
+        var current = root_item;
+        var parts = std.mem.tokenizeAny(u8, relative, "/\\");
+        while (parts.next()) |name| {
+            if (!current.is_directory) return;
+            if (!current.is_directory_resolved) try self.loadChildren(current);
+
+            var next: ?*ExplorerItem = null;
+            for (current.children.items) |child| {
+                if (std.mem.eql(u8, child.name, name)) {
+                    next = child;
+                    break;
+                }
+            }
+            const item = next orelse return;
+
+            // The single-folder root is the tree input and has no visible row;
+            // its children were already installed by init().
+            if (!(current == root_item and !self.show_roots)) {
+                try self.setChildren(current, current.children.items, false);
+                _ = try self.tree_model.setCollapsed(current, false, false);
+                try self.tree_view.refresh();
+            }
+            current = item;
+        }
+        self.selectElement(current);
     }
 
     pub fn selectedNode(self: *Sidebar) ?*ExplorerItem {
@@ -378,4 +428,68 @@ test "explorer tree sidebar: renders and uses the ported tree view" {
         .open => |path| try std.testing.expect(std.mem.endsWith(u8, path, "z.txt")),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "explorer tree sidebar: wheel scrolls the tree viewport" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    for (0..12) |i| {
+        var name_buffer: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "f{d:0>2}.txt", .{i});
+        var file = try tmp.dir.createFile(io, name, .{});
+        try file.writeStreamingAll(io, "x");
+        file.close(io);
+    }
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(@as(usize, 12), sidebar.count());
+    var grid = try ui.CellGrid.init(allocator, 24, 6);
+    defer grid.deinit();
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 6 }, true);
+    const before = sidebar.tree_view.widget.view.scroll_top;
+
+    const wheel = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 2, .delta_y = 1 };
+    try std.testing.expect(sidebar.handleMouse(&wheel));
+    try std.testing.expect(sidebar.tree_view.widget.view.scroll_top > before);
+}
+
+test "explorer tree sidebar: revealPath expands ancestors and selects the file" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "alpha/beta");
+    var file = try tmp.dir.createFile(io, "alpha/beta/deep.txt", .{});
+    try file.writeStreamingAll(io, "deep");
+    file.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/alpha/beta/deep.txt", .{root});
+    defer allocator.free(path);
+    try sidebar.revealPath(path);
+
+    const selected = sidebar.selectedNode().?;
+    try std.testing.expectEqualStrings("deep.txt", selected.name);
+    try std.testing.expect(sidebar.isExpanded(selected.parent.?));
+    try std.testing.expect(sidebar.isExpanded(selected.parent.?.parent.?));
 }
