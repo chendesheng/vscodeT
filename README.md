@@ -279,6 +279,10 @@ TextMate tokenization:
 - The pinned `textmate.zig` dependency includes upstream fixes for wildcard
   scope selectors and the parser's zero-width cycle baseline. No local
   substitutions of the dependency's parser or evaluator are carried.
+- A faithful Zig port of `microsoft/vscode-textmate` has started in
+  `textmate/`, with the reference checkout at `../vscode-textmate`. The
+  matcher is ported; the editor continues to use `textmate.zig` until the port
+  is complete. See `textmate/README.md` for status and future work.
 - Theme selectors that combine a parent scope with a target (`a b`) or exclude
   a scope (`a - b`) are reduced to the target scope; the terminal theme trie
   matches one scope at a time.

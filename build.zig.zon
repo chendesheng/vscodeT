@@ -43,6 +43,10 @@
         .ui = .{
             .path = "ui",
         },
+        // In-progress faithful port of microsoft/vscode-textmate.
+        .vscode_textmate = .{
+            .path = "textmate",
+        },
         // CommonMark + GFM Markdown parser used by the hover markdown renderer.
         .markdown_zig = .{
             .url = "https://github.com/taggon/markdown-zig/archive/85bcc67eecc51253c75b0e92eddaedc6b2b2676d.tar.gz",

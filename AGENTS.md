@@ -31,6 +31,17 @@ Do not edit upstream files. Port behavior into this repository instead.
 When a file contains a deliberate Zig adaptation rather than a literal port,
 state that in the comment and keep the behavioral contract intact.
 
+## Standalone vscode-textmate port
+
+- `textmate/` is a standalone Zig package outside `src/` porting
+  `../vscode-textmate` (currently v9.3.2). It must not import anything from
+  `src/`.
+- Keep upstream basenames (`matcher.ts` → `matcher.zig`) and port the upstream
+  tests. See `textmate/README.md` for the source map, status, faithful-port
+  rules and future phases.
+- The editor keeps using the pinned `textmate.zig` dependency until that port
+  is complete; do not wire the in-progress package into the editor early.
+
 ## Standalone UI library
 
 - `ui/` is a separate Zig package outside `src/` (a path dependency in

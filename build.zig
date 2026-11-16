@@ -329,4 +329,15 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     });
     const run_ui_tests = b.addRunArtifact(ui_tests);
     test_step.dependOn(&run_ui_tests.step);
+
+    const vscode_textmate_dep = b.dependency("vscode_textmate", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const vscode_textmate_tests = b.addTest(.{
+        .name = "vscode_textmate_tests",
+        .root_module = vscode_textmate_dep.module("vscode_textmate"),
+    });
+    const run_vscode_textmate_tests = b.addRunArtifact(vscode_textmate_tests);
+    test_step.dependOn(&run_vscode_textmate_tests.step);
 }
