@@ -49,7 +49,7 @@ const Visible = struct {
 /// each workspace root gets its own root filter; the ignore-chain map is keyed
 /// by the directory whose children are being resolved, mirroring upstream's
 /// per-root ignore tree.
-const FilesFilter = struct {
+pub const FilesFilter = struct {
     allocator: Allocator,
     io: Io,
     configuration: *ConfigurationService,
@@ -65,7 +65,7 @@ const FilesFilter = struct {
         exclude_git_ignore: bool,
     };
 
-    fn init(
+    pub fn init(
         allocator: Allocator,
         io: Io,
         configuration: *ConfigurationService,
@@ -80,7 +80,7 @@ const FilesFilter = struct {
         };
     }
 
-    fn deinit(self: *FilesFilter) void {
+    pub fn deinit(self: *FilesFilter) void {
         var roots = self.roots.valueIterator();
         while (roots.next()) |filter| {
             filter.*.files_exclude.deinit();
@@ -94,7 +94,7 @@ const FilesFilter = struct {
 
     /// Reads `<directory>/.gitignore` and `.ignore` on top of the enclosing
     /// directory's chain and records the chain for `directory`'s children.
-    fn prepare(self: *FilesFilter, directory: *ExplorerItem) !void {
+    pub fn prepare(self: *FilesFilter, directory: *ExplorerItem) !void {
         const root_filter = try self.rootFilter(directory.root());
         if (!root_filter.exclude_git_ignore or self.chains.contains(directory)) return;
 
@@ -129,7 +129,7 @@ const FilesFilter = struct {
         try self.chains.put(directory, current);
     }
 
-    fn isVisible(self: *FilesFilter, item: *ExplorerItem) bool {
+    pub fn isVisible(self: *FilesFilter, item: *ExplorerItem) bool {
         if (item.parent == null) return true;
 
         const root_filter = self.rootFilter(item.root()) catch return true;

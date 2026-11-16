@@ -912,9 +912,13 @@ Library constraints:
   existed; a workspace setting can disable it.
   The workbench reserves a fixed left activity column
   and sidebar column and offsets the editor split root; a click or Enter on a
-  file calls `Workbench.openPath`. Directory resolution is synchronous and
-  only the visible rows are painted; the async data tree/loading placeholders
-  and list virtualization of the browser tree are not ported.
+  file calls `Workbench.openPath`. Directory resolution is synchronous. The
+  Explorer now renders through the ported list/tree view layer
+  (`rangeMap` + `ListView`/`ListWidget` + `IndexTreeModel`/`ObjectTreeModel` +
+  `AbstractTree`), including virtualization, wheel scrolling and collapse
+  state. The compressed tree model and object/index/synchronous-data tree view
+  adapters are ported too. The async data tree/loading placeholders, tree-level
+  filtering, smart diff splice, drag/drop and sticky scroll are not ported.
   `src/tui/activityBar.zig` switches fixed Explorer, Search and Settings
   containers; Settings remains a placeholder. This is not the browser
   `ExplorerView`/tree widget or registered view-container service port; file

@@ -22,6 +22,7 @@ comptime {
     _ = @import("./tui/editorInput.zig");
     _ = @import("./tui/tabBar.zig");
     _ = @import("./tui/sidebar.zig");
+    _ = @import("./tui/explorerTreeSidebar.zig");
     _ = @import("./tui/activityBar.zig");
     _ = @import("./tui/tab.zig");
     _ = @import("./tui/workbench.zig");
@@ -156,6 +157,16 @@ comptime {
     _ = @import("./vs/base/common/scrollable.zig");
     _ = @import("./vs/base/browser/ui/scrollbar/scrollbarState.zig");
     _ = @import("./vs/base/test/browser/ui/scrollbar/scrollbarState.test.zig");
+    _ = @import("./vs/base/test/browser/ui/list/rangeMap.test.zig");
+    _ = @import("./vs/base/test/browser/ui/list/listView.test.zig");
+    _ = @import("./vs/base/test/browser/ui/list/listWidget.test.zig");
+    _ = @import("./vs/base/test/browser/ui/tree/indexTreeModel.test.zig");
+    _ = @import("./vs/base/test/browser/ui/tree/objectTreeModel.test.zig");
+    _ = @import("./vs/base/test/browser/ui/tree/abstractTree.test.zig");
+    _ = @import("./vs/base/test/browser/ui/tree/compressedObjectTreeModel.test.zig");
+    _ = @import("./vs/base/test/browser/ui/tree/objectTree.test.zig");
+    _ = @import("./vs/base/test/browser/ui/tree/indexTree.test.zig");
+    _ = @import("./vs/base/test/browser/ui/tree/dataTree.test.zig");
     _ = @import("./vs/platform/theme/common/theme.zig");
     _ = @import("./vs/platform/theme/common/themeService.zig");
     _ = @import("./vs/editor/common/editorCommon.zig");

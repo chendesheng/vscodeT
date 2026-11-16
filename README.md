@@ -87,7 +87,15 @@ Notes for the Zig 0.17 port:
   default for that setting is on, unlike upstream's off default, because the
   Explorer hid ignored entries before the configuration service existed;
   workspace settings can turn it off. `Ctrl-B` toggles the side panel and
-  `Escape` returns focus to the editor.
+  `Escape` returns focus to the editor. The generic VS Code list/tree view is
+  being replaced in layers under `src/vs/base/browser/ui/list` and
+  `src/vs/base/browser/ui/tree`: `rangeMap`, the virtualized `ListView`,
+  `ListWidget`, the index/object tree models and a terminal `AbstractTree`.
+  The Explorer now renders through that `AbstractTree`/`ObjectTreeModel` path.
+  `ObjectTree`, `IndexTree` and a synchronous `DataTree` view adapter are also
+  ported, along with `CompressedObjectTreeModel`. Remaining work is tree-level
+  filtering, smart diff splicing, the async data tree, drag/drop and sticky
+  scroll.
 - The configuration service (`src/vs/workbench/services/configuration/browser/configurationService.zig`)
   resolves defaults, user settings, the workspace file's `settings` block and
   each folder's `.vscode/settings.json`, in that precedence order. It uses the
