@@ -253,7 +253,7 @@ View model:
 
 TextMate tokenization:
 
-- The `textmate.zig` fork (`chendesheng/textmate.zig`, commit `55ea72f`) is
+- The `textmate.zig` fork (`chendesheng/textmate.zig`, commit `bcef1f2`) is
   used for language tokenization as a pinned Zig package dependency.
 - Supported language IDs include `zig`, `json`, `javascript`,
   `typescript`, `python`, `rust`, `go`, `c`, `cpp`, `java`, `html`, `css`,
@@ -279,10 +279,13 @@ TextMate tokenization:
 - The pinned `textmate.zig` dependency includes upstream fixes for wildcard
   scope selectors and the parser's zero-width cycle baseline. No local
   substitutions of the dependency's parser or evaluator are carried.
-- A faithful Zig port of `microsoft/vscode-textmate` has started in
-  `textmate/`, with the reference checkout at `../vscode-textmate`. The
-  matcher is ported; the editor continues to use `textmate.zig` until the port
-  is complete. See `textmate/README.md` for status and future work.
+- A faithful Zig port of `microsoft/vscode-textmate` lives in `textmate/`,
+  with the reference checkout at `../vscode-textmate`. It now covers the
+  engine and all upstream test suites, including the first-mate/suite1
+  tokenization fixtures and all 14×72 theme fixtures. The editor still uses
+  `textmate.zig`; wiring the port behind `ITokenizationSupport` is the
+  remaining integration step. See `textmate/README.md` for the source map,
+  UTF-16 index contract and porting notes.
 - Theme selectors that combine a parent scope with a target (`a b`) or exclude
   a scope (`a - b`) are reduced to the target scope; the terminal theme trie
   matches one scope at a time.

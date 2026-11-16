@@ -38,9 +38,14 @@ state that in the comment and keep the behavioral contract intact.
   `src/`.
 - Keep upstream basenames (`matcher.ts` → `matcher.zig`) and port the upstream
   tests. See `textmate/README.md` for the source map, status, faithful-port
-  rules and future phases.
-- The editor keeps using the pinned `textmate.zig` dependency until that port
-  is complete; do not wire the in-progress package into the editor early.
+  rules and remaining integration work. The engine and all upstream test
+  suites (including the copied `test-cases/` fixtures) are ported.
+- Token indices are UTF-16 code units, matching vscode-textmate; only
+  `OnigString` converts at the Oniguruma boundary. Do not replace this with
+  UTF-8 byte offsets.
+- The engine is complete, but the editor still uses the pinned `textmate.zig`
+  dependency. Do not wire the package into the editor until the integration
+  step is done deliberately behind `ITokenizationSupport`.
 
 ## Standalone UI library
 

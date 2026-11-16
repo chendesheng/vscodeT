@@ -7,111 +7,51 @@ the TextMate engine used by VS Code.
 - Reference checkout: `../vscode-textmate`
 - Pinned version: **9.3.2** (commit `5fc1758`, package.json version `9.3.2`)
 - Zig: 0.17
-- Status: **early** — the path is being built up file by file while the editor
-  continues to use the pinned `textmate.zig` dependency.
+- Status: **complete port of the engine and its upstream test suites**. The
+  editor still uses the pinned `textmate.zig` dependency until integration is
+  done; that is the remaining step, not a missing engine feature.
 
-The package is standalone: it must not import from `src/`. It is a path
-dependency named `vscode_textmate` in the root `build.zig.zon`.
+The package is standalone: it does not import anything from `src/`. It is a
+path dependency named `vscode_textmate` in the root `build.zig.zon`.
 
-## Why
-
-`textmate.zig` is a compact TextMate engine, not a complete equivalent of
-`vscode-textmate`. Known divergences include:
-
-- fixed limits (`max_line_len = 1024`, 9 match ranges, 64 span captures,
-  pruned state stacks);
-- no `$self`/`$base` completion, `firstLineMatch`, folding markers,
-  `embeddedLanguages` or per-grammar `tokenTypes`;
-- partial injection support and a simplified scope-selector grammar;
-- system Oniguruma instead of `vscode-oniguruma`, with no retry/timeout policy;
-- silent regex compile failures.
-
-The long-term goal is to replace the dependency with this port and delete the
-remaining compatibility layer.
-
-## Current status
+## Source map
 
 | Upstream source | Port | Status |
 | --- | --- | --- |
-| `src/matcher.ts` | `src/matcher.zig` | **Ported**, all upstream matcher tests |
-| `src/rawGrammar.ts` | — | TODO |
-| `src/onigLib.ts` | — | TODO (binding decision needed) |
-| `src/utils.ts` | — | TODO |
-| `src/parseRawGrammar.ts` | — | TODO |
-| `src/json.ts` | — | TODO |
-| `src/plist.ts` | — | TODO |
-| `src/encodedTokenAttributes.ts` | — | TODO |
-| `src/rule.ts` | — | TODO |
-| `src/grammar/grammarDependencies.ts` | — | TODO |
-| `src/grammar/basicScopesAttributeProvider.ts` | — | TODO |
-| `src/grammar/grammar.ts` | — | TODO |
-| `src/grammar/tokenizeString.ts` | — | TODO |
-| `src/theme.ts` | — | TODO |
-| `src/registry.ts` | — | TODO |
-| `src/main.ts` | — | TODO |
-| `src/diffStateStacks.ts` | — | TODO |
-| `src/debug.ts` | — | TODO (optional) |
-| `src/tests/*` | `src/*.test.zig` | Matcher tests ported; rest TODO |
+| `src/rawGrammar.ts` | `src/rawGrammar.zig` | Ported |
+| `src/onigLib.ts` | `src/onigLib.zig` | Ported; libonig-backed `OnigLib` |
+| `src/utils.ts` | `src/utils.zig` | Ported |
+| `src/parseRawGrammar.ts` | `src/parseRawGrammar.zig` | Ported |
+| `src/json.ts` | `src/json.zig` | Ported |
+| `src/plist.ts` | `src/plist.zig` | Ported |
+| `src/encodedTokenAttributes.ts` | `src/encodedTokenAttributes.zig` | Ported |
+| `src/rule.ts` | `src/rule.zig` | Ported |
+| `src/grammar/grammarDependencies.ts` | `src/grammar/grammarDependencies.zig` | Ported |
+| `src/grammar/basicScopesAttributeProvider.ts` | `src/grammar/basicScopesAttributeProvider.zig` | Ported |
+| `src/grammar/grammar.ts` | `src/grammar/grammar.zig` | Ported |
+| `src/grammar/tokenizeString.ts` | `src/grammar/tokenizeString.zig` | Ported |
+| `src/grammar/index.ts` | `src/grammar/index.zig` | Ported |
+| `src/theme.ts` | `src/theme.zig` | Ported |
+| `src/registry.ts` | `src/registry.zig` | Ported |
+| `src/main.ts` | `src/main.zig` | Ported |
+| `src/diffStateStacks.ts` | `src/diffStateStacks.zig` | Ported |
+| `src/debug.ts` | `src/debug.zig` | Ported as explicit flags |
+| `src/matcher.ts` | `src/matcher.zig` | Ported |
+| `src/tests/matcher.test.ts` | `src/matcher.test.zig` | All cases |
+| `src/tests/json.test.ts` | `src/tests/json.test.zig` | All cases |
+| `src/tests/grammar.test.ts` | `src/tests/grammar.test.zig` | All cases; upstream skipped case remains skipped |
+| `src/tests/tokenization.test.ts` | `src/tests/tokenization.test.zig` | All three fixture suites |
+| `src/tests/themes.test.ts` | `src/tests/theme.test.zig`, `src/tests/themes.test.zig` | Unit cases and all theme fixtures |
+| `src/tests/themeTest.ts` | `src/tests/themes.test.zig` | Folded into the fixture runner |
+| `src/tests/themedTokenizer.ts` | `src/tests/themedTokenizer.zig` | Ported |
+| `src/tests/resolver.ts` | `src/tests/resolver.zig` | Ported |
+| `src/tests/onigLibs.ts` | `src/onigLib.zig` | Replaced by the libonig binding |
+| `src/tests/inspect.ts` | — | Not ported; interactive debugging utility only |
 
-## Allocator model (reference: textmate.zig)
+The upstream `test-cases/` fixtures are copied unchanged and include the
+first-mate/suite1 tokenization suites and 14 themes × 72 theme fixtures.
 
-The port follows the allocator conventions of the pinned `textmate.zig`
-dependency rather than introducing a new ownership style:
-
-- Every constructor and factory takes an explicit `std.mem.Allocator`; there is
-  no global or hidden allocator.
-- `textmate.zig`'s `Grammar` and `Theme` each own an `ArenaAllocator`, while
-  `Parser` owns its string arenas and unmanaged `std.ArrayList` fields. Objects
-  store the allocator they were created with and expose `deinit`.
-- This port mirrors that: `MatcherSet(T)` owns an `ArenaAllocator` created from
-  the caller's allocator. The selector copy, matcher nodes and identifier
-  slices all live in that arena, and `MatcherSet.deinit` releases them.
-- Use Zig 0.17 unmanaged `std.ArrayList` with explicit allocator arguments in
-  this package. The editor's legacy `std.array_list.Managed` shim belongs to
-  `src/`, not to `textmate/`.
-- Tests allocate with `std.testing.allocator` and always `defer` the set's
-  `deinit`, so leaks are visible under `zig build test`.
-
-## Porting rules
-
-1. **Read the upstream file and its tests first.**
-2. Keep the upstream basename: `matcher.ts` → `matcher.zig`, `grammar.ts` →
-   `grammar.zig`. Test files keep the upstream `*.test.ts` name:
-   `tests/matcher.test.ts` → `src/matcher.test.zig`.
-3. Prefer upstream control flow, names and edge cases over Zig rewrites. Use
-   Zig naming for fields/functions and PascalCase for types; comments may keep
-   upstream terminology (`IRawRule`, `ScopePath`, `RuleId`, ...).
-4. Port every upstream test case. Do not delete inconvenient assertions.
-5. State every deliberate adaptation in the file header and here:
-   - TypeScript closures/interfaces become explicit tagged unions and
-     function pointers.
-   - TypeScript garbage collection becomes explicit allocators/arenas with a
-     `deinit` path.
-   - JavaScript regular expressions used for tokenizing selectors become hand
-     scanners when a regex would obscure the exact behavior; tests must prove
-     equivalence.
-   - `console.log` diagnostics are not part of the API.
-6. Do not add features that upstream does not have. If the terminal/editor
-   needs a deviation, isolate it outside this package.
-7. Keep the copyright/license notice of the source file being ported.
-
-## Matcher port (done)
-
-The first vertical slice ports `src/matcher.ts` and
-`src/tests/matcher.test.ts`.
-
-- `createMatchers` returns a `MatcherSet(T)` with matcher/priority entries.
-- `MatcherSet.any(matchesName, input)` matches the upstream
-  `matchers.some(m => m.matcher(input))` test pattern.
-- Priorities are `-1`, `0`, `1` for `L:`, none, `R:`.
-- The matcher AST mirrors the upstream closure tree: name, negation,
-  conjunction, disjunction. An empty conjunction is true; an empty disjunction
-  is false; negating a missing operand is false.
-- The selector is copied into the set's arena so matcher identifiers remain
-  valid until `deinit`.
-
-All 27 cases from `src/tests/matcher.test.ts`, plus priority and empty-selector
-coverage, are ported. Run:
+## Building and testing
 
 ```sh
 cd textmate
@@ -124,73 +64,86 @@ or from the repository root:
 zig build test
 ```
 
-## Future work
+The package needs Oniguruma headers and library, like the editor build:
 
-### Phase 1 — foundations
+```sh
+# macOS
+brew install oniguruma
+# Debian/Ubuntu
+sudo apt install libonig-dev
+```
 
-- `rawGrammar.zig`: `IRawGrammar`, `IRawRule`, `IRawCaptures`,
-  `IRawRepository`, `IncludeString`, `RegExpString`, `ScopeName`, `RuleId`.
-- `onigLib.zig`: `IOnigLib`, `OnigScanner`, `OnigString`, `FindOption`.
-  Decide between:
-  - a `libonig` C binding like the existing editor build; or
-  - `vscode-oniguruma` compatibility.
-  This decision affects regex features, retry limits and portability.
-- `utils.zig`, `parseRawGrammar.zig`, `json.zig`, `plist.zig`:
-  grammar-file parsing, including JSONC/plist forms.
-- Port `src/tests/json.test.ts`.
+The package's `build.zig` translates `src/oniguruma.h` with Zig's build-time
+translate-c support; it does not rely on the editor's build graph.
 
-### Phase 2 — rules and grammar
+## Faithful-port notes
 
-- `encodedTokenAttributes.zig`: metadata bit layout and standard token types.
-- `rule.zig`: `Rule`, `CaptureRule`, `BeginEndRule`, `BeginWhileRule`,
-  `MatchRule`, include resolution.
-- `grammar/grammarDependencies.zig`, `basicScopesAttributeProvider.zig`,
-  `grammar.zig`, `tokenizeString.zig`: grammar loading, injection/embedded
-  language resolution, tokenization state and encoded binary tokens.
-- Port `src/tests/grammar.test.ts` and the tokenization fixtures.
+The port follows the upstream control flow, names and edge cases. The
+deliberate adaptations are:
 
-### Phase 3 — theme, registry, main
-
-- `theme.zig`: full scope-stack theme matching, parent selectors, exclusions,
-  priorities, font styles and color maps.
-- `registry.zig`: grammar registry, injection grammar resolution,
-  `embeddedLanguages`, `tokenTypes`, `firstLineMatch`.
-- `main.zig`: public API (`Registry`, `IGrammar`, `StateStack`, encoded tokens,
-  `INITIAL`), matching upstream signatures where Zig allows.
-- `diffStateStacks.zig` and `debug.zig`.
-- Port `src/tests/themes.test.ts`, `themeTest.ts`, `tokenization.test.ts`.
-
-### Phase 4 — conformance
-
-- Port the upstream test harness and fixtures, including grammar spec tests.
-- Compare token streams against `vscode-textmate` for the bundled grammars:
-  - same scopes and encoded metadata;
-  - same state transitions and stack diffs;
-  - same behavior for injections, embedded languages and theme selectors.
-- Add fuzz tests for state round-trips and malformed grammars.
-- Remove fixed limits only when the port has no equivalent upstream limit.
-
-### Phase 5 — integration
-
-- Add the port as the editor's tokenizer behind the existing
-  `ITokenizationSupport` interface.
-- Remove the `textmate` dependency from `build.zig.zon` and delete
-  `textmate.zig` imports.
-- Keep the editor's current `TokenTheme`/Dark+ integration until the ported
-  theme matcher is proven equivalent, then switch.
-- Update `README.md`, `docs/extensions.md` and `AGENTS.md` with the new
-  reference path and porting rules.
+- **Oniguruma binding.** `onigLib.zig` keeps the `IOnigLib`/`OnigScanner`/
+  `OnigString` contract and provides a libonig-backed implementation. The
+  upstream tests use `vscode-oniguruma` WASM; this package uses the same
+  Oniguruma engine through the system library.
+- **UTF-16 indices.** vscode-textmate indexes JavaScript strings in UTF-16 code
+  units. `OnigString` builds the same UTF-16↔UTF-8 offset maps as
+  `vscode-oniguruma` and exposes UTF-16 capture indices. ASCII strings use the
+  identity path with no maps. This keeps token boundaries, captures and
+  `linePos` identical to upstream. `textmate.zig` by contrast exposes UTF-8
+  byte offsets.
+- **Synchronous registry.** Upstream `Registry`/`RegistryOptions` use Promises.
+  This port walks the grammar dependency graph synchronously; `loadGrammar`
+  returns the grammar (or null) directly.
+- **Dynamic raw grammar.** `IRawGrammar`/`IRawRule` are a JSON-like `Value`
+  tree instead of TypeScript `any`. Object `id` and `$vscodeTextmateLocation`
+  are stored on the object; grammar files are deep-cloned before compilation
+  just like `initGrammar`.
+- **Allocators and ownership.** Constructors take explicit allocators. A
+  `Grammar` owns an arena for its cloned grammar, rules, scope stacks and
+  state stacks. `tokenizeLine*` uses a scratch arena reset per call, so its
+  returned tokens are valid until the next tokenization on that grammar.
+  `RawGrammar`/`Theme` own their arenas and expose `deinit`; `StackDiff` has
+  `deinit`.
+- **No JavaScript GC.** Rule objects, matcher sets and scanner caches have
+  explicit ownership. `Grammar.deinit` disposes compiled scanners and matcher
+  sets.
+- **Scope matchers.** Selector matching keeps upstream's selector syntax via
+  `matcher.zig`; embedded-language and standard-token-type matching use
+  direct prefix/word scans instead of JavaScript regular expressions.
+- **RTL merging.** `containsRTL` uses a compact Unicode range table for the
+  characters that affect the "merge consecutive equal-metadata tokens" rule.
+- **Diagnostics.** `debug.zig` exposes the upstream flags directly instead of
+  reading `process.env.VSCODE_TEXTMATE_DEBUG`; console diagnostics are not part
+  of the ported API.
+- **Dates/data in plists.** `Value.date` and `Value.data` preserve the raw
+  plist text because Zig has no JavaScript `Date` object; grammars and themes
+  treat them as opaque values.
+- **Font attribute cache.** The behavior of `FontAttribute` is ported without
+  the static cache; the observable token/font output is identical.
 
 ## Definition of done
 
-The port is complete when:
+- [x] Every upstream source file has a Zig counterpart (except the dev-only
+      `inspect.ts` utility).
+- [x] Every upstream test suite has a Zig counterpart.
+- [x] The first-mate, suite1 and while tokenization fixtures pass.
+- [x] All theme unit tests and all 14×72 theme fixtures pass.
+- [x] `cd textmate && zig build test` passes.
+- [x] The package is covered by `zig build test` from the repository root.
+- [ ] Replace the editor's pinned `textmate.zig` dependency with this package
+      behind `ITokenizationSupport` and remove the old dependency.
 
-- every upstream source file and test has a Zig counterpart;
-- all upstream tests and grammar fixtures pass;
-- token output is byte-for-byte compatible for the supported grammars, modulo
-  documented Zig adaptations;
-- the editor no longer imports `textmate.zig`;
-- the package is covered by `zig build test` from the repository root.
+## Integration notes
+
+When wiring this package into the editor:
+
+- The editor currently stores UTF-8 line text. Convert at the tokenization
+  boundary or keep a UTF-16 view; token indices are UTF-16 code units.
+- `tokenizeLine2` results are scratch-owned until the next call. Copy tokens
+  or consume them before tokenizing the next line.
+- The editor's existing `TokenTheme`/Dark+ mapping can be replaced by
+  `Theme`/`ColorMap` once the editor is ready to use scratch-arena state
+  stacks.
 
 ## License
 
