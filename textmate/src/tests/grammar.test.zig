@@ -33,6 +33,27 @@ test "StackElementMetadata works" {
     try expectMetadata(value, 1, encoded.StandardTokenType.regex, false, theme.FontStyle.underline | theme.FontStyle.bold, 101, 102);
 }
 
+test "StackElementMetadata can overwrite font style with strikethrough" {
+    const initial = encoded.set(0, 1, encoded.OptionalStandardTokenType.regex, false, theme.FontStyle.strikethrough, 101, 102);
+    try expectMetadata(initial, 1, encoded.StandardTokenType.regex, false, theme.FontStyle.strikethrough, 101, 102);
+    try expectMetadata(encoded.set(initial, 0, encoded.OptionalStandardTokenType.not_set, false, theme.FontStyle.none, 0, 0), 1, encoded.StandardTokenType.regex, false, theme.FontStyle.none, 101, 102);
+}
+
+test "StackElementMetadata can work at max values" {
+    const max_language_id = 255;
+    const max_token_type = encoded.StandardTokenType.comment | encoded.StandardTokenType.other | encoded.StandardTokenType.regex | encoded.StandardTokenType.string;
+    const max_font_style = theme.FontStyle.bold | theme.FontStyle.italic | theme.FontStyle.underline;
+    const max_foreground = 511;
+    const max_background = 254;
+    const value = encoded.set(0, max_language_id, max_token_type, true, max_font_style, max_foreground, max_background);
+    try expectMetadata(value, max_language_id, max_token_type, true, max_font_style, max_foreground, max_background);
+}
+
+test "Shadowed rules are resolved correctly" {
+    // Upstream marks this test `test.skip`; keep the same status.
+    return error.SkipZigTest;
+}
+
 test "StackElementMetadata can overwrite fields" {
     const initial = encoded.set(0, 1, encoded.OptionalStandardTokenType.regex, false, theme.FontStyle.underline | theme.FontStyle.bold, 101, 102);
     try expectMetadata(initial, 1, encoded.StandardTokenType.regex, false, theme.FontStyle.underline | theme.FontStyle.bold, 101, 102);
