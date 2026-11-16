@@ -167,6 +167,16 @@ fn assertTokenizationSuite(test_location: []const u8) !void {
                 const expected_value = expected_token.get("value").?.string;
                 try std.testing.expectEqualStrings(expected_value, value);
                 const expected_scopes = expected_token.get("scopes").?.array.items;
+                if (expected_scopes.len != token.scopes.len) {
+                    std.debug.print("scope count mismatch for {s}: line '{s}' token '{s}' expected {} actual {}\n", .{
+                        desc, line, value, expected_scopes.len, token.scopes.len,
+                    });
+                    std.debug.print("expected scopes: ", .{});
+                    for (expected_scopes) |scope| std.debug.print("'{s}' ", .{scope.string});
+                    std.debug.print("\nactual scopes: ", .{});
+                    for (token.scopes) |scope| std.debug.print("'{s}' ", .{scope});
+                    std.debug.print("\n", .{});
+                }
                 try std.testing.expectEqual(expected_scopes.len, token.scopes.len);
                 for (expected_scopes, token.scopes) |expected_scope, actual_scope| {
                     try std.testing.expectEqualStrings(expected_scope.string, actual_scope);
