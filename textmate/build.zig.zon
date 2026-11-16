@@ -28,6 +28,8 @@
         "src/diffStateStacks.zig",
         "src/registry.zig",
         "src/main.zig",
+        "src/debug.zig",
+        "src/grammar/index.zig",
         "src/tests/grammar.test.zig",
         "src/tests/theme.test.zig",
         "src/tests/testPaths.zig",

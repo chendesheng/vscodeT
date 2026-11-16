@@ -22,6 +22,8 @@ pub const tokenizeString = @import("grammar/tokenizeString.zig");
 pub const diffStateStacks = @import("diffStateStacks.zig");
 pub const registry = @import("registry.zig");
 pub const main = @import("main.zig");
+pub const debug = @import("debug.zig");
+pub const grammar_index = @import("grammar/index.zig");
 
 test {
     _ = matcher;
@@ -42,6 +44,8 @@ test {
     _ = diffStateStacks;
     _ = registry;
     _ = main;
+    _ = debug;
+    _ = grammar_index;
     _ = @import("tests/grammar.test.zig");
     _ = @import("tests/theme.test.zig");
     _ = @import("tests/tokenization.test.zig");
