@@ -709,7 +709,8 @@ pub const Theme = struct {
 
         const matching = self.cached_match_root.get(scope_name) orelse blk: {
             const rules = try self.root.match(self.arena.allocator(), scope_name);
-            try self.cached_match_root.put(scope_name, rules);
+            const key = try self.arena.allocator().dupe(u8, scope_name);
+            try self.cached_match_root.put(key, rules);
             break :blk rules;
         };
 

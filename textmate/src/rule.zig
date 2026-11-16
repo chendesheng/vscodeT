@@ -431,14 +431,15 @@ pub const RegExpSource = struct {
     }
 
     pub fn clone(self: *const RegExpSource, allocator: Allocator) !RegExpSource {
-        return init(allocator, self.source, self.rule_id);
+        const source_copy = try allocator.dupe(u8, self.source);
+        return init(allocator, source_copy, self.rule_id);
     }
 
     pub fn setSource(self: *RegExpSource, allocator: Allocator, new_source: []const u8) !void {
         if (std.mem.eql(u8, self.source, new_source)) return;
-        self.source = new_source;
+        self.source = try allocator.dupe(u8, new_source);
         if (self.has_anchor) self.anchor_cache = try self.buildAnchorCache(allocator);
-        self.has_back_references = hasBackReferences(new_source);
+        self.has_back_references = hasBackReferences(self.source);
     }
 
     pub fn resolveBackReferences(

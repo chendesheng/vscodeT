@@ -64,7 +64,8 @@ pub const BasicScopeAttributesProvider = struct {
             .language_id = self.scopeToLanguage(scope),
             .token_type = self.toStandardTokenType(scope),
         };
-        try self.cache.put(scope, attributes);
+        const key = try self.allocator.dupe(u8, scope);
+        try self.cache.put(key, attributes);
         return attributes;
     }
 
