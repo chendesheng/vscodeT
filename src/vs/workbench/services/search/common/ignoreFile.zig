@@ -48,19 +48,11 @@ pub const IgnoreFile = struct {
         parent: ?*const IgnoreFile,
         ignore_case: bool,
     ) !*IgnoreFile {
-        if (location.len > 0 and location[location.len - 1] == '\\') {
-            return error.UnexpectedPathFormat;
-        }
-
         const self = try allocator.create(IgnoreFile);
         errdefer allocator.destroy(self);
 
-        const needs_separator = location.len == 0 or location[location.len - 1] != '/';
-        const location_length = location.len + @intFromBool(needs_separator);
-        const normalized = try allocator.alloc(u8, location_length);
+        const normalized = try normalizeLocation(allocator, location);
         errdefer allocator.free(normalized);
-        @memcpy(normalized[0..location.len], location);
-        if (needs_separator) normalized[location.len] = '/';
 
         self.* = .{
             .allocator = allocator,
@@ -93,18 +85,22 @@ pub const IgnoreFile = struct {
     /// with a traversal that checks each directory. In cases where a path must
     /// be tested in isolation, use `isArbitraryPathIgnored`.
     pub fn isPathIncludedInTraversal(self: *const IgnoreFile, path: []const u8, is_dir: bool) !bool {
-        try validatePath(path);
-        return !self.isPathIgnored(path, is_dir);
+        const normalized = try normalizePath(self.allocator, path);
+        defer self.allocator.free(normalized);
+        try validatePath(normalized);
+        return !self.isPathIgnored(normalized, is_dir);
     }
 
     /// Returns true if an arbitrary path has been ignored. This is an expensive
     /// operation and should only be used outside of traversals.
     pub fn isArbitraryPathIgnored(self: *const IgnoreFile, path: []const u8, is_dir: bool) !bool {
-        try validatePath(path);
+        const normalized = try normalizePath(self.allocator, path);
+        defer self.allocator.free(normalized);
+        try validatePath(normalized);
 
         var segments = std.array_list.Managed([]const u8).init(self.allocator);
         defer segments.deinit();
-        var iterator = std.mem.splitScalar(u8, path, '/');
+        var iterator = std.mem.splitScalar(u8, normalized, '/');
         while (iterator.next()) |segment| {
             if (segment.len > 0) try segments.append(segment);
         }
@@ -245,8 +241,32 @@ pub fn isPathIncluded(ignore: ?*const IgnoreFile, path: []const u8, is_dir: bool
     return file.isPathIncludedInTraversal(path, is_dir) catch true;
 }
 
-fn validatePath(path: []const u8) !void {
-    if (path.len == 0 or path[0] != '/' or path[path.len - 1] == '/') {
-        return error.UnexpectedPathFormat;
+fn normalizePath(allocator: Allocator, path: []const u8) ![]u8 {
+    const copy = try allocator.dupe(u8, path);
+    for (copy) |*ch| {
+        if (ch.* == '\\') ch.* = '/';
     }
+    return copy;
+}
+
+fn normalizeLocation(allocator: Allocator, location: []const u8) ![]u8 {
+    var copy = try allocator.dupe(u8, location);
+    for (copy) |*ch| {
+        if (ch.* == '\\') ch.* = '/';
+    }
+    if (copy.len == 0 or copy[copy.len - 1] != '/') {
+        const extended = try allocator.alloc(u8, copy.len + 1);
+        @memcpy(extended[0..copy.len], copy);
+        extended[copy.len] = '/';
+        allocator.free(copy);
+        copy = extended;
+    }
+    return copy;
+}
+
+fn validatePath(path: []const u8) !void {
+    if (path.len == 0 or path[path.len - 1] == '/') return error.UnexpectedPathFormat;
+    if (path[0] == '/') return;
+    if (path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and path[2] == '/') return;
+    return error.UnexpectedPathFormat;
 }

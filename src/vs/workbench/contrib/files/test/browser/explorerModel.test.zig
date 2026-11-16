@@ -12,40 +12,60 @@ const WorkspaceContextService = workspace_context.WorkspaceContextService;
 
 test "ExplorerItem: properties, children and find" {
     const allocator = std.testing.allocator;
-    const root = try ExplorerItem.create(allocator, "/", "/", null, true);
+    const root_path = if (std.fs.path.sep == '/') "/" else "C:\\";
+    const root = try ExplorerItem.create(allocator, root_path, root_path, null, true);
     defer root.destroy();
 
-    const path = try ExplorerItem.create(allocator, "/path", "path", root, true);
+    const path_path = try std.fs.path.join(allocator, &.{ root_path, "path" });
+    defer allocator.free(path_path);
+    const to_path = try std.fs.path.join(allocator, &.{ path_path, "to" });
+    defer allocator.free(to_path);
+    const file_path = try std.fs.path.join(allocator, &.{ to_path, "file.txt" });
+    defer allocator.free(file_path);
+
+    const path = try ExplorerItem.create(allocator, path_path, "path", root, true);
     try root.addChild(path);
-    const to = try ExplorerItem.create(allocator, "/path/to", "to", path, true);
+    const to = try ExplorerItem.create(allocator, to_path, "to", path, true);
     try path.addChild(to);
-    const file = try ExplorerItem.create(allocator, "/path/to/file.txt", "file.txt", to, false);
+    const file = try ExplorerItem.create(allocator, file_path, "file.txt", to, false);
     try to.addChild(file);
 
     try std.testing.expect(root.getChild("path") == path);
-    try std.testing.expect(root.find("/path/to/file.txt") == file);
-    try std.testing.expect(root.find("/missing") == null);
+    try std.testing.expect(root.find(file_path) == file);
+    try std.testing.expect(root.find("missing") == null);
     try std.testing.expectEqual(@as(usize, 1), path.children.items.len);
 }
 
 test "ExplorerItem: move and rename update paths" {
     const allocator = std.testing.allocator;
-    const root = try ExplorerItem.create(allocator, "/", "/", null, true);
+    const root_path = if (std.fs.path.sep == '/') "/" else "C:\\";
+    const one_path = try std.fs.path.join(allocator, &.{ root_path, "one" });
+    defer allocator.free(one_path);
+    const two_path = try std.fs.path.join(allocator, &.{ root_path, "two" });
+    defer allocator.free(two_path);
+    const item_path = try std.fs.path.join(allocator, &.{ one_path, "item" });
+    defer allocator.free(item_path);
+    const moved_path = try std.fs.path.join(allocator, &.{ two_path, "item" });
+    defer allocator.free(moved_path);
+    const renamed_path = try std.fs.path.join(allocator, &.{ two_path, "renamed.txt" });
+    defer allocator.free(renamed_path);
+
+    const root = try ExplorerItem.create(allocator, root_path, root_path, null, true);
     defer root.destroy();
-    const one = try ExplorerItem.create(allocator, "/one", "one", root, true);
+    const one = try ExplorerItem.create(allocator, one_path, "one", root, true);
     try root.addChild(one);
-    const two = try ExplorerItem.create(allocator, "/two", "two", root, true);
+    const two = try ExplorerItem.create(allocator, two_path, "two", root, true);
     try root.addChild(two);
-    const item = try ExplorerItem.create(allocator, "/one/item", "item", one, false);
+    const item = try ExplorerItem.create(allocator, item_path, "item", one, false);
     try one.addChild(item);
 
     try item.move(two);
-    try std.testing.expectEqualStrings("/two/item", item.resource);
+    try std.testing.expectEqualStrings(moved_path, item.resource);
     try std.testing.expect(two.getChild("item") == item);
 
     try item.rename("renamed.txt");
     try std.testing.expectEqualStrings("renamed.txt", item.name);
-    try std.testing.expectEqualStrings("/two/renamed.txt", item.resource);
+    try std.testing.expectEqualStrings(renamed_path, item.resource);
     try std.testing.expect(two.getChild("renamed.txt") == item);
 }
 

@@ -297,12 +297,12 @@ test "Theme resolving respects incoming defaults" {
 }
 
 test "Theme resolving can merge incoming defaults" {
-    const rules = [_]theme.ParsedThemeRule{
+    var rules = [_]theme.ParsedThemeRule{
         .{ .scope = "", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = null, .background = "#ff0000", .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = "#00ff00", .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.bold, .foreground = null, .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
     };
-    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, @constCast(&rules), null);
+    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, &rules, null);
     defer value.deinit();
     const defaults = value.getDefaults();
     try std.testing.expectEqual(theme.FontStyle.bold, defaults.font_style);
@@ -311,28 +311,28 @@ test "Theme resolving can merge incoming defaults" {
 }
 
 test "Theme resolving defaults are inherited" {
-    const rules = [_]theme.ParsedThemeRule{
+    var rules = [_]theme.ParsedThemeRule{
         .{ .scope = "", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = "#F8F8F2", .background = "#272822", .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "var", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = "#ff0000", .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
     };
-    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, @constCast(&rules), null);
+    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, &rules, null);
     defer value.deinit();
     try expectMatch(std.testing.allocator, value, &.{"var"}, .{ .font_style = "not set", .foreground = "#FF0000" });
 }
 
 test "Theme resolving same rules get merged" {
-    const rules = [_]theme.ParsedThemeRule{
+    var rules = [_]theme.ParsedThemeRule{
         .{ .scope = "", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = "#F8F8F2", .background = "#272822", .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "var", .parent_scopes = null, .index = 1, .font_style = theme.FontStyle.bold, .foreground = null, .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "var", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = "#ff0000", .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
     };
-    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, @constCast(&rules), null);
+    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, &rules, null);
     defer value.deinit();
     try expectMatch(std.testing.allocator, value, &.{"var"}, .{ .font_style = "bold", .foreground = "#FF0000" });
 }
 
 test "Theme resolving rules are inherited" {
-    const rules = [_]theme.ParsedThemeRule{
+    var rules = [_]theme.ParsedThemeRule{
         .{ .scope = "", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = "#F8F8F2", .background = "#272822", .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "var", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.bold, .foreground = "#ff0000", .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "var.identifier", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = "#00ff00", .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
@@ -342,7 +342,7 @@ test "Theme resolving rules are inherited" {
         .{ .scope = "constant.numeric.oct", .parent_scopes = null, .index = 7, .font_style = theme.FontStyle.bold | theme.FontStyle.italic | theme.FontStyle.underline, .foreground = null, .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "constant.numeric.dec", .parent_scopes = null, .index = 8, .font_style = theme.FontStyle.none, .foreground = "#300000", .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
     };
-    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, @constCast(&rules), null);
+    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, &rules, null);
     defer value.deinit();
     try expectMatch(std.testing.allocator, value, &.{"var.identifier"}, .{ .font_style = "bold", .foreground = "#00FF00" });
     try expectMatch(std.testing.allocator, value, &.{"constant.numeric.hex"}, .{ .font_style = "bold", .foreground = "#200000" });
@@ -351,14 +351,14 @@ test "Theme resolving rules are inherited" {
 }
 
 test "Theme resolving rules with parent scopes" {
-    const rules = [_]theme.ParsedThemeRule{
+    var rules = [_]theme.ParsedThemeRule{
         .{ .scope = "", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = "#F8F8F2", .background = "#272822", .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "var", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.bold, .foreground = "#100000", .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "var.identifier", .parent_scopes = null, .index = 0, .font_style = theme.FontStyle.not_set, .foreground = "#200000", .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "var", .parent_scopes = &.{"source.css"}, .index = 1, .font_style = theme.FontStyle.italic, .foreground = "#300000", .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
         .{ .scope = "var", .parent_scopes = &.{"source.css"}, .index = 2, .font_style = theme.FontStyle.underline, .foreground = null, .background = null, .font_family = "", .font_size = 0, .line_height = 0 },
     };
-    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, @constCast(&rules), null);
+    const value = try theme.Theme.createFromParsedTheme(std.testing.allocator, &rules, null);
     defer value.deinit();
     try expectMatch(std.testing.allocator, value, &.{ "source.css", "var" }, .{ .font_style = "underline", .foreground = "#300000" });
 }

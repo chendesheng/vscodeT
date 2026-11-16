@@ -506,13 +506,13 @@ pub const FolderMatch = struct {
                 if (!std.mem.eql(u8, dir, self.path) and pathIsInside(self.path, dir)) {
                     var current = self;
                     var relative = dir[self.path.len..];
-                    while (relative.len > 0 and relative[0] == '/') relative = relative[1..];
+                    while (relative.len > 0 and isSeparator(relative[0])) relative = relative[1..];
                     var built = try self.allocator.dupe(u8, self.path);
                     defer self.allocator.free(built);
-                    var segments = std.mem.splitScalar(u8, relative, '/');
+                    var segments = std.mem.tokenizeAny(u8, relative, "/\\");
                     while (segments.next()) |segment| {
                         if (segment.len == 0) continue;
-                        const next_path = try std.fs.path.join(self.allocator, &.{ built, segment });
+                        const next_path = try joinSearchPath(self.allocator, built, segment);
                         self.allocator.free(built);
                         built = next_path;
                         current = try current.createIntermediate(built);
@@ -894,12 +894,33 @@ pub const SearchResult = struct {
     }
 };
 
+fn isSeparator(ch: u8) bool {
+    return ch == '/' or ch == '\\';
+}
+
 fn pathIsInside(root: []const u8, path: []const u8) bool {
     if (root.len == 0) return true;
     if (std.mem.eql(u8, root, path)) return true;
     if (!std.mem.startsWith(u8, path, root)) return false;
-    if (root[root.len - 1] == '/') return true;
-    return path.len > root.len and path[root.len] == '/';
+    if (isSeparator(root[root.len - 1])) return true;
+    return path.len > root.len and isSeparator(path[root.len]);
+}
+
+/// Joins a relative folder segment while preserving the separator style of the
+/// base path. Search results arrive either as `/`-rooted test paths or native
+/// Windows paths; mixing separators breaks the prefix checks above.
+fn joinSearchPath(allocator: Allocator, base: []const u8, segment: []const u8) ![]u8 {
+    const separator: u8 = if (std.mem.indexOfScalar(u8, base, '\\') != null and std.mem.indexOfScalar(u8, base, '/') == null) '\\' else '/';
+    const needs_separator = base.len > 0 and !isSeparator(base[base.len - 1]);
+    const result = try allocator.alloc(u8, base.len + @intFromBool(needs_separator) + segment.len);
+    @memcpy(result[0..base.len], base);
+    var index = base.len;
+    if (needs_separator) {
+        result[index] = separator;
+        index += 1;
+    }
+    @memcpy(result[index..][0..segment.len], segment);
+    return result;
 }
 
 test "SearchResult: adds files, matches and folder hierarchy" {
