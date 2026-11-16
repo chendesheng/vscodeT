@@ -15,6 +15,7 @@ zig build run -- <file>...   # open files in an empty workspace
 zig build run -- --session <file> [<folder>] [<file>...]  # restore/save the tab session
 zig build run -- --preview <file>   # read-only terminal UI preview
 zig build test   # run the editor and ui library tests
+zig build test-watcher   # run the file-watcher tests without the TUI
 ```
 
 Notes for the Zig 0.17 port:
@@ -111,10 +112,9 @@ Notes for the Zig 0.17 port:
   comments and trailing commas. User settings default to
   `$XDG_CONFIG_HOME/vscode-textbuffer/settings.json` (or
   `$HOME/.config/vscode-textbuffer/settings.json`); set
-  `VSCODE_TEXTBUFFER_USER_SETTINGS` to override the path. Settings are read at
-  startup or explicit `reload`. Not ported yet:
-  - file watching and automatic settings reload (the terminal has no file
-    watcher/file service);
+  `VSCODE_TEXTBUFFER_USER_SETTINGS` to override the path. The TUI watches the
+  user settings file, the workspace file and each folder's
+  `.vscode/settings.json`, and reloads the service automatically. Not ported:
   - `updateValue` and settings editing (needs the JSONC-preserving configuration
     editing service);
   - language override blocks such as `[typescript]` (override models are not
@@ -126,12 +126,32 @@ Notes for the Zig 0.17 port:
   - `files.exclude` `when` clauses and exception-leading folders (`glob.zig`
     does not port the traversal/exception metadata);
   - the Settings editor/view, which remains a placeholder.
+- The file watcher (`src/vs/platform/files/...`) ports the VS Code service and
+  the Linux/macOS/Windows backends: `common/files.zig` and
+  `common/watcher.zig` for change/request contracts, coalescing, pattern
+  normalization and filters; `baseWatcher.zig` for correlation,
+  suspend/resume and retry; `parcelWatcher.zig` plus the in-tree
+  `parcel/watcherLib` for recursive watching; `nodejsWatcherLib.zig` for
+  non-recursive watching; and `watcher.zig`/`watcherStats.zig` for the
+  universal watcher and diagnostics. The Linux backend uses inotify, macOS
+  uses kqueue (the upstream parcel kqueue backend; FSEvents/CoreServices is not
+  ported), and Windows uses overlapped `ReadDirectoryChangesW`. Brute-force
+  snapshot polling backs the polling mode. The `@parcel/watcher` N-API binding,
+  JS wrapper, prebuilds and Electron IPC watcher clients are not ported; the
+  terminal embeds one in-process `UniversalWatcher`. The only wired consumer is
+  automatic settings reload; Explorer and Search still do not refresh on
+  external changes. `src/tui/settingsWatcher.zig` owns the settings requests
+  and `src/tui/app.zig` polls the watcher's fd alongside stdin.
+  `zig build test-watcher` runs the watcher-only suite;
+  `zig build check-watcher -Dtarget=x86_64-windows` and
+  `zig build check-watcher -Dtarget=aarch64-macos` type-check the other
+  platform backends without the POSIX TUI.
 - A minimal activity bar (`src/tui/activityBar.zig`) switches between Explorer,
   Search and Settings containers. Explorer is wired to the file tree and Search
   to the workspace text-search panel; Settings remains a placeholder.
   `Alt-1..3` switches containers while the side panel has focus. The width is
   fixed for now; there is no registered activity-bar/view-container service,
-  file watching, context menu or drag-and-drop.
+  live Explorer/Search file-change integration, context menu or drag-and-drop.
 - The Search panel (`src/tui/searchView.zig` and `src/tui/searchWidget.zig`) is
   a plain-text workspace search over
   `src/vs/workbench/services/search/common/searchService.zig` and the ported

@@ -264,6 +264,7 @@ pub fn main(init: std.process.Init) !void {
     var needs_render = false;
     while (true) {
         const now_ms = time_compat.milliTimestamp();
+        if (workbench.pollFileWatcher(now_ms)) needs_render = true;
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
         if (workbench.pollSearch(now_ms)) needs_render = true;
         var timeout: i32 = 250;
@@ -290,8 +291,15 @@ pub fn main(init: std.process.Init) !void {
         }
         if (workbench.quickAccessWantsTick()) timeout = 0;
         if (workbench.searchWantsTick()) timeout = 0;
+        if (workbench.fileWatcherTimeout(now_ms)) |watcher_timeout| {
+            timeout = @min(timeout, @as(i32, @intCast(@min(watcher_timeout, 250))));
+        }
 
-        const ready = input_buffer.items.len != 0 or try tui.pollInput(timeout);
+        const polled = try tui.pollInputWithFd(workbench.fileWatcherFd(), timeout);
+        if (polled.extra) {
+            if (workbench.pollFileWatcher(time_compat.milliTimestamp())) needs_render = true;
+        }
+        const ready = input_buffer.items.len != 0 or polled.input;
         var resized = false;
         if (try tui.resizedSize()) |new_size| {
             size = new_size;

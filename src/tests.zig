@@ -1,4 +1,5 @@
 comptime {
+    _ = @import("./watcher_tests.zig");
     _ = @import("./vs/base/common/glob.zig");
     _ = @import("./vs/base/common/comparers.zig");
     _ = @import("./vs/workbench/services/search/common/search.zig");
@@ -366,4 +367,13 @@ comptime {
     _ = @import("./tui/fileIndex.zig");
     _ = @import("./tui/quickInput.zig");
     _ = @import("./tui/quickAccess.zig");
+}
+comptime {
+    _ = @import("./vs/platform/files/test/common/files.test.zig");
+    _ = @import("./vs/platform/files/test/common/watcher.test.zig");
+    _ = @import("./vs/platform/files/test/node/parcelWatcher.test.zig");
+}
+comptime {
+    _ = @import("./vs/platform/files/test/node/nodejsWatcher.test.zig");
+    _ = @import("./vs/platform/files/test/node/watcherStats.test.zig");
 }

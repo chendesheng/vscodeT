@@ -10,10 +10,10 @@
 // `ConfigurationModel`.
 //
 // Settings files are read with VS Code's JSONC allowances (comments and
-// trailing commas). File watching, `updateValue` (setting editing), language
+// trailing commas). The TUI settings watcher calls `reload` automatically when
+// one of these files changes. `updateValue` (setting editing), language
 // override identifiers (`[typescript]` blocks), policy/application/remote
-// scopes and trusted-workspace filtering are not ported; call `reload` after a
-// settings file changes.
+// scopes and trusted-workspace filtering are not ported.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -217,6 +217,35 @@ pub const ConfigurationService = struct {
             .workspace_folder = if (folder_model) |model| model.getValue(section) else null,
             .value = effective.getValue(section),
         };
+    }
+
+    /// Returns the settings files this service reads. The watcher uses the
+    /// same list so both always agree on the watched scopes. The caller owns
+    /// the paths and the outer slice.
+    pub fn settingsFilePaths(self: *const ConfigurationService, allocator: Allocator) ![]const []u8 {
+        var paths = std.array_list.Managed([]u8).init(allocator);
+        errdefer {
+            for (paths.items) |path| allocator.free(path);
+            paths.deinit();
+        }
+
+        if (self.user_settings_path) |path| {
+            try paths.append(try allocator.dupe(u8, path));
+        }
+        if (self.workspace.getWorkspace().configuration) |path| {
+            try paths.append(try allocator.dupe(u8, path));
+        }
+        for (self.workspace.getWorkspace().folders.items) |folder| {
+            const path = try std.fs.path.join(allocator, &.{ folder.resource, ".vscode", "settings.json" });
+            try paths.append(path);
+        }
+        return try paths.toOwnedSlice();
+    }
+
+    pub fn freeSettingsFilePaths(self: *const ConfigurationService, allocator: Allocator, paths: []const []u8) void {
+        _ = self;
+        for (paths) |path| allocator.free(path);
+        allocator.free(paths);
     }
 
     pub fn keys(self: *const ConfigurationService) configuration.Keys {

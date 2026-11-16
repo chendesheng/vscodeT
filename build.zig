@@ -16,6 +16,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const onig = onigModule(b, target, optimize);
+
     const vscode_textmate_dep = b.dependency("vscode_textmate", .{ .target = target, .optimize = optimize });
     const vscode_textmate = vscode_textmate_dep.module("vscode_textmate");
     const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
@@ -339,6 +340,24 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     });
     const run_ui_tests = b.addRunArtifact(ui_tests);
     test_step.dependOn(&run_ui_tests.step);
+
+    // Watcher-only tests: compile and run without the POSIX TUI. This root is
+    // also used to cross-check the Linux/macOS/Windows backends on a host that
+    // cannot run the other targets' tests.
+    const watcher_tests = b.addTest(.{
+        .name = "watcher_tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/watcher_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_watcher_tests = b.addRunArtifact(watcher_tests);
+    const watcher_test_step = b.step("test-watcher", "Run file-watcher tests");
+    watcher_test_step.dependOn(&run_watcher_tests.step);
+
+    const check_watcher_step = b.step("check-watcher", "Compile the file-watcher tests without running them");
+    check_watcher_step.dependOn(&watcher_tests.step);
 
     const vscode_textmate_dep = b.dependency("vscode_textmate", .{
         .target = target,

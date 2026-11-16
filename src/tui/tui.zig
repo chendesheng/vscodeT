@@ -227,3 +227,24 @@ pub fn pollInput(timeout_ms: i32) !bool {
     const result = try posix.poll(&fds, timeout_ms);
     return result > 0;
 }
+
+pub const PollResult = struct {
+    input: bool,
+    extra: bool,
+};
+
+/// Polls stdin plus an optional extra fd (the file watcher's inotify/kqueue
+/// handle). The caller drains the extra fd when `extra` is true.
+pub fn pollInputWithFd(extra_fd: ?posix.fd_t, timeout_ms: i32) !PollResult {
+    var fds = [_]posix.pollfd{
+        .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
+        .{ .fd = extra_fd orelse -1, .events = posix.POLL.IN, .revents = 0 },
+    };
+    const count: posix.nfds_t = if (extra_fd == null) 1 else 2;
+    const result = try posix.poll(fds[0..count], timeout_ms);
+    if (result == 0) return .{ .input = false, .extra = false };
+    return .{
+        .input = fds[0].revents != 0,
+        .extra = count == 2 and fds[1].revents != 0,
+    };
+}

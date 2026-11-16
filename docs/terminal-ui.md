@@ -921,8 +921,8 @@ Library constraints:
   filtering, smart diff splice, drag/drop and sticky scroll are not ported.
   `src/tui/activityBar.zig` switches fixed Explorer, Search and Settings
   containers; Settings remains a placeholder. This is not the browser
-  `ExplorerView`/tree widget or registered view-container service port; file
-  watching, resizing and context menus are not ported.
+  `ExplorerView`/tree widget or registered view-container service port; live
+  file-change refresh, resizing and context menus are not ported.
 - The Search panel is split into a portable search service/tree and a terminal
   view. `searchService.zig` walks workspace folders in bounded steps, reads
   open-editor content through a host callback, applies the ported regex/word
@@ -948,9 +948,10 @@ Library constraints:
   `.vscode/settings.json`, with folder > workspace > user > defaults precedence.
   Settings JSON accepts comments and trailing commas. The service exposes
   `getValue`, `inspect`, `keys`, `reload` and a change emitter.
+  Native watching uses inotify on Linux, kqueue on macOS and overlapped
+  `ReadDirectoryChangesW` on Windows; the `@parcel/watcher` FSEvents backend is
+  not ported because it requires the CoreServices SDK and a CFRunLoop thread.
   Not ported in this configuration-service port:
-  - file watching and automatic reload; the terminal has no file-watcher or
-    file-service layer, so the host must call `reload`;
   - `updateValue` and settings editing; these need the JSONC-preserving
     configuration-editing service, which is not ported;
   - language override blocks (`[typescript]`); `ConfigurationModel` keeps the

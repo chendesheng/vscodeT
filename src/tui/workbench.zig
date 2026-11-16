@@ -48,6 +48,8 @@ const workspace_context = @import("../vs/workbench/services/workspaces/common/wo
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
 const ConfigurationService = configuration_mod.ConfigurationService;
+const settings_watcher_mod = @import("./settingsWatcher.zig");
+const SettingsWatcher = settings_watcher_mod.SettingsWatcher;
 const ActivityBar = activity_bar_mod.ActivityBar;
 const search_view_mod = @import("./searchView.zig");
 const SearchView = search_view_mod.SearchView;
@@ -170,6 +172,7 @@ pub const Workbench = struct {
     active_activity: usize = 0,
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
+    settings_watcher: ?*SettingsWatcher = null,
     user_settings_path: ?[]u8,
     history: HistoryService,
     commands: CommandRegistry,
@@ -212,6 +215,7 @@ pub const Workbench = struct {
         self.active_activity = 0;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
+        self.settings_watcher = null;
         self.user_settings_path = null;
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
@@ -284,6 +288,7 @@ pub const Workbench = struct {
         self.active_activity = 0;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
+        self.settings_watcher = null;
         self.user_settings_path = null;
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
@@ -368,6 +373,7 @@ pub const Workbench = struct {
         self.active_activity = 0;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
+        self.settings_watcher = null;
         self.user_settings_path = null;
 
         self.service = try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, data, registry, .{});
@@ -582,6 +588,7 @@ pub const Workbench = struct {
         self.service.deinit();
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.destroySearch();
+        if (self.settings_watcher) |watcher| watcher.deinit();
         if (self.configuration) |configuration| configuration.deinit();
         if (self.user_settings_path) |path| self.allocator.free(path);
         self.workspace.deinit();
@@ -676,6 +683,10 @@ pub const Workbench = struct {
             self.sidebar = null;
         }
         self.destroySearch();
+        if (self.settings_watcher) |watcher| {
+            watcher.deinit();
+            self.settings_watcher = null;
+        }
         if (self.configuration) |configuration| {
             configuration.deinit();
             self.configuration = null;
@@ -692,6 +703,10 @@ pub const Workbench = struct {
         if (self.user_settings_path) |old| self.allocator.free(old);
         self.user_settings_path = if (path) |value| try self.allocator.dupe(u8, value) else null;
         if (self.configuration) |configuration| {
+            if (self.settings_watcher) |watcher| {
+                watcher.deinit();
+                self.settings_watcher = null;
+            }
             configuration.deinit();
             self.configuration = null;
             try self.ensureConfiguration();
@@ -706,6 +721,27 @@ pub const Workbench = struct {
             self.workspace,
             .{ .user_settings_path = self.user_settings_path },
         );
+        self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
+    }
+
+    /// Drives the settings watcher. Returns true when a settings reload was
+    /// performed (or an event was emitted) and the host should repaint.
+    pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
+        const watcher = self.settings_watcher orelse return false;
+        return watcher.poll(now_ms) catch false;
+    }
+
+    pub fn fileWatcherFd(self: *const Workbench) ?std.posix.fd_t {
+        const watcher = self.settings_watcher orelse return null;
+        return switch (watcher.waitHandle()) {
+            .fd => |fd| fd,
+            else => null,
+        };
+    }
+
+    pub fn fileWatcherTimeout(self: *const Workbench, now_ms: i64) ?u32 {
+        const watcher = self.settings_watcher orelse return null;
+        return watcher.nextTimeout(now_ms);
     }
 
     fn autoRevealEnabled(self: *const Workbench, resource: []const u8) bool {

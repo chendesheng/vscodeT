@@ -18,8 +18,8 @@
 //   the folder itself during a traversal, like upstream.
 // * `ignoreCase` folds ASCII case while matching.
 //
-// Not ported: sibling clauses (`{ when: ... }`), `IRelativePattern` bases, the
-// `Promise`-returning `hasSibling` matcher, the parsed-pattern metadata
+// Not ported: sibling clauses (`{ when: ... }`), the `Promise`-returning
+// `hasSibling` matcher, the parsed-pattern metadata
 // (`allBasenames`/`allPaths`) and the LRU cache of parsed patterns.
 
 const std = @import("std");
@@ -33,15 +33,52 @@ pub const Options = struct {
     ignore_case: bool = false,
 };
 
+/// Mirrors upstream `IRelativePattern`: `pattern` is matched relative to
+/// `base`, and `base` must be equal to or a parent of the candidate path.
+pub const RelativePattern = struct {
+    base: []const u8,
+    pattern: []const u8,
+};
+
+/// Either a plain glob string or a relative pattern.
+pub const Source = union(enum) {
+    string: []const u8,
+    relative: RelativePattern,
+};
+
 /// One brace-expanded glob pattern split into path segments.
 pub const Pattern = struct {
     segments: []const []const u8,
     ignore_case: bool,
+    /// When set, the pattern only matches inside this base path and the base is
+    /// stripped before segment matching, like upstream `wrapRelativePattern`.
+    base: ?[]const u8 = null,
 
     pub fn matches(self: Pattern, path: []const u8) bool {
-        return matchSegments(self.segments, 0, path, 0, self.ignore_case);
+        var candidate = path;
+        if (self.base) |base| {
+            candidate = stripBase(path, base, self.ignore_case) orelse return false;
+        }
+        return matchSegments(self.segments, 0, candidate, 0, self.ignore_case);
     }
 };
+
+fn stripBase(path: []const u8, base: []const u8, ignore_case: bool) ?[]const u8 {
+    if (path.len < base.len) return null;
+    if (ignore_case) {
+        if (!std.ascii.startsWithIgnoreCase(path, base)) return null;
+    } else {
+        if (!std.mem.startsWith(u8, path, base)) return null;
+    }
+    if (path.len == base.len) return path[path.len..];
+    if (isSeparator(base[base.len - 1])) return path[base.len..];
+    if (!isSeparator(path[base.len])) return null;
+    return path[base.len + 1 ..];
+}
+
+fn isSeparator(ch: u8) bool {
+    return ch == '/' or ch == '\\';
+}
 
 /// A parsed glob expression, the equivalent of upstream's `ParsedExpression`
 /// for a list of patterns that all have to match: `matches` is true when any
@@ -54,7 +91,23 @@ pub const Expression = struct {
     pub fn init(arena: Allocator, patterns: []const []const u8, options: Options) !Expression {
         var list = std.array_list.Managed(Pattern).init(arena);
         for (patterns) |pattern| {
-            try appendExpanded(arena, &list, pattern, options);
+            try appendExpanded(arena, &list, pattern, null, options);
+        }
+        return .{ .patterns = try list.toOwnedSlice() };
+    }
+
+    /// Compiles plain and relative patterns. Relative bases are copied into
+    /// `arena`, so the caller does not need to keep the sources alive.
+    pub fn initSources(arena: Allocator, sources: []const Source, options: Options) !Expression {
+        var list = std.array_list.Managed(Pattern).init(arena);
+        for (sources) |source| {
+            switch (source) {
+                .string => |pattern| try appendExpanded(arena, &list, pattern, null, options),
+                .relative => |relative| {
+                    const base = try arena.dupe(u8, relative.base);
+                    try appendExpanded(arena, &list, relative.pattern, base, options);
+                },
+            }
         }
         return .{ .patterns = try list.toOwnedSlice() };
     }
@@ -131,7 +184,7 @@ pub const GlobList = struct {
                 try arena.dupe(u8, piece);
 
             var patterns = std.array_list.Managed(Pattern).init(arena);
-            try appendExpanded(arena, &patterns, written, .{});
+            try appendExpanded(arena, &patterns, written, null, .{});
             try self.rules.append(.{
                 .patterns = try patterns.toOwnedSlice(),
                 .negated = negated,
@@ -230,6 +283,7 @@ fn appendExpanded(
     arena: Allocator,
     list: *std.array_list.Managed(Pattern),
     raw: []const u8,
+    base: ?[]const u8,
     options: Options,
 ) !void {
     var pattern = std.mem.trim(u8, raw, " \t\r\n");
@@ -248,22 +302,43 @@ fn appendExpanded(
                 alternative,
                 pattern[brace.close + 1 ..],
             });
-            try appendExpanded(arena, list, combined, options);
+            try appendExpanded(arena, list, combined, base, options);
         }
         return;
     }
 
-    const owned = try arena.dupe(u8, pattern);
+    const owned = try normalizePatternSeparators(arena, pattern);
     try list.append(.{
         .segments = try splitSegments(arena, owned),
         .ignore_case = options.ignore_case,
+        .base = base,
     });
+}
+
+/// Glob matching works on `/` even when the target path uses `\`. Upstream
+/// handles both separators in its glob implementation; this port normalizes
+/// patterns once and treats both separators while splitting paths.
+fn normalizePatternSeparators(arena: Allocator, pattern: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, pattern, '\\') == null) {
+        return try arena.dupe(u8, pattern);
+    }
+    const owned = try arena.dupe(u8, pattern);
+    for (owned) |*ch| {
+        if (ch.* == '\\') ch.* = '/';
+    }
+    return owned;
 }
 
 fn splitSegments(arena: Allocator, pattern: []const u8) ![]const []const u8 {
     var segments = std.array_list.Managed([]const u8).init(arena);
-    var iterator = std.mem.splitScalar(u8, pattern, '/');
-    while (iterator.next()) |segment| try segments.append(segment);
+    var start: usize = 0;
+    var index: usize = 0;
+    while (index <= pattern.len) : (index += 1) {
+        if (index == pattern.len or isSeparator(pattern[index])) {
+            try segments.append(pattern[start..index]);
+            start = index + 1;
+        }
+    }
     // A trailing slash marks a directory pattern. Upstream's trivial-basename
     // matcher treats `**/foo/` like `**/foo`, and trailing-slash directory
     // patterns must match the directory itself for traversal to prune it.
@@ -290,7 +365,7 @@ fn matchSegments(
         // ... or one segment and then the rest.
         var cursor = start;
         while (cursor < path.len) : (cursor += 1) {
-            if (path[cursor] == '/' and matchSegments(segments, index, path, cursor + 1, ignore_case)) {
+            if (isSeparator(path[cursor]) and matchSegments(segments, index, path, cursor + 1, ignore_case)) {
                 return true;
             }
         }
@@ -298,7 +373,7 @@ fn matchSegments(
     }
 
     var end = start;
-    while (end < path.len and path[end] != '/') : (end += 1) {}
+    while (end < path.len and !isSeparator(path[end])) : (end += 1) {}
     if (!segmentMatches(segment, path[start..end], ignore_case)) return false;
     if (end == path.len) return onlyGlobStars(segments[index + 1 ..]);
     return matchSegments(segments, index + 1, path, end + 1, ignore_case);
@@ -496,4 +571,29 @@ test "glob: expression options" {
     const case_sensitive = try Expression.init(arena.allocator(), &.{"**/*.log"}, .{});
     try std.testing.expect(!case_sensitive.matches("/A/LOG.LOG"));
     try std.testing.expect(case_sensitive.matches("/A/a.log"));
+}
+
+test "glob: relative pattern bases" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const expression = try Expression.initSources(arena.allocator(), &.{
+        .{ .relative = .{ .base = "/users/data/src", .pattern = "*.js" } },
+    }, .{});
+
+    try std.testing.expect(expression.matches("/users/data/src/foo.js"));
+    try std.testing.expect(!expression.matches("/users/data/src/foo.ts"));
+    try std.testing.expect(!expression.matches("/users/data/src/bar/foo.js"));
+    try std.testing.expect(!expression.matches("/other/foo.js"));
+
+    const windows = try Expression.initSources(arena.allocator(), &.{
+        .{ .relative = .{ .base = "c:\\users\\data\\src", .pattern = "*.js" } },
+    }, .{ .ignore_case = true });
+    try std.testing.expect(windows.matches("c:\\users\\data\\src\\foo.js"));
+    try std.testing.expect(windows.matches("C:\\USERS\\DATA\\SRC\\FOO.JS"));
+    try std.testing.expect(!windows.matches("c:\\users\\data\\src\\bar\\foo.js"));
+
+    const globstar = try Expression.init(arena.allocator(), &.{"**/*.js"}, .{});
+    try std.testing.expect(globstar.matches("/users/data/src/foo.js"));
+    try std.testing.expect(globstar.matches("/users/data/src/bar/foo.js"));
 }
