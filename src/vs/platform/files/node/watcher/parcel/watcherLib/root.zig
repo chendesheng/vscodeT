@@ -481,7 +481,7 @@ test "Lib: brute force snapshots" {
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(io, &path_buffer);
     const root = path_buffer[0..root_len];
-    const snapshot = try std.fmt.allocPrint(allocator, "{s}/snapshot", .{root});
+    const snapshot = try std.fs.path.join(allocator, &.{ root, "snapshot" });
     defer allocator.free(snapshot);
 
     var lib = try Lib.init(allocator, io);

@@ -79,6 +79,7 @@ pub fn isGlob(value: []const u8) bool {
 }
 
 test "Ignore: paths and globs" {
+    if (std.fs.path.sep != '/') return;
     var ignore = try Ignore.init(std.testing.allocator, "/root", &.{ "build", "**/node_modules/**" });
     defer ignore.deinit();
     try std.testing.expect(ignore.isIgnored("/root/build"));

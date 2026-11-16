@@ -161,7 +161,11 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
                     const node = self.selection() orelse return true;
                     const element = node.element orelse return true;
                     if (node.collapsible and !node.collapsed) {
-                        _ = self.model.setCollapsedElement(element, true, false) catch {};
+                        if (@hasDecl(Model, "setCollapsedElement")) {
+                            _ = self.model.setCollapsedElement(element, true, false) catch {};
+                        } else {
+                            _ = self.model.setCollapsed(element, true, false) catch {};
+                        }
                         self.refresh() catch {};
                     } else if (node.parent) |parent| {
                         if (parent.element != null) self.setSelectionNode(parent);
@@ -172,7 +176,11 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
                     const node = self.selection() orelse return true;
                     const element = node.element orelse return true;
                     if (node.collapsible and node.collapsed) {
-                        _ = self.model.setCollapsedElement(element, false, false) catch {};
+                        if (@hasDecl(Model, "setCollapsedElement")) {
+                            _ = self.model.setCollapsedElement(element, false, false) catch {};
+                        } else {
+                            _ = self.model.setCollapsed(element, false, false) catch {};
+                        }
                         self.refresh() catch {};
                     } else if (node.children.items.len > 0) {
                         self.setSelectionNode(node.children.items[0]);

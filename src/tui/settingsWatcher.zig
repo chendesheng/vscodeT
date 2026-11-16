@@ -112,7 +112,7 @@ test "SettingsWatcher: reloads when a settings file changes" {
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(io, &path_buffer);
     const root = path_buffer[0..root_len];
-    const settings_path = try std.fmt.allocPrint(allocator, "{s}/.vscode/settings.json", .{root});
+    const settings_path = try std.fs.path.join(allocator, &.{ root, ".vscode", "settings.json" });
     defer allocator.free(settings_path);
 
     var file = try tmp.dir.createFile(io, ".vscode/settings.json", .{});

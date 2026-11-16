@@ -196,7 +196,7 @@ test "DirTree: snapshot roundtrip and changes" {
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(io, &path_buffer);
     const root = path_buffer[0..root_len];
-    const snapshot_path = try std.fmt.allocPrint(allocator, "{s}/snapshot", .{root});
+    const snapshot_path = try std.fs.path.join(allocator, &.{ root, "snapshot" });
     defer allocator.free(snapshot_path);
 
     var old = DirTree.init(allocator);

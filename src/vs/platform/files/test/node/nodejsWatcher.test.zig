@@ -39,7 +39,7 @@ test "nodejs watcher: file update and atomic save" {
 
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(io, &path_buffer);
-    const path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{path_buffer[0..root_len]});
+    const path = try std.fs.path.join(allocator, &.{ path_buffer[0..root_len], "settings.json" });
     defer allocator.free(path);
 
     var watcher = try nodejs_mod.NodeJSWatcher.init(allocator, io, .{});
@@ -105,7 +105,7 @@ test "nodejs watcher: missing file is suspended and resumes" {
 
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(io, &path_buffer);
-    const path = try std.fmt.allocPrint(allocator, "{s}/missing.json", .{path_buffer[0..root_len]});
+    const path = try std.fs.path.join(allocator, &.{ path_buffer[0..root_len], "missing.json" });
     defer allocator.free(path);
 
     var watcher = try nodejs_mod.NodeJSWatcher.init(allocator, io, .{});
@@ -154,7 +154,7 @@ test "watchFileContents: delivers appended data" {
 
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(io, &path_buffer);
-    const path = try std.fmt.allocPrint(allocator, "{s}/log.txt", .{path_buffer[0..root_len]});
+    const path = try std.fs.path.join(allocator, &.{ path_buffer[0..root_len], "log.txt" });
     defer allocator.free(path);
 
     var recorder = ContentsRecorder{ .allocator = allocator, .data = std.array_list.Managed(u8).init(allocator) };

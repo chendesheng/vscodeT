@@ -53,9 +53,9 @@ test "UniversalWatcher: recursive and non-recursive inotify events" {
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(io, &path_buffer);
     const root = path_buffer[0..root_len];
-    const settings = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
+    const settings = try std.fs.path.join(allocator, &.{ root, "settings.json" });
     defer allocator.free(settings);
-    const workspace = try std.fmt.allocPrint(allocator, "{s}/workspace", .{root});
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
     defer allocator.free(workspace);
 
     var watcher = try universal_mod.UniversalWatcher.init(allocator, io);
