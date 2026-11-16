@@ -385,6 +385,8 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const vscode_textmate_dep = b.dependency("vscode_textmate", .{
         .target = target,
         .optimize = optimize,
+        .@"onig-include" = onig_paths.include_dir orelse "",
+        .@"onig-lib" = onig_paths.lib_dir orelse "",
     });
     const vscode_textmate_tests = b.addTest(.{
         .name = "vscode_textmate_tests",
