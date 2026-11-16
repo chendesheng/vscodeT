@@ -517,6 +517,11 @@ pub const Sidebar = struct {
         if (self.selected >= self.visible.items.len and self.visible.items.len > 0) {
             self.selected = self.visible.items.len - 1;
         }
+        // Clamp stale scroll offsets: a viewport that grows after the keyboard
+        // hides can fit the whole list, but the old offset would keep the top
+        // rows hidden. Only keep the offset needed for the selection.
+        const max_scroll = self.visible.items.len -| rows;
+        if (self.scroll > max_scroll) self.scroll = max_scroll;
         if (self.selected < self.scroll) self.scroll = self.selected;
         if (self.selected >= self.scroll + rows) self.scroll = self.selected - rows + 1;
 
@@ -678,6 +683,45 @@ test "sidebar: renders rows and handles clicks" {
     const opened = try sidebar.handleClick(4, 1);
     try std.testing.expect(opened != null);
     try std.testing.expect(std.mem.endsWith(u8, opened.?, "click.txt"));
+}
+
+test "sidebar: clamps stale scroll when the whole list fits" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "alpha");
+    try tmp.dir.createDirPath(io, "beta");
+    try tmp.dir.createDirPath(io, "gamma");
+    for ([_][]const u8{ "a.txt", "b.txt", "c.txt", "d.txt" }) |name| {
+        var file = try tmp.dir.createFile(io, name, .{});
+        try file.writeStreamingAll(io, "x");
+        file.close(io);
+    }
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(@as(usize, 7), sidebar.count());
+    sidebar.selected = 3;
+    sidebar.scroll = 3;
+
+    var grid = try CellGrid.init(allocator, 24, 10);
+    defer grid.deinit();
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 10 }, true);
+
+    try std.testing.expectEqual(@as(usize, 0), sidebar.scroll);
+    const first = try grid.rowText(allocator, 1);
+    defer allocator.free(first);
+    try std.testing.expect(std.mem.indexOf(u8, first, "alpha") != null);
 }
 
 test "sidebar: multi-root workspace shows root rows" {
