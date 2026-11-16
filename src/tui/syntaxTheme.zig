@@ -305,3 +305,50 @@ test "syntax theme: editor paints the dark+ colors" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;106;153;85m") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;86;156;214m") != null);
 }
+
+test "syntax theme: every supported language highlights inside a fence" {
+    var theme: SyntaxTheme = undefined;
+    try theme.init(std.testing.allocator);
+    defer theme.deinit();
+
+    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    const default_foreground = theme.theme._match("").getForeground();
+    const cases = [_]struct { fence: []const u8, body: []const u8 }{
+        .{ .fence = "zig", .body = "const x = 1;" },
+        .{ .fence = "toml", .body = "key = \"value\"" },
+        .{ .fence = "json", .body = "{\"key\": 1}" },
+        .{ .fence = "jsonc", .body = "{\"key\": 1}" },
+        .{ .fence = "javascript", .body = "const x = 1;" },
+        .{ .fence = "javascriptreact", .body = "const x = <div/>;" },
+        .{ .fence = "typescript", .body = "const x: number = 1;" },
+        .{ .fence = "typescriptreact", .body = "const x: number = 1;" },
+        .{ .fence = "python", .body = "def f(): pass" },
+        .{ .fence = "rust", .body = "fn main() {}" },
+        .{ .fence = "go", .body = "func main() {}" },
+        .{ .fence = "c", .body = "int x = 1;" },
+        .{ .fence = "cpp", .body = "int x = 1;" },
+        .{ .fence = "java", .body = "class A {}" },
+        .{ .fence = "html", .body = "<div>hi</div>" },
+        .{ .fence = "css", .body = "body { color: red; }" },
+        .{ .fence = "scss", .body = "$x: red;" },
+        .{ .fence = "markdown", .body = "# Heading" },
+        .{ .fence = "yaml", .body = "key: value" },
+        .{ .fence = "shellscript", .body = "echo hi" },
+    };
+
+    for (cases) |case| {
+        const text = try std.fmt.allocPrint(std.testing.allocator, "```{s}\n{s}\n```\n", .{ case.fence, case.body });
+        defer std.testing.allocator.free(text);
+        var model = try TestModel.init(std.testing.allocator, text, "markdown");
+        defer model.deinit();
+        model.model.forceTokenization(3);
+        var tokens = try model.model.tokenization().getLineTokens(2);
+        defer tokens.deinit();
+
+        var varied = false;
+        for (0..tokens.getCount()) |i| {
+            if (tokens.getForeground(i) != default_foreground) varied = true;
+        }
+        try std.testing.expect(varied);
+    }
+}

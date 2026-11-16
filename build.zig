@@ -167,8 +167,8 @@ const VscodeGrammar = struct {
 };
 
 /// Grammars taken from the VS Code checkout, mirroring the extensions those
-/// languages ship in. Languages without a VS Code grammar (zig, toml) keep the
-/// pinned package's grammar.
+/// languages ship in. Languages without a working VS Code grammar (zig, toml,
+/// yaml) keep the pinned package's grammar.
 const vscode_grammars = [_]VscodeGrammar{
     .{ .language = "json", .scope = "source.json", .path = "../vscode/extensions/json/syntaxes/JSON.tmLanguage.json" },
     .{ .language = "jsonc", .scope = "source.json.comments", .path = "../vscode/extensions/json/syntaxes/JSONC.tmLanguage.json" },
@@ -188,7 +188,6 @@ const vscode_grammars = [_]VscodeGrammar{
     .{ .language = "css", .scope = "source.css", .path = "../vscode/extensions/css/syntaxes/css.tmLanguage.json" },
     .{ .language = "scss", .scope = "source.css.scss", .path = "../vscode/extensions/scss/syntaxes/scss.tmLanguage.json" },
     .{ .language = "markdown", .scope = "text.html.markdown", .path = "../vscode/extensions/markdown-basics/syntaxes/markdown.tmLanguage.json" },
-    .{ .language = "yaml", .scope = "source.yaml.1.0", .path = "../vscode/extensions/yaml/syntaxes/yaml-1.0.tmLanguage.json" },
     .{ .language = "shellscript", .scope = "source.shell", .path = "../vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
     .{ .language = "bash", .scope = "source.shell", .path = "../vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
 };
@@ -231,11 +230,11 @@ fn vscodeSyntaxAssets(
     }
 
     _ = files.add(
-        "grammars/markdown-zig-fence.tmLanguage.json",
-        @embedFile("src/support/markdownZigFence.tmLanguage.json"),
+        "grammars/markdown-code-fences.tmLanguage.json",
+        @embedFile("src/support/markdownCodeFences.tmLanguage.json"),
     );
     source.appendSlice(
-        \\    .{ .language = "", .scope = "markdown.zig.fenced", .data = @embedFile("grammars/markdown-zig-fence.tmLanguage.json") },
+        \\    .{ .language = "", .scope = "markdown.code.fences", .data = @embedFile("grammars/markdown-code-fences.tmLanguage.json") },
         \\};
         \\
         \\pub fn scopeForLanguage(language: []const u8) ?[]const u8 {

@@ -15,7 +15,7 @@ const toStandardTokenType = tokenization.toStandardTokenType;
 const vscode_syntax = @import("vscode-syntax");
 
 var initialized = false;
-var markdown_fence_installed = false;
+var markdown_fences_installed = false;
 
 fn ensureInitialized() !void {
     if (initialized) return;
@@ -53,13 +53,14 @@ fn registerVscodeGrammars() !void {
     }
 }
 
-/// Adds a `zig` fenced-code pattern to the markdown grammar. VS Code has no
-/// Zig grammar, so its markdown grammar has no `fenced_code_block_zig` entry;
-/// this attaches the fence rule from `markdownZigFence.tmLanguage.json`.
-fn installMarkdownZigFence(markdown: *tm.Grammar) !void {
-    if (markdown_fence_installed) return;
+/// Adds fenced-code patterns for every supported language to the markdown
+/// grammar. VS Code's grammar has a fixed fence list, so languages outside it
+/// (such as Zig and TOML) would otherwise stay plain. The patterns are
+/// prepended because the parser stops at the first pattern matching a line.
+fn installMarkdownCodeFences(markdown: *tm.Grammar) !void {
+    if (markdown_fences_installed) return;
     const library = tm.GrammarLibrary.getLibrary().?;
-    const fence = library.grammarFromScopeName("markdown.zig.fenced") catch return;
+    const fence = library.grammarFromScopeName("markdown.code.fences") catch return;
     const root = markdown.syntax orelse return;
     const patterns = if (root.patterns) |*value| value else return;
     const fence_root = fence.syntax orelse return;
@@ -67,7 +68,7 @@ fn installMarkdownZigFence(markdown: *tm.Grammar) !void {
     for (fence_patterns.items) |pattern| {
         try patterns.insert(markdown.arena.allocator(), 0, pattern);
     }
-    markdown_fence_installed = true;
+    markdown_fences_installed = true;
 }
 
 fn grammarScope(languageId: []const u8) ?[]const u8 {
@@ -210,7 +211,7 @@ pub fn create(allocator: Allocator, languageId: []const u8) !?ITokenizationSuppo
     const scope = grammarScope(languageId) orelse return null;
     try ensureInitialized();
     const grammar = tm.GrammarLibrary.getLibrary().?.grammarFromScopeName(scope) catch return null;
-    if (std.mem.eql(u8, languageId, "markdown")) try installMarkdownZigFence(grammar);
+    if (std.mem.eql(u8, languageId, "markdown")) try installMarkdownCodeFences(grammar);
     const parser = try allocator.create(tm.Parser);
     errdefer allocator.destroy(parser);
     parser.* = try tm.Parser.init(allocator, grammar);

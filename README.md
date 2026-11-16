@@ -260,8 +260,9 @@ TextMate tokenization:
   `scss`, `markdown`, `yaml`, `toml`, and `shellscript`/`bash`.
 - Languages that ship a grammar in the upstream checkout use VS Code's
   originals, embedded from `../vscode/extensions/*/syntaxes/*.tmLanguage.json`
-  at build time (`vscode-syntax`). `zig` and `toml` keep the pinned package's
-  grammars; the package is also the fallback when the checkout is unavailable.
+  at build time (`vscode-syntax`). `zig`, `toml` and `yaml` keep the pinned
+  package's grammars (the current VS Code YAML grammar does not tokenize with
+  this parser); the package is also the fallback when the checkout is absent.
 - Token colors come from VS Code's Dark+ theme
   (`theme-defaults/themes/dark_plus.json` and its `dark_vs.json` include).
   `TokenTheme` resolves the `tokenColors` rules (foreground and
@@ -271,9 +272,10 @@ TextMate tokenization:
   the token metadata but the terminal view uses the workspace background.
 - TextMate scopes still provide the standard token types (`comment`, `string`,
   `regexp`) used by bracket and language features.
-- Markdown fenced blocks tagged `zig` are enabled by a small injection grammar
-  (`src/support/markdownZigFence.tmLanguage.json`), because VS Code has no Zig
-  grammar or built-in Zig fence.
+- Markdown fenced blocks for every supported language are enabled by a small
+  fence grammar (`src/support/markdownCodeFences.tmLanguage.json`), including
+  aliases such as `js`, `ts`, `py`, `rs`, `yml`, `md`, `sh` and `c++`. VS
+  Code's built-in fence list does not cover Zig or TOML.
 - The pinned package's scope-selector evaluator is replaced at build time
   (`src/support/textmateScopes.zig`) so grammars with wildcard injection
   selectors (for example the HTML grammars loaded while parsing markdown)
