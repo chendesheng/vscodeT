@@ -320,6 +320,15 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
 
+    const markdown_tests = b.addTest(.{
+        .name = "markdown_tests",
+        .root_module = tests.root_module,
+        .filters = &.{"markdown"},
+    });
+    const run_markdown_tests = b.addRunArtifact(markdown_tests);
+    const markdown_test_step = b.step("test-markdown", "Run markdown/TextMate syntax tests");
+    markdown_test_step.dependOn(&run_markdown_tests.step);
+
     const ui_tests = b.addTest(.{
         .name = "ui_tests",
         .root_module = b.createModule(.{
