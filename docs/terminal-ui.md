@@ -877,8 +877,13 @@ Library constraints:
   projection/wrapping column.
 - The old `src/tui/screen.zig`/`render.zig` path is gone.
 - Multi-file editing keeps one `View` per tab and composites the active view's
-  cell grid below a one-row tab strip in `src/tui/workbench.zig`. This is a
-  terminal adaptation of the workbench editor part: `EditorGroupModel` owns
+  cell grid below a one-row tab strip in `src/tui/workbench.zig`. The portable
+  editor-part layers live at their upstream paths:
+  `src/vs/workbench/browser/parts/editor/editorPart.zig` owns the group
+  registry, grid and sash resize; `editorGroupView.zig` maps model editors to
+  tab views and drives the active pane; `editorPanes.zig` keeps the active pane
+  and page position. `src/tui/workbench.zig` keeps the terminal rendering and
+  input adaptation. `EditorGroupModel` owns
   tab order/MRU/preview/pinned/sticky state, `FileEditorInput` exposes each
   editor's path/dirty/save state, and `Tab` keeps one persistent
   view/contribution set per file. `ui.Surface.paintFrame` paints without

@@ -70,8 +70,9 @@ console API for raw mode, sizing and input polling.
   sash between them. Without support the glyph fallback keeps the gutter and
   box-drawing dividers. It does not import editor code.
 - Multi-file editing uses the ported workbench editor-group model
-  (`src/vs/workbench/common/editor/editorGroupModel.zig`) with a terminal tab
-  strip (`src/tui/tabBar.zig`, `src/tui/workbench.zig`). Each tab keeps its own
+  (`src/vs/workbench/common/editor/editorGroupModel.zig`), the editor part,
+  group view and pane layers (`src/vs/workbench/browser/parts/editor/`), and a
+  terminal tab strip (`src/tui/tabBar.zig`, `src/tui/workbench.zig`). Each tab keeps its own
   `Editor`, `View` and lazy editor contributions; only the active view is
   composited under the tab row, so switching tabs preserves scroll position and
   decorations. `Ctrl-W` closes the active tab (a dirty tab asks
@@ -603,9 +604,13 @@ Editor contributions:
   `src/vs/workbench/services/editor/common/editorGroupsService.zig` provides
   group creation/removal, active-group MRU ordering, typed `openEditor`
   resolution with `revealIfOpen`/`revealIfVisible`/`ForceReveal`/`Singleton`,
-  and multi-group serialization. `src/tui/workbench.zig` renders an oriented
-  split tree (a terminal adaptation of VS Code's `Grid`) with a tab row per
-  group and composites every pane into one frame. With cell borders each pane
+  and multi-group serialization. The upstream editor-part layers are ported at
+  `src/vs/workbench/browser/parts/editor/editorPart.zig` (group registry,
+  oriented grid, branch demotion, sash resize), `editorGroupView.zig`
+  (model-to-tab mapping, active tab, pane activation) and `editorPanes.zig`
+  (active pane, page position, size constraints); `src/tui/workbench.zig` is
+  the terminal adapter that renders the split tree with a tab row per group
+  and composites every pane into one frame. With cell borders each pane
   is outlined and the active pane's outline wins shared edges; the divider is
   a draggable sash, and a tab can be dragged into another pane or onto an edge
   to tile a new group. `Alt-\` splits horizontally, `Alt-Shift-\` vertically,

@@ -1,13 +1,13 @@
-//! The multi-file terminal workbench: an editor-part-like shell over the
-//! ported editor-groups service and `EditorGroupModel`.
+//! The multi-file terminal workbench: the TUI adapter over the ported
+//! workbench editor part, group views, panes and split grid.
 //!
-//! Upstream counterparts are `src/vs/workbench/browser/parts/editor/editorPart.ts`,
-//! `editorGroupView.ts`, `editorPanes.ts` and `src/vs/base/browser/ui/grid/grid.ts`.
-//! The split tree itself is the upstream-shaped port in
-//! `src/vs/base/browser/ui/grid/grid.zig`, and drop-zone decisions live in
-//! `src/vs/workbench/browser/parts/editor/editorDropTarget.zig`; this file
-//! remains the TUI editor-part adapter because the group views, panes and tab
-//! rows are terminal-specific.
+//! The portable counterparts are ported to their upstream paths:
+//! `editorPart.zig` (group registry, grid, branch demotion and sash math),
+//! `editorGroupView.zig` (tab-to-model mapping, active tab, pane activation)
+//! and `editorPanes.zig` (active pane and page position), plus
+//! `src/vs/base/browser/ui/grid/grid.zig` and `editorDropTarget.zig`. This file
+//! keeps only the terminal shell: rendering, input routing, the sidebar/search
+//! chrome and the CLI/editor services.
 //!
 //! Every group gets a tab row and an editor pane, groups are arranged in an
 //! oriented split tree, and the workbench composites all visible panes into one
@@ -36,6 +36,8 @@ const Io = std.Io;
 const ui = @import("ui");
 const grid_mod = @import("../vs/base/browser/ui/grid/grid.zig");
 const editor_drop_target = @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig");
+const editor_group_view = @import("../vs/workbench/browser/parts/editor/editorGroupView.zig");
+const editor_part = @import("../vs/workbench/browser/parts/editor/editorPart.zig");
 const tui = @import("./tui.zig");
 const Tab = @import("./tab.zig").Tab;
 const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
@@ -90,8 +92,6 @@ pub const Focus = enum { editor, sidebar };
 const inactive_pane_border = ui.Color{ .r = 70, .g = 70, .b = 70 };
 const active_pane_border = ui.Color{ .r = 0x4d, .g = 0x9b, .b = 0xd6 };
 const pane_border_width: u8 = 32;
-const min_pane_width: usize = 10;
-const min_pane_height: usize = 3;
 
 /// A tab drag can drop in the middle of a pane (move into that group) or on an
 /// edge (split that pane and move into the new group), mirroring the drop
@@ -102,42 +102,10 @@ const PendingTabDrag = struct { pane: *GroupPane, tab: *Tab, x: usize, y: usize 
 
 const LayoutNode = grid_mod.Node(*GroupPane);
 
-/// One editor group in the terminal editor part: the group model plus the tabs
-/// (views/controllers) and the cell rectangle it occupies.
-pub const GroupPane = struct {
-    group: *editor_groups.EditorGroup,
-    tabs: std.array_list.Managed(*Tab),
-    hits: std.array_list.Managed(tab_bar.Hit),
-    rect: ui.Rect = .{},
-
-    pub fn init(allocator: Allocator, group: *editor_groups.EditorGroup) GroupPane {
-        return .{
-            .group = group,
-            .tabs = std.array_list.Managed(*Tab).init(allocator),
-            .hits = std.array_list.Managed(tab_bar.Hit).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *GroupPane) void {
-        self.hits.deinit();
-        self.tabs.deinit();
-    }
-
-    pub fn activeTab(self: *const GroupPane) ?*Tab {
-        const active = self.group.model.activeEditor() orelse return null;
-        for (self.tabs.items) |tab| {
-            if (&tab.input.base == active) return tab;
-        }
-        return null;
-    }
-
-    pub fn tabForInput(self: *const GroupPane, input: *EditorInput) ?*Tab {
-        for (self.tabs.items) |tab| {
-            if (&tab.input.base == input) return tab;
-        }
-        return null;
-    }
-};
+/// One editor group in the terminal editor part: the ported group view holds
+/// the group model, the tabs (views/controllers), the tab-strip hit cache and
+/// the cell rectangle it occupies.
+pub const GroupPane = editor_group_view.EditorGroupView(*Tab);
 
 const editor_mod = @import("../vs/workbench/common/editor.zig");
 
@@ -148,14 +116,8 @@ pub const Workbench = struct {
     rows: usize,
 
     service: *editor_groups.EditorGroupsService,
-    panes: std.array_list.Managed(*GroupPane),
-    layout: *LayoutNode,
+    part: *editor_part.EditorPart(GroupPane),
     frame: ui.Frame,
-    /// The terminal implements the cell-border protocol: split gutters are
-    /// zero-width, panes get shared-edge outlines, and the dividers are sashes.
-    cell_borders: bool = false,
-    /// The split whose boundary is being dragged, if any.
-    active_sash: ?*LayoutNode = null,
     /// Tab drag state: pending until the pointer moves, then a live drop target.
     pending_tab_drag: ?PendingTabDrag = null,
     drag_tab: ?*Tab = null,
@@ -197,8 +159,6 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
-        self.cell_borders = false;
-        self.active_sash = null;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -219,20 +179,8 @@ pub const Workbench = struct {
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
-
-        self.panes = std.array_list.Managed(*GroupPane).init(allocator);
-        errdefer {
-            for (self.panes.items) |pane| {
-                for (pane.tabs.items) |tab| tab.deinit();
-                pane.deinit();
-                allocator.destroy(pane);
-            }
-            self.panes.deinit();
-        }
-
-        const pane = try self.createPane(self.service.activeGroup());
-        self.layout = try self.createLeaf(pane);
-        errdefer grid_mod.deinitRoot(*GroupPane, self.allocator, self.layout);
+        self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
+        errdefer self.part.deinit();
 
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
@@ -270,8 +218,6 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
-        self.cell_borders = false;
-        self.active_sash = null;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -293,24 +239,13 @@ pub const Workbench = struct {
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
 
-        self.panes = std.array_list.Managed(*GroupPane).init(allocator);
-        errdefer {
-            for (self.panes.items) |pane| {
-                for (pane.tabs.items) |tab| tab.deinit();
-                pane.deinit();
-                allocator.destroy(pane);
-            }
-            self.panes.deinit();
-        }
-
         const group = self.service.activeGroup();
         group.model.deinit();
         group.model = try group_mod.EditorGroupModel.initFromSerialized(allocator, .{}, data, registry);
         group.id = group.model.id;
 
-        const pane = try self.createPane(group);
-        self.layout = try self.createLeaf(pane);
-        errdefer grid_mod.deinitRoot(*GroupPane, self.allocator, self.layout);
+        self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
+        errdefer self.part.deinit();
 
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
@@ -321,13 +256,14 @@ pub const Workbench = struct {
         errdefer self.quick_access.deinit();
         self.layoutAll();
 
+        const pane = self.part.group_views.items[0];
         const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
         defer allocator.free(editors);
         for (editors) |input| {
             if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
             const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
             const tab = try Tab.initFromInput(allocator, file_input);
-            try addTabToPane(pane, tab);
+            try pane.addTab(tab);
             try self.history.add(file_input.editor.path);
         }
 
@@ -355,8 +291,6 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
-        self.cell_borders = false;
-        self.active_sash = null;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -377,16 +311,9 @@ pub const Workbench = struct {
 
         self.service = try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, data, registry, .{});
         errdefer self.service.deinit();
-
-        self.panes = std.array_list.Managed(*GroupPane).init(allocator);
-        errdefer {
-            for (self.panes.items) |pane| {
-                for (pane.tabs.items) |tab| tab.deinit();
-                pane.deinit();
-                allocator.destroy(pane);
-            }
-            self.panes.deinit();
-        }
+        self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
+        errdefer self.part.deinit();
+        try self.part.restoreGroups();
 
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
@@ -395,14 +322,8 @@ pub const Workbench = struct {
         errdefer self.history.deinit();
         errdefer self.commands.deinit();
         errdefer self.quick_access.deinit();
-        self.layout = undefined;
         for (self.service.groups.items, 0..) |group, index| {
-            const pane = try self.createPane(group);
-            if (index == 0) {
-                self.layout = try self.createLeaf(pane);
-            } else {
-                try grid_mod.splitRoot(*GroupPane, self.allocator, &self.layout, self.panes.items[index - 1], .horizontal, pane, false);
-            }
+            const pane = self.part.group_views.items[index];
 
             const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
             defer allocator.free(editors);
@@ -410,7 +331,7 @@ pub const Workbench = struct {
                 if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
                 const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
                 const tab = try Tab.initFromInput(allocator, file_input);
-                try addTabToPane(pane, tab);
+                try pane.addTab(tab);
                 try self.history.add(file_input.editor.path);
             }
         }
@@ -590,31 +511,14 @@ pub const Workbench = struct {
         if (self.configuration) |configuration| configuration.deinit();
         if (self.user_settings_path) |path| self.allocator.free(path);
         self.workspace.deinit();
-        for (self.panes.items) |pane| {
-            for (pane.tabs.items) |tab| tab.deinit();
-            pane.deinit();
-            self.allocator.destroy(pane);
-        }
-        self.panes.deinit();
-        grid_mod.deinitRoot(*GroupPane, self.allocator, self.layout);
+        // The part owns the group views; disposing it disposes the tab views.
+        self.part.deinit();
         self.frame.deinit();
         self.allocator.destroy(self);
     }
 
     fn editorHeight(rows: usize) usize {
         return @max(rows -| 1, 1);
-    }
-
-    fn createPane(self: *Workbench, group: *editor_groups.EditorGroup) !*GroupPane {
-        const pane = try self.allocator.create(GroupPane);
-        errdefer self.allocator.destroy(pane);
-        pane.* = GroupPane.init(self.allocator, group);
-        try self.panes.append(pane);
-        return pane;
-    }
-
-    fn createLeaf(self: *Workbench, pane: *GroupPane) !*LayoutNode {
-        return grid_mod.initNode(*GroupPane, self.allocator, pane);
     }
 
     fn sidebarWidth(self: *const Workbench) usize {
@@ -867,68 +771,14 @@ pub const Workbench = struct {
                 .h = @floatFromInt(self.rows),
             };
         }
-        grid_mod.layoutRoot(*GroupPane, self.layout, rect, self, paneGapCallback);
-        syncPaneRects(self.layout);
-        for (self.panes.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                tab.editor.setViewport(
-                    @max(ui.cell.snap(pane.rect.w), 1),
-                    editorHeight(@max(ui.cell.snap(pane.rect.h), 1)),
-                );
-                tab.view.resize() catch {};
-            }
-        }
-    }
-
-    /// Gutter cells between two panes. Cell borders need none: both panes put
-    /// a centred stroke on their own side of the shared edge. The glyph
-    /// fallback needs one divider column/row when there is room.
-    fn paneGap(self: *const Workbench, direction: SplitDirection, rect: ui.Rect) f64 {
-        if (self.cell_borders) return 0;
-        return switch (direction) {
-            .horizontal => if (rect.w >= 6) 1 else 0,
-            .vertical => if (rect.h >= 6) 1 else 0,
-        };
-    }
-
-    fn paneGapCallback(self: *const Workbench, direction: grid_mod.Orientation, rect: ui.Rect) f64 {
-        return self.paneGap(direction, rect);
-    }
-
-    fn syncPaneRects(node: *LayoutNode) void {
-        switch (node.kind) {
-            .leaf => |pane| pane.rect = node.rect,
-            .split => |split| {
-                syncPaneRects(split.first);
-                syncPaneRects(split.second);
-            },
-        }
-    }
-
-    /// Removes a leaf from the split tree and promotes its sibling, the
-    /// terminal equivalent of Grid's branch demotion when the last view leaves
-    /// a group. The root leaf is kept: the workbench always has one group.
-    fn removePaneFromLayout(self: *Workbench, target: *GroupPane) bool {
-        return grid_mod.removeRoot(*GroupPane, self.allocator, &self.layout, target);
+        self.part.layout(rect);
     }
 
     /// Removes an empty pane from the grid and the editor-group service,
     /// promoting its sibling. The last group is kept so the workbench always
     /// has a target for the next editor.
     fn collapseEmptyPane(self: *Workbench, pane: *GroupPane) void {
-        if (pane.tabs.items.len != 0 or self.service.count() <= 1) return;
-        self.active_sash = null;
-        if (!self.removePaneFromLayout(pane)) return;
-        self.service.removeGroup(pane.group) catch {};
-        for (self.panes.items, 0..) |candidate, index| {
-            if (candidate == pane) {
-                _ = self.panes.orderedRemove(index);
-                break;
-            }
-        }
-        pane.deinit();
-        self.allocator.destroy(pane);
-        self.layoutAll();
+        _ = self.part.collapseView(pane);
     }
 
     fn activeGroup(self: *Workbench) *editor_groups.EditorGroup {
@@ -936,14 +786,11 @@ pub const Workbench = struct {
     }
 
     fn paneForGroup(self: *Workbench, group: *editor_groups.EditorGroup) ?*GroupPane {
-        for (self.panes.items) |pane| {
-            if (pane.group == group) return pane;
-        }
-        return null;
+        return self.part.viewForGroup(group);
     }
 
     pub fn activePane(self: *Workbench) ?*GroupPane {
-        return self.paneForGroup(self.service.activeGroup());
+        return self.part.activeView();
     }
 
     pub fn activeTab(self: *Workbench) ?*Tab {
@@ -953,42 +800,12 @@ pub const Workbench = struct {
 
     pub fn tabCount(self: *Workbench) usize {
         var count: usize = 0;
-        for (self.panes.items) |pane| count += pane.tabs.items.len;
+        for (self.part.group_views.items) |pane| count += pane.tabs.items.len;
         return count;
     }
 
     pub fn groupCount(self: *const Workbench) usize {
         return self.service.count();
-    }
-
-    fn orderedTabs(pane: *GroupPane, allocator: Allocator, out: *std.array_list.Managed(*Tab)) !void {
-        const editors = try pane.group.model.getEditors(allocator, .SEQUENTIAL, false);
-        defer allocator.free(editors);
-        for (editors) |input| {
-            for (pane.tabs.items) |tab| {
-                if (&tab.input.base == input) {
-                    try out.append(tab);
-                    break;
-                }
-            }
-        }
-    }
-
-    fn activeIndex(pane: *GroupPane, ordered: []const *Tab) usize {
-        const active = pane.group.model.activeEditor() orelse return 0;
-        for (ordered, 0..) |tab, index| {
-            if (&tab.input.base == active) return index;
-        }
-        return 0;
-    }
-
-    fn addTabToPane(pane: *GroupPane, tab: *Tab) !void {
-        try pane.tabs.append(tab);
-        tab.editor.setViewport(
-            @max(ui.cell.snap(pane.rect.w), 1),
-            editorHeight(@max(ui.cell.snap(pane.rect.h), 1)),
-        );
-        try tab.view.resize();
     }
 
     /// Opens a path through the editor-groups service. If the resource is
@@ -1016,6 +833,7 @@ pub const Workbench = struct {
         if (!opened.result.is_new) {
             input.deinit();
             if (pane.tabForInput(opened.result.editor)) |tab| {
+                try pane.activateTab(tab);
                 try tab.ensureControllers();
                 tab.view.focusEditor();
             }
@@ -1024,7 +842,7 @@ pub const Workbench = struct {
         }
 
         const tab = try Tab.initFromInput(self.allocator, input);
-        try addTabToPane(pane, tab);
+        try pane.addTab(tab);
         try tab.ensureControllers();
         try self.history.add(path);
     }
@@ -1033,11 +851,11 @@ pub const Workbench = struct {
         const pane = self.activePane() orelse return;
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
         defer ordered.deinit();
-        try orderedTabs(pane, self.allocator, &ordered);
+        try pane.orderedTabs(self.allocator, &ordered);
         if (index >= ordered.items.len) return;
 
         const tab = ordered.items[index];
-        _ = try pane.group.model.setActive(&tab.input.base);
+        try pane.activateTab(tab);
         try tab.ensureControllers();
         tab.view.focusEditor();
         tab.onEditorChanged(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
@@ -1050,10 +868,10 @@ pub const Workbench = struct {
         const pane = self.activePane() orelse return;
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
         defer ordered.deinit();
-        try orderedTabs(pane, self.allocator, &ordered);
+        try pane.orderedTabs(self.allocator, &ordered);
         if (ordered.items.len == 0) return;
 
-        const current: isize = @intCast(activeIndex(pane, ordered.items));
+        const current: isize = @intCast(pane.activeIndex(ordered.items));
         const count: isize = @intCast(ordered.items.len);
         const next: isize = @mod(current + delta, count);
         try self.activateIndex(@intCast(next));
@@ -1077,6 +895,7 @@ pub const Workbench = struct {
             const pane = self.paneForGroup(candidate) orelse continue;
             if (pane.tabs.items.len == 0) continue;
             self.service.activateGroup(candidate);
+            pane.syncActivePane();
             if (self.activeTab()) |tab| try tab.ensureControllers();
             self.revealActiveEditor();
             return;
@@ -1085,30 +904,19 @@ pub const Workbench = struct {
 
     /// Splits the active group and moves the active tab into the new group.
     pub fn splitActive(self: *Workbench, direction: SplitDirection) !void {
-        self.active_sash = null;
+        self.part.active_sash = null;
         self.clearTabDrag();
         const source = self.activePane() orelse return;
         const tab = source.activeTab() orelse return;
 
-        const new_group = try self.service.addGroup(
-            source.group,
-            if (direction == .horizontal) .RIGHT else .DOWN,
-        );
-        const new_pane = try self.createPane(new_group);
+        const new_pane = try self.part.splitGroup(source, direction, false);
 
         _ = try source.group.model.closeEditor(&tab.input.base, .MOVE, false);
-        for (source.tabs.items, 0..) |candidate, index| {
-            if (candidate == tab) {
-                _ = source.tabs.orderedRemove(index);
-                break;
-            }
-        }
-        try new_pane.tabs.append(tab);
-        _ = try new_group.model.openEditor(&tab.input.base, .{ .pinned = true, .active = true });
+        _ = source.removeTab(tab);
+        source.syncActivePane();
+        _ = try new_pane.group.model.openEditor(&tab.input.base, .{ .pinned = true, .active = true });
+        try new_pane.addTab(tab);
 
-        try grid_mod.splitRoot(*GroupPane, self.allocator, &self.layout, source, direction, new_pane, false);
-
-        self.service.activateGroup(new_group);
         self.layoutAll();
         if (self.activeTab()) |active| {
             try active.ensureControllers();
@@ -1117,7 +925,7 @@ pub const Workbench = struct {
     }
 
     pub fn closeActive(self: *Workbench) !bool {
-        self.active_sash = null;
+        self.part.active_sash = null;
         self.clearTabDrag();
         const pane = self.activePane() orelse return false;
         const tab = pane.activeTab() orelse return false;
@@ -1125,12 +933,8 @@ pub const Workbench = struct {
         if (!tab.editor.requestCloseTab()) return false;
 
         _ = try pane.group.model.closeEditor(&tab.input.base, .UNKNOWN, true);
-        for (pane.tabs.items, 0..) |candidate, index| {
-            if (candidate == tab) {
-                _ = pane.tabs.orderedRemove(index);
-                break;
-            }
-        }
+        _ = pane.removeTab(tab);
+        pane.syncActivePane();
         tab.deinit();
 
         if (self.tabCount() == 0) return false;
@@ -1233,7 +1037,7 @@ pub const Workbench = struct {
     }
 
     pub fn hasDirtyTabs(self: *const Workbench) bool {
-        for (self.panes.items) |pane| {
+        for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 if (tab.editor.isDirty()) return true;
             }
@@ -1257,63 +1061,26 @@ pub const Workbench = struct {
     }
 
     fn paneAt(self: *Workbench, x: usize, y: usize) ?*GroupPane {
-        for (self.panes.items) |pane| {
-            if (x >= ui.cell.snap(pane.rect.x) and x < ui.cell.snap(pane.rect.right()) and
-                y >= ui.cell.snap(pane.rect.y) and y < ui.cell.snap(pane.rect.bottom()))
-            {
-                return pane;
-            }
-        }
-        return null;
-    }
-
-    /// The split boundary under a cell, if any. With cell borders the shared
-    /// edge is between two cells, so both adjacent columns/rows are in the hit
-    /// zone; the glyph fallback only has the divider cell.
-    fn dividerAt(self: *const Workbench, x: usize, y: usize) ?*LayoutNode {
-        return self.findDivider(self.layout, x, y);
-    }
-
-    fn findDivider(self: *const Workbench, node: *LayoutNode, x: usize, y: usize) ?*LayoutNode {
-        switch (node.kind) {
-            .leaf => return null,
-            .split => |split| {
-                const rect = node.rect;
-                if (split.direction == .horizontal) {
-                    const edge = ui.cell.snap(split.first.rect.right());
-                    const on_edge = x == edge or (self.cell_borders and x + 1 == edge);
-                    if (on_edge and y >= ui.cell.snap(rect.y) and y < ui.cell.snap(rect.bottom())) {
-                        return node;
-                    }
-                } else {
-                    const edge = ui.cell.snap(split.first.rect.bottom());
-                    const on_edge = y == edge or (self.cell_borders and y + 1 == edge);
-                    if (on_edge and x >= ui.cell.snap(rect.x) and x < ui.cell.snap(rect.right())) {
-                        return node;
-                    }
-                }
-                return self.findDivider(split.first, x, y) orelse self.findDivider(split.second, x, y);
-            },
-        }
+        return self.part.viewAt(x, y);
     }
 
     /// Starts, updates and ends a sash drag. Called before tab and editor mouse
     /// handling; a drag consumes every event until the button is released.
     pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (self.drag_tab != null or self.pending_tab_drag != null) return false;
-        if (self.active_sash) |split| {
+        if (self.part.active_sash) |split| {
             switch (event.kind) {
                 .move => {
                     if (event.button == .left) {
-                        self.resizeSash(split, event.x, event.y);
+                        self.part.resizeSash(split, event.x, event.y);
                     } else {
-                        self.active_sash = null;
+                        self.part.active_sash = null;
                     }
                     return true;
                 },
                 .up, .click => {
-                    self.resizeSash(split, event.x, event.y);
-                    self.active_sash = null;
+                    self.part.resizeSash(split, event.x, event.y);
+                    self.part.active_sash = null;
                     return true;
                 },
                 .down => return true,
@@ -1325,49 +1092,18 @@ pub const Workbench = struct {
         if (event.kind != .down or event.button != .left) {
             // Keep the editor from treating a click on the sash as a caret
             // placement; hover motion over the line is also consumed.
-            return event.kind != .wheel and self.dividerAt(event.x, event.y) != null;
+            return event.kind != .wheel and self.part.dividerAt(event.x, event.y) != null;
         }
 
-        const split = self.dividerAt(event.x, event.y) orelse return false;
-        self.active_sash = split;
+        const split = self.part.dividerAt(event.x, event.y) orelse return false;
+        self.part.active_sash = split;
         return true;
-    }
-
-    fn resizeSash(self: *Workbench, node: *LayoutNode, x: usize, y: usize) void {
-        const split = switch (node.kind) {
-            .split => |*value| value,
-            .leaf => return,
-        };
-        const rect = node.rect;
-        const gap = self.paneGap(split.direction, rect);
-        if (split.direction == .horizontal) {
-            const available = rect.w - gap;
-            if (available < 2 * min_pane_width) return;
-            const target = @as(f64, @floatFromInt(x)) - rect.x;
-            const clamped = std.math.clamp(
-                target,
-                @as(f64, @floatFromInt(min_pane_width)),
-                available - @as(f64, @floatFromInt(min_pane_width)),
-            );
-            split.ratio = clamped / available;
-        } else {
-            const available = rect.h - gap;
-            if (available < 2 * min_pane_height) return;
-            const target = @as(f64, @floatFromInt(y)) - rect.y;
-            const clamped = std.math.clamp(
-                target,
-                @as(f64, @floatFromInt(min_pane_height)),
-                available - @as(f64, @floatFromInt(min_pane_height)),
-            );
-            split.ratio = clamped / available;
-        }
-        self.layoutAll();
     }
 
     fn orderedTabAt(self: *Workbench, pane: *GroupPane, index: usize) ?*Tab {
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
         defer ordered.deinit();
-        orderedTabs(pane, self.allocator, &ordered) catch return null;
+        pane.orderedTabs(self.allocator, &ordered) catch return null;
         if (index >= ordered.items.len) return null;
         return ordered.items[index];
     }
@@ -1414,14 +1150,10 @@ pub const Workbench = struct {
 
     fn moveTabToPane(self: *Workbench, source: *GroupPane, dest: *GroupPane, tab: *Tab) !void {
         _ = try source.group.model.closeEditor(&tab.input.base, .MOVE, false);
-        for (source.tabs.items, 0..) |candidate, index| {
-            if (candidate == tab) {
-                _ = source.tabs.orderedRemove(index);
-                break;
-            }
-        }
-        try dest.tabs.append(tab);
+        _ = source.removeTab(tab);
+        source.syncActivePane();
         _ = try dest.group.model.openEditor(&tab.input.base, .{ .pinned = true, .active = true });
+        try dest.addTab(tab);
         self.service.activateGroup(dest.group);
         try tab.ensureControllers();
         tab.view.focusEditor();
@@ -1442,26 +1174,18 @@ pub const Workbench = struct {
 
         const direction: SplitDirection = editor_drop_target.orientation(zone);
         const new_first = editor_drop_target.newFirst(zone);
-        const new_group = try self.service.addGroup(target.group, switch (zone) {
-            .left => .LEFT,
-            .right => .RIGHT,
-            .top => .UP,
-            .bottom => .DOWN,
-            .center => unreachable,
-        });
-        const new_pane = try self.createPane(new_group);
-        try self.moveTabToPane(source, new_pane, tab);
 
         // Insert before collapsing the source: if source and target are
         // siblings, collapsing first would promote and destroy the target leaf.
-        try grid_mod.splitRoot(*GroupPane, self.allocator, &self.layout, target, direction, new_pane, new_first);
-        self.service.activateGroup(new_group);
+        const new_pane = try self.part.splitGroup(target, direction, new_first);
+        try self.moveTabToPane(source, new_pane, tab);
+
         self.collapseEmptyPane(source);
         self.layoutAll();
     }
 
     fn renderDropTarget(self: *Workbench, target: DropTarget) void {
-        if (!self.cell_borders) return;
+        if (!self.part.cell_borders) return;
         const stroke = ui.cell_border.Stroke{
             .width = 64,
             .color = .{ .rgb = .{ .r = 0xe5, .g = 0xc0, .b = 0x7b } },
@@ -1682,17 +1406,17 @@ pub const Workbench = struct {
             }
         }
 
-        for (self.panes.items) |pane| {
+        for (self.part.group_views.items) |pane| {
             try self.renderPane(pane);
         }
-        if (self.cell_borders) {
+        if (self.part.cell_borders) {
             // Each pane is outlined on its own cell edges. Adjacent panes put
             // strokes on opposite cells of the shared boundary and the
             // terminal merges them into one line, so no gutter is needed.
-            for (self.panes.items) |pane| self.renderPaneBorder(pane);
+            for (self.part.group_views.items) |pane| self.renderPaneBorder(pane);
             if (self.drag_target) |target| self.renderDropTarget(target);
         } else {
-            self.renderDividers(self.layout);
+            self.renderDividers(self.part.root);
         }
         try self.quick_access.render(&self.frame.next);
 
@@ -1717,7 +1441,7 @@ pub const Workbench = struct {
 
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
         defer ordered.deinit();
-        try orderedTabs(pane, self.allocator, &ordered);
+        try pane.orderedTabs(self.allocator, &ordered);
 
         const infos = try self.allocator.alloc(tab_bar.TabInfo, ordered.items.len);
         defer self.allocator.free(infos);
@@ -1731,7 +1455,7 @@ pub const Workbench = struct {
         try tab_bar.draw(
             &self.frame.next,
             infos,
-            activeIndex(pane, ordered.items),
+            pane.activeIndex(ordered.items),
             x,
             y,
             width,
@@ -1848,12 +1572,12 @@ pub const Workbench = struct {
     }
 
     pub fn resize(self: *Workbench, cols: usize, rows: usize) !void {
-        self.active_sash = null;
+        self.part.active_sash = null;
         self.clearTabDrag();
         const new_cols = @max(cols, 1);
         const new_rows = @max(rows, 1);
         if (new_cols == self.cols and new_rows == self.rows) {
-            for (self.panes.items) |pane| {
+            for (self.part.group_views.items) |pane| {
                 for (pane.tabs.items) |tab| try tab.refresh();
             }
             return;
@@ -1873,9 +1597,7 @@ pub const Workbench = struct {
     /// Hosts call this after the terminal capability probe. Cell borders keep
     /// the split gutters from consuming a column/row; the fallback keeps them.
     pub fn setCellBorders(self: *Workbench, enabled: bool) void {
-        if (self.cell_borders == enabled) return;
-        self.cell_borders = enabled;
-        self.layoutAll();
+        self.part.setCellBorders(enabled);
     }
 
     pub fn syncCursor(self: *Workbench, out: *std.Io.Writer) !void {
@@ -2117,7 +1839,7 @@ fn searchOpenMatch(context: *anyopaque, path: []const u8, range: ?Range) anyerro
 
 fn searchHighlightRange(context: *anyopaque, path: []const u8, range: ?Range) void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    for (self.panes.items) |pane| {
+    for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
             if (range != null and std.mem.eql(u8, tab.editor.path, path)) {
                 const decorations = [_]editorBrowser.Decoration{.{ .range = range.?, .kind = .search_range_highlight }};
@@ -2131,7 +1853,7 @@ fn searchHighlightRange(context: *anyopaque, path: []const u8, range: ?Range) vo
 
 fn searchReadFile(context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?[]u8 {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    for (self.panes.items) |pane| {
+    for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
             if (!std.mem.eql(u8, tab.editor.path, path)) continue;
             var value = try tab.editor.model.getValue(null, false);
@@ -2149,7 +1871,7 @@ fn searchExtraFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
         for (paths.items) |path| allocator.free(path);
         paths.deinit();
     }
-    for (self.panes.items) |pane| {
+    for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
             if (self.workspace.isInsideWorkspace(tab.editor.path)) continue;
             var duplicate = false;
@@ -2172,7 +1894,7 @@ fn searchFreePaths(_: *anyopaque, allocator: Allocator, paths: [][]u8) void {
 
 fn searchApplyEdits(context: *anyopaque, path: []const u8, edits: []const replace_types.Edit) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    for (self.panes.items) |pane| {
+    for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
             if (!pathsEqual(tab.editor.path, path)) continue;
             const converted = try self.allocator.alloc(TextEdit, edits.len);
@@ -2232,7 +1954,7 @@ fn offsetAt(starts: []const usize, line: usize, column: usize) usize {
 
 fn searchSaveFile(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    for (self.panes.items) |pane| {
+    for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
             if (pathsEqual(tab.editor.path, path)) {
                 try tab.editor.save();
@@ -2443,8 +2165,8 @@ test "Workbench: split moves the active tab into a second group" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "split_b.txt") != null);
 
     // The original group still holds the other tab.
-    const first_pane = workbench.panes.items[0];
-    const second_pane = workbench.panes.items[1];
+    const first_pane = workbench.part.group_views.items[0];
+    const second_pane = workbench.part.group_views.items[1];
     try std.testing.expectEqual(@as(usize, 1), first_pane.tabs.items.len);
     try std.testing.expectEqual(@as(usize, 1), second_pane.tabs.items.len);
 
@@ -2470,8 +2192,8 @@ test "Workbench: cell borders remove the split gutter" {
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
 
-    const first = workbench.panes.items[0];
-    const second = workbench.panes.items[1];
+    const first = workbench.part.group_views.items[0];
+    const second = workbench.part.group_views.items[1];
     // The fallback reserves one gutter column between the panes.
     try std.testing.expectEqual(ui.cell.snap(first.rect.right()) + 1, ui.cell.snap(second.rect.x));
 
@@ -2540,21 +2262,21 @@ test "Workbench: sash drag resizes the split" {
     try workbench.splitActive(.horizontal);
     workbench.setCellBorders(true);
 
-    try std.testing.expectEqual(@as(usize, 25), ui.cell.snap(workbench.layout.kind.split.first.rect.w));
-    const boundary = ui.cell.snap(workbench.layout.kind.split.first.rect.right());
+    try std.testing.expectEqual(@as(usize, 25), ui.cell.snap(workbench.part.root.kind.split.first.rect.w));
+    const boundary = ui.cell.snap(workbench.part.root.kind.split.first.rect.right());
 
     var down = ui.MouseEvent{ .kind = .down, .x = boundary, .y = 2, .button = .left };
     try std.testing.expect(workbench.handleSashMouse(&down));
-    try std.testing.expect(workbench.active_sash != null);
+    try std.testing.expect(workbench.part.active_sash != null);
 
     var move = ui.MouseEvent{ .kind = .move, .x = 30, .y = 2, .button = .left };
     try std.testing.expect(workbench.handleSashMouse(&move));
-    try std.testing.expectEqual(@as(f64, 0.6), workbench.layout.kind.split.ratio);
-    try std.testing.expectEqual(@as(usize, 30), ui.cell.snap(workbench.layout.kind.split.first.rect.w));
+    try std.testing.expectEqual(@as(f64, 0.6), workbench.part.root.kind.split.ratio);
+    try std.testing.expectEqual(@as(usize, 30), ui.cell.snap(workbench.part.root.kind.split.first.rect.w));
 
     var up = ui.MouseEvent{ .kind = .up, .x = 30, .y = 2, .button = .left };
     try std.testing.expect(workbench.handleSashMouse(&up));
-    try std.testing.expect(workbench.active_sash == null);
+    try std.testing.expect(workbench.part.active_sash == null);
 }
 
 test "Workbench: closing the last tab collapses the empty group" {
@@ -2573,13 +2295,13 @@ test "Workbench: closing the last tab collapses the empty group" {
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
-    try std.testing.expectEqual(@as(usize, 2), workbench.panes.items.len);
+    try std.testing.expectEqual(@as(usize, 2), workbench.part.group_views.items.len);
 
     _ = try workbench.closeActive();
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
-    try std.testing.expectEqual(@as(usize, 1), workbench.panes.items.len);
+    try std.testing.expectEqual(@as(usize, 1), workbench.part.group_views.items.len);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
-    try std.testing.expectEqual(@as(usize, 50), ui.cell.snap(workbench.layout.rect.w));
+    try std.testing.expectEqual(@as(usize, 50), ui.cell.snap(workbench.part.root.rect.w));
 }
 
 test "Workbench: dragging a tab into a pane moves it there" {
@@ -2603,8 +2325,8 @@ test "Workbench: dragging a tab into a pane moves it there" {
     defer out.deinit();
     try workbench.render(&out.writer);
 
-    const source = workbench.panes.items[1];
-    const target = workbench.panes.items[0];
+    const source = workbench.part.group_views.items[1];
+    const target = workbench.part.group_views.items[0];
     const tab_x = source.hits.items[0].start;
     const tab_y = ui.cell.snap(source.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .left };
@@ -2624,7 +2346,7 @@ test "Workbench: dragging a tab into a pane moves it there" {
     try std.testing.expect(workbench.handleTabDragMouse(&up));
 
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
-    try std.testing.expectEqual(@as(usize, 1), workbench.panes.items.len);
+    try std.testing.expectEqual(@as(usize, 1), workbench.part.group_views.items.len);
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
 }
 
@@ -2648,7 +2370,7 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
     defer out.deinit();
     try workbench.render(&out.writer);
 
-    const pane = workbench.panes.items[0];
+    const pane = workbench.part.group_views.items[0];
     const tab_x = pane.hits.items[0].start;
     const tab_y = ui.cell.snap(pane.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .left };
@@ -2669,10 +2391,10 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
     try std.testing.expect(workbench.handleTabDragMouse(&up));
 
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
-    try std.testing.expectEqual(@as(usize, 2), workbench.panes.items.len);
+    try std.testing.expectEqual(@as(usize, 2), workbench.part.group_views.items.len);
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
-    const first = workbench.panes.items[0];
-    const second = workbench.panes.items[1];
+    const first = workbench.part.group_views.items[0];
+    const second = workbench.part.group_views.items[1];
     try std.testing.expectEqual(ui.cell.snap(first.rect.right()), ui.cell.snap(second.rect.x));
 }
 
@@ -2796,7 +2518,7 @@ test "Workbench: sidebar renders and opens a file" {
     defer allocator.free(root);
     try workbench.initSidebar(root);
     workbench.focusSidebar();
-    try std.testing.expect(workbench.panes.items[0].rect.x > 0);
+    try std.testing.expect(workbench.part.group_views.items[0].rect.x > 0);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();

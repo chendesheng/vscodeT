@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
+const editor_group_view = @import("../vs/workbench/browser/parts/editor/editorGroupView.zig");
 
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
@@ -16,11 +17,8 @@ pub const TabInfo = struct {
     dirty: bool = false,
 };
 
-pub const Hit = struct {
-    start: usize,
-    end: usize,
-    index: usize,
-};
+/// The terminal tab strip's hit rectangle; the group view keeps this cache.
+pub const Hit = editor_group_view.TabHit;
 
 const active_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 245, .g = 245, .b = 245 }),

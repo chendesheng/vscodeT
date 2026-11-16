@@ -15,6 +15,7 @@ const ui = @import("ui");
 const Editor = @import("./editor.zig").Editor;
 const View = @import("./view.zig").View;
 const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
+const EditorInput = @import("../vs/workbench/common/editor/editorInput.zig").EditorInput;
 const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
 const word_character_classifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
@@ -108,6 +109,19 @@ pub const Tab = struct {
 
     pub fn refresh(self: *Tab) !void {
         try self.view.refresh();
+    }
+
+    /// The tab's entry in the ported `EditorGroupModel`; the group view maps
+    /// model editors to tab views through this accessor.
+    pub fn editorInput(self: *Tab) *EditorInput {
+        return &self.input.base;
+    }
+
+    /// Lays the editor view out in the group pane. The height is the editor
+    /// content height; the tab strip row is owned by the workbench.
+    pub fn layoutCells(self: *Tab, width: usize, height: usize) void {
+        self.editor.setViewport(@max(width, 1), @max(height, 1));
+        self.view.resize() catch {};
     }
 
     pub fn deinit(self: *Tab) void {

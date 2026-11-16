@@ -1,5 +1,7 @@
 comptime {
     _ = @import("./vs/workbench/browser/parts/editor/editorDropTarget.zig");
+    _ = @import("./vs/workbench/browser/parts/editor/editorPanes.zig");
+    _ = @import("./vs/workbench/browser/parts/editor/editorGroupView.zig");
     _ = @import("./vs/base/test/browser/ui/grid/grid.test.zig");
     _ = @import("./watcher_tests.zig");
     _ = @import("./vs/base/common/glob.zig");
