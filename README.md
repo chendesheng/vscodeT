@@ -86,8 +86,11 @@ Notes for the Zig 0.17 port:
   and `explorer.excludeGitIgnore` controls the ignore-file filtering. The TUI
   default for that setting is on, unlike upstream's off default, because the
   Explorer hid ignored entries before the configuration service existed;
-  workspace settings can turn it off. `Ctrl-B` toggles the side panel and
-  `Escape` returns focus to the editor. The generic VS Code list/tree view is
+  workspace settings can turn it off. `explorer.autoReveal` is honored, and
+  opening or activating a file selects it in the Explorer without moving focus;
+  directory twisties toggle on click while the rest of the row only selects.
+  `Ctrl-B` toggles the side panel and `Escape` returns focus to the editor. The
+  generic VS Code list/tree view is
   being replaced in layers under `src/vs/base/browser/ui/list` and
   `src/vs/base/browser/ui/tree`: `rangeMap`, the virtualized `ListView`,
   `ListWidget`, the index/object tree models and a terminal `AbstractTree`.

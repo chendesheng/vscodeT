@@ -708,6 +708,22 @@ pub const Workbench = struct {
         );
     }
 
+    fn autoRevealEnabled(self: *const Workbench, resource: []const u8) bool {
+        const configuration = self.configuration orelse return true;
+        const value = configuration.getValue("explorer.autoReveal", .{ .resource = resource }) orelse
+            return true;
+        return switch (value.*) {
+            .bool => |enabled| enabled,
+            else => true,
+        };
+    }
+
+    fn revealActiveEditor(self: *Workbench) void {
+        const tab = self.activeTab() orelse return;
+        if (!self.autoRevealEnabled(tab.input.editor.path)) return;
+        if (self.sidebar) |sidebar| sidebar.revealPath(tab.input.editor.path) catch {};
+    }
+
     /// Test/standalone helper: set a single-folder workspace and open the
     /// Explorer on it.
     pub fn initSidebar(self: *Workbench, root_path: []const u8) !void {
@@ -1047,7 +1063,9 @@ pub const Workbench = struct {
         );
 
         const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
-        if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
+        if (self.autoRevealEnabled(path)) {
+            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
+        }
         if (!opened.result.is_new) {
             input.deinit();
             if (pane.tabForInput(opened.result.editor)) |tab| {
@@ -1078,6 +1096,7 @@ pub const Workbench = struct {
         tab.onEditorChanged(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
         try tab.refresh();
         try self.history.add(tab.input.editor.path);
+        self.revealActiveEditor();
     }
 
     pub fn switchTab(self: *Workbench, delta: isize) !void {
@@ -1112,6 +1131,7 @@ pub const Workbench = struct {
             if (pane.tabs.items.len == 0) continue;
             self.service.activateGroup(candidate);
             if (self.activeTab()) |tab| try tab.ensureControllers();
+            self.revealActiveEditor();
             return;
         }
     }
@@ -3140,6 +3160,67 @@ test "Workbench: opening a file reveals it in the Explorer" {
     const selected = workbench.sidebar.?.selectedNode().?;
     try std.testing.expectEqualStrings("revealed.txt", selected.name);
     try std.testing.expect(workbench.sidebar.?.isExpanded(selected.parent.?));
+}
+
+test "Workbench: explorer.autoReveal false disables selection" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".vscode");
+    var settings = try tmp.dir.createFile(io, ".vscode/settings.json", .{});
+    try settings.writeStreamingAll(io, "{\"explorer.autoReveal\": false}");
+    settings.close(io);
+    var file = try tmp.dir.createFile(io, "no_reveal.txt", .{});
+    try file.writeStreamingAll(io, "x");
+    file.close(io);
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const path = try std.fmt.allocPrint(allocator, "{s}/no_reveal.txt", .{root});
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.openPath(path);
+
+    const selected = workbench.sidebar.?.selectedNode().?;
+    try std.testing.expect(!std.mem.eql(u8, selected.name, "no_reveal.txt"));
+}
+
+test "Workbench: switching tabs reveals the active file" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var a = try tmp.dir.createFile(io, "a.txt", .{});
+    try a.writeStreamingAll(io, "a");
+    a.close(io);
+    var b = try tmp.dir.createFile(io, "b.txt", .{});
+    try b.writeStreamingAll(io, "b");
+    b.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const path_a = try std.fmt.allocPrint(allocator, "{s}/a.txt", .{root});
+    defer allocator.free(path_a);
+    const path_b = try std.fmt.allocPrint(allocator, "{s}/b.txt", .{root});
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.openPath(path_a);
+    try workbench.openPath(path_b);
+    try std.testing.expectEqualStrings("b.txt", workbench.sidebar.?.selectedNode().?.name);
+
+    try workbench.switchTab(-1);
+    try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("a.txt", workbench.sidebar.?.selectedNode().?.name);
 }
 
 test "Workbench: quick open renders and an outside click only closes it" {

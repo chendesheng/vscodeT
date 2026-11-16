@@ -234,6 +234,11 @@ pub const Sidebar = struct {
 
         const node = self.tree_view.selection() orelse return null;
         const item = node.element orelse return null;
+        if (item.is_directory) {
+            const visual_depth = node.depth -| 1;
+            const twistie_x = left + 2 + visual_depth * 2;
+            if (x != twistie_x) return null;
+        }
         return self.toggle(item);
     }
 
@@ -343,7 +348,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const TreeModel.N
 
     var col = row.x + 2;
     var indent: usize = 0;
-    const indent_width = node.depth * 2;
+    const indent_width = (node.depth -| 1) * 2;
     while (indent < indent_width and col < row.x + row.width) : (indent += 1) {
         row.grid.putSpace(col, row.y, paint);
         col += 1;
@@ -492,4 +497,32 @@ test "explorer tree sidebar: revealPath expands ancestors and selects the file" 
     try std.testing.expectEqualStrings("deep.txt", selected.name);
     try std.testing.expect(sidebar.isExpanded(selected.parent.?));
     try std.testing.expect(sidebar.isExpanded(selected.parent.?.parent.?));
+}
+
+test "explorer tree sidebar: directory rows only toggle from the twistie" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "alpha");
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    var grid = try ui.CellGrid.init(allocator, 24, 6);
+    defer grid.deinit();
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 6 }, true);
+
+    const alpha = sidebar.selectedNode().?;
+    try std.testing.expectEqualStrings("alpha", alpha.name);
+    _ = try sidebar.handleClick(5, 1);
+    try std.testing.expect(!sidebar.isExpanded(alpha));
+    _ = try sidebar.handleClick(2, 1);
+    try std.testing.expect(sidebar.isExpanded(alpha));
 }
