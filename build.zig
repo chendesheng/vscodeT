@@ -230,19 +230,17 @@ fn vscodeSyntaxAssets(
         source.appendSlice(line) catch @panic("OOM");
     }
 
+    _ = files.add(
+        "grammars/markdown-zig-fence.tmLanguage.json",
+        @embedFile("src/support/markdownZigFence.tmLanguage.json"),
+    );
     source.appendSlice(
+        \\    .{ .language = "", .scope = "markdown.zig.fenced", .data = @embedFile("grammars/markdown-zig-fence.tmLanguage.json") },
         \\};
         \\
         \\pub fn scopeForLanguage(language: []const u8) ?[]const u8 {
         \\    inline for (grammars) |grammar| {
         \\        if (grammar.language.len > 0 and std.mem.eql(u8, grammar.language, language)) return grammar.scope;
-        \\    }
-        \\    return null;
-        \\}
-        \\
-        \\pub fn dataForScope(scope: []const u8) ?[]const u8 {
-        \\    inline for (grammars) |grammar| {
-        \\        if (std.mem.eql(u8, grammar.scope, scope)) return grammar.data;
         \\    }
         \\    return null;
         \\}

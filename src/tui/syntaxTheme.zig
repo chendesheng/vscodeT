@@ -258,6 +258,24 @@ test "syntax theme: markdown inline code and bold use dark+ styles" {
         }
     }
     try std.testing.expect(saw_bold);
+
+    var fenced = try TestModel.init(std.testing.allocator, "```zig\nconst x = 1;\n```\n", "markdown");
+    defer fenced.deinit();
+    fenced.model.forceTokenization(3);
+    var fenced_tokens = try fenced.model.tokenization().getLineTokens(2);
+    defer fenced_tokens.deinit();
+
+    var saw_fenced_const = false;
+    for (0..fenced_tokens.getCount()) |i| {
+        if (std.mem.eql(u8, fenced_tokens.getTokenText(i), "const")) {
+            saw_fenced_const = true;
+            const color = theme.theme.getColorMap()[fenced_tokens.getForeground(i)];
+            try std.testing.expectEqual(@as(u8, 0x56), color.r);
+            try std.testing.expectEqual(@as(u8, 0x9C), color.g);
+            try std.testing.expectEqual(@as(u8, 0xD6), color.b);
+        }
+    }
+    try std.testing.expect(saw_fenced_const);
 }
 
 test "syntax theme: editor paints the dark+ colors" {

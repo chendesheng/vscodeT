@@ -271,6 +271,9 @@ TextMate tokenization:
   the token metadata but the terminal view uses the workspace background.
 - TextMate scopes still provide the standard token types (`comment`, `string`,
   `regexp`) used by bracket and language features.
+- Markdown fenced blocks tagged `zig` are enabled by a small injection grammar
+  (`src/support/markdownZigFence.tmLanguage.json`), because VS Code has no Zig
+  grammar or built-in Zig fence.
 - The pinned package's scope-selector evaluator is replaced at build time
   (`src/support/textmateScopes.zig`) so grammars with wildcard injection
   selectors (for example the HTML grammars loaded while parsing markdown)
