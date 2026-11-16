@@ -39,18 +39,24 @@ const Args = struct {
 /// Parses `--preview`, `--session <file>` and the remaining paths.
 /// `--preview` is only valid with exactly one path; `--session` restores the
 /// saved group when the file exists and otherwise opens the given paths.
-fn parseArgs(args: std.process.Args, paths: *ArrayList([]const u8)) !Args {
-    var it = args.iterate();
+fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *ArrayList([]const u8)) !Args {
+    var it = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer it.deinit();
     _ = it.next(); // executable name
 
     var parsed: Args = .{};
+    errdefer if (parsed.session) |session_path| allocator.free(session_path);
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--preview")) {
             parsed.preview = true;
         } else if (std.mem.eql(u8, arg, "--session")) {
-            parsed.session = it.next() orelse return error.MissingSessionPath;
+            const value = it.next() orelse return error.MissingSessionPath;
+            if (parsed.session) |old| allocator.free(old);
+            parsed.session = try allocator.dupe(u8, value);
         } else {
-            try paths.append(arg);
+            const copy = try allocator.dupe(u8, arg);
+            errdefer allocator.free(copy);
+            try paths.append(copy);
         }
     }
 
@@ -89,15 +95,19 @@ pub fn main(init: std.process.Init) !void {
     defer word_character_classifier.freeWordClassifierCache();
 
     var paths = ArrayList([]const u8).init(allocator);
-    defer paths.deinit();
+    defer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit();
+    }
 
-    const args = parseArgs(init.minimal.args, &paths) catch {
+    const args = parseArgs(allocator, init.minimal.args, &paths) catch {
         std.debug.print(
             "usage: zig <folder> [<file>...]\n       zig <file>...\n       zig --session <file> [<folder>] [<file>...]\n       zig --preview <file>\n",
             .{},
         );
         return;
     };
+    defer if (args.session) |session_path| allocator.free(session_path);
 
     var out_buffer: [65536]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &out_buffer);

@@ -104,7 +104,7 @@ fn enableRawModeWindows() !WindowsRawMode {
     var state = WindowsRawMode{};
 
     const input = GetStdHandle(STD_INPUT_HANDLE);
-    if (input != null and input != windows.INVALID_HANDLE_VALUE) {
+    if (input != windows.INVALID_HANDLE_VALUE) {
         if (GetConsoleMode(input, &state.input_mode) != .FALSE) {
             state.input = input;
             var mode = state.input_mode;
@@ -116,7 +116,7 @@ fn enableRawModeWindows() !WindowsRawMode {
     }
 
     const output = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (output != null and output != windows.INVALID_HANDLE_VALUE) {
+    if (output != windows.INVALID_HANDLE_VALUE) {
         if (GetConsoleMode(output, &state.output_mode) != .FALSE) {
             state.output = output;
             var mode = state.output_mode;
@@ -211,7 +211,7 @@ pub fn getTerminalSize() !Size {
 
 fn getTerminalSizeWindows() !Size {
     const handle = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (handle == null or handle == windows.INVALID_HANDLE_VALUE) return .{ .width = 80, .height = 24 };
+    if (handle == windows.INVALID_HANDLE_VALUE) return .{ .width = 80, .height = 24 };
     var info: ConsoleScreenBufferInfo = undefined;
     if (GetConsoleScreenBufferInfo(handle, &info) == .FALSE) return .{ .width = 80, .height = 24 };
     const width: usize = @intCast(@max(info.window.right - info.window.left + 1, 1));
@@ -359,7 +359,7 @@ pub fn readFd(io: Io, fd: anytype, buffer: *ArrayList(u8)) ![]const u8 {
 pub fn pollInput(timeout_ms: i32) !bool {
     if (is_windows) {
         const handle = GetStdHandle(STD_INPUT_HANDLE);
-        if (handle == null or handle == windows.INVALID_HANDLE_VALUE) return false;
+        if (handle == windows.INVALID_HANDLE_VALUE) return false;
         const milliseconds: windows.DWORD = if (timeout_ms < 0) INFINITE else @intCast(timeout_ms);
         const result = WaitForSingleObject(handle, milliseconds);
         return result == WAIT_OBJECT_0;
@@ -400,7 +400,7 @@ pub fn pollInputWithHandle(extra_handle: ?windows.HANDLE, timeout_ms: i32) !Poll
 
     var handles: [2]windows.HANDLE = undefined;
     const stdin = GetStdHandle(STD_INPUT_HANDLE);
-    if (stdin == null or stdin == windows.INVALID_HANDLE_VALUE) {
+    if (stdin == windows.INVALID_HANDLE_VALUE) {
         return .{ .input = false, .extra = false };
     }
     handles[0] = stdin;
