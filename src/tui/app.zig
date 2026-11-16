@@ -267,6 +267,8 @@ pub fn main(init: std.process.Init) !void {
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
 
+    workbench.refreshStatus();
+    if (workbench.activeTab()) |active| try active.view.refresh();
     try workbench.render(out);
     try workbench.syncCursor(out);
     try out.flush();
@@ -326,6 +328,7 @@ pub fn main(init: std.process.Init) !void {
                 if (workbench.activeTab()) |current| {
                     current.onEditorChanged(now_ms);
                     workbench.onSearchEditorChanged();
+                    workbench.refreshStatus();
                     try current.view.refresh();
                 }
                 try workbench.render(out);
@@ -413,6 +416,7 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.activeTab()) |current| {
             current.onEditorChanged(time_compat.milliTimestamp());
             workbench.onSearchEditorChanged();
+            workbench.refreshStatus();
             try current.view.refresh();
         }
         try tui.hideCursor(out);

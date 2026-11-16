@@ -700,7 +700,8 @@ Library constraints:
     them through `LineDecoration.filter`/`extractWrapped`, the same per-wrapped-
     line route as find ranges. Highlights are hidden while a widget owns focus
     and update on typing or cursor movement.
-  - Builds the whole screen (editor area plus the status row) as one tree, so a
+  - Builds the whole screen (editor area plus the status row) as one tree; the
+    row is fed by the ported `StatusbarModel`/`StatusbarPart`, so a
     single `Surface.render` diff covers it. `Document.clear` rebuilds the tree
     between frames while keeping the previous grid for the diff.
 - `src/tui/preview.zig` remains the read-only `--preview` variant, adding
@@ -901,20 +902,24 @@ Library constraints:
   arguments as workspace folders and file arguments as initial editors;
   `ExplorerModel` creates one root per workspace folder. The workbench starts
   with an empty editor group when only a folder is opened.
-- The Explorer sidebar is a direct cell-painted TUI view
-  (`src/tui/sidebar.zig`) over `ExplorerModel`/`ExplorerItem` from
+- The Explorer sidebar is a terminal tree view
+  (`src/tui/explorerTreeSidebar.zig`) over `ExplorerModel`/`ExplorerItem` from
   `src/vs/workbench/contrib/files/common/explorerModel.zig`: lazy directory
   resolution, directories-first ordering, expand/collapse, selection and
   scroll. A single-folder workspace uses the folder as the tree input, so its
   children are top-level rows; multi-root workspaces show roots and expand the
-  first five by default. Directory resolution drops entries excluded by
+  first five by default. Filtering runs through the upstream-shaped
+  `FilesFilter`
+  (`src/vs/workbench/contrib/files/browser/views/explorerViewer.zig`): it
+  evaluates `files.exclude` per root, applies `!` exceptions, keeps folders
+  that lead to an exception visible, and hides entries matched by
   `.gitignore`/`.ignore` through the ported `IgnoreFile`, including nested
-  files and `!` negations; ignore files themselves stay visible.
-  `files.exclude` is applied per root (including VS Code's default VCS/OS
-  metadata patterns), and `explorer.excludeGitIgnore` controls the ignore-file
-  filtering. The TUI default for that setting is on rather than upstream's off,
-  because the Explorer hid ignored entries before the configuration service
-  existed; a workspace setting can disable it.
+  files and `!` negations. Ignore files themselves stay visible.
+  `explorer.excludeGitIgnore` controls the ignore-file filtering; the TUI
+  default for that setting is on rather than upstream's off, because the
+  Explorer hid ignored entries before the configuration service existed; a
+  workspace setting can disable it. An open editor keeps an otherwise excluded
+  file and its parent folders visible.
   The workbench reserves a fixed left activity column
   and sidebar column and offsets the editor split root; a click or Enter on a
   file calls `Workbench.openPath`. Directory resolution is synchronous. The
@@ -927,9 +932,15 @@ Library constraints:
   too. The async data tree/loading placeholders, identity-provider diffing
   through the object models, drag/drop, sticky scroll and the compressed-label
   navigation controller (per-segment focus/hover) are not ported.
-  `src/tui/activityBar.zig` switches fixed Explorer, Search and Settings
-  containers; Settings remains a placeholder. This is not the browser
-  `ExplorerView`/tree widget or registered view-container service port; live
+  The activity bar is split into the ported model
+  (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`), the
+  activity service model
+  (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
+  terminal view (`src/tui/activityBar.zig`). The service has no badge source in
+  the terminal workbench yet; it is ready for view contributions. It switches fixed Explorer,
+  Search and Settings containers; Settings remains a placeholder. The model
+  owns activity order, visibility, the active container and compact width.
+  There is still no registered view-container contribution registry; live
   file-change refresh, resizing and context menus are not ported.
 - The Search panel is split into a portable search service/tree and a terminal
   view. `searchService.zig` walks workspace folders in bounded steps, reads
@@ -968,8 +979,9 @@ Library constraints:
     services do not exist in the terminal workbench;
   - trusted-workspace filtering and restricted settings; there is no
     workspace-trust service;
-  - `files.exclude` `when` clauses and exception-leading folders; `glob.zig`
-    does not port upstream's sibling clauses or exception traversal metadata;
+  - `files.exclude` `when` clauses; `glob.zig` does not port upstream's
+    sibling-clause evaluation. Plain `!` exceptions and exception-leading
+    folders are supported;
   - the browser Settings editor/view; the activity-bar Settings container
     remains a placeholder.
 
@@ -1046,6 +1058,13 @@ Library constraints:
    widgets and contributions (marker/glyph hover, and the quick-pick list's
    icons/buttons/virtualization). The workbench quick-open overlay, file and
    command providers, and their terminal view are in.
+
+Since this list was written, the editor view model (`ViewModelLines`,
+`ViewModelDecorations`, `CoordinatesConverter`) has landed. The remaining
+editor-view work is the view/controller/widget split, not the view model.
+The file-by-file mapping of `src/tui/` to these upstream modules, including
+the P1-P5 sequencing and upstream test map, is tracked in the
+[TUI porting inventory](porting-inventory.md).
 
 ## 11. Testing strategy
 

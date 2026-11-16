@@ -127,6 +127,283 @@ pub const Expression = struct {
 /// A comma-separated glob expression as used by the search include/exclude
 /// inputs: each piece may start with `!` to re-include a path, and evaluation
 /// is last-rule-wins, matching upstream's expression semantics.
+/// One entry of an `IExpression`-shaped exclude object. The order is kept so
+/// the caller can build the same expression that the configuration object
+/// describes. `enabled == false` mirrors upstream `value === false`.
+pub const ExcludeEntry = struct {
+    pattern: []const u8,
+    enabled: bool = true,
+};
+
+/// Mirrors upstream `isExcludeException`.
+pub fn isExcludeException(pattern: []const u8) bool {
+    const trimmed = std.mem.trimStart(u8, pattern, " \t\r\n");
+    return trimmed.len > 0 and trimmed[0] == '!';
+}
+
+/// Mirrors upstream `escapeExcludeException`: rewrites a leading `!` as `{!}`
+/// so the pattern matches a literal `!` instead of being an exception.
+pub fn escapeExcludeException(allocator: Allocator, pattern: []const u8) ![]u8 {
+    const trimmed = std.mem.trimStart(u8, pattern, " \t\r\n");
+    if (trimmed.len > 0 and trimmed[0] == '!') {
+        return std.fmt.allocPrint(allocator, "{{!}}{s}", .{trimmed[1..]});
+    }
+    return allocator.dupe(u8, pattern);
+}
+
+/// Mirrors upstream `getExcludeExceptions`: enabled, non-empty, relative
+/// `!`-prefixed patterns, without the prefix and without a trailing slash.
+/// The returned slice and each item are owned by `allocator`.
+pub fn getExcludeExceptions(allocator: Allocator, entries: []const ExcludeEntry) ![][]const u8 {
+    var list = std.array_list.Managed([]const u8).init(allocator);
+    errdefer {
+        for (list.items) |item| allocator.free(item);
+        list.deinit();
+    }
+    for (entries) |entry| {
+        if (!entry.enabled or !isExcludeException(entry.pattern)) continue;
+        const raw = std.mem.trim(u8, entry.pattern, " \t\r\n");
+        var pattern = std.mem.trim(u8, raw[1..], " \t\r\n");
+        pattern = std.mem.trimEnd(u8, pattern, "/\\");
+        if (pattern.len == 0 or isAbsolutePattern(pattern)) continue;
+        try list.append(try allocator.dupe(u8, pattern));
+    }
+    return list.toOwnedSlice();
+}
+
+fn isAbsolutePattern(pattern: []const u8) bool {
+    if (pattern.len == 0) return false;
+    if (isSeparator(pattern[0])) return true;
+    return pattern.len >= 2 and std.ascii.isAlphabetic(pattern[0]) and pattern[1] == ':';
+}
+
+fn isVersionControlFolder(name: []const u8) bool {
+    return std.mem.eql(u8, name, ".git") or
+        std.mem.eql(u8, name, ".svn") or
+        std.mem.eql(u8, name, ".hg") or
+        std.mem.eql(u8, name, ".jj");
+}
+
+fn patternNamesFolder(patterns: []const Pattern, folder: []const u8) bool {
+    for (patterns) |pattern| {
+        for (pattern.segments) |segment| {
+            if (std.mem.eql(u8, segment, folder)) return true;
+        }
+    }
+    return false;
+}
+
+fn isInSkippedFolder(path: []const u8, skipped: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < path.len) {
+        while (index < path.len and isSeparator(path[index])) index += 1;
+        if (index >= path.len) break;
+        const end = segmentEnd(path, index);
+        for (skipped) |folder| {
+            if (std.mem.eql(u8, path[index..end], folder)) return true;
+        }
+        index = end;
+    }
+    return false;
+}
+
+/// A parsed `files.exclude`-style expression with upstream's `!` exception
+/// semantics. The arena owns the patterns, exception strings and skipped-folder
+/// list.
+pub const ParsedExcludeExpression = struct {
+    arena: std.heap.ArenaAllocator,
+    matches_exclude: Expression,
+    exception_expression: Expression = Expression.empty,
+    exception_patterns: []const Pattern = &.{},
+    exceptions: []const []const u8 = &.{},
+    skipped_folders: []const []const u8 = &.{},
+    has_exceptions: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        entries: []const ExcludeEntry,
+        options: Options,
+    ) !ParsedExcludeExpression {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var exclude_patterns = std.array_list.Managed([]const u8).init(arena_allocator);
+        for (entries) |entry| {
+            if (!entry.enabled) continue;
+            const pattern = std.mem.trim(u8, entry.pattern, " \t\r\n");
+            if (pattern.len == 0 or isExcludeException(pattern)) continue;
+            try exclude_patterns.append(try arena_allocator.dupe(u8, pattern));
+        }
+        const matches_exclude = try Expression.init(arena_allocator, exclude_patterns.items, options);
+        const exceptions = try getExcludeExceptions(arena_allocator, entries);
+        if (exceptions.len == 0) {
+            return .{
+                .arena = arena,
+                .matches_exclude = matches_exclude,
+            };
+        }
+
+        const exception_patterns_expression = try Expression.init(arena_allocator, exceptions, .{
+            .ignore_case = options.ignore_case,
+            .trim_for_exclusions = false,
+        });
+
+        var exception_expression_patterns = std.array_list.Managed([]const u8).init(arena_allocator);
+        for (exceptions) |exception| {
+            try exception_expression_patterns.append(exception);
+            try exception_expression_patterns.append(
+                try std.fmt.allocPrint(arena_allocator, "{s}/**", .{exception}),
+            );
+        }
+        const exception_expression = try Expression.init(arena_allocator, exception_expression_patterns.items, .{
+            .ignore_case = options.ignore_case,
+            .trim_for_exclusions = false,
+        });
+
+        var skipped_folders = std.array_list.Managed([]const u8).init(arena_allocator);
+        for ([_][]const u8{ ".git", ".svn", ".hg", ".jj" }) |folder| {
+            if (!patternNamesFolder(exception_patterns_expression.patterns, folder)) {
+                try skipped_folders.append(folder);
+            }
+        }
+
+        return .{
+            .arena = arena,
+            .matches_exclude = matches_exclude,
+            .exception_expression = exception_expression,
+            .exception_patterns = exception_patterns_expression.patterns,
+            .exceptions = exceptions,
+            .skipped_folders = skipped_folders.items,
+            .has_exceptions = true,
+        };
+    }
+
+    pub fn deinit(self: *ParsedExcludeExpression) void {
+        self.arena.deinit();
+    }
+
+    /// Matches the exclude patterns only, ignoring exceptions.
+    pub fn matchesExclude(self: *const ParsedExcludeExpression, path: []const u8, basename: ?[]const u8) bool {
+        _ = basename;
+        return self.matches_exclude.matches(path);
+    }
+
+    /// Whether the path, or one of its parents, is carved out by an exception.
+    pub fn isExcepted(self: *const ParsedExcludeExpression, path: []const u8, basename: ?[]const u8) bool {
+        _ = basename;
+        if (!self.has_exceptions) return false;
+        if (!self.exception_expression.matches(path)) return false;
+        return !isInSkippedFolder(path, self.skipped_folders);
+    }
+
+    /// Matches like upstream `parseExcludeExpression(...).matches`: a path is
+    /// excluded only when it matches an exclude pattern and is not excepted.
+    pub fn matches(self: *const ParsedExcludeExpression, path: []const u8, basename: ?[]const u8) bool {
+        if (!self.matchesExclude(path, basename)) return false;
+        return !self.isExcepted(path, basename);
+    }
+
+    /// Whether an exception could match a path beneath `folder_path`.
+    pub fn couldExceptionMatchBeneath(self: *const ParsedExcludeExpression, folder_path: []const u8) bool {
+        if (!self.has_exceptions) return false;
+        if (isInSkippedFolder(folder_path, self.skipped_folders)) return false;
+        for (self.exception_patterns) |pattern| {
+            if (couldMatchBeneathPattern(pattern, folder_path)) return true;
+        }
+        return false;
+    }
+};
+
+/// Convenience alias matching the upstream function name.
+pub fn parseExcludeExpression(
+    allocator: Allocator,
+    entries: []const ExcludeEntry,
+    options: Options,
+) !ParsedExcludeExpression {
+    return ParsedExcludeExpression.init(allocator, entries, options);
+}
+
+fn segmentEnd(path: []const u8, start: usize) usize {
+    var index = start;
+    while (index < path.len and !isSeparator(path[index])) index += 1;
+    return index;
+}
+
+/// Whether the expanded pattern could match a path below `folder_path`.
+fn couldMatchBeneathPattern(pattern: Pattern, folder_path: []const u8) bool {
+    return couldMatchBeneathSegments(pattern.segments, 0, folder_path, 0, pattern.ignore_case);
+}
+
+fn couldMatchBeneathSegments(
+    segments: []const []const u8,
+    matcher_index: usize,
+    path: []const u8,
+    start: usize,
+    ignore_case: bool,
+) bool {
+    var index = start;
+    while (index < path.len and isSeparator(path[index])) index += 1;
+    if (index >= path.len) return true; // the folder is exhausted; a pattern may still match below
+    if (matcher_index >= segments.len) return false;
+
+    const segment = segments[matcher_index];
+    if (std.mem.eql(u8, segment, "**")) {
+        if (couldMatchBeneathSegments(segments, matcher_index + 1, path, index, ignore_case)) return true;
+        const end = segmentEnd(path, index);
+        return couldMatchBeneathSegments(segments, matcher_index, path, end + 1, ignore_case);
+    }
+
+    const end = segmentEnd(path, index);
+    if (!segmentMatches(segment, path[index..end], ignore_case)) return false;
+    return couldMatchBeneathSegments(segments, matcher_index + 1, path, end + 1, ignore_case);
+}
+
+/// Optional callbacks used by `evaluateExcludeTreeEntry`, mirroring the
+/// upstream `hasSibling` and `isHidden` entry hooks.
+pub const IsHidden = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque) bool,
+};
+
+pub const HasSibling = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque, name: []const u8) bool,
+};
+
+pub const ExcludeTreeEntry = struct {
+    path: []const u8,
+    basename: ?[]const u8 = null,
+    is_directory: bool,
+    is_parent_excluded: bool,
+    is_hidden: ?IsHidden = null,
+    has_sibling: ?HasSibling = null,
+};
+
+pub const ExcludeTreeResult = struct {
+    is_excluded: bool,
+    is_visited: bool,
+};
+
+/// Mirrors upstream `evaluateExcludeTreeEntry`. An excluded folder is still
+/// visited when an exception could match beneath it, so the walker can find
+/// the exception.
+pub fn evaluateExcludeTreeEntry(
+    parsed: *const ParsedExcludeExpression,
+    entry: ExcludeTreeEntry,
+) ExcludeTreeResult {
+    _ = entry.has_sibling;
+    const hidden = if (entry.is_hidden) |hook| hook.callback(hook.context) else false;
+    const matched = entry.is_parent_excluded or
+        parsed.matchesExclude(entry.path, entry.basename) or hidden;
+    const is_excluded = matched and !parsed.isExcepted(entry.path, entry.basename);
+    return .{
+        .is_excluded = is_excluded,
+        .is_visited = !is_excluded or
+            (entry.is_directory and parsed.couldExceptionMatchBeneath(entry.path)),
+    };
+}
+
 pub const GlobList = struct {
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
@@ -596,4 +873,341 @@ test "glob: relative pattern bases" {
     const globstar = try Expression.init(arena.allocator(), &.{"**/*.js"}, .{});
     try std.testing.expect(globstar.matches("/users/data/src/foo.js"));
     try std.testing.expect(globstar.matches("/users/data/src/bar/foo.js"));
+}
+
+test "glob: exclude exceptions carve paths and children out of excludes" {
+    const allocator = std.testing.allocator;
+
+    var node_modules = try parseExcludeExpression(allocator, &.{
+        .{ .pattern = "node_modules/*" },
+        .{ .pattern = "!node_modules/susa" },
+    }, .{});
+    defer node_modules.deinit();
+    try std.testing.expect(node_modules.matches("node_modules/a", null));
+    try std.testing.expect(!node_modules.matches("node_modules/susa", null));
+    try std.testing.expect(!node_modules.matches("node_modules/susa/index.js", null));
+    try std.testing.expect(!node_modules.matches("src/a.js", null));
+
+    var gulpfile = try parseExcludeExpression(allocator, &.{
+        .{ .pattern = "*.js" },
+        .{ .pattern = "!gulpfile.js" },
+    }, .{});
+    defer gulpfile.deinit();
+    try std.testing.expect(gulpfile.matches("a.js", null));
+    try std.testing.expect(!gulpfile.matches("gulpfile.js", null));
+
+    var dotfiles = try parseExcludeExpression(allocator, &.{
+        .{ .pattern = ".*" },
+        .{ .pattern = "!.editorconfig" },
+        .{ .pattern = "!.gitignore" },
+    }, .{});
+    defer dotfiles.deinit();
+    try std.testing.expect(dotfiles.matches(".env", null));
+    try std.testing.expect(!dotfiles.matches(".editorconfig", null));
+    try std.testing.expect(!dotfiles.matches(".gitignore", null));
+
+    var vscode = try parseExcludeExpression(allocator, &.{
+        .{ .pattern = "**/.vscode" },
+        .{ .pattern = "**/.vscode/*" },
+        .{ .pattern = "!**/.vscode/launch.json" },
+    }, .{});
+    defer vscode.deinit();
+    try std.testing.expect(vscode.matches("a/.vscode", null));
+    try std.testing.expect(vscode.matches("a/.vscode/settings.json", null));
+    try std.testing.expect(!vscode.matches("a/.vscode/launch.json", null));
+}
+
+test "glob: exceptions on their own exclude nothing" {
+    var parsed = try parseExcludeExpression(std.testing.allocator, &.{
+        .{ .pattern = "!*.js" },
+        .{ .pattern = "!*.ts" },
+    }, .{});
+    defer parsed.deinit();
+
+    try std.testing.expect(!parsed.matches("a.js", null));
+    try std.testing.expect(!parsed.matches("a.ts", null));
+    try std.testing.expect(!parsed.matches("a.md", null));
+}
+
+test "glob: exceptions win over excludes beneath them" {
+    var parsed = try parseExcludeExpression(std.testing.allocator, &.{
+        .{ .pattern = "node_modules/*" },
+        .{ .pattern = "!node_modules/@types" },
+        .{ .pattern = "node_modules/@types/*" },
+    }, .{});
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.matches("node_modules/a", null));
+    try std.testing.expect(!parsed.matches("node_modules/@types/node", null));
+}
+
+test "glob: disabled and escaped exception keys" {
+    const allocator = std.testing.allocator;
+
+    var disabled = try parseExcludeExpression(allocator, &.{
+        .{ .pattern = "*.js" },
+        .{ .pattern = "!gulpfile.js", .enabled = false },
+    }, .{});
+    defer disabled.deinit();
+    try std.testing.expect(disabled.matches("gulpfile.js", null));
+
+    var escaped = try parseExcludeExpression(allocator, &.{
+        .{ .pattern = "{!}notes.txt" },
+    }, .{});
+    defer escaped.deinit();
+    try std.testing.expect(escaped.matches("!notes.txt", null));
+    try std.testing.expect(!escaped.matches("notes.txt", null));
+
+    const escaped_pattern = try escapeExcludeException(allocator, "!notes.txt");
+    defer allocator.free(escaped_pattern);
+    try std.testing.expectEqualStrings("{!}notes.txt", escaped_pattern);
+
+    const plain_pattern = try escapeExcludeException(allocator, "notes.txt");
+    defer allocator.free(plain_pattern);
+    try std.testing.expectEqualStrings("notes.txt", plain_pattern);
+}
+
+test "glob: exceptions respect ignoreCase" {
+    const entries = [_]ExcludeEntry{
+        .{ .pattern = "node_modules" },
+        .{ .pattern = "node_modules/*" },
+        .{ .pattern = "!node_modules/@Types" },
+    };
+
+    var insensitive = try parseExcludeExpression(std.testing.allocator, &entries, .{ .ignore_case = true });
+    defer insensitive.deinit();
+    try std.testing.expect(!insensitive.matches("node_modules/@types", null));
+
+    var sensitive = try parseExcludeExpression(std.testing.allocator, &entries, .{});
+    defer sensitive.deinit();
+    try std.testing.expect(sensitive.matches("node_modules/@types", null));
+}
+
+test "glob: getExcludeExceptions ignores disabled, empty and absolute exceptions" {
+    const allocator = std.testing.allocator;
+    const entries = [_]ExcludeEntry{
+        .{ .pattern = "a" },
+        .{ .pattern = "!node_modules/@types/**" },
+        .{ .pattern = "!**/Scripts/" },
+        .{ .pattern = "!src/*.js" },
+        .{ .pattern = "!off", .enabled = false },
+        .{ .pattern = "!" },
+        .{ .pattern = "!/workspace/keep.js" },
+    };
+    const exceptions = try getExcludeExceptions(allocator, &entries);
+    defer {
+        for (exceptions) |exception| allocator.free(exception);
+        allocator.free(exceptions);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), exceptions.len);
+    try std.testing.expectEqualStrings("node_modules/@types/**", exceptions[0]);
+    try std.testing.expectEqualStrings("**/Scripts", exceptions[1]);
+    try std.testing.expectEqualStrings("src/*.js", exceptions[2]);
+}
+
+test "glob: evaluateExcludeTreeEntry" {
+    var parsed = try parseExcludeExpression(std.testing.allocator, &.{
+        .{ .pattern = "node_modules" },
+        .{ .pattern = "!node_modules/@types" },
+    }, .{});
+    defer parsed.deinit();
+
+    const leading = evaluateExcludeTreeEntry(&parsed, .{
+        .path = "node_modules",
+        .is_directory = true,
+        .is_parent_excluded = false,
+    });
+    try std.testing.expect(leading.is_excluded);
+    try std.testing.expect(leading.is_visited);
+
+    const excluded_folder = evaluateExcludeTreeEntry(&parsed, .{
+        .path = "node_modules/react",
+        .is_directory = true,
+        .is_parent_excluded = true,
+    });
+    try std.testing.expect(excluded_folder.is_excluded);
+    try std.testing.expect(!excluded_folder.is_visited);
+
+    const excluded_file = evaluateExcludeTreeEntry(&parsed, .{
+        .path = "node_modules/a.js",
+        .is_directory = false,
+        .is_parent_excluded = true,
+    });
+    try std.testing.expect(excluded_file.is_excluded);
+    try std.testing.expect(!excluded_file.is_visited);
+
+    const excepted = evaluateExcludeTreeEntry(&parsed, .{
+        .path = "node_modules/@types",
+        .is_directory = true,
+        .is_parent_excluded = true,
+    });
+    try std.testing.expect(!excepted.is_excluded);
+    try std.testing.expect(excepted.is_visited);
+
+    var hidden_context: u8 = 0;
+    const hidden_file = evaluateExcludeTreeEntry(&parsed, .{
+        .path = "dist/a.js",
+        .is_directory = false,
+        .is_parent_excluded = false,
+        .is_hidden = .{ .context = &hidden_context, .callback = alwaysHidden },
+    });
+    try std.testing.expect(hidden_file.is_excluded);
+    try std.testing.expect(!hidden_file.is_visited);
+
+    const included = evaluateExcludeTreeEntry(&parsed, .{
+        .path = "src/a.js",
+        .is_directory = false,
+        .is_parent_excluded = false,
+    });
+    try std.testing.expect(!included.is_excluded);
+    try std.testing.expect(included.is_visited);
+}
+
+fn alwaysHidden(_: *anyopaque) bool {
+    return true;
+}
+
+test "glob: couldExceptionMatchBeneath" {
+    const Case = struct {
+        entries: []const ExcludeEntry,
+        folders: []const []const u8,
+        expected: []const bool,
+    };
+    const cases = [_]Case{
+        .{
+            .entries = &.{ .{ .pattern = "node_modules" }, .{ .pattern = "!node_modules/@types" } },
+            .folders = &.{ "node_modules", "node_modules/@types", "node_modules/react", "src" },
+            .expected = &.{ true, true, false, false },
+        },
+        .{
+            .entries = &.{ .{ .pattern = "**/*" }, .{ .pattern = "!**/Scripts" } },
+            .folders = &.{ "a", "a/b/c" },
+            .expected = &.{ true, true },
+        },
+        .{
+            .entries = &.{ .{ .pattern = "*.js" }, .{ .pattern = "!*.ts" } },
+            .folders = &.{"src"},
+            .expected = &.{false},
+        },
+        .{
+            .entries = &.{ .{ .pattern = "a" }, .{ .pattern = "!a/*/c/**/d.txt" } },
+            .folders = &.{ "a", "a/b", "a/b/c", "a/b/x", "a/b/c/e/f" },
+            .expected = &.{ true, true, true, false, true },
+        },
+        .{
+            .entries = &.{.{ .pattern = "a" }},
+            .folders = &.{"a"},
+            .expected = &.{false},
+        },
+        .{
+            .entries = &.{ .{ .pattern = "a" }, .{ .pattern = "!{a/b,c}/keep.txt" } },
+            .folders = &.{ "a", "a/b", "c" },
+            .expected = &.{ true, true, true },
+        },
+        .{
+            .entries = &.{ .{ .pattern = "a" }, .{ .pattern = "!a/{b/c,d}/keep" } },
+            .folders = &.{ "a/b", "a/b/c" },
+            .expected = &.{ true, true },
+        },
+        .{
+            .entries = &.{ .{ .pattern = "**" }, .{ .pattern = "!{**,foo}/keep.txt" } },
+            .folders = &.{ "a", "a/b" },
+            .expected = &.{ true, true },
+        },
+        .{
+            .entries = &.{ .{ .pattern = "node_modules" }, .{ .pattern = "!**.js" } },
+            .folders = &.{ "node_modules", "node_modules/a/b" },
+            .expected = &.{ false, false },
+        },
+        .{
+            .entries = &.{ .{ .pattern = "src" }, .{ .pattern = "!src/**.keep" } },
+            .folders = &.{ "src", "src/a" },
+            .expected = &.{ true, false },
+        },
+    };
+
+    for (cases) |case| {
+        var parsed = try parseExcludeExpression(std.testing.allocator, case.entries, .{});
+        defer parsed.deinit();
+        for (case.folders, case.expected) |folder, expected| {
+            try std.testing.expectEqual(expected, parsed.couldExceptionMatchBeneath(folder));
+        }
+    }
+}
+
+test "glob: exceptions do not re-include version control folders unless named" {
+    var unnamed = try parseExcludeExpression(std.testing.allocator, &.{
+        .{ .pattern = "**/.git" },
+        .{ .pattern = "third_party" },
+        .{ .pattern = "!third_party/lib" },
+    }, .{});
+    defer unnamed.deinit();
+    try std.testing.expect(unnamed.isExcepted("third_party/lib/a.js", null));
+    try std.testing.expect(!unnamed.isExcepted("third_party/lib/.git", null));
+    try std.testing.expect(!unnamed.isExcepted("third_party/lib/.git/config", null));
+    const git_folder = evaluateExcludeTreeEntry(&unnamed, .{
+        .path = "third_party/lib/.git",
+        .is_directory = true,
+        .is_parent_excluded = false,
+    });
+    try std.testing.expect(git_folder.is_excluded);
+    try std.testing.expect(!git_folder.is_visited);
+
+    var named = try parseExcludeExpression(std.testing.allocator, &.{
+        .{ .pattern = "**/.git" },
+        .{ .pattern = "!.git/hooks" },
+    }, .{});
+    defer named.deinit();
+    try std.testing.expect(named.isExcepted(".git/hooks/pre-commit", null));
+    try std.testing.expect(!named.isExcepted(".git/config", null));
+}
+
+test "glob: couldExceptionMatchBeneath skips version control folders unless named" {
+    const Case = struct {
+        entries: []const ExcludeEntry,
+        folders: []const []const u8,
+        expected: []const bool,
+    };
+    const cases = [_]Case{
+        .{
+            .entries = &.{ .{ .pattern = "**/*" }, .{ .pattern = "!**/Scripts" } },
+            .folders = &.{ ".git", "a/.hg/b", "a" },
+            .expected = &.{ false, false, true },
+        },
+        .{
+            .entries = &.{ .{ .pattern = "**/*" }, .{ .pattern = "!**/Scripts" }, .{ .pattern = "!.git/hooks" } },
+            .folders = &.{ ".git", "a/.hg/b" },
+            .expected = &.{ true, false },
+        },
+        .{
+            .entries = &.{ .{ .pattern = "**/*" }, .{ .pattern = "!{.git,.hg}/hooks" } },
+            .folders = &.{ ".git", ".hg", ".svn" },
+            .expected = &.{ true, true, false },
+        },
+        .{
+            .entries = &.{ .{ .pattern = "**/*" }, .{ .pattern = "!{*,src}/hooks" } },
+            .folders = &.{ ".git", "src" },
+            .expected = &.{ false, true },
+        },
+    };
+
+    for (cases) |case| {
+        var parsed = try parseExcludeExpression(std.testing.allocator, case.entries, .{});
+        defer parsed.deinit();
+        for (case.folders, case.expected) |folder, expected| {
+            try std.testing.expectEqual(expected, parsed.couldExceptionMatchBeneath(folder));
+        }
+    }
+}
+
+test "glob: expressions without exceptions parse unchanged" {
+    var parsed = try parseExcludeExpression(std.testing.allocator, &.{
+        .{ .pattern = "**/node_modules" },
+    }, .{});
+    defer parsed.deinit();
+
+    try std.testing.expect(!parsed.has_exceptions);
+    try std.testing.expect(parsed.matches("a/node_modules", null));
+    try std.testing.expect(!parsed.matches("a/src", null));
 }

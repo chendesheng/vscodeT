@@ -30,6 +30,10 @@ pub const ExplorerItem = struct {
     is_directory_resolved: bool = false,
     mtime: i64 = 0,
     unknown: bool = false,
+    /// Set by `FilesFilter.filter` when the item is hidden by an exclude
+    /// pattern or ignore file. Explorer views use it to keep a hidden parent
+    /// chain hidden without re-evaluating every ancestor.
+    is_excluded: bool = false,
     children: std.array_list.Managed(*ExplorerItem),
 
     pub fn create(

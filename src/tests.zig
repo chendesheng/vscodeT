@@ -26,7 +26,6 @@ comptime {
     _ = @import("./tui/preview.zig");
     _ = @import("./tui/editorInput.zig");
     _ = @import("./tui/tabBar.zig");
-    _ = @import("./tui/sidebar.zig");
     _ = @import("./tui/explorerTreeSidebar.zig");
     _ = @import("./tui/activityBar.zig");
     _ = @import("./tui/tab.zig");
@@ -80,6 +79,12 @@ comptime {
     _ = @import("./vs/workbench/services/editor/common/editorGroupsService.zig");
     _ = @import("./vs/workbench/contrib/files/common/explorerModel.zig");
     _ = @import("./vs/workbench/contrib/files/test/browser/explorerModel.test.zig");
+    _ = @import("./vs/workbench/contrib/files/test/browser/explorerFilesFilter.test.zig");
+    _ = @import("./vs/workbench/test/browser/layout.test.zig");
+    _ = @import("./vs/workbench/test/browser/parts/activitybar/activitybarPart.test.zig");
+    _ = @import("./vs/workbench/test/browser/parts/sidebar/sidebarPart.test.zig");
+    _ = @import("./vs/workbench/test/browser/parts/statusbar/statusbarModel.test.zig");
+    _ = @import("./vs/workbench/browser/parts/statusbar/statusbarPart.zig");
     _ = @import("./vs/workbench/services/views/common/viewContainerModel.zig");
     _ = @import("./vs/workbench/services/workspaces/common/workspaceContextService.zig");
     _ = @import("./vs/platform/configuration/common/configuration.zig");

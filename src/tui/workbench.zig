@@ -50,6 +50,11 @@ const ViewCell = @import("./view.zig").Cell;
 const tab_bar = @import("./tabBar.zig");
 const Sidebar = @import("./explorerTreeSidebar.zig").Sidebar;
 const activity_bar_mod = @import("./activityBar.zig");
+const ActivityBarPart = @import("../vs/workbench/browser/parts/activitybar/activitybarPart.zig").ActivityBarPart;
+const SidebarPart = @import("../vs/workbench/browser/parts/sidebar/sidebarPart.zig").SidebarPart;
+const LayoutModel = @import("../vs/workbench/browser/layout.zig").LayoutModel;
+const StatusbarModel = @import("../vs/workbench/browser/parts/statusbar/statusbarModel.zig").StatusbarModel;
+const StatusbarPart = @import("../vs/workbench/browser/parts/statusbar/statusbarPart.zig").StatusbarPart;
 const history_mod = @import("../vs/workbench/services/history/common/history.zig");
 const HistoryService = history_mod.HistoryService;
 const commands_mod = @import("./commands.zig");
@@ -62,7 +67,6 @@ const configuration_mod = @import("../vs/workbench/services/configuration/browse
 const ConfigurationService = configuration_mod.ConfigurationService;
 const settings_watcher_mod = @import("./settingsWatcher.zig");
 const SettingsWatcher = settings_watcher_mod.SettingsWatcher;
-const ActivityBar = activity_bar_mod.ActivityBar;
 const search_view_mod = @import("./searchView.zig");
 const SearchView = search_view_mod.SearchView;
 const search_service_mod = @import("../vs/workbench/services/search/common/searchService.zig");
@@ -127,10 +131,12 @@ pub const Workbench = struct {
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
     search_replace: ?*ReplaceService = null,
-    sidebar_visible: bool = false,
-    sidebar_width: usize = 28,
-    activity_bar: ActivityBar = .{},
-    active_activity: usize = 0,
+    layout_model: LayoutModel,
+    activity_bar_part: ActivityBarPart,
+    sidebar_part: SidebarPart,
+    statusbar: StatusbarModel,
+    statusbar_part: StatusbarPart,
+    status_editor_buf: [768]u8 = undefined,
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
     settings_watcher: ?*SettingsWatcher = null,
@@ -168,10 +174,8 @@ pub const Workbench = struct {
         self.search_view = null;
         self.search_service = null;
         self.search_replace = null;
-        self.sidebar_visible = false;
-        self.sidebar_width = 28;
-        self.activity_bar = .{};
-        self.active_activity = 0;
+        try self.initShellModels();
+        errdefer self.deinitShellModels();
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -227,10 +231,8 @@ pub const Workbench = struct {
         self.search_view = null;
         self.search_service = null;
         self.search_replace = null;
-        self.sidebar_visible = false;
-        self.sidebar_width = 28;
-        self.activity_bar = .{};
-        self.active_activity = 0;
+        try self.initShellModels();
+        errdefer self.deinitShellModels();
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -300,10 +302,8 @@ pub const Workbench = struct {
         self.search_view = null;
         self.search_service = null;
         self.search_replace = null;
-        self.sidebar_visible = false;
-        self.sidebar_width = 28;
-        self.activity_bar = .{};
-        self.active_activity = 0;
+        try self.initShellModels();
+        errdefer self.deinitShellModels();
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -360,6 +360,54 @@ pub const Workbench = struct {
 
     pub fn createFileSerializer(self: *Workbench) FileEditorSerializer {
         return FileEditorSerializer.init(self.allocator, self.io, self.cols, editorHeight(self.rows));
+    }
+
+    fn initShellModels(self: *Workbench) !void {
+        self.layout_model = LayoutModel.init(self.allocator);
+        errdefer self.layout_model.deinit();
+        self.activity_bar_part = ActivityBarPart.init(self.allocator);
+        errdefer self.activity_bar_part.deinit();
+        self.sidebar_part = SidebarPart.init(self.allocator);
+        errdefer self.sidebar_part.deinit();
+        self.statusbar = StatusbarModel.init(self.allocator);
+        errdefer self.statusbar.deinit();
+        self.statusbar_part = StatusbarPart.init(&self.statusbar);
+
+        try self.layout_model.setSize(.sidebar, 28);
+        try self.layout_model.setVisible(.sidebar, false);
+        try self.layout_model.setVisible(.activitybar, true);
+        try self.layout_model.setVisible(.statusbar, true);
+
+        for (activity_bar_mod.default_activities) |activity| {
+            try self.activity_bar_part.addActivity(activity);
+        }
+        try self.activity_bar_part.setVisible(true);
+
+        try self.sidebar_part.pane.addComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
+        try self.sidebar_part.pane.addComposite(.{ .id = "search", .name = "Search", .order = 2 });
+        try self.sidebar_part.pane.addComposite(.{ .id = "settings", .name = "Settings", .order = 3 });
+        try self.sidebar_part.setWidth(28);
+
+        try self.statusbar.add(.{
+            .id = "workbench.editor",
+            .name = "Editor status",
+            .alignment = .left,
+            .priority = .{ .primary = .{ .number = 1 }, .secondary = 1 },
+        });
+        try self.statusbar.add(.{
+            .id = "workbench.hint",
+            .name = "Quit hint",
+            .text = " Ctrl-Q quit ",
+            .alignment = .right,
+            .priority = .{ .primary = .{ .number = 0 }, .secondary = 1 },
+        });
+    }
+
+    fn deinitShellModels(self: *Workbench) void {
+        self.statusbar.deinit();
+        self.sidebar_part.deinit();
+        self.activity_bar_part.deinit();
+        self.layout_model.deinit();
     }
 
     fn initQuickAccess(self: *Workbench) !void {
@@ -499,6 +547,7 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
+        self.deinitShellModels();
         self.quick_access.deinit();
         self.commands.deinit();
         self.history.deinit();
@@ -523,28 +572,57 @@ pub const Workbench = struct {
 
     fn sidebarWidth(self: *const Workbench) usize {
         const max_width = @max(self.cols / 2, 10);
-        return @min(self.sidebar_width, @max(max_width, 1));
+        return @min(self.layout_model.size(.sidebar), @max(max_width, 1));
     }
 
-    const activity_width: usize = 3;
+    fn activityBarWidth(self: *const Workbench) usize {
+        return self.activity_bar_part.width();
+    }
 
     fn sidebarShown(self: *const Workbench) bool {
-        return self.sidebar_visible and self.sidebar != null and
-            activity_width + self.sidebarWidth() + 8 < self.cols;
+        return self.layout_model.isVisible(.sidebar) and self.sidebar != null and
+            self.activityBarWidth() + self.sidebarWidth() + 8 < self.cols;
+    }
+
+    fn setSidebarVisible(self: *Workbench, visible: bool) !void {
+        try self.layout_model.setVisible(.sidebar, visible);
+        try self.sidebar_part.setVisible(visible);
+    }
+
+    pub fn activeActivity(self: *const Workbench) usize {
+        return self.activity_bar_part.activeIndex() orelse 0;
+    }
+
+    /// Open-editor query for the Explorer filter. A file is visible when it is
+    /// open, and a folder is visible when an open file is below it.
+    fn isPathOpen(context: *anyopaque, resource: []const u8) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const path = tab.editor.path;
+                if (std.mem.eql(u8, path, resource)) return true;
+                if (std.mem.startsWith(u8, path, resource) and path.len > resource.len and
+                    (path[resource.len] == '/' or path[resource.len] == '\\'))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     fn activityRect(self: *const Workbench) ui.Rect {
         return .{
             .x = 0,
             .y = 0,
-            .w = @floatFromInt(activity_width),
+            .w = @floatFromInt(self.activityBarWidth()),
             .h = @floatFromInt(self.rows),
         };
     }
 
     fn sidebarRect(self: *const Workbench) ui.Rect {
         return .{
-            .x = @floatFromInt(activity_width),
+            .x = @floatFromInt(self.activityBarWidth()),
             .y = 0,
             .w = @floatFromInt(self.sidebarWidth()),
             .h = @floatFromInt(self.rows),
@@ -664,8 +742,10 @@ pub const Workbench = struct {
             );
         }
         if (self.search_view == null) try self.initSearchFromWorkspace();
-        self.sidebar_visible = true;
-        if (self.active_activity >= self.activity_bar.count()) self.active_activity = 0;
+        self.sidebar.?.setOpenEditorQuery(.{ .context = self, .is_open = isPathOpen });
+        try self.setSidebarVisible(true);
+        _ = try self.activity_bar_part.setActive(self.activity_bar_part.activities.items[0].id);
+        _ = try self.sidebar_part.openPaneComposite(self.activity_bar_part.activities.items[0].id);
         self.layoutAll();
     }
 
@@ -720,12 +800,14 @@ pub const Workbench = struct {
     }
 
     pub fn showActivity(self: *Workbench, index: usize) !void {
-        if (index >= self.activity_bar.count()) return;
+        const activity = self.activity_bar_part.activityAtVisibleIndex(index) orelse return;
         if (self.sidebar == null or self.search_view == null) try self.initSidebarFromWorkspace();
-        self.active_activity = index;
-        self.sidebar_visible = true;
+        _ = try self.activity_bar_part.setActive(activity.id);
+        _ = try self.sidebar_part.openPaneComposite(activity.id);
+        try self.setSidebarVisible(true);
+        try self.layout_model.setVisible(.activitybar, true);
         self.focus = .sidebar;
-        if (index == 1) {
+        if (std.mem.eql(u8, activity.id, "search")) {
             if (self.search_view) |view| view.focus();
         }
         self.layoutAll();
@@ -737,15 +819,16 @@ pub const Workbench = struct {
             self.focus = .sidebar;
             return;
         }
-        self.sidebar_visible = !self.sidebar_visible;
-        self.focus = if (self.sidebar_visible) .sidebar else .editor;
+        const visible = !self.layout_model.isVisible(.sidebar);
+        try self.setSidebarVisible(visible);
+        self.focus = if (visible) .sidebar else .editor;
         self.layoutAll();
     }
 
     pub fn focusSidebar(self: *Workbench) void {
         if (!self.sidebarShown()) return;
         self.focus = .sidebar;
-        if (self.active_activity == 1) {
+        if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) {
             if (self.search_view) |view| view.focus();
         }
     }
@@ -765,9 +848,9 @@ pub const Workbench = struct {
         if (self.sidebarShown()) {
             const width = self.sidebarWidth();
             rect = .{
-                .x = @floatFromInt(activity_width + width + 1),
+                .x = @floatFromInt(self.activityBarWidth() + width + 1),
                 .y = 0,
-                .w = @floatFromInt(self.cols - activity_width - width - 1),
+                .w = @floatFromInt(self.cols - self.activityBarWidth() - width - 1),
                 .h = @floatFromInt(self.rows),
             };
         }
@@ -1251,7 +1334,8 @@ pub const Workbench = struct {
             }
         }
 
-        if (self.active_activity == 1) {
+        const active_id = self.activity_bar_part.active_id orelse "";
+        if (std.mem.eql(u8, active_id, "search")) {
             if (self.search_view) |view| {
                 switch (view.handleKey(event)) {
                     .handled => return true,
@@ -1266,9 +1350,10 @@ pub const Workbench = struct {
             return true;
         }
 
-        if (self.active_activity != 0) {
-            if (event.key == .up) try self.showActivity(@mod(self.active_activity + self.activity_bar.count() - 1, self.activity_bar.count()));
-            if (event.key == .down) try self.showActivity(@mod(self.active_activity + 1, self.activity_bar.count()));
+        if (!std.mem.eql(u8, active_id, "explorer")) {
+            const current = self.activeActivity();
+            if (event.key == .up) try self.showActivity(self.activity_bar_part.next(current, -1));
+            if (event.key == .down) try self.showActivity(self.activity_bar_part.next(current, 1));
             return true;
         }
 
@@ -1286,22 +1371,23 @@ pub const Workbench = struct {
     pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (!self.sidebarShown()) return false;
 
-        if (event.x < activity_width) {
+        if (event.x < self.activityBarWidth()) {
             if (event.kind == .down) {
-                if (self.activity_bar.hitAt(event.x, event.y, self.activityRect())) |index| {
+                if (activity_bar_mod.hitAt(&self.activity_bar_part, event.x, event.y, self.activityRect())) |index| {
                     self.showActivity(index) catch {};
                 }
             }
             return true;
         }
 
-        if (event.x > activity_width + self.sidebarWidth()) return false;
+        if (event.x > self.activityBarWidth() + self.sidebarWidth()) return false;
         if (event.kind == .down) self.focus = .sidebar;
-        if (self.active_activity == 1) {
+        const active_id = self.activity_bar_part.active_id orelse "";
+        if (std.mem.eql(u8, active_id, "search")) {
             if (self.search_view) |view| _ = view.handleMouse(event);
             return true;
         }
-        if (self.active_activity != 0) return true;
+        if (!std.mem.eql(u8, active_id, "explorer")) return true;
 
         const sidebar = self.sidebar orelse return false;
         if (event.kind == .wheel) {
@@ -1318,7 +1404,7 @@ pub const Workbench = struct {
     }
 
     pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-        if (self.sidebarShown() and event.x <= activity_width + self.sidebarWidth()) return false;
+        if (self.sidebarShown() and event.x <= self.activityBarWidth() + self.sidebarWidth()) return false;
 
         if (self.pending_tab_drag) |pending| {
             if (event.kind == .move and event.button == .left and
@@ -1366,7 +1452,7 @@ pub const Workbench = struct {
     /// Converts a terminal mouse position inside a pane into editor-relative
     /// coordinates, or null when the event belongs to a tab row.
     pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?ui.MouseEvent {
-        if (self.sidebarShown() and event.x <= activity_width + self.sidebarWidth()) return null;
+        if (self.sidebarShown() and event.x <= self.activityBarWidth() + self.sidebarWidth()) return null;
         const pane = self.paneAt(event.x, event.y) orelse return null;
         if (pane.group != self.service.activeGroup()) return null;
         if (event.y == ui.cell.snap(pane.rect.y)) return null;
@@ -1378,17 +1464,49 @@ pub const Workbench = struct {
         return adjusted;
     }
 
+    /// Rebuilds the workbench status row from the ported `StatusbarModel`.
+    /// The model owns alignment/priority; the active editor view receives the
+    /// final left and right strings.
+    pub fn refreshStatus(self: *Workbench) void {
+        const tab = self.activeTab() orelse return;
+        const editor = tab.editor;
+        const position = editor.modelCursorPosition();
+        const message = editor.message();
+        const editor_text = std.fmt.bufPrint(
+            &self.status_editor_buf,
+            " {s}{s}  Ln {d}, Col {d}  {s}{s}{s}",
+            .{
+                editor.path,
+                if (editor.isDirty()) "*" else "",
+                position.lineNumber,
+                position.column,
+                editor.languageId(),
+                if (message.len > 0) "  " else "",
+                message,
+            },
+        ) catch self.status_editor_buf[0..0];
+        self.statusbar.setText("workbench.editor", editor_text);
+
+        self.statusbar_part.layout();
+        for (self.part.group_views.items) |pane| {
+            if (pane.activeTab()) |active| {
+                active.view.setStatusText(self.statusbar_part.leftText(), self.statusbar_part.rightText());
+            }
+        }
+    }
+
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
         self.frame.begin();
 
         if (self.sidebarShown()) {
             const focused = self.focus == .sidebar;
-            self.activity_bar.render(&self.frame.next, self.activityRect(), self.active_activity, focused);
-            if (self.active_activity == 0) {
+            activity_bar_mod.render(&self.activity_bar_part, &self.frame.next, self.activityRect(), self.activeActivity(), focused);
+            const active_id = self.activity_bar_part.active_id orelse "";
+            if (std.mem.eql(u8, active_id, "explorer")) {
                 if (self.sidebar) |sidebar| {
                     try sidebar.render(&self.frame.next, self.sidebarRect(), focused);
                 }
-            } else if (self.active_activity == 1) {
+            } else if (std.mem.eql(u8, active_id, "search")) {
                 if (self.search_view) |view| {
                     try view.render(&self.frame.next, self.sidebarRect());
                 }
@@ -1396,7 +1514,7 @@ pub const Workbench = struct {
                 self.renderPlaceholder(self.sidebarRect(), focused);
             }
 
-            const divider_x = activity_width + self.sidebarWidth();
+            const divider_x = self.activityBarWidth() + self.sidebarWidth();
             const style = ui.cell.PaintStyle{
                 .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
             };
@@ -1486,7 +1604,7 @@ pub const Workbench = struct {
             .fg = ui.cell.packColor(.{ .r = 190, .g = 190, .b = 190 }),
             .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }),
         };
-        const header = if (self.active_activity == 1) " SEARCH " else " SETTINGS ";
+        const header = if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) " SEARCH " else " SETTINGS ";
         const title = "Settings view is not ported yet";
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
         const header_style = ui.cell.PaintStyle{
@@ -2534,9 +2652,9 @@ test "Workbench: sidebar renders and opens a file" {
 
     const ctrl_b = ui.KeyEvent{ .key = .{ .char = 'b' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(try workbench.handleSidebarKey(&ctrl_b));
-    try std.testing.expect(!workbench.sidebar_visible);
+    try std.testing.expect(!workbench.layout_model.isVisible(.sidebar));
     try std.testing.expect(try workbench.handleSidebarKey(&ctrl_b));
-    try std.testing.expect(workbench.sidebar_visible);
+    try std.testing.expect(workbench.layout_model.isVisible(.sidebar));
 }
 
 test "Workbench: workspace search streams results and opens a match" {
@@ -2675,7 +2793,7 @@ test "Workbench: activity bar switches view containers" {
 
     const search_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 2 };
     try std.testing.expect(workbench.handleSidebarMouse(&search_click));
-    try std.testing.expectEqual(@as(usize, 1), workbench.active_activity);
+    try std.testing.expectEqual(@as(usize, 1), workbench.activeActivity());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -2685,7 +2803,7 @@ test "Workbench: activity bar switches view containers" {
 
     const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 3 };
     try std.testing.expect(workbench.handleSidebarMouse(&settings_click));
-    try std.testing.expectEqual(@as(usize, 2), workbench.active_activity);
+    try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
 
     out.clearRetainingCapacity();
     try workbench.render(&out.writer);
@@ -2693,7 +2811,7 @@ test "Workbench: activity bar switches view containers" {
 
     const alt_1 = ui.KeyEvent{ .key = .{ .char = '1' }, .mods = .{ .alt = true } };
     try std.testing.expect(try workbench.handleSidebarKey(&alt_1));
-    try std.testing.expectEqual(@as(usize, 0), workbench.active_activity);
+    try std.testing.expectEqual(@as(usize, 0), workbench.activeActivity());
 }
 
 test "Workbench: opens a folder workspace with no initial tabs" {

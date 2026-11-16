@@ -52,6 +52,9 @@ console API for raw mode, sizing and input polling.
 - [Extension system](docs/extensions.md) — reuse VS Code's Node extension host
   unmodified, port the workbench side (RPC codec, `MainThread*` actors,
   scanner, contribution points, TUI wiring) to Zig.
+- [TUI porting inventory](docs/porting-inventory.md) — file-by-file mapping of
+  `src/tui/` to the VS Code internals it should port, with a prioritized,
+  dependency-ordered roadmap.
 
 ## Terminal UI library
 
@@ -82,7 +85,7 @@ console API for raw mode, sizing and input polling.
   the split tree when their last tab closes, the divider between panes is a
   draggable sash, and dragging a tab into another pane (or onto its edge)
   retiles the editor part. `--preview` remains a single-file mode.
-- A terminal Explorer sidebar (`src/tui/sidebar.zig`) sits left of the editor
+- A terminal Explorer sidebar (`src/tui/explorerTreeSidebar.zig`) sits left of the editor
   area over the ported `ExplorerModel`
   (`src/vs/workbench/contrib/files/common/explorerModel.zig`). It lists the
   workspace folders lazily, directories first, expands/collapses with
@@ -91,16 +94,21 @@ console API for raw mode, sizing and input polling.
   model. In a single-folder workspace the folder is the tree input, so its
   children are the top-level rows; a multi-root workspace shows root rows and
   expands the first five roots, matching the Explorer view's default. Deeper
-  directories resolve only when expanded. Directory resolution hides entries
-  matched by `.gitignore`/`.ignore` through the ported `IgnoreFile`
+  directories resolve only when expanded. Filtering now runs through the
+  upstream-shaped `FilesFilter`
+  (`src/vs/workbench/contrib/files/browser/views/explorerViewer.zig`): it
+  evaluates `files.exclude` per workspace root, applies `!` exceptions and
+  keeps the folders that lead to an exception visible. Entries matched by
+  `.gitignore`/`.ignore` are hidden through the ported `IgnoreFile`
   (`src/vs/workbench/services/search/common/ignoreFile.zig`), including nested
   ignore files and `!` negations; the ignore files themselves stay visible.
-  `files.exclude` (including VS Code's default `**/.git`, `**/.svn`, `**/.hg`,
-  `**/.jj`, `**/.DS_Store` and `**/Thumbs.db`) is applied per workspace root,
-  and `explorer.excludeGitIgnore` controls the ignore-file filtering. The TUI
-  default for that setting is on, unlike upstream's off default, because the
-  Explorer hid ignored entries before the configuration service existed;
-  workspace settings can turn it off. `explorer.autoReveal` is honored, and
+  VS Code's default `**/.git`, `**/.svn`, `**/.hg`, `**/.jj`, `**/.DS_Store`
+  and `**/Thumbs.db` patterns still apply, and `explorer.excludeGitIgnore`
+  controls the ignore-file filtering. The TUI default for that setting is on,
+  unlike upstream's off default, because the Explorer hid ignored entries
+  before the configuration service existed; workspace settings can turn it off.
+  An open editor keeps an otherwise excluded file and its parent folders
+  visible. `explorer.autoReveal` is honored, and
   opening or activating a file selects it in the Explorer without moving focus;
   directory twisties toggle on click while the rest of the row only selects.
   A one-cell scrollbar appears when the list overflows, and the selection is
@@ -141,8 +149,9 @@ console API for raw mode, sizing and input polling.
     in the terminal workbench);
   - trusted-workspace filtering and restricted settings (no workspace-trust
     service);
-  - `files.exclude` `when` clauses and exception-leading folders (`glob.zig`
-    does not port the traversal/exception metadata);
+  - `files.exclude` `when` clauses (`glob.zig` does not port upstream's
+    sibling-clause evaluation; plain `!` exceptions and exception-leading
+    folders are supported);
   - the Settings editor/view, which remains a placeholder.
 - The file watcher (`src/vs/platform/files/...`) ports the VS Code service and
   the Linux/macOS/Windows backends: `common/files.zig` and
@@ -164,12 +173,18 @@ console API for raw mode, sizing and input polling.
   `zig build check-watcher -Dwatcher-only=true -Dtarget=x86_64-windows` and
   `zig build check-watcher -Dwatcher-only=true -Dtarget=aarch64-macos` type-check the other
   platform backends without the POSIX TUI.
-- A minimal activity bar (`src/tui/activityBar.zig`) switches between Explorer,
-  Search and Settings containers. Explorer is wired to the file tree and Search
-  to the workspace text-search panel; Settings remains a placeholder.
-  `Alt-1..3` switches containers while the side panel has focus. The width is
-  fixed for now; there is no registered activity-bar/view-container service,
-  live Explorer/Search file-change integration, context menu or drag-and-drop.
+- The activity bar is split into the ported model
+  (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`), the
+  activity service model
+  (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
+  terminal view (`src/tui/activityBar.zig`). The service has no badge source in
+  the terminal workbench yet; it is ready for view contributions. It switches between
+  Explorer, Search and Settings containers; Explorer is wired to the file tree
+  and Search to the workspace text-search panel, while Settings remains a
+  placeholder. `Alt-1..3` switches containers while the side panel has focus.
+  The model owns order, visibility, the active container and compact width.
+  There is still no registered view-container contribution registry, live
+  Explorer/Search file-change integration, context menu or drag-and-drop.
 - The Search panel (`src/tui/searchView.zig` and `src/tui/searchWidget.zig`) is
   a plain-text workspace search over
   `src/vs/workbench/services/search/common/searchService.zig` and the ported
@@ -201,7 +216,11 @@ console API for raw mode, sizing and input polling.
   files uses an empty workspace, as upstream does.
 - The editor is rendered through the library (`src/tui/view.zig`): text,
   syntax colors, right-aligned line numbers, wrapped-line markers, selections,
-  the current line, a hardware cursor and the status row. The
+  the current line, a hardware cursor and the status row. The row is fed by the
+  ported `StatusbarModel`/`StatusbarPart`
+  (`src/vs/workbench/browser/parts/statusbar/`), so entry alignment and
+  priority follow upstream; the editor view keeps the fallback status string
+  for standalone tests and the read-only preview. The
   `zig build run -- --preview <file>` read-only mode uses the same token
   renderer and adds Up/Down, PageUp/PageDown, Home, End and mouse-wheel
   scrolling; Ctrl-Q quits. Overlay widgets and a single-line terminal input box

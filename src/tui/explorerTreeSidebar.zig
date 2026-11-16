@@ -5,7 +5,8 @@
 //! selection, focus, keyboard/mouse scrolling, collapse state and
 //! `explorer.compactFolders` come from the ported base tree views. The portable
 //! Explorer model, ignore filtering and lazy directory resolution are shared
-//! with `sidebar.zig`.
+//! with the upstream-shaped `FilesFilter` in
+//! `vs/workbench/contrib/files/browser/views/explorerViewer.zig`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -14,14 +15,14 @@ const ui = @import("ui");
 const explorer = @import("../vs/workbench/contrib/files/common/explorerModel.zig");
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
-const sidebar_mod = @import("./sidebar.zig");
+const explorer_viewer = @import("../vs/workbench/contrib/files/browser/views/explorerViewer.zig");
 const compressible_tree = @import("../vs/base/browser/ui/tree/compressibleObjectTree.zig");
 const list = @import("../vs/base/browser/ui/list/list.zig");
 const tree = @import("../vs/base/browser/ui/tree/tree.zig");
 
 const ExplorerItem = explorer.ExplorerItem;
 const ExplorerModel = explorer.ExplorerModel;
-const FilesFilter = sidebar_mod.FilesFilter;
+const FilesFilter = explorer_viewer.FilesFilter;
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const ConfigurationService = configuration_mod.ConfigurationService;
 const CompressibleTree = compressible_tree.CompressibleObjectTree(*ExplorerItem);
@@ -59,7 +60,11 @@ const scrollbar_thumb_style = PaintStyle{
     .bg = ui.cell.packColor(.{ .r = 105, .g = 108, .b = 122 }),
 };
 
-pub const Action = sidebar_mod.Action;
+pub const Action = union(enum) {
+    none,
+    handled,
+    open: []const u8,
+};
 
 pub const Sidebar = struct {
     allocator: Allocator,
@@ -293,6 +298,12 @@ pub const Sidebar = struct {
         return self.toggle(item);
     }
 
+    /// Supplies the open-editor query used by the ported `FilesFilter` to
+    /// keep excluded open files and their parents visible.
+    pub fn setOpenEditorQuery(self: *Sidebar, query: ?explorer_viewer.OpenEditorQuery) void {
+        self.files_filter.setOpenEditorQuery(query);
+    }
+
     /// Reveals a resource like VS Code's `explorer.autoReveal`: expands lazy
     /// ancestors, then selects and scrolls to the item without moving focus.
     pub fn revealPath(self: *Sidebar, path: []const u8) !void {
@@ -416,7 +427,7 @@ fn filterItem(context: *anyopaque, item: ?*ExplorerItem, parent_visibility: tree
     if (parent_visibility == .hidden) return .hidden;
     const files_filter: *FilesFilter = @ptrCast(@alignCast(context));
     const value = item orelse return .visible;
-    return if (files_filter.isVisible(value)) .visible else .hidden;
+    return if (files_filter.filter(value, parent_visibility)) .visible else .hidden;
 }
 
 /// `explorer.compactFolders` defaults to true, like upstream. Screen-reader

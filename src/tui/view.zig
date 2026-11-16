@@ -239,6 +239,13 @@ pub const View = struct {
     drag_anchor: ?Position = null,
     /// A drag moved the selection, so the release is not a click.
     drag_moved: bool = false,
+    /// Workbench status-bar text supplied through the ported
+    /// `StatusbarModel`. Empty slices fall back to the editor's own status
+    /// string so standalone editor view tests keep their old contract.
+    status_left: [512]u8 = undefined,
+    status_left_len: usize = 0,
+    status_right: [256]u8 = undefined,
+    status_right_len: usize = 0,
 
     const LineEntry = struct {
         node: *ui.Node,
@@ -338,6 +345,16 @@ pub const View = struct {
     pub fn addContentWidget(self: *View, widget: editorBrowser.IContentWidget) !void {
         try self.content_widgets.append(widget);
         try self.refresh();
+    }
+
+    /// Supplies the status row from the workbench status-bar model.
+    pub fn setStatusText(self: *View, left: []const u8, right: []const u8) void {
+        const left_len = @min(left.len, self.status_left.len);
+        @memcpy(self.status_left[0..left_len], left[0..left_len]);
+        self.status_left_len = left_len;
+        const right_len = @min(right.len, self.status_right.len);
+        @memcpy(self.status_right[0..right_len], right[0..right_len]);
+        self.status_right_len = right_len;
     }
 
     /// Replaces the find contribution's model decorations.
@@ -1622,6 +1639,27 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
         .overflow = .hidden,
         .reverse = true,
     });
+
+    if (view.status_left_len > 0 or view.status_right_len > 0) {
+        if (view.status_left_len > 0) {
+            const left = try doc.createText(view.status_left[0..view.status_left_len]);
+            _ = try bar.appendChild(left);
+        }
+        if (view.status_right_len > 0) {
+            const right = try doc.createElement(.div);
+            right.setStyle(.{
+                .position = .absolute,
+                .right = .{ .cells = 0 },
+                .top = .{ .cells = 0 },
+                .white_space = .pre,
+            });
+            const text = try doc.createText(view.status_right[0..view.status_right_len]);
+            _ = try right.appendChild(text);
+            _ = try bar.appendChild(right);
+        }
+        _ = try root.appendChild(bar);
+        return;
+    }
 
     var status_buf: [1024]u8 = undefined;
     const position = editor.modelCursorPosition();
