@@ -739,6 +739,14 @@ pub const Workbench = struct {
         };
     }
 
+    pub fn fileWatcherHandle(self: *const Workbench) ?*anyopaque {
+        const watcher = self.settings_watcher orelse return null;
+        return switch (watcher.waitHandle()) {
+            .handle => |handle| handle,
+            else => null,
+        };
+    }
+
     pub fn fileWatcherTimeout(self: *const Workbench, now_ms: i64) ?u32 {
         const watcher = self.settings_watcher orelse return null;
         return watcher.nextTimeout(now_ms);

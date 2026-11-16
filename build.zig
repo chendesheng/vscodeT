@@ -16,9 +16,13 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const watcher_only = b.option(bool, "watcher-only", "Build only the file-watcher tests") orelse false;
+    const onig_paths = OnigPaths{
+        .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h"),
+        .lib_dir = b.option([]const u8, "onig-lib", "Directory containing the oniguruma library"),
+    };
 
     if (!watcher_only) {
-        const onig = onigModule(b, target, optimize);
+        const onig = onigModule(b, target, optimize, onig_paths);
 
         const vscode_textmate_dep = b.dependency("vscode_textmate", .{ .target = target, .optimize = optimize });
         const vscode_textmate = vscode_textmate_dep.module("vscode_textmate");
@@ -42,7 +46,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("ui", ui);
         exe.root_module.addImport("markdown", markdown);
         exe.root_module.addImport("vscode-syntax", vscode_syntax);
-        addOnigLibraryPath(b, exe.root_module);
+        addOnigLibraryPath(b, exe.root_module, onig_paths);
         exe.root_module.linkSystemLibrary("onig", .{});
 
         // This declares intent for the executable to be installed into the
@@ -61,7 +65,7 @@ pub fn build(b: *std.Build) void {
         const run_step = b.step("run", "Run the app");
         run_step.dependOn(&run_cmd.step);
 
-        setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax);
+        setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax, onig_paths);
     }
 
     setupWatcherTests(b, target, optimize);
@@ -243,8 +247,13 @@ fn vscodeSyntaxAssets(
 ///
 /// Search the usual Linux and macOS install prefixes instead of assuming a
 /// single Homebrew location.
-fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) *std.Build.Module {
-    const include_dir = onigIncludeDir(b) orelse @panic(
+const OnigPaths = struct {
+    include_dir: ?[]const u8 = null,
+    lib_dir: ?[]const u8 = null,
+};
+
+fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, paths: OnigPaths) *std.Build.Module {
+    const include_dir = onigIncludeDir(b, paths) orelse @panic(
         "oniguruma.h not found; install oniguruma " ++
             "(macOS: brew install oniguruma, Debian/Ubuntu: apt install libonig-dev)",
     );
@@ -258,7 +267,7 @@ fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
 
     const module = translate.createModule();
     module.addIncludePath(.{ .cwd_relative = include_dir });
-    addOnigLibraryPath(b, module);
+    addOnigLibraryPath(b, module, paths);
     module.linkSystemLibrary("onig", .{});
     return module;
 }
@@ -277,7 +286,11 @@ const onig_lib_candidates = [_][]const u8{
     "/usr/lib",
 };
 
-fn onigIncludeDir(b: *std.Build) ?[]const u8 {
+fn onigIncludeDir(b: *std.Build, paths: OnigPaths) ?[]const u8 {
+    if (paths.include_dir) |dir| {
+        const header = std.fmt.allocPrint(b.allocator, "{s}/oniguruma.h", .{dir}) catch @panic("OOM");
+        if (std.Io.Dir.accessAbsolute(b.graph.io, header, .{})) |_| return dir else |_| {}
+    }
     for (onig_include_candidates) |dir| {
         const header = std.fmt.allocPrint(b.allocator, "{s}/oniguruma.h", .{dir}) catch @panic("OOM");
         if (std.Io.Dir.accessAbsolute(b.graph.io, header, .{})) |_| return dir else |_| {}
@@ -285,9 +298,13 @@ fn onigIncludeDir(b: *std.Build) ?[]const u8 {
     return null;
 }
 
-fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module) void {
+fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module, paths: OnigPaths) void {
+    if (paths.lib_dir) |dir| {
+        module.addLibraryPath(.{ .cwd_relative = dir });
+        return;
+    }
     for (onig_lib_candidates) |dir| {
-        const names = [_][]const u8{ "libonig.so", "libonig.dylib", "libonig.a" };
+        const names = [_][]const u8{ "libonig.so", "libonig.dylib", "libonig.a", "onig.lib" };
         for (names) |name| {
             const lib = std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ dir, name }) catch @panic("OOM");
             if (std.Io.Dir.accessAbsolute(b.graph.io, lib, .{})) |_| {
@@ -318,7 +335,7 @@ fn setupWatcherTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: 
     check_watcher_step.dependOn(&watcher_tests.step);
 }
 
-fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, vscode_textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, vscode_textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module, onig_paths: OnigPaths) void {
     const test_step = b.step("test", "Run all tests");
 
     const tests = b.addTest(.{
@@ -334,7 +351,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     tests.root_module.addImport("ui", ui);
     tests.root_module.addImport("markdown", markdown);
     tests.root_module.addImport("vscode-syntax", vscode_syntax);
-    addOnigLibraryPath(b, tests.root_module);
+    addOnigLibraryPath(b, tests.root_module, onig_paths);
     tests.root_module.linkSystemLibrary("onig", .{});
 
     const run_tests = b.addRunArtifact(tests);

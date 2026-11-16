@@ -1,6 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
-const posix = std.posix;
 const tui = @import("./tui.zig");
 const cellBorders = @import("./cellBorders.zig");
 const ui = @import("ui");
@@ -130,13 +130,13 @@ pub fn main(init: std.process.Init) !void {
             editor.deinit();
             allocator.destroy(editor);
         }
-        try runPreview(allocator, out, editor, size);
+        try runPreview(allocator, io, out, editor, size);
         return;
     }
 
     // Probe once, inside the alternate screen, before the first frame: the
     // answer decides whether borders reserve cells or paint on cell edges.
-    const border_probe = try cellBorders.probe(allocator, out);
+    const border_probe = try cellBorders.probe(allocator, io, out);
     defer border_probe.deinit(allocator);
 
     var folders = ArrayList([]u8).init(allocator);
@@ -295,7 +295,10 @@ pub fn main(init: std.process.Init) !void {
             timeout = @min(timeout, @as(i32, @intCast(@min(watcher_timeout, 250))));
         }
 
-        const polled = try tui.pollInputWithFd(workbench.fileWatcherFd(), timeout);
+        const polled = if (builtin.os.tag == .windows)
+            try tui.pollInputWithHandle(workbench.fileWatcherHandle(), timeout)
+        else
+            try tui.pollInputWithFd(workbench.fileWatcherFd(), timeout);
         if (polled.extra) {
             if (workbench.pollFileWatcher(time_compat.milliTimestamp())) needs_render = true;
         }
@@ -326,7 +329,7 @@ pub fn main(init: std.process.Init) !void {
         // Leftover bytes from the capability probe are processed before a new
         // read; both the border reply and DA1 are ignored by the decoder.
         if (input_buffer.items.len == 0) {
-            _ = try tui.readFd(posix.STDIN_FILENO, &input_buffer);
+            _ = try tui.readFd(io, 0, &input_buffer);
         }
 
         var events = try input.decode(allocator, input_buffer.items);
@@ -591,7 +594,7 @@ fn syncCursor(out: *Io.Writer, view: *View) !void {
     }
 }
 
-fn runPreview(allocator: std.mem.Allocator, out: *Io.Writer, editor: *Editor, initial_size: tui.Size) !void {
+fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Editor, initial_size: tui.Size) !void {
     var size = initial_size;
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
@@ -621,7 +624,7 @@ fn runPreview(allocator: std.mem.Allocator, out: *Io.Writer, editor: *Editor, in
         if (!ready) continue;
 
         input_buffer.clearRetainingCapacity();
-        const bytes = try tui.readFd(posix.STDIN_FILENO, &input_buffer);
+        const bytes = try tui.readFd(io, 0, &input_buffer);
 
         var events = try ui.input.decode(allocator, bytes);
         defer events.deinit(allocator);

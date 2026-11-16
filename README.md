@@ -35,14 +35,14 @@ Notes for the Zig 0.17 port:
 ## Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`
-suite on Linux (inotify) and macOS (kqueue), the watcher-only suite on Windows
-(`ReadDirectoryChangesW`), and cross-compiles the watcher-only test root for
-`x86_64-windows` and `aarch64-macos` on Linux. The Linux and macOS jobs check
-out the pinned upstream VS Code grammar and theme assets into `../vscode`, so the
+suite on Linux (inotify), macOS (kqueue) and Windows (`ReadDirectoryChangesW`),
+and cross-compiles the watcher-only test root for `x86_64-windows` and
+`aarch64-macos` on Linux. The Linux and macOS jobs check out the pinned
+upstream VS Code grammar and theme assets into `../vscode`, so the
 tokenizer/theme tests run against the real assets instead of the fallback
-theme. The Windows job cannot run the full TUI suite because the terminal layer
-is POSIX-only; it and the cross-compile job use `-Dwatcher-only=true`, which
-skips the oniguruma-dependent editor build.
+theme. The Windows job installs oniguruma with vcpkg and passes
+`-Donig-include`/`-Donig-lib` to the build; the terminal layer uses the Windows
+console API for raw mode, sizing and input polling.
 
 ## Design docs
 

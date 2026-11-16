@@ -8,7 +8,6 @@
 //! the wire format and parser live in `ui/cell_border.zig`.
 
 const std = @import("std");
-const posix = std.posix;
 const ui = @import("ui");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
 const tui = @import("./tui.zig");
@@ -28,7 +27,7 @@ pub const Result = struct {
     }
 };
 
-pub fn probe(allocator: std.mem.Allocator, out: *std.Io.Writer) !Result {
+pub fn probe(allocator: std.mem.Allocator, io: std.Io, out: *std.Io.Writer) !Result {
     try out.writeAll(ui.cell_border.query);
     try out.writeAll(ui.cell_border.da1);
     try out.flush();
@@ -43,7 +42,7 @@ pub fn probe(allocator: std.mem.Allocator, out: *std.Io.Writer) !Result {
         const remaining: i32 = @intCast(@min(deadline - now, timeout_ms));
         if (!try tui.pollInput(remaining)) break;
         const before = buffer.items.len;
-        _ = try tui.readFd(posix.STDIN_FILENO, &buffer);
+        _ = try tui.readFd(io, 0, &buffer);
         // A readable fd with no bytes is EOF (piped stdin); stop instead of
         // spinning until the deadline.
         if (buffer.items.len == before) break;

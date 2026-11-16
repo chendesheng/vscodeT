@@ -85,17 +85,25 @@ jobs:
         run: zig build test --summary all
 
   windows:
-    name: Windows (watcher test suite)
+    name: Windows (full test suite)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - name: Compile watcher tests
-        run: zig build check-watcher -Dwatcher-only=true
-      - name: Run watcher tests
-        run: zig build test-watcher -Dwatcher-only=true --summary all
+      - name: Install oniguruma
+        shell: pwsh
+        run: |
+          $vcpkg = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
+          & "$vcpkg\vcpkg.exe" install oniguruma:x64-windows
+          "ONIG_DIR=$vcpkg\installed\x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build
+        shell: pwsh
+        run: zig build "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"
+      - name: Test
+        shell: pwsh
+        run: zig build test --summary all "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"
 
   cross-compile:
     name: Cross-compile watcher for Windows and macOS

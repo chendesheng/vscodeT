@@ -1,12 +1,81 @@
 // https://viewsourcecode.org/snaptoken/kilo/index.html
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const ArrayList = std.array_list.Managed;
 const posix = std.posix;
-const termios = posix.system.termios;
 const Allocator = std.mem.Allocator;
 
-pub fn enableRawMode() !termios {
+const is_windows = builtin.os.tag == .windows;
+const windows = std.os.windows;
+
+const STD_INPUT_HANDLE: windows.DWORD = @bitCast(@as(i32, -10));
+const STD_OUTPUT_HANDLE: windows.DWORD = @bitCast(@as(i32, -11));
+
+const ENABLE_PROCESSED_INPUT: windows.DWORD = 0x0001;
+const ENABLE_LINE_INPUT: windows.DWORD = 0x0002;
+const ENABLE_ECHO_INPUT: windows.DWORD = 0x0004;
+const ENABLE_WINDOW_INPUT: windows.DWORD = 0x0008;
+const ENABLE_MOUSE_INPUT: windows.DWORD = 0x0010;
+const ENABLE_EXTENDED_FLAGS: windows.DWORD = 0x0080;
+const ENABLE_VIRTUAL_TERMINAL_INPUT: windows.DWORD = 0x0200;
+const ENABLE_PROCESSED_OUTPUT: windows.DWORD = 0x0001;
+const ENABLE_VIRTUAL_TERMINAL_PROCESSING: windows.DWORD = 0x0004;
+const DISABLE_NEWLINE_AUTO_RETURN: windows.DWORD = 0x0008;
+
+const WAIT_OBJECT_0: windows.DWORD = 0;
+const WAIT_TIMEOUT: windows.DWORD = 258;
+const WAIT_FAILED: windows.DWORD = 0xFFFFFFFF;
+const INFINITE: windows.DWORD = 0xFFFFFFFF;
+
+const COORD = extern struct {
+    x: i16,
+    y: i16,
+};
+
+const SMALL_RECT = extern struct {
+    left: i16,
+    top: i16,
+    right: i16,
+    bottom: i16,
+};
+
+const ConsoleScreenBufferInfo = extern struct {
+    size: COORD,
+    cursor_position: COORD,
+    attributes: u16,
+    window: SMALL_RECT,
+    maximum_window_size: COORD,
+};
+
+extern "kernel32" fn GetStdHandle(std_handle: windows.DWORD) callconv(.winapi) windows.HANDLE;
+extern "kernel32" fn GetConsoleMode(handle: windows.HANDLE, mode: *windows.DWORD) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn SetConsoleMode(handle: windows.HANDLE, mode: windows.DWORD) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn GetConsoleScreenBufferInfo(handle: windows.HANDLE, info: *ConsoleScreenBufferInfo) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn WaitForSingleObject(handle: windows.HANDLE, milliseconds: windows.DWORD) callconv(.winapi) windows.DWORD;
+extern "kernel32" fn WaitForMultipleObjects(
+    count: windows.DWORD,
+    handles: [*]const windows.HANDLE,
+    wait_all: windows.BOOL,
+    milliseconds: windows.DWORD,
+) callconv(.winapi) windows.DWORD;
+
+/// Platform-specific state saved by `enableRawMode`.
+pub const RawModeState = if (is_windows) WindowsRawMode else posix.termios;
+
+const WindowsRawMode = struct {
+    input: ?windows.HANDLE = null,
+    input_mode: windows.DWORD = 0,
+    output: ?windows.HANDLE = null,
+    output_mode: windows.DWORD = 0,
+};
+
+pub fn enableRawMode() !RawModeState {
+    if (is_windows) return enableRawModeWindows();
+    return enableRawModePosix();
+}
+
+fn enableRawModePosix() !posix.termios {
     const orig_termios = try posix.tcgetattr(posix.STDIN_FILENO);
     var raw = orig_termios;
 
@@ -20,7 +89,7 @@ pub fn enableRawMode() !termios {
     raw.iflag.IXON = false;
     raw.iflag.ICRNL = false;
 
-    // Disable post‑processing of output
+    // Disable post-processing of output
     raw.oflag.OPOST = false;
 
     raw.cc[@backingInt(posix.system.V.MIN)] = 0;
@@ -29,6 +98,35 @@ pub fn enableRawMode() !termios {
     try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.FLUSH, raw);
 
     return orig_termios;
+}
+
+fn enableRawModeWindows() !WindowsRawMode {
+    var state = WindowsRawMode{};
+
+    const input = GetStdHandle(STD_INPUT_HANDLE);
+    if (input != null and input != windows.INVALID_HANDLE_VALUE) {
+        if (GetConsoleMode(input, &state.input_mode) != .FALSE) {
+            state.input = input;
+            var mode = state.input_mode;
+            mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+            mode |= ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS;
+            mode |= ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT;
+            _ = SetConsoleMode(input, mode);
+        }
+    }
+
+    const output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (output != null and output != windows.INVALID_HANDLE_VALUE) {
+        if (GetConsoleMode(output, &state.output_mode) != .FALSE) {
+            state.output = output;
+            var mode = state.output_mode;
+            mode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            mode &= ~DISABLE_NEWLINE_AUTO_RETURN;
+            _ = SetConsoleMode(output, mode);
+        }
+    }
+
+    return state;
 }
 
 pub fn enableLineWrap(out: anytype) !void {
@@ -58,8 +156,17 @@ pub fn disableMouseCapture(out: anytype) !void {
     try writeAll(out, "\x1b[?1006l\x1b[?1003l");
 }
 
-pub fn disableRawMode(orig_termios: termios) !void {
-    try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.FLUSH, orig_termios);
+pub fn disableRawMode(state: RawModeState) !void {
+    if (is_windows) {
+        disableRawModeWindows(state);
+        return;
+    }
+    try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.FLUSH, state);
+}
+
+fn disableRawModeWindows(state: WindowsRawMode) void {
+    if (state.input) |handle| _ = SetConsoleMode(handle, state.input_mode);
+    if (state.output) |handle| _ = SetConsoleMode(handle, state.output_mode);
 }
 
 pub fn writeAll(writer: anytype, text: []const u8) !void {
@@ -93,12 +200,23 @@ pub const Size = struct {
 };
 
 pub fn getTerminalSize() !Size {
+    if (is_windows) return getTerminalSizeWindows();
     var size: posix.winsize = std.mem.zeroes(posix.winsize);
     _ = posix.system.ioctl(posix.STDOUT_FILENO, posix.T.IOCGWINSZ, @intFromPtr(&size));
     return .{
         .width = if (size.col == 0) 80 else size.col,
         .height = if (size.row == 0) 24 else size.row,
     };
+}
+
+fn getTerminalSizeWindows() !Size {
+    const handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (handle == null or handle == windows.INVALID_HANDLE_VALUE) return .{ .width = 80, .height = 24 };
+    var info: ConsoleScreenBufferInfo = undefined;
+    if (GetConsoleScreenBufferInfo(handle, &info) == .FALSE) return .{ .width = 80, .height = 24 };
+    const width: usize = @intCast(@max(info.window.right - info.window.left + 1, 1));
+    const height: usize = @intCast(@max(info.window.bottom - info.window.top + 1, 1));
+    return .{ .width = width, .height = height };
 }
 
 pub fn clearScreen(out: anytype) !void {
@@ -125,8 +243,6 @@ pub fn getCursorPosition(io: Io) !Point {
     };
 
     // Example response: ESC [ 12 ; 40 R
-
-    // Strip prefix: "\x1b["
     if (response.len < 2 or response[0] != 0x1B or response[1] != '[') {
         return error.InvalidCursorResponse;
     }
@@ -162,16 +278,16 @@ pub fn showCursor(out: anytype) !void {
     try writeAll(out, "\x1b[?25h");
 }
 
-var g_orig_termios: ?std.posix.termios = null;
-pub fn rememberOrigTermios(t: std.posix.termios) void {
-    g_orig_termios = t;
+var g_orig_state: ?RawModeState = null;
+pub fn rememberOrigTermios(state: RawModeState) void {
+    g_orig_state = state;
 }
 
 pub const panic = std.debug.FullPanic(myPanic);
 
 pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
-    if (g_orig_termios) |t| {
-        _ = std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, t) catch {};
+    if (g_orig_state) |state| {
+        disableRawMode(state) catch {};
     }
 
     const io = Io.Threaded.global_single_threaded.io();
@@ -183,12 +299,27 @@ pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
 }
 
 var resized = std.atomic.Value(bool).init(false);
+var windows_last_size: Size = .{ .width = 0, .height = 0 };
+var windows_size_initialized = false;
 
 fn handleSigWinch(_: posix.SIG) callconv(.c) void {
     resized.store(true, .seq_cst);
 }
 
 pub fn resizedSize() !?Size {
+    if (is_windows) {
+        const current = try getTerminalSize();
+        if (!windows_size_initialized) {
+            windows_size_initialized = true;
+            windows_last_size = current;
+            return null;
+        }
+        if (current.width != windows_last_size.width or current.height != windows_last_size.height) {
+            windows_last_size = current;
+            return current;
+        }
+        return null;
+    }
     if (resized.swap(false, .seq_cst)) {
         return try getTerminalSize();
     } else {
@@ -197,6 +328,7 @@ pub fn resizedSize() !?Size {
 }
 
 pub fn installSigWinch() !void {
+    if (is_windows) return;
     var sa: posix.Sigaction = .{
         .handler = .{ .handler = handleSigWinch },
         .mask = posix.sigemptyset(),
@@ -205,7 +337,13 @@ pub fn installSigWinch() !void {
     posix.sigaction(posix.SIG.WINCH, &sa, null);
 }
 
-pub fn readFd(fd: posix.fd_t, buffer: *ArrayList(u8)) ![]const u8 {
+pub fn readFd(io: Io, fd: anytype, buffer: *ArrayList(u8)) ![]const u8 {
+    if (is_windows) {
+        var tmp: [4096]u8 = undefined;
+        const n = Io.File.stdin().readStreaming(io, &.{tmp[0..]}) catch 0;
+        if (n > 0) try buffer.appendSlice(tmp[0..n]);
+        return buffer.items;
+    }
     var tmp: [32]u8 = undefined;
     while (true) {
         const n = try posix.read(fd, &tmp);
@@ -219,6 +357,13 @@ pub fn readFd(fd: posix.fd_t, buffer: *ArrayList(u8)) ![]const u8 {
 }
 
 pub fn pollInput(timeout_ms: i32) !bool {
+    if (is_windows) {
+        const handle = GetStdHandle(STD_INPUT_HANDLE);
+        if (handle == null or handle == windows.INVALID_HANDLE_VALUE) return false;
+        const milliseconds: windows.DWORD = if (timeout_ms < 0) INFINITE else @intCast(timeout_ms);
+        const result = WaitForSingleObject(handle, milliseconds);
+        return result == WAIT_OBJECT_0;
+    }
     var fds = [_]posix.pollfd{.{
         .fd = posix.STDIN_FILENO,
         .events = posix.POLL.IN,
@@ -233,9 +378,9 @@ pub const PollResult = struct {
     extra: bool,
 };
 
-/// Polls stdin plus an optional extra fd (the file watcher's inotify/kqueue
-/// handle). The caller drains the extra fd when `extra` is true.
-pub fn pollInputWithFd(extra_fd: ?posix.fd_t, timeout_ms: i32) !PollResult {
+/// Polls stdin plus an optional extra POSIX fd (the file watcher's
+/// inotify/kqueue handle). The caller drains the extra fd when `extra` is true.
+pub fn pollInputWithFd(extra_fd: ?i32, timeout_ms: i32) !PollResult {
     var fds = [_]posix.pollfd{
         .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
         .{ .fd = extra_fd orelse -1, .events = posix.POLL.IN, .revents = 0 },
@@ -246,5 +391,32 @@ pub fn pollInputWithFd(extra_fd: ?posix.fd_t, timeout_ms: i32) !PollResult {
     return .{
         .input = fds[0].revents != 0,
         .extra = count == 2 and fds[1].revents != 0,
+    };
+}
+
+/// Windows variant of `pollInputWithFd`, using the watcher's native handle.
+pub fn pollInputWithHandle(extra_handle: ?windows.HANDLE, timeout_ms: i32) !PollResult {
+    if (!is_windows) return pollInputWithFd(null, timeout_ms);
+
+    var handles: [2]windows.HANDLE = undefined;
+    const stdin = GetStdHandle(STD_INPUT_HANDLE);
+    if (stdin == null or stdin == windows.INVALID_HANDLE_VALUE) {
+        return .{ .input = false, .extra = false };
+    }
+    handles[0] = stdin;
+    var count: windows.DWORD = 1;
+    if (extra_handle) |handle| {
+        handles[1] = handle;
+        count = 2;
+    }
+
+    const milliseconds: windows.DWORD = if (timeout_ms < 0) INFINITE else @intCast(timeout_ms);
+    const result = WaitForMultipleObjects(count, &handles, .FALSE, milliseconds);
+    if (result == WAIT_TIMEOUT or result == WAIT_FAILED) {
+        return .{ .input = false, .extra = false };
+    }
+    return .{
+        .input = result == WAIT_OBJECT_0,
+        .extra = count == 2 and result == WAIT_OBJECT_0 + 1,
     };
 }
