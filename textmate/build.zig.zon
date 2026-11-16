@@ -35,6 +35,7 @@
         "src/tests/resolver.zig",
         "src/tests/themedTokenizer.zig",
         "src/tests/themes.test.zig",
+        "src/tests/json.test.zig",
         "test-cases",
     },
 }

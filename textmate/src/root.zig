@@ -46,4 +46,5 @@ test {
     _ = @import("tests/theme.test.zig");
     _ = @import("tests/tokenization.test.zig");
     _ = @import("tests/themes.test.zig");
+    _ = @import("tests/json.test.zig");
 }
