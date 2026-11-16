@@ -24,7 +24,12 @@ pub fn build(b: *std.Build) void {
     if (!watcher_only) {
         const onig = onigModule(b, target, optimize, onig_paths);
 
-        const vscode_textmate_dep = b.dependency("vscode_textmate", .{ .target = target, .optimize = optimize });
+        const vscode_textmate_dep = b.dependency("vscode_textmate", .{
+            .target = target,
+            .optimize = optimize,
+            .@"onig-include" = onig_paths.include_dir orelse "",
+            .@"onig-lib" = onig_paths.lib_dir orelse "",
+        });
         const vscode_textmate = vscode_textmate_dep.module("vscode_textmate");
         const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
         const ui = ui_dep.module("ui");

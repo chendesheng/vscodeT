@@ -4,7 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const onig = onigModule(b, target, optimize);
+    const onig_paths = OnigPaths{
+        .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h") orelse "",
+        .lib_dir = b.option([]const u8, "onig-lib", "Directory containing the oniguruma library") orelse "",
+    };
+    const onig = onigModule(b, target, optimize, onig_paths);
 
     const module = b.addModule("vscode_textmate", .{
         .root_source_file = b.path("src/root.zig"),
@@ -44,8 +48,13 @@ pub fn build(b: *std.Build) void {
 
 /// Translates the oniguruma C header into a Zig module. Zig 0.17 removed
 /// `@cImport`, so the build system performs the translation.
-fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) *std.Build.Module {
-    const include_dir = onigIncludeDir(b) orelse @panic(
+const OnigPaths = struct {
+    include_dir: []const u8 = "",
+    lib_dir: []const u8 = "",
+};
+
+fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, paths: OnigPaths) *std.Build.Module {
+    const include_dir = onigIncludeDir(b, paths) orelse @panic(
         "oniguruma.h not found; install oniguruma " ++
             "(macOS: brew install oniguruma, Debian/Ubuntu: apt install libonig-dev)",
     );
@@ -59,7 +68,7 @@ fn onigModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
 
     const module = translate.createModule();
     module.addIncludePath(.{ .cwd_relative = include_dir });
-    addOnigLibraryPath(b, module);
+    addOnigLibraryPath(b, module, paths);
     module.linkSystemLibrary("onig", .{});
     return module;
 }
@@ -78,7 +87,11 @@ const onig_lib_candidates = [_][]const u8{
     "/usr/lib",
 };
 
-fn onigIncludeDir(b: *std.Build) ?[]const u8 {
+fn onigIncludeDir(b: *std.Build, paths: OnigPaths) ?[]const u8 {
+    if (paths.include_dir.len > 0) {
+        const header = std.fmt.allocPrint(b.allocator, "{s}/oniguruma.h", .{paths.include_dir}) catch @panic("OOM");
+        if (std.Io.Dir.accessAbsolute(b.graph.io, header, .{})) |_| return paths.include_dir else |_| {}
+    }
     for (onig_include_candidates) |dir| {
         const header = std.fmt.allocPrint(b.allocator, "{s}/oniguruma.h", .{dir}) catch @panic("OOM");
         if (std.Io.Dir.accessAbsolute(b.graph.io, header, .{})) |_| return dir else |_| {}
@@ -86,9 +99,13 @@ fn onigIncludeDir(b: *std.Build) ?[]const u8 {
     return null;
 }
 
-fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module) void {
+fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module, paths: OnigPaths) void {
+    if (paths.lib_dir.len > 0) {
+        module.addLibraryPath(.{ .cwd_relative = paths.lib_dir });
+        return;
+    }
     for (onig_lib_candidates) |dir| {
-        const names = [_][]const u8{ "libonig.so", "libonig.dylib", "libonig.a" };
+        const names = [_][]const u8{ "libonig.so", "libonig.dylib", "libonig.a", "onig.lib" };
         for (names) |name| {
             const lib = std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ dir, name }) catch @panic("OOM");
             if (std.Io.Dir.accessAbsolute(b.graph.io, lib, .{})) |_| {
