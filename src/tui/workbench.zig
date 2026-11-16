@@ -1,10 +1,17 @@
 //! The multi-file terminal workbench: an editor-part-like shell over the
 //! ported editor-groups service and `EditorGroupModel`.
 //!
-//! Layout is the terminal adaptation of the workbench editor part and of
-//! `vs/base/browser/ui/grid`: every group gets a tab row and an editor pane,
-//! groups are arranged in an oriented split tree, and the workbench composites
-//! all visible panes into one frame before encoding a single ANSI diff. Each
+//! Upstream counterparts are `src/vs/workbench/browser/parts/editor/editorPart.ts`,
+//! `editorGroupView.ts`, `editorPanes.ts` and `src/vs/base/browser/ui/grid/grid.ts`.
+//! The split tree itself is the upstream-shaped port in
+//! `src/vs/base/browser/ui/grid/grid.zig`, and drop-zone decisions live in
+//! `src/vs/workbench/browser/parts/editor/editorDropTarget.zig`; this file
+//! remains the TUI editor-part adapter because the group views, panes and tab
+//! rows are terminal-specific.
+//!
+//! Every group gets a tab row and an editor pane, groups are arranged in an
+//! oriented split tree, and the workbench composites all visible panes into one
+//! frame before encoding a single ANSI diff. Each
 //! tab owns a persistent `View`, so switching tabs or groups keeps scroll
 //! position and decorations. The port keeps Grid's branch-demotion behavior
 //! when a group empties, its sash resize, and tab drag/drop into a group or
@@ -27,6 +34,8 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const ui = @import("ui");
+const grid_mod = @import("../vs/base/browser/ui/grid/grid.zig");
+const editor_drop_target = @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig");
 const tui = @import("./tui.zig");
 const Tab = @import("./tab.zig").Tab;
 const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
@@ -71,7 +80,7 @@ const Range = @import("../vs/editor/common/core/range.zig").Range;
 const SearchOption = @import("./searchWidget.zig").Option;
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
-pub const SplitDirection = enum { horizontal, vertical };
+pub const SplitDirection = grid_mod.Orientation;
 pub const Focus = enum { editor, sidebar };
 
 /// Pane chrome for the terminal editor part. The active pane's outline uses
@@ -87,22 +96,11 @@ const min_pane_height: usize = 3;
 /// A tab drag can drop in the middle of a pane (move into that group) or on an
 /// edge (split that pane and move into the new group), mirroring the drop
 /// locations of VS Code's grid.
-const DropZone = enum { center, left, right, top, bottom };
-const DropTarget = struct { pane: *GroupPane, zone: DropZone };
+const DropZone = editor_drop_target.Zone;
+const DropTarget = editor_drop_target.Target(*GroupPane);
 const PendingTabDrag = struct { pane: *GroupPane, tab: *Tab, x: usize, y: usize };
 
-const LayoutNode = struct {
-    kind: union(enum) {
-        leaf: *GroupPane,
-        split: struct {
-            direction: SplitDirection,
-            ratio: f64,
-            first: *LayoutNode,
-            second: *LayoutNode,
-        },
-    },
-    rect: ui.Rect = .{},
-};
+const LayoutNode = grid_mod.Node(*GroupPane);
 
 /// One editor group in the terminal editor part: the group model plus the tabs
 /// (views/controllers) and the cell rectangle it occupies.
@@ -234,7 +232,7 @@ pub const Workbench = struct {
 
         const pane = try self.createPane(self.service.activeGroup());
         self.layout = try self.createLeaf(pane);
-        errdefer self.destroyLayout(self.layout);
+        errdefer grid_mod.deinitRoot(*GroupPane, self.allocator, self.layout);
 
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
@@ -312,7 +310,7 @@ pub const Workbench = struct {
 
         const pane = try self.createPane(group);
         self.layout = try self.createLeaf(pane);
-        errdefer self.destroyLayout(self.layout);
+        errdefer grid_mod.deinitRoot(*GroupPane, self.allocator, self.layout);
 
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
@@ -400,11 +398,10 @@ pub const Workbench = struct {
         self.layout = undefined;
         for (self.service.groups.items, 0..) |group, index| {
             const pane = try self.createPane(group);
-            const leaf = try self.createLeaf(pane);
             if (index == 0) {
-                self.layout = leaf;
+                self.layout = try self.createLeaf(pane);
             } else {
-                self.layout = try self.createSplit(.horizontal, self.layout, leaf);
+                try grid_mod.splitRoot(*GroupPane, self.allocator, &self.layout, self.panes.items[index - 1], .horizontal, pane, false);
             }
 
             const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
@@ -599,7 +596,7 @@ pub const Workbench = struct {
             self.allocator.destroy(pane);
         }
         self.panes.deinit();
-        self.destroyLayout(self.layout);
+        grid_mod.deinitRoot(*GroupPane, self.allocator, self.layout);
         self.frame.deinit();
         self.allocator.destroy(self);
     }
@@ -617,31 +614,7 @@ pub const Workbench = struct {
     }
 
     fn createLeaf(self: *Workbench, pane: *GroupPane) !*LayoutNode {
-        const node = try self.allocator.create(LayoutNode);
-        node.* = .{ .kind = .{ .leaf = pane } };
-        return node;
-    }
-
-    fn createSplit(self: *Workbench, direction: SplitDirection, first: *LayoutNode, second: *LayoutNode) !*LayoutNode {
-        const node = try self.allocator.create(LayoutNode);
-        node.* = .{ .kind = .{ .split = .{
-            .direction = direction,
-            .ratio = 0.5,
-            .first = first,
-            .second = second,
-        } } };
-        return node;
-    }
-
-    fn destroyLayout(self: *Workbench, node: *LayoutNode) void {
-        switch (node.kind) {
-            .leaf => {},
-            .split => |split| {
-                self.destroyLayout(split.first);
-                self.destroyLayout(split.second);
-            },
-        }
-        self.allocator.destroy(node);
+        return grid_mod.initNode(*GroupPane, self.allocator, pane);
     }
 
     fn sidebarWidth(self: *const Workbench) usize {
@@ -894,7 +867,8 @@ pub const Workbench = struct {
                 .h = @floatFromInt(self.rows),
             };
         }
-        self.computeLayout(self.layout, rect);
+        grid_mod.layoutRoot(*GroupPane, self.layout, rect, self, paneGapCallback);
+        syncPaneRects(self.layout);
         for (self.panes.items) |pane| {
             for (pane.tabs.items) |tab| {
                 tab.editor.setViewport(
@@ -903,42 +877,6 @@ pub const Workbench = struct {
                 );
                 tab.view.resize() catch {};
             }
-        }
-    }
-
-    fn computeLayout(self: *Workbench, node: *LayoutNode, rect: ui.Rect) void {
-        node.rect = rect;
-        switch (node.kind) {
-            .leaf => |pane| pane.rect = rect,
-            .split => |split| {
-                if (split.direction == .horizontal) {
-                    const gap = self.paneGap(split.direction, rect);
-                    const available = @max(rect.w - gap, 0);
-                    const first_width = @floor(available * split.ratio);
-                    const first = ui.Rect{ .x = rect.x, .y = rect.y, .w = first_width, .h = rect.h };
-                    const second = ui.Rect{
-                        .x = rect.x + first_width + gap,
-                        .y = rect.y,
-                        .w = @max(rect.w - first_width - gap, 0),
-                        .h = rect.h,
-                    };
-                    self.computeLayout(split.first, first);
-                    self.computeLayout(split.second, second);
-                } else {
-                    const gap = self.paneGap(split.direction, rect);
-                    const available = @max(rect.h - gap, 0);
-                    const first_height = @floor(available * split.ratio);
-                    const first = ui.Rect{ .x = rect.x, .y = rect.y, .w = rect.w, .h = first_height };
-                    const second = ui.Rect{
-                        .x = rect.x,
-                        .y = rect.y + first_height + gap,
-                        .w = rect.w,
-                        .h = @max(rect.h - first_height - gap, 0),
-                    };
-                    self.computeLayout(split.first, first);
-                    self.computeLayout(split.second, second);
-                }
-            },
         }
     }
 
@@ -953,34 +891,25 @@ pub const Workbench = struct {
         };
     }
 
+    fn paneGapCallback(self: *const Workbench, direction: grid_mod.Orientation, rect: ui.Rect) f64 {
+        return self.paneGap(direction, rect);
+    }
+
+    fn syncPaneRects(node: *LayoutNode) void {
+        switch (node.kind) {
+            .leaf => |pane| pane.rect = node.rect,
+            .split => |split| {
+                syncPaneRects(split.first);
+                syncPaneRects(split.second);
+            },
+        }
+    }
+
     /// Removes a leaf from the split tree and promotes its sibling, the
     /// terminal equivalent of Grid's branch demotion when the last view leaves
     /// a group. The root leaf is kept: the workbench always has one group.
     fn removePaneFromLayout(self: *Workbench, target: *GroupPane) bool {
-        if (self.layout.kind == .leaf) return false;
-        return self.removePaneFromNode(self.layout, target);
-    }
-
-    fn removePaneFromNode(self: *Workbench, node: *LayoutNode, target: *GroupPane) bool {
-        switch (node.kind) {
-            .leaf => return false,
-            .split => |*split| {
-                const first_matches = split.first.kind == .leaf and split.first.kind.leaf == target;
-                const second_matches = split.second.kind == .leaf and split.second.kind.leaf == target;
-                if (first_matches or second_matches) {
-                    const keep = if (first_matches) split.second else split.first;
-                    const removed = if (first_matches) split.first else split.second;
-                    self.allocator.destroy(removed);
-                    // Promote the sibling into this node, then release only the
-                    // sibling container: its children now belong to `node`.
-                    node.* = keep.*;
-                    self.allocator.destroy(keep);
-                    return true;
-                }
-                return self.removePaneFromNode(split.first, target) or
-                    self.removePaneFromNode(split.second, target);
-            },
-        }
+        return grid_mod.removeRoot(*GroupPane, self.allocator, &self.layout, target);
     }
 
     /// Removes an empty pane from the grid and the editor-group service,
@@ -1000,33 +929,6 @@ pub const Workbench = struct {
         pane.deinit();
         self.allocator.destroy(pane);
         self.layoutAll();
-    }
-
-    fn replaceLeaf(self: *Workbench, target: *GroupPane, replacement: *LayoutNode) bool {
-        if (self.layout.kind == .leaf and self.layout.kind.leaf == target) {
-            replacement.kind.split.first = self.layout;
-            self.layout = replacement;
-            return true;
-        }
-        return self.replaceChild(self.layout, target, replacement);
-    }
-
-    fn replaceChild(self: *Workbench, node: *LayoutNode, target: *GroupPane, replacement: *LayoutNode) bool {
-        switch (node.kind) {
-            .leaf => return false,
-            .split => |*split| {
-                if (split.first.kind == .leaf and split.first.kind.leaf == target) {
-                    split.first = replacement;
-                    return true;
-                }
-                if (split.second.kind == .leaf and split.second.kind.leaf == target) {
-                    split.second = replacement;
-                    return true;
-                }
-                if (self.replaceChild(split.first, target, replacement)) return true;
-                return self.replaceChild(split.second, target, replacement);
-            },
-        }
     }
 
     fn activeGroup(self: *Workbench) *editor_groups.EditorGroup {
@@ -1193,7 +1095,6 @@ pub const Workbench = struct {
             if (direction == .horizontal) .RIGHT else .DOWN,
         );
         const new_pane = try self.createPane(new_group);
-        const new_leaf = try self.createLeaf(new_pane);
 
         _ = try source.group.model.closeEditor(&tab.input.base, .MOVE, false);
         for (source.tabs.items, 0..) |candidate, index| {
@@ -1205,27 +1106,13 @@ pub const Workbench = struct {
         try new_pane.tabs.append(tab);
         _ = try new_group.model.openEditor(&tab.input.base, .{ .pinned = true, .active = true });
 
-        const old_leaf = self.findLeaf(self.layout, source) orelse return error.LayoutLeafMissing;
-        const split = try self.createSplit(direction, old_leaf, new_leaf);
-        if (!self.replaceLeaf(source, split)) {
-            return error.LayoutLeafMissing;
-        }
+        try grid_mod.splitRoot(*GroupPane, self.allocator, &self.layout, source, direction, new_pane, false);
 
         self.service.activateGroup(new_group);
         self.layoutAll();
         if (self.activeTab()) |active| {
             try active.ensureControllers();
             try active.refresh();
-        }
-    }
-
-    fn findLeaf(self: *Workbench, node: *LayoutNode, pane: *GroupPane) ?*LayoutNode {
-        switch (node.kind) {
-            .leaf => |candidate| return if (candidate == pane) node else null,
-            .split => |split| {
-                if (self.findLeaf(split.first, pane)) |leaf| return leaf;
-                return self.findLeaf(split.second, pane);
-            },
         }
     }
 
@@ -1508,23 +1395,7 @@ pub const Workbench = struct {
     fn updateDragTarget(self: *Workbench, event: *const ui.MouseEvent) void {
         self.drag_target = null;
         const pane = self.paneAt(event.x, event.y) orelse return;
-        const x0 = ui.cell.snap(pane.rect.x);
-        const y0 = ui.cell.snap(pane.rect.y);
-        const width = ui.cell.snap(pane.rect.right()) -| x0;
-        const height = ui.cell.snap(pane.rect.bottom()) -| y0;
-        if (width == 0 or height == 0) return;
-        const rel_x = event.x -| x0;
-        const rel_y = event.y -| y0;
-        const zone: DropZone = if (rel_y * 4 < height)
-            .top
-        else if (rel_y * 4 >= height * 3)
-            .bottom
-        else if (rel_x * 4 < width)
-            .left
-        else if (rel_x * 4 >= width * 3)
-            .right
-        else
-            .center;
+        const zone = editor_drop_target.zoneAt(pane.rect, event.x, event.y) orelse return;
         self.drag_target = .{ .pane = pane, .zone = zone };
     }
 
@@ -1569,12 +1440,8 @@ pub const Workbench = struct {
             return;
         }
 
-        const direction: SplitDirection = switch (zone) {
-            .left, .right => .horizontal,
-            .top, .bottom => .vertical,
-            .center => unreachable,
-        };
-        const new_first = zone == .left or zone == .top;
+        const direction: SplitDirection = editor_drop_target.orientation(zone);
+        const new_first = editor_drop_target.newFirst(zone);
         const new_group = try self.service.addGroup(target.group, switch (zone) {
             .left => .LEFT,
             .right => .RIGHT,
@@ -1587,14 +1454,7 @@ pub const Workbench = struct {
 
         // Insert before collapsing the source: if source and target are
         // siblings, collapsing first would promote and destroy the target leaf.
-        const target_leaf = self.findLeaf(self.layout, target) orelse return error.LayoutLeafMissing;
-        const new_leaf = try self.createLeaf(new_pane);
-        const split = try self.createSplit(
-            direction,
-            if (new_first) new_leaf else target_leaf,
-            if (new_first) target_leaf else new_leaf,
-        );
-        if (!self.replaceLeaf(target, split)) return error.LayoutLeafMissing;
+        try grid_mod.splitRoot(*GroupPane, self.allocator, &self.layout, target, direction, new_pane, new_first);
         self.service.activateGroup(new_group);
         self.collapseEmptyPane(source);
         self.layoutAll();
