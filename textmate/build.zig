@@ -25,6 +25,21 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run the vscode-textmate port tests");
     test_step.dependOn(&run_tests.step);
+
+    const inspect_module = b.createModule(.{
+        .root_source_file = b.path("src/tests/inspect.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    inspect_module.addImport("c_onig", onig);
+    const inspect_exe = b.addExecutable(.{
+        .name = "textmate-inspect",
+        .root_module = inspect_module,
+    });
+    const run_inspect = b.addRunArtifact(inspect_exe);
+    run_inspect.addPassthruArgs();
+    const inspect_step = b.step("inspect", "Inspect TextMate tokenization rule stacks");
+    inspect_step.dependOn(&run_inspect.step);
 }
 
 /// Translates the oniguruma C header into a Zig module. Zig 0.17 removed

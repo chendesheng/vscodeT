@@ -956,6 +956,10 @@ pub const StateStackImpl = struct {
         return grammar.getRule(self.rule_id);
     }
 
+    pub fn getRuleMaybe(self: *const StateStackImpl, grammar: *Grammar) ?*rule.Rule {
+        return grammar.getRuleMaybe(self.rule_id);
+    }
+
     pub fn withContentNameScopesList(
         self: *StateStackImpl,
         allocator: Allocator,

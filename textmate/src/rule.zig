@@ -167,6 +167,30 @@ pub const Rule = union(enum) {
         return self.base().id;
     }
 
+    pub fn debugTypeName(self: *const Rule) []const u8 {
+        return switch (self.*) {
+            .capture => "CaptureRule",
+            .match => "MatchRule",
+            .include_only => "IncludeOnlyRule",
+            .begin_end => "BeginEndRule",
+            .begin_while => "BeginWhileRule",
+        };
+    }
+
+    pub fn debugName(self: *const Rule, allocator: Allocator) ![]u8 {
+        const rule_base = self.base();
+        if (rule_base.location) |location| {
+            const filename = location.filename orelse "";
+            return std.fmt.allocPrint(allocator, "{s}#{d} @ {s}:{d}", .{
+                self.debugTypeName(),
+                rule_base.id,
+                utils.basename(filename),
+                location.line,
+            });
+        }
+        return std.fmt.allocPrint(allocator, "{s}#{d} @ unknown", .{ self.debugTypeName(), rule_base.id });
+    }
+
     pub fn getName(
         self: *const Rule,
         allocator: Allocator,

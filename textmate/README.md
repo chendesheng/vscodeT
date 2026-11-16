@@ -46,7 +46,17 @@ path dependency named `vscode_textmate` in the root `build.zig.zon`.
 | `src/tests/themedTokenizer.ts` | `src/tests/themedTokenizer.zig` | Ported |
 | `src/tests/resolver.ts` | `src/tests/resolver.zig` | Ported |
 | `src/tests/onigLibs.ts` | `src/onigLib.zig` | Replaced by the libonig binding |
-| `src/tests/inspect.ts` | — | Not ported; interactive debugging utility only |
+| `src/tests/inspect.ts` | `src/tests/inspect.zig` | Ported CLI utility |
+
+The `inspect` utility is available as a build step:
+
+```sh
+cd textmate
+zig build inspect -- <mainGrammarPath> [<additionalGrammarPath> ...] <filePath>
+```
+
+It prints the rule stack after each line with rule debug names, ids and live
+stack-instance ids.
 
 The upstream `test-cases/` fixtures are copied unchanged and include the
 first-mate/suite1 tokenization suites and 14 themes × 72 theme fixtures.
@@ -139,8 +149,8 @@ the live stack depth rather than by the number of lines.
 
 ## Definition of done
 
-- [x] Every upstream source file has a Zig counterpart (except the dev-only
-      `inspect.ts` utility).
+- [x] Every upstream source file has a Zig counterpart, including the
+      `inspect.ts` debugging utility.
 - [x] Every upstream test suite has a Zig counterpart.
 - [x] The first-mate, suite1 and while tokenization fixtures pass.
 - [x] All theme unit tests and all 14×72 theme fixtures pass.
