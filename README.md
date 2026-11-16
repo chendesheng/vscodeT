@@ -32,6 +32,14 @@ Notes for the Zig 0.17 port:
   deprecated-but-supported `std.array_list.Managed` shim as an intermediate
   step; moving to unmanaged lists is the main remaining modernization.
 
+## Continuous integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`
+suite on Linux (inotify) and macOS (kqueue), the watcher-only suite on Windows
+(`ReadDirectoryChangesW`), and cross-compiles the watcher-only test root for
+`x86_64-windows` and `aarch64-macos` on Linux. The Windows job cannot run the
+full TUI suite because the terminal layer is POSIX-only.
+
 ## Design docs
 
 - [Terminal UI architecture](docs/terminal-ui.md) — the standalone `ui/`

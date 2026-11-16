@@ -104,6 +104,9 @@ pub const Backend = struct {
                     continue;
                 };
                 try watcher.tree.add(child, mtimeNs(child_stat.mtime), child_stat.kind == .directory);
+                if (child_stat.kind != .directory) {
+                    self.addWatch(watcher, child, false) catch {};
+                }
                 self.allocator.free(child);
             }
         }
@@ -201,6 +204,11 @@ pub const Backend = struct {
     fn diffDirectory(self: *Backend, binding: Binding, now_ms: i64) !void {
         var present = std.StringHashMap(void).init(self.allocator);
         defer present.deinit();
+        var present_keys = std.array_list.Managed([]u8).init(self.allocator);
+        defer {
+            for (present_keys.items) |key| self.allocator.free(key);
+            present_keys.deinit();
+        }
 
         var dir = Io.Dir.cwd().openDir(self.io, binding.path, .{ .iterate = true }) catch return;
         defer dir.close(self.io);
@@ -210,9 +218,12 @@ pub const Backend = struct {
             const entry = (iterator.next(self.io) catch break) orelse break;
             if (entry.kind == .sym_link) continue;
             const child = try std.fs.path.join(self.allocator, &.{ binding.path, entry.name });
-            defer self.allocator.free(child);
-            if (binding.watcher.isIgnored(child)) continue;
+            if (binding.watcher.isIgnored(child)) {
+                self.allocator.free(child);
+                continue;
+            }
             try present.put(child, {});
+            try present_keys.append(child);
 
             const stat = dir.statFile(self.io, entry.name, .{ .follow_symlinks = false }) catch continue;
             if (binding.watcher.tree.find(child)) |old| {
@@ -221,8 +232,12 @@ pub const Backend = struct {
                 }
             } else {
                 try binding.watcher.recordCreate(child, mtimeNs(stat.mtime), stat.kind == .directory);
-                if (binding.watcher.recursive) {
-                    self.watchTree(binding.watcher, child, false) catch {};
+                if (stat.kind == .directory) {
+                    if (binding.watcher.recursive) {
+                        self.watchTree(binding.watcher, child, false) catch {};
+                    }
+                } else {
+                    self.addWatch(binding.watcher, child, false) catch {};
                 }
             }
         }

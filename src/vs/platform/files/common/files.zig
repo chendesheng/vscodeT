@@ -43,13 +43,19 @@ pub fn isParent(path: []const u8, candidate: []const u8, ignore_case: bool) bool
     if (path.len == 0 or candidate.len == 0) return false;
     if (path.len <= candidate.len) return false;
 
-    const separator = std.fs.path.sep;
-    if (candidate[candidate.len - 1] == separator) {
+    if (isSeparator(candidate[candidate.len - 1])) {
         return startsWithIgnoreCaseOrExact(path, candidate, ignore_case);
     }
     if (path.len < candidate.len + 1) return false;
-    if (path[candidate.len] != separator) return false;
+    if (!isSeparator(path[candidate.len])) return false;
     return startsWithIgnoreCaseOrExact(path[0..candidate.len], candidate, ignore_case);
+}
+
+fn isSeparator(ch: u8) bool {
+    if (ch == std.fs.path.sep) return true;
+    // Accept `/` on Windows as well. Tests and a number of upstream callers
+    // construct logical paths with `/` even when the native separator is `\`.
+    return std.fs.path.sep == '\\' and ch == '/';
 }
 
 fn startsWithIgnoreCaseOrExact(path: []const u8, prefix: []const u8, ignore_case: bool) bool {

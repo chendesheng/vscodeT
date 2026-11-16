@@ -80,8 +80,13 @@ pub const Workspace = struct {
     fn pathIsEqualOrParent(resource: []const u8, folder: []const u8) bool {
         if (std.mem.eql(u8, resource, folder)) return true;
         if (!std.mem.startsWith(u8, resource, folder)) return false;
-        if (folder.len == 0 or folder[folder.len - 1] == '/') return true;
-        return resource[folder.len] == '/';
+        if (folder.len == 0 or isSeparator(folder[folder.len - 1])) return true;
+        return isSeparator(resource[folder.len]);
+    }
+
+    fn isSeparator(ch: u8) bool {
+        if (ch == std.fs.path.sep) return true;
+        return std.fs.path.sep == '\\' and ch == '/';
     }
 
     /// Returns the closest containing folder, mirroring `getFolder`'s

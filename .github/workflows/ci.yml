@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux (full test suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - name: Install oniguruma
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libonig-dev
+      - name: Build
+        run: zig build
+      - name: Test
+        run: zig build test --summary all
+
+  macos:
+    name: macOS (full test suite)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - name: Install oniguruma
+        run: brew install oniguruma
+      - name: Build
+        run: zig build
+      - name: Test
+        run: zig build test --summary all
+
+  windows:
+    name: Windows (watcher test suite)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - name: Compile watcher tests
+        run: zig build check-watcher
+      - name: Run watcher tests
+        run: zig build test-watcher --summary all
+
+  cross-compile:
+    name: Cross-compile watcher for Windows and macOS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - name: Windows backend
+        run: zig build check-watcher -Dtarget=x86_64-windows
+      - name: macOS backend
+        run: zig build check-watcher -Dtarget=aarch64-macos
