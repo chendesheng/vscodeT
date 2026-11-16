@@ -135,6 +135,12 @@ deliberate adaptations are:
   treat them as opaque values.
 - **Font attribute cache.** The behavior of `FontAttribute` is ported without
   the static cache; the observable token/font output is identical.
+- **System Oniguruma compatibility.** vscode-oniguruma bundles a newer
+  Oniguruma than some Linux distributions. If the system library rejects a
+  grammar pattern, `OnigScanner` installs a never-matching placeholder instead
+  of failing the whole grammar, matching `textmate.zig`'s resilience. This can
+  omit a rare rule (for example some modern CSS value patterns) on older
+  Oniguruma versions.
 
 ### Memory model
 
