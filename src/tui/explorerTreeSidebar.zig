@@ -17,6 +17,7 @@ const sidebar_mod = @import("./sidebar.zig");
 const object_tree = @import("../vs/base/browser/ui/tree/objectTreeModel.zig");
 const abstract_tree = @import("../vs/base/browser/ui/tree/abstractTree.zig");
 const list = @import("../vs/base/browser/ui/list/list.zig");
+const tree = @import("../vs/base/browser/ui/tree/tree.zig");
 
 const ExplorerItem = explorer.ExplorerItem;
 const ExplorerModel = explorer.ExplorerModel;
@@ -68,6 +69,7 @@ pub const Sidebar = struct {
     files_filter: FilesFilter,
     tree_model: TreeModel,
     tree_view: *TreeView,
+    sort_order: explorer.SortOrder = .FilesFirst,
     show_roots: bool = false,
     last_rect: ui.Rect = .{},
 
@@ -93,6 +95,7 @@ pub const Sidebar = struct {
             .files_filter = FilesFilter.init(allocator, io, configuration),
             .tree_model = tree_model,
             .tree_view = undefined,
+            .sort_order = readSortOrder(configuration, explorer_model),
         };
         errdefer self.files_filter.deinit();
 
@@ -102,6 +105,10 @@ pub const Sidebar = struct {
             .render = renderRow,
         });
         errdefer self.tree_view.deinit();
+        try self.tree_model.setFilter(.{
+            .context = &self.files_filter,
+            .filter = filterItem,
+        });
 
         if (!self.show_roots and self.model.roots.items.len == 1) {
             const root = self.model.roots.items[0];
@@ -129,18 +136,8 @@ pub const Sidebar = struct {
     }
 
     fn loadChildren(self: *Sidebar, item: *ExplorerItem) !void {
-        item.fetchChildren(self.io, .FilesFirst) catch {};
+        item.fetchChildren(self.io, self.sort_order) catch {};
         try self.files_filter.prepare(item);
-        var index: usize = 0;
-        while (index < item.children.items.len) {
-            const child = item.children.items[index];
-            if (self.files_filter.isVisible(child)) {
-                index += 1;
-                continue;
-            }
-            item.removeChild(child);
-            child.destroy();
-        }
     }
 
     fn setChildren(self: *Sidebar, parent: ?*ExplorerItem, items: []*ExplorerItem, expand: bool) !void {
@@ -372,6 +369,28 @@ pub const Sidebar = struct {
     }
 };
 
+fn filterItem(context: *anyopaque, item: ?*ExplorerItem, _: tree.TreeVisibility) tree.TreeVisibility {
+    const files_filter: *FilesFilter = @ptrCast(@alignCast(context));
+    const value = item orelse return .visible;
+    return if (files_filter.isVisible(value)) .visible else .hidden;
+}
+
+fn readSortOrder(configuration: *ConfigurationService, model: *ExplorerModel) explorer.SortOrder {
+    if (model.roots.items.len == 0) return .FilesFirst;
+    const value = configuration.getValue("explorer.sortOrder", .{
+        .resource = model.roots.items[0].resource,
+    }) orelse return .FilesFirst;
+    const text = switch (value.*) {
+        .string => |inner| inner,
+        else => return .FilesFirst,
+    };
+    if (std.mem.eql(u8, text, "mixed")) return .Mixed;
+    if (std.mem.eql(u8, text, "type")) return .Type;
+    if (std.mem.eql(u8, text, "modified")) return .Modified;
+    if (std.mem.eql(u8, text, "filesFirst")) return .FilesFirst;
+    return .FilesFirst;
+}
+
 fn renderRow(context: *anyopaque, row: *const list.Row, node: *const TreeModel.Node) void {
     const self: *Sidebar = @ptrCast(@alignCast(context));
     const item = node.element orelse return;
@@ -576,4 +595,68 @@ test "explorer tree sidebar: directory rows only toggle from the twistie" {
     try std.testing.expect(!sidebar.isExpanded(alpha));
     _ = try sidebar.handleClick(2, 1);
     try std.testing.expect(sidebar.isExpanded(alpha));
+}
+
+test "explorer tree sidebar: sort order comes from settings" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".vscode");
+    var settings = try tmp.dir.createFile(io, ".vscode/settings.json", .{});
+    try settings.writeStreamingAll(io, "{\"explorer.sortOrder\": \"type\"}");
+    settings.close(io);
+    var zig_file = try tmp.dir.createFile(io, "a.zig", .{});
+    try zig_file.writeStreamingAll(io, "x");
+    zig_file.close(io);
+    var txt_file = try tmp.dir.createFile(io, "z.txt", .{});
+    try txt_file.writeStreamingAll(io, "x");
+    txt_file.close(io);
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(explorer.SortOrder.Type, sidebar.sort_order);
+    try std.testing.expectEqualStrings(".vscode", sidebar.tree_view.rendered.items[0].element.?.name);
+    try std.testing.expectEqualStrings("z.txt", sidebar.tree_view.rendered.items[1].element.?.name);
+    try std.testing.expectEqualStrings("a.zig", sidebar.tree_view.rendered.items[2].element.?.name);
+}
+
+test "explorer tree sidebar: tree filter hides ignored children without dropping them" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var ignore = try tmp.dir.createFile(io, ".gitignore", .{});
+    try ignore.writeStreamingAll(io, "ignored.txt\n");
+    ignore.close(io);
+    var ignored = try tmp.dir.createFile(io, "ignored.txt", .{});
+    try ignored.writeStreamingAll(io, "x");
+    ignored.close(io);
+    var visible = try tmp.dir.createFile(io, "visible.txt", .{});
+    try visible.writeStreamingAll(io, "x");
+    visible.close(io);
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), sidebar.count());
+    try std.testing.expectEqualStrings(".gitignore", sidebar.tree_view.rendered.items[0].element.?.name);
+    try std.testing.expectEqualStrings("visible.txt", sidebar.tree_view.rendered.items[1].element.?.name);
 }

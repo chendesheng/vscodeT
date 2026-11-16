@@ -163,8 +163,15 @@ pub const ExplorerItem = struct {
     }
 
     fn lessThan(order: SortOrder, a: *ExplorerItem, b: *ExplorerItem) bool {
-        if (order == .FilesFirst and a.is_directory != b.is_directory) {
+        if (order != .Mixed and a.is_directory != b.is_directory) {
             return a.is_directory;
+        }
+        if (order == .Type and !a.is_directory and !b.is_directory) {
+            const a_extension = std.fs.path.extension(a.name);
+            const b_extension = std.fs.path.extension(b.name);
+            if (!std.ascii.eqlIgnoreCase(a_extension, b_extension)) {
+                return std.ascii.lessThanIgnoreCase(a_extension, b_extension);
+            }
         }
         return std.ascii.lessThanIgnoreCase(a.name, b.name);
     }

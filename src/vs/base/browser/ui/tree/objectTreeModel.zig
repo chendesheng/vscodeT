@@ -208,7 +208,7 @@ pub fn ObjectTreeModelWithHash(comptime T: type, comptime Context: type) type {
             try self.model.refilter();
         }
 
-        pub fn setFilter(self: *ObjectTreeModelWithHash(T, Context), filter: ?tree.TreeFilter(T)) !void {
+        pub fn setFilter(self: *ObjectTreeModelWithHash(T, Context), filter: ?tree.TreeFilter(?T)) !void {
             try self.model.setFilter(filter);
         }
     };

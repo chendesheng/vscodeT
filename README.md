@@ -90,7 +90,11 @@ Notes for the Zig 0.17 port:
   opening or activating a file selects it in the Explorer without moving focus;
   directory twisties toggle on click while the rest of the row only selects.
   A one-cell scrollbar appears when the list overflows, and the selection is
-  dimmed while the Explorer is unfocused. `Ctrl-B` toggles the side panel and
+  dimmed while the Explorer is unfocused. `explorer.sortOrder` is honored for
+  `default`, `mixed`, `filesFirst` and `type` (`modified` falls back until
+  mtimes are collected), and ignore/exclude filtering now runs through the tree
+  filter instead of pruning the model. `explorer.compactFolders` is not wired
+  yet. `Ctrl-B` toggles the side panel and
   `Escape` returns focus to the editor. The generic VS Code list/tree view is
   being replaced in layers under `src/vs/base/browser/ui/list` and
   `src/vs/base/browser/ui/tree`: `rangeMap`, the virtualized `ListView`,
