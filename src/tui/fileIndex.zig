@@ -391,7 +391,7 @@ fn relativeDirectory(root: []const u8, directory: []const u8) []const u8 {
     if (std.mem.eql(u8, root, directory)) return "";
     if (std.mem.startsWith(u8, directory, root)) {
         var index = root.len;
-        if (index < directory.len and directory[index] == '/') index += 1;
+        if (index < directory.len and (directory[index] == '/' or directory[index] == '\\')) index += 1;
         return directory[index..];
     }
     return directory;
@@ -466,7 +466,7 @@ test "WorkspaceFileIndex: lazy walk, excludes and search" {
     try std.testing.expect(index.entries.items.len >= 2);
     var found_ignored = false;
     for (index.entries.items) |entry| {
-        if (std.mem.indexOf(u8, entry.path, "/.git/") != null) found_ignored = true;
+        if (std.mem.indexOf(u8, entry.path, "/.git/") != null or std.mem.indexOf(u8, entry.path, "\\.git\\") != null) found_ignored = true;
         if (std.mem.endsWith(u8, entry.path, "ignored-by-ignore-file.txt")) found_ignored = true;
     }
     try std.testing.expect(!found_ignored);

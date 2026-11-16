@@ -779,9 +779,13 @@ test "SearchService: honors .gitignore and .ignore files" {
             var relative = result.resource;
             if (std.mem.startsWith(u8, relative, root)) {
                 relative = relative[root.len..];
-                if (relative.len > 0 and relative[0] == '/') relative = relative[1..];
+                if (relative.len > 0 and (relative[0] == '/' or relative[0] == '\\')) relative = relative[1..];
             }
-            try found.put(try allocator.dupe(u8, relative), {});
+            const key = try allocator.dupe(u8, relative);
+            for (key) |*ch| {
+                if (ch.* == '\\') ch.* = '/';
+            }
+            try found.put(key, {});
         }
         if (step.done) break;
     }

@@ -22,6 +22,7 @@
 //! model until the editor is split into model/view state.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -2313,7 +2314,7 @@ fn searchApplyEdits(context: *anyopaque, path: []const u8, edits: []const replac
     const self: *Workbench = @ptrCast(@alignCast(context));
     for (self.panes.items) |pane| {
         for (pane.tabs.items) |tab| {
-            if (!std.mem.eql(u8, tab.editor.path, path)) continue;
+            if (!pathsEqual(tab.editor.path, path)) continue;
             const converted = try self.allocator.alloc(TextEdit, edits.len);
             defer self.allocator.free(converted);
             for (edits, 0..) |edit, index| {
@@ -2373,12 +2374,26 @@ fn searchSaveFile(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     for (self.panes.items) |pane| {
         for (pane.tabs.items) |tab| {
-            if (std.mem.eql(u8, tab.editor.path, path)) {
+            if (pathsEqual(tab.editor.path, path)) {
                 try tab.editor.save();
                 return;
             }
         }
     }
+}
+
+/// Compares resource paths across the CLI/test boundary. Windows tests and
+/// callers can mix `/` and `\`, and Windows paths are case-insensitive.
+fn pathsEqual(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (left == right) continue;
+        const separators = (left == '/' or left == '\\') and (right == '/' or right == '\\');
+        if (separators) continue;
+        if (builtin.os.tag == .windows and std.ascii.toLower(left) == std.ascii.toLower(right)) continue;
+        return false;
+    }
+    return true;
 }
 
 fn searchActiveSelectionText(context: *anyopaque, allocator: Allocator) anyerror!?[]u8 {
