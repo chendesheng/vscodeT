@@ -1,4 +1,14 @@
+const TokenizationRegistry = @import("../vs/editor/common/tokenizationRegistry.zig").TokenizationRegistry;
+
+/// Resolves a token color id through the active VS Code theme's color map.
+/// The fallback palette keeps the read-only tools usable before a theme is
+/// initialized.
 pub fn colorForToken(foreground: u9) ?[3]u8 {
+    if (TokenizationRegistry.instance.getColorMap()) |color_map| {
+        if (foreground >= color_map.len) return null;
+        const color = color_map[foreground];
+        return .{ color.r, color.g, color.b };
+    }
     return switch (foreground) {
         5 => .{ 106, 153, 85 },
         6 => .{ 206, 145, 120 },

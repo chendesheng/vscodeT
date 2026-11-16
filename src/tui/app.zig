@@ -10,6 +10,7 @@ const View = @import("./view.zig").View;
 const Preview = @import("./preview.zig").Preview;
 const Workbench = @import("./workbench.zig").Workbench;
 const session = @import("./session.zig");
+const SyntaxTheme = @import("./syntaxTheme.zig").SyntaxTheme;
 const FileEditorSerializer = @import("./editorInput.zig").FileEditorSerializer;
 const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
 const EditorFactoryRegistry = @import("../vs/workbench/common/editor/editorFactory.zig").EditorFactoryRegistry;
@@ -80,6 +81,9 @@ fn defaultUserSettingsPath(
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
+    var syntax_theme: SyntaxTheme = undefined;
+    try syntax_theme.init(allocator);
+    defer syntax_theme.deinit();
     // The whole-word search classifier cache is process-lifetime by design;
     // release it before the safe allocator checks for leaks on exit.
     defer word_character_classifier.freeWordClassifierCache();

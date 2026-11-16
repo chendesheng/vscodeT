@@ -608,17 +608,16 @@ languages will otherwise get IDs without working comments/brackets.
 
 ### 11.2 Grammars and themes
 
-`textMateTokenizer.zig` currently uses a hard-coded `grammarScope` map and a
-`metadataForScope` classifier. Contributed grammars need a registry from
+Built-in languages already take their grammars from the upstream checkout's
+`extensions/*/syntaxes` files (see `README.md`), and built-in colors come from
+Dark+ through `TokenTheme`. Contributed grammars still need a registry from
 `contributes.grammars` (language, `scopeName`, `path`, `injectTo`,
 `embeddedLanguages`, `tokenTypes`) and `GrammarLibrary.addGrammar(path)`.
-Contributed themes need the theme file loaded (JSONC), the existing
-`TokenTheme` trie fed with `tokenColors`, and the tokenizer to pass enough
-scope information for theme matching. The textmate parser exposes capture
-scope names but the current tokenizer flattens them to a token type; validate
-the required scope stack against the library's theme support before promising
-arbitrary `tokenColors`. Until then, map the resolved token style to the
-nearest ANSI colour and document the approximation.
+Contributed themes can reuse `src/tui/syntaxTheme.zig` and `TokenTheme`: load
+the JSONC theme, feed its `tokenColors` to the trie, and publish the resulting
+color map through `TokenizationRegistry`. The tokenizer applies theme rules to
+the capture scope stack; descendant/exclusion selectors are currently reduced
+to their target scope.
 
 ### 11.3 Keybindings and commands
 

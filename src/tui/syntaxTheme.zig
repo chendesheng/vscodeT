@@ -1,0 +1,289 @@
+//! Loads VS Code's Dark+ token colors for TextMate tokenization.
+//!
+//! The rules are read from the upstream checkout's
+//! `theme-defaults/themes/dark_plus.json` and its `dark_vs.json` include. They
+//! are resolved by the editor's `TokenTheme` (the VS Code tokenization port),
+//! which keeps the scope inheritance, font styles and color map. The TUI paints
+//! token colors through `TokenizationRegistry`'s color map.
+//!
+//! VS Code's theme files are JSONC; they are sanitized before parsing. Scope
+//! selectors that combine a parent scope and a target (`a b`) or exclude a
+//! scope (`a - b`) are reduced to their target scope because the ported trie
+//! matches one scope at a time.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const assets = @import("vscode-syntax");
+const tokenization = @import("../vs/editor/common/languages/supports/tokenization.zig");
+const TokenTheme = tokenization.TokenTheme;
+const ITokenThemeRule = tokenization.ITokenThemeRule;
+const stripJsonc = @import("../vs/platform/configuration/common/configurationModels.zig").stripJsonc;
+const TokenizationRegistry = @import("../vs/editor/common/tokenizationRegistry.zig").TokenizationRegistry;
+
+pub const SyntaxTheme = struct {
+    theme: TokenTheme = undefined,
+
+    pub fn init(self: *SyntaxTheme, allocator: Allocator) !void {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+
+        var rules = std.array_list.Managed(ITokenThemeRule).init(scratch);
+        var colors: std.json.ObjectMap = .empty;
+        try appendTheme(scratch, "dark_plus.json", &rules, &colors, 0);
+
+        const foreground = colorString(colors, "editor.foreground") orelse "#D4D4D4";
+        const background = colorString(colors, "editor.background") orelse "#1E1E1E";
+        try rules.append(.{ .token = "", .foreground = foreground, .background = background });
+
+        self.theme = try TokenTheme.createFromRawTokenTheme(allocator, rules.items, &.{});
+        tokenization.setActiveTokenTheme(&self.theme);
+        TokenizationRegistry.instance.setColorMap(self.theme.getColorMap());
+    }
+
+    pub fn deinit(self: *SyntaxTheme) void {
+        tokenization.setActiveTokenTheme(null);
+        TokenizationRegistry.instance.clearColorMap();
+        self.theme.deinit();
+    }
+};
+
+fn colorString(colors: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = colors.get(key) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn appendTheme(
+    allocator: Allocator,
+    name: []const u8,
+    rules: *std.array_list.Managed(ITokenThemeRule),
+    colors: *std.json.ObjectMap,
+    depth: usize,
+) !void {
+    if (depth > 8) return;
+    const data = assets.themeData(name) orelse return;
+    const sanitized = try stripJsonc(allocator, data);
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, sanitized, .{}) catch return;
+    if (parsed != .object) return;
+    const object = parsed.object;
+
+    if (object.get("include")) |include| {
+        if (include == .string) {
+            try appendTheme(allocator, std.fs.path.basename(include.string), rules, colors, depth + 1);
+        }
+    }
+
+    if (object.get("colors")) |value| {
+        if (value == .object) {
+            var iterator = value.object.iterator();
+            while (iterator.next()) |entry| {
+                try colors.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+            }
+        }
+    }
+
+    if (object.get("tokenColors")) |value| {
+        if (value == .array) {
+            for (value.array.items) |item| try appendRule(allocator, item, rules);
+        }
+    }
+}
+
+fn appendRule(
+    allocator: Allocator,
+    item: std.json.Value,
+    rules: *std.array_list.Managed(ITokenThemeRule),
+) !void {
+    if (item != .object) return;
+    const object = item.object;
+    const settings_value = object.get("settings") orelse return;
+    if (settings_value != .object) return;
+    const settings = settings_value.object;
+
+    var foreground: ?[]const u8 = null;
+    var background: ?[]const u8 = null;
+    var font_style: ?[]const u8 = null;
+    if (settings.get("foreground")) |value| {
+        if (value == .string) foreground = value.string;
+    }
+    if (settings.get("background")) |value| {
+        if (value == .string) background = value.string;
+    }
+    if (settings.get("fontStyle")) |value| {
+        if (value == .string) font_style = value.string;
+    }
+
+    const scopes_value = object.get("scope") orelse {
+        try rules.append(.{
+            .token = "",
+            .foreground = foreground,
+            .background = background,
+            .fontStyle = font_style,
+        });
+        return;
+    };
+
+    switch (scopes_value) {
+        .string => |scope| try appendScopes(allocator, scope, rules, foreground, background, font_style),
+        .array => |array| {
+            for (array.items) |value| {
+                if (value == .string) {
+                    try appendScopes(allocator, value.string, rules, foreground, background, font_style);
+                }
+            }
+        },
+        else => {},
+    }
+}
+
+fn appendScopes(
+    allocator: Allocator,
+    scopes: []const u8,
+    rules: *std.array_list.Managed(ITokenThemeRule),
+    foreground: ?[]const u8,
+    background: ?[]const u8,
+    font_style: ?[]const u8,
+) !void {
+    var iterator = std.mem.splitScalar(u8, scopes, ',');
+    while (iterator.next()) |part| {
+        var selector = std.mem.trim(u8, part, " \t\r\n");
+        if (selector.len == 0) continue;
+
+        // `target - excluded`: the ported trie has no exclusion support, so
+        // keep the target selector.
+        if (std.mem.indexOf(u8, selector, " - ")) |index| {
+            selector = std.mem.trim(u8, selector[0..index], " \t\r\n");
+        }
+        // `parent target`: the trie matches one scope, so keep the target.
+        if (std.mem.lastIndexOfScalar(u8, selector, ' ')) |index| {
+            selector = std.mem.trim(u8, selector[index + 1 ..], " \t\r\n");
+        }
+        if (selector.len == 0) continue;
+
+        try rules.append(.{
+            .token = try allocator.dupe(u8, selector),
+            .foreground = foreground,
+            .background = background,
+            .fontStyle = font_style,
+        });
+    }
+}
+
+test "syntax theme: dark+ token colors resolve" {
+    var theme: SyntaxTheme = undefined;
+    try theme.init(std.testing.allocator);
+    defer theme.deinit();
+
+    const colors = theme.theme.getColorMap();
+    const comment = colors[theme.theme._match("comment.line.double-slash.zig").getForeground()];
+    try std.testing.expectEqual(@as(u8, 106), comment.r);
+    try std.testing.expectEqual(@as(u8, 153), comment.g);
+    try std.testing.expectEqual(@as(u8, 85), comment.b);
+
+    const inline_rule = colors[theme.theme._match("markup.inline.raw.string.markdown").getForeground()];
+    try std.testing.expectEqual(@as(u8, 0xCE), inline_rule.r);
+    try std.testing.expectEqual(@as(u8, 0x91), inline_rule.g);
+    try std.testing.expectEqual(@as(u8, 0x78), inline_rule.b);
+}
+
+test "syntax theme: tokenization uses the dark+ rules" {
+    var theme: SyntaxTheme = undefined;
+    try theme.init(std.testing.allocator);
+    defer theme.deinit();
+
+    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    var ctx = try TestModel.init(std.testing.allocator, "const x = 1; // hi", "zig");
+    defer ctx.deinit();
+    ctx.model.forceTokenization(1);
+    var tokens = try ctx.model.tokenization().getLineTokens(1);
+    defer tokens.deinit();
+
+    var saw_const = false;
+    var saw_comment = false;
+    for (0..tokens.getCount()) |i| {
+        const text = tokens.getTokenText(i);
+        const color = theme.theme.getColorMap()[tokens.getForeground(i)];
+        if (std.mem.eql(u8, text, "const")) {
+            saw_const = true;
+            try std.testing.expectEqual(@as(u8, 0x56), color.r);
+            try std.testing.expectEqual(@as(u8, 0x9C), color.g);
+            try std.testing.expectEqual(@as(u8, 0xD6), color.b);
+        } else if (std.mem.eql(u8, text, "// hi")) {
+            saw_comment = true;
+            try std.testing.expectEqual(@as(u8, 0x6A), color.r);
+            try std.testing.expectEqual(@as(u8, 0x99), color.g);
+            try std.testing.expectEqual(@as(u8, 0x55), color.b);
+        }
+    }
+    try std.testing.expect(saw_const);
+    try std.testing.expect(saw_comment);
+}
+
+test "syntax theme: markdown inline code and bold use dark+ styles" {
+    var theme: SyntaxTheme = undefined;
+    try theme.init(std.testing.allocator);
+    defer theme.deinit();
+
+    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    var inline_code = try TestModel.init(std.testing.allocator, "a `code` span", "markdown");
+    defer inline_code.deinit();
+    inline_code.model.forceTokenization(1);
+    var inline_tokens = try inline_code.model.tokenization().getLineTokens(1);
+    defer inline_tokens.deinit();
+
+    var saw_inline_code = false;
+    for (0..inline_tokens.getCount()) |i| {
+        if (std.mem.eql(u8, inline_tokens.getTokenText(i), "`code`")) {
+            saw_inline_code = true;
+            const color = theme.theme.getColorMap()[inline_tokens.getForeground(i)];
+            try std.testing.expectEqual(@as(u8, 0xCE), color.r);
+            try std.testing.expectEqual(@as(u8, 0x91), color.g);
+            try std.testing.expectEqual(@as(u8, 0x78), color.b);
+        }
+    }
+    try std.testing.expect(saw_inline_code);
+
+    var bold = try TestModel.init(std.testing.allocator, "**bold**", "markdown");
+    defer bold.deinit();
+    bold.model.forceTokenization(1);
+    var bold_tokens = try bold.model.tokenization().getLineTokens(1);
+    defer bold_tokens.deinit();
+
+    var saw_bold = false;
+    for (0..bold_tokens.getCount()) |i| {
+        if (std.mem.eql(u8, bold_tokens.getTokenText(i), "**bold**") or std.mem.eql(u8, bold_tokens.getTokenText(i), "bold")) {
+            saw_bold = true;
+            try std.testing.expect(bold_tokens.getMetadata(i).fontStyle.bold);
+        }
+    }
+    try std.testing.expect(saw_bold);
+}
+
+test "syntax theme: editor paints the dark+ colors" {
+    const Editor = @import("editor.zig").Editor;
+    const View = @import("view.zig").View;
+
+    var theme: SyntaxTheme = undefined;
+    try theme.init(std.testing.allocator);
+    defer theme.deinit();
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "// hi\nconst x = 1;\n", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    editor.ensureTokensVisible();
+    var view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const rendered = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;106;153;85m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;86;156;214m") != null);
+}

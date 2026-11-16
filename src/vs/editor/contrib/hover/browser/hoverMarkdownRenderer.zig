@@ -38,6 +38,7 @@ const IState = @import("../../../common/languages.zig").IState;
 const TokenPacked = @import("../../../common/tokens/lineTokens.zig").TokenPacked;
 const TokenMetadata = @import("../../../common/encodedTokenAttributes.zig").TokenMetadata;
 const textMateTokenizer = @import("../../../common/model/tokens/textMateTokenizer.zig");
+const TokenizationRegistry = @import("../../../common/tokenizationRegistry.zig").TokenizationRegistry;
 
 const Node = markdown.Node;
 const NodeData = markdown.NodeData;
@@ -423,9 +424,14 @@ fn tokenStyle(metadata: TokenMetadata) ui.Style {
     };
 }
 
-/// Same dark-theme token palette as `src/tui/theme.zig`. Kept here instead of
-/// importing the TUI layer, which editor code must not depend on.
+/// Resolves a token color through the active theme's color map. The fixed
+/// palette is only a fallback for tools that run without a theme.
 fn tokenColor(foreground: u9) ?ui.Color {
+    if (TokenizationRegistry.instance.getColorMap()) |color_map| {
+        if (foreground >= color_map.len) return null;
+        const color = color_map[foreground];
+        return .{ .r = color.r, .g = color.g, .b = color.b };
+    }
     const rgb = switch (foreground) {
         5 => [3]u8{ 106, 153, 85 }, // comment
         6 => [3]u8{ 206, 145, 120 }, // string

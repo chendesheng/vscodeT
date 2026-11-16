@@ -21,6 +21,7 @@ pub fn build(b: *std.Build) void {
     const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
     const ui = ui_dep.module("ui");
     const markdown = markdownModule(b, target, optimize);
+    const vscode_syntax = vscodeSyntaxAssets(b, target, optimize, textmate_dep);
 
     // We will also create a module for our other entry point, 'main.zig'.
     const exe = b.addExecutable(.{
@@ -36,6 +37,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("textmate", textmate);
     exe.root_module.addImport("ui", ui);
     exe.root_module.addImport("markdown", markdown);
+    exe.root_module.addImport("vscode-syntax", vscode_syntax);
     addOnigLibraryPath(b, exe.root_module);
     exe.root_module.linkSystemLibrary("onig", .{});
 
@@ -62,7 +64,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    setupTests(b, target, optimize, onig, textmate, ui, markdown);
+    setupTests(b, target, optimize, onig, textmate, ui, markdown, vscode_syntax);
 }
 
 /// Builds the markdown module from the pinned CommonMark + GFM package.
@@ -158,6 +160,130 @@ fn patchedTextmateSources(b: *std.Build, dep: *std.Build.Dependency) std.Build.L
     return sources.getDirectory();
 }
 
+const VscodeGrammar = struct {
+    language: []const u8,
+    scope: []const u8,
+    path: []const u8,
+};
+
+/// Grammars taken from the VS Code checkout, mirroring the extensions those
+/// languages ship in. Languages without a VS Code grammar (zig, toml) keep the
+/// pinned package's grammar.
+const vscode_grammars = [_]VscodeGrammar{
+    .{ .language = "json", .scope = "source.json", .path = "../vscode/extensions/json/syntaxes/JSON.tmLanguage.json" },
+    .{ .language = "jsonc", .scope = "source.json.comments", .path = "../vscode/extensions/json/syntaxes/JSONC.tmLanguage.json" },
+    .{ .language = "javascript", .scope = "source.js", .path = "../vscode/extensions/javascript/syntaxes/JavaScript.tmLanguage.json" },
+    .{ .language = "javascriptreact", .scope = "source.js.jsx", .path = "../vscode/extensions/javascript/syntaxes/JavaScriptReact.tmLanguage.json" },
+    .{ .language = "typescript", .scope = "source.ts", .path = "../vscode/extensions/typescript-basics/syntaxes/TypeScript.tmLanguage.json" },
+    .{ .language = "typescriptreact", .scope = "source.tsx", .path = "../vscode/extensions/typescript-basics/syntaxes/TypeScriptReact.tmLanguage.json" },
+    .{ .language = "python", .scope = "source.python", .path = "../vscode/extensions/python/syntaxes/MagicPython.tmLanguage.json" },
+    .{ .language = "rust", .scope = "source.rust", .path = "../vscode/extensions/rust/syntaxes/rust.tmLanguage.json" },
+    .{ .language = "go", .scope = "source.go", .path = "../vscode/extensions/go/syntaxes/go.tmLanguage.json" },
+    .{ .language = "c", .scope = "source.c", .path = "../vscode/extensions/cpp/syntaxes/c.tmLanguage.json" },
+    .{ .language = "cpp", .scope = "source.cpp", .path = "../vscode/extensions/cpp/syntaxes/cpp.tmLanguage.json" },
+    .{ .language = "", .scope = "source.cpp.embedded.macro", .path = "../vscode/extensions/cpp/syntaxes/cpp.embedded.macro.tmLanguage.json" },
+    .{ .language = "java", .scope = "source.java", .path = "../vscode/extensions/java/syntaxes/java.tmLanguage.json" },
+    .{ .language = "html", .scope = "text.html.basic", .path = "../vscode/extensions/html/syntaxes/html.tmLanguage.json" },
+    .{ .language = "", .scope = "text.html.derivative", .path = "../vscode/extensions/html/syntaxes/html-derivative.tmLanguage.json" },
+    .{ .language = "css", .scope = "source.css", .path = "../vscode/extensions/css/syntaxes/css.tmLanguage.json" },
+    .{ .language = "scss", .scope = "source.css.scss", .path = "../vscode/extensions/scss/syntaxes/scss.tmLanguage.json" },
+    .{ .language = "markdown", .scope = "text.html.markdown", .path = "../vscode/extensions/markdown-basics/syntaxes/markdown.tmLanguage.json" },
+    .{ .language = "yaml", .scope = "source.yaml.1.0", .path = "../vscode/extensions/yaml/syntaxes/yaml-1.0.tmLanguage.json" },
+    .{ .language = "shellscript", .scope = "source.shell", .path = "../vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
+    .{ .language = "bash", .scope = "source.shell", .path = "../vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
+};
+
+fn fileExists(b: *std.Build, path: []const u8) bool {
+    std.Io.Dir.cwd().access(b.graph.io, path, .{}) catch return false;
+    return true;
+}
+
+/// Builds a module containing the VS Code grammars and Dark+ theme files
+/// embedded from the upstream checkout. When the checkout is unavailable the
+/// package's own Dark+ theme is used and the package grammars stay in effect.
+fn vscodeSyntaxAssets(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.Optimize,
+    textmate_dep: *std.Build.Dependency,
+) *std.Build.Module {
+    const files = b.addWriteFiles();
+    var source = std.array_list.Managed(u8).init(b.allocator);
+    source.appendSlice(
+        \\const std = @import("std");
+        \\
+        \\pub const Grammar = struct { language: []const u8, scope: []const u8, data: []const u8 };
+        \\pub const grammars = [_]Grammar{
+        \\
+    ) catch @panic("OOM");
+
+    for (vscode_grammars) |grammar| {
+        if (!fileExists(b, grammar.path)) continue;
+        const file_name = std.fs.path.basename(grammar.path);
+        const dest = std.fmt.allocPrint(b.allocator, "grammars/{s}", .{file_name}) catch @panic("OOM");
+        _ = files.addCopyFile(.{ .cwd_relative = grammar.path }, dest);
+        const line = std.fmt.allocPrint(
+            b.allocator,
+            "    .{{ .language = \"{s}\", .scope = \"{s}\", .data = @embedFile(\"{s}\") }},\n",
+            .{ grammar.language, grammar.scope, dest },
+        ) catch @panic("OOM");
+        source.appendSlice(line) catch @panic("OOM");
+    }
+
+    source.appendSlice(
+        \\};
+        \\
+        \\pub fn scopeForLanguage(language: []const u8) ?[]const u8 {
+        \\    inline for (grammars) |grammar| {
+        \\        if (grammar.language.len > 0 and std.mem.eql(u8, grammar.language, language)) return grammar.scope;
+        \\    }
+        \\    return null;
+        \\}
+        \\
+        \\pub fn dataForScope(scope: []const u8) ?[]const u8 {
+        \\    inline for (grammars) |grammar| {
+        \\        if (std.mem.eql(u8, grammar.scope, scope)) return grammar.data;
+        \\    }
+        \\    return null;
+        \\}
+        \\
+    ) catch @panic("OOM");
+
+    const dark_plus_path = "../vscode/extensions/theme-defaults/themes/dark_plus.json";
+    const dark_vs_path = "../vscode/extensions/theme-defaults/themes/dark_vs.json";
+    if (fileExists(b, dark_plus_path) and fileExists(b, dark_vs_path)) {
+        _ = files.addCopyFile(.{ .cwd_relative = dark_plus_path }, "themes/dark_plus.json");
+        _ = files.addCopyFile(.{ .cwd_relative = dark_vs_path }, "themes/dark_vs.json");
+        source.appendSlice(
+            \\pub const dark_plus = @embedFile("themes/dark_plus.json");
+            \\pub const dark_vs = @embedFile("themes/dark_vs.json");
+            \\pub fn themeData(name: []const u8) ?[]const u8 {
+            \\    if (std.mem.eql(u8, name, "dark_plus.json")) return dark_plus;
+            \\    if (std.mem.eql(u8, name, "dark_vs.json")) return dark_vs;
+            \\    return null;
+            \\}
+            \\
+        ) catch @panic("OOM");
+    } else {
+        _ = files.addCopyFile(textmate_dep.path("src/resources/themes/dark-plus.json"), "themes/dark_plus.json");
+        source.appendSlice(
+            \\pub const dark_plus = @embedFile("themes/dark_plus.json");
+            \\pub fn themeData(name: []const u8) ?[]const u8 {
+            \\    if (std.mem.eql(u8, name, "dark_plus.json")) return dark_plus;
+            \\    return null;
+            \\}
+            \\
+        ) catch @panic("OOM");
+    }
+
+    const root = files.add("syntax.zig", source.items);
+    return b.createModule(.{
+        .root_source_file = root,
+        .target = target,
+        .optimize = optimize,
+    });
+}
+
 /// Translates the oniguruma C header into a Zig module. Zig 0.17 removed
 /// `@cImport`, so C headers must be translated by the build system instead.
 ///
@@ -218,7 +344,7 @@ fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module) void {
     }
 }
 
-fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module) void {
     const test_step = b.step("test", "Run all tests");
 
     const tests = b.addTest(.{
@@ -233,6 +359,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     tests.root_module.addImport("textmate", textmate);
     tests.root_module.addImport("ui", ui);
     tests.root_module.addImport("markdown", markdown);
+    tests.root_module.addImport("vscode-syntax", vscode_syntax);
     addOnigLibraryPath(b, tests.root_module);
     tests.root_module.linkSystemLibrary("onig", .{});
 

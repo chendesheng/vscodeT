@@ -98,6 +98,15 @@ pub const TokenizationRegistry = struct {
         return self._colorMap;
     }
 
+    pub fn clearColorMap(self: *TokenizationRegistry) void {
+        self._colorMap = null;
+        var languages = std.array_list.Managed([]const u8).init(self.allocator);
+        defer languages.deinit();
+        var iter = self._tokenizationSupports.keyIterator();
+        while (iter.next()) |key| languages.append(key.*) catch {};
+        self._onDidChange.fire(.{ .changedLanguages = languages.items, .changedColorMap = true }) catch {};
+    }
+
     pub fn getDefaultBackground(self: *TokenizationRegistry) ?Color {
         const colorMap = self._colorMap orelse return null;
         if (colorMap.len > @backingInt(ColorId.DefaultBackground)) {

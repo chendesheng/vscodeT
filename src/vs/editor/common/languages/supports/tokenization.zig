@@ -324,6 +324,18 @@ pub const TokenTheme = struct {
     }
 };
 
+/// The process-wide token theme used by the editor's tokenizer. The theme
+/// service owns the theme and replaces this pointer on theme changes.
+var active_token_theme: ?*TokenTheme = null;
+
+pub fn setActiveTokenTheme(theme: ?*TokenTheme) void {
+    active_token_theme = theme;
+}
+
+pub fn getActiveTokenTheme() ?*TokenTheme {
+    return active_token_theme;
+}
+
 pub fn toStandardTokenType(token_type: []const u8) StandardTokenType {
     // Port of `/\b(comment|string|regex|regexp)\b/`.
     var index: usize = 0;

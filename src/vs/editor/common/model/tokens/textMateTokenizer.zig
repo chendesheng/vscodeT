@@ -10,6 +10,9 @@ const EncodedTokenizationResult = languages.EncodedTokenizationResult;
 const TokenPacked = @import("../../tokens/lineTokens.zig").TokenPacked;
 const TokenMetadata = @import("../../encodedTokenAttributes.zig").TokenMetadata;
 const StandardTokenType = @import("../../encodedTokenAttributes.zig").StandardTokenType;
+const tokenization = @import("../../languages/supports/tokenization.zig");
+const toStandardTokenType = tokenization.toStandardTokenType;
+const vscode_syntax = @import("vscode-syntax");
 
 var initialized = false;
 
@@ -19,18 +22,46 @@ fn ensureInitialized() !void {
     try tm.oni.init(&.{tm.oni.Encoding.utf8});
     try tm.GrammarLibrary.initLibrary(io, std.heap.page_allocator);
     try tm.GrammarLibrary.getLibrary().?.addEmbeddedGrammars();
+    try registerVscodeGrammars();
     initialized = true;
 }
 
+/// Replaces the pinned package's grammar definitions with the VS Code checkout's
+/// files for the languages that ship one. The package grammar stays in use for
+/// languages without a VS Code grammar and for grammars reached through includes.
+fn registerVscodeGrammars() !void {
+    const library = tm.GrammarLibrary.getLibrary().?;
+    const GrammarInfo = @TypeOf(library.grammars.items[0]);
+    for (vscode_syntax.grammars) |grammar| {
+        var index: usize = 0;
+        while (index < library.grammars.items.len) {
+            const scope = std.mem.sliceTo(&library.grammars.items[index].scope_name, 0);
+            if (std.mem.eql(u8, scope, grammar.scope)) {
+                _ = library.grammars.swapRemove(index);
+                continue;
+            }
+            index += 1;
+        }
+
+        var info = GrammarInfo{};
+        @memcpy(info.name[0..grammar.scope.len], grammar.scope);
+        @memcpy(info.scope_name[0..grammar.scope.len], grammar.scope);
+        info.id = @intFromPtr(grammar.data.ptr);
+        info.embedded_file = grammar.data;
+        try library.grammars.append(library.allocator, info);
+    }
+}
+
 fn grammarScope(languageId: []const u8) ?[]const u8 {
+    if (vscode_syntax.scopeForLanguage(languageId)) |scope| return scope;
     const map = .{
         .{ "zig", "source.zig" },
         .{ "json", "source.json" },
-        .{ "jsonc", "source.json" },
+        .{ "jsonc", "source.json.comments" },
         .{ "javascript", "source.js" },
-        .{ "javascriptreact", "source.js" },
+        .{ "javascriptreact", "source.js.jsx" },
         .{ "typescript", "source.ts" },
-        .{ "typescriptreact", "source.ts" },
+        .{ "typescriptreact", "source.tsx" },
         .{ "python", "source.python" },
         .{ "rust", "source.rust" },
         .{ "go", "source.go" },
@@ -127,7 +158,15 @@ const TextMateSupport = struct {
         self.parser.processor = &self.processor;
         try self.parser.parseLine(&next.state, block, input.first_line);
 
-        return .{ .tokens = try tokensFromCaptures(allocator, self.processor.captures.items, line.len), .endState = .{ .context = next, .vtable = &TextMateState.vtable } };
+        return .{
+            .tokens = try tokensFromCaptures(
+                allocator,
+                self.processor.captures.items,
+                line.len,
+                tokenization.getActiveTokenTheme(),
+            ),
+            .endState = .{ .context = next, .vtable = &TextMateState.vtable },
+        };
     }
 
     fn dispose(ctx: *anyopaque) void {
@@ -170,6 +209,24 @@ pub fn create(allocator: Allocator, languageId: []const u8) !?ITokenizationSuppo
     return .{ .context = context, .vtable = &TextMateSupport.vtable };
 }
 
+test "textmate tokenizer: VS Code grammars replace the package grammars" {
+    if (vscode_syntax.scopeForLanguage("jsonc") == null) return error.SkipZigTest;
+    try std.testing.expectEqualStrings("source.json.comments", grammarScope("jsonc").?);
+    try std.testing.expectEqualStrings("source.js.jsx", grammarScope("javascriptreact").?);
+    try ensureInitialized();
+
+    const library = tm.GrammarLibrary.getLibrary().?;
+    var found = false;
+    for (library.grammars.items) |item| {
+        const scope = std.mem.sliceTo(&item.scope_name, 0);
+        if (std.mem.eql(u8, scope, "source.json.comments")) {
+            try std.testing.expect(item.embedded_file != null);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
 test "textmate tokenizer: zig grammar produces scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -203,7 +260,12 @@ test "textmate tokenizer: integrated through TextModel" {
     try std.testing.expect(found_comment);
 }
 
-fn tokensFromCaptures(allocator: Allocator, captures: []const tm.ParseCapture, lineLen: usize) ![]TokenPacked {
+fn tokensFromCaptures(
+    allocator: Allocator,
+    captures: []const tm.ParseCapture,
+    lineLen: usize,
+    theme: ?*tokenization.TokenTheme,
+) ![]TokenPacked {
     var cutPoints = ArrayList(usize).init(allocator);
     defer cutPoints.deinit();
     try cutPoints.append(0);
@@ -220,6 +282,7 @@ fn tokensFromCaptures(allocator: Allocator, captures: []const tm.ParseCapture, l
 
     var tokens = ArrayList(TokenPacked).init(allocator);
     errdefer tokens.deinit();
+    const root_rule = if (theme) |active| active._match("") else null;
     var i: usize = 0;
     while (i + 1 < cutPoints.items.len) : (i += 1) {
         const start = cutPoints.items[i];
@@ -227,7 +290,14 @@ fn tokensFromCaptures(allocator: Allocator, captures: []const tm.ParseCapture, l
         if (start >= end) continue;
         var metadata = defaultMetadata();
         for (captures) |cap| {
-            if (cap.start <= start and end <= cap.end) metadata = metadataForScope(metadata, cap.scope);
+            if (cap.start > start or end > cap.end) continue;
+            const token_type = toStandardTokenType(cap.scope);
+            if (token_type != .Other) metadata.tokenType = token_type;
+            if (theme) |active| {
+                applyThemeRule(&metadata, active, cap.scope, root_rule.?);
+            } else {
+                metadata = metadataForScope(metadata, cap.scope);
+            }
         }
         // The tokenization pipeline converts start offsets to end offsets
         // (`LineTokens.convertToEndOffset`), so emit the segment start here.
@@ -239,6 +309,28 @@ fn tokensFromCaptures(allocator: Allocator, captures: []const tm.ParseCapture, l
     }
     if (tokens.items.len == 0) try tokens.append(.{ .endOffset = 0, .metadata = defaultMetadata() });
     return try tokens.toOwnedSlice();
+}
+
+fn applyThemeRule(
+    metadata: *TokenMetadata,
+    theme: *tokenization.TokenTheme,
+    scope: []const u8,
+    root_rule: *const tokenization.ThemeTrieElementRule,
+) void {
+    const rule = theme._match(scope);
+    if (rule == root_rule) return;
+
+    // Rules inherit their parent's colors, so only apply a color when it
+    // differs from the theme default. That keeps an outer scope's color when
+    // an inner scope only contributes a font style (or has no rule of its own).
+    if (rule.getForeground() != root_rule.getForeground()) metadata.foreground = rule.getForeground();
+    const background: u8 = @intCast(rule.getBackground());
+    if (background != @as(u8, @intCast(root_rule.getBackground()))) metadata.background = background;
+
+    const font_style = rule.getFontStyle();
+    if (font_style.bold or font_style.italic or font_style.underline or font_style.strikethrough) {
+        metadata.fontStyle = font_style;
+    }
 }
 
 fn metadataForScope(metadata_: TokenMetadata, scope: []const u8) TokenMetadata {
@@ -339,7 +431,7 @@ test "textmate tokenizer: markdown inline raw scopes use the string color" {
         .{ .start = 2, .end = 3, .scope = "punctuation.definition.raw.markdown" },
         .{ .start = 7, .end = 8, .scope = "punctuation.definition.raw.markdown" },
     };
-    const tokens = try tokensFromCaptures(std.testing.allocator, &captures, line.len);
+    const tokens = try tokensFromCaptures(std.testing.allocator, &captures, line.len, null);
     defer std.testing.allocator.free(tokens);
 
     try std.testing.expectEqual(@as(usize, 3), tokens.len);

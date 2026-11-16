@@ -258,13 +258,26 @@ TextMate tokenization:
 - Supported language IDs include `zig`, `json`, `javascript`,
   `typescript`, `python`, `rust`, `go`, `c`, `cpp`, `java`, `html`, `css`,
   `scss`, `markdown`, `yaml`, `toml`, and `shellscript`/`bash`.
-- TextMate scopes are mapped to token types (`comment`, `string`, `regexp`)
-  and foreground color IDs. Markdown inline code (`markup.inline.raw`) and its
-  backticks use the string color, matching the Dark+ theme.
+- Languages that ship a grammar in the upstream checkout use VS Code's
+  originals, embedded from `../vscode/extensions/*/syntaxes/*.tmLanguage.json`
+  at build time (`vscode-syntax`). `zig` and `toml` keep the pinned package's
+  grammars; the package is also the fallback when the checkout is unavailable.
+- Token colors come from VS Code's Dark+ theme
+  (`theme-defaults/themes/dark_plus.json` and its `dark_vs.json` include).
+  `TokenTheme` resolves the `tokenColors` rules (foreground and
+  bold/italic/underline/strikethrough), and the TUI paints through the theme's
+  color map. Markdown inline code and its backticks therefore use Dark+'s
+  string color without a separate scope table. Token backgrounds are kept in
+  the token metadata but the terminal view uses the workspace background.
+- TextMate scopes still provide the standard token types (`comment`, `string`,
+  `regexp`) used by bracket and language features.
 - The pinned package's scope-selector evaluator is replaced at build time
   (`src/support/textmateScopes.zig`) so grammars with wildcard injection
   selectors (for example the HTML grammars loaded while parsing markdown)
   cannot spin the tokenizer. The selectors are still evaluated.
+- Theme selectors that combine a parent scope with a target (`a b`) or exclude
+  a scope (`a - b`) are reduced to the target scope; the terminal theme trie
+  matches one scope at a time.
 - Languages without a TextMate mapping continue to use the null tokenizer.
 
 Markdown:
