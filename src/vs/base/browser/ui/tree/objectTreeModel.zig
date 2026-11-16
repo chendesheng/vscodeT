@@ -183,6 +183,11 @@ pub fn ObjectTreeModelWithHash(comptime T: type, comptime Context: type) type {
             return self.model.setCollapsed(location, collapsed, recursive);
         }
 
+        /// Model-agnostic collapse entry point used by `AbstractTreeForModel`.
+        pub fn setCollapsedElement(self: *ObjectTreeModelWithHash(T, Context), element: ?T, collapsed: bool, recursive: bool) !bool {
+            return self.setCollapsed(element, collapsed, recursive);
+        }
+
         pub fn isCollapsible(self: *ObjectTreeModelWithHash(T, Context), element: ?T) bool {
             const node = self.getNode(element) catch return false;
             return node.collapsible;

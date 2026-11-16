@@ -106,17 +106,22 @@ skips the oniguruma-dependent editor build.
   dimmed while the Explorer is unfocused. `explorer.sortOrder` is honored for
   `default`, `mixed`, `filesFirst` and `type` (`modified` falls back until
   mtimes are collected), and ignore/exclude filtering now runs through the tree
-  filter instead of pruning the model. `explorer.compactFolders` is not wired
-  yet. `Ctrl-B` toggles the side panel and
+  filter instead of pruning the model. `explorer.compactFolders` is honored
+  (default on): a lone child chain such as `src/vs/editor` renders as one
+  compressed row, expands/collapses as one node, and resolves the compressed
+  child through `autoExpandCompressedChildren`. `Ctrl-B` toggles the side panel
+  and
   `Escape` returns focus to the editor. The generic VS Code list/tree view is
   being replaced in layers under `src/vs/base/browser/ui/list` and
   `src/vs/base/browser/ui/tree`: `rangeMap`, the virtualized `ListView`,
   `ListWidget`, the index/object tree models and a terminal `AbstractTree`.
-  The Explorer now renders through that `AbstractTree`/`ObjectTreeModel` path.
-  `ObjectTree`, `IndexTree` and a synchronous `DataTree` view adapter are also
-  ported, along with `CompressedObjectTreeModel`. Remaining work is tree-level
-  filtering, smart diff splicing, the async data tree, drag/drop and sticky
-  scroll.
+  The Explorer now renders through that
+  `CompressibleObjectTree`/`CompressedObjectTreeModel`/`AbstractTree` path.
+  `ObjectTree`, `IndexTree`, a synchronous `DataTree` and the
+  `CompressibleObjectTree` view adapter are also ported. Remaining work is the
+  async data tree, drag/drop, sticky scroll, the compressed-label navigation
+  controller (per-segment focus/hover) and identity-provider diffing through
+  the object models.
 - The configuration service (`src/vs/workbench/services/configuration/browser/configurationService.zig`)
   resolves defaults, user settings, the workspace file's `settings` block and
   each folder's `.vscode/settings.json`, in that precedence order. It uses the

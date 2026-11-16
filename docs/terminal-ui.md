@@ -915,10 +915,13 @@ Library constraints:
   file calls `Workbench.openPath`. Directory resolution is synchronous. The
   Explorer now renders through the ported list/tree view layer
   (`rangeMap` + `ListView`/`ListWidget` + `IndexTreeModel`/`ObjectTreeModel` +
-  `AbstractTree`), including virtualization, wheel scrolling and collapse
-  state. The compressed tree model and object/index/synchronous-data tree view
-  adapters are ported too. The async data tree/loading placeholders, tree-level
-  filtering, smart diff splice, drag/drop and sticky scroll are not ported.
+  `CompressedObjectTreeModel` + `AbstractTree`), including virtualization,
+  wheel scrolling, collapse state and `explorer.compactFolders`. The
+  `CompressibleObjectTree` adapter renders a compressed path as one
+  `a/b/c` row, and object/index/synchronous-data tree view adapters are ported
+  too. The async data tree/loading placeholders, identity-provider diffing
+  through the object models, drag/drop, sticky scroll and the compressed-label
+  navigation controller (per-segment focus/hover) are not ported.
   `src/tui/activityBar.zig` switches fixed Explorer, Search and Settings
   containers; Settings remains a placeholder. This is not the browser
   `ExplorerView`/tree widget or registered view-container service port; live

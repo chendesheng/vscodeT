@@ -86,6 +86,79 @@ test "CompressedObjectTreeModel: decompress a compressed branch" {
     try testing.expectEqual(@as(i32, 11), restored.children[0].element);
 }
 
+test "CompressedObjectTreeModel: incompressible leaf" {
+    const allocator = testing.allocator;
+    const leaf = [_]Element{.{ .element = 1111, .incompressible = true }};
+    const c111 = [_]Element{.{ .element = 111, .children = &leaf }};
+    const c11 = [_]Element{.{ .element = 11, .children = &c111 }};
+    const input = Element{ .element = 1, .children = &c11 };
+
+    const output = try compressed.compress(i32, allocator, input);
+    defer compressed.freeCompressed(i32, allocator, output);
+    try expectElements(&.{ 1, 11, 111 }, output.element.elements);
+    try testing.expect(!output.element.incompressible);
+    try testing.expectEqual(@as(usize, 1), output.children.len);
+    try expectElements(&.{1111}, output.children[0].element.elements);
+    try testing.expect(output.children[0].element.incompressible);
+
+    const restored = try compressed.decompress(i32, allocator, output);
+    defer compressed.freeDecompressed(i32, allocator, restored);
+    try testing.expectEqual(@as(i32, 1), restored.element);
+    try testing.expectEqual(@as(i32, 11), restored.children[0].element);
+    try testing.expectEqual(@as(i32, 111), restored.children[0].children[0].element);
+    try testing.expect(restored.children[0].children[0].children[0].incompressible);
+}
+
+test "CompressedObjectTreeModel: incompressible branch" {
+    const allocator = testing.allocator;
+    const leaf = [_]Element{.{ .element = 1111 }};
+    const c111 = [_]Element{.{ .element = 111, .incompressible = true, .children = &leaf }};
+    const c11 = [_]Element{.{ .element = 11, .children = &c111 }};
+    const input = Element{ .element = 1, .children = &c11 };
+
+    const output = try compressed.compress(i32, allocator, input);
+    defer compressed.freeCompressed(i32, allocator, output);
+    try expectElements(&.{ 1, 11 }, output.element.elements);
+    try testing.expectEqual(@as(usize, 1), output.children.len);
+    try expectElements(&.{ 111, 1111 }, output.children[0].element.elements);
+    try testing.expect(output.children[0].element.incompressible);
+}
+
+test "CompressedObjectTreeModel: incompressible chain" {
+    const allocator = testing.allocator;
+    const leaf = [_]Element{.{ .element = 1111, .incompressible = true }};
+    const c111 = [_]Element{.{ .element = 111, .incompressible = true, .children = &leaf }};
+    const c11 = [_]Element{.{ .element = 11, .children = &c111 }};
+    const input = Element{ .element = 1, .children = &c11 };
+
+    const output = try compressed.compress(i32, allocator, input);
+    defer compressed.freeCompressed(i32, allocator, output);
+    try expectElements(&.{ 1, 11 }, output.element.elements);
+    try testing.expectEqual(@as(usize, 1), output.children.len);
+    try expectElements(&.{111}, output.children[0].element.elements);
+    try testing.expect(output.children[0].element.incompressible);
+    try testing.expectEqual(@as(usize, 1), output.children[0].children.len);
+    try expectElements(&.{1111}, output.children[0].children[0].element.elements);
+    try testing.expect(output.children[0].children[0].element.incompressible);
+}
+
+test "CompressedObjectTreeModel: incompressible tree" {
+    const allocator = testing.allocator;
+    const leaf = [_]Element{.{ .element = 1111, .incompressible = true }};
+    const c111 = [_]Element{.{ .element = 111, .incompressible = true, .children = &leaf }};
+    const c11 = [_]Element{.{ .element = 11, .incompressible = true, .children = &c111 }};
+    const input = Element{ .element = 1, .children = &c11 };
+
+    const output = try compressed.compress(i32, allocator, input);
+    defer compressed.freeCompressed(i32, allocator, output);
+    try expectElements(&.{1}, output.element.elements);
+    try testing.expectEqual(@as(usize, 1), output.children.len);
+    try expectElements(&.{11}, output.children[0].element.elements);
+    try testing.expect(output.children[0].element.incompressible);
+    try expectElements(&.{111}, output.children[0].children[0].element.elements);
+    try expectElements(&.{1111}, output.children[0].children[0].children[0].element.elements);
+}
+
 const Model = compressed.CompressedObjectTreeModel(i32);
 
 fn collect(model: *Model, allocator: std.mem.Allocator) ![]*Model.ModelNode {
@@ -208,4 +281,63 @@ test "CompressedObjectTreeModel: compressed regrouping" {
     defer allocator.free(rows4);
     try expectRows(&.{ &.{ 1, 11 }, &.{111}, &.{112}, &.{ 113, 1131 }, &.{1132}, &.{1133} }, rows4);
     try testing.expectEqual(@as(usize, 8), model.size());
+}
+
+test "CompressedObjectTreeModel: model keeps incompressible groups" {
+    const allocator = testing.allocator;
+    var model = try Model.init(allocator, "test", true);
+    defer model.deinit();
+
+    const leaf = [_]Element{.{ .element = 1111, .incompressible = true }};
+    const c111 = [_]Element{.{ .element = 111, .children = &leaf }};
+    const c11 = [_]Element{.{ .element = 11, .children = &c111 }};
+    try model.setChildren(null, &.{.{ .element = 1, .children = &c11 }});
+
+    const rows = try collect(&model, allocator);
+    defer allocator.free(rows);
+    try expectRows(&.{ &.{ 1, 11, 111 }, &.{1111} }, rows);
+    try testing.expect(!rows[0].element.?.incompressible);
+    try testing.expect(rows[1].element.?.incompressible);
+}
+
+test "CompressedObjectTreeModel: collapse state survives child updates" {
+    const allocator = testing.allocator;
+    var model = try Model.init(allocator, "test", true);
+    defer model.deinit();
+
+    const leaf = [_]Element{.{ .element = 1111, .incompressible = true }};
+    const c111 = [_]Element{.{ .element = 111, .children = &leaf }};
+    const c11 = [_]Element{.{ .element = 11, .children = &c111 }};
+    try model.setChildren(null, &.{.{ .element = 1, .children = &c11 }});
+    try testing.expect(!model.isCollapsed(1));
+
+    _ = try model.setCollapsed(1, true, false);
+    try testing.expect(model.isCollapsed(1));
+
+    try model.setChildren(111, &.{.{ .element = 1112, .incompressible = true }});
+    try testing.expect(model.isCollapsed(1));
+    const rows = try collect(&model, allocator);
+    defer allocator.free(rows);
+    try expectRows(&.{&.{ 1, 11, 111 }}, rows);
+
+    _ = try model.setCollapsed(1, false, false);
+    try testing.expect(!model.isCollapsed(1));
+    try model.setChildren(111, &.{
+        .{ .element = 1112, .incompressible = true },
+        .{ .element = 1113, .incompressible = true },
+    });
+    try testing.expect(!model.isCollapsed(1));
+    const expanded_rows = try collect(&model, allocator);
+    defer allocator.free(expanded_rows);
+    try expectRows(&.{ &.{ 1, 11, 111 }, &.{1112}, &.{1113} }, expanded_rows);
+
+    try model.setCompressionEnabled(false);
+    const flat = try collect(&model, allocator);
+    defer allocator.free(flat);
+    try expectRows(&.{ &.{1}, &.{11}, &.{111}, &.{1112}, &.{1113} }, flat);
+
+    try model.setCompressionEnabled(true);
+    const recompressed = try collect(&model, allocator);
+    defer allocator.free(recompressed);
+    try expectRows(&.{ &.{ 1, 11, 111 }, &.{1112}, &.{1113} }, recompressed);
 }

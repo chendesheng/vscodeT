@@ -4,8 +4,8 @@
 // instead of DOM rows. `AbstractTreeForModel` keeps the view model-agnostic so
 // `CompressibleObjectTree` can drive it with `CompressedObjectTreeModel`, the
 // same composition as upstream's `CompressibleObjectTree extends ObjectTree`.
-// Filtering, async nodes, drag/drop, context menus and the browser
-// accessibility layer are not ported yet.
+// Filtering lives in the tree models; async nodes, drag/drop, context menus
+// and the browser accessibility layer are not ported yet.
 
 const std = @import("std");
 const ui = @import("ui");
