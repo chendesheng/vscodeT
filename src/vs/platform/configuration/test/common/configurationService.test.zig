@@ -302,3 +302,18 @@ test "empty override identifier falls back to normal values" {
     try std.testing.expectEqual(@as(i64, 2), (try service.getValueWithOverrides("empty.setting", "")).?.integer);
     try std.testing.expectEqual(@as(i64, 2), (try service.getValueWithOverrides("empty.setting", "missing")).?.integer);
 }
+
+test "updating to the default value clears the user setting" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "clear.setting", .default = std.json.Value{ .integer = 4 } }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try service.updateValue("clear.setting", .{ .integer = 8 }, .USER);
+    try std.testing.expect(configurationService.isConfigured(service.inspect("clear.setting")));
+    try service.updateValue("clear.setting", .{ .integer = 4 }, .USER);
+    try std.testing.expect(!configurationService.isConfigured(service.inspect("clear.setting")));
+    try std.testing.expectEqual(@as(i64, 4), service.getValue("clear.setting").?.integer);
+}
