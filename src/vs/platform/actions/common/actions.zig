@@ -337,6 +337,8 @@ pub const MenuRegistry = struct {
     allocator: Allocator,
     menus: std.StringHashMap(std.array_list.Managed(MenuEntry)),
     groups: std.StringHashMap(std.StringHashMap([]const u8)),
+    commands: std.StringHashMap(ICommandAction),
+    implicit_items: std.array_list.Managed(MenuEntry),
     on_did_change: Emitter(MenuChangeEvent),
 
     pub fn init(allocator: Allocator) MenuRegistry {
@@ -344,6 +346,8 @@ pub const MenuRegistry = struct {
             .allocator = allocator,
             .menus = std.StringHashMap(std.array_list.Managed(MenuEntry)).init(allocator),
             .groups = std.StringHashMap(std.StringHashMap([]const u8)).init(allocator),
+            .commands = std.StringHashMap(ICommandAction).init(allocator),
+            .implicit_items = std.array_list.Managed(MenuEntry).init(allocator),
             .on_did_change = Emitter(MenuChangeEvent).init(allocator),
         };
     }
@@ -355,6 +359,8 @@ pub const MenuRegistry = struct {
         var group_iterator = self.groups.valueIterator();
         while (group_iterator.next()) |map| map.deinit();
         self.groups.deinit();
+        self.commands.deinit();
+        self.implicit_items.deinit();
         self.on_did_change.deinit();
     }
 
@@ -393,11 +399,44 @@ pub const MenuRegistry = struct {
         try self.on_did_change.fire(.{ .menu = id });
     }
 
+    /// Registers a command for implicit command-palette visibility.
+    pub fn addCommand(self: *MenuRegistry, command: ICommandAction) !void {
+        try self.commands.put(command.id, command);
+        try self.on_did_change.fire(.{ .menu = menu_ids.CommandPalette });
+    }
+
+    pub fn getCommand(self: *MenuRegistry, id: []const u8) ?ICommandAction {
+        return self.commands.get(id);
+    }
+
     /// Items are returned in insertion order; the menu service applies
-    /// visibility and ordering.
+    /// visibility and ordering. The command palette additionally shows every
+    /// registered command that has no explicit palette item (upstream
+    /// `_appendImplicitItems`). That slice is owned by the registry scratch
+    /// buffer and is invalidated by the next palette lookup.
     pub fn getMenuItems(self: *MenuRegistry, id: MenuId) []const MenuEntry {
-        const list = self.menus.getPtr(id.id) orelse return &.{};
-        return list.items;
+        const list = self.menus.getPtr(id.id);
+        if (!MenuId.eql(id, menu_ids.CommandPalette)) {
+            return if (list) |entries| entries.items else &.{};
+        }
+
+        self.implicit_items.clearRetainingCapacity();
+        if (list) |entries| self.implicit_items.appendSlice(entries.items) catch return &.{};
+
+        var explicit = std.StringHashMap(void).init(self.allocator);
+        defer explicit.deinit();
+        for (self.implicit_items.items) |entry| {
+            if (entry == .command) {
+                explicit.put(entry.command.command.id, {}) catch {};
+                if (entry.command.alt) |alt| explicit.put(alt.id, {}) catch {};
+            }
+        }
+        var iterator = self.commands.iterator();
+        while (iterator.next()) |entry| {
+            if (explicit.contains(entry.key_ptr.*)) continue;
+            self.implicit_items.append(.{ .command = .{ .command = entry.value_ptr.* } }) catch return self.implicit_items.items;
+        }
+        return self.implicit_items.items;
     }
 };
 
@@ -440,6 +479,13 @@ pub const Action2 = struct {
             .id = self.id,
             .context = self,
             .run = runCommand,
+        });
+        try registries.menus.addCommand(.{
+            .id = self.id,
+            .title = self.title,
+            .tooltip = self.tooltip,
+            .category = self.category,
+            .precondition = self.precondition,
         });
 
         if (self.keybinding) |keybinding| {
@@ -544,4 +590,21 @@ test "Action2 registers command, keybinding and menu contribution" {
     defer allocator.free(keybindings);
     try std.testing.expectEqual(@as(usize, 1), keybindings.len);
     try std.testing.expectEqualStrings("test.action", keybindings[0].command.?);
+}
+
+test "command palette shows implicit commands once" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.addCommand(.{ .id = "a", .title = "A" });
+    try registry.addCommand(.{ .id = "b", .title = "B" });
+    try registry.appendMenuItem(menu_ids.CommandPalette, .{
+        .command = .{ .id = "a", .title = "Explicit A" },
+    });
+
+    const items = registry.getMenuItems(menu_ids.CommandPalette);
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("Explicit A", items[0].command.command.title);
+    try std.testing.expectEqualStrings("b", items[1].command.command.id);
 }
