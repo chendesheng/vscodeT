@@ -1,6 +1,11 @@
 //! Loads VS Code's Dark+ token colors for TextMate tokenization.
 //!
-//! The rules are read from the upstream checkout's
+//! The primary path goes through the ported workbench theme service
+//! (`initFromThemeService`): `ColorThemeData` loads `dark_plus.json` and its
+//! `dark_vs.json` include through a bundled-assets resource reader, and its
+//! token colors are converted into the editor `TokenTheme`. The legacy
+//! `init` below remains as a fallback loader; it reads the rules from the
+//! upstream checkout's
 //! `theme-defaults/themes/dark_plus.json` and its `dark_vs.json` include. They
 //! are resolved by the editor's `TokenTheme` (the VS Code tokenization port),
 //! which keeps the scope inheritance, font styles and color map. The TUI paints
@@ -19,6 +24,10 @@ const TokenTheme = tokenization.TokenTheme;
 const ITokenThemeRule = tokenization.ITokenThemeRule;
 const stripJsonc = @import("../vs/platform/configuration/common/configurationModels.zig").stripJsonc;
 const TokenizationRegistry = @import("../vs/editor/common/tokenizationRegistry.zig").TokenizationRegistry;
+const Color = @import("../vs/base/common/color.zig").Color;
+const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+const theme_service_mod = @import("../vs/workbench/services/themes/browser/workbenchThemeService.zig");
+const color_theme_mod = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
 
 pub const SyntaxTheme = struct {
     theme: TokenTheme = undefined,
@@ -36,7 +45,73 @@ pub const SyntaxTheme = struct {
         const background = colorString(colors, "editor.background") orelse "#1E1E1E";
         try rules.append(.{ .token = "", .foreground = foreground, .background = background });
 
-        self.theme = try TokenTheme.createFromRawTokenTheme(allocator, rules.items, &.{});
+        try self.installTheme(allocator, rules.items);
+    }
+
+    /// Builds the token theme from the ported color-theme data instead of the
+    /// local JSONC walker. `TokenColor` scopes become one token rule each; the
+    /// theme's `editor.foreground`/`editor.background` become the default rule.
+    pub fn initFromColorThemeData(self: *SyntaxTheme, allocator: Allocator, theme_data: *color_theme_mod.ColorThemeData) !void {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+
+        var rules = std.array_list.Managed(ITokenThemeRule).init(scratch);
+        for (theme_data.getTokenColors()) |token_color| {
+            const settings = token_color.settings;
+            if (token_color.scope) |scopes| {
+                if (scopes.len == 0) {
+                    try rules.append(.{
+                        .token = "",
+                        .foreground = settings.foreground,
+                        .background = settings.background,
+                        .fontStyle = settings.font_style,
+                    });
+                    continue;
+                }
+                for (scopes) |scope| {
+                    try rules.append(.{
+                        .token = scope,
+                        .foreground = settings.foreground,
+                        .background = settings.background,
+                        .fontStyle = settings.font_style,
+                    });
+                }
+            } else {
+                try rules.append(.{
+                    .token = "",
+                    .foreground = settings.foreground,
+                    .background = settings.background,
+                    .fontStyle = settings.font_style,
+                });
+            }
+        }
+
+        const foreground = try colorToHex(scratch, theme_data.getColor("editor.foreground", true));
+        const background = try colorToHex(scratch, theme_data.getColor("editor.background", true));
+        if (foreground != null or background != null) {
+            try rules.append(.{ .token = "", .foreground = foreground, .background = background });
+        }
+
+        try self.installTheme(allocator, rules.items);
+    }
+
+    /// Loads the built-in Dark+ theme through the ported workbench theme
+    /// service (including the `dark_vs.json` include).
+    pub fn initFromThemeService(self: *SyntaxTheme, allocator: Allocator) !void {
+        var registry = color_utils.ColorRegistry.init(allocator);
+        defer registry.deinit();
+        const service = try theme_service_mod.ThemeService.init(allocator, &registry, null);
+        defer service.deinit();
+        try service.registerTheme("vs-dark", "Dark (Visual Studio)", .DARK);
+
+        var reader = ThemeAssetReader{};
+        try service.setTheme("vs-dark", ThemeAssetReader.interface(&reader), "dark_plus.json");
+        try self.initFromColorThemeData(allocator, service.getActiveTheme());
+    }
+
+    fn installTheme(self: *SyntaxTheme, allocator: Allocator, rules: []const ITokenThemeRule) !void {
+        self.theme = try TokenTheme.createFromRawTokenTheme(allocator, rules, &.{});
         tokenization.setActiveTokenTheme(&self.theme);
         TokenizationRegistry.instance.setColorMap(self.theme.getColorMap());
     }
@@ -47,6 +122,23 @@ pub const SyntaxTheme = struct {
         self.theme.deinit();
     }
 };
+
+/// Serves the bundled VS Code theme assets to the color theme loader.
+pub const ThemeAssetReader = struct {
+    fn read(_: *anyopaque, path: []const u8) anyerror![]const u8 {
+        const name = std.fs.path.basename(path);
+        return assets.themeData(name) orelse error.FileNotFound;
+    }
+
+    pub fn interface(self: *ThemeAssetReader) color_theme_mod.ResourceReader {
+        return .{ .context = self, .read = read };
+    }
+};
+
+fn colorToHex(allocator: Allocator, color: ?Color) !?[]const u8 {
+    const value = color orelse return null;
+    return try value.toHexString(allocator);
+}
 
 fn colorString(colors: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const value = colors.get(key) orelse return null;
@@ -383,4 +475,21 @@ test "syntax theme: markdown list continuation keeps inline code" {
         }
         try std.testing.expect(has_inline);
     }
+}
+
+test "syntax theme loads through the workbench theme service" {
+    const allocator = std.testing.allocator;
+
+    var themed: SyntaxTheme = undefined;
+    try themed.initFromThemeService(allocator);
+    defer themed.deinit();
+
+    var legacy: SyntaxTheme = undefined;
+    try legacy.init(allocator);
+    defer legacy.deinit();
+
+    const themed_map = themed.theme.getColorMap();
+    const legacy_map = legacy.theme.getColorMap();
+    try std.testing.expect(themed_map.len > 1);
+    try std.testing.expectEqual(legacy_map.len, themed_map.len);
 }

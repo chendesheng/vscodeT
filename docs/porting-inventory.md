@@ -890,8 +890,10 @@ registering the base and semantic tokens; the full `sizeRegistry.test.ts` suite
 passes (schema data is a plain map, not a JSON-contribution registry). `workbench/services/themes/common/colorThemeData.zig` ports the
 in-memory theme data (theme/custom/transient colors, derived defaults, base
 theme, token background cache and profile-storage round-trip); four of the five
-`colorThemeData.test.ts` cases pass, while plist/tmTheme loading needs the
-extension resource loader. `browser/workbenchThemeService.zig` now ports the
+`colorThemeData.test.ts` cases pass, while `ensureLoaded` now also ports the
+JSON/JSONC `include` chain (base colors first, derived overrides, token rules
+appended) and tmTheme parsing through an explicit resource reader; the
+extension resource loader/watch are host-provided. `browser/workbenchThemeService.zig` now ports the
 terminal theme service (explicit registration, active-theme persistence,
 `ThemeSettings`/`ThemeSettingDefaults` and `migrateThemeSettingsId` with its
 three cases), and `common/themeConfiguration.zig` ports the color-theme
@@ -928,7 +930,11 @@ and registry integration/lifecycle tests pass.
 The resolved configuration also builds `RichEditBrackets` and
 `BracketElectricCharacterSupport` eagerly (upstream lazily) and exposes
 `getBrackets`/`getElectricCharacter`, releasing the bracket regexes when the
-configuration is invalidated. The workbench registration surface is ported in
+configuration is invalidated. The TUI consumes the theme service: `syntaxTheme.initFromThemeService` loads
+`dark_plus.json` (with its `dark_vs.json` include) through `ColorThemeData` and
+converts its token colors into the editor `TokenTheme`; `app.zig` uses it with
+the bundled loader as a fallback, and a test asserts the resulting color map
+matches the legacy loader. The workbench registration surface is ported in
 `workbench/services/language/common/languageService.zig`
 (`WorkbenchLanguageService`: contribution validation/registration and
 `files.associations` → configured associations), and the TUI editor resolves
@@ -1069,7 +1075,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,032 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,035 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1086,7 +1092,7 @@ ConfigurationService; P5d is ported (associations, workbench registration
 surface, TUI path matching), with only `files.associations` host wiring left; P5e has the URI/file-service/editor-input foundation and needs the
 full provider file service and the working-copy wiring.
 
-**Status at the end of the current session:** 2,032 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,035 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor view/controller/widget stack and the URI/file

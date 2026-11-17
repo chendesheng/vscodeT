@@ -822,7 +822,11 @@ Editor contributions:
   themes explicitly and persists the active id; `themeConfiguration.zig` ports
   the color-theme selection/preferred-scheme logic, registers the theme settings
   schemas (`workbench.colorTheme`, preferred themes, customizations and the
-  auto-detect flags) and `migrateThemeSettingsId` handles legacy ids. The file-backed workbench
+  auto-detect flags) and `migrateThemeSettingsId` handles legacy ids. The TUI
+  now loads its syntax theme through this service: `syntaxTheme.initFromThemeService`
+  reads `dark_plus.json` plus its `dark_vs.json` include via `ColorThemeData`
+  (JSONC include chains are ported) and converts the token colors into the
+  editor `TokenTheme`; the bundled loader remains as a fallback. The file-backed workbench
   configuration service applies
   language overrides, application/machine scope filtering, and untrusted
   workspace filtering for restricted/unregistered settings.

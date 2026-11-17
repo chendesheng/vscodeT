@@ -1,6 +1,7 @@
 // Port of `src/vs/workbench/services/themes/test/common/colorThemeData.test.ts`
-// (in-memory/transient/storage cases). The plist-loading case needs the
-// extension resource loader + URI/tmTheme parsing, which are not ported yet.
+// (in-memory/transient/storage cases) plus the JSONC include-chain loader.
+// The upstream plist fixture case is not ported verbatim; tmTheme parsing is
+// exercised through the ported resource-reader path.
 const std = @import("std");
 const Color = @import("../../../../../base/common/color.zig").Color;
 const color_utils = @import("../../../../../platform/theme/common/colorUtils.zig");
@@ -462,4 +463,88 @@ test "ColorThemeData: applies custom semantic and token color settings JSON" {
     try std.testing.expectEqual(@as(?bool, true), resolved.bold);
     const resolved_color = resolved.foreground orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u8, 0xaa), resolved_color.r);
+}
+
+const ThemeMapReader = struct {
+    files: std.StringHashMap([]const u8),
+
+    fn read(context: *anyopaque, path: []const u8) anyerror![]const u8 {
+        const self: *ThemeMapReader = @ptrCast(@alignCast(context));
+        return self.files.get(path) orelse error.FileNotFound;
+    }
+
+    fn interface(self: *ThemeMapReader) @import("../../common/colorThemeData.zig").ResourceReader {
+        return .{ .context = self, .read = read };
+    }
+};
+
+test "loads theme includes with base colors and appended token rules" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    const base =
+        \\{
+        \\  "colors": { "editor.foreground": "#111111", "editor.background": "#000000" },
+        \\  "tokenColors": [
+        \\    { "scope": "comment", "settings": { "foreground": "#AAAAAA" } }
+        \\  ],
+        \\  "semanticTokenColors": { "comment": "#AAAAAA" }
+        \\}
+    ;
+    const derived =
+        \\{
+        \\  "include": "base.json",
+        \\  "colors": { "editor.foreground": "#222222" },
+        \\  "tokenColors": [
+        \\    { "scope": "keyword", "settings": { "foreground": "#BBBBBB" } }
+        \\  ]
+        \\}
+    ;
+
+    var files = std.StringHashMap([]const u8).init(allocator);
+    defer files.deinit();
+    try files.put("themes/base.json", base);
+    try files.put("themes/derived.json", derived);
+    var reader = ThemeMapReader{ .files = files };
+
+    const theme = try ColorThemeData.createUnloadedTheme(allocator, &fixture.registry, "vs-dark", &.{});
+    defer theme.deinit();
+    theme.location = "themes/derived.json";
+    try theme.ensureLoaded(reader.interface());
+
+    try std.testing.expect(theme.is_loaded);
+    // The derived theme wins over the included base...
+    try expectHex(theme.getColor("editor.foreground", true), 0x22, 0x22, 0x22);
+    // ...while the base still provides the other colors.
+    try expectHex(theme.getColor("editor.background", true), 0x00, 0x00, 0x00);
+
+    const token_colors = theme.getTokenColors();
+    // Index 0 is the generated default background rule; then the included and
+    // the derived token rules in that order.
+    try std.testing.expectEqual(@as(usize, 3), token_colors.len);
+    try std.testing.expectEqualStrings("#AAAAAA", token_colors[1].settings.foreground.?);
+    try std.testing.expectEqualStrings("#BBBBBB", token_colors[2].settings.foreground.?);
+
+    const comment_style = theme.getTokenStyleMetadata("comment", &.{}, "plaintext").?;
+    try std.testing.expect(comment_style.foreground != null);
+}
+
+test "rejects include cycles when loading a theme" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    const loop =
+        \\{ "include": "loop.json", "colors": {} }
+    ;
+    var files = std.StringHashMap([]const u8).init(allocator);
+    defer files.deinit();
+    try files.put("themes/loop.json", loop);
+    var reader = ThemeMapReader{ .files = files };
+
+    const theme = try ColorThemeData.createUnloadedTheme(allocator, &fixture.registry, "vs-dark", &.{});
+    defer theme.deinit();
+    theme.location = "themes/loop.json";
+    try std.testing.expectError(error.InvalidTheme, theme.ensureLoaded(reader.interface()));
 }

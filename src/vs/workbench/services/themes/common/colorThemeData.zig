@@ -2,9 +2,10 @@
 // `src/vs/workbench/services/themes/common/colorThemeData.ts`.
 //
 // Terminal adaptations and current scope:
-// - File/extension theme loading (`ensureLoaded`, plist/tmTheme parsing,
-//   extension resource loader, watch) is not ported yet; only the in-memory
-//   theme data, custom/transient colors and storage round-trip are.
+// - File/extension theme loading (`ensureLoaded` with an explicit resource
+//   reader, JSON/JSONC includes, plist/tmTheme parsing) is ported. There is no
+//   extension resource loader or file watch: the host provides the reader and
+//   reloads explicitly.
 // - The global color registry is passed explicitly, and maps are keyed by the
 //   original hex strings so token backgrounds keep their authored casing.
 const std = @import("std");
@@ -14,6 +15,7 @@ const color_utils = @import("../../../../platform/theme/common/colorUtils.zig");
 const theme_service = @import("../../../../platform/theme/common/themeService.zig");
 const theme_mod = @import("../../../../platform/theme/common/theme.zig");
 const storage_mod = @import("../../../../platform/storage/common/storage.zig");
+const configuration_models = @import("../../../../platform/configuration/common/configurationModels.zig");
 
 const ColorRegistry = color_utils.ColorRegistry;
 const ColorValue = color_utils.ColorValue;
@@ -591,11 +593,51 @@ pub const ColorThemeData = struct {
             return;
         }
 
-        const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return error.InvalidTheme;
+        var token_colors = std.array_list.Managed(TokenColor).init(allocator);
+        defer token_colors.deinit();
+        var semantic_inputs = std.array_list.Managed(SemanticRuleInput).init(allocator);
+        defer semantic_inputs.deinit();
+
+        self.theme_token_colors = &.{};
+        try self.loadJsonTheme(reader, location, &token_colors, &semantic_inputs, 0);
+
+        if (semantic_inputs.items.len > 0) {
+            try self.setCustomSemanticTokenColors(semantic_inputs.items);
+        }
+        self.theme_token_colors = try token_colors.toOwnedSlice();
+        self.is_loaded = true;
+        try self.refreshTokenColors();
+    }
+
+    /// Port of `_loadColorTheme`: loads `include`d themes first, then applies
+    /// this file's colors (overriding) and token rules (appended after the
+    /// included ones).
+    fn loadJsonTheme(
+        self: *ColorThemeData,
+        reader: ResourceReader,
+        location: []const u8,
+        token_colors: *std.array_list.Managed(TokenColor),
+        semantic_inputs: *std.array_list.Managed(SemanticRuleInput),
+        depth: usize,
+    ) !void {
+        if (depth > 16) return error.InvalidTheme;
+        const allocator = self.arena.allocator();
+        const content = try reader.read(reader.context, location);
+        const sanitized = configuration_models.stripJsonc(allocator, content) catch return error.InvalidTheme;
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, sanitized, .{}) catch return error.InvalidTheme;
         const object = switch (parsed.value) {
-            .object => |object| object,
+            .object => |value| value,
             else => return error.InvalidTheme,
         };
+
+        if (object.get("include")) |include| {
+            if (include == .string) {
+                const directory = std.fs.path.dirname(location) orelse ".";
+                const include_location = try std.fs.path.join(allocator, &.{ directory, include.string });
+                try self.loadJsonTheme(reader, include_location, token_colors, semantic_inputs, depth + 1);
+            }
+        }
+
         if (object.get("colors")) |colors| {
             if (colors == .object) {
                 var iterator = colors.object.iterator();
@@ -610,7 +652,6 @@ pub const ColorThemeData = struct {
         }
         if (object.get("semanticTokenColors")) |semantic_colors| {
             if (semantic_colors == .object) {
-                var inputs = std.array_list.Managed(SemanticRuleInput).init(allocator);
                 var semantic_iterator = semantic_colors.object.iterator();
                 while (semantic_iterator.next()) |entry| {
                     const selector = entry.key_ptr.*;
@@ -641,26 +682,21 @@ pub const ColorThemeData = struct {
                         },
                         else => continue,
                     }
-                    try inputs.append(input);
+                    try semantic_inputs.append(input);
                 }
-                try self.setCustomSemanticTokenColors(inputs.items);
             }
         }
-        if (object.get("tokenColors")) |token_colors| {
-            if (token_colors == .array) {
-                var rules = std.array_list.Managed(TokenColor).init(allocator);
-                for (token_colors.array.items) |entry| {
+        if (object.get("tokenColors")) |theme_token_colors| {
+            if (theme_token_colors == .array) {
+                for (theme_token_colors.array.items) |entry| {
                     const rule_object = switch (entry) {
                         .object => |rule| rule,
                         else => continue,
                     };
-                    if (try parseTokenColor(allocator, rule_object)) |rule| try rules.append(rule);
+                    if (try parseTokenColor(allocator, rule_object)) |rule| try token_colors.append(rule);
                 }
-                self.theme_token_colors = try rules.toOwnedSlice();
             }
         }
-        self.is_loaded = true;
-        try self.refreshTokenColors();
     }
 
     pub fn toStorage(self: *ColorThemeData, storage: *InMemoryStorageService) !void {

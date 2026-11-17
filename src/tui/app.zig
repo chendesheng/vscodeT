@@ -121,7 +121,10 @@ pub fn main(init: std.process.Init) !void {
     defer infoLog(log_service, "exit", .{});
 
     var syntax_theme: SyntaxTheme = undefined;
-    try syntax_theme.init(allocator);
+    syntax_theme.initFromThemeService(allocator) catch |err| {
+        infoLog(log_service, "theme service unavailable: {s}; using the bundled loader", .{@errorName(err)});
+        try syntax_theme.init(allocator);
+    };
     defer syntax_theme.deinit();
     // The whole-word search classifier cache is process-lifetime by design;
     // release it before the safe allocator checks for leaks on exit.
