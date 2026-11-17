@@ -9,6 +9,8 @@ const editor_input = @import("../../../../common/editor/editorInput.zig");
 const text_file = @import("../../../../services/textfile/common/textFileService.zig");
 const EditorInput = editor_input.EditorInput;
 const TextFileService = text_file.TextFileService;
+const factory_mod = @import("../../../../common/editor/editorFactory.zig");
+const IEditorSerializer = factory_mod.IEditorSerializer;
 
 pub const TYPE_ID = "workbench.editors.files.textFileEditor";
 
@@ -117,6 +119,63 @@ pub const FileEditorInput = struct {
     }
 };
 
+pub const FileEditorSerializer = struct {
+    allocator: Allocator,
+    text_files: *TextFileService,
+
+    pub fn init(allocator: Allocator, text_files: *TextFileService) FileEditorSerializer {
+        return .{ .allocator = allocator, .text_files = text_files };
+    }
+
+    pub fn interface(self: *FileEditorSerializer) IEditorSerializer {
+        return .{
+            .context = self,
+            .canSerialize = canSerialize,
+            .serialize = serialize,
+            .deserialize = deserialize,
+        };
+    }
+
+    fn canSerialize(context: *anyopaque, input: *EditorInput) bool {
+        const self: *FileEditorSerializer = @ptrCast(@alignCast(context));
+        _ = self;
+        return std.mem.eql(u8, input.type_id, TYPE_ID) and input.impl != null;
+    }
+
+    fn serialize(context: *anyopaque, input: *EditorInput, allocator: Allocator) anyerror!?[]const u8 {
+        const self: *FileEditorSerializer = @ptrCast(@alignCast(context));
+        _ = self;
+        const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl orelse return null));
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        var root = std.json.ObjectMap{};
+        try root.put(scratch.allocator(), "resource", .{ .string = file_input.path });
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        try std.json.Stringify.value(std.json.Value{ .object = root }, .{}, &out.writer);
+        const bytes = try out.toOwnedSlice();
+        return bytes;
+    }
+
+    fn deserialize(context: *anyopaque, data: []const u8) anyerror!?*EditorInput {
+        const self: *FileEditorSerializer = @ptrCast(@alignCast(context));
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{}) catch return null;
+        defer parsed.deinit();
+        const object = switch (parsed.value) {
+            .object => |object| object,
+            else => return null,
+        };
+        const resource = switch (object.get("resource") orelse return null) {
+            .string => |value| value,
+            else => return null,
+        };
+        const input = try self.allocator.create(FileEditorInput);
+        errdefer self.allocator.destroy(input);
+        input.* = try FileEditorInput.init(self.allocator, self.text_files, resource);
+        return input.interface();
+    }
+};
+
 test "FileEditorInput loads, edits, saves and reverts" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -175,4 +234,34 @@ test "FileEditorInput loads, edits, saves and reverts" {
     _ = other.interface();
     const other_candidate = editor_input.Candidate{ .input = &other.base };
     try std.testing.expect(!input.base.matches(other_candidate));
+}
+
+test "FileEditorSerializer round-trips the resource" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = buffer[0..root_len];
+    const path = try std.fs.path.join(allocator, &.{ root, "serialized.txt" });
+    defer allocator.free(path);
+
+    var files = @import("../../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+    defer files.deinit();
+    var text_files = TextFileService.init(allocator, &files);
+    var input = try FileEditorInput.init(allocator, &text_files, path);
+    defer input.deinit();
+    _ = input.interface();
+    var serializer = FileEditorSerializer.init(allocator, &text_files);
+    const interface = serializer.interface();
+    const data = (try interface.serialize(interface.context, &input.base, allocator)).?;
+    defer allocator.free(data);
+    const restored = (try interface.deserialize(interface.context, data)).?;
+    const restored_input: *FileEditorInput = @ptrCast(@alignCast(restored.impl.?));
+    defer {
+        restored_input.deinit();
+        allocator.destroy(restored_input);
+    }
+    try std.testing.expectEqualStrings(path, restored_input.path);
 }
