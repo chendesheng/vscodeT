@@ -17,6 +17,7 @@ pub const DiffEditorInput = struct {
     modified: *EditorInput,
     force_description: bool,
     owned_name: ?[]u8 = null,
+    owned_description: ?[]u8 = null,
 
     pub fn init(
         allocator: Allocator,
@@ -36,7 +37,6 @@ pub const DiffEditorInput = struct {
         base.save_fn = saveHook;
         base.revert_fn = revertHook;
         base.capabilities = modified.capabilities | editor.EditorInputCapabilities.MultipleEditors;
-        base.description = preferred_description;
         self.* = .{
             .allocator = allocator,
             .base = base,
@@ -45,6 +45,10 @@ pub const DiffEditorInput = struct {
             .force_description = std.mem.eql(u8, original_name, modified_name),
         };
         if (self.force_description) self.base.capabilities |= editor.EditorInputCapabilities.ForceDescription;
+        if (preferred_description) |description| {
+            self.owned_description = try allocator.dupe(u8, description);
+            self.base.description = self.owned_description.?;
+        }
         if (preferred_name) |name| {
             self.owned_name = try allocator.dupe(u8, name);
             self.base.name = self.owned_name.?;
@@ -60,6 +64,7 @@ pub const DiffEditorInput = struct {
 
     pub fn destroy(self: *DiffEditorInput) void {
         if (self.owned_name) |name| self.allocator.free(name);
+        if (self.owned_description) |description| self.allocator.free(description);
         self.base.deinit();
         self.allocator.destroy(self);
     }
@@ -140,6 +145,8 @@ pub const DiffEditorSerializer = struct {
         try root.put(arena, "modifiedSerialized", .{ .string = modified_data });
         try root.put(arena, "originalTypeId", .{ .string = diff.original.type_id });
         try root.put(arena, "modifiedTypeId", .{ .string = diff.modified.type_id });
+        if (diff.owned_name) |name| try root.put(arena, "name", .{ .string = name });
+        if (diff.base.description) |description| try root.put(arena, "description", .{ .string = description });
         var out: std.Io.Writer.Allocating = .init(allocator);
         errdefer out.deinit();
         try std.json.Stringify.value(std.json.Value{ .object = root }, .{}, &out.writer);
@@ -162,7 +169,7 @@ pub const DiffEditorSerializer = struct {
         const modified_serializer = self.registry.getEditorSerializerByType(modified_type) orelse return null;
         const original = (try original_serializer.deserialize(original_serializer.context, original_data)) orelse return null;
         const modified = (try modified_serializer.deserialize(modified_serializer.context, modified_data)) orelse return null;
-        const diff = try DiffEditorInput.init(self.allocator, null, null, original, modified);
+        const diff = try DiffEditorInput.init(self.allocator, stringField(object, "name"), stringField(object, "description"), original, modified);
         return &diff.base;
     }
 };

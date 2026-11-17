@@ -364,7 +364,7 @@ test "Diff editor serializer round-trips file inputs" {
     var serializer = diff_mod.DiffEditorSerializer.init(allocator, &registry);
     const serializer_interface = serializer.interface();
 
-    const diff = try diff_mod.DiffEditorInput.init(allocator, null, null, &original.base, &modified.base);
+    const diff = try diff_mod.DiffEditorInput.init(allocator, "custom diff", "diff desc", &original.base, &modified.base);
     defer diff.destroy();
     const data = (try serializer_interface.serialize(serializer_interface.context, &diff.base, allocator)).?;
     defer allocator.free(data);
@@ -381,4 +381,6 @@ test "Diff editor serializer round-trips file inputs" {
     }
     try std.testing.expectEqualStrings(original_path, restored_original.path);
     try std.testing.expectEqualStrings(modified_path, restored_modified.path);
+    try std.testing.expectEqualStrings("custom diff", restored_diff.base.getName());
+    try std.testing.expectEqualStrings("diff desc", restored_diff.base.getDescription(.LONG).?);
 }
