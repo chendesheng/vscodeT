@@ -1899,3 +1899,45 @@ test "EditorGroupModel: serialization skips non-serializable editors" {
     try std.testing.expect(deserialized.isPinned(.{ .editor = serializable2 }));
     try std.testing.expect(deserialized.isActive(.{ .input = serializable2 }));
 }
+
+test "EditorGroupModel: index events" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+    var events = GroupEvents.init(allocator, group);
+    defer events.deinit();
+    try events.listen();
+    try std.testing.expectEqual(@as(usize, 0), events.index);
+    try group.setIndex(4);
+    try std.testing.expectEqual(@as(usize, 1), events.index);
+}
+
+test "EditorGroupModel: label events" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+    var events = GroupEvents.init(allocator, group);
+    defer events.deinit();
+    try events.listen();
+    try std.testing.expectEqual(@as(usize, 0), events.label);
+    try group.setLabel("Window 1");
+    try std.testing.expectEqual(@as(usize, 1), events.label);
+}
+
+test "EditorGroupModel: active events" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+    var events = GroupEvents.init(allocator, group);
+    defer events.deinit();
+    try events.listen();
+    try std.testing.expectEqual(@as(usize, 0), events.active);
+    _ = try group.setActive(null);
+    try std.testing.expectEqual(@as(usize, 1), events.active);
+}
