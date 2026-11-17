@@ -210,3 +210,42 @@ fn toKeyboardEvent(event: input.KeyEvent) ?keybinding_mod.IKeyboardEvent {
         .key_code = key_code,
     };
 }
+
+test "keybinding service dispatches single and multi-chord bindings" {
+    const allocator = std.testing.allocator;
+    const State = struct {
+        calls: usize = 0,
+        fn execute(context: *anyopaque, _: []const u8) anyerror!void {
+            const state: *@This() = @ptrCast(@alignCast(context));
+            state.calls += 1;
+        }
+    };
+    var state = State{};
+
+    var registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig").KeybindingsRegistry.init(allocator);
+    defer registry.deinit();
+
+    const rules = [_]@import("../vs/platform/keybinding/common/keybindingsRegistry.zig").IKeybindingRule{
+        .{ .id = "test.single", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyA) } },
+        .{ .id = "test.chord", .weight = 200, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyI)) } },
+    };
+
+    const service = try KeybindingService.init(allocator, &rules, .{ .context = &state, .execute = State.execute });
+    defer service.deinit();
+
+    const single = input.KeyEvent{ .key = .{ .char = 'a' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(service.dispatch(single));
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+
+    const first = input.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(service.dispatch(first));
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expect(service.service.inChordMode());
+
+    const second = input.KeyEvent{ .key = .{ .char = 'i' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(service.dispatch(second));
+    try std.testing.expectEqual(@as(usize, 2), state.calls);
+
+    const unmatched = input.KeyEvent{ .key = .{ .char = 'j' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(!service.dispatch(unmatched));
+}
