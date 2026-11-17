@@ -408,6 +408,24 @@ fn normalizeAnd(allocator: Allocator, exprs: []const ?*const Expr, extra_redunda
     return try createExpr(allocator, .{ .And = items });
 }
 
+fn andTermsContain(superset: *const Expr, subset: *const Expr) bool {
+    if (std.meta.activeTag(superset.*) != .And or std.meta.activeTag(subset.*) != .And) return false;
+    const superset_items = superset.And;
+    const subset_items = subset.And;
+    if (subset_items.len >= superset_items.len) return false;
+    for (subset_items) |term| {
+        var found = false;
+        for (superset_items) |candidate| {
+            if (term.equalsExpr(candidate)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
 fn normalizeOr(allocator: Allocator, exprs: []const ?*const Expr, extra_redundant_check: bool) Allocator.Error!?*const Expr {
     var list = ArrayList(*const Expr).init(allocator);
     defer list.deinit();
@@ -444,6 +462,23 @@ fn normalizeOr(allocator: Allocator, exprs: []const ?*const Expr, extra_redundan
                     return try createExpr(allocator, .True);
                 }
             }
+        }
+        // Absorption: `p || (p && q) == p`. Negating a distributed OR can
+        // reintroduce the larger AND term; drop any AND whose terms contain
+        // another AND term of the OR.
+        var index: usize = 0;
+        while (index < list.items.len) {
+            var removed = false;
+            var other_index: usize = 0;
+            while (other_index < list.items.len) : (other_index += 1) {
+                if (other_index == index) continue;
+                if (andTermsContain(list.items[index], list.items[other_index])) {
+                    _ = list.orderedRemove(index);
+                    removed = true;
+                    break;
+                }
+            }
+            if (!removed) index += 1;
         }
         if (list.items.len == 1) return list.items[0];
     }

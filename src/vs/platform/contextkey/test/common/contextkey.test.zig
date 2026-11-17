@@ -177,3 +177,130 @@ test "issue #101015: distribute OR" {
         try std.testing.expectEqualStrings(case.expected, try combined.serialize(arena.allocator()));
     }
 }
+
+fn expectEval(allocator: std.mem.Allocator, expr_text: []const u8, context: *TestContext, expected: bool) !void {
+    _ = allocator;
+    const expression = try parse(context.values.allocator, expr_text);
+    try std.testing.expectEqual(expected, expression.evaluate(context.context()));
+}
+
+test "ContextKeyInExpr and ContextKeyNotInExpr" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const cases = [_]struct { a: contextkey.ContextKeyValue, b: contextkey.ContextKeyValue, in: bool }{
+        .{ .a = .{ .number = 3 }, .b = .{ .array = &.{ .{ .number = 3 }, .{ .number = 2 }, .{ .number = 1 } } }, .in = true },
+        .{ .a = .{ .number = 3 }, .b = .{ .array = &.{ .{ .number = 1 }, .{ .number = 2 } } }, .in = false },
+        .{ .a = .{ .number = 3 }, .b = .null_value, .in = false },
+        .{ .a = .{ .string = "x" }, .b = .{ .array = &.{.{ .string = "x" }} }, .in = true },
+        .{ .a = .{ .string = "x" }, .b = .{ .array = &.{.{ .string = "y" }} }, .in = false },
+        .{ .a = .{ .string = "x" }, .b = .{ .string = "x" }, .in = false },
+    };
+    for (cases) |case| {
+        var context = TestContext.init(arena_allocator);
+        try context.put("a", case.a);
+        try context.put("b", case.b);
+        const in_expr = try parse(arena_allocator, "a in b");
+        try std.testing.expectEqual(case.in, in_expr.evaluate(context.context()));
+        const not_in_expr = try parse(arena_allocator, "a not in b");
+        try std.testing.expectEqual(!case.in, not_in_expr.evaluate(context.context()));
+    }
+
+    {
+        var object = std.StringHashMap(contextkey.ContextKeyValue).init(arena_allocator);
+        try object.put("x", .{ .boolean = false });
+        var context = TestContext.init(arena_allocator);
+        try context.put("a", .{ .string = "x" });
+        try context.put("b", .{ .object = &object });
+        const in_expr = try parse(arena_allocator, "a in b");
+        try std.testing.expect(in_expr.evaluate(context.context()));
+    }
+}
+
+test "issue #338834: distributing an OR that collapses to a single AND" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var factory = ContextKeyExpr.init(arena.allocator());
+    const actual = (try factory.andExpr(&.{
+        try factory.has("a"),
+        try factory.has("b"),
+        try factory.orExpr(&.{
+            try factory.not("b"),
+            try factory.andExpr(&.{ try factory.has("a"), try factory.has("c") }),
+        }),
+    })).?;
+    try std.testing.expectEqualStrings("a && b && c", try actual.serialize(arena.allocator()));
+    const flat = (try factory.andExpr(&.{ try factory.has("a"), try factory.has("b"), try factory.has("c") })).?;
+    try std.testing.expect(actual.equalsExpr(flat));
+}
+
+test "distributing AND over OR with in and comparison terms" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var factory = ContextKeyExpr.init(arena.allocator());
+    const comparison = (try factory.andExpr(&.{
+        try factory.orExpr(&.{ try factory.has("a"), try factory.has("b") }),
+        try factory.greater("c", .{ .number = 1 }),
+    })).?;
+    try std.testing.expectEqualStrings("a && c > 1 || b && c > 1", try comparison.serialize(arena.allocator()));
+    const in_expr = (try factory.andExpr(&.{
+        try factory.orExpr(&.{ try factory.has("a"), try factory.has("b") }),
+        try factory.inKey("c", "d"),
+    })).?;
+    try std.testing.expectEqualStrings("a && c in 'd' || b && c in 'd'", try in_expr.serialize(arena.allocator()));
+}
+
+test "duplicated and constant terms" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var factory = ContextKeyExpr.init(arena.allocator());
+    try std.testing.expectEqualStrings("A || B", try (try factory.orExpr(&.{ try factory.has("A"), try factory.has("B"), try factory.has("A") })).?.serialize(arena.allocator()));
+    try std.testing.expectEqualStrings("true", try (try factory.orExpr(&.{ try factory.has("A"), try factory.not("A") })).?.serialize(arena.allocator()));
+    try std.testing.expectEqualStrings("false", try (try factory.andExpr(&.{ try factory.has("A"), try factory.not("A") })).?.serialize(arena.allocator()));
+    try std.testing.expectEqualStrings("A && B", try (try factory.andExpr(&.{ try factory.has("A"), try factory.has("B"), try factory.has("A") })).?.serialize(arena.allocator()));
+}
+
+test "issue #129625: duplicated terms when negating" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var factory = ContextKeyExpr.init(arena.allocator());
+    const expr = (try factory.andExpr(&.{
+        try factory.has("A"),
+        try factory.orExpr(&.{ try factory.has("B1"), try factory.has("B2") }),
+    })).?;
+    try std.testing.expectEqualStrings("A && B1 || A && B2", try expr.serialize(arena.allocator()));
+    const negated = try expr.negate(arena.allocator());
+    try std.testing.expectEqualStrings("!A || !A && !B1 || !A && !B2 || !B1 && !B2", try negated.serialize(arena.allocator()));
+    const double_negated = try negated.negate(arena.allocator());
+    try std.testing.expectEqualStrings("A && B1 || A && B2", try double_negated.serialize(arena.allocator()));
+}
+
+test "implies" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const cases = [_]struct { p: []const u8, q: []const u8, expected: bool }{
+        .{ .p = "a", .q = "a", .expected = true },
+        .{ .p = "a", .q = "a || b", .expected = true },
+        .{ .p = "a", .q = "a && b", .expected = false },
+        .{ .p = "a", .q = "a && b || a && c", .expected = false },
+        .{ .p = "a && b", .q = "a", .expected = true },
+        .{ .p = "a && b", .q = "b", .expected = true },
+        .{ .p = "a && b", .q = "a && b || c", .expected = true },
+        .{ .p = "a || b", .q = "a || c", .expected = false },
+        .{ .p = "a || b", .q = "a || b", .expected = true },
+        .{ .p = "a || b", .q = "a || b || c", .expected = true },
+        .{ .p = "c && a && b", .q = "c && a", .expected = true },
+    };
+    for (cases) |case| {
+        const p = try parse(arena.allocator(), case.p);
+        const q = try parse(arena.allocator(), case.q);
+        try std.testing.expectEqual(case.expected, contextkey.implies(p, q));
+    }
+}
