@@ -11,6 +11,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const configuration = @import("./configuration.zig");
 const configurationModels = @import("./configurationModels.zig");
+const Emitter = @import("../../../base/common/event.zig").Emitter;
 const ConfigurationModel = configurationModels.ConfigurationModel;
 
 pub const ConfigurationScope = configuration.ConfigurationScope;
@@ -66,6 +67,7 @@ pub const ConfigurationRegistry = struct {
     excluded_properties: std.StringHashMap(Property),
     agent_host_configurations: std.StringHashMap(AgentHostConfig),
     nodes: std.StringHashMap(std.array_list.Managed([]const u8)),
+    on_did_update_configuration: Emitter([]const []const u8),
 
     const Contribution = struct {
         source: ?ConfigurationDefaultSource,
@@ -88,6 +90,7 @@ pub const ConfigurationRegistry = struct {
             .excluded_properties = std.StringHashMap(Property).init(allocator),
             .agent_host_configurations = std.StringHashMap(AgentHostConfig).init(allocator),
             .nodes = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
+            .on_did_update_configuration = Emitter([]const []const u8).init(allocator),
         };
         return self;
     }
@@ -111,6 +114,7 @@ pub const ConfigurationRegistry = struct {
         var nodes = self.nodes.valueIterator();
         while (nodes.next()) |keys| keys.deinit();
         self.nodes.deinit();
+        self.on_did_update_configuration.deinit();
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -158,6 +162,9 @@ pub const ConfigurationRegistry = struct {
                 try self.agent_host_configurations.put(try arena.dupe(u8, agent_key), .{ .key = try arena.dupe(u8, schema.key) });
             }
         }
+        var keys = std.array_list.Managed([]const u8).init(arena);
+        for (properties) |schema| try keys.append(schema.key);
+        self.on_did_update_configuration.fire(keys.items) catch {};
     }
 
     /// Merges registered default overrides into the property defaults. Later
@@ -178,6 +185,9 @@ pub const ConfigurationRegistry = struct {
         }
         try self.contributions.append(.{ .source = source, .entries = try entries.toOwnedSlice() });
         try self.rebuildDefaults();
+        var keys = std.array_list.Managed([]const u8).init(arena);
+        for (overrides) |override_value| try keys.append(override_value.key);
+        self.on_did_update_configuration.fire(keys.items) catch {};
     }
 
     /// Removes the first contribution matching `overrides` (and source when
@@ -190,6 +200,9 @@ pub const ConfigurationRegistry = struct {
             if (!sameOverrides(contribution.entries, overrides)) continue;
             _ = self.contributions.orderedRemove(index);
             try self.rebuildDefaults();
+            var keys = std.array_list.Managed([]const u8).init(self.arena.allocator());
+            for (overrides) |override_value| try keys.append(override_value.key);
+            self.on_did_update_configuration.fire(keys.items) catch {};
             return;
         }
     }
@@ -398,6 +411,7 @@ pub const ConfigurationRegistry = struct {
         }
         for (removed_agents.items) |key| _ = self.agent_host_configurations.remove(key);
         _ = self.nodes.remove(id);
+        self.on_did_update_configuration.fire(keys.items) catch {};
     }
 
     pub fn getPolicyConfigurations(self: *ConfigurationRegistry) *std.StringHashMap([]const u8) {

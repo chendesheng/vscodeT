@@ -945,6 +945,7 @@ enforced policy configuration and remote/folder scoping remain unported.
 provides the file-backed workspace service (user/workspace/folder scopes,
 `.code-workspace`, settings watcher) with five terminal workspace-scope tests;
 the 198-case upstream file is otherwise unported. `configurations.zig` ports the explicit `DefaultConfiguration` model lifecycle
+(with automatic registry-change updates),
 (initialize/reload/property updates, override-identifier values), with the
 registration, override and deregistration cases (including merged language object defaults) from `configurations.test.ts`. The merge/remove helper cases in `configuration.test.ts` are also ported
 (except the `__proto__` pollution case, which is N/A for Zig maps). The

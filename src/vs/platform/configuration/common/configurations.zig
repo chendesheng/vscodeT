@@ -15,6 +15,7 @@ pub const DefaultConfiguration = struct {
     allocator: Allocator,
     registry: *configurationRegistry.ConfigurationRegistry,
     model: *ConfigurationModel,
+    listener_id: ?usize = null,
 
     pub fn init(allocator: Allocator, registry: *configurationRegistry.ConfigurationRegistry) !DefaultConfiguration {
         const model = try allocator.create(ConfigurationModel);
@@ -24,6 +25,7 @@ pub const DefaultConfiguration = struct {
     }
 
     pub fn deinit(self: *DefaultConfiguration) void {
+        if (self.listener_id) |id| self.registry.on_did_update_configuration.unlisten(id);
         self.model.deinit();
         self.allocator.destroy(self.model);
     }
@@ -35,9 +37,18 @@ pub const DefaultConfiguration = struct {
     /// Rebuilds the model from every registered property (including hidden
     /// experimental settings).
     pub fn initialize(self: *DefaultConfiguration) !void {
+        if (self.listener_id) |id| {
+            self.registry.on_did_update_configuration.unlisten(id);
+            self.listener_id = null;
+        }
         self.model.deinit();
         self.model.* = try ConfigurationModel.initEmpty(self.allocator);
         try self.onDidUpdateConfiguration(null);
+        self.listener_id = try self.registry.on_did_update_configuration.listen(self, onRegistryUpdate);
+    }
+
+    fn onRegistryUpdate(keys: []const []const u8, self: *DefaultConfiguration) anyerror!void {
+        try self.onDidUpdateConfiguration(keys);
     }
 
     pub fn reload(self: *DefaultConfiguration) !void {

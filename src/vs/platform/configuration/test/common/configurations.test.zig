@@ -220,3 +220,19 @@ test "deregistering a merged language object setting" {
     defer overridden.deinit();
     try std.testing.expectEqualStrings("20", overridden.getValue("b.bb").?.string);
 }
+
+test "registry changes update the default configuration automatically" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    try std.testing.expect(defaults.configurationModel().getValue("auto.prop") == null);
+
+    try registry.registerConfiguration("auto", &.{.{ .key = "auto.prop", .default = std.json.Value{ .string = "value" } }});
+    try std.testing.expectEqualStrings("value", defaults.configurationModel().getValue("auto.prop").?.string);
+
+    registry.deregisterConfigurations("auto");
+    try std.testing.expect(defaults.configurationModel().getValue("auto.prop") == null);
+}
