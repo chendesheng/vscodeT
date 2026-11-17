@@ -1281,3 +1281,50 @@ test "one-shot and persistent menus use the same group and item ordering" {
     try std.testing.expectEqualStrings("a", persistent[2][1]);
     try std.testing.expectEqualStrings("z", persistent[2][2]);
 }
+
+test "one-shot menus omit empty submenus and observe nested registrations" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const parent = MenuId{ .id = "test.parent.submenu" };
+    const child = MenuId{ .id = "test.child.submenu" };
+    const nested = MenuId{ .id = "test.nested.submenu" };
+
+    const parent_registration = try registry.appendSubmenuItemTracked(parent, .{ .title = "Submenu", .submenu = child });
+    defer parent_registration.dispose();
+    const child_registration = try registry.appendSubmenuItemTracked(child, .{ .title = "Nested submenu", .submenu = nested });
+    defer child_registration.dispose();
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var before = try service.getMenuActions(allocator, parent, Context.context());
+    defer before.deinit();
+    try std.testing.expectEqual(@as(usize, 0), before.groups.len);
+
+    const nested_registration = try registry.appendMenuItemTracked(nested, .{ .command = .{ .id = "nested", .title = "Nested" } });
+
+    var during = try service.getMenuActions(allocator, parent, Context.context());
+    defer during.deinit();
+    try std.testing.expectEqual(@as(usize, 1), during.groups.len);
+    try std.testing.expectEqual(@as(usize, 1), during.groups[0].actions.len);
+    const submenu_action: *SubmenuItemAction = @ptrCast(@alignCast(during.groups[0].actions[0].context));
+    try std.testing.expectEqual(@as(usize, 1), submenu_action.actions.len);
+    const nested_action: *SubmenuItemAction = @ptrCast(@alignCast(submenu_action.actions[0].context));
+    try std.testing.expectEqual(@as(usize, 1), nested_action.actions.len);
+    try std.testing.expectEqualStrings("nested", nested_action.actions[0].id());
+
+    nested_registration.dispose();
+
+    var after = try service.getMenuActions(allocator, parent, Context.context());
+    defer after.deinit();
+    try std.testing.expectEqual(@as(usize, 0), after.groups.len);
+}
