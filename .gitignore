@@ -4,3 +4,5 @@ zig-out/
 debug.log
 zig-pkg/
 .zig-global-cache/
+
+.zhome/
