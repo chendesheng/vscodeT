@@ -30,6 +30,7 @@ pub const PropertySchema = struct {
     restricted: bool = false,
     disallow_configuration_default: bool = false,
     policy: ?[]const u8 = null,
+    policy_reference: ?[]const u8 = null,
 };
 
 pub const Property = struct {
@@ -39,6 +40,7 @@ pub const Property = struct {
     restricted: bool = false,
     disallow_configuration_default: bool = false,
     policy: ?[]const u8 = null,
+    policy_reference: ?[]const u8 = null,
 };
 
 pub const DefaultOverride = struct {
@@ -52,6 +54,8 @@ pub const ConfigurationRegistry = struct {
     defaults: std.array_list.Managed(*ConfigurationModel),
     properties: std.StringHashMap(Property),
     policies: std.StringHashMap(void),
+    policy_configurations: std.StringHashMap([]const u8),
+    policy_reference_configurations: std.StringHashMap(std.array_list.Managed([]const u8)),
 
     pub fn init(allocator: Allocator) !*ConfigurationRegistry {
         const self = try allocator.create(ConfigurationRegistry);
@@ -62,6 +66,8 @@ pub const ConfigurationRegistry = struct {
             .defaults = std.array_list.Managed(*ConfigurationModel).init(allocator),
             .properties = std.StringHashMap(Property).init(allocator),
             .policies = std.StringHashMap(void).init(allocator),
+            .policy_configurations = std.StringHashMap([]const u8).init(allocator),
+            .policy_reference_configurations = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
         };
         return self;
     }
@@ -74,6 +80,10 @@ pub const ConfigurationRegistry = struct {
         self.defaults.deinit();
         self.properties.deinit();
         self.policies.deinit();
+        self.policy_configurations.deinit();
+        var references = self.policy_reference_configurations.valueIterator();
+        while (references.next()) |list| list.deinit();
+        self.policy_reference_configurations.deinit();
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -84,9 +94,16 @@ pub const ConfigurationRegistry = struct {
         _ = id;
         const arena = self.arena.allocator();
         for (properties) |schema| {
+            if (schema.policy != null and schema.policy_reference != null) continue;
             if (schema.policy) |policy| {
                 if (self.policies.contains(policy)) continue;
                 try self.policies.put(try arena.dupe(u8, policy), {});
+                try self.policy_configurations.put(try arena.dupe(u8, policy), try arena.dupe(u8, schema.key));
+            }
+            if (schema.policy_reference) |reference| {
+                const entry = try self.policy_reference_configurations.getOrPut(try arena.dupe(u8, reference));
+                if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed([]const u8).init(arena);
+                try entry.value_ptr.append(try arena.dupe(u8, schema.key));
             }
             const default_value = if (schema.default) |value| try cloneValue(arena, value) else std.json.Value.null;
             try self.properties.put(try arena.dupe(u8, schema.key), .{
@@ -96,6 +113,7 @@ pub const ConfigurationRegistry = struct {
                 .restricted = schema.restricted,
                 .disallow_configuration_default = schema.disallow_configuration_default,
                 .policy = if (schema.policy) |policy| try arena.dupe(u8, policy) else null,
+                .policy_reference = if (schema.policy_reference) |reference| try arena.dupe(u8, reference) else null,
             });
         }
     }
@@ -126,6 +144,14 @@ pub const ConfigurationRegistry = struct {
 
     pub fn getConfigurationProperties(self: *ConfigurationRegistry) *std.StringHashMap(Property) {
         return &self.properties;
+    }
+
+    pub fn getPolicyConfigurations(self: *ConfigurationRegistry) *std.StringHashMap([]const u8) {
+        return &self.policy_configurations;
+    }
+
+    pub fn getPolicyReferenceConfigurations(self: *ConfigurationRegistry) *std.StringHashMap(std.array_list.Managed([]const u8)) {
+        return &self.policy_reference_configurations;
     }
 
     /// Registers a JSON settings document as configuration defaults. Later

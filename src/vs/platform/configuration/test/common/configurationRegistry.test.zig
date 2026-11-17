@@ -130,3 +130,46 @@ test "isConfigurationDefaultSourceEquals" {
     const source = registry_mod.ConfigurationDefaultSource{ .extension = .{ .id = "ext", .display_name = "Extension" } };
     try std.testing.expect(registry_mod.isConfigurationDefaultSourceEquals(source, source));
 }
+
+test "policyReference attaches subordinate settings to an owning policy" {
+    const allocator = std.testing.allocator;
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.registerConfiguration("_test_default", &.{
+        .{ .key = "policy.owner", .value_type = "boolean", .policy = "sharedPolicy" },
+        .{ .key = "policy.subordinate", .value_type = "boolean", .policy_reference = "sharedPolicy" },
+    });
+    const props = registry.getConfigurationProperties();
+    try std.testing.expect(props.get("policy.owner") != null);
+    try std.testing.expect(props.get("policy.subordinate") != null);
+    try std.testing.expectEqualStrings("policy.owner", registry.getPolicyConfigurations().get("sharedPolicy").?);
+    const references = registry.getPolicyReferenceConfigurations().get("sharedPolicy").?;
+    try std.testing.expectEqual(@as(usize, 1), references.items.len);
+    try std.testing.expectEqualStrings("policy.subordinate", references.items[0]);
+}
+
+test "policyReference does not require its owner to be registered" {
+    const allocator = std.testing.allocator;
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test_default", &.{
+        .{ .key = "policy.orphanReference", .value_type = "boolean", .policy_reference = "externallyOwnedPolicy" },
+    });
+    try std.testing.expect(registry.getConfigurationProperties().get("policy.orphanReference") != null);
+    try std.testing.expect(registry.getPolicyConfigurations().get("externallyOwnedPolicy") == null);
+    const references = registry.getPolicyReferenceConfigurations().get("externallyOwnedPolicy").?;
+    try std.testing.expectEqualStrings("policy.orphanReference", references.items[0]);
+}
+
+test "policy and policyReference on the same setting are rejected" {
+    const allocator = std.testing.allocator;
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test_default", &.{
+        .{ .key = "policy.both", .value_type = "boolean", .policy = "policyBoth", .policy_reference = "policyBothReference" },
+    });
+    try std.testing.expect(registry.getConfigurationProperties().get("policy.both") == null);
+    try std.testing.expect(registry.getPolicyConfigurations().get("policyBoth") == null);
+    try std.testing.expect(registry.getPolicyReferenceConfigurations().get("policyBothReference") == null);
+}
