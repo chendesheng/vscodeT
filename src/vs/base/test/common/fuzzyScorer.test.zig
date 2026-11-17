@@ -314,3 +314,83 @@ test "compareItemsByScore - identity" {
     const equal = try fuzzy.compareItemsByFuzzyScore(allocator, &a, &a, &prepared, true, TestItem.accessor());
     try std.testing.expectEqual(@as(i32, 0), equal);
 }
+
+const FixtureA = TestItem{ .label = "fileA.txt", .description = "/some/path", .path_value = "/some/path/fileA.txt" };
+const FixtureB = TestItem{ .label = "fileB.txt", .description = "/some/path/other", .path_value = "/some/path/other/fileB.txt" };
+const FixtureC = TestItem{ .label = "fileC.txt", .description = "/unrelated/some/path/other", .path_value = "/unrelated/some/path/other/fileC.txt" };
+
+fn sortItems(allocator: std.mem.Allocator, items: []*TestItem, query_text: []const u8) !void {
+    const prepared = try fuzzy.prepareQuery(allocator, query_text);
+    defer prepared.deinit(allocator);
+    var index: usize = 1;
+    while (index < items.len) : (index += 1) {
+        const current = items[index];
+        var position = index;
+        while (position > 0) : (position -= 1) {
+            const comparison = try fuzzy.compareItemsByFuzzyScore(allocator, current, items[position - 1], &prepared, true, TestItem.accessor());
+            if (comparison >= 0) break;
+            items[position] = items[position - 1];
+        }
+        items[position] = current;
+    }
+}
+
+fn expectOrder(allocator: std.mem.Allocator, items: []*TestItem, query: []const u8, expected: []const *TestItem) !void {
+    var copy: [3]*TestItem = undefined;
+    var copy_reversed: [3]*TestItem = undefined;
+    for (items, 0..) |item, index| {
+        copy[index] = item;
+        copy_reversed[2 - index] = item;
+    }
+    try sortItems(allocator, &copy, query);
+    try sortItems(allocator, &copy_reversed, query);
+    for (expected, 0..) |item, index| {
+        try std.testing.expectEqual(item, copy[index]);
+        try std.testing.expectEqual(item, copy_reversed[index]);
+    }
+}
+
+test "compareFilesByScore - identity and basename prefix" {
+    const allocator = std.testing.allocator;
+    var a = FixtureA;
+    var b = FixtureB;
+    var c = FixtureC;
+    const items = [_]*TestItem{ &a, &b, &c };
+
+    try expectOrder(allocator, @constCast(&items), a.path_value.?, &[_]*TestItem{ &a, &b, &c });
+    try expectOrder(allocator, @constCast(&items), b.path_value.?, &[_]*TestItem{ &b, &a, &c });
+    try expectOrder(allocator, @constCast(&items), a.label, &[_]*TestItem{ &a, &b, &c });
+    try expectOrder(allocator, @constCast(&items), b.label, &[_]*TestItem{ &b, &a, &c });
+}
+
+test "compareFilesByScore - basename camelcase" {
+    const allocator = std.testing.allocator;
+    var a = FixtureA;
+    var b = FixtureB;
+    var c = FixtureC;
+    const items = [_]*TestItem{ &a, &b, &c };
+    try expectOrder(allocator, @constCast(&items), "fA", &[_]*TestItem{ &a, &b, &c });
+    try expectOrder(allocator, @constCast(&items), "fB", &[_]*TestItem{ &b, &a, &c });
+}
+
+test "compareFilesByScore - basename and path scores" {
+    const allocator = std.testing.allocator;
+    var a = FixtureA;
+    var b = FixtureB;
+    var c = FixtureC;
+    const items = [_]*TestItem{ &a, &b, &c };
+
+    try expectOrder(allocator, @constCast(&items), "fileA", &[_]*TestItem{ &a, &b, &c });
+    try expectOrder(allocator, @constCast(&items), "fileB", &[_]*TestItem{ &b, &a, &c });
+    try expectOrder(allocator, @constCast(&items), "pathfileA", &[_]*TestItem{ &a, &b, &c });
+    try expectOrder(allocator, @constCast(&items), "pathfileB", &[_]*TestItem{ &b, &a, &c });
+}
+
+test "compareFilesByScore - preferred shorter basenames" {
+    const allocator = std.testing.allocator;
+    var a = FixtureA;
+    var b = TestItem{ .label = "fileBLonger.txt", .description = "/some/path/other", .path_value = "/some/path/other/fileBLonger.txt" };
+    var c = FixtureC;
+    const items = [_]*TestItem{ &a, &b, &c };
+    try expectOrder(allocator, @constCast(&items), "somepath", &[_]*TestItem{ &a, &b, &c });
+}
