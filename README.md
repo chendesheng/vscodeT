@@ -768,6 +768,9 @@ Editor contributions:
   changes and owner/reference fallback); and the token-classification registry
   with TextMate scope matching and `ColorThemeData` token-style resolution
   (theme/custom token colors, semantic rules, language/super-type selectors and
-  custom settings JSON). The file-backed workbench configuration service applies
+  custom settings JSON). Minimal `DiskFileService`/`TextFileService` and
+  file/untitled editor inputs (with serializers and side-by-side/diff identity)
+  provide the terminal file-editing foundation. The file-backed workbench
+  configuration service applies
   language overrides, application/machine scope filtering, and untrusted
   workspace filtering for restricted/unregistered settings.
