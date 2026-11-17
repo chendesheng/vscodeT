@@ -162,3 +162,16 @@ test "reloading workspace configuration reflects the new document" {
     try fixture.service.loadWorkspaceJson("{}");
     try std.testing.expectEqualStrings("isSet", fixture.service.getValue("configurationService.testSetting").?.string);
 }
+
+test "late registered defaults become visible automatically" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+
+    try std.testing.expect(service.getValue("late.setting") == null);
+    try registry.registerConfiguration("late", &.{.{ .key = "late.setting", .default = std.json.Value{ .string = "default" } }});
+    try std.testing.expectEqualStrings("default", service.getValue("late.setting").?.string);
+}
