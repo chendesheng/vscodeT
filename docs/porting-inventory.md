@@ -858,6 +858,13 @@ independently shippable slices.
 | P5g Search actions/config | `searchView.zig`, `searchWidget.zig`, `fileIndex.zig` | `workbench/contrib/search/browser/searchActions*.ts`, `workbench/contrib/search/browser/searchView.ts`, `workbench/contrib/search/browser/searchWidget.ts`, search service | `workbench/contrib/search/test/browser/searchActions.test.ts` (6), `workbench/contrib/search/test/browser/searchWidget.test.ts` (1), `workbench/contrib/search/test/browser/searchView.test.ts` (2) | M |
 | P5h Settings watch | `settingsWatcher.zig` | `workbench/services/configuration/browser/configurationService.zig`, file service | `workbench/services/configuration/test/browser/configurationService.test.ts` | S |
 
+**P5a status:** `platform/storage/common/storage.zig` ports the in-memory
+storage service (scopes/targets, value stringification, key-target bookkeeping,
+change events, `storeAll`, `remove`, `keys`, `isNew`, `flush`). Async
+initialization, database persistence, profile/workspace switching and
+cross-window propagation are terminal deviations; the 10-case
+`storageService.test.ts` still needs the async harness and `memento.ts` is next.
+
 **P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
 registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
 change events) and the 11 `languageConfiguration.test.ts` cases pass; the TUI
