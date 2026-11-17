@@ -135,6 +135,20 @@ pub const DiskFileService = struct {
     }
 
     pub fn copy(self: *DiskFileService, from: []const u8, to: []const u8) !void {
+        const info = try self.stat(from);
+        if (info.isDirectory()) {
+            try self.createDirectory(to);
+            const entries = try self.readDirectory(from, self.allocator);
+            defer DiskFileService.freeDirectory(self.allocator, entries);
+            for (entries) |entry| {
+                const source_child = try std.fs.path.join(self.allocator, &.{ from, entry.name });
+                defer self.allocator.free(source_child);
+                const target_child = try std.fs.path.join(self.allocator, &.{ to, entry.name });
+                defer self.allocator.free(target_child);
+                try self.copy(source_child, target_child);
+            }
+            return;
+        }
         var data = try self.readFile(from);
         defer data.deinit(self.allocator);
         try self.writeFile(to, data);
@@ -223,4 +237,36 @@ test "DiskFileService reports missing files" {
     const io = std.Io.Threaded.global_single_threaded.io();
     var service = DiskFileService.init(allocator, io);
     try std.testing.expectError(error.FileNotFound, service.stat("/definitely/not/here"));
+}
+
+test "DiskFileService copies directory trees" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = buffer[0..root_len];
+    const source = try std.fs.path.join(allocator, &.{ root, "source" });
+    defer allocator.free(source);
+    const target = try std.fs.path.join(allocator, &.{ root, "target" });
+    defer allocator.free(target);
+    const source_file = try std.fs.path.join(allocator, &.{ source, "a.txt" });
+    defer allocator.free(source_file);
+    const target_file = try std.fs.path.join(allocator, &.{ target, "a.txt" });
+    defer allocator.free(target_file);
+
+    var service = DiskFileService.init(allocator, io);
+    defer service.deinit();
+    try service.createDirectory(source);
+    var data = try VSBuffer.fromString(allocator, "tree");
+    defer data.deinit(allocator);
+    try service.writeFile(source_file, data);
+    try service.copy(source, target);
+    try std.testing.expect(service.exists(target_file));
+    var copied = try service.readFile(target_file);
+    defer copied.deinit(allocator);
+    const text = try copied.toString(allocator);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("tree", text);
 }
