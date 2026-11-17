@@ -76,10 +76,11 @@ pub const TextFileEditorModel = struct {
     }
 
     pub fn save(self: *TextFileEditorModel) !void {
+        const was_dirty = self.isDirty();
         try self.text_files.write(self.path, self.getText());
         if (self.saved_content) |content| self.allocator.free(content);
         self.saved_content = try self.allocator.dupe(u8, self.getText());
-        try self.onDidChangeDirty.fire({});
+        if (was_dirty) try self.onDidChangeDirty.fire({});
     }
 
     pub fn revert(self: *TextFileEditorModel) !void {
