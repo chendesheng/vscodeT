@@ -166,3 +166,25 @@ test "deregistering an override identifier removes the override" {
     try std.testing.expectEqual(@as(usize, 0), defaults.configurationModel().overrides.len);
     try std.testing.expectEqual(@as(usize, 1), defaults.configurationModel().getKeys().len);
 }
+
+test "hidden experimental defaults update and unregister" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+
+    try registry.registerConfiguration("test", &.{.{
+        .key = "hidden.experimental",
+        .value_type = "string",
+        .default = std.json.Value{ .string = "value" },
+        .included = false,
+        .experiment_mode = "auto",
+    }});
+    try defaults.initialize();
+    try std.testing.expectEqualStrings("value", defaults.configurationModel().getValue("hidden.experimental").?.string);
+
+    registry.deregisterConfigurations("test");
+    try defaults.onDidUpdateConfiguration(&.{"hidden.experimental"});
+    try std.testing.expect(defaults.configurationModel().getValue("hidden.experimental") == null);
+}
