@@ -266,6 +266,7 @@ pub const ConfigurationRegistry = struct {
 
     pub fn record(self: *ConfigurationRegistry, allocator: Allocator) !Snapshot {
         const clone = try ConfigurationRegistry.init(allocator);
+        errdefer clone.deinit();
         const arena = clone.arena.allocator();
         var properties = self.properties.iterator();
         while (properties.next()) |entry| {
