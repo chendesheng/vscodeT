@@ -225,6 +225,7 @@ test "ConfigurationService: language overrides from workspace settings" {
     try std.testing.expectEqual(@as(i64, 2), service.getValue("editor.tabSize", .{ .resource = resource }).?.integer);
     try std.testing.expectEqual(@as(i64, 4), service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "typescript" }).?.integer);
     try std.testing.expectEqual(@as(i64, 2), service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "python" }).?.integer);
+    try std.testing.expectEqual(@as(i64, 4), service.inspect("editor.tabSize", .{ .resource = resource, .override_identifier = "typescript" }).value.?.integer);
 }
 
 test "ConfigurationService: untrusted workspaces ignore restricted workspace values" {

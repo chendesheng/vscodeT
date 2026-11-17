@@ -235,18 +235,24 @@ pub const ConfigurationService = struct {
     }
 
     pub fn inspect(
-        self: *const ConfigurationService,
+        self: *ConfigurationService,
         section: []const u8,
         overrides: configuration.Overrides,
     ) configuration.ConfigurationValue {
         const folder_model = self.folderModel(overrides.resource);
         const effective = self.effectiveModel(overrides) orelse &self.workspace_consolidated;
+        var value = effective.getValue(section);
+        if (overrides.override_identifier) |identifier| {
+            _ = self.scratch.reset(.retain_capacity);
+            const overridden = effective.override(self.scratch.allocator(), identifier) catch null;
+            if (overridden) |model| value = model.getValue(section);
+        }
         return .{
             .default = self.defaults.getValue(section),
             .user = self.user.getValue(section),
             .workspace = self.workspace_model.getValue(section),
             .workspace_folder = if (folder_model) |model| model.getValue(section) else null,
-            .value = effective.getValue(section),
+            .value = value,
         };
     }
 
