@@ -45,12 +45,12 @@ pub const TextQueryBuilderOptions = struct {
 
 pub const QueryBuilder = struct {
     allocator: Allocator,
-    configuration: *const ConfigurationService,
+    configuration: *ConfigurationService,
     workspace: *WorkspaceContextService,
 
     pub fn init(
         allocator: Allocator,
-        configuration_service_value: *const ConfigurationService,
+        configuration_service_value: *ConfigurationService,
         workspace: *WorkspaceContextService,
     ) QueryBuilder {
         return .{

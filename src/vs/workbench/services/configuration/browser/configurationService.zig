@@ -54,6 +54,7 @@ pub const ConfigurationService = struct {
     defaults: ConfigurationModel,
     user: ConfigurationModel,
     workspace_model: ConfigurationModel,
+    scratch: std.heap.ArenaAllocator,
     folders: std.StringHashMap(*ConfigurationModel),
     workspace_consolidated: ConfigurationModel,
     folder_consolidated: std.StringHashMap(*ConfigurationModel),
@@ -91,6 +92,7 @@ pub const ConfigurationService = struct {
             .defaults = try ConfigurationModel.initEmpty(allocator),
             .user = try ConfigurationModel.initEmpty(allocator),
             .workspace_model = try ConfigurationModel.initEmpty(allocator),
+            .scratch = std.heap.ArenaAllocator.init(allocator),
             .folders = std.StringHashMap(*ConfigurationModel).init(allocator),
             .workspace_consolidated = try ConfigurationModel.initEmpty(allocator),
             .folder_consolidated = std.StringHashMap(*ConfigurationModel).init(allocator),
@@ -103,6 +105,7 @@ pub const ConfigurationService = struct {
     }
 
     pub fn deinit(self: *ConfigurationService) void {
+        self.scratch.deinit();
         self.change_emitter.deinit();
         deinitFolderModels(self.allocator, &self.folder_consolidated);
         deinitFolderModels(self.allocator, &self.folders);
@@ -192,16 +195,21 @@ pub const ConfigurationService = struct {
     /// when `overrides.resource` names a workspace folder. The pointer is owned
     /// by the service and stays valid until the next reload.
     pub fn getValue(
-        self: *const ConfigurationService,
+        self: *ConfigurationService,
         section: []const u8,
         overrides: configuration.Overrides,
     ) ?*const Value {
         const model = self.effectiveModel(overrides) orelse return null;
+        if (overrides.override_identifier) |identifier| {
+            _ = self.scratch.reset(.retain_capacity);
+            var overridden = model.override(self.scratch.allocator(), identifier) catch return null;
+            return overridden.getValue(section);
+        }
         return model.getValue(section);
     }
 
     /// Convenience for boolean settings such as `explorer.excludeGitIgnore`.
-    pub fn getBool(self: *const ConfigurationService, section: []const u8, default: bool) bool {
+    pub fn getBool(self: *ConfigurationService, section: []const u8, default: bool) bool {
         const value = self.getValue(section, .{}) orelse return default;
         return switch (value.*) {
             .bool => |inner| inner,
