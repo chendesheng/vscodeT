@@ -226,3 +226,38 @@ test "matchesWords basic word filters" {
     }
     try expectWordMatch(allocator, ".", ".");
 }
+
+test "matchesContiguousSubString finds case-insensitive substrings" {
+    const match = filters.matchesContiguousSubString("cela", "cancelAnimationFrame()").?;
+    try std.testing.expectEqual(@as(usize, 3), match.start);
+    try std.testing.expectEqual(@as(usize, 7), match.end);
+    try std.testing.expect(filters.matchesContiguousSubString("missing", "target") == null);
+}
+
+test "matchesSubString coalesces consecutive positions" {
+    const allocator = std.testing.allocator;
+    {
+        const matches = (try filters.matchesSubString(allocator, "cmm", "cancelAnimationFrame()")) orelse return error.TestUnexpectedResult;
+        defer allocator.free(matches);
+        try std.testing.expectEqual(@as(usize, 3), matches.len);
+        try std.testing.expectEqual(@as(usize, 0), matches[0].start);
+        try std.testing.expectEqual(@as(usize, 9), matches[1].start);
+        try std.testing.expectEqual(@as(usize, 18), matches[2].start);
+    }
+    {
+        const matches = (try filters.matchesSubString(allocator, "abc", "abcabc")) orelse return error.TestUnexpectedResult;
+        defer allocator.free(matches);
+        try std.testing.expectEqual(@as(usize, 1), matches.len);
+        try std.testing.expectEqual(@as(usize, 0), matches[0].start);
+        try std.testing.expectEqual(@as(usize, 3), matches[0].end);
+    }
+    {
+        const matches = (try filters.matchesSubString(allocator, "abc", "aaabbbccc")) orelse return error.TestUnexpectedResult;
+        defer allocator.free(matches);
+        try std.testing.expectEqual(@as(usize, 3), matches.len);
+        try std.testing.expectEqual(@as(usize, 0), matches[0].start);
+        try std.testing.expectEqual(@as(usize, 3), matches[1].start);
+        try std.testing.expectEqual(@as(usize, 6), matches[2].start);
+    }
+    try std.testing.expect((try filters.matchesSubString(allocator, "aaaaaaaaaaaaaaaaaaaax", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) == null);
+}

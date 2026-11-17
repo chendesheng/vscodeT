@@ -98,6 +98,52 @@ fn isBoundary(previous: u8, current: u8) bool {
     return std.ascii.isLower(previous) and std.ascii.isUpper(current);
 }
 
+/// Port of `matchesContiguousSubString`: case-insensitive substring match.
+pub fn matchesContiguousSubString(word: []const u8, target: []const u8) ?Match {
+    if (word.len > target.len) return null;
+    if (word.len == 0) return .{ .start = 0, .end = 0 };
+    var start: usize = 0;
+    while (start + word.len <= target.len) : (start += 1) {
+        var offset: usize = 0;
+        while (offset < word.len and
+            std.ascii.toLower(target[start + offset]) == std.ascii.toLower(word[offset]))
+        {
+            offset += 1;
+        }
+        if (offset == word.len) return .{ .start = start, .end = start + word.len };
+    }
+    return null;
+}
+
+/// Port of `matchesSubString`: case-insensitive subsequence matching with
+/// consecutive positions coalesced into ranges. The caller owns the result.
+pub fn matchesSubString(allocator: std.mem.Allocator, word: []const u8, target: []const u8) !?[]Match {
+    var cursor: usize = 0;
+    var result = std.array_list.Managed(Match).init(allocator);
+    errdefer result.deinit();
+    for (word) |query_char| {
+        const wanted = std.ascii.toLower(query_char);
+        var found: ?usize = null;
+        while (cursor < target.len) : (cursor += 1) {
+            if (std.ascii.toLower(target[cursor]) == wanted) {
+                found = cursor;
+                cursor += 1;
+                break;
+            }
+        }
+        const position = found orelse {
+            result.deinit();
+            return null;
+        };
+        if (result.items.len > 0 and result.items[result.items.len - 1].end == position) {
+            result.items[result.items.len - 1].end = position + 1;
+        } else {
+            try result.append(.{ .start = position, .end = position + 1 });
+        }
+    }
+    return try result.toOwnedSlice();
+}
+
 /// Port of `matchesBaseContiguousSubString`: a case-insensitive contiguous
 /// substring match. Returns the single matched range.
 pub fn matchesBaseContiguousSubString(word: []const u8, target: []const u8) ?Match {
