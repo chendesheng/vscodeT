@@ -255,3 +255,21 @@ test "language override lookup falls back to user and default values" {
     try std.testing.expectEqual(@as(i64, 2), (try service.getValueWithOverrides("editor.tabSize", "typescript")).?.integer);
     try std.testing.expectEqual(@as(i64, 8), (try service.getValueWithOverrides("editor.tabSize", "python")).?.integer);
 }
+
+test "inspect reflects workspace reloads" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "inspect.setting", .default = std.json.Value{ .integer = 4 } }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+
+    try std.testing.expect(service.inspect("inspect.setting").workspace_value == null);
+    try service.loadWorkspaceJson("{\"inspect.setting\":2}");
+    try std.testing.expectEqual(@as(i64, 2), service.inspect("inspect.setting").workspace_value.?.integer);
+    try std.testing.expectEqual(@as(i64, 2), service.inspect("inspect.setting").value.?.integer);
+    try service.loadWorkspaceJson("{}");
+    try std.testing.expect(service.inspect("inspect.setting").workspace_value == null);
+    try std.testing.expectEqual(@as(i64, 4), service.inspect("inspect.setting").value.?.integer);
+}
