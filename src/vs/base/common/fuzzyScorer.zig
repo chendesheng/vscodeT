@@ -7,6 +7,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const comparers = @import("./comparers.zig");
+const filters = @import("./filters.zig");
 
 pub const PreparedQueryPiece = struct {
     original: []const u8,
@@ -368,11 +369,31 @@ fn doScoreFuzzy2Single(
     word_start: usize,
 ) !FuzzyScore2 {
     _ = pattern_start;
-    const score_value = try scoreFuzzy(allocator, target[word_start..], piece.normalized, piece.normalizedLowercase, true);
-    defer score_value.deinit(allocator);
-    if (score_value.score == 0) return .{ .score = null, .matches = try allocator.alloc(Match, 0) };
-    for (score_value.positions) |*position| position.* += word_start;
-    return .{ .score = score_value.score, .matches = try matchesFromPositions(allocator, score_value.positions) };
+    const target_slice = target[word_start..];
+    const target_low = try allocator.alloc(u8, target_slice.len);
+    defer allocator.free(target_low);
+    for (target_slice, 0..) |character, index| target_low[index] = std.ascii.toLower(character);
+    var scorer = try filters.FuzzyScorer.init(allocator);
+    defer scorer.deinit();
+    const result = try scorer.score(
+        piece.normalized,
+        piece.normalizedLowercase,
+        0,
+        target_slice,
+        target_low,
+        0,
+        .{ .first_match_can_be_weak = true, .boost_full_match = true },
+    );
+    if (result == null) return .{ .score = null, .matches = try allocator.alloc(Match, 0) };
+    const value = result.?;
+    defer value.deinit(allocator);
+    const filter_matches = try filters.createScorerMatches(allocator, value);
+    defer allocator.free(filter_matches);
+    const matches = try allocator.alloc(Match, filter_matches.len);
+    for (filter_matches, 0..) |match, index| {
+        matches[index] = .{ .start = match.start + word_start, .end = match.end + word_start };
+    }
+    return .{ .score = value.score, .matches = matches };
 }
 
 pub fn scoreFuzzy2(
