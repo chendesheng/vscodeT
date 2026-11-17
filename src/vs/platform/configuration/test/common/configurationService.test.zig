@@ -289,3 +289,16 @@ test "isConfigured reflects user and workspace values" {
     try service.loadWorkspaceJson("{\"configured.setting\":2}");
     try std.testing.expect(configurationService.isConfigured(service.inspect("configured.setting")));
 }
+
+test "empty override identifier falls back to normal values" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "empty.setting", .default = std.json.Value{ .integer = 4 } }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try service.loadWorkspaceJson("{\"empty.setting\":2}");
+    try std.testing.expectEqual(@as(i64, 2), (try service.getValueWithOverrides("empty.setting", "")).?.integer);
+    try std.testing.expectEqual(@as(i64, 2), (try service.getValueWithOverrides("empty.setting", "missing")).?.integer);
+}

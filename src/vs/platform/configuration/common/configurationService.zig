@@ -73,7 +73,8 @@ pub const ConfigurationService = struct {
         var user = try self.user.override(scratch, identifier);
         if (user.getValue(key)) |value| return value;
         var defaults = try self.defaults.configurationModel().override(scratch, identifier);
-        return defaults.getValue(key);
+        if (defaults.getValue(key)) |value| return value;
+        return self.getValue(key);
     }
 
     pub fn getValue(self: *ConfigurationService, key: []const u8) ?*const std.json.Value {
