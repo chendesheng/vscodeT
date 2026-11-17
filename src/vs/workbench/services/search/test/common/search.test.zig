@@ -114,3 +114,21 @@ test "TextSearchMatch: trims line endings" {
     defer crlf.deinit();
     try std.testing.expectEqualStrings("foo bar", crlf.preview_text);
 }
+
+test "isFilePatternMatch: glob match is case-sensitive by default" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(try search.isFilePatternMatch(allocator, "src/Foo.ts", null, "**/*.ts", false, false));
+    try std.testing.expect(!try search.isFilePatternMatch(allocator, "src/Foo.ts", null, "**/*.TS", false, false));
+}
+
+test "isFilePatternMatch: glob match is case-insensitive when ignoreCase is true" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(try search.isFilePatternMatch(allocator, "src/Foo.ts", null, "**/*.TS", false, true));
+    try std.testing.expect(try search.isFilePatternMatch(allocator, "src/Foo.ts", null, "**/*.Ts", false, true));
+}
+
+test "isFilePatternMatch: glob match with mixed case pattern" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(!try search.isFilePatternMatch(allocator, "src/MyComponent.TSX", null, "**/*.tsx", false, false));
+    try std.testing.expect(try search.isFilePatternMatch(allocator, "src/MyComponent.TSX", null, "**/*.tsx", false, true));
+}

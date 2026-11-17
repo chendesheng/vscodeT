@@ -7,9 +7,10 @@
 // follow upstream so the search tree model can mirror `searchView.ts`.
 
 const std = @import("std");
+const glob = @import("../../../../base/common/glob.zig");
+const strings = @import("../../../../base/common/strings.zig");
 const Allocator = std.mem.Allocator;
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
-const glob = @import("../../../../base/common/glob.zig");
 
 pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 20_000;
 pub const SEARCH_EXCLUDE_CONFIG = "search.exclude";
@@ -547,4 +548,22 @@ test "TextSearchMatch: multi-range preview and line endings" {
     var trimmed = try TextSearchMatch.init(allocator, "foo bar\r\n", &[_]SearchRange{SearchRange.init(0, 4, 0, 7)}, .{ .match_lines = 1, .chars_per_line = 1000 });
     defer trimmed.deinit();
     try std.testing.expectEqualStrings("foo bar", trimmed.preview_text);
+}
+
+/// Port of `isFilePatternMatch`: fuzzy sequence match or glob match, honoring
+/// `ignoreCase`.
+pub fn isFilePatternMatch(
+    allocator: std.mem.Allocator,
+    relative_path: []const u8,
+    search_path: ?[]const u8,
+    file_pattern: []const u8,
+    fuzzy: bool,
+    ignore_case: bool,
+) !bool {
+    const path_to_match = search_path orelse relative_path;
+    if (fuzzy) return strings.fuzzyContains(path_to_match, file_pattern);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var expression = try glob.Expression.init(arena.allocator(), &.{file_pattern}, .{ .ignore_case = ignore_case });
+    return expression.matches(path_to_match);
 }

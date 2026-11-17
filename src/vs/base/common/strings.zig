@@ -757,3 +757,32 @@ test "getLeadingWhitespace" {
     try std.testing.expectEqualStrings("\t \t", getLeadingWhitespace("\t \tabc"));
     try std.testing.expectEqualStrings("   ", getLeadingWhitespace("   "));
 }
+
+/// Port of `fuzzyContains`: sequence containment (not substring) after ASCII
+/// lowercasing.
+pub fn fuzzyContains(target: []const u8, query: []const u8) bool {
+    if (target.len == 0 or query.len == 0) return false;
+    if (target.len < query.len) return false;
+    var last_index: isize = -1;
+    for (query) |query_character| {
+        const wanted = std.ascii.toLower(query_character);
+        var found: isize = -1;
+        var index: usize = @intCast(last_index + 1);
+        while (index < target.len) : (index += 1) {
+            if (std.ascii.toLower(target[index]) == wanted) {
+                found = @intCast(index);
+                break;
+            }
+        }
+        if (found < 0) return false;
+        last_index = found;
+    }
+    return true;
+}
+
+test "fuzzyContains matches a character sequence" {
+    try std.testing.expect(fuzzyContains("src/Foo.ts", "sft"));
+    try std.testing.expect(fuzzyContains("src/Foo.ts", "SRC"));
+    try std.testing.expect(!fuzzyContains("src/Foo.ts", "tfs"));
+    try std.testing.expect(!fuzzyContains("foo", "foobar"));
+}
