@@ -450,4 +450,9 @@ test "untrusted workspaces ignore restricted workspace values" {
     try std.testing.expectEqual(@as(i64, 4), service.getValue("restricted.setting").?.integer);
     try std.testing.expect(service.inspect("restricted.setting").workspace_value == null);
     try std.testing.expectEqual(@as(i64, 4), (try service.getValueWithOverrides("restricted.setting", "typescript")).?.integer);
+
+    try registry.registerConfiguration("_test", &.{.{ .key = "plain.setting", .default = std.json.Value{ .integer = 1 } }});
+    try service.loadWorkspaceJson("{\"plain.setting\":9,\"[typescript]\":{\"plain.setting\":7}}");
+    try std.testing.expectEqual(@as(i64, 9), service.getValue("plain.setting").?.integer);
+    try std.testing.expectEqual(@as(i64, 7), (try service.getValueWithOverrides("plain.setting", "typescript")).?.integer);
 }

@@ -85,7 +85,7 @@ pub const ConfigurationService = struct {
         const identifier = override_identifier orelse return self.getValue(key);
         _ = self.scratch.reset(.retain_capacity);
         const scratch = self.scratch.allocator();
-        if (self.trusted) {
+        if (self.allowsWorkspaceValue(key)) {
             var workspace = try self.workspace.override(scratch, identifier);
             if (workspace.getValue(key)) |value| return value;
         }
@@ -118,7 +118,7 @@ pub const ConfigurationService = struct {
         var workspace = try self.workspace.override(scratch, identifier);
         var user = try self.user.override(scratch, identifier);
         var defaults = try self.defaults.configurationModel().override(scratch, identifier);
-        const workspace_value = if (self.trusted) workspace.getValue(key) else null;
+        const workspace_value = if (self.allowsWorkspaceValue(key)) workspace.getValue(key) else null;
         const user_value = user.getValue(key);
         const default_value = defaults.getValue(key);
         return .{
@@ -141,12 +141,16 @@ pub const ConfigurationService = struct {
         };
     }
 
-    fn workspaceValue(self: *ConfigurationService, key: []const u8) ?*const std.json.Value {
-        if (!self.trusted) {
-            if (self.defaults.registry.getConfigurationProperties().get(key)) |property| {
-                if (property.restricted) return null;
-            }
+    fn allowsWorkspaceValue(self: *ConfigurationService, key: []const u8) bool {
+        if (self.trusted) return true;
+        if (self.defaults.registry.getConfigurationProperties().get(key)) |property| {
+            return !property.restricted;
         }
+        return true;
+    }
+
+    fn workspaceValue(self: *ConfigurationService, key: []const u8) ?*const std.json.Value {
+        if (!self.allowsWorkspaceValue(key)) return null;
         return self.workspace.getValue(key);
     }
 
