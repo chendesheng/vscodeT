@@ -311,6 +311,9 @@ test "Side-by-side serializer round-trips file inputs" {
     const saved_text = try text_files.read(primary_path, allocator);
     defer allocator.free(saved_text);
     try std.testing.expectEqualStrings("saved", saved_text);
+    try primary.setText("temporary");
+    try composite.base.revert(1);
+    try std.testing.expectEqualStrings("saved", primary.getText());
     const data = (try serializer.serialize(serializer.context, &composite.base, allocator)).?;
     defer allocator.free(data);
     const restored = (try serializer.deserialize(serializer.context, data)).?;
