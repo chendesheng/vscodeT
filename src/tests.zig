@@ -441,6 +441,7 @@ comptime {
     _ = @import("./vs/editor/browser/view/viewPart.zig");
     _ = @import("./vs/editor/browser/view/dynamicViewOverlay.zig");
     _ = @import("./vs/editor/browser/view/viewLayer.zig");
+    _ = @import("./vs/editor/test/browser/view/viewLayer.test.zig");
     _ = @import("./vs/editor/browser/view/viewOverlays.zig");
     _ = @import("./vs/editor/common/config/editorConfiguration.zig");
     _ = @import("./vs/editor/test/common/modes/languageConfiguration.test.zig");

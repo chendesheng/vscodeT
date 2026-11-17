@@ -787,7 +787,7 @@ model/view model and contributions.
 `editor/browser/view/viewUserInputEvents.zig` (view-to-model mouse target
 conversion incl. view zones) are ported, together with the extended
 `MouseTargetType`/view-zone detail; `viewPart.zig`, `viewLayer.zig`,
-`viewOverlays.zig` and the thin `View` orchestrator are next; `viewLayer.zig` is also ported (RenderedLinesCollection and the terminal-adapted VisibleLinesCollection window/render loop); `viewOverlays.zig` ports ViewOverlays/ViewOverlayLine (content/margin subclasses still need layoutInfo options). Visible-lines DOM plumbing stays terminal-side. `viewContext.zig` and `viewPart.zig` (handler registration + prepare/render callbacks) are now ported too, along with `IViewModel.view_layout`/event-handler hooks; computed editor options remain opaque.
+`viewOverlays.zig` and the thin `View` orchestrator are next; `viewLayer.zig` is also ported (RenderedLinesCollection and the terminal-adapted VisibleLinesCollection window/render loop), with the full `viewLayer.test.ts` case matrix ported; `viewOverlays.zig` ports ViewOverlays/ViewOverlayLine (content/margin subclasses still need layoutInfo options). Visible-lines DOM plumbing stays terminal-side. `viewContext.zig` and `viewPart.zig` (handler registration + prepare/render callbacks) are now ported too, along with `IViewModel.view_layout`/event-handler hooks; computed editor options remain opaque.
 
 **Suggested commits:**
 

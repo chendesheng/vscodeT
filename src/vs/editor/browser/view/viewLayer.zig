@@ -152,7 +152,7 @@ pub fn RenderedLinesCollection(comptime T: type) type {
             }
 
             var new_lines = std.array_list.Managed(T).init(self.allocator);
-            errdefer new_lines.deinit();
+            defer new_lines.deinit();
             for (0..insert_count) |_| try new_lines.append(try self.factory.create(self.factory.context));
 
             const insert_index = insert_from - self.rend_line_number_start;
