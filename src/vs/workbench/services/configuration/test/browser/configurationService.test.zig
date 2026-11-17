@@ -226,3 +226,32 @@ test "ConfigurationService: language overrides from workspace settings" {
     try std.testing.expectEqual(@as(i64, 4), service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "typescript" }).?.integer);
     try std.testing.expectEqual(@as(i64, 2), service.getValue("editor.tabSize", .{ .resource = resource, .override_identifier = "python" }).?.integer);
 }
+
+test "ConfigurationService: untrusted workspaces ignore restricted workspace values" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".vscode");
+    try writeFile(&tmp, io, ".vscode/settings.json", "{\"restricted.setting\": 8}");
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = try absoluteRoot(&tmp, io, &buffer);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const service = try ConfigurationService.init(allocator, io, context, .{});
+    defer service.deinit();
+    try service.registry.registerConfiguration("test", &.{.{
+        .key = "restricted.setting",
+        .value_type = "number",
+        .default = std.json.Value{ .integer = 4 },
+        .restricted = true,
+    }});
+    try service.reload();
+
+    const resource = try std.fmt.allocPrint(allocator, "{s}/main.zig", .{root});
+    defer allocator.free(resource);
+    try std.testing.expectEqual(@as(i64, 8), service.getValue("restricted.setting", .{ .resource = resource }).?.integer);
+    service.trusted = false;
+    try std.testing.expectEqual(@as(i64, 4), service.getValue("restricted.setting", .{ .resource = resource }).?.integer);
+}

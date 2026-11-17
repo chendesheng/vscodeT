@@ -60,6 +60,8 @@ pub const ConfigurationService = struct {
     folder_consolidated: std.StringHashMap(*ConfigurationModel),
 
     change_emitter: Emitter(configuration.Change),
+    /// When false, workspace/folder values for restricted settings are ignored.
+    trusted: bool = true,
 
     pub fn init(
         allocator: Allocator,
@@ -199,6 +201,21 @@ pub const ConfigurationService = struct {
         section: []const u8,
         overrides: configuration.Overrides,
     ) ?*const Value {
+        if (!self.trusted) {
+            if (self.registry.getConfigurationProperties().get(section)) |property| {
+                if (property.restricted) {
+                    _ = self.scratch.reset(.retain_capacity);
+                    var merged = mergeModels(self.scratch.allocator(), &.{ &self.defaults, &self.user }) catch return null;
+                    if (overrides.override_identifier) |identifier| {
+                        var overridden = merged.override(self.scratch.allocator(), identifier) catch return null;
+                        if (overridden.getValue(section)) |value| return value;
+                        return &property.default;
+                    }
+                    if (merged.getValue(section)) |value| return value;
+                    return &property.default;
+                }
+            }
+        }
         const model = self.effectiveModel(overrides) orelse return null;
         if (overrides.override_identifier) |identifier| {
             _ = self.scratch.reset(.retain_capacity);
