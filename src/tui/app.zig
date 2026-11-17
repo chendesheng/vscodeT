@@ -21,6 +21,8 @@ const Position = @import("../vs/editor/common/core/position.zig").Position;
 const Range = @import("../vs/editor/common/core/range.zig").Range;
 const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const time_compat = @import("../vs/base/common/timeCompat.zig");
+const logger = @import("./logger.zig");
+const log_module = @import("../vs/platform/log/common/log.zig");
 const languages = @import("../vs/editor/common/languages.zig");
 const hoverTypes = @import("../vs/editor/contrib/hover/browser/hoverTypes.zig");
 const ContentHoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
@@ -30,6 +32,23 @@ const SuggestController = @import("../vs/editor/contrib/suggest/browser/suggestC
 const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
 const TuiHoverProvider = @import("./hoverProvider.zig").TuiHoverProvider;
 const ArrayList = std.array_list.Managed;
+
+/// Mirrors the previous `std.debug.print` error reporting, now also written to
+/// the main log file.
+fn report(log_service: ?log_module.ILogger, comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt ++ "\n", args);
+    const logger_value = log_service orelse return;
+    var buffer: [1024]u8 = undefined;
+    const text = std.fmt.bufPrint(&buffer, fmt, args) catch return;
+    logger_value.err(.{ .string = text }, &.{}) catch {};
+}
+
+fn infoLog(log_service: ?log_module.ILogger, comptime fmt: []const u8, args: anytype) void {
+    const logger_value = log_service orelse return;
+    var buffer: [1024]u8 = undefined;
+    const text = std.fmt.bufPrint(&buffer, fmt, args) catch return;
+    logger_value.info(text, &.{}) catch {};
+}
 
 const Args = struct {
     preview: bool = false,
@@ -87,6 +106,20 @@ fn defaultUserSettingsPath(
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
+
+    var file_logger: ?*logger.FileLogger = null;
+    const log_path = logger.defaultLogPath(allocator, init.environ_map) catch null;
+    defer if (log_path) |path| allocator.free(path);
+    if (log_path) |path| {
+        file_logger = logger.FileLogger.create(allocator, io, path) catch |err| blk: {
+            std.debug.print("log file unavailable: {s}\n", .{@errorName(err)});
+            break :blk null;
+        };
+    }
+    defer if (file_logger) |value| value.destroy();
+    const log_service: ?log_module.ILogger = if (file_logger) |value| value.logger() else null;
+    defer infoLog(log_service, "exit", .{});
+
     var syntax_theme: SyntaxTheme = undefined;
     try syntax_theme.init(allocator);
     defer syntax_theme.deinit();
@@ -108,6 +141,11 @@ pub fn main(init: std.process.Init) !void {
         return;
     };
     defer if (args.session) |session_path| allocator.free(session_path);
+    infoLog(log_service, "starting: preview={} session={s} paths={d}", .{
+        args.preview,
+        args.session orelse "-",
+        paths.items.len,
+    });
 
     var out_buffer: [65536]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &out_buffer);
@@ -198,7 +236,7 @@ pub fn main(init: std.process.Init) !void {
     var restored = false;
     if (args.session) |session_path| {
         const loaded = session.loadPart(allocator, io, session_path) catch |err| blk: {
-            std.debug.print("session load failed: {s}\n", .{@errorName(err)});
+            report(log_service, "session load failed: {s}", .{@errorName(err)});
             break :blk null;
         };
         if (loaded) |data| {
@@ -213,7 +251,7 @@ pub fn main(init: std.process.Init) !void {
                 size.width,
                 size.height,
             ) catch |err| blk: {
-                std.debug.print("session restore failed: {s}\n", .{@errorName(err)});
+                report(log_service, "session restore failed: {s}", .{@errorName(err)});
                 break :blk @as(?*Workbench, null);
             };
 
@@ -224,9 +262,12 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    if (restored) {
+        infoLog(log_service, "session restored: {d} tab(s)", .{workbench.tabCount()});
+    }
     if (!restored) {
         if (files.items.len == 0 and folders.items.len == 0) {
-            std.debug.print("no files or folders to open and no restorable session\n", .{});
+            report(log_service, "no files or folders to open and no restorable session", .{});
             return;
         }
         workbench = try Workbench.init(allocator, io, files.items, size.width, size.height);
@@ -245,10 +286,10 @@ pub fn main(init: std.process.Init) !void {
                     var owned = data;
                     defer owned.deinit(allocator);
                     session.savePart(allocator, io, session_path, &data) catch |err| {
-                        std.debug.print("session save failed: {s}\n", .{@errorName(err)});
+                        report(log_service, "session save failed: {s}", .{@errorName(err)});
                     };
                 } else |err| {
-                    std.debug.print("session serialize failed: {s}\n", .{@errorName(err)});
+                    report(log_service, "session serialize failed: {s}", .{@errorName(err)});
                 }
             }
         }
@@ -271,6 +312,7 @@ pub fn main(init: std.process.Init) !void {
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
 
+    infoLog(log_service, "workbench ready: {d} tab(s)", .{workbench.tabCount()});
     workbench.refreshStatus();
     if (workbench.activeTab()) |active| try active.view.refresh();
     try workbench.render(out);

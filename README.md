@@ -32,6 +32,26 @@ Notes for the Zig 0.17 port:
   deprecated-but-supported `std.array_list.Managed` shim as an intermediate
   step; moving to unmanaged lists is the main remaining modernization.
 
+## Logging
+
+The TUI logs through the ported service in
+`src/vs/platform/log/common/log.zig` and `logService.zig` (the upstream
+`AbstractLogger`/`AbstractMessageLogger`, `AdapterLogger`, `MultiplexLogger`,
+`NullLogger`, `createUnexpectedErrorHandler` and `format`). `src/tui/logger.zig`
+is the terminal host: it keeps one synchronous `main.log` and writes the same
+line format as upstream's `FileLogger`:
+
+```text
+2026-11-17 03:36:00.568Z [info] workbench ready: 2 tab(s)
+```
+
+The file defaults to `$XDG_STATE_HOME/vscode-textbuffer/logs/main.log`
+(`$HOME/.local/state/...` fallback) and `VSCODE_TEXTBUFFER_LOG` overrides the
+path. Timestamps are UTC because the terminal host has no time-zone database.
+Console loggers, the URI-keyed `ILoggerService` registry and the log-output
+picker are not ported: the TUI owns the terminal (alternate screen, raw mode)
+and has a single log file instead of per-channel resources.
+
 ## Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`

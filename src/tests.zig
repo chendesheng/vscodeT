@@ -379,6 +379,11 @@ comptime {
     _ = @import("./vs/base/common/filters.zig");
     _ = @import("./vs/platform/commands/common/commands.zig");
     _ = @import("./vs/platform/commands/test/common/commands.test.zig");
+    _ = @import("./vs/base/common/errorMessage.zig");
+    _ = @import("./vs/platform/log/common/log.zig");
+    _ = @import("./vs/platform/log/common/logService.zig");
+    _ = @import("./vs/platform/log/test/common/log.test.zig");
+    _ = @import("./tui/logger.zig");
     _ = @import("./vs/platform/quickinput/common/quickInput.zig");
     _ = @import("./vs/platform/quickinput/browser/quickInput.zig");
     _ = @import("./vs/platform/quickinput/test/browser/quickinput.test.zig");
