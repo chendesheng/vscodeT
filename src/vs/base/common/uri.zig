@@ -73,6 +73,31 @@ pub const URI = struct {
         return out.toOwnedSlice();
     }
 
+    /// Percent-encodes the path/query/fragment (terminal URIs keep raw bytes
+    /// internally; this is the display/serialization form).
+    pub fn toStringEncoded(self: *const URI, allocator: Allocator) ![]u8 {
+        var out = std.array_list.Managed(u8).init(allocator);
+        errdefer out.deinit();
+        if (self.scheme.len > 0) {
+            try out.appendSlice(self.scheme);
+            try out.append(':');
+        }
+        if (self.authority.len > 0 or std.mem.eql(u8, self.scheme, "file")) {
+            try out.appendSlice("//");
+            try out.appendSlice(self.authority);
+        }
+        try appendEncoded(&out, self.path, "/:");
+        if (self.query.len > 0) {
+            try out.append('?');
+            try appendEncoded(&out, self.query, "");
+        }
+        if (self.fragment.len > 0) {
+            try out.append('#');
+            try appendEncoded(&out, self.fragment, "");
+        }
+        return out.toOwnedSlice();
+    }
+
     pub fn withChanges(self: *const URI, allocator: Allocator, changes: WithChanges) !URI {
         return makeComponents(allocator, .{
             .scheme = resolveChange(self.scheme, changes.scheme),
@@ -200,6 +225,20 @@ pub fn uriToFsPath(uri: *const URI, allocator: Allocator) ![]u8 {
 
 pub fn isUriComponents(value: Components) bool {
     return std.mem.indexOfAny(u8, value.scheme, " \t") == null;
+}
+
+fn appendEncoded(out: *std.array_list.Managed(u8), text: []const u8, extra_allowed: []const u8) !void {
+    const digits = "0123456789ABCDEF";
+    for (text) |ch| {
+        const unreserved = std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch == '.' or ch == '~';
+        if (unreserved or std.mem.indexOfScalar(u8, extra_allowed, ch) != null) {
+            try out.append(ch);
+        } else {
+            try out.append('%');
+            try out.append(digits[ch >> 4]);
+            try out.append(digits[ch & 0xF]);
+        }
+    }
 }
 
 fn resolveChange(current: []const u8, change: ??[]const u8) []const u8 {
@@ -490,4 +529,13 @@ test "URI with empty changes keeps every component" {
 test "URI parse rejects a double-slash path without authority" {
     const allocator = std.testing.allocator;
     try std.testing.expectError(error.InvalidPath, URI.parse(allocator, "file:////path", true));
+}
+
+test "URI toStringEncoded escapes path and query delimiters" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.parse(allocator, "file:///tmp/a b%25.txt?q=1#f g", true);
+    defer uri.deinit();
+    const encoded = try uri.toStringEncoded(allocator);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualStrings("file:///tmp/a%20b%2525.txt?q%3D1#f%20g", encoded);
 }
