@@ -7,6 +7,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+pub const WithChanges = struct {
+    /// Outer null keeps the component; inner null removes it; a value sets it.
+    scheme: ??[]const u8 = null,
+    authority: ??[]const u8 = null,
+    path: ??[]const u8 = null,
+    query: ??[]const u8 = null,
+    fragment: ??[]const u8 = null,
+};
+
 pub const Components = struct {
     scheme: []const u8 = "",
     authority: []const u8 = "",
@@ -64,6 +73,16 @@ pub const URI = struct {
         return out.toOwnedSlice();
     }
 
+    pub fn withChanges(self: *const URI, allocator: Allocator, changes: WithChanges) !URI {
+        return makeComponents(allocator, .{
+            .scheme = resolveChange(self.scheme, changes.scheme),
+            .authority = resolveChange(self.authority, changes.authority),
+            .path = resolveChange(self.path, changes.path),
+            .query = resolveChange(self.query, changes.query),
+            .fragment = resolveChange(self.fragment, changes.fragment),
+        }, true);
+    }
+
     pub fn with(self: *const URI, allocator: Allocator, changes: Components) !URI {
         return make(allocator, .{
             .scheme = if (changes.scheme.len > 0) changes.scheme else self.scheme,
@@ -71,7 +90,7 @@ pub const URI = struct {
             .path = if (changes.path.len > 0) changes.path else self.path,
             .query = if (changes.query.len > 0) changes.query else self.query,
             .fragment = if (changes.fragment.len > 0) changes.fragment else self.fragment,
-        }, false);
+        }, true);
     }
 
     pub fn joinPath(self: *const URI, allocator: Allocator, segments: []const []const u8) !URI {
@@ -165,6 +184,11 @@ pub fn uriToFsPath(uri: *const URI) []const u8 {
 
 pub fn isUriComponents(value: Components) bool {
     return std.mem.indexOfAny(u8, value.scheme, " \t") == null;
+}
+
+fn resolveChange(current: []const u8, change: ??[]const u8) []const u8 {
+    if (change) |value| return value orelse "";
+    return current;
 }
 
 fn schemeValid(scheme: []const u8) bool {
@@ -377,4 +401,29 @@ test "URI with changes updates components" {
     const http_text = try http.toString(allocator);
     defer allocator.free(http_text);
     try std.testing.expectEqualStrings("http:/api/files/test.me?t=1234", http_text);
+}
+
+test "URI withChanges can remove and replace components" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.parse(allocator, "scheme://authority/path", false);
+    defer uri.deinit();
+    var removed = try uri.withChanges(allocator, .{ .authority = @as(?[]const u8, null) });
+    defer removed.deinit();
+    const removed_text = try removed.toString(allocator);
+    defer allocator.free(removed_text);
+    try std.testing.expectEqualStrings("scheme:/path", removed_text);
+
+    var no_path = try uri.withChanges(allocator, .{ .path = @as(?[]const u8, null) });
+    defer no_path.deinit();
+    const no_path_text = try no_path.toString(allocator);
+    defer allocator.free(no_path_text);
+    try std.testing.expectEqualStrings("scheme://authority", no_path_text);
+}
+
+test "URI with validates resulting components" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.parse(allocator, "foo:bar/path", true);
+    defer uri.deinit();
+    try std.testing.expectError(error.InvalidScheme, uri.with(allocator, .{ .scheme = "fai:l" }));
+    try std.testing.expectError(error.InvalidPath, uri.with(allocator, .{ .path = "//fail" }));
 }
