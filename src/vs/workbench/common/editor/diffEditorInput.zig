@@ -33,6 +33,8 @@ pub const DiffEditorInput = struct {
         base.impl = self;
         base.matches_fn = matches;
         base.matches_untyped_fn = matchesUntyped;
+        base.save_fn = saveHook;
+        base.revert_fn = revertHook;
         base.capabilities = modified.capabilities | editor.EditorInputCapabilities.MultipleEditors;
         base.description = preferred_description;
         self.* = .{
@@ -60,6 +62,16 @@ pub const DiffEditorInput = struct {
         if (self.owned_name) |name| self.allocator.free(name);
         self.base.deinit();
         self.allocator.destroy(self);
+    }
+
+    fn saveHook(base: *EditorInput, group: editor.GroupIdentifier) anyerror!editor_input.SaveResult {
+        const self: *DiffEditorInput = @ptrCast(@alignCast(base.impl.?));
+        return self.modified.save(group);
+    }
+
+    fn revertHook(base: *EditorInput, group: editor.GroupIdentifier) anyerror!void {
+        const self: *DiffEditorInput = @ptrCast(@alignCast(base.impl.?));
+        return self.modified.revert(group);
     }
 
     fn matchesUntyped(base: *const EditorInput, other: editor.UntypedEditorInput) bool {

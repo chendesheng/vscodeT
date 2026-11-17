@@ -306,6 +306,11 @@ test "Side-by-side serializer round-trips file inputs" {
 
     const composite = try @import("../../../../common/editor/sideBySideEditorInput.zig").SideBySideEditorInput.init(allocator, null, null, &secondary.base, &primary.base);
     defer composite.destroy();
+    try primary.setText("saved");
+    _ = try composite.base.save(1);
+    const saved_text = try text_files.read(primary_path, allocator);
+    defer allocator.free(saved_text);
+    try std.testing.expectEqualStrings("saved", saved_text);
     const data = (try serializer.serialize(serializer.context, &composite.base, allocator)).?;
     defer allocator.free(data);
     const restored = (try serializer.deserialize(serializer.context, data)).?;

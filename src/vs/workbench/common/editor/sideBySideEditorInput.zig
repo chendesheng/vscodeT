@@ -34,6 +34,8 @@ pub const SideBySideEditorInput = struct {
         base.impl = self;
         base.matches_fn = matches;
         base.matches_untyped_fn = matchesUntyped;
+        base.save_fn = saveHook;
+        base.revert_fn = revertHook;
         base.capabilities = primary.capabilities | editor.EditorInputCapabilities.MultipleEditors;
         self.* = .{
             .allocator = allocator,
@@ -75,6 +77,16 @@ pub const SideBySideEditorInput = struct {
 
     pub fn getPreferredDescription(self: *const SideBySideEditorInput) ?[]const u8 {
         return self.owned_description;
+    }
+
+    fn saveHook(base: *EditorInput, group: editor.GroupIdentifier) anyerror!editor_input.SaveResult {
+        const self: *SideBySideEditorInput = @ptrCast(@alignCast(base.impl.?));
+        return self.primary.save(group);
+    }
+
+    fn revertHook(base: *EditorInput, group: editor.GroupIdentifier) anyerror!void {
+        const self: *SideBySideEditorInput = @ptrCast(@alignCast(base.impl.?));
+        return self.primary.revert(group);
     }
 
     fn matchesUntyped(base: *const EditorInput, other: editor.UntypedEditorInput) bool {
