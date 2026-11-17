@@ -725,8 +725,10 @@ commands as actions.
   `MenuRegistry` and `Action2` (command + keybinding + menu registration); `src/tui/keybindings.zig` is the terminal host (event -> dispatch
   string, multi-chord state, command execution) and the workbench tab/group
   shortcuts are wired through it (`workbench.action.closeActiveEditor`,
-  next/previous editor, focus group, `openEditorAtIndex1-9`); the 4
-  `keyCodes.test.ts` and 5
+  next/previous editor, focus group, `openEditorAtIndex1-9`), and the editor
+  Ctrl/Alt character shortcuts (save/undo/redo/select/comment/bracket/replace/
+  reindent/occurrences/line-selection/indent) resolve through the same host;
+  the 4 `keyCodes.test.ts` and 5
   `keybindingLabels.test.ts` cases are ported. `platform/contextkey/common/scanner.zig`
   ports the context-key scanner and its 34 upstream cases;
   `platform/contextkey/common/contextkey.zig` ports the expression model

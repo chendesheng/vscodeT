@@ -187,9 +187,15 @@ pub const empty_context = contextkey.IContext{
 /// keys that cannot participate in a shortcut (bulk text/paste markers).
 pub fn dispatchString(allocator: Allocator, event: input.KeyEvent) !?[]u8 {
     const key_code = keyCodeFor(event) orelse return null;
+    // Terminals deliver shifted letters as uppercase characters; infer shift so
+    // `Shift+B` and `B` do not collapse to the same chord.
+    const uppercase = switch (event.key) {
+        .char => |codepoint| codepoint >= 'A' and codepoint <= 'Z',
+        else => false,
+    };
     const chord = key_bindings.KeyCodeChord.init(
         event.mods.ctrl,
-        event.mods.shift or std.meta.activeTag(event.key) == .backtab,
+        event.mods.shift or uppercase or std.meta.activeTag(event.key) == .backtab,
         event.mods.alt,
         false,
         key_code,
@@ -366,6 +372,10 @@ test "dispatch keys cover navigation and punctuation" {
     const quote = try dispatchString(allocator, .{ .key = .{ .char = '\'' }, .mods = .{ .ctrl = true } });
     defer if (quote) |value| allocator.free(value);
     try std.testing.expectEqualStrings("ctrl+'", quote.?);
+
+    const uppercase = try dispatchString(allocator, .{ .key = .{ .char = 'B' }, .mods = .{ .alt = true } });
+    defer if (uppercase) |value| allocator.free(value);
+    try std.testing.expectEqualStrings("shift+alt+B", uppercase.?);
 
     const text = try dispatchString(allocator, .{ .key = .{ .text = "abc" } });
     try std.testing.expect(text == null);

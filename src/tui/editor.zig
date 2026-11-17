@@ -59,6 +59,11 @@ const InsertFinalNewLineCommand = @import("../vs/editor/contrib/insertFinalNewLi
 const bracket_matching = @import("../vs/editor/contrib/bracketMatching/browser/bracketMatching.zig");
 const BracketMatchingController = bracket_matching.BracketMatchingController;
 const language_configuration_service = @import("./languageConfiguration.zig");
+const input = @import("ui").input;
+const tui_keybindings = @import("./keybindings.zig");
+const key_codes = @import("../vs/base/common/keyCodes.zig");
+const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
+const CommandRegistry = @import("../vs/platform/commands/common/commands.zig").CommandRegistry;
 const ShiftCommand = @import("../vs/editor/common/commands/shiftCommand.zig").ShiftCommand;
 const IShiftCommandOpts = @import("../vs/editor/common/commands/shiftCommand.zig").IShiftCommandOpts;
 const indentation_commands = @import("../vs/editor/contrib/indentation/browser/indentation.zig");
@@ -169,6 +174,10 @@ pub const Editor = struct {
     /// Whether multi-cursor paste spreads clipboard lines over cursors. The
     /// terminal has no settings service yet; upstream's default is `spread`.
     multi_cursor_paste_spread: bool = true,
+    /// Ctrl/Alt character shortcuts are resolved through the ported keybinding
+    /// registry; text editing itself stays on the editor methods below.
+    keybindings: ?*tui_keybindings.TuiKeybindings = null,
+    shortcut_commands: CommandRegistry,
 
     pub fn create(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Editor {
         return createInternal(allocator, io, path, width, height, null);
@@ -296,6 +305,8 @@ pub const Editor = struct {
             .pending_selection = undefined,
             .pending_selection_count = 0,
             .tokens_need_refresh = false,
+            .keybindings = null,
+            .shortcut_commands = CommandRegistry.init(allocator),
         };
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
         if (editor.character_pair) |*pair_support| {
@@ -322,6 +333,35 @@ pub const Editor = struct {
         return editor;
     }
 
+    fn ensureShortcutKeybindings(self: *Editor) !void {
+        if (self.keybindings != null) return;
+
+        for (shortcut_specs) |spec| {
+            try self.shortcut_commands.register(.{
+                .id = spec.id,
+                .context = self,
+                .run = spec.run,
+            });
+        }
+
+        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
+        errdefer self.allocator.destroy(keybindings);
+        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &shortcut_keybinding_rules, &self.shortcut_commands);
+        self.keybindings = keybindings;
+    }
+
+    /// Resolves a Ctrl/Alt character shortcut through the keybinding registry.
+    /// Returns whether the key was consumed (a matched command or a reserved
+    /// modifier combination); text input never reaches this path.
+    pub fn dispatchShortcut(self: *Editor, event: input.KeyEvent) !bool {
+        if (std.meta.activeTag(event.key) != .char) return false;
+        if (!event.mods.ctrl and !event.mods.alt) return false;
+
+        try self.ensureShortcutKeybindings();
+        _ = try self.keybindings.?.dispatch(event, tui_keybindings.empty_context);
+        return true;
+    }
+
     pub fn deinit(self: *Editor) void {
         if (self.cursors) |*cursors| cursors.deinit();
         if (self.cursor_context) |context| self.allocator.destroy(context);
@@ -341,6 +381,11 @@ pub const Editor = struct {
         self.allocator.destroy(self.language_service);
         self.codec.deinit();
         self.allocator.destroy(self.codec);
+        if (self.keybindings) |keybindings| {
+            keybindings.deinit();
+            self.allocator.destroy(keybindings);
+        }
+        self.shortcut_commands.deinit();
         self.on_did_change_dirty.deinit();
         self.allocator.free(self.path);
     }
@@ -2652,3 +2697,104 @@ test "Editor: word movement applies to every cursor" {
     try std.testing.expectEqual(@as(usize, 5), cursors[0].viewState.position.column);
     try std.testing.expectEqual(@as(usize, 5), cursors[1].viewState.position.column);
 }
+
+const shortcut_specs = [_]struct {
+    id: []const u8,
+    run: *const fn (*anyopaque) anyerror!void,
+}{
+    .{ .id = "workbench.action.files.save", .run = cmdSave },
+    .{ .id = "undo", .run = cmdUndo },
+    .{ .id = "redo", .run = cmdRedo },
+    .{ .id = "editor.action.selectAll", .run = cmdSelectAll },
+    .{ .id = "expandLineSelection", .run = cmdExpandLineSelection },
+    .{ .id = "editor.action.commentLine", .run = cmdToggleLineComment },
+    .{ .id = "editor.action.blockComment", .run = cmdToggleBlockComment },
+    .{ .id = "editor.action.jumpToBracket", .run = cmdJumpToBracket },
+    .{ .id = "editor.action.indentLines", .run = cmdIndentLines },
+    .{ .id = "editor.action.selectNextOccurrence", .run = cmdSelectNextOccurrence },
+    .{ .id = "editor.action.inPlaceReplace.up", .run = cmdInPlaceReplaceUp },
+    .{ .id = "editor.action.inPlaceReplace.down", .run = cmdInPlaceReplaceDown },
+    .{ .id = "editor.action.selectToBracket", .run = cmdSelectToBracket },
+    .{ .id = "editor.action.removeBrackets", .run = cmdRemoveBrackets },
+    .{ .id = "editor.action.selectAllOccurrences", .run = cmdSelectAllOccurrences },
+    .{ .id = "editor.action.reindentselectedlines", .run = cmdReindentSelectedLines },
+    .{ .id = "editor.action.reindentlines", .run = cmdReindentLines },
+};
+
+fn editorOf(context: *anyopaque) *Editor {
+    return @ptrCast(@alignCast(context));
+}
+
+fn cmdSave(context: *anyopaque) anyerror!void {
+    return editorOf(context).save();
+}
+fn cmdUndo(context: *anyopaque) anyerror!void {
+    return editorOf(context).undo();
+}
+fn cmdRedo(context: *anyopaque) anyerror!void {
+    return editorOf(context).redo();
+}
+fn cmdSelectAll(context: *anyopaque) anyerror!void {
+    return editorOf(context).selectAll();
+}
+fn cmdExpandLineSelection(context: *anyopaque) anyerror!void {
+    return editorOf(context).expandLineSelection();
+}
+fn cmdToggleLineComment(context: *anyopaque) anyerror!void {
+    return editorOf(context).toggleLineComment();
+}
+fn cmdToggleBlockComment(context: *anyopaque) anyerror!void {
+    return editorOf(context).toggleBlockComment();
+}
+fn cmdJumpToBracket(context: *anyopaque) anyerror!void {
+    return editorOf(context).jumpToBracket();
+}
+fn cmdIndentLines(context: *anyopaque) anyerror!void {
+    return editorOf(context).indentLines();
+}
+fn cmdSelectNextOccurrence(context: *anyopaque) anyerror!void {
+    return editorOf(context).selectNextOccurrence();
+}
+fn cmdInPlaceReplaceUp(context: *anyopaque) anyerror!void {
+    _ = try editorOf(context).inPlaceReplace(false);
+}
+fn cmdInPlaceReplaceDown(context: *anyopaque) anyerror!void {
+    _ = try editorOf(context).inPlaceReplace(true);
+}
+fn cmdSelectToBracket(context: *anyopaque) anyerror!void {
+    return editorOf(context).selectToBracket(true);
+}
+fn cmdRemoveBrackets(context: *anyopaque) anyerror!void {
+    return editorOf(context).removeBrackets();
+}
+fn cmdSelectAllOccurrences(context: *anyopaque) anyerror!void {
+    return editorOf(context).selectAllOccurrences();
+}
+fn cmdReindentSelectedLines(context: *anyopaque) anyerror!void {
+    return editorOf(context).reindentSelectedLines();
+}
+fn cmdReindentLines(context: *anyopaque) anyerror!void {
+    return editorOf(context).reindentLines();
+}
+
+const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
+    .{ .id = "workbench.action.files.save", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyS) } },
+    .{ .id = "undo", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyZ) } },
+    .{ .id = "redo", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyY) } },
+    .{ .id = "editor.action.selectAll", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyA) } },
+    .{ .id = "expandLineSelection", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyL) } },
+    .{ .id = "editor.action.commentLine", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Slash) } },
+    .{ .id = "editor.action.blockComment", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Slash) } },
+    .{ .id = "editor.action.jumpToBracket", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash) } },
+    .{ .id = "editor.action.indentLines", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.BracketRight) } },
+    .{ .id = "editor.action.selectNextOccurrence", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyD) } },
+    .{ .id = "editor.action.insertCursorAbove", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.UpArrow) } },
+    .{ .id = "editor.action.insertCursorBelow", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.DownArrow) } },
+    .{ .id = "editor.action.inPlaceReplace.up", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Comma) } },
+    .{ .id = "editor.action.inPlaceReplace.down", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Period) } },
+    .{ .id = "editor.action.selectToBracket", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyB) } },
+    .{ .id = "editor.action.removeBrackets", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyB) } },
+    .{ .id = "editor.action.selectAllOccurrences", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyD) } },
+    .{ .id = "editor.action.reindentselectedlines", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyR) } },
+    .{ .id = "editor.action.reindentlines", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyR) } },
+};

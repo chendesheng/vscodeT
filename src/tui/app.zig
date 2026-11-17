@@ -751,6 +751,17 @@ fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
         }
     }
 
+    if (std.meta.activeTag(event.key) == .char and (event.mods.ctrl or event.mods.alt)) {
+        if (event.mods.ctrl and !event.mods.alt and event.key.char == 'q') {
+            return editor.requestQuit();
+        }
+        _ = editor.dispatchShortcut(event) catch |err| {
+            editor.setMessage("shortcut failed: {s}", .{@errorName(err)});
+            return false;
+        };
+        return false;
+    }
+
     switch (event.key) {
         .paste_start => {
             is_pasting.* = true;
@@ -768,37 +779,6 @@ fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
             return false;
         },
         .char => |ch| {
-            if (event.mods.alt) {
-                switch (ch) {
-                    ',' => _ = editor.inPlaceReplace(false) catch |err| editor.setMessage("in-place replace failed: {s}", .{@errorName(err)}),
-                    '.' => _ = editor.inPlaceReplace(true) catch |err| editor.setMessage("in-place replace failed: {s}", .{@errorName(err)}),
-                    '/' => editor.toggleBlockComment() catch |err| editor.setMessage("comment failed: {s}", .{@errorName(err)}),
-                    'b' => editor.selectToBracket(true) catch |err| editor.setMessage("select bracket failed: {s}", .{@errorName(err)}),
-                    'B' => editor.removeBrackets() catch |err| editor.setMessage("remove brackets failed: {s}", .{@errorName(err)}),
-                    'd' => editor.selectAllOccurrences() catch |err| editor.setMessage("select occurrences failed: {s}", .{@errorName(err)}),
-                    'r' => editor.reindentSelectedLines() catch |err| editor.setMessage("reindent failed: {s}", .{@errorName(err)}),
-                    'R' => editor.reindentLines() catch |err| editor.setMessage("reindent failed: {s}", .{@errorName(err)}),
-                    else => {},
-                }
-                return false;
-            }
-            if (event.mods.ctrl) {
-                switch (ch) {
-                    'q' => return editor.requestQuit(),
-                    's' => editor.save() catch |err| editor.setMessage("save failed: {s}", .{@errorName(err)}),
-                    'z' => editor.undo() catch |err| editor.setMessage("undo failed: {s}", .{@errorName(err)}),
-                    'y' => editor.redo() catch |err| editor.setMessage("redo failed: {s}", .{@errorName(err)}),
-                    'a' => editor.selectAll() catch |err| editor.setMessage("select all failed: {s}", .{@errorName(err)}),
-                    'c' => {},
-                    'l' => editor.expandLineSelection() catch |err| editor.setMessage("select line failed: {s}", .{@errorName(err)}),
-                    '/' => editor.toggleLineComment() catch |err| editor.setMessage("comment failed: {s}", .{@errorName(err)}),
-                    '\\' => editor.jumpToBracket() catch |err| editor.setMessage("jump failed: {s}", .{@errorName(err)}),
-                    ']' => editor.indentLines() catch |err| editor.setMessage("indent failed: {s}", .{@errorName(err)}),
-                    'd' => editor.selectNextOccurrence() catch |err| editor.setMessage("select occurrence failed: {s}", .{@errorName(err)}),
-                    else => {},
-                }
-                return false;
-            }
             var buffer: [4]u8 = undefined;
             const encoded = std.unicode.utf8Encode(ch, &buffer) catch return false;
             editor.typeCharacter(buffer[0..encoded]) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
