@@ -44,6 +44,29 @@ pub const VSBuffer = struct {
         return .{ .bytes = result };
     }
 
+    pub fn toHexString(self: *const VSBuffer, allocator: Allocator) ![]u8 {
+        const digits = "0123456789abcdef";
+        const result = try allocator.alloc(u8, self.bytes.len * 2);
+        for (self.bytes, 0..) |byte, index| {
+            result[index * 2] = digits[byte >> 4];
+            result[index * 2 + 1] = digits[byte & 0xF];
+        }
+        return result;
+    }
+
+    pub fn fromHexString(allocator: Allocator, text: []const u8) !VSBuffer {
+        if (text.len % 2 != 0) return error.InvalidHexString;
+        const result = try allocator.alloc(u8, text.len / 2);
+        errdefer allocator.free(result);
+        var index: usize = 0;
+        while (index < result.len) : (index += 1) {
+            const high = std.fmt.charToDigit(text[index * 2], 16) catch return error.InvalidHexString;
+            const low = std.fmt.charToDigit(text[index * 2 + 1], 16) catch return error.InvalidHexString;
+            result[index] = high * 16 + low;
+        }
+        return .{ .bytes = result };
+    }
+
     pub fn equals(self: *const VSBuffer, other: *const VSBuffer) bool {
         return std.mem.eql(u8, self.bytes, other.bytes);
     }
@@ -107,4 +130,16 @@ test "VSBuffer integer access" {
     try std.testing.expectEqual(@as(?u32, 0xA1B2C3D4), buffer.readUInt32BE(0));
     try std.testing.expectEqual(@as(?u8, 0xA1), buffer.readUInt8(0));
     try std.testing.expect(buffer.readUInt32BE(6) == null);
+}
+
+test "VSBuffer hex round-trip" {
+    const allocator = std.testing.allocator;
+    var buffer = try VSBuffer.fromHexString(allocator, "00abff");
+    defer buffer.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), buffer.byteLength());
+    const hex = try buffer.toHexString(allocator);
+    defer allocator.free(hex);
+    try std.testing.expectEqualStrings("00abff", hex);
+    try std.testing.expectError(error.InvalidHexString, VSBuffer.fromHexString(allocator, "0g"));
+    try std.testing.expectError(error.InvalidHexString, VSBuffer.fromHexString(allocator, "abc"));
 }
