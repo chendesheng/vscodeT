@@ -760,3 +760,14 @@ Editor contributions:
   prerequisites are `editor/common/config/editorOptions.ts` (needed by the
   P4 view/controller stack) and the portable URI/file-service/editor-input
   layer (P5e).
+
+- Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
+  parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
+  round-trip, fs-path decoding) plus portable `extpath` helpers; the in-memory
+  policy service with `PolicyConfiguration` (types, restricted/managed metadata,
+  changes and owner/reference fallback); and the token-classification registry
+  with TextMate scope matching and `ColorThemeData` token-style resolution
+  (theme/custom token colors, semantic rules, language/super-type selectors and
+  custom settings JSON). The file-backed workbench configuration service applies
+  language overrides, application/machine scope filtering, and untrusted
+  workspace filtering for restricted/unregistered settings.
