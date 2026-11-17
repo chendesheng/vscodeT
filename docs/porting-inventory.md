@@ -262,7 +262,7 @@ not scheduled for a port. §7.1 breaks the UI/view files down by code block.
 | `fileIndex.zig` | `base/common/fuzzyScorer.ts` (25), `workbench/services/search/common/searchService.ts`, `workbench/contrib/search/browser/anythingQuickAccess.ts` | Workspace walk, ignore/exclude handling; replace simple matcher with `scoreItemFuzzy`; honor `search.exclude` | `portable-embedded` | P5b/P5g | M | `base/test/common/fuzzyScorer.test.ts` (68), `workbench/services/search/test/common/search.test.ts`, `workbench/contrib/search/test/browser/anythingQuickAccess.test.ts` |
 | `hoverProvider.zig` | none (requires language extension host) | Word/token stand-in for the ported hover contribution | `terminal-only` | — | — | none |
 | `languageConfiguration.zig` | `editor/common/languages/languageConfigurationRegistry.ts`, `workbench/services/language/common/languageService.ts` | `ILanguageConfigurationService` implementation and global activation | `portable-embedded` | P5d | M | `editor/test/common/modes/languageConfiguration.test.ts` |
-| `language.zig` | `workbench/services/language/common/languageService.ts` (223), language association extension point | Hard-coded extension→language map, comment rules, brackets | `portable-embedded` | P5d | S | none direct |
+| `language.zig` | `workbench/services/language/common/languageService.ts` (223), language association extension point | Bundled language contributions, comment rules, brackets; path matching now uses `LanguageService`/`languagesAssociations` | `portable-embedded` | P5d | S | none direct |
 | `logger.zig` | `platform/log/common/log.ts` (233), `platform/log/common/logService.ts` (10), `platform/log/common/fileLog.ts` (18) | Terminal host over the ported log core: one synchronous `main.log` in upstream `FileLogger` line format with UTC timestamps; `app.zig` reports lifecycle and errors through the service | `ported` | — | — | `platform/log/test/common/log.test.ts` (10, ported) |
 | `preview.zig` | none (read-only host) | Read-only duplicate of the view renderer (gutter/tokens/scroll); fold into a read-only `Editor`/`View` instead of keeping a second renderer | `terminal-only` (duplicate view code) | — | S | none |
 | `quickAccess.zig` | `workbench/browser/quickaccess.ts`, `platform/quickinput/common/quickAccess.ts`, `platform/quickinput/browser/quickAccess.ts` | Provider/controller host and terminal key/mouse routing | `tui-adapter` | P3/P5 | S | `platform/quickinput/test/browser/quickinput.test.ts` |
@@ -914,8 +914,7 @@ first-line predicates, data-URI labels) and the 10 upstream
 entries for every language contribution and resolves file paths through the
 matcher (filename > pattern > longest case-insensitive extension, later
 registrations win); first-line matching keeps the simple prefix/suffix form.
-The workbench `languageService.ts` registration surface that would replace
-`src/tui/language.zig` remains. `languageConfigurationRegistry.zig`
+`languageConfigurationRegistry.zig`
 now carries the upstream registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
 change events) and the 11 `languageConfiguration.test.ts` cases pass; the TUI
 `languageConfiguration.zig` service consumes it. The existing
@@ -929,9 +928,14 @@ and registry integration/lifecycle tests pass.
 The resolved configuration also builds `RichEditBrackets` and
 `BracketElectricCharacterSupport` eagerly (upstream lazily) and exposes
 `getBrackets`/`getElectricCharacter`, releasing the bracket regexes when the
-configuration is invalidated. Still missing: the workbench `languageService.ts`
-registration surface that would replace `src/tui/language.zig`
-(extension→language contributions).
+configuration is invalidated. The workbench registration surface is ported in
+`workbench/services/language/common/languageService.zig`
+(`WorkbenchLanguageService`: contribution validation/registration and
+`files.associations` → configured associations), and the TUI editor resolves
+paths through the service's association matcher instead of the removed
+`language.zig` extension map. Remaining host wiring: feed the TUI
+`files.associations` setting into `updateMime` and implement the
+`onLanguage` activation hook (a no-op without an extension host).
 
 **P5f status:** `log.zig`, `logService.zig`, `bufferLog.zig` and
 `errorMessage.zig` exist under the mirrored paths, the 10 upstream
@@ -1065,7 +1069,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,030 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,032 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1078,11 +1082,11 @@ are complete; P5c has color-theme data/registry/loading, a terminal
 workbench theme service (+ its test suite) and the size registry; P5h has the
 configuration model parser/filters/merges/overrides, registry defaults/policies/
 deregistration, variables, DefaultConfiguration and an in-memory user-target
-ConfigurationService; P5d tests are ported with the service registration surface
-pending; P5e has the URI/file-service/editor-input foundation and needs the
+ConfigurationService; P5d is ported (associations, workbench registration
+surface, TUI path matching), with only `files.associations` host wiring left; P5e has the URI/file-service/editor-input foundation and needs the
 full provider file service and the working-copy wiring.
 
-**Status at the end of the current session:** 2,030 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,032 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor view/controller/widget stack and the URI/file

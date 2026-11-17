@@ -359,7 +359,11 @@ Bracket-pair colorization:
   language names, and `createById`/`createByMimeType`/`createByFilepathOrFirstLine`
   selections that re-emit when languages are registered. The TUI editor
   registers its bundled language table (extensions per language) on the service
-  at startup. Workbench extension contribution registration is not ported yet.
+  at startup and resolves file paths through the ported language associations
+  (the old hard-coded extension map is gone). `workbench/services/language/common/languageService.zig`
+  ports the workbench registration surface, including `files.associations` →
+  configured associations; feeding the TUI's settings into it remains host
+  wiring.
 - The language-support helpers are ported: rich bracket grouping and
   forward/reversed bracket search (`RichEditBrackets`, `BracketsUtils`),
   `ScopedLineTokens`, electric-character matching, and `OnEnterSupport`

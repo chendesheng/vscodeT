@@ -175,6 +175,24 @@ pub const LanguageService = struct {
         }
     }
 
+    /// Registers a configured (user) language association; it wins over the
+    /// platform associations derived from registered languages.
+    pub fn registerConfiguredLanguageAssociation(self: *LanguageService, association: languages_associations.ILanguageAssociation) !void {
+        const associations = try self.ensureAssociations();
+        try associations.registerConfigured(association);
+    }
+
+    pub fn clearConfiguredLanguageAssociations(self: *LanguageService) void {
+        if (self.associations) |associations| associations.clearConfigured();
+    }
+
+    /// Notifies selections after association changes (upstream fires
+    /// `_onDidChange` and refreshes the registered language selections).
+    pub fn notifyLanguageChange(self: *LanguageService) void {
+        self.changed.fire({}) catch {};
+        for (self.selections.items) |selection| selection.refresh() catch {};
+    }
+
     pub fn isRegisteredLanguageId(self: *LanguageService, language_id: []const u8) bool {
         return self.languages.contains(language_id);
     }

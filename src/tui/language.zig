@@ -1,4 +1,6 @@
 const std = @import("std");
+const LanguageIdCodec = @import("../vs/editor/common/languages.zig").LanguageIdCodec;
+const LanguageService = @import("../vs/editor/common/services/languageService.zig").LanguageService;
 const language_configuration = @import("../vs/editor/common/languages/languageConfiguration.zig");
 const CommentRule = language_configuration.CommentRule;
 const LineCommentConfig = language_configuration.LineCommentConfig;
@@ -39,21 +41,6 @@ pub const bundled_languages = [_]BundledLanguage{
     .{ .id = "toml", .extensions = &.{".toml"} },
     .{ .id = "shellscript", .extensions = &.{ ".sh", ".bash" } },
 };
-
-/// TUI-local stand-in for vscode's language association registry. Only the
-/// grammars bundled with textmate.zig are recognized; the editor also registers
-/// `bundled_languages` on the ported `LanguageService`.
-pub fn languageIdForPath(path: []const u8) []const u8 {
-    const basename = std.fs.path.basename(path);
-    for (bundled_languages) |language| {
-        for (language.extensions) |extension| {
-            if (basename.len >= extension.len and std.ascii.eqlIgnoreCase(basename[basename.len - extension.len ..], extension)) {
-                return language.id;
-            }
-        }
-    }
-    return "plaintext";
-}
 
 /// Comment rules for the languages recognized by the TUI. VS Code ships these
 /// in per-language `language-configuration.json` files; this is the portable
@@ -115,9 +102,19 @@ test "comment rules for supported languages" {
 }
 
 test "language detection by path" {
-    try std.testing.expectEqualStrings("zig", languageIdForPath("src/main.zig"));
-    try std.testing.expectEqualStrings("c", languageIdForPath("foo.h"));
-    try std.testing.expectEqualStrings("typescript", languageIdForPath("app.ts"));
-    try std.testing.expectEqualStrings("typescript", languageIdForPath("APP.TS"));
-    try std.testing.expectEqualStrings("plaintext", languageIdForPath("Makefile"));
+    const allocator = std.testing.allocator;
+    var codec = try LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var service = LanguageService.init(allocator, &codec);
+    defer service.deinit();
+    for (bundled_languages) |bundled| {
+        try service.registerLanguage(.{ .id = bundled.id, .extensions = bundled.extensions });
+    }
+
+    try std.testing.expectEqualStrings("zig", service.guessLanguageIdByFilepathOrFirstLine("src/main.zig", null).?);
+    try std.testing.expectEqualStrings("c", service.guessLanguageIdByFilepathOrFirstLine("foo.h", null).?);
+    try std.testing.expectEqualStrings("typescript", service.guessLanguageIdByFilepathOrFirstLine("app.ts", null).?);
+    try std.testing.expectEqualStrings("typescript", service.guessLanguageIdByFilepathOrFirstLine("APP.TS", null).?);
+    // The editor falls back to plaintext when no association matches.
+    try std.testing.expect(service.guessLanguageIdByFilepathOrFirstLine("Makefile", null) == null);
 }

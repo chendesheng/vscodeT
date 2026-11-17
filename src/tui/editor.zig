@@ -197,13 +197,10 @@ pub const Editor = struct {
         const path_copy = try allocator.dupe(u8, path);
         errdefer allocator.free(path_copy);
 
-        const language_id = language.languageIdForPath(path);
-
         const codec = try allocator.create(LanguageIdCodec);
         errdefer allocator.destroy(codec);
         codec.* = try LanguageIdCodec.init(allocator);
         errdefer codec.deinit();
-        try codec.register(language_id);
 
         const language_service = try allocator.create(LanguageService);
         errdefer allocator.destroy(language_service);
@@ -212,6 +209,11 @@ pub const Editor = struct {
         for (language.bundled_languages) |bundled| {
             try language_service.registerLanguage(.{ .id = bundled.id, .extensions = bundled.extensions });
         }
+
+        // Path matching goes through the ported language associations, which the
+        // service derives from the registered language contributions.
+        const language_id = language_service.guessLanguageIdByFilepathOrFirstLine(path, null) orelse "plaintext";
+        try codec.register(language_id);
 
         var language_config = language_configuration.empty();
         var has_language_config = false;
