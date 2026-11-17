@@ -31,7 +31,12 @@ pub fn compareFileNames(one: []const u8, other: []const u8) i32 {
             for (one[i..ai], other[j..bj]) |ca, cb| {
                 if (ca != cb) return if (ca < cb) -1 else 1;
             }
-            if (ai - a_start != bj - b_start) return if (ai - a_start < bj - b_start) -1 else 1;
+            if (ai - a_start != bj - b_start) {
+                // Collator numeric equality: disambiguate by full unicode order
+                // (upstream returns `a < b ? -1 : 1`).
+                const order = std.mem.order(u8, one, other);
+                if (order != .eq) return if (order == .lt) -1 else 1;
+            }
             i = ai;
             j = bj;
             continue;
