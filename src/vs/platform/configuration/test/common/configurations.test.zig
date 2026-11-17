@@ -112,3 +112,57 @@ test "registering a normal property and override identifier" {
     try std.testing.expectEqual(@as(usize, 1), model.overrides.len);
     try std.testing.expectEqual(@as(usize, 2), model.getKeys().len);
 }
+
+test "register override identifier and property after initialize" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+
+    try registry.registerConfiguration("a", &.{.{ .key = "b", .value_type = "boolean", .default = std.json.Value{ .bool = false } }});
+    try registry.registerDefaultConfigurations(&.{.{ .key = "[a]", .value = try jsonValue(arena.allocator(), "{\"b\":true}") }});
+    try defaults.onDidUpdateConfiguration(&.{ "b", "[a]" });
+    const model = defaults.configurationModel();
+    try std.testing.expectEqual(@as(bool, false), model.getValue("b").?.bool);
+    try std.testing.expect(model.getValue("[a]") != null);
+    try std.testing.expectEqual(@as(usize, 1), model.overrides.len);
+}
+
+test "deregistering a property removes it from defaults" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try registry.registerConfiguration("a", &.{.{ .key = "a", .value_type = "boolean", .default = std.json.Value{ .bool = false } }});
+    try defaults.initialize();
+    try std.testing.expect(defaults.configurationModel().getValue("a") != null);
+    registry.deregisterConfigurations("a");
+    try defaults.onDidUpdateConfiguration(&.{"a"});
+    try std.testing.expect(defaults.configurationModel().getValue("a") == null);
+    try std.testing.expectEqual(@as(usize, 0), defaults.configurationModel().getKeys().len);
+}
+
+test "deregistering an override identifier removes the override" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try registry.registerConfiguration("a", &.{.{ .key = "b", .value_type = "boolean", .default = std.json.Value{ .bool = false } }});
+    const entries = [_]configurationRegistry.DefaultOverride{.{ .key = "[a]", .value = try jsonValue(arena.allocator(), "{\"b\":true}") }};
+    try registry.registerDefaultConfigurations(&entries);
+    try defaults.initialize();
+    try std.testing.expect(defaults.configurationModel().getValue("[a]") != null);
+    try registry.deregisterDefaultConfigurations(&entries, null);
+    try defaults.onDidUpdateConfiguration(&.{"[a]"});
+    try std.testing.expect(defaults.configurationModel().getValue("[a]") == null);
+    try std.testing.expectEqual(@as(usize, 0), defaults.configurationModel().overrides.len);
+    try std.testing.expectEqual(@as(usize, 1), defaults.configurationModel().getKeys().len);
+}
