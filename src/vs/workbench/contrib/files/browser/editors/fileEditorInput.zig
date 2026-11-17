@@ -53,12 +53,24 @@ pub const FileEditorInput = struct {
         return &self.base;
     }
 
+    pub fn getPreferredResource(self: *const FileEditorInput) []const u8 {
+        return self.path;
+    }
+
+    pub fn getPreferredLanguage(_: *const FileEditorInput) ?[]const u8 {
+        return null;
+    }
+
+    pub fn getPreferredContents(self: *const FileEditorInput) []const u8 {
+        return self.getText();
+    }
+
     pub fn load(self: *FileEditorInput) !void {
         if (self.content) |content| self.allocator.free(content);
         self.content = try self.text_files.read(self.path, self.allocator);
     }
 
-    pub fn getText(self: *FileEditorInput) []const u8 {
+    pub fn getText(self: *const FileEditorInput) []const u8 {
         if (self.modified) |modified| return modified;
         return self.content orelse "";
     }
@@ -106,6 +118,9 @@ test "FileEditorInput loads, edits, saves and reverts" {
     defer input.deinit();
     try input.load();
     try std.testing.expectEqualStrings("hello", input.getText());
+    try std.testing.expectEqualStrings(path, input.getPreferredResource());
+    try std.testing.expectEqualStrings("hello", input.getPreferredContents());
+    try std.testing.expect(input.getPreferredLanguage() == null);
     try std.testing.expectEqualStrings("file.txt", input.base.getName());
     try std.testing.expect(!input.base.isDirty());
 
