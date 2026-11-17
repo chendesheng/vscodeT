@@ -1,0 +1,212 @@
+//! Terminal keybinding service on top of the ported
+//! `AbstractKeybindingService` (P3 wiring).
+//!
+//! The workbench-global shortcuts now go through the upstream dispatch path
+//! (resolver + context + notification + command execution) instead of the
+//! `TuiKeybindings` id-dispatch host. Terminal adaptations: the flat context
+//! key service, a no-op notification service (no status bar for chord hints
+//! here), `Alt` as the only meta-like modifier, and no timers/IME.
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const input = @import("ui").input;
+const key_codes = @import("../vs/base/common/keyCodes.zig");
+const key_bindings = @import("../vs/base/common/keybindings.zig");
+const contextkey = @import("../vs/platform/contextkey/common/contextkey.zig");
+const registry_module = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
+const resolver_module = @import("../vs/platform/keybinding/common/keybindingResolver.zig");
+const item_module = @import("../vs/platform/keybinding/common/resolvedKeybindingItem.zig");
+const us_module = @import("../vs/platform/keybinding/common/usLayoutResolvedKeybinding.zig");
+const notification_mod = @import("../vs/platform/notification/common/notification.zig");
+const abstract_mod = @import("../vs/platform/keybinding/common/abstractKeybindingService.zig");
+const keybinding_mod = @import("../vs/platform/keybinding/common/keybinding.zig");
+const tui_keybindings = @import("./keybindings.zig");
+
+const ResolvedKeybindingItem = item_module.ResolvedKeybindingItem;
+const USLayoutResolvedKeybinding = us_module.USLayoutResolvedKeybinding;
+const AbstractKeybindingService = abstract_mod.AbstractKeybindingService;
+
+pub const KeybindingService = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    context: contextkey.ContextKeyService,
+    noop_notification: notification_mod.NoOpNotification = .{},
+    commands: abstract_mod.CommandExecutor,
+    items: std.array_list.Managed(*ResolvedKeybindingItem),
+    resolved: std.array_list.Managed(*USLayoutResolvedKeybinding),
+    resolver: resolver_module.KeybindingResolver,
+    service: AbstractKeybindingService,
+    last_command: ?[]const u8 = null,
+
+    pub fn init(allocator: Allocator, rules: []const registry_module.IKeybindingRule, executor: abstract_mod.CommandExecutor) !*KeybindingService {
+        const self = try allocator.create(KeybindingService);
+        errdefer allocator.destroy(self);
+
+        var registry = registry_module.KeybindingsRegistry.init(allocator);
+        defer registry.deinit();
+        for (rules) |rule| {
+            var registration = try registry.registerKeybindingRule(rule);
+            registration.disposed = true;
+        }
+        const registry_items = try registry.getDefaultKeybindings(allocator);
+        defer allocator.free(registry_items);
+
+        self.* = .{
+            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .context = contextkey.ContextKeyService.init(allocator),
+            .commands = executor,
+            .items = std.array_list.Managed(*ResolvedKeybindingItem).init(allocator),
+            .resolved = std.array_list.Managed(*USLayoutResolvedKeybinding).init(allocator),
+            .resolver = undefined,
+            .service = undefined,
+        };
+
+        for (registry_items) |item| {
+            const keybinding = item.keybinding orelse continue;
+            const resolved_value = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, .Linux)) orelse continue;
+            const held = try allocator.create(USLayoutResolvedKeybinding);
+            held.* = resolved_value;
+            try self.resolved.append(held);
+            const entry = try allocator.create(ResolvedKeybindingItem);
+            entry.* = try ResolvedKeybindingItem.init(
+                allocator,
+                held.interface(),
+                item.command,
+                item.commandArgs,
+                item.when,
+                true,
+                item.extensionId,
+                item.isBuiltinExtension,
+                false,
+            );
+            try self.items.append(entry);
+        }
+        const item_ptrs = try allocator.alloc(*const ResolvedKeybindingItem, self.items.items.len);
+        defer allocator.free(item_ptrs);
+        for (self.items.items, 0..) |item, index| item_ptrs[index] = item;
+        self.resolver = try resolver_module.KeybindingResolver.init(allocator, item_ptrs, &.{});
+
+        self.service = AbstractKeybindingService.init(
+            allocator,
+            self.context.interface(),
+            .{ .context = self, .execute = executeCommand },
+            notificationService(self),
+            &self.resolver,
+            self,
+            resolveEvent,
+            resolveKeybinding,
+            resolveUserBinding,
+            hasFocus,
+        );
+        return self;
+    }
+
+    pub fn deinit(self: *KeybindingService) void {
+        self.service.deinit();
+        self.resolver.deinit();
+        for (self.items.items) |item| {
+            item.deinit(self.allocator);
+            self.allocator.destroy(item);
+        }
+        self.items.deinit();
+        for (self.resolved.items) |resolved| {
+            resolved.deinit();
+            self.allocator.destroy(resolved);
+        }
+        self.resolved.deinit();
+        self.context.deinit();
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
+
+    /// Dispatches a decoded terminal key. Returns whether the key was consumed.
+    pub fn dispatch(self: *KeybindingService, event: input.KeyEvent) bool {
+        self.last_command = null;
+        const keyboard = toKeyboardEvent(event) orelse return false;
+        const prevented = self.service.dispatchEvent(keyboard);
+        return prevented or self.last_command != null or self.service.inChordMode();
+    }
+
+    pub fn lastCommand(self: *const KeybindingService) ?[]const u8 {
+        return self.last_command;
+    }
+
+    fn executeCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
+        const self: *KeybindingService = @ptrCast(@alignCast(context));
+        self.last_command = command_id;
+        try self.commands.execute(self.commands.context, command_id);
+    }
+
+    fn resolveEvent(context: *anyopaque, _: Allocator, event: keybinding_mod.IKeyboardEvent) anyerror!?key_bindings.ResolvedKeybinding {
+        const self: *KeybindingService = @ptrCast(@alignCast(context));
+        const allocator = self.arena.allocator();
+        var encoded: u32 = @intCast(@backingInt(event.key_code));
+        if (event.ctrl) encoded |= key_codes.KeyMod.CtrlCmd;
+        if (event.shift) encoded |= key_codes.KeyMod.Shift;
+        if (event.alt) encoded |= key_codes.KeyMod.Alt;
+        const resolved = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, .{ .chords = &.{.{ .key_code = .{
+            .ctrl_key = event.ctrl,
+            .shift_key = event.shift,
+            .alt_key = event.alt,
+            .meta_key = false,
+            .key_code = event.key_code,
+        } }} }, .Linux)) orelse return null;
+        const held = try allocator.create(USLayoutResolvedKeybinding);
+        held.* = resolved;
+        return held.interface();
+    }
+
+    fn resolveKeybinding(context: *anyopaque, _: Allocator, keybinding: key_bindings.Keybinding) anyerror![]key_bindings.ResolvedKeybinding {
+        const self: *KeybindingService = @ptrCast(@alignCast(context));
+        const allocator = self.arena.allocator();
+        var resolved = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, .Linux)) orelse return &.{};
+        const result = try allocator.alloc(key_bindings.ResolvedKeybinding, 1);
+        result[0] = resolved.interface();
+        return result;
+    }
+
+    fn resolveUserBinding(_: *anyopaque, _: Allocator, _: []const u8) anyerror![]key_bindings.ResolvedKeybinding {
+        return &.{};
+    }
+
+    fn hasFocus(_: *anyopaque) bool {
+        return true;
+    }
+};
+
+fn notificationService(service: *KeybindingService) notification_mod.INotificationService {
+    return .{
+        .context = &service.noop_notification,
+        .notify_fn = noopNotify,
+        .info_fn = noopMessage,
+        .warn_fn = noopMessage,
+        .error_fn = noopMessage,
+        .prompt_fn = noopPrompt,
+        .status_fn = noopStatus,
+    };
+}
+
+fn noopNotify(context: *anyopaque, _: notification_mod.INotification) notification_mod.INotificationHandle {
+    const noop: *notification_mod.NoOpNotification = @ptrCast(@alignCast(context));
+    return noop.interface();
+}
+fn noopMessage(_: *anyopaque, _: notification_mod.NotificationMessage) void {}
+fn noopPrompt(context: *anyopaque, _: @import("../vs/base/common/severity.zig").Severity, _: notification_mod.NotificationMessage, _: []const notification_mod.IPromptChoice, _: ?notification_mod.IPromptOptions) notification_mod.INotificationHandle {
+    const noop: *notification_mod.NoOpNotification = @ptrCast(@alignCast(context));
+    return noop.interface();
+}
+fn noopStatus(context: *anyopaque, _: notification_mod.NotificationMessage, _: ?notification_mod.IStatusMessageOptions) notification_mod.IStatusHandle {
+    return .{ .context = context, .close_fn = noopClose };
+}
+fn noopClose(_: *anyopaque) void {}
+
+fn toKeyboardEvent(event: input.KeyEvent) ?keybinding_mod.IKeyboardEvent {
+    const key_code = tui_keybindings.keyCodeFor(event) orelse return null;
+    return .{
+        .ctrl = event.mods.ctrl,
+        .shift = event.mods.shift or std.meta.activeTag(event.key) == .backtab,
+        .alt = event.mods.alt,
+        .meta = false,
+        .key_code = key_code,
+    };
+}

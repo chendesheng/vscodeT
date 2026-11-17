@@ -71,6 +71,7 @@ const configuration_mod = @import("../vs/workbench/services/configuration/browse
 const ConfigurationService = configuration_mod.ConfigurationService;
 const settings_watcher_mod = @import("./settingsWatcher.zig");
 const tui_keybindings = @import("./keybindings.zig");
+const keybinding_service = @import("./keybindingService.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
 const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
 const SettingsWatcher = settings_watcher_mod.SettingsWatcher;
@@ -162,7 +163,7 @@ pub const Workbench = struct {
     history: HistoryService,
     commands: CommandRegistry,
     keybindings: ?*tui_keybindings.TuiKeybindings,
-    global_keybindings: ?*tui_keybindings.TuiKeybindings,
+    global_service: ?*keybinding_service.KeybindingService,
     statusbar_keybindings: ?*tui_keybindings.TuiKeybindings,
     quick_access: *QuickAccessService,
     focus: Focus = .editor,
@@ -184,7 +185,7 @@ pub const Workbench = struct {
         self.io = io;
         self.cols = @max(cols, 1);
         self.keybindings = null;
-        self.global_keybindings = null;
+        self.global_service = null;
         self.statusbar_keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
@@ -243,7 +244,7 @@ pub const Workbench = struct {
         self.io = io;
         self.cols = @max(cols, 1);
         self.keybindings = null;
-        self.global_keybindings = null;
+        self.global_service = null;
         self.statusbar_keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
@@ -317,7 +318,7 @@ pub const Workbench = struct {
         self.io = io;
         self.cols = @max(cols, 1);
         self.keybindings = null;
-        self.global_keybindings = null;
+        self.global_service = null;
         self.statusbar_keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
@@ -613,9 +614,8 @@ pub const Workbench = struct {
             keybindings.deinit();
             self.allocator.destroy(keybindings);
         }
-        if (self.global_keybindings) |keybindings| {
-            keybindings.deinit();
-            self.allocator.destroy(keybindings);
+        if (self.global_service) |service| {
+            service.deinit();
         }
         if (self.statusbar_keybindings) |keybindings| {
             keybindings.deinit();
@@ -1161,26 +1161,20 @@ pub const Workbench = struct {
         return false;
     }
 
-    fn ensureGlobalKeybindings(self: *Workbench) !*tui_keybindings.TuiKeybindings {
-        if (self.global_keybindings) |keybindings| return keybindings;
-        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
-        errdefer self.allocator.destroy(keybindings);
-        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &global_keybinding_rules, null);
-        self.global_keybindings = keybindings;
-        return keybindings;
+    fn ensureGlobalService(self: *Workbench) !*keybinding_service.KeybindingService {
+        if (self.global_service) |service| return service;
+        const service = try keybinding_service.KeybindingService.init(self.allocator, &global_keybinding_rules, .{ .context = self, .execute = executeGlobalCommand });
+        self.global_service = service;
+        return service;
     }
 
-    /// Workbench-global shortcuts (quick open/commands, find/replace in files,
-    /// sidebar visibility and status-bar focus). Skipped while quick access owns
-    /// the keyboard so Ctrl+P keeps cycling the open picker.
+    /// Workbench-global shortcuts through the abstract keybinding service.
+    /// Skipped while quick access owns the keyboard so Ctrl+P keeps cycling
+    /// the open picker.
     pub fn handleGlobalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         if (self.quick_access.isOpen()) return false;
-        const keybindings = try self.ensureGlobalKeybindings();
-        if (try keybindings.dispatch(event.*, tui_keybindings.empty_context)) |command| {
-            try self.commands.execute(command);
-            return true;
-        }
-        return keybindings.inChordMode();
+        const service = try self.ensureGlobalService();
+        return service.dispatch(event.*);
     }
 
     fn ensureTabKeybindings(self: *Workbench) !*tui_keybindings.TuiKeybindings {
@@ -3824,3 +3818,8 @@ const statusbar_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.statusbar.executeFocused", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Enter), .secondary = &.{@backingInt(key_codes.KeyCode.Space)} } },
     .{ .id = "workbench.action.statusbar.escapeFocus", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Escape) } },
 };
+
+fn executeGlobalCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.commands.execute(command_id);
+}
