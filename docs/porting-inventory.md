@@ -1044,6 +1044,23 @@ deregistration, variables, DefaultConfiguration and an in-memory user-target
 ConfigurationService; P5d tests are ported with the service registration surface
 pending; P5e (URI/file/editor input) is not started.
 
+**Known blockers for the remaining work**
+
+- P4 `View`, `viewController` and `codeEditorWidget` need
+  `IEditorConfiguration`'s computed options (`editorOptions.ts`, still opaque in
+  `editorConfiguration.zig`).
+- P5e needs `base/common/uri.zig`, the file service and the concrete editor
+  inputs (`TextResourceEditorInput`, `FileEditorInput`, untitled/diff/side-by-side)
+  before its upstream tests can run.
+- Remaining `editorGroupModel`/`explorerView` cases construct diff and
+  side-by-side editor inputs.
+- P5c token-style resolving needs `tokenClassificationRegistry.ts`.
+- The remaining workbench configuration-service cases cover experiment
+  assignments, remote/folder scopes, policy configuration and the 198-case
+  browser harness.
+- Workbench extension-contribution registration is absent by design (no
+  extension host).
+
 **Open questions**
 
 - Should P3 (commands) or P4's view-part steps start first? P3 unblocks the
