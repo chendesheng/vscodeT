@@ -78,6 +78,16 @@ pub const IColorTheme = struct {
     }
 };
 
+/// Port of the terminal-visible subset of upstream `IThemeService`.
+pub const IThemeService = struct {
+    context: *anyopaque,
+    get_color_theme: *const fn (context: *anyopaque) IColorTheme,
+
+    pub fn colorTheme(self: IThemeService) IColorTheme {
+        return self.get_color_theme(self.context);
+    }
+};
+
 pub const IFileIconTheme = struct {
     hasFileIcons: bool,
     hasFolderIcons: bool,

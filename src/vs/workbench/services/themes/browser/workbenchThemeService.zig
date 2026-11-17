@@ -81,6 +81,15 @@ pub const ThemeService = struct {
         return self.active.interface();
     }
 
+    pub fn interface(self: *ThemeService) theme_service.IThemeService {
+        return .{ .context = self, .get_color_theme = getColorThemeContext };
+    }
+
+    fn getColorThemeContext(context: *anyopaque) IColorTheme {
+        const self: *ThemeService = @ptrCast(@alignCast(context));
+        return self.active.interface();
+    }
+
     pub fn getActiveThemeId(self: *const ThemeService) []const u8 {
         return self.active_id;
     }
@@ -126,6 +135,7 @@ test "theme service applies and restores the active theme" {
     try service.setTheme("vs-light", null, null);
     try std.testing.expectEqualStrings("vs-light", service.getActiveThemeId());
     try std.testing.expectEqual(ColorScheme.LIGHT, service.getActiveTheme().theme_type);
+    try std.testing.expectEqual(ColorScheme.LIGHT, service.interface().colorTheme().theme_type);
     try std.testing.expectEqualStrings("vs-light", storage.get(STORAGE_KEY, .profile, null).?);
 
     const restored = try ThemeService.init(allocator, &registry, &storage);
