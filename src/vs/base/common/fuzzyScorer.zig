@@ -6,6 +6,7 @@
 // scorer instead of `filters.fuzzyScore` (the filters DP scorer is not ported).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const comparers = @import("./comparers.zig");
 
 pub const PreparedQueryPiece = struct {
     original: []const u8,
@@ -619,17 +620,6 @@ fn matchDistance(item: *const anyopaque, score: ItemScore, accessor: ItemAccesso
     return match_end - match_start;
 }
 
-fn compareStringsIgnoreCase(a: []const u8, b: []const u8) i32 {
-    const length = @min(a.len, b.len);
-    for (0..length) |index| {
-        const ca = std.ascii.toLower(a[index]);
-        const cb = std.ascii.toLower(b[index]);
-        if (ca != cb) return if (ca < cb) -1 else 1;
-    }
-    if (a.len == b.len) return 0;
-    return if (a.len < b.len) -1 else 1;
-}
-
 pub fn compareItemsByFuzzyScore(
     allocator: Allocator,
     item_a: *const anyopaque,
@@ -688,12 +678,12 @@ pub fn compareItemsByFuzzyScore(
     if (path_a != null and path_b != null and path_a.?.len != path_b.?.len) {
         return @intCast(@as(isize, @intCast(path_a.?.len)) - @as(isize, @intCast(path_b.?.len)));
     }
-    if (!std.mem.eql(u8, label_a, label_b)) return compareStringsIgnoreCase(label_a, label_b);
+    if (!std.mem.eql(u8, label_a, label_b)) return comparers.compareAnything(label_a, label_b, query.normalized);
     if (description_a != null and description_b != null and !std.mem.eql(u8, description_a.?, description_b.?)) {
-        return compareStringsIgnoreCase(description_a.?, description_b.?);
+        return comparers.compareAnything(description_a.?, description_b.?, query.normalized);
     }
     if (path_a != null and path_b != null and !std.mem.eql(u8, path_a.?, path_b.?)) {
-        return compareStringsIgnoreCase(path_a.?, path_b.?);
+        return comparers.compareAnything(path_a.?, path_b.?, query.normalized);
     }
     return 0;
 }

@@ -90,3 +90,58 @@ test "comparers: numeric names and paths" {
     try std.testing.expect(comparePaths("/a/b", "/a/c") < 0);
     try std.testing.expect(compareFileExtensions("a.zig", "b.ts") > 0);
 }
+
+/// Port of `compareByPrefix` (ASCII case folding; terminal has no locale).
+pub fn compareByPrefix(one: []const u8, other: []const u8, look_for: []const u8) i32 {
+    const prefix_a = startsWithIgnoreCase(one, look_for);
+    const prefix_b = startsWithIgnoreCase(other, look_for);
+    if (prefix_a != prefix_b) return if (prefix_a) -1 else 1;
+    if (prefix_a and prefix_b) {
+        if (one.len < other.len) return -1;
+        if (one.len > other.len) return 1;
+    }
+    return 0;
+}
+
+fn startsWithIgnoreCase(text: []const u8, prefix: []const u8) bool {
+    if (text.len < prefix.len) return false;
+    return std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
+}
+
+fn endsWithIgnoreCase(text: []const u8, suffix: []const u8) bool {
+    if (text.len < suffix.len) return false;
+    return std.ascii.eqlIgnoreCase(text[text.len - suffix.len ..], suffix);
+}
+
+fn lowerCompare(a: []const u8, b: []const u8) i32 {
+    const length = @min(a.len, b.len);
+    for (0..length) |index| {
+        const ca = std.ascii.toLower(a[index]);
+        const cb = std.ascii.toLower(b[index]);
+        if (ca != cb) return if (ca < cb) -1 else 1;
+    }
+    if (a.len == b.len) return 0;
+    return if (a.len < b.len) -1 else 1;
+}
+
+/// Port of `compareAnything`: prefix matches first, then suffix matches, then
+/// file-name aware comparison, then case-insensitive lexical order.
+pub fn compareAnything(one: []const u8, other: []const u8, look_for: []const u8) i32 {
+    const prefix_compare = compareByPrefix(one, other, look_for);
+    if (prefix_compare != 0) return prefix_compare;
+
+    const suffix_a = endsWithIgnoreCase(one, look_for);
+    const suffix_b = endsWithIgnoreCase(other, look_for);
+    if (suffix_a != suffix_b) return if (suffix_a) -1 else 1;
+
+    const file_compare = compareFileNames(one, other);
+    if (file_compare != 0) return file_compare;
+    return lowerCompare(one, other);
+}
+
+test "compareAnything prefers prefixes and suffixes" {
+    try std.testing.expect(compareAnything("foo.ts", "barfoo.ts", "foo") < 0);
+    try std.testing.expect(compareAnything("barfoo.ts", "foo.ts", "foo") > 0);
+    try std.testing.expect(compareAnything("abcfoo", "fooabc", "foo") > 0);
+    try std.testing.expect(compareAnything("x/foo", "y/foo", "foo") < 0);
+}
