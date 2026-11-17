@@ -51,6 +51,8 @@ pub const DiskFileService = struct {
             .name = std.fs.path.basename(path),
             .type = type_flags,
             .size = info.size,
+            .mtime = if (info.mtime.nanoseconds > 0) @intCast(info.mtime.nanoseconds) else 0,
+            .ctime = if (info.ctime.nanoseconds > 0) @intCast(info.ctime.nanoseconds) else 0,
         };
     }
 
@@ -171,6 +173,7 @@ test "DiskFileService reads, writes, stats and removes files" {
     const stat = try service.stat(path);
     try std.testing.expect(stat.isFile());
     try std.testing.expectEqual(@as(u64, 5), stat.size);
+    try std.testing.expect(stat.mtime > 0);
 
     var read = try service.readFile(path);
     defer read.deinit(allocator);
