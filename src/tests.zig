@@ -470,6 +470,9 @@ comptime {
     _ = @import("./vs/editor/browser/viewParts/currentLineHighlight/currentLineHighlight.zig");
     _ = @import("./vs/editor/browser/viewParts/selections/selections.zig");
     _ = @import("./vs/editor/browser/viewParts/wordWrapIndicator/wordWrapIndicator.zig");
+    _ = @import("./vs/editor/browser/viewParts/glyphMargin/glyphMargin.zig");
+    _ = @import("./vs/editor/browser/viewParts/linesDecorations/linesDecorations.zig");
+    _ = @import("./vs/editor/browser/viewParts/marginDecorations/marginDecorations.zig");
     _ = @import("./vs/editor/test/browser/config/editorLayoutProvider.test.zig");
     _ = @import("./vs/editor/test/common/modes/languageConfiguration.test.zig");
     _ = @import("./vs/platform/log/common/log.zig");

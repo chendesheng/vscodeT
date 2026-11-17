@@ -769,14 +769,19 @@ Editor contributions:
   `editor/browser/viewParts/lineNumbers/lineNumbers.zig` and
   `editor/browser/viewParts/currentLineHighlight/currentLineHighlight.zig` and
   `editor/browser/viewParts/selections/selections.zig` and
-  `editor/browser/viewParts/wordWrapIndicator/wordWrapIndicator.zig` are ported.
+  `editor/browser/viewParts/wordWrapIndicator/wordWrapIndicator.zig`,
+  `editor/browser/viewParts/glyphMargin/glyphMargin.zig` (the shared
+  decoration dedup helpers; the DOM widget host is not ported),
+  `editor/browser/viewParts/linesDecorations/linesDecorations.zig` and
+  `editor/browser/viewParts/marginDecorations/marginDecorations.zig` are ported.
   The line-numbers part produces terminal line-number data
   (absolute/relative/interval/custom numbering, final-newline and decoration
   class handling), the highlight part per-view-line content/margin/exact flags,
   the selections part per-view-line styled ranges with the rounded-corner
   enrichment and multi-selection insets (rounded corner background pieces are
-  DOM-only), and the word-wrap indicator part per-line indicator data at the
-  wrapping column; all have focused tests. The open P4 work is the `View` orchestrator,
+  DOM-only), the word-wrap indicator part per-line indicator data at the
+  wrapping column, and the line/margin decoration parts the per-line class
+  identifiers with the upstream dedup/order rules; all have focused tests. The open P4 work is the `View` orchestrator,
   `viewController.ts`, `codeEditorWidget.ts` and the remaining view parts. The
   portable URI/file-service/editor-input layer (P5e) still needs the full
   provider file service and the concrete working-copy wiring.
