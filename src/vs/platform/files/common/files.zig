@@ -271,3 +271,34 @@ test "FileChangesEvent: correlation" {
     try std.testing.expect(event.correlates(7));
     try std.testing.expect(!event.correlates(8));
 }
+
+/// Mirror of upstream `FileType` bit flags.
+pub const FileType = struct {
+    pub const Unknown: u8 = 0;
+    pub const File: u8 = 1;
+    pub const Directory: u8 = 2;
+    pub const SymbolicLink: u8 = 4;
+
+    pub fn isFile(value: u8) bool {
+        return value & File != 0;
+    }
+
+    pub fn isDirectory(value: u8) bool {
+        return value & Directory != 0;
+    }
+
+    pub fn isSymbolicLink(value: u8) bool {
+        return value & SymbolicLink != 0;
+    }
+};
+
+/// Mirror of upstream `FileOperation`.
+pub const FileOperation = enum { CREATE, DELETE, MOVE, COPY, WRITE };
+
+test "FileType flags" {
+    try std.testing.expect(FileType.isFile(FileType.File));
+    try std.testing.expect(FileType.isDirectory(FileType.Directory));
+    try std.testing.expect(FileType.isFile(FileType.File | FileType.SymbolicLink));
+    try std.testing.expect(!FileType.isDirectory(FileType.File));
+    try std.testing.expect(!FileType.isFile(FileType.Unknown));
+}
