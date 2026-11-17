@@ -849,7 +849,7 @@ independently shippable slices.
 
 | Slice | TUI code | Upstream | Tests | Effort |
 | --- | --- | --- | --- | --- |
-| P5a Storage/memento | `session.zig` | `platform/storage/common/storage.ts`, `workbench/common/memento.ts` | `platform/storage/test/common/storageService.test.ts` (10), `workbench/test/common/memento.test.ts` (4) | M |
+| P5a Storage/memento | `session.zig` | `platform/storage/common/storage.ts`, `workbench/common/memento.ts` | `platform/storage/test/common/storageService.test.ts` (10, ported), `workbench/test/common/memento.test.ts` (4, ported); `session.zig` still uses its host format | M |
 | P5b Fuzzy scoring | `fileIndex.zig` | `base/common/fuzzyScorer.ts` | `base/test/common/fuzzyScorer.test.ts` (68) | M |
 | P5c Theme service | `theme.zig`, `syntaxTheme.zig`, hard-coded palettes | `workbench/services/themes/browser/workbenchThemeService.ts`, `platform/theme/common/themeService.ts` | `workbench/services/themes/test/common/workbenchThemeService.test.ts` (4), `workbench/services/themes/test/common/colorThemeData.test.ts` (5) | M/L |
 | P5d Language service | `language.zig`, `languageConfiguration.zig` | `workbench/services/language/common/languageService.ts`, `editor/common/languages/languageConfigurationRegistry.ts` | `editor/test/common/modes/languageConfiguration.test.ts` | M |
@@ -868,8 +868,9 @@ synchronous harness, including scoped/key-filtered change events and
 key/target bookkeeping.
 `workbench/common/memento.zig` is ported on top of it: the upstream static maps
 become an explicit `MementoStore` (shared id -> scoped object), and a memento
-value is a `std.json.ObjectMap` mutated through `put/get/remove/clear`; two
-inline tests cover save/load/removal, same-id sharing and clearing.
+value is a `std.json.ObjectMap` mutated through `put/get/remove/clear`; all four
+`memento.test.ts` cases are ported at
+`workbench/test/common/memento.test.zig`.
 
 **P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
 registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
