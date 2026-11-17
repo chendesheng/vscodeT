@@ -1052,6 +1052,17 @@ P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor-options/view stack and the URI/file/editor
 input infrastructure described below.
 
+**Remaining upstream files by slice**
+
+| Slice | Remaining upstream work |
+| --- | --- |
+| P4 | `editor/common/config/editorOptions.ts` (`ComputedEditorOptions`), `editor/browser/view.ts`, `editor/browser/view/viewController.ts`, `editor/browser/widget/codeEditor/codeEditorWidget.ts`, and the layout-dependent overlays |
+| P5e | `base/common/uri.ts`, the file service and `TextResourceEditorInput`/`FileEditorInput`/untitled/diff/side-by-side editor inputs |
+| P5c | `platform/theme/common/tokenClassificationRegistry.ts` and the remaining `themeConfiguration.ts`/workbench theme service pieces |
+| P5h | the workbench browser `configurationService.test.ts` experiment/remote/policy suites and policy configuration |
+| P2 | `multiEditorTabsControl.test.ts`, browser tooltip cases in `statusbarItem.test.ts`, and the `explorerView.test.ts` tree cases that construct diff/side-by-side inputs |
+| filters | multi-byte highlight selection (#113404) and `Intl.Collator` locale ordering |
+
 **Known blockers for the remaining work**
 
 - P4 `View`, `viewController` and `codeEditorWidget` need
