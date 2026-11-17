@@ -54,6 +54,47 @@ pub const DiskFileService = struct {
         try Io.Dir.renameAbsolute(from, to, self.io);
     }
 
+    pub fn createDirectory(self: *DiskFileService, path: []const u8) !void {
+        try Io.Dir.createDirAbsolute(self.io, path, .default_dir);
+    }
+
+    pub fn deleteDirectory(self: *DiskFileService, path: []const u8) !void {
+        try Io.Dir.deleteDirAbsolute(self.io, path);
+    }
+
+    pub const DirEntry = struct {
+        name: []u8,
+        type: u8,
+    };
+
+    /// Lists a directory; the caller frees names and the slice with
+    /// `allocator.free`/`freeDirectory`.
+    pub fn readDirectory(self: *DiskFileService, path: []const u8, allocator: Allocator) ![]DirEntry {
+        var dir = try Io.Dir.openDirAbsolute(self.io, path, .{ .iterate = true });
+        defer dir.close(self.io);
+        var entries = std.array_list.Managed(DirEntry).init(allocator);
+        errdefer {
+            for (entries.items) |entry| allocator.free(entry.name);
+            entries.deinit();
+        }
+        var iterator = dir.iterate();
+        while (try iterator.next(self.io)) |entry| {
+            const type_flags: u8 = switch (entry.kind) {
+                .file => files.FileType.File,
+                .directory => files.FileType.Directory,
+                .sym_link => files.FileType.SymbolicLink,
+                else => files.FileType.Unknown,
+            };
+            try entries.append(.{ .name = try allocator.dupe(u8, entry.name), .type = type_flags });
+        }
+        return entries.toOwnedSlice();
+    }
+
+    pub fn freeDirectory(allocator: Allocator, entries: []DirEntry) void {
+        for (entries) |entry| allocator.free(entry.name);
+        allocator.free(entries);
+    }
+
     pub fn copy(self: *DiskFileService, from: []const u8, to: []const u8) !void {
         var data = try self.readFile(from);
         defer data.deinit(self.allocator);
@@ -96,6 +137,35 @@ test "DiskFileService reads, writes, stats and removes files" {
     try service.rename(copy_path, path);
     try service.deleteFile(path);
     try std.testing.expect(!service.exists(path));
+}
+
+test "DiskFileService lists directories" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &path_buffer);
+    const root = path_buffer[0..root_len];
+    const dir = try std.fs.path.join(allocator, &.{ root, "sub" });
+    defer allocator.free(dir);
+    const file = try std.fs.path.join(allocator, &.{ dir, "a.txt" });
+    defer allocator.free(file);
+
+    var service = DiskFileService.init(allocator, io);
+    try service.createDirectory(dir);
+    var data = try VSBuffer.fromString(allocator, "a");
+    defer data.deinit(allocator);
+    try service.writeFile(file, data);
+
+    const entries = try service.readDirectory(dir, allocator);
+    defer DiskFileService.freeDirectory(allocator, entries);
+    try std.testing.expectEqual(@as(usize, 1), entries.len);
+    try std.testing.expectEqualStrings("a.txt", entries[0].name);
+    try std.testing.expect(files.FileType.isFile(entries[0].type));
+
+    try service.deleteFile(file);
+    try service.deleteDirectory(dir);
 }
 
 test "DiskFileService reports missing files" {
