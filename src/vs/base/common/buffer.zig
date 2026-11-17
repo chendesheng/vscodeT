@@ -67,6 +67,22 @@ pub const VSBuffer = struct {
         return .{ .bytes = result };
     }
 
+    pub fn toBase64(self: *const VSBuffer, allocator: Allocator) ![]u8 {
+        const encoder = std.base64.standard.Encoder;
+        const result = try allocator.alloc(u8, encoder.calcSize(self.bytes.len));
+        const encoded = encoder.encode(result, self.bytes);
+        return result[0..encoded.len];
+    }
+
+    pub fn fromBase64(allocator: Allocator, text: []const u8) !VSBuffer {
+        const decoder = std.base64.standard.Decoder;
+        const size = decoder.calcSizeForSlice(text) catch return error.InvalidBase64;
+        const result = try allocator.alloc(u8, size);
+        errdefer allocator.free(result);
+        decoder.decode(result, text) catch return error.InvalidBase64;
+        return .{ .bytes = result };
+    }
+
     pub fn equals(self: *const VSBuffer, other: *const VSBuffer) bool {
         return std.mem.eql(u8, self.bytes, other.bytes);
     }
@@ -142,4 +158,16 @@ test "VSBuffer hex round-trip" {
     try std.testing.expectEqualStrings("00abff", hex);
     try std.testing.expectError(error.InvalidHexString, VSBuffer.fromHexString(allocator, "0g"));
     try std.testing.expectError(error.InvalidHexString, VSBuffer.fromHexString(allocator, "abc"));
+}
+
+test "VSBuffer base64 round-trip" {
+    const allocator = std.testing.allocator;
+    var buffer = try VSBuffer.fromString(allocator, "hello world");
+    defer buffer.deinit(allocator);
+    const encoded = try buffer.toBase64(allocator);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualStrings("aGVsbG8gd29ybGQ=", encoded);
+    var decoded = try VSBuffer.fromBase64(allocator, encoded);
+    defer decoded.deinit(allocator);
+    try std.testing.expect(buffer.equals(&decoded));
 }
