@@ -2029,3 +2029,27 @@ test "EditorGroupModel: side-by-side matching unwraps composites" {
     _ = try group.openEditor(input1, .{ .pinned = true, .active = true });
     try std.testing.expectEqual(@as(?usize, 1), group.indexOfWith(.{ .input = input1 }, any));
 }
+
+test "EditorGroupModel: diff inputs unwrap like side-by-side inputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const original = try newInput(allocator, .serializable, "original", "/original");
+    const modified = try newInput(allocator, .serializable, "modified", "/modified");
+    const diff = try @import("../../../../common/editor/diffEditorInput.zig").DiffEditorInput.init(allocator, null, null, original, modified);
+    defer diff.destroy();
+    _ = try group.openEditor(&diff.base, .{ .pinned = true, .active = true });
+
+    const any = workbench_editor.MatchEditorOptions{ .support_side_by_side = .ANY };
+    const both = workbench_editor.MatchEditorOptions{ .support_side_by_side = .BOTH };
+    try std.testing.expect(group.contains(.{ .input = original }, any));
+    try std.testing.expect(group.contains(.{ .input = modified }, any));
+    try std.testing.expect(!group.contains(.{ .input = original }, both));
+    try std.testing.expect(!group.contains(.{ .input = original }, .{}));
+
+    _ = try group.openEditor(modified, .{ .pinned = true, .active = true });
+    try std.testing.expectEqual(@as(?usize, 1), group.indexOfWith(.{ .input = modified }, any));
+}

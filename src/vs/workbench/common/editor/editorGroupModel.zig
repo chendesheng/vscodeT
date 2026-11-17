@@ -24,6 +24,7 @@ const editor = @import("../editor.zig");
 const editor_input = @import("editorInput.zig");
 const editor_factory = @import("editorFactory.zig");
 const side_by_side = @import("sideBySideEditorInput.zig");
+const diff_editor = @import("diffEditorInput.zig");
 
 const EditorInput = editor_input.EditorInput;
 const Candidate = editor_input.Candidate;
@@ -368,14 +369,14 @@ pub const EditorGroupModel = struct {
     ) ?usize {
         var index: ?usize = null;
         const candidate_is_side_by_side = switch (candidate) {
-            .input => |other| side_by_side.is(other) != null,
+            .input => |other| side_by_side.is(other) != null or diff_editor.is(other) != null,
             .untyped => false,
         };
         for (editors, 0..) |input, i| {
             if (self.matchesEditor(input, candidate, options)) {
                 index = i;
                 // Prefer a later direct match over an earlier side-by-side match.
-                if (options.support_side_by_side != null and side_by_side.is(input) != null and !candidate_is_side_by_side) continue;
+                if (options.support_side_by_side != null and (side_by_side.is(input) != null or diff_editor.is(input) != null) and !candidate_is_side_by_side) continue;
                 break;
             }
         }
@@ -842,6 +843,14 @@ pub const EditorGroupModel = struct {
         return false;
     }
 
+    const SideBySideParts = struct { primary: *EditorInput, secondary: *EditorInput };
+
+    fn sideBySideParts(input: *EditorInput) ?SideBySideParts {
+        if (side_by_side.is(input)) |composite| return .{ .primary = composite.primary, .secondary = composite.secondary };
+        if (diff_editor.is(input)) |composite| return .{ .primary = composite.modified, .secondary = composite.original };
+        return null;
+    }
+
     fn matchesEditor(
         self: *const EditorGroupModel,
         input: ?*EditorInput,
@@ -851,20 +860,21 @@ pub const EditorGroupModel = struct {
         const editor_input_value = input orelse return false;
 
         if (options.support_side_by_side) |support| {
-            if (side_by_side.is(editor_input_value)) |composite| {
+            const composite = sideBySideParts(editor_input_value);
+            if (composite) |parts| {
                 const candidate_is_side_by_side = switch (candidate) {
-                    .input => |other| side_by_side.is(other) != null,
+                    .input => |other| sideBySideParts(other) != null,
                     .untyped => false,
                 };
                 if (!candidate_is_side_by_side) {
                     switch (support) {
                         .ANY => {
-                            if (self.matchesEditor(composite.primary, candidate, options) or
-                                self.matchesEditor(composite.secondary, candidate, options)) return true;
+                            if (self.matchesEditor(parts.primary, candidate, options) or
+                                self.matchesEditor(parts.secondary, candidate, options)) return true;
                         },
                         .BOTH => {
-                            if (self.matchesEditor(composite.primary, candidate, options) and
-                                self.matchesEditor(composite.secondary, candidate, options)) return true;
+                            if (self.matchesEditor(parts.primary, candidate, options) and
+                                self.matchesEditor(parts.secondary, candidate, options)) return true;
                         },
                         else => {},
                     }
