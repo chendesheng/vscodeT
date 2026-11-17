@@ -521,6 +521,7 @@ test "URI with validates resulting components" {
     defer uri.deinit();
     try std.testing.expectError(error.InvalidScheme, uri.with(allocator, .{ .scheme = "fai:l" }));
     try std.testing.expectError(error.InvalidPath, uri.with(allocator, .{ .path = "//fail" }));
+    try std.testing.expectError(error.InvalidPath, uri.with(allocator, .{ .authority = "fail" }));
 }
 
 test "uriToFsPath decodes percent escapes" {
