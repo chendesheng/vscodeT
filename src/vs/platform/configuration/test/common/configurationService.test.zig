@@ -342,3 +342,18 @@ test "only user settings can be updated by the platform service" {
     try std.testing.expectError(error.UnsupportedConfigurationTarget, service.updateValue("any.setting", .{ .bool = true }, .WORKSPACE));
     try std.testing.expectError(error.UnsupportedConfigurationTarget, service.updateValue("any.setting", .{ .bool = true }, .DEFAULT));
 }
+
+test "removing a user setting falls back to the default" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "remove.setting", .default = std.json.Value{ .integer = 4 } }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try service.updateValue("remove.setting", .{ .integer = 8 }, .USER);
+    try std.testing.expectEqual(@as(i64, 8), service.getValue("remove.setting").?.integer);
+    try service.updateValue("remove.setting", null, .USER);
+    try std.testing.expectEqual(@as(i64, 4), service.getValue("remove.setting").?.integer);
+    try std.testing.expect(!configurationService.isConfigured(service.inspect("remove.setting")));
+}
