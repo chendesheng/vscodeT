@@ -262,3 +262,215 @@ test "rendered lines collection tracks start, changes and insertions" {
     try std.testing.expectEqual(@as(usize, 12), lines.getStartLineNumber());
     try std.testing.expectEqual(@as(usize, 2), lines.getCount());
 }
+
+/// Terminal-adapted `VisibleLinesCollection`: keeps the rendered line window in
+/// sync with the viewport and renders each line into a `StringBuilder`.
+///
+/// The DOM node and the incremental `innerHTML` diff are replaced by rebuilding
+/// the window through the line factory and appending rendered text; per-line
+/// caches (tokens/decorations) live in the line implementation, as upstream.
+pub fn VisibleLinesCollection(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        allocator: Allocator,
+        view_layout: @import("../../common/viewModel.zig").IViewLayout,
+        lines: RenderedLinesCollection(T),
+        line_factory: RenderedLinesCollection(T).Factory,
+        last_viewport_top: f64 = -1,
+
+        pub fn init(
+            allocator: Allocator,
+            view_layout: @import("../../common/viewModel.zig").IViewLayout,
+            factory: RenderedLinesCollection(T).Factory,
+        ) Self {
+            return .{
+                .allocator = allocator,
+                .view_layout = view_layout,
+                .lines = RenderedLinesCollection(T).init(allocator, factory),
+                .line_factory = factory,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.lines.deinit();
+        }
+
+        pub fn onConfigurationChanged(self: *Self, event: *const viewEvents.ViewConfigurationChangedEvent) bool {
+            _ = self;
+            _ = event;
+            return true;
+        }
+
+        pub fn onFlushed(self: *Self, event: *const viewEvents.ViewFlushedEvent) bool {
+            _ = event;
+            self.lines.flush();
+            return true;
+        }
+
+        pub fn onLinesChanged(self: *Self, event: *const viewEvents.ViewLinesChangedEvent) bool {
+            return self.lines.onLinesChanged(event.fromLineNumber, event.count);
+        }
+
+        pub fn onLinesDeleted(self: *Self, event: *const viewEvents.ViewLinesDeletedEvent) !bool {
+            const deleted = try self.lines.onLinesDeleted(event.fromLineNumber, event.toLineNumber);
+            if (deleted) |slice| self.allocator.free(slice);
+            return true;
+        }
+
+        pub fn onLinesInserted(self: *Self, event: *const viewEvents.ViewLinesInsertedEvent) !bool {
+            const pushed = try self.lines.onLinesInserted(event.fromLineNumber, event.toLineNumber);
+            if (pushed) |slice| self.allocator.free(slice);
+            return true;
+        }
+
+        pub fn onScrollChanged(self: *Self, event: *const viewEvents.ViewScrollChangedEvent) bool {
+            _ = self;
+            return event.scrollTopChanged;
+        }
+
+        pub fn onTokensChanged(self: *Self, event: *const viewEvents.ViewTokensChangedEvent) bool {
+            return self.lines.onTokensChanged(event.ranges);
+        }
+
+        pub fn onZonesChanged(self: *Self, event: *const viewEvents.ViewZonesChangedEvent) bool {
+            _ = self;
+            _ = event;
+            return true;
+        }
+
+        pub fn getStartLineNumber(self: *const Self) usize {
+            return self.lines.getStartLineNumber();
+        }
+
+        pub fn getEndLineNumber(self: *const Self) usize {
+            return self.lines.getEndLineNumber();
+        }
+
+        pub fn getVisibleLine(self: *const Self, line_number: usize) *T {
+            return &self.lines.lines.items[line_number - self.lines.rend_line_number_start];
+        }
+
+        /// Rebuilds the line window when needed and renders each line into `sb`.
+        pub fn renderLines(self: *Self, viewport: *const @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData, sb: *@import("../../common/core/stringBuilder.zig").StringBuilder) !void {
+            const start = viewport.startLineNumber;
+            const end = viewport.endLineNumber;
+            if (self.lines.getCount() == 0 or self.lines.getStartLineNumber() != start or self.lines.getEndLineNumber() != end) {
+                self.lines.flush();
+                self.lines.rend_line_number_start = start;
+                for (start..end + 1) |_| try self.lines.lines.append(try self.line_factory.create(self.line_factory.context));
+            }
+
+            var line_number = start;
+            while (line_number <= end) : (line_number += 1) {
+                const line = self.getVisibleLine(line_number);
+                const delta_top = viewport.relativeVerticalOffset[line_number - start];
+                const line_height = self.view_layout.get_line_height_for_line_number(self.view_layout.context, line_number);
+                line.layoutLine(line_number, delta_top, line_height);
+                if (line.shouldRender()) {
+                    _ = line.renderLine(line_number, delta_top, line_height, viewport, sb);
+                    line.onDidRender();
+                }
+            }
+        }
+    };
+}
+
+test "visible lines collection renders the viewport window" {
+    const Line = struct {
+        text: []const u8,
+        rendered: usize = 0,
+        should: bool = true,
+
+        fn createLine(context: *anyopaque) anyerror!@This() {
+            const next: *usize = @ptrCast(@alignCast(context));
+            const line = @This(){ .text = if (next.* == 0) "first" else "second" };
+            next.* += 1;
+            return line;
+        }
+        fn lineFactory(context: *anyopaque) RenderedLinesCollection(@This()).Factory {
+            return .{ .context = context, .create = createLine };
+        }
+        fn onContentChanged(_: *@This()) void {}
+        fn onTokensChanged(_: *@This()) void {}
+        fn layoutLine(_: *@This(), _: usize, _: f64, _: f64) void {}
+        fn shouldRender(self: *@This()) bool {
+            return self.should;
+        }
+        fn onDidRender(self: *@This()) void {
+            self.rendered += 1;
+            self.should = false;
+        }
+        fn renderLine(self: *@This(), _: usize, _: f64, _: f64, _: *const @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData, sb: *@import("../../common/core/stringBuilder.zig").StringBuilder) bool {
+            sb.appendString(self.text) catch return false;
+            sb.appendASCIICharCode('\n') catch return false;
+            return true;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const view_model = @import("../../common/viewModel.zig");
+    const layout = view_model.IViewLayout{
+        .context = @ptrFromInt(@alignOf(usize)),
+        .get_scroll_width = struct {
+            fn f(_: *anyopaque) f64 {
+                return 0;
+            }
+        }.f,
+        .get_scroll_height = struct {
+            fn f(_: *anyopaque) f64 {
+                return 0;
+            }
+        }.f,
+        .get_current_viewport = struct {
+            fn f(_: *anyopaque) view_model.Viewport {
+                return .{ .top = 0, .left = 0, .width = 0, .height = 0 };
+            }
+        }.f,
+        .get_vertical_offset_for_line_number = struct {
+            fn f(_: *anyopaque, _: usize, _: bool) f64 {
+                return 0;
+            }
+        }.f,
+        .get_vertical_offset_after_line_number = struct {
+            fn f(_: *anyopaque, _: usize, _: bool) f64 {
+                return 0;
+            }
+        }.f,
+        .get_line_height_for_line_number = struct {
+            fn f(_: *anyopaque, _: usize) f64 {
+                return 20;
+            }
+        }.f,
+    };
+
+    var next_id: usize = 0;
+    var collection = VisibleLinesCollection(Line).init(allocator, layout, Line.lineFactory(&next_id));
+    defer collection.deinit();
+
+    const offsets = [_]f64{ 0, 20 };
+    const viewport = @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData{
+        .selections = &.{},
+        .startLineNumber = 5,
+        .endLineNumber = 6,
+        .relativeVerticalOffset = &offsets,
+        .visibleRange = @import("../../common/core/range.zig").Range.init(5, 1, 6, 1),
+        .bigNumbersDelta = 0,
+        .whitespaceViewportData = &.{},
+        .lineHeight = 20,
+        ._model = undefined,
+    };
+    var sb = try @import("../../common/core/stringBuilder.zig").StringBuilder.init(allocator, 32);
+    defer sb.deinit();
+    try collection.renderLines(&viewport, &sb);
+    try std.testing.expectEqualStrings("first\nsecond\n", sb.build());
+    try std.testing.expectEqual(@as(usize, 5), collection.getStartLineNumber());
+    try std.testing.expectEqual(@as(usize, 6), collection.getEndLineNumber());
+    try std.testing.expectEqual(@as(usize, 1), collection.getVisibleLine(5).rendered);
+    try std.testing.expectEqual(@as(usize, 1), collection.getVisibleLine(6).rendered);
+
+    // Rendering again does not re-render clean lines.
+    sb.reset();
+    try collection.renderLines(&viewport, &sb);
+    try std.testing.expectEqualStrings("", sb.build());
+}
