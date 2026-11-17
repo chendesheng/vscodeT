@@ -52,8 +52,13 @@ pub fn RenderedLinesCollection(comptime T: type) type {
         }
 
         pub fn flush(self: *Self) void {
+            for (self.lines.items) |*line| self.disposeLine(line);
             self.lines.clearRetainingCapacity();
             self.rend_line_number_start = 1;
+        }
+
+        fn disposeLine(self: *Self, line: *T) void {
+            if (@hasDecl(T, "deinit")) line.deinit(self.allocator);
         }
 
         pub fn getStartLineNumber(self: *const Self) usize {
@@ -180,6 +185,10 @@ pub fn RenderedLinesCollection(comptime T: type) type {
         fn removeRangeFrom(list: *std.array_list.Managed(T), start: usize, count: usize) void {
             std.mem.copyForwards(T, list.items[start..], list.items[start + count ..]);
             list.items.len -= count;
+        }
+
+        pub fn disposeLineLine(self: *Self, line: *T) void {
+            if (@hasDecl(T, "deinit")) line.deinit(self.allocator);
         }
 
         fn lineAt(self: *const Self, line_number: usize) *T {
@@ -314,13 +323,19 @@ pub fn VisibleLinesCollection(comptime T: type) type {
 
         pub fn onLinesDeleted(self: *Self, event: *const viewEvents.ViewLinesDeletedEvent) !bool {
             const deleted = try self.lines.onLinesDeleted(event.fromLineNumber, event.toLineNumber);
-            if (deleted) |slice| self.allocator.free(slice);
+            if (deleted) |slice| {
+                for (slice) |*line| self.lines.disposeLineLine(line);
+                self.allocator.free(slice);
+            }
             return true;
         }
 
         pub fn onLinesInserted(self: *Self, event: *const viewEvents.ViewLinesInsertedEvent) !bool {
             const pushed = try self.lines.onLinesInserted(event.fromLineNumber, event.toLineNumber);
-            if (pushed) |slice| self.allocator.free(slice);
+            if (pushed) |slice| {
+                for (slice) |*line| self.lines.disposeLineLine(line);
+                self.allocator.free(slice);
+            }
             return true;
         }
 
