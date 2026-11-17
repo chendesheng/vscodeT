@@ -720,7 +720,10 @@ commands as actions.
   `keybindingsRegistry.zig` (default/extension rules, per-OS bindings,
   registration disposal); the full 36-case `keybindingResolver.test.ts` is
   ported; `src/tui/keybindings.zig` is the terminal host (event -> dispatch
-  string, multi-chord state, command execution); the 4 `keyCodes.test.ts` and 5
+  string, multi-chord state, command execution) and the workbench tab/group
+  shortcuts are wired through it (`workbench.action.closeActiveEditor`,
+  next/previous editor, focus group, `openEditorAtIndex1-9`); the 4
+  `keyCodes.test.ts` and 5
   `keybindingLabels.test.ts` cases are ported. `platform/contextkey/common/scanner.zig`
   ports the context-key scanner and its 34 upstream cases;
   `platform/contextkey/common/contextkey.zig` ports the expression model

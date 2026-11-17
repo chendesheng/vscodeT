@@ -716,7 +716,10 @@ Editor contributions:
   browser-facing editor controllers and menus are not part of this port. The
   keybinding registry/resolver and the context-key scanner/parser/expression
   model are ported, with `src/tui/keybindings.zig` as the terminal host
-  (dispatch strings, chords, command execution); the TUI still routes input
-  through its hand-written key map until that host is wired in. Quick open has no `fuzzyScorer.ts`
+  (dispatch strings, chords, command execution). Workbench tab/group shortcuts
+  already dispatch through a `KeybindingsRegistry` + `KeybindingResolver`
+  (`workbench.action.closeActiveEditor`, next/previous editor, focus group
+  left/right, `openEditorAtIndex1-9`); the editor's text/editing keys still use
+  the hand-written dispatch until the editor action layer is ported. Quick open has no `fuzzyScorer.ts`
   path-aware scoring, symbol/go-to-line/link providers, quick-input buttons,
   icons, keybinding labels or persisted command history.

@@ -70,6 +70,9 @@ const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
 const ConfigurationService = configuration_mod.ConfigurationService;
 const settings_watcher_mod = @import("./settingsWatcher.zig");
+const tui_keybindings = @import("./keybindings.zig");
+const key_codes = @import("../vs/base/common/keyCodes.zig");
+const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
 const SettingsWatcher = settings_watcher_mod.SettingsWatcher;
 const search_view_mod = @import("./searchView.zig");
 const SearchView = search_view_mod.SearchView;
@@ -158,6 +161,7 @@ pub const Workbench = struct {
     user_settings_path: ?[]u8,
     history: HistoryService,
     commands: CommandRegistry,
+    keybindings: ?*tui_keybindings.TuiKeybindings,
     quick_access: *QuickAccessService,
     focus: Focus = .editor,
     is_pasting: bool = false,
@@ -177,6 +181,7 @@ pub const Workbench = struct {
         self.allocator = allocator;
         self.io = io;
         self.cols = @max(cols, 1);
+        self.keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -233,6 +238,7 @@ pub const Workbench = struct {
         self.allocator = allocator;
         self.io = io;
         self.cols = @max(cols, 1);
+        self.keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -304,6 +310,7 @@ pub const Workbench = struct {
         self.allocator = allocator;
         self.io = io;
         self.cols = @max(cols, 1);
+        self.keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -594,6 +601,10 @@ pub const Workbench = struct {
 
     pub fn deinit(self: *Workbench) void {
         self.deinitShellModels();
+        if (self.keybindings) |keybindings| {
+            keybindings.deinit();
+            self.allocator.destroy(keybindings);
+        }
         self.quick_access.deinit();
         self.commands.deinit();
         self.history.deinit();
@@ -1134,7 +1145,51 @@ pub const Workbench = struct {
         return false;
     }
 
+    fn ensureTabKeybindings(self: *Workbench) !*tui_keybindings.TuiKeybindings {
+        if (self.keybindings) |keybindings| return keybindings;
+        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
+        errdefer self.allocator.destroy(keybindings);
+        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &tab_keybinding_rules, null);
+        self.keybindings = keybindings;
+        return keybindings;
+    }
+
+    fn runTabCommand(self: *Workbench, command: []const u8) !?TabKeyResult {
+        if (std.mem.eql(u8, command, "workbench.action.closeActiveEditor")) {
+            return if (try self.closeActive()) .quit else .handled;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.nextEditor")) {
+            try self.switchTab(1);
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.previousEditor")) {
+            try self.switchTab(-1);
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.focusLeftGroup")) {
+            try self.switchGroup(-1);
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.focusRightGroup")) {
+            try self.switchGroup(1);
+            return .handled;
+        }
+        if (std.mem.startsWith(u8, command, "workbench.action.openEditorAtIndex")) {
+            const digit = command[command.len - 1];
+            if (digit >= '1' and digit <= '9') {
+                try self.activateIndex(digit - '1');
+                return .handled;
+            }
+        }
+        return null;
+    }
+
     pub fn handleTabKey(self: *Workbench, event: *const ui.KeyEvent) !TabKeyResult {
+        const keybindings = try self.ensureTabKeybindings();
+        if (try keybindings.dispatch(event.*, tui_keybindings.empty_context)) |command| {
+            if (try self.runTabCommand(command)) |result| return result;
+        }
+
         if (isCtrlChar(event, 'w')) {
             return if (try self.closeActive()) .quit else .handled;
         }
@@ -3629,3 +3684,20 @@ test "Workbench: clicking a status entry focuses it and runs its command" {
     try std.testing.expectEqual(Focus.statusbar, workbench.focus);
     try std.testing.expectEqual(accessor.handle, workbench.statusbar.main_part.focusedHandle().?);
 }
+
+const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
+    .{ .id = "workbench.action.closeActiveEditor", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyW) } },
+    .{ .id = "workbench.action.nextEditor", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.PageDown) } },
+    .{ .id = "workbench.action.previousEditor", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.PageUp) } },
+    .{ .id = "workbench.action.focusLeftGroup", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.LeftArrow) } },
+    .{ .id = "workbench.action.focusRightGroup", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.RightArrow) } },
+    .{ .id = "workbench.action.openEditorAtIndex1", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit1) } },
+    .{ .id = "workbench.action.openEditorAtIndex2", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit2) } },
+    .{ .id = "workbench.action.openEditorAtIndex3", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit3) } },
+    .{ .id = "workbench.action.openEditorAtIndex4", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit4) } },
+    .{ .id = "workbench.action.openEditorAtIndex5", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit5) } },
+    .{ .id = "workbench.action.openEditorAtIndex6", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit6) } },
+    .{ .id = "workbench.action.openEditorAtIndex7", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit7) } },
+    .{ .id = "workbench.action.openEditorAtIndex8", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit8) } },
+    .{ .id = "workbench.action.openEditorAtIndex9", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit9) } },
+};

@@ -173,6 +173,16 @@ pub const TuiKeybindings = struct {
     }
 };
 
+/// Context with no defined keys, for hosts that do not model context keys yet.
+pub const empty_context = contextkey.IContext{
+    .context = @ptrFromInt(1),
+    .get_value = struct {
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    }.getValue,
+};
+
 /// `ctrl+shift+alt+key` dispatch string for a decoded terminal key, or null for
 /// keys that cannot participate in a shortcut (bulk text/paste markers).
 pub fn dispatchString(allocator: Allocator, event: input.KeyEvent) !?[]u8 {
