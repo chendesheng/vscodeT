@@ -335,15 +335,17 @@ fn sortItems(allocator: std.mem.Allocator, items: []*TestItem, query_text: []con
     }
 }
 
-fn expectOrder(allocator: std.mem.Allocator, items: []*TestItem, query: []const u8, expected: []const *TestItem) !void {
-    var copy: [3]*TestItem = undefined;
-    var copy_reversed: [3]*TestItem = undefined;
+fn expectOrder(allocator: std.mem.Allocator, items: []const *TestItem, query: []const u8, expected: []const *TestItem) !void {
+    const copy = try allocator.alloc(*TestItem, items.len);
+    defer allocator.free(copy);
+    const copy_reversed = try allocator.alloc(*TestItem, items.len);
+    defer allocator.free(copy_reversed);
     for (items, 0..) |item, index| {
         copy[index] = item;
-        copy_reversed[2 - index] = item;
+        copy_reversed[items.len - 1 - index] = item;
     }
-    try sortItems(allocator, &copy, query);
-    try sortItems(allocator, &copy_reversed, query);
+    try sortItems(allocator, copy, query);
+    try sortItems(allocator, copy_reversed, query);
     for (expected, 0..) |item, index| {
         try std.testing.expectEqual(item, copy[index]);
         try std.testing.expectEqual(item, copy_reversed[index]);
@@ -393,4 +395,52 @@ test "compareFilesByScore - preferred shorter basenames" {
     var c = FixtureC;
     const items = [_]*TestItem{ &a, &b, &c };
     try expectOrder(allocator, @constCast(&items), "somepath", &[_]*TestItem{ &a, &b, &c });
+}
+
+test "compareFilesByScore - shorter basenames, paths and label preference" {
+    const allocator = std.testing.allocator;
+    {
+        var a = FixtureA;
+        var b = TestItem{ .label = "fileBLonger.txt", .description = "/some/path/other", .path_value = "/some/path/other/fileBLonger.txt" };
+        var c = TestItem{ .label = "fileC.txt", .description = "/unrelated/the/path/other", .path_value = "/unrelated/the/path/other/fileC.txt" };
+        const items = [_]*TestItem{ &a, &b, &c };
+        try expectOrder(allocator, &items, "file", &[_]*TestItem{ &a, &c, &b });
+        try expectOrder(allocator, &items, "somepath", &[_]*TestItem{ &a, &b, &c });
+    }
+    {
+        var a = TestItem{ .label = "t1.js", .description = "config/test", .path_value = "config/test/t1.js" };
+        var b = TestItem{ .label = "test.js", .description = "config", .path_value = "config/test.js" };
+        var c = TestItem{ .label = "t2.js", .description = "config/test", .path_value = "config/test/t2.js" };
+        const items = [_]*TestItem{ &a, &b, &c };
+        try expectOrder(allocator, &items, "co/te", &[_]*TestItem{ &b, &a, &c });
+    }
+    {
+        var a = TestItem{ .label = "arrow-left-dark.svg", .description = "parts/quick", .path_value = "parts/quick/arrow-left-dark.svg" };
+        var b = TestItem{ .label = "quickopen.ts", .description = "parts/quickopen", .path_value = "parts/quickopen/quickopen.ts" };
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "partsquick", &[_]*TestItem{ &b, &a });
+    }
+}
+
+test "compareFilesByScore - camel case and compact matches" {
+    const allocator = std.testing.allocator;
+    {
+        var a = TestItem{ .label = "NullPointerException.java", .description = "config/test", .path_value = "config/test/NullPointerException.java" };
+        var b = TestItem{ .label = "nopointerexception.java", .description = "config/test", .path_value = "config/test/nopointerexception.java" };
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "npe", &[_]*TestItem{ &a, &b });
+        try expectOrder(allocator, &items, "NPE", &[_]*TestItem{ &a, &b });
+    }
+    {
+        var a = TestItem{ .label = "openthisAnythingHandler.js", .description = "config/test", .path_value = "config/test/openthisAnythingHandler.js" };
+        var b = TestItem{ .label = "openthisisnotsorelevantforthequeryAnyHand.js", .description = "config/test", .path_value = "config/test/openthisisnotsorelevantforthequeryAnyHand.js" };
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "AH", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = TestItem{ .label = "examasdaple.js", .description = "config/test", .path_value = "config/test/examasdaple.js" };
+        var b = TestItem{ .label = "exampleasdaasd.ts", .description = "config/test", .path_value = "config/test/exampleasdaasd.ts" };
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "xp", &[_]*TestItem{ &b, &a });
+    }
 }
