@@ -298,7 +298,7 @@ pub const IMenuItem = struct {
     alt: ?ICommandAction = null,
     /// Item is hidden when this expression returns false.
     when: ?*const contextkey.Expr = null,
-    group: []const u8 = "navigation",
+    group: []const u8 = "",
     order: i64 = 0,
     is_hidden_by_default: bool = false,
 };
@@ -310,7 +310,7 @@ pub const ISubmenuItem = struct {
     when: ?*const contextkey.Expr = null,
     /// Submenu is checked when this expression returns true.
     toggled: ?*const contextkey.Expr = null,
-    group: []const u8 = "navigation",
+    group: []const u8 = "",
     order: i64 = 0,
     is_selection: bool = false,
 };

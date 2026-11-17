@@ -1194,3 +1194,90 @@ test "one-shot menus observe registrations synchronously" {
     }
     try std.testing.expectEqual(@as(usize, 1), third.len);
 }
+
+test "one-shot and persistent menus use the same group and item ordering" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.ordering" };
+
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "z", .title = "Z" } });
+    try registry.appendMenuItem(menu_id, .{
+        .command = .{ .id = "hidden", .title = "Hidden" },
+        .when = try factory.has("hidden"),
+    });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "a", .title = "A" } });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "first", .title = "First" }, .order = -1 });
+    try registry.appendMenuItem(menu_id, .{
+        .command = .{ .id = "navigation", .title = "Navigation" },
+        .group = "navigation",
+    });
+    try registry.appendMenuItem(menu_id, .{
+        .command = .{ .id = "localized", .title = "AAA" },
+        .group = "primary",
+    });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "middle", .title = "BBB" }, .group = "primary" });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "tie", .title = "BBC" }, .group = "primary" });
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+    var one_shot = try service.getMenuActions(allocator, menu_id, Context.context());
+    defer one_shot.deinit();
+
+    const Snapshot = struct {
+        fn groups(alloc: Allocator, menu_groups: []const MenuGroup) ![]const []const []const u8 {
+            var result = std.array_list.Managed([]const []const u8).init(alloc);
+            for (menu_groups) |group| {
+                var ids = std.array_list.Managed([]const u8).init(alloc);
+                for (group.actions) |action| try ids.append(try alloc.dupe(u8, action.id()));
+                try result.append(try ids.toOwnedSlice());
+            }
+            return result.toOwnedSlice();
+        }
+        fn freeGroups(alloc: Allocator, groups_value: []const []const []const u8) void {
+            for (groups_value) |ids| {
+                for (ids) |id| alloc.free(id);
+                alloc.free(ids);
+            }
+            alloc.free(groups_value);
+        }
+    };
+
+    const persistent = try Snapshot.groups(allocator, menu.getActions());
+    defer Snapshot.freeGroups(allocator, persistent);
+    const one = try Snapshot.groups(allocator, one_shot.groups);
+    defer Snapshot.freeGroups(allocator, one);
+
+    try std.testing.expectEqual(persistent.len, one.len);
+    for (persistent, one) |expected, actual| {
+        try std.testing.expectEqual(expected.len, actual.len);
+        for (expected, actual) |expected_id, actual_id| {
+            try std.testing.expectEqualStrings(expected_id, actual_id);
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), persistent.len);
+    try std.testing.expectEqualStrings("navigation", persistent[0][0]);
+    try std.testing.expectEqualStrings("localized", persistent[1][0]);
+    try std.testing.expectEqualStrings("middle", persistent[1][1]);
+    try std.testing.expectEqualStrings("tie", persistent[1][2]);
+    try std.testing.expectEqualStrings("first", persistent[2][0]);
+    try std.testing.expectEqualStrings("a", persistent[2][1]);
+    try std.testing.expectEqualStrings("z", persistent[2][2]);
+}
