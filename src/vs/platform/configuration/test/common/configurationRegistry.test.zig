@@ -265,3 +265,35 @@ test "deregister with string and extension sources" {
     try registry.deregisterDefaultConfigurations(overrides2, extension_source);
     try expectDefault(registry.getConfigurationProperties(), "config", "{}", arena.allocator());
 }
+
+test "hidden properties and node deregistration" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.registerConfiguration("_test_restore", &.{
+        .{ .key = "restore.overridden", .value_type = "boolean", .default = std.json.Value{ .bool = false } },
+        .{ .key = "restore.hiddenMirrored", .value_type = "string", .default = std.json.Value{ .string = "" }, .included = false, .agent_host_key = "restore.hiddenMirrored" },
+        .{ .key = "restore.hiddenExperiment", .value_type = "boolean", .default = std.json.Value{ .bool = false }, .included = false, .experiment_mode = "auto" },
+    });
+    try registry.registerDefaultConfigurations(&.{.{ .key = "restore.overridden", .value = std.json.Value{ .bool = true } }});
+
+    try std.testing.expectEqual(@as(bool, true), registry.getConfigurationProperties().get("restore.overridden").?.default.bool);
+    const mirrored = registry.getAgentHostSyncConfigurations().get("restore.hiddenMirrored").?;
+    try std.testing.expectEqualStrings("restore.hiddenMirrored", mirrored.key);
+    const experiment = registry.getExcludedConfigurationProperties().get("restore.hiddenExperiment").?;
+    try std.testing.expectEqualStrings("auto", experiment.experiment_mode.?);
+
+    const registered = try registry.getRegisteredDefaultConfigurations(allocator);
+    defer allocator.free(registered);
+    try registry.deregisterDefaultConfigurations(registered, null);
+    try std.testing.expectEqual(@as(bool, false), registry.getConfigurationProperties().get("restore.overridden").?.default.bool);
+    try std.testing.expect(registry.getAgentHostSyncConfigurations().get("restore.hiddenMirrored") != null);
+
+    registry.deregisterConfigurations("_test_restore");
+    try std.testing.expect(registry.getConfigurationProperties().get("restore.overridden") == null);
+    try std.testing.expect(registry.getAgentHostSyncConfigurations().get("restore.hiddenMirrored") == null);
+    try std.testing.expect(registry.getExcludedConfigurationProperties().get("restore.hiddenExperiment") == null);
+}

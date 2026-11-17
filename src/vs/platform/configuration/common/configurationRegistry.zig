@@ -31,6 +31,9 @@ pub const PropertySchema = struct {
     disallow_configuration_default: bool = false,
     policy: ?[]const u8 = null,
     policy_reference: ?[]const u8 = null,
+    included: bool = true,
+    agent_host_key: ?[]const u8 = null,
+    experiment_mode: ?[]const u8 = null,
 };
 
 pub const Property = struct {
@@ -41,6 +44,13 @@ pub const Property = struct {
     disallow_configuration_default: bool = false,
     policy: ?[]const u8 = null,
     policy_reference: ?[]const u8 = null,
+    included: bool = true,
+    agent_host_key: ?[]const u8 = null,
+    experiment_mode: ?[]const u8 = null,
+};
+
+pub const AgentHostConfig = struct {
+    key: []const u8,
 };
 
 pub const DefaultOverride = struct {
@@ -59,6 +69,9 @@ pub const ConfigurationRegistry = struct {
     policy_reference_configurations: std.StringHashMap(std.array_list.Managed([]const u8)),
     base_defaults: std.StringHashMap(std.json.Value),
     contributions: std.array_list.Managed(Contribution),
+    excluded_properties: std.StringHashMap(Property),
+    agent_host_configurations: std.StringHashMap(AgentHostConfig),
+    nodes: std.StringHashMap(std.array_list.Managed([]const u8)),
 
     const Contribution = struct {
         source: ?ConfigurationDefaultSource,
@@ -78,6 +91,9 @@ pub const ConfigurationRegistry = struct {
             .policy_reference_configurations = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
             .base_defaults = std.StringHashMap(std.json.Value).init(allocator),
             .contributions = std.array_list.Managed(Contribution).init(allocator),
+            .excluded_properties = std.StringHashMap(Property).init(allocator),
+            .agent_host_configurations = std.StringHashMap(AgentHostConfig).init(allocator),
+            .nodes = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
         };
         return self;
     }
@@ -96,6 +112,11 @@ pub const ConfigurationRegistry = struct {
         self.policy_reference_configurations.deinit();
         self.base_defaults.deinit();
         self.contributions.deinit();
+        self.excluded_properties.deinit();
+        self.agent_host_configurations.deinit();
+        var nodes = self.nodes.valueIterator();
+        while (nodes.next()) |keys| keys.deinit();
+        self.nodes.deinit();
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -103,9 +124,11 @@ pub const ConfigurationRegistry = struct {
     /// Registers configuration properties. A property whose policy name was
     /// already registered is skipped (upstream logs and ignores it).
     pub fn registerConfiguration(self: *ConfigurationRegistry, id: []const u8, properties: []const PropertySchema) !void {
-        _ = id;
         const arena = self.arena.allocator();
+        const node_entry = try self.nodes.getOrPut(try arena.dupe(u8, id));
+        if (!node_entry.found_existing) node_entry.value_ptr.* = std.array_list.Managed([]const u8).init(arena);
         for (properties) |schema| {
+            try node_entry.value_ptr.append(try arena.dupe(u8, schema.key));
             if (schema.policy != null and schema.policy_reference != null) continue;
             if (schema.policy) |policy| {
                 if (self.policies.contains(policy)) continue;
@@ -118,9 +141,8 @@ pub const ConfigurationRegistry = struct {
                 try entry.value_ptr.append(try arena.dupe(u8, schema.key));
             }
             const base_value = if (schema.default) |value| try cloneValue(arena, value) else std.json.Value{ .object = .{} };
-            try self.base_defaults.put(try arena.dupe(u8, schema.key), try cloneValue(arena, base_value));
             const default_value = try cloneValue(arena, base_value);
-            try self.properties.put(try arena.dupe(u8, schema.key), .{
+            const property = Property{
                 .value_type = try arena.dupe(u8, schema.value_type),
                 .default = default_value,
                 .scope = schema.scope,
@@ -128,7 +150,19 @@ pub const ConfigurationRegistry = struct {
                 .disallow_configuration_default = schema.disallow_configuration_default,
                 .policy = if (schema.policy) |policy| try arena.dupe(u8, policy) else null,
                 .policy_reference = if (schema.policy_reference) |reference| try arena.dupe(u8, reference) else null,
-            });
+                .included = schema.included,
+                .agent_host_key = if (schema.agent_host_key) |key| try arena.dupe(u8, key) else null,
+                .experiment_mode = if (schema.experiment_mode) |mode| try arena.dupe(u8, mode) else null,
+            };
+            if (schema.included) {
+                try self.base_defaults.put(try arena.dupe(u8, schema.key), try cloneValue(arena, base_value));
+                try self.properties.put(try arena.dupe(u8, schema.key), property);
+            } else {
+                try self.excluded_properties.put(try arena.dupe(u8, schema.key), property);
+            }
+            if (schema.agent_host_key) |agent_key| {
+                try self.agent_host_configurations.put(try arena.dupe(u8, agent_key), .{ .key = try arena.dupe(u8, schema.key) });
+            }
         }
     }
 
@@ -206,6 +240,42 @@ pub const ConfigurationRegistry = struct {
 
     pub fn getConfigurationProperties(self: *ConfigurationRegistry) *std.StringHashMap(Property) {
         return &self.properties;
+    }
+
+    pub fn getExcludedConfigurationProperties(self: *ConfigurationRegistry) *std.StringHashMap(Property) {
+        return &self.excluded_properties;
+    }
+
+    pub fn getAgentHostSyncConfigurations(self: *ConfigurationRegistry) *std.StringHashMap(AgentHostConfig) {
+        return &self.agent_host_configurations;
+    }
+
+    /// Flattened registered default overrides (borrowed from the registry).
+    pub fn getRegisteredDefaultConfigurations(self: *ConfigurationRegistry, allocator: Allocator) ![]DefaultOverride {
+        var result = std.array_list.Managed(DefaultOverride).init(allocator);
+        errdefer result.deinit();
+        for (self.contributions.items) |contribution| try result.appendSlice(contribution.entries);
+        return result.toOwnedSlice();
+    }
+
+    /// Removes every property contributed by the node id.
+    pub fn deregisterConfigurations(self: *ConfigurationRegistry, id: []const u8) void {
+        const keys = self.nodes.get(id) orelse return;
+        for (keys.items) |key| {
+            _ = self.properties.remove(key);
+            _ = self.excluded_properties.remove(key);
+            _ = self.base_defaults.remove(key);
+        }
+        var agents = self.agent_host_configurations.iterator();
+        var removed_agents = std.array_list.Managed([]const u8).init(self.allocator);
+        defer removed_agents.deinit();
+        while (agents.next()) |entry| {
+            for (keys.items) |key| {
+                if (std.mem.eql(u8, entry.value_ptr.key, key)) removed_agents.append(entry.key_ptr.*) catch break;
+            }
+        }
+        for (removed_agents.items) |key| _ = self.agent_host_configurations.remove(key);
+        _ = self.nodes.remove(id);
     }
 
     pub fn getPolicyConfigurations(self: *ConfigurationRegistry) *std.StringHashMap([]const u8) {
