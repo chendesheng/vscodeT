@@ -898,9 +898,12 @@ three cases), and `common/themeConfiguration.zig` ports the color-theme
 selection/preference subset of `ThemeConfiguration` (`getColorTheme`,
 customizations, preferred color scheme, `isPreferredColorSchemeChange` and the
 color-theme setting id); the four `workbenchThemeService.test.ts` cases are
-ported at the upstream test path. The configuration-schema registration, the
-extension-point theme enums, the icon-theme getters and the
-`fontSize`->`lineHeight` token-customization rewrite remain.
+ported at the upstream test path. `registerThemeConfigurationSchemas` also ports
+the static settings contribution (color theme, preferred themes, customization
+objects, auto-detect flags with their defaults/scopes, and the token
+customization settings). The extension-point theme enums/dynamic schema updates,
+the icon-theme getters and the `fontSize`->`lineHeight` token-customization
+rewrite remain.
 
 **P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
 registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
@@ -1042,7 +1045,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,006 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,009 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1059,7 +1062,7 @@ ConfigurationService; P5d tests are ported with the service registration surface
 pending; P5e has the URI/file-service/editor-input foundation and needs the
 full provider file service and the working-copy wiring.
 
-**Status at the end of the current session:** 2,006 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,009 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor view/controller/widget stack and the URI/file
@@ -1071,7 +1074,7 @@ service/editor-input wiring described below.
 | --- | --- |
 | P4 | `editor/browser/view.ts`, `editor/browser/view/viewController.ts`, `editor/browser/widget/codeEditor/codeEditorWidget.ts`, the remaining view parts and the layout-dependent overlays; the computed options (`ComputedEditorOptions`, `EditorLayoutInfoComputer`) are ported |
 | P5e | core `base/common/uri.ts`, `network`/`VSBuffer`/`extpath` helpers, `FileType`/`FileOperation`/`FileChangesEvent`, a disk-backed `DiskFileService` (read/write/stat/rename/copy/recursive delete/directory listing/change events), a minimal `TextFileService`, `FileEditorInput`/serializer and the side-by-side/diff input identity/unwrapping and side-by-side/diff serializers, save/revert forwarding and composite untyped matching are ported; the full provider/event file service remains; minimal text-file editor models and untitled/diff/side-by-side inputs (with serializers) are ported |
-| P5c | `tokenClassificationRegistry`, the TextMate scope matcher, `ColorThemeData` token-style resolution, the terminal `workbenchThemeService` (registration/persistence/migrations) and the `ThemeConfiguration` color-theme/preference subset are ported; the configuration-schema contribution, icon themes and config-watcher plumbing remain |
+| P5c | `tokenClassificationRegistry`, the TextMate scope matcher, `ColorThemeData` token-style resolution, the terminal `workbenchThemeService` (registration/persistence/migrations) and the `ThemeConfiguration` color-theme/preference subset and its static settings schemas are ported; the dynamic theme-enum schema updates, icon themes and config-watcher plumbing remain |
 | P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering are ported; the workbench experiment/remote suites remain |
 | P2 | `multiEditorTabsControl.test.ts`, browser tooltip cases in `statusbarItem.test.ts`, and the `explorerView.test.ts` tree cases that construct diff/side-by-side inputs |
 | filters | multi-byte highlight selection (#113404) and `Intl.Collator` locale ordering |

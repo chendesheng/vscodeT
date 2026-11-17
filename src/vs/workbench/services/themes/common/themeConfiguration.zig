@@ -1,10 +1,11 @@
 // Port of the portable subset of
 // `src/vs/workbench/services/themes/common/themeConfiguration.ts`.
 //
-// Terminal adaptations: the configuration-schema registration, the extension
-// points that fill the theme enums and the file/product icon theme getters are
-// not ported (the terminal has no icon themes and registers themes explicitly,
-// see `browser/workbenchThemeService.zig`). The `fontSize` -> `lineHeight`
+// Terminal adaptations: the static settings schemas are registered
+// (`registerThemeConfigurationSchemas`), but the extension points that fill the
+// theme enum values and the file/product icon theme getters are not ported (the
+// terminal has no icon themes and registers themes explicitly, see
+// `browser/workbenchThemeService.zig`). The `fontSize` -> `lineHeight`
 // compatibility rewrite of `tokenColorCustomizations` is not applied; the
 // stored value is returned unchanged. The color theme selection, customizations
 // and preferred-color-scheme logic keep the upstream behavior.
@@ -12,6 +13,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
+const configuration_registry = @import("../../../../platform/configuration/common/configurationRegistry.zig");
 const theme_mod = @import("../../../../platform/theme/common/theme.zig");
 const window_mod = @import("../../../../platform/window/common/window.zig");
 const workbench_theme_service = @import("../browser/workbenchThemeService.zig");
@@ -23,6 +25,81 @@ const ColorScheme = theme_mod.ColorScheme;
 const IColorScheme = window_mod.IColorScheme;
 const IHostColorSchemeService = host_color_scheme_service.IHostColorSchemeService;
 const ThemeSettings = workbench_theme_service.ThemeSettings;
+const ThemeSettingDefaults = workbench_theme_service.ThemeSettingDefaults;
+const ConfigurationRegistry = configuration_registry.ConfigurationRegistry;
+const PropertySchema = configuration_registry.PropertySchema;
+
+/// Upstream tags every color-theme setting with this configuration tag.
+pub const COLOR_THEME_CONFIGURATION_SETTINGS_TAG = "colorThemeConfiguration";
+
+/// The default color theme for the terminal (upstream uses the light theme on
+/// the web; the terminal is a desktop host).
+pub fn defaultColorTheme() []const u8 {
+    return ThemeSettingDefaults.COLOR_THEME_DARK;
+}
+
+/// Port of the configuration-schema contribution of `themeConfiguration.ts`.
+///
+/// Terminal adaptation: the theme enum values that upstream fills from the
+/// registered color themes are not contributed (the terminal registers themes
+/// explicitly at runtime), and the icon-theme settings are omitted because the
+/// terminal has no icon themes. The settings, defaults and scopes match
+/// upstream so the configuration service can read them.
+pub fn registerThemeConfigurationSchemas(registry: *ConfigurationRegistry) !void {
+    try registry.registerConfiguration("workbench", &.{
+        .{
+            .key = ThemeSettings.COLOR_THEME,
+            .value_type = "string",
+            .default = .{ .string = defaultColorTheme() },
+        },
+        .{
+            .key = ThemeSettings.PREFERRED_DARK_THEME,
+            .value_type = "string",
+            .default = .{ .string = ThemeSettingDefaults.COLOR_THEME_DARK },
+        },
+        .{
+            .key = ThemeSettings.PREFERRED_LIGHT_THEME,
+            .value_type = "string",
+            .default = .{ .string = ThemeSettingDefaults.COLOR_THEME_LIGHT },
+        },
+        .{
+            .key = ThemeSettings.PREFERRED_HC_DARK_THEME,
+            .value_type = "string",
+            .default = .{ .string = ThemeSettingDefaults.COLOR_THEME_HC_DARK },
+        },
+        .{
+            .key = ThemeSettings.PREFERRED_HC_LIGHT_THEME,
+            .value_type = "string",
+            .default = .{ .string = ThemeSettingDefaults.COLOR_THEME_HC_LIGHT },
+        },
+        .{
+            .key = ThemeSettings.COLOR_CUSTOMIZATIONS,
+            .value_type = "object",
+        },
+        .{
+            .key = ThemeSettings.DETECT_COLOR_SCHEME,
+            .value_type = "boolean",
+            .default = .{ .bool = false },
+        },
+        .{
+            .key = ThemeSettings.DETECT_HC,
+            .value_type = "boolean",
+            .default = .{ .bool = true },
+            .scope = .APPLICATION,
+        },
+    });
+
+    try registry.registerConfiguration("editor", &.{
+        .{
+            .key = ThemeSettings.TOKEN_COLOR_CUSTOMIZATIONS,
+            .value_type = "object",
+        },
+        .{
+            .key = ThemeSettings.SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS,
+            .value_type = "object",
+        },
+    });
+}
 
 pub const ThemeConfiguration = struct {
     configuration_service: IConfigurationService,
