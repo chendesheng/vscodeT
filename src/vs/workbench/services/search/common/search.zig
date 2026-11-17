@@ -567,3 +567,115 @@ pub fn isFilePatternMatch(
     var expression = try glob.Expression.init(arena.allocator(), &.{file_pattern}, .{ .ignore_case = ignore_case });
     return expression.matches(path_to_match);
 }
+
+/// Merges global and folder exclude entries; later folder entries override
+/// entries with the same pattern (upstream object spread).
+pub fn mergeExcludeEntries(allocator: Allocator, global: []const glob.ExcludeEntry, folder: []const glob.ExcludeEntry) ![]glob.ExcludeEntry {
+    var result = std.array_list.Managed(glob.ExcludeEntry).init(allocator);
+    errdefer result.deinit();
+    try result.appendSlice(global);
+    for (folder) |entry| {
+        var replaced = false;
+        for (result.items) |*existing| {
+            if (std.mem.eql(u8, existing.pattern, entry.pattern)) {
+                existing.* = entry;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) try result.append(entry);
+    }
+    return result.toOwnedSlice();
+}
+
+/// Enabled non-exception exclude patterns for a search provider (global then
+/// folder, folder overriding).
+pub fn resolveExcludePatternsForProvider(allocator: Allocator, global: []const glob.ExcludeEntry, folder: []const glob.ExcludeEntry) ![][]const u8 {
+    const merged = try mergeExcludeEntries(allocator, global, folder);
+    defer allocator.free(merged);
+    var patterns = std.array_list.Managed([]const u8).init(allocator);
+    errdefer patterns.deinit();
+    for (merged) |entry| {
+        if (!entry.enabled or entry.when != null) continue;
+        if (glob.isExcludeException(entry.pattern)) continue;
+        try patterns.append(entry.pattern);
+    }
+    return patterns.toOwnedSlice();
+}
+
+/// Enabled `!`-prefixed exceptions for a provider, without the `!`.
+pub fn resolveExcludeExceptionsForProvider(allocator: Allocator, global: []const glob.ExcludeEntry, folder: []const glob.ExcludeEntry) ![][]const u8 {
+    const merged = try mergeExcludeEntries(allocator, global, folder);
+    defer allocator.free(merged);
+    return glob.getExcludeExceptions(allocator, merged);
+}
+
+pub const ExcludeExceptionCounts = struct {
+    exclude_exception_count: usize,
+    unanchored_exclude_exception_count: usize,
+};
+
+/// Counts distinct enabled exclude exceptions across the global expression and
+/// every folder expression; unanchored ones start with `**`.
+pub fn getExcludeExceptionCounts(
+    allocator: Allocator,
+    global: []const glob.ExcludeEntry,
+    folder_expressions: []const []const glob.ExcludeEntry,
+) !ExcludeExceptionCounts {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var unique = std.StringHashMap(void).init(arena.allocator());
+    try addExceptionsToSet(arena.allocator(), &unique, global);
+    for (folder_expressions) |entries| try addExceptionsToSet(arena.allocator(), &unique, entries);
+
+    var unanchored: usize = 0;
+    var iterator = unique.keyIterator();
+    while (iterator.next()) |key| {
+        if (std.mem.startsWith(u8, key.*, "**")) unanchored += 1;
+    }
+    return .{ .exclude_exception_count = unique.count(), .unanchored_exclude_exception_count = unanchored };
+}
+
+fn addExceptionsToSet(allocator: Allocator, set: *std.StringHashMap(void), entries: []const glob.ExcludeEntry) !void {
+    const exceptions = try glob.getExcludeExceptions(allocator, entries);
+    defer {
+        for (exceptions) |exception| allocator.free(exception);
+        allocator.free(exceptions);
+    }
+    for (exceptions) |exception| {
+        if (set.contains(exception)) continue;
+        try set.put(try allocator.dupe(u8, exception), {});
+    }
+}
+
+/// Terminal-adapted `QueryGlobTester` for one folder query: synchronous
+/// exclude evaluation with exceptions and sibling clauses.
+pub const QueryGlobTester = struct {
+    parsed: glob.ParsedExcludeExpression,
+
+    pub fn init(allocator: Allocator, global: []const glob.ExcludeEntry, folder: []const glob.ExcludeEntry) !QueryGlobTester {
+        const merged = try mergeExcludeEntries(allocator, global, folder);
+        defer allocator.free(merged);
+        return .{ .parsed = try glob.parseExcludeExpression(allocator, merged, .{}) };
+    }
+
+    pub fn deinit(self: *QueryGlobTester) void {
+        self.parsed.deinit();
+    }
+
+    pub fn matchesExcludesSync(self: *const QueryGlobTester, test_path: []const u8, basename: ?[]const u8, has_sibling: ?glob.HasSibling) bool {
+        return self.parsed.matchesExcludeWithSiblings(test_path, basename, has_sibling);
+    }
+
+    pub fn includedInQuery(self: *const QueryGlobTester, test_path: []const u8, basename: ?[]const u8, has_sibling: ?glob.HasSibling) bool {
+        return !self.matchesExcludesSync(test_path, basename, has_sibling);
+    }
+
+    pub fn isExcepted(self: *const QueryGlobTester, test_path: []const u8, basename: ?[]const u8) bool {
+        return self.parsed.isExcepted(test_path, basename);
+    }
+
+    pub fn couldExceptionMatchBeneath(self: *const QueryGlobTester, folder_path: []const u8) bool {
+        return self.parsed.couldExceptionMatchBeneath(folder_path);
+    }
+};

@@ -922,6 +922,13 @@ remain (the terminal cache key is a readable composite). `fileIndex.zig` now
 scores via `scoreItemFuzzy` (label/description/path, all query words required)
 instead of its ad-hoc matcher.
 
+**P5g status:** the `search.test.ts` suite is fully ported
+(`TextSearchMatch` previews including byte-column elision, `isFilePatternMatch`,
+`QueryGlobTester`/provider exclude exceptions and exception counts), and the
+search action/view tests under `contrib/search/test/browser` are ported for the
+terminal tree model. Search quick-access and anything quick-access remain tied
+to the quick-input widget gaps.
+
 **Exit criteria per slice:** the upstream module exists under the mirrored
 path, its upstream tests are ported and registered, the TUI consumes it, and
 README/docs drop the corresponding limitation.

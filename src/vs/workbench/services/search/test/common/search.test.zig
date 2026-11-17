@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const search = @import("../../common/search.zig");
+const glob = @import("../../../../../base/common/glob.zig");
 
 test "TextSearchMatch: empty and short ranges" {
     const allocator = std.testing.allocator;
@@ -131,4 +132,60 @@ test "isFilePatternMatch: glob match with mixed case pattern" {
     const allocator = std.testing.allocator;
     try std.testing.expect(!try search.isFilePatternMatch(allocator, "src/MyComponent.TSX", null, "**/*.tsx", false, false));
     try std.testing.expect(try search.isFilePatternMatch(allocator, "src/MyComponent.TSX", null, "**/*.tsx", false, true));
+}
+
+const exclude_pattern = [_]glob.ExcludeEntry{
+    .{ .pattern = "node_modules" },
+    .{ .pattern = "**/*.js", .when = "$(basename).ts" },
+    .{ .pattern = "!node_modules/@types" },
+    .{ .pattern = "!off", .enabled = false },
+};
+
+test "exclude exceptions: QueryGlobTester applies exceptions and sibling clauses" {
+    const allocator = std.testing.allocator;
+    const empty = [_]glob.ExcludeEntry{};
+    var tester = try search.QueryGlobTester.init(allocator, &empty, &exclude_pattern);
+    defer tester.deinit();
+
+    const Sibling = struct {
+        fn callback(_: *anyopaque, name: []const u8) bool {
+            return std.mem.eql(u8, name, "a.ts");
+        }
+    };
+    var sibling_state: u8 = 0;
+    const has_sibling = glob.HasSibling{ .context = &sibling_state, .callback = Sibling.callback };
+
+    try std.testing.expect(tester.matchesExcludesSync("node_modules", "node_modules", null));
+    try std.testing.expect(!tester.includedInQuery("node_modules", "node_modules", null));
+    try std.testing.expect(!tester.includedInQuery("a.js", "a.js", has_sibling));
+    try std.testing.expect(tester.isExcepted("node_modules/@types/node/index.d.ts", null));
+    try std.testing.expect(tester.couldExceptionMatchBeneath("node_modules"));
+    try std.testing.expect(!tester.couldExceptionMatchBeneath("src"));
+}
+
+test "exclude exceptions: providers receive patterns without exceptions" {
+    const allocator = std.testing.allocator;
+    const global = [_]glob.ExcludeEntry{.{ .pattern = "!gulpfile.js" }};
+    const excludes = try search.resolveExcludePatternsForProvider(allocator, &global, &exclude_pattern);
+    defer allocator.free(excludes);
+    try std.testing.expectEqual(@as(usize, 1), excludes.len);
+    try std.testing.expectEqualStrings("node_modules", excludes[0]);
+
+    const exceptions = try search.resolveExcludeExceptionsForProvider(allocator, &global, &exclude_pattern);
+    defer {
+        for (exceptions) |exception| allocator.free(exception);
+        allocator.free(exceptions);
+    }
+    try std.testing.expectEqual(@as(usize, 2), exceptions.len);
+    try std.testing.expectEqualStrings("gulpfile.js", exceptions[0]);
+    try std.testing.expectEqualStrings("node_modules/@types", exceptions[1]);
+}
+
+test "exclude exceptions: counts distinct exceptions of a query" {
+    const allocator = std.testing.allocator;
+    const global = [_]glob.ExcludeEntry{.{ .pattern = "!**/Scripts" }};
+    const folder_expressions = [_][]const glob.ExcludeEntry{ &exclude_pattern, &exclude_pattern };
+    const counts = try search.getExcludeExceptionCounts(allocator, &global, &folder_expressions);
+    try std.testing.expectEqual(@as(usize, 2), counts.exclude_exception_count);
+    try std.testing.expectEqual(@as(usize, 1), counts.unanchored_exclude_exception_count);
 }
