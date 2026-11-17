@@ -134,3 +134,31 @@ test "lookup with null" {
     result = service.inspect("lookup.service.testNullSetting");
     try std.testing.expect(result.user_value == null);
 }
+
+test "workspace configuration overrides user and defaults" {
+    const allocator = std.testing.allocator;
+    var fixture = try setup(allocator);
+    defer teardown(fixture.registry, fixture.service);
+
+    try fixture.service.updateValue("configurationService.testSetting", .{ .string = "user" }, .USER);
+    try fixture.service.loadWorkspaceJson("{\"configurationService.testSetting\":\"workspace\"}");
+    try std.testing.expectEqualStrings("workspace", fixture.service.getValue("configurationService.testSetting").?.string);
+    const result = fixture.service.inspect("configurationService.testSetting");
+    try std.testing.expectEqualStrings("workspace", result.workspace_value.?.string);
+    try std.testing.expectEqualStrings("user", result.user_value.?.string);
+    try std.testing.expectEqualStrings("workspace", result.value.?.string);
+    try std.testing.expect(configurationService.isConfigured(result));
+}
+
+test "reloading workspace configuration reflects the new document" {
+    const allocator = std.testing.allocator;
+    var fixture = try setup(allocator);
+    defer teardown(fixture.registry, fixture.service);
+
+    try fixture.service.loadWorkspaceJson("{\"configurationService.testSetting\":\"first\"}");
+    try std.testing.expectEqualStrings("first", fixture.service.getValue("configurationService.testSetting").?.string);
+    try fixture.service.loadWorkspaceJson("{\"configurationService.testSetting\":\"second\"}");
+    try std.testing.expectEqualStrings("second", fixture.service.getValue("configurationService.testSetting").?.string);
+    try fixture.service.loadWorkspaceJson("{}");
+    try std.testing.expectEqualStrings("isSet", fixture.service.getValue("configurationService.testSetting").?.string);
+}

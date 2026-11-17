@@ -17,18 +17,20 @@ const ConfigurationTarget = configuration.ConfigurationTarget;
 pub const InspectValue = struct {
     default_value: ?*const std.json.Value,
     user_value: ?*const std.json.Value,
+    workspace_value: ?*const std.json.Value,
     value: ?*const std.json.Value,
 };
 
-/// A setting is configured when the user (or any higher store) overrides it.
+/// A setting is configured when the user or workspace overrides it.
 pub fn isConfigured(value: InspectValue) bool {
-    return value.user_value != null;
+    return value.user_value != null or value.workspace_value != null;
 }
 
 pub const ConfigurationService = struct {
     allocator: Allocator,
     defaults: configurations.DefaultConfiguration,
     user: ConfigurationModel,
+    workspace: ConfigurationModel,
 
     pub fn init(allocator: Allocator, registry: *configurationRegistry.ConfigurationRegistry) !*ConfigurationService {
         const self = try allocator.create(ConfigurationService);
@@ -37,6 +39,7 @@ pub const ConfigurationService = struct {
             .allocator = allocator,
             .defaults = try configurations.DefaultConfiguration.init(allocator, registry),
             .user = try ConfigurationModel.initEmpty(allocator),
+            .workspace = try ConfigurationModel.initEmpty(allocator),
         };
         return self;
     }
@@ -44,6 +47,7 @@ pub const ConfigurationService = struct {
     pub fn deinit(self: *ConfigurationService) void {
         self.defaults.deinit();
         self.user.deinit();
+        self.workspace.deinit();
         self.allocator.destroy(self);
     }
 
@@ -52,17 +56,26 @@ pub const ConfigurationService = struct {
     }
 
     pub fn getValue(self: *ConfigurationService, key: []const u8) ?*const std.json.Value {
+        if (self.workspace.getValue(key)) |value| return value;
         if (self.user.getValue(key)) |value| return value;
         return self.defaults.configurationModel().getValue(key);
     }
 
+    /// Replaces the workspace configuration from a JSON(C) document.
+    pub fn loadWorkspaceJson(self: *ConfigurationService, text: []const u8) !void {
+        self.workspace.deinit();
+        self.workspace = try ConfigurationModel.fromJson(self.allocator, text);
+    }
+
     pub fn inspect(self: *ConfigurationService, key: []const u8) InspectValue {
         const user_value = self.user.getValue(key);
+        const workspace_value = self.workspace.getValue(key);
         const default_value = self.defaults.configurationModel().getValue(key);
         return .{
             .default_value = default_value,
             .user_value = user_value,
-            .value = user_value orelse default_value,
+            .workspace_value = workspace_value,
+            .value = workspace_value orelse user_value orelse default_value,
         };
     }
 

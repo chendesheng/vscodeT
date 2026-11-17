@@ -939,8 +939,12 @@ policy deduplication, policy references, and hidden/excluded and agent-host sett
 schema/scope/policy-reference/excluded-property cases remain. `configurationVariables.zig` (variable parsing/scanning) and its test suite are
 ported too. `configurationService.zig` ports an in-memory user-target `ConfigurationService`
 (getValue/inspect/updateValue, default-value removal, non-user target rejection),
-with the update cases from `configurationService.test.ts`; workspace/file/policy
-configuration remains unported. `configurations.zig` ports the explicit `DefaultConfiguration` model lifecycle
+with the update and workspace-document cases from `configurationService.test.ts`;
+enforced policy configuration and remote/folder scoping remain unported.
+`workbench/services/configuration/browser/configurationService.zig` already
+provides the file-backed workspace service (user/workspace/folder scopes,
+`.code-workspace`, settings watcher) with five terminal workspace-scope tests;
+the 198-case upstream file is otherwise unported. `configurations.zig` ports the explicit `DefaultConfiguration` model lifecycle
 (initialize/reload/property updates, override-identifier values), with the
 registration, override and deregistration cases (including merged language object defaults) from `configurations.test.ts`. The merge/remove helper cases in `configuration.test.ts` are also ported
 (except the `__proto__` pollution case, which is N/A for Zig maps). The
