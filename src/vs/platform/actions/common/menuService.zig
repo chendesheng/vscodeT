@@ -124,6 +124,12 @@ pub const MenuItemAction = struct {
     group_title: ?[]const u8,
     alt: ?*const IAction = null,
     command_registry: ?*commands.CommandRegistry,
+    menu: MenuId,
+    hide_state: *MenuHideState,
+
+    pub fn toggleHidden(self: *MenuItemAction) void {
+        self.hide_state.updateHidden(self.menu, self.item.id, !self.hide_state.isHidden(self.menu, self.item.id));
+    }
 
     pub fn interface(self: *MenuItemAction) IAction {
         return .{
@@ -447,6 +453,10 @@ pub const MenuService = struct {
         return service;
     }
 
+    pub fn resetHiddenStates(self: *MenuService, menu: ?MenuId) void {
+        self.hide_state.reset(menu);
+    }
+
     fn keybindingLabel(self: *MenuService, allocator: Allocator, command_id: []const u8, context: contextkey.IContext) !?[]const u8 {
         const registry = self.keybindings orelse return null;
         const items = try registry.getDefaultKeybindingsForOS(allocator, self.os);
@@ -604,6 +614,8 @@ pub const MenuService = struct {
                             .tooltip = item.command.tooltip orelse "",
                             .group_title = group_title,
                             .command_registry = self.command_registry,
+                            .menu = id,
+                            .hide_state = &self.hide_state,
                         };
                         if (item.alt) |alt| {
                             const alt_action = try allocator.create(MenuItemAction);
@@ -624,6 +636,8 @@ pub const MenuService = struct {
                                 .tooltip = alt.tooltip orelse "",
                                 .group_title = group_title,
                                 .command_registry = self.command_registry,
+                                .menu = id,
+                                .hide_state = &self.hide_state,
                             };
                             const alt_interface = alt_action.interface();
                             const alt_storage = try allocator.create(IAction);
@@ -1703,4 +1717,61 @@ test "one-shot menus reevaluate enablement, toggled state and alternates" {
             toggled.set(.{ .boolean = true });
         }
     }
+}
+
+test "menu hidden-by-default state tracks divergence and resets" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.hidden.modified" };
+
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "hiddenByDefault", .title = "Hidden By Default" }, .is_hidden_by_default = true });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "visibleByDefault", .title = "Visible By Default" } });
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    const Flags = struct {
+        fn read(alloc: Allocator, svc: *MenuService, id: MenuId) ![2]bool {
+            var menu_actions = try svc.getMenuActions(alloc, id, context());
+            defer menu_actions.deinit();
+            const first: *MenuItemAction = @ptrCast(@alignCast(menu_actions.groups[0].actions[0].context));
+            const second: *MenuItemAction = @ptrCast(@alignCast(menu_actions.groups[0].actions[1].context));
+            return .{ first.is_modified_from_default, second.is_modified_from_default };
+        }
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    const initial = try Flags.read(allocator, &service, menu_id);
+    try std.testing.expectEqual([2]bool{ false, false }, initial);
+
+    var menu_actions = try service.getMenuActions(allocator, menu_id, Context.context());
+    const first: *MenuItemAction = @ptrCast(@alignCast(menu_actions.groups[0].actions[0].context));
+    first.toggleHidden();
+    menu_actions.deinit();
+
+    menu_actions = try service.getMenuActions(allocator, menu_id, Context.context());
+    const second: *MenuItemAction = @ptrCast(@alignCast(menu_actions.groups[0].actions[1].context));
+    second.toggleHidden();
+    menu_actions.deinit();
+
+    const modified = try Flags.read(allocator, &service, menu_id);
+    try std.testing.expectEqual([2]bool{ true, true }, modified);
+
+    service.resetHiddenStates(menu_id);
+    const reset = try Flags.read(allocator, &service, menu_id);
+    try std.testing.expectEqual([2]bool{ false, false }, reset);
 }
