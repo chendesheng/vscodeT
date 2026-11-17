@@ -50,6 +50,14 @@ pub fn Emitter(comptime T: type) type {
             }
         }
 
+        pub fn listenerCount(self: *const Self) usize {
+            var count: usize = 0;
+            for (self._listeners.items) |entry| {
+                if (entry != null) count += 1;
+            }
+            return count;
+        }
+
         pub fn hasListeners(self: *const Self) bool {
             for (self._listeners.items) |entry| {
                 if (entry != null) return true;

@@ -993,3 +993,34 @@ test "menus refresh when context keys change" {
     try std.testing.expectEqual(@as(usize, 1), changes);
     try std.testing.expectEqual(@as(usize, 1), menu.getActions().len);
 }
+
+test "live menus unsubscribe from registry and context changes" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var context_keys = contextkey.ContextKeyService.init(allocator);
+    defer context_keys.deinit();
+
+    const menu_id = MenuId{ .id = "test.unsubscribe" };
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    service.useContextService(&context_keys);
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    try std.testing.expectEqual(@as(usize, 1), registry.on_did_change.listenerCount());
+    try std.testing.expectEqual(@as(usize, 1), context_keys.onDidChangeContext.listenerCount());
+
+    menu.deinit();
+    allocator.destroy(menu);
+    try std.testing.expectEqual(@as(usize, 0), registry.on_did_change.listenerCount());
+    try std.testing.expectEqual(@as(usize, 0), context_keys.onDidChangeContext.listenerCount());
+}
