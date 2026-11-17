@@ -908,6 +908,17 @@ consume `ILogService`. The console loggers and the URI-keyed logger registry
 remain unported for the reasons in §8.6; README documents the single-file
 logging scope.
 
+**P5b status:** `base/common/fuzzyScorer.zig` ports query preparation
+(`prepareQuery`/`pieceToQuery`), the `scoreFuzzy` matrix and character scoring,
+`scoreFuzzy2`, item label/description/path scoring, item comparison and the
+optional scorer cache; `base/common/comparers.zig` now also has
+`compareAnything`/`compareByPrefix` for the comparison fallback. 26 upstream
+`fuzzyScorer.test.ts` cases (including the resource ordering/scattering matrix)
+are ported and registered. The `filters.fuzzyScore` dynamic-programming scorer
+(`filters.ts`) is still unported, so the upstream #134723 upper-case-bonus case
+and the exact scorer cache-hash cases remain gaps; `fileIndex.zig` still uses
+its simpler matcher.
+
 **Exit criteria per slice:** the upstream module exists under the mirrored
 path, its upstream tests are ported and registered, the TUI consumes it, and
 README/docs drop the corresponding limitation.
