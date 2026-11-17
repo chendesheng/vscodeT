@@ -348,7 +348,9 @@ test "record and restore keep declared defaults, hidden settings and contributio
     try std.testing.expect(restored.getExcludedConfigurationProperties().get("restore.hidden") != null);
     try std.testing.expect(restored.getAgentHostSyncConfigurations().get("restore.hidden") != null);
     try std.testing.expect(restored.getPolicyConfigurations().get("restorePolicy") != null);
-    try std.testing.expect(restored.getPolicyReferenceConfigurations().get("restoreRef") != null);
+    const references = restored.getPolicyReferenceConfigurations().get("restoreRef").?;
+    try std.testing.expectEqual(@as(usize, 1), references.items.len);
+    try std.testing.expectEqualStrings("restore.ref", references.items[0]);
 
     const entries = try restored.getRegisteredDefaultConfigurations(allocator);
     defer allocator.free(entries);
