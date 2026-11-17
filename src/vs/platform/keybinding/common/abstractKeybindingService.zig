@@ -228,9 +228,11 @@ pub const AbstractKeybindingService = struct {
 
     pub fn appendKeybinding(self: *AbstractKeybindingService, allocator: Allocator, label: []const u8, command_id: ?[]const u8, enforce_context_check: bool) ![]u8 {
         if (command_id) |id| {
-            if (try self.lookupKeybinding(allocator, id, enforce_context_check)) |resolved| {
-                if (resolved.getLabel()) |keybinding_label| {
-                    return std.fmt.allocPrint(allocator, "{s} ({s})", .{ label, keybinding_label });
+            if (id.len > 0) {
+                if (try self.lookupKeybinding(allocator, id, enforce_context_check)) |resolved| {
+                    if (resolved.getLabel()) |keybinding_label| {
+                        return std.fmt.allocPrint(allocator, "{s} ({s})", .{ label, keybinding_label });
+                    }
                 }
             }
         }

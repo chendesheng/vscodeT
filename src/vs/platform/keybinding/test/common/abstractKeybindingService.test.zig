@@ -130,6 +130,16 @@ const Harness = struct {
             item.command = null;
             item.bubble = false;
         }
+        try self.rebuildResolver();
+    }
+
+    fn rebuildResolver(self: *Harness) !void {
+        self.resolver.deinit();
+        const item_ptrs = try self.allocator.alloc(*const item_mod.ResolvedKeybindingItem, self.items.items.len);
+        defer self.allocator.free(item_ptrs);
+        for (self.items.items, 0..) |item, index| item_ptrs[index] = item;
+        self.resolver = try resolver_mod.KeybindingResolver.init(self.allocator, item_ptrs, &.{});
+        self.service.resolver = &self.resolver;
     }
 
     fn resolveEvent(context: *anyopaque, _: Allocator, event: IKeyboardEvent) anyerror!?ResolvedKeybinding {
@@ -417,4 +427,138 @@ test "can have spying command" {
     try std.testing.expectEqual(@as(usize, 1), harness.executed.items.len);
     try std.testing.expectEqualStrings("simpleCommand", harness.executed.items[0]);
     try std.testing.expectEqual(@as(usize, 0), harness.statuses.items.len);
+}
+
+fn expectedLabel(allocator: Allocator, encoded: u32) ![]u8 {
+    var resolved = (try test_util.createUSLayoutResolvedKeybinding(allocator, encoded, .Linux)).?;
+    defer resolved.deinit();
+    return allocator.dupe(u8, resolved.base.getLabel().?);
+}
+
+test "appendKeybinding appends label when command has a keybinding" {
+    const allocator = std.testing.allocator;
+    const encoded = key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK);
+    const harness = try Harness.init(allocator, &.{encoded});
+    defer harness.deinit();
+    try harness.setCommand(0, "myCommand");
+
+    const label = try expectedLabel(allocator, encoded);
+    defer allocator.free(label);
+    const result = try harness.service.appendKeybinding(allocator, "My Label", "myCommand", false);
+    defer allocator.free(result);
+    const expected = try std.fmt.allocPrint(allocator, "My Label ({s})", .{label});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, result);
+}
+
+test "appendKeybinding returns only the label without a keybinding" {
+    const allocator = std.testing.allocator;
+    const harness = try Harness.init(allocator, &.{});
+    defer harness.deinit();
+
+    const result = try harness.service.appendKeybinding(allocator, "My Label", "myCommand", false);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("My Label", result);
+}
+
+test "appendKeybinding returns only the label for a null command" {
+    const allocator = std.testing.allocator;
+    const harness = try Harness.init(allocator, &.{key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK)});
+    defer harness.deinit();
+
+    const result = try harness.service.appendKeybinding(allocator, "My Label", null, false);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("My Label", result);
+}
+
+test "appendKeybinding returns only the label for an undefined command" {
+    const allocator = std.testing.allocator;
+    const harness = try Harness.init(allocator, &.{key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK)});
+    defer harness.deinit();
+
+    const result = try harness.service.appendKeybinding(allocator, "My Label", null, false);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("My Label", result);
+}
+
+test "appendKeybinding returns only the label for an empty command" {
+    const allocator = std.testing.allocator;
+    const harness = try Harness.init(allocator, &.{key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK)});
+    defer harness.deinit();
+    try harness.setCommand(0, "myCommand");
+
+    const result = try harness.service.appendKeybinding(allocator, "My Label", "", false);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("My Label", result);
+}
+
+test "appendKeybinding appends when the command context matches" {
+    const allocator = std.testing.allocator;
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    const encoded = key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK);
+    const harness = try Harness.init(allocator, &.{encoded});
+    defer harness.deinit();
+    try harness.setCommand(0, "myCommand");
+    harness.setWhen(0, try factory.has("key1"));
+    try harness.setContext("key1", .{ .boolean = true });
+
+    const label = try expectedLabel(allocator, encoded);
+    defer allocator.free(label);
+    const result = try harness.service.appendKeybinding(allocator, "My Label", "myCommand", false);
+    defer allocator.free(result);
+    const expected = try std.fmt.allocPrint(allocator, "My Label ({s})", .{label});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, result);
+}
+
+test "appendKeybinding returns only the label when context does not match and is enforced" {
+    const allocator = std.testing.allocator;
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    const harness = try Harness.init(allocator, &.{key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK)});
+    defer harness.deinit();
+    try harness.setCommand(0, "myCommand");
+    harness.setWhen(0, try factory.has("key1"));
+    try harness.setContext("key1", .{ .undefined_value = {} });
+
+    const result = try harness.service.appendKeybinding(allocator, "My Label", "myCommand", true);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("My Label", result);
+}
+
+test "appendKeybinding appends when context does not match but is not enforced" {
+    const allocator = std.testing.allocator;
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    const encoded = key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK);
+    const harness = try Harness.init(allocator, &.{encoded});
+    defer harness.deinit();
+    try harness.setCommand(0, "myCommand");
+    harness.setWhen(0, try factory.has("key1"));
+    try harness.setContext("key1", .{ .undefined_value = {} });
+
+    const label = try expectedLabel(allocator, encoded);
+    defer allocator.free(label);
+    const result = try harness.service.appendKeybinding(allocator, "My Label", "myCommand", false);
+    defer allocator.free(result);
+    const expected = try std.fmt.allocPrint(allocator, "My Label ({s})", .{label});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, result);
+}
+
+test "appendKeybinding appends even when the label is empty" {
+    const allocator = std.testing.allocator;
+    const encoded = key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK);
+    const harness = try Harness.init(allocator, &.{encoded});
+    defer harness.deinit();
+    try harness.setCommand(0, "myCommand");
+
+    const label = try expectedLabel(allocator, encoded);
+    defer allocator.free(label);
+    const result = try harness.service.appendKeybinding(allocator, "", "myCommand", false);
+    defer allocator.free(result);
+    const expected = try std.fmt.allocPrint(allocator, " ({s})", .{label});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, result);
 }
