@@ -357,3 +357,17 @@ test "removing a user setting falls back to the default" {
     try std.testing.expectEqual(@as(i64, 4), service.getValue("remove.setting").?.integer);
     try std.testing.expect(!configurationService.isConfigured(service.inspect("remove.setting")));
 }
+
+test "non-object workspace settings are ignored" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "shape.setting", .default = std.json.Value{ .integer = 4 } }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try service.loadWorkspaceJson("null");
+    try std.testing.expectEqual(@as(i64, 4), service.getValue("shape.setting").?.integer);
+    try service.loadWorkspaceJson("[]");
+    try std.testing.expectEqual(@as(i64, 4), service.getValue("shape.setting").?.integer);
+}
