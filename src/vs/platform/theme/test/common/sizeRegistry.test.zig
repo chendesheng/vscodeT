@@ -184,3 +184,76 @@ test "customizations resolve in specificity order through references" {
     defer allocator.free(ignored);
     try std.testing.expectEqualSlices(f64, &.{ 8, 8, 8, 8, 8 }, ignored);
 }
+
+test "base size tokens are registered" {
+    const allocator = std.testing.allocator;
+    var registry = size_utils.SizeRegistry.init(allocator);
+    defer registry.deinit();
+    const base = @import("../../common/sizes/baseSizes.zig");
+    try base.registerBaseSizes(&registry);
+
+    const required = [_][]const u8{
+        base.bodyFontSize,       base.bodyFontSizeSmall, base.codiconFontSize,
+        base.cornerRadiusMedium, base.cornerRadiusSmall, base.cornerRadiusLarge,
+        base.strokeThickness,
+    };
+    for (required) |id| {
+        try std.testing.expect(registry.getSize(id) != null);
+    }
+}
+
+test "size customization schema exposes only bounded semantic tokens" {
+    const allocator = std.testing.allocator;
+    var registry = size_utils.SizeRegistry.init(allocator);
+    defer registry.deinit();
+    const base = @import("../../common/sizes/baseSizes.zig");
+    const semantic = @import("../../common/sizes/semanticSizes.zig");
+    try base.registerBaseSizes(&registry);
+    try semantic.registerSemanticSizes(&registry);
+
+    const schema = registry.getSizeCustomizationSchema();
+    try std.testing.expect(!schema.additional_properties);
+
+    var names = std.array_list.Managed([]const u8).init(allocator);
+    defer names.deinit();
+    var iterator = schema.properties.iterator();
+    while (iterator.next()) |entry| try names.append(entry.key_ptr.*);
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+
+    const expected = [_][]const u8{
+        "activityBar.cornerRadius",
+        "agentsWindow.chatPanels.cornerRadius",
+        "agentsWindow.editorArea.cornerRadius",
+        "agentsWindow.panels.cornerRadius",
+        "agentsWindow.panels.spacing",
+        "agentsWindow.secondarySideBar.cornerRadius",
+        "agentsWindow.toolsPanel.cornerRadius",
+        "editorArea.cornerRadius",
+        "panels.cornerRadius",
+        "panels.spacing",
+        "primarySideBar.cornerRadius",
+        "secondarySideBar.cornerRadius",
+        "toolsPanel.cornerRadius",
+    };
+    try std.testing.expectEqualSlices([]const u8, &expected, names.items);
+
+    const tools = schema.properties.get(semantic.toolsPanelCornerRadius).?;
+    try std.testing.expectEqual(@as(i64, 0), tools.minimum);
+    try std.testing.expectEqual(@as(i64, 8), tools.maximum);
+    try std.testing.expect(schema.properties.get(base.cornerRadiusLarge) == null);
+    try std.testing.expectEqual(@as(usize, expected.len), schema.properties.count());
+}
+
+test "registerSize works with sizeForAllThemes" {
+    const allocator = std.testing.allocator;
+    var registry = size_utils.SizeRegistry.init(allocator);
+    defer registry.deinit();
+    _ = try registry.registerSize("test.allThemes", .{ .defaults = size_utils.sizeForAllThemes(5, .rem) }, "Test all themes", null, null);
+    try std.testing.expect(registry.getSize("test.allThemes") != null);
+    registry.deregisterSize("test.allThemes");
+    try std.testing.expect(registry.getSize("test.allThemes") == null);
+}

@@ -107,21 +107,34 @@ pub fn asCssVariableWithDefault(allocator: Allocator, id: SizeIdentifier, defaul
     return std.fmt.allocPrint(allocator, "var({s}, {s})", .{ name, default_css });
 }
 
+pub const CustomizationProperty = struct {
+    minimum: i64,
+    maximum: i64,
+};
+
+pub const CustomizationSchema = struct {
+    additional_properties: bool,
+    properties: *const std.StringHashMap(CustomizationProperty),
+};
+
 pub const SizeRegistry = struct {
     allocator: Allocator,
     sizes: std.StringHashMap(SizeContribution),
+    customization_properties: std.StringHashMap(CustomizationProperty),
     onDidChangeSchema: Emitter(void),
 
     pub fn init(allocator: Allocator) SizeRegistry {
         return .{
             .allocator = allocator,
             .sizes = std.StringHashMap(SizeContribution).init(allocator),
+            .customization_properties = std.StringHashMap(CustomizationProperty).init(allocator),
             .onDidChangeSchema = Emitter(void).init(allocator),
         };
     }
 
     pub fn deinit(self: *SizeRegistry) void {
         self.sizes.deinit();
+        self.customization_properties.deinit();
         self.onDidChangeSchema.deinit();
     }
 
@@ -140,12 +153,18 @@ pub const SizeRegistry = struct {
             .deprecation_message = deprecation_message,
             .customization = customization,
         });
+        if (customization) |limits| {
+            try self.customization_properties.put(id, .{ .minimum = limits.minimum, .maximum = limits.maximum });
+        } else {
+            _ = self.customization_properties.remove(id);
+        }
         try self.onDidChangeSchema.fire({});
         return id;
     }
 
     pub fn deregisterSize(self: *SizeRegistry, id: SizeIdentifier) void {
         _ = self.sizes.remove(id);
+        _ = self.customization_properties.remove(id);
         self.onDidChangeSchema.fire({}) catch {};
     }
 
@@ -156,6 +175,10 @@ pub const SizeRegistry = struct {
         var iterator = self.sizes.valueIterator();
         while (iterator.next()) |contribution| try result.append(contribution);
         return result.toOwnedSlice();
+    }
+
+    pub fn getSizeCustomizationSchema(self: *SizeRegistry) CustomizationSchema {
+        return .{ .additional_properties = false, .properties = &self.customization_properties };
     }
 
     pub fn getSize(self: *SizeRegistry, id: SizeIdentifier) ?SizeContribution {
