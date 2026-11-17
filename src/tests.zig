@@ -382,6 +382,8 @@ comptime {
     _ = @import("./vs/platform/commands/common/commands.zig");
     _ = @import("./vs/platform/storage/common/storage.zig");
     _ = @import("./vs/workbench/common/memento.zig");
+    _ = @import("./vs/workbench/services/themes/common/colorThemeData.zig");
+    _ = @import("./vs/workbench/services/themes/test/common/colorThemeData.test.zig");
     _ = @import("./vs/workbench/test/common/memento.test.zig");
     _ = @import("./vs/platform/storage/test/common/storageService.test.zig");
     _ = @import("./vs/platform/commands/test/common/commands.test.zig");

@@ -880,8 +880,12 @@ session format left.
 `platform/theme/common/colorUtils.zig` are ported: color transforms (three
 upstream `colorUtils.test.ts` cases) and an explicit `ColorRegistry`
 (contributions, per-theme defaults, update/deregister/resolve, schema-change
-event). The JSON schema contribution, `workbenchThemeService` and
-`colorThemeData` remain.
+event). `workbench/services/themes/common/colorThemeData.zig` ports the
+in-memory theme data (theme/custom/transient colors, derived defaults, base
+theme, token background cache and profile-storage round-trip); four of the five
+`colorThemeData.test.ts` cases pass, while plist/tmTheme loading needs the
+extension resource loader. The JSON schema contribution and
+`workbenchThemeService` remain.
 
 **P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
 registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
