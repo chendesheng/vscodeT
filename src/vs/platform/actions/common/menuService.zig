@@ -18,6 +18,10 @@ const action_module = @import("../../action/common/action.zig");
 const commands = @import("../../commands/common/commands.zig");
 const contextkey = @import("../../contextkey/common/contextkey.zig");
 const base_actions = @import("../../../base/common/actions.zig");
+const storage_mod = @import("../../storage/common/storage.zig");
+const InMemoryStorageService = storage_mod.InMemoryStorageService;
+const StorageScope = storage_mod.StorageScope;
+const StorageTarget = storage_mod.StorageTarget;
 
 const IAction = base_actions.IAction;
 const MenuId = actions.MenuId;
@@ -158,22 +162,90 @@ pub const SubmenuItemAction = struct {
 /// the terminal host has no storage service yet, so the state lives in memory
 /// for the session and `MenuService.deinit` releases it.
 pub const MenuHideState = struct {
+    pub const storage_key = "menu.hiddenCommands";
+
     allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
     hidden: std.StringHashMap(std.StringHashMap(bool)),
     defaults: std.StringHashMap(std.StringHashMap(bool)),
+    storage: ?*InMemoryStorageService = null,
 
     pub fn init(allocator: Allocator) MenuHideState {
         return .{
             .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
             .hidden = std.StringHashMap(std.StringHashMap(bool)).init(allocator),
             .defaults = std.StringHashMap(std.StringHashMap(bool)).init(allocator),
         };
+    }
+
+    /// Loads the persisted `Record<menuId, commandId[]>` state from the
+    /// profile storage, matching upstream `menu.hiddenCommands`.
+    pub fn initWithStorage(allocator: Allocator, storage: *InMemoryStorageService) MenuHideState {
+        var self = init(allocator);
+        self.storage = storage;
+        self.load() catch {};
+        return self;
+    }
+
+    fn load(self: *MenuHideState) !void {
+        const storage = self.storage orelse return;
+        const raw = storage.get(storage_key, .profile, null) orelse return;
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, raw, .{}) catch return;
+        defer parsed.deinit();
+        const object = switch (parsed.value) {
+            .object => |object| object,
+            else => return,
+        };
+        var iterator = object.iterator();
+        while (iterator.next()) |entry| {
+            const command_list = switch (entry.value_ptr.*) {
+                .array => |array| array,
+                else => continue,
+            };
+            for (command_list.items) |command| {
+                const id = switch (command) {
+                    .string => |text| text,
+                    else => continue,
+                };
+                if (self.hidden.getPtr(entry.key_ptr.*) == null) {
+                    const key = try self.arena.allocator().dupe(u8, entry.key_ptr.*);
+                    try self.hidden.put(key, std.StringHashMap(bool).init(self.allocator));
+                }
+                const map = self.hidden.getPtr(entry.key_ptr.*).?;
+                try map.put(try self.arena.allocator().dupe(u8, id), true);
+            }
+        }
+    }
+
+    fn persist(self: *MenuHideState) void {
+        const storage = self.storage orelse return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var root = std.json.ObjectMap{};
+        var menus = self.hidden.iterator();
+        while (menus.next()) |entry| {
+            var array: std.array_list.Managed(std.json.Value) = .init(arena_allocator);
+            var commands_iter = entry.value_ptr.iterator();
+            while (commands_iter.next()) |command| {
+                array.append(.{ .string = command.key_ptr.* }) catch return;
+            }
+            root.put(arena_allocator, entry.key_ptr.*, .{ .array = array }) catch return;
+        }
+
+        var out: std.Io.Writer.Allocating = .init(arena_allocator);
+        defer out.deinit();
+        std.json.Stringify.value(std.json.Value{ .object = root }, .{}, &out.writer) catch return;
+        storage.store(storage_key, .{ .string = out.written() }, .profile, .machine) catch return;
     }
 
     pub fn deinit(self: *MenuHideState) void {
         var hidden_iterator = self.hidden.valueIterator();
         while (hidden_iterator.next()) |map| map.deinit();
         self.hidden.deinit();
+        self.arena.deinit();
         var defaults_iterator = self.defaults.valueIterator();
         while (defaults_iterator.next()) |map| map.deinit();
         self.defaults.deinit();
@@ -198,29 +270,39 @@ pub const MenuHideState = struct {
     pub fn updateHidden(self: *MenuHideState, menu: MenuId, command_id: []const u8, hidden: bool) void {
         const hidden_by_default = self.isHiddenByDefault(menu, command_id);
         const value = if (hidden_by_default) !hidden else hidden;
-        const map = self.hidden.getOrPut(menu.id) catch return;
-        if (!map.found_existing) map.value_ptr.* = std.StringHashMap(bool).init(self.allocator);
+        if (self.hidden.getPtr(menu.id) == null) {
+            const key = self.arena.allocator().dupe(u8, menu.id) catch return;
+            self.hidden.put(key, std.StringHashMap(bool).init(self.allocator)) catch return;
+        }
+        const map = self.hidden.getPtr(menu.id).?;
         if (value) {
-            map.value_ptr.put(command_id, true) catch {};
+            const command_key = self.arena.allocator().dupe(u8, command_id) catch return;
+            map.put(command_key, true) catch return;
         } else {
-            _ = map.value_ptr.remove(command_id);
-            if (map.value_ptr.count() == 0) {
-                _ = self.hidden.remove(menu.id);
+            _ = map.fetchRemove(command_id);
+            if (map.count() == 0) {
+                if (self.hidden.fetchRemove(menu.id)) |removed| {
+                    var removed_map = removed.value;
+                    removed_map.deinit();
+                }
             }
         }
+        self.persist();
     }
 
     pub fn reset(self: *MenuHideState, menu: ?MenuId) void {
         if (menu) |id| {
-            if (self.hidden.getPtr(id.id)) |map| {
-                map.deinit();
-                _ = self.hidden.remove(id.id);
+            if (self.hidden.fetchRemove(id.id)) |removed| {
+                var removed_map = removed.value;
+                removed_map.deinit();
             }
+            self.persist();
             return;
         }
         var iterator = self.hidden.valueIterator();
         while (iterator.next()) |map| map.deinit();
         self.hidden.clearRetainingCapacity();
+        self.persist();
     }
 
     fn isHiddenByDefault(self: *MenuHideState, menu: MenuId, command_id: []const u8) bool {
@@ -241,6 +323,15 @@ pub const MenuService = struct {
             .registry = registry,
             .command_registry = command_registry,
             .hide_state = MenuHideState.init(allocator),
+        };
+    }
+
+    pub fn initWithStorage(allocator: Allocator, registry: *MenuRegistry, command_registry: ?*commands.CommandRegistry, storage: *InMemoryStorageService) MenuService {
+        return .{
+            .allocator = allocator,
+            .registry = registry,
+            .command_registry = command_registry,
+            .hide_state = MenuHideState.initWithStorage(allocator, storage),
         };
     }
 
@@ -527,4 +618,29 @@ test "menu hide state inverts hidden-by-default items" {
     try std.testing.expect(!state.isHidden(menu, "visible"));
     try std.testing.expect(state.isHidden(menu, "hiddenByDefault"));
     try std.testing.expect(!state.isModifiedFromDefault(menu, "visible"));
+}
+
+test "menu hide state persists through storage" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var storage = InMemoryStorageService.init(allocator);
+    defer storage.deinit();
+
+    const menu = MenuId{ .id = "test.persist" };
+
+    var first = MenuService.initWithStorage(allocator, &registry, null, &storage);
+    first.hide_state.setDefaultState(menu, "command", false);
+    first.hide_state.updateHidden(menu, "command", true);
+    try std.testing.expect(first.hide_state.isHidden(menu, "command"));
+    first.deinit();
+
+    var second = MenuService.initWithStorage(allocator, &registry, null, &storage);
+    defer second.deinit();
+    try std.testing.expect(second.hide_state.isHidden(menu, "command"));
+
+    second.hide_state.reset(null);
+    var third = MenuService.initWithStorage(allocator, &registry, null, &storage);
+    defer third.deinit();
+    try std.testing.expect(!third.hide_state.isHidden(menu, "command"));
 }
