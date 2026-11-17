@@ -142,7 +142,6 @@ pub const ContiguousTokensEditing = struct {
     }
 };
 
-
 test "ContiguousTokensEditing.delete skips tokens before the deleted range" {
     const allocator = std.testing.allocator;
     var tokens = ArrayList(TokenPacked).init(allocator);
@@ -157,7 +156,6 @@ test "ContiguousTokensEditing.delete skips tokens before the deleted range" {
     try std.testing.expectEqual(@as(usize, 1), result.items.len);
     try std.testing.expectEqual(@as(u32, 2), result.items[0].endOffset);
 }
-
 
 test "ContiguousTokensEditing.append releases an empty destination buffer" {
     const allocator = std.testing.allocator;
@@ -174,7 +172,6 @@ test "ContiguousTokensEditing.append releases an empty destination buffer" {
     defer result.deinit();
     try std.testing.expectEqual(@as(usize, 1), result.items.len);
 }
-
 
 test "ContiguousTokensEditing.append frees the destination when other is null" {
     const allocator = std.testing.allocator;
