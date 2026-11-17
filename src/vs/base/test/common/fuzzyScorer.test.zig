@@ -685,3 +685,69 @@ test "scoreItem - optimize for file paths and scattering" {
         try std.testing.expectEqual(@as(usize, 13), result.description_match.?[1].start);
     }
 }
+
+test "scoreItem - multiple" {
+    const allocator = std.testing.allocator;
+    var item = fixture("/xyz/some/path/someFile123.txt");
+
+    const res1 = try itemScore(allocator, &item, "xyz some");
+    defer res1.deinit(allocator);
+    try std.testing.expect(res1.score > 0);
+    try std.testing.expectEqual(@as(usize, 1), res1.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 0), res1.label_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 4), res1.label_match.?[0].end);
+    try std.testing.expectEqual(@as(usize, 1), res1.description_match.?.len);
+    try std.testing.expectEqual(@as(usize, 1), res1.description_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 4), res1.description_match.?[0].end);
+
+    const res2 = try itemScore(allocator, &item, "some xyz");
+    defer res2.deinit(allocator);
+    try std.testing.expect(res2.score > 0);
+    try std.testing.expectEqual(res1.score, res2.score);
+    try std.testing.expectEqual(@as(usize, 1), res2.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 0), res2.label_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 4), res2.label_match.?[0].end);
+    try std.testing.expectEqual(@as(usize, 1), res2.description_match.?.len);
+    try std.testing.expectEqual(@as(usize, 1), res2.description_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 4), res2.description_match.?[0].end);
+
+    const res3 = try itemScore(allocator, &item, "some xyz file file123");
+    defer res3.deinit(allocator);
+    try std.testing.expect(res3.score > res2.score);
+    try std.testing.expectEqual(@as(usize, 1), res3.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 0), res3.label_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 11), res3.label_match.?[0].end);
+    try std.testing.expectEqual(@as(usize, 1), res3.description_match.?.len);
+    try std.testing.expectEqual(@as(usize, 1), res3.description_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 4), res3.description_match.?[0].end);
+
+    const res4 = try itemScore(allocator, &item, "path z y");
+    defer res4.deinit(allocator);
+    try std.testing.expect(res4.score > 0);
+    try std.testing.expect(res4.score < res2.score);
+    try std.testing.expectEqual(@as(usize, 0), res4.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 2), res4.description_match.?.len);
+    try std.testing.expectEqual(@as(usize, 2), res4.description_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 4), res4.description_match.?[0].end);
+    try std.testing.expectEqual(@as(usize, 10), res4.description_match.?[1].start);
+    try std.testing.expectEqual(@as(usize, 14), res4.description_match.?[1].end);
+}
+
+test "scoreItem - proper target offset #3" {
+    const allocator = std.testing.allocator;
+    var item = fixture("/src/vs/editor/browser/viewParts/lineNumbers/flipped-cursor-2x.svg");
+    const result = try itemScore(allocator, &item, "debug");
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), result.description_match.?.len);
+    try std.testing.expectEqual(@as(usize, 9), result.description_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 10), result.description_match.?[0].end);
+    try std.testing.expectEqual(@as(usize, 36), result.description_match.?[1].start);
+    try std.testing.expectEqual(@as(usize, 37), result.description_match.?[1].end);
+    try std.testing.expectEqual(@as(usize, 40), result.description_match.?[2].start);
+    try std.testing.expectEqual(@as(usize, 41), result.description_match.?[2].end);
+    try std.testing.expectEqual(@as(usize, 2), result.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 9), result.label_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 10), result.label_match.?[0].end);
+    try std.testing.expectEqual(@as(usize, 20), result.label_match.?[1].start);
+    try std.testing.expectEqual(@as(usize, 21), result.label_match.?[1].end);
+}
