@@ -787,7 +787,7 @@ model/view model and contributions.
 `editor/browser/view/viewUserInputEvents.zig` (view-to-model mouse target
 conversion incl. view zones) are ported, together with the extended
 `MouseTargetType`/view-zone detail; `viewPart.zig`, `viewLayer.zig`,
-`viewOverlays.zig` and the thin `View` orchestrator are next.
+`viewOverlays.zig` and the thin `View` orchestrator are next. `viewContext.zig` and `viewPart.zig` (handler registration + prepare/render callbacks) are now ported too, along with `IViewModel.view_layout`/event-handler hooks; computed editor options remain opaque.
 
 **Suggested commits:**
 
