@@ -80,20 +80,6 @@ pub const DefaultConfiguration = struct {
         self.model.* = merged;
     }
 
-    fn updateProperty(self: *DefaultConfiguration, key: []const u8) !void {
-        if (self.registry.getConfigurationProperties().getPtr(key)) |property| {
-            try self.setDefault(key, property.*);
-            return;
-        }
-        if (self.registry.getExcludedConfigurationProperties().getPtr(key)) |property| {
-            if (property.experiment_mode != null) {
-                try self.setDefault(key, property.*);
-                return;
-            }
-        }
-        self.model.removeValue(key);
-    }
-
     fn setDefault(self: *DefaultConfiguration, key: []const u8, property: configurationRegistry.Property) !void {
         const value = try configuration.cloneValue(self.model.arena.allocator(), property.default);
         try self.model.setValue(key, value);
