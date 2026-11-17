@@ -466,9 +466,8 @@ fn filterValue(arena: Allocator, path: []const u8, value: std.json.Value, option
     const excluded_schema = findSchema(path, options.excluded_schemas);
     if (schema != null) {
         if (!shouldInclude(path, schema, excluded_schema, options)) return null;
-        return try configuration.cloneValue(arena, value);
-    }
-    if (excluded_schema != null) {
+        if (value != .object) return try configuration.cloneValue(arena, value);
+    } else if (excluded_schema != null) {
         if (!shouldInclude(path, null, excluded_schema, options)) return null;
         return try configuration.cloneValue(arena, value);
     }

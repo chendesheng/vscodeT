@@ -406,3 +406,30 @@ test "excluded property schemas bypass skipRestricted but respect scope" {
         try std.testing.expectEqualStrings("excludedValue", model.getValue("excludedProperty").?.string);
     }
 }
+
+test "nested restricted descendants and language overrides are filtered" {
+    const allocator = std.testing.allocator;
+    const schemas = [_]configuration_models.PropertySchemaEntry{
+        .{ .key = "a" },
+        .{ .key = "a.b", .restricted = true },
+    };
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"a\":{\"b\":1,\"c\":2}}", .{ .skip_restricted = true, .schemas = &schemas });
+        defer model.deinit();
+        try std.testing.expect(model.getValue("a.b") == null);
+        try std.testing.expectEqual(@as(i64, 2), model.getValue("a.c").?.integer);
+    }
+    {
+        const unrestricted = [_]configuration_models.PropertySchemaEntry{.{ .key = "a" }};
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"a\":{\"b\":1}}", .{ .skip_restricted = true, .schemas = &unrestricted });
+        defer model.deinit();
+        try std.testing.expectEqual(@as(i64, 1), model.getValue("a.b").?.integer);
+    }
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"[x]\":{\"a.b\":1,\"a.c\":2}}", .{ .skip_restricted = true, .schemas = &schemas });
+        defer model.deinit();
+        try std.testing.expectEqual(@as(usize, 1), model.overrides.len);
+        try std.testing.expect(model.overrides[0].contents.object.get("a").?.object.get("b") == null);
+        try std.testing.expectEqual(@as(i64, 2), model.overrides[0].contents.object.get("a").?.object.get("c").?.integer);
+    }
+}
