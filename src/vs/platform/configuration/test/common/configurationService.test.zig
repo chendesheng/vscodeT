@@ -71,3 +71,22 @@ test "update configuration in non-user target throws" {
         fixture.service.updateValue("configurationService.testSetting", .{ .string = "value" }, .WORKSPACE),
     );
 }
+
+test "lookup nested default values" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{
+        .{ .key = "a.b", .default = std.json.Value{ .integer = 1 } },
+        .{ .key = "a.c", .default = std.json.Value{ .integer = 2 } },
+    });
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+
+    try std.testing.expectEqual(@as(i64, 1), service.getValue("a.b").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), service.getValue("a.c").?.integer);
+    const a = service.getValue("a").?;
+    try std.testing.expectEqual(@as(i64, 1), a.object.get("b").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), a.object.get("c").?.integer);
+}
