@@ -6,6 +6,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
+const factory_mod = @import("../../../common/editor/editorFactory.zig");
 
 pub const ID = "workbench.editors.untitledEditor";
 
@@ -85,4 +86,79 @@ test "UntitledTextEditorInput tracks content and dirty state" {
     defer same.destroy();
     const candidate = editor_input.Candidate{ .input = &same.base };
     try std.testing.expect(input.base.matches(candidate));
+}
+
+pub const UntitledTextEditorSerializer = struct {
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator) UntitledTextEditorSerializer {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn interface(self: *UntitledTextEditorSerializer) factory_mod.IEditorSerializer {
+        return .{
+            .context = self,
+            .canSerialize = canSerialize,
+            .serialize = serialize,
+            .deserialize = deserialize,
+        };
+    }
+
+    fn canSerialize(_: *anyopaque, input: *EditorInput) bool {
+        return std.mem.eql(u8, input.type_id, ID) and input.impl != null;
+    }
+
+    fn serialize(context: *anyopaque, input: *EditorInput, allocator: Allocator) anyerror!?[]const u8 {
+        const self: *UntitledTextEditorSerializer = @ptrCast(@alignCast(context));
+        _ = self;
+        const untitled: *UntitledTextEditorInput = @ptrCast(@alignCast(input.impl orelse return null));
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        var root = std.json.ObjectMap{};
+        const arena = scratch.allocator();
+        try root.put(arena, "name", .{ .string = untitled.base.getName() });
+        try root.put(arena, "content", .{ .string = untitled.getText() });
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        try std.json.Stringify.value(std.json.Value{ .object = root }, .{}, &out.writer);
+        return try out.toOwnedSlice();
+    }
+
+    fn deserialize(context: *anyopaque, data: []const u8) anyerror!?*EditorInput {
+        const self: *UntitledTextEditorSerializer = @ptrCast(@alignCast(context));
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{}) catch return null;
+        defer parsed.deinit();
+        const object = switch (parsed.value) {
+            .object => |object| object,
+            else => return null,
+        };
+        const name = switch (object.get("name") orelse return null) {
+            .string => |value| value,
+            else => return null,
+        };
+        const content = switch (object.get("content") orelse return null) {
+            .string => |value| value,
+            else => return null,
+        };
+        const input = try UntitledTextEditorInput.init(self.allocator, name);
+        errdefer input.destroy();
+        if (content.len > 0) try input.setText(content);
+        return &input.base;
+    }
+};
+
+test "UntitledTextEditorSerializer round-trips content" {
+    const allocator = std.testing.allocator;
+    var input = try UntitledTextEditorInput.init(allocator, "Untitled-2");
+    defer input.destroy();
+    try input.setText("body");
+    var serializer = UntitledTextEditorSerializer.init(allocator);
+    const interface = serializer.interface();
+    const data = (try interface.serialize(interface.context, &input.base, allocator)).?;
+    defer allocator.free(data);
+    const restored = (try interface.deserialize(interface.context, data)).?;
+    const restored_input: *UntitledTextEditorInput = @ptrCast(@alignCast(restored.impl.?));
+    defer restored_input.destroy();
+    try std.testing.expectEqualStrings("Untitled-2", restored_input.base.getName());
+    try std.testing.expectEqualStrings("body", restored_input.getText());
 }
