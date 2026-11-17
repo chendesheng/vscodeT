@@ -933,7 +933,7 @@ to the quick-input widget gaps.
 parses language-override blocks (`[x][y]`, duplicate identifiers dropped),
 supports the `exclude` parse option, and ports the ConfigurationModel parsing
 cases (override identifiers, exclude/exclude-with-include, invalid keys, null
-values), the setValue/removeValue segmented-key cases, and override-model/merge cases (with `ConfigurationModel.override`). The registry/scope-dependent cases (`configurationRegistry`,
+values), the setValue/removeValue segmented-key cases, and override-model/merge cases (with `ConfigurationModel.override`, override-preserving merges and identifier precedence). The registry/scope-dependent cases (`configurationRegistry`,
 `configuration.test`, `configurations`, `policyConfiguration`,
 `configurationService`, `configurationVariables`) remain, as does the TUI
 settings watcher's upstream parity pass.

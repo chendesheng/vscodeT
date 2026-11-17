@@ -202,6 +202,33 @@ pub const ConfigurationModel = struct {
         var result = try self.clone(allocator);
         errdefer result.deinit();
         const arena = result.arena.allocator();
+        // Multi-identifier overrides merge first; an identifier-only override
+        // takes precedence, matching upstream's `getContentsForOverrideIdentifer`.
+        for (self.overrides) |override_value| {
+            if (override_value.identifiers.len <= 1) continue;
+            if (!containsIdentifier(override_value.identifiers, identifier)) continue;
+            if (override_value.contents != .object) continue;
+            try configuration.mergeInto(arena, &result.contents, override_value.contents);
+            for (override_value.keys) |key| {
+                if (!result.hasKey(key)) try result.keys.append(try arena.dupe(u8, key));
+            }
+        }
+        for (self.overrides) |override_value| {
+            if (override_value.identifiers.len != 1 or !std.mem.eql(u8, override_value.identifiers[0], identifier)) continue;
+            if (override_value.contents != .object) continue;
+            try configuration.mergeInto(arena, &result.contents, override_value.contents);
+            for (override_value.keys) |key| {
+                if (!result.hasKey(key)) try result.keys.append(try arena.dupe(u8, key));
+            }
+        }
+        return result;
+    }
+
+    /// Keys contributed by every override block whose identifiers contain
+    /// `identifier`, in first-seen order without duplicates.
+    pub fn getKeysForOverrideIdentifier(self: *const ConfigurationModel, allocator: Allocator, identifier: []const u8) ![]const []const u8 {
+        var keys = std.array_list.Managed([]const u8).init(allocator);
+        errdefer keys.deinit();
         for (self.overrides) |override_value| {
             var matches = false;
             for (override_value.identifiers) |candidate| {
@@ -210,13 +237,19 @@ pub const ConfigurationModel = struct {
                     break;
                 }
             }
-            if (!matches or override_value.contents != .object) continue;
-            try configuration.mergeInto(arena, &result.contents, override_value.contents);
+            if (!matches) continue;
             for (override_value.keys) |key| {
-                if (!result.hasKey(key)) try result.keys.append(try arena.dupe(u8, key));
+                var exists = false;
+                for (keys.items) |existing| {
+                    if (std.mem.eql(u8, existing, key)) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) try keys.append(key);
             }
         }
-        return result;
+        return keys.toOwnedSlice();
     }
 
     /// Merges models left-to-right. Later models win on scalar/array values;
@@ -226,12 +259,38 @@ pub const ConfigurationModel = struct {
         errdefer result.deinit();
         const arena = result.arena.allocator();
 
+        var overrides = std.array_list.Managed(OverrideIdentifier).init(arena);
         for (models) |model| {
             try configuration.mergeInto(arena, &result.contents, model.contents);
             for (model.keys.items) |key| {
                 if (!result.hasKey(key)) try result.keys.append(try arena.dupe(u8, key));
             }
+            for (model.overrides) |override_value| {
+                var existing: ?*OverrideIdentifier = null;
+                for (overrides.items) |*candidate| {
+                    if (sameIdentifiers(candidate.identifiers, override_value.identifiers)) {
+                        existing = candidate;
+                        break;
+                    }
+                }
+                if (existing) |target| {
+                    if (override_value.contents == .object) try configuration.mergeInto(arena, &target.contents, override_value.contents);
+                    for (override_value.keys) |key| {
+                        var found = false;
+                        for (target.keys) |existing_key| {
+                            if (std.mem.eql(u8, existing_key, key)) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) target.keys = try appendKey(arena, target.keys, key);
+                    }
+                } else {
+                    try overrides.append(try cloneOverride(arena, override_value));
+                }
+            }
         }
+        result.overrides = try overrides.toOwnedSlice();
         return result;
     }
 
@@ -246,6 +305,47 @@ pub const ConfigurationModel = struct {
         return result;
     }
 };
+
+fn containsIdentifier(identifiers: []const []const u8, identifier: []const u8) bool {
+    for (identifiers) |candidate| {
+        if (std.mem.eql(u8, candidate, identifier)) return true;
+    }
+    return false;
+}
+
+fn sameIdentifiers(a: []const []const u8, b: []const []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a) |identifier| {
+        var found = false;
+        for (b) |candidate| {
+            if (std.mem.eql(u8, identifier, candidate)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+fn appendKey(arena: Allocator, keys: []const []const u8, key: []const u8) ![]const []const u8 {
+    const result = try arena.alloc([]const u8, keys.len + 1);
+    @memcpy(result[0..keys.len], keys);
+    result[keys.len] = try arena.dupe(u8, key);
+    return result;
+}
+
+fn cloneOverride(arena: Allocator, override_value: OverrideIdentifier) !OverrideIdentifier {
+    var identifiers = std.array_list.Managed([]const u8).init(arena);
+    for (override_value.identifiers) |identifier| try identifiers.append(try arena.dupe(u8, identifier));
+    var keys = std.array_list.Managed([]const u8).init(arena);
+    for (override_value.keys) |key| try keys.append(try arena.dupe(u8, key));
+    return .{
+        .identifiers = try identifiers.toOwnedSlice(),
+        .keys = try keys.toOwnedSlice(),
+        .contents = try configuration.cloneValue(arena, override_value.contents),
+    };
+}
 
 fn isOverrideIdentifierKey(key: []const u8) bool {
     return key.len >= 2 and key[0] == '[' and key[key.len - 1] == ']';
