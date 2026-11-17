@@ -390,3 +390,35 @@ test "anyScore should not require a strong first match" {
     try Check.run(allocator, "bar", "foobAr", "foo^b^A^r");
     try Check.run(allocator, "bar", "foobar", "foo^b^a^r");
 }
+
+test "configurable full match boost" {
+    const allocator = std.testing.allocator;
+    const prefix = "create";
+    const a = "createModelServices";
+    const b = "create";
+    var scorer = try filters.FuzzyScorer.init(allocator);
+    defer scorer.deinit();
+
+    const boost_options = filters.FuzzyScoreOptions{ .boost_full_match = true, .first_match_can_be_weak = true };
+    const a_boost = (try scorer.score(prefix, prefix, 0, a, a, 0, boost_options)).?;
+    defer a_boost.deinit(allocator);
+    const b_boost = (try scorer.score(prefix, prefix, 0, b, b, 0, boost_options)).?;
+    defer b_boost.deinit(allocator);
+    try std.testing.expect(a_boost.score < b_boost.score);
+
+    const word_prefix = "$(symbol-function) ";
+    const a_prefix = word_prefix ++ a;
+    const b_prefix = word_prefix ++ b;
+    const a_prefixed = (try scorer.score(prefix, prefix, 0, a_prefix, a_prefix, word_prefix.len, boost_options)).?;
+    defer a_prefixed.deinit(allocator);
+    const b_prefixed = (try scorer.score(prefix, prefix, 0, b_prefix, b_prefix, word_prefix.len, boost_options)).?;
+    defer b_prefixed.deinit(allocator);
+    try std.testing.expect(a_prefixed.score < b_prefixed.score);
+
+    const no_boost = filters.FuzzyScoreOptions{ .boost_full_match = false, .first_match_can_be_weak = true };
+    const a_flat = (try scorer.score(prefix, prefix, 0, a, a, 0, no_boost)).?;
+    defer a_flat.deinit(allocator);
+    const b_flat = (try scorer.score(prefix, prefix, 0, b, b, 0, no_boost)).?;
+    defer b_flat.deinit(allocator);
+    try std.testing.expectEqual(a_flat.score, b_flat.score);
+}
