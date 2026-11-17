@@ -7,6 +7,7 @@ const color_utils = @import("../../../../../platform/theme/common/colorUtils.zig
 const storage_mod = @import("../../../../../platform/storage/common/storage.zig");
 const ColorThemeData = @import("../../common/colorThemeData.zig").ColorThemeData;
 const TokenStyle = @import("../../../../../platform/theme/common/tokenClassificationRegistry.zig").TokenStyle;
+const token_classification = @import("../../../../../platform/theme/common/tokenClassificationRegistry.zig");
 
 const foreground = "foreground";
 const editor_background = "editor.background";
@@ -300,4 +301,50 @@ test "ColorThemeData: resolveScopes matches rule scopes and specificity" {
     try assertResolvedStyle(theme, &.{"storage.type"}, "#66D9EF", "italic");
     try assertResolvedStyle(theme, &.{ "meta.structure.dictionary.json", "string.quoted.double.json" }, "#66D9EF", null);
     try assertResolvedStyle(theme, &.{"entity.name.type.class"}, "#FF00FF", "underline");
+}
+
+test "ColorThemeData: semantic token super types and languages" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+    var registry = try token_classification.createDefaultRegistry(allocator);
+    defer registry.deinit();
+    try registry.registerTokenType("myTestInterface", "test interface", "interface", null);
+    try registry.registerTokenType("myTestSubInterface", "test sub interface", "myTestInterface", null);
+
+    const theme = try ColorThemeData.createLoadedEmptyTheme(allocator, &fixture.registry, "test-dark");
+    defer theme.deinit();
+    theme.setTokenRegistry(&registry);
+    try theme.setCustomSemanticTokenColors(&.{
+        .{ .selector = "interface", .foreground = "#ff0000" },
+        .{ .selector = "myTestInterface", .italic = true },
+        .{ .selector = "interface.static", .bold = true },
+    });
+    try expectTokenColor(theme, "myTestSubInterface", "#ff0000");
+    const sub = theme.getTokenStyleMetadata("myTestSubInterface", &.{}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), sub.italic);
+    const sub_static = theme.getTokenStyleMetadata("myTestSubInterface", &.{"static"}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), sub_static.italic);
+    try std.testing.expectEqual(@as(?bool, true), sub_static.bold);
+
+    try theme.setCustomSemanticTokenColors(&.{
+        .{ .selector = "interface", .foreground = "#ff0000" },
+        .{ .selector = "myTestInterface", .foreground = "#ff00ff", .italic = true },
+    });
+    try expectTokenColor(theme, "myTestSubInterface", "#ff00ff");
+
+    try theme.setCustomSemanticTokenColors(&.{
+        .{ .selector = "interface", .foreground = "#fff000" },
+        .{ .selector = "interface:java", .foreground = "#ff0000" },
+        .{ .selector = "interface.static", .bold = true },
+        .{ .selector = "interface.static:typescript", .italic = true },
+    });
+    const java_interface = theme.getTokenStyleMetadata("interface", &.{}, "java").?;
+    try std.testing.expectEqual(@as(?bool, null), java_interface.italic);
+    const java_static = theme.getTokenStyleMetadata("interface", &.{"static"}, "java").?;
+    try std.testing.expectEqual(@as(?bool, true), java_static.bold);
+    try std.testing.expectEqual(@as(?bool, null), java_static.italic);
+    const ts_static = theme.getTokenStyleMetadata("interface", &.{"static"}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), ts_static.bold);
+    try std.testing.expectEqual(@as(?bool, true), ts_static.italic);
 }
