@@ -225,7 +225,7 @@ that make the later phases tractable.
 | View model | `vs/editor/common/viewModel/viewModelLines.zig`, `viewModelDecorations.zig`, `modelLineProjection.zig`, `vs/editor/common/coordinatesConverter.zig` | Ported |
 | View layout and line rendering | `vs/editor/common/viewLayout/lineDecorations.zig`, `viewLineRenderer.zig`, `lineHeights.zig`, `linesLayout.zig`, `vs/editor/common/viewModel/inlineDecorations.zig` | Ported |
 | Editor options and layout | `vs/editor/common/config/editorOptions.zig` (option value types, `IComputedEditorOptions`, `EditorLayoutInfoComputer`, `EditorWrappingInfoComputer`), `vs/editor/browser/config/editorConfiguration.zig` (`ComputedEditorOptions`) | Ported: upstream defaults, layout/minimap/wrapping computation and the 21-case `editorLayoutProvider.test.ts`; `IEditorConfiguration.options` is typed |
-| View parts | `vs/editor/browser/viewParts/viewLines/viewLineOptions.zig`, `vs/editor/browser/viewParts/lineNumbers/lineNumbers.zig`, `indentGuides.zig`, `overviewRuler/decorationsOverviewRuler.zig` | Line numbers (absolute/relative/interval/custom, final newline, decoration classes) and view-line options ported with tests; the overlay/part scaffolding now initializes in place so event handlers point at the final object; remaining `viewLines`/`viewLine`, `currentLineHighlight`, selections and cursors are next |
+| View parts | `vs/editor/browser/viewParts/viewLines/viewLineOptions.zig`, `vs/editor/browser/viewParts/lineNumbers/lineNumbers.zig`, `vs/editor/browser/viewParts/currentLineHighlight/currentLineHighlight.zig`, `indentGuides.zig`, `overviewRuler/decorationsOverviewRuler.zig` | Line numbers (absolute/relative/interval/custom, final newline, decoration classes), view-line options and the current-line highlight (content/margin, focus-only, empty-selection, word-wrap first pass) ported with tests; the overlay/part scaffolding now initializes in place so event handlers point at the final object; remaining `viewLines`/`viewLine`, selections and cursors are next |
 | Cursors and edit operations | `vs/editor/common/cursor/...`, `cursorCommon.zig`, `cursorMoveCommands.zig`, `cursorTypeOperations.zig`, `cursorCollection.zig` | Ported; exercised through `editor.zig` |
 | Editor contributions | Find, hover, suggest, bracket matching, word highlighter, smart select, in-place replace, comment, indentation, multicursor, line selection, line operations, snippet, insert-final-newline, word operations | Ported under `vs/editor/contrib/...` |
 | Workbench editor group | `vs/workbench/common/editor/editorGroupModel.zig`, `vs/workbench/services/editor/common/editorGroupsService.zig` | Ported |
@@ -788,7 +788,7 @@ model/view model and contributions.
 `editor/browser/view/viewUserInputEvents.zig` (view-to-model mouse target
 conversion incl. view zones) are ported, together with the extended
 `MouseTargetType`/view-zone detail; `viewPart.zig`, `viewLayer.zig`,
-`viewOverlays.zig` and the thin `View` orchestrator are next; `viewLayer.zig` is also ported (RenderedLinesCollection and the terminal-adapted VisibleLinesCollection window/render loop), with the full `viewLayer.test.ts` case matrix ported; `viewOverlays.zig` ports ViewOverlays/ViewOverlayLine (content/margin subclasses still need layoutInfo options). Visible-lines DOM plumbing stays terminal-side. `viewContext.zig` and `viewPart.zig` (handler registration + prepare/render callbacks) are now ported too, along with `IViewModel.view_layout`/event-handler hooks. The computed-options blocker is removed: `common/config/editorOptions.zig` ports the option value types, `IComputedEditorOptions`, `EditorLayoutInfoComputer` and `EditorWrappingInfoComputer`, `browser/config/editorConfiguration.zig` ports `ComputedEditorOptions` with the upstream defaults and `compute` step, and the 21-case `editorLayoutProvider.test.ts` is ported at the upstream test path. Step 2 has started: `viewParts/viewLines/viewLineOptions.zig` and `viewParts/lineNumbers/lineNumbers.zig` are ported (terminal line-number data instead of DOM HTML) with focused tests, and `ViewPart`/`DynamicViewOverlay` now initialize in place so registered handlers point at the final object. Next are `viewLines`/`viewLine`, `currentLineHighlight`, the selection/cursor parts, then the `View` orchestrator, `viewController.zig` and `codeEditorWidget.zig`.
+`viewOverlays.zig` and the thin `View` orchestrator are next; `viewLayer.zig` is also ported (RenderedLinesCollection and the terminal-adapted VisibleLinesCollection window/render loop), with the full `viewLayer.test.ts` case matrix ported; `viewOverlays.zig` ports ViewOverlays/ViewOverlayLine (content/margin subclasses still need layoutInfo options). Visible-lines DOM plumbing stays terminal-side. `viewContext.zig` and `viewPart.zig` (handler registration + prepare/render callbacks) are now ported too, along with `IViewModel.view_layout`/event-handler hooks. The computed-options blocker is removed: `common/config/editorOptions.zig` ports the option value types, `IComputedEditorOptions`, `EditorLayoutInfoComputer` and `EditorWrappingInfoComputer`, `browser/config/editorConfiguration.zig` ports `ComputedEditorOptions` with the upstream defaults and `compute` step, and the 21-case `editorLayoutProvider.test.ts` is ported at the upstream test path. Step 2 has started: `viewParts/viewLines/viewLineOptions.zig`, `viewParts/lineNumbers/lineNumbers.zig` and `viewParts/currentLineHighlight/currentLineHighlight.zig` are ported (structured terminal data instead of DOM HTML) with focused tests, and `ViewPart`/`DynamicViewOverlay` now initialize in place so registered handlers point at the final object. Next are `viewLines`/`viewLine`, the selection/cursor parts, then the `View` orchestrator, `viewController.zig` and `codeEditorWidget.zig`.
 
 **Suggested commits:**
 
@@ -1034,7 +1034,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 1,959 editor tests + 187 UI
+**Current implementation snapshot (clean build, 1,964 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1051,7 +1051,7 @@ ConfigurationService; P5d tests are ported with the service registration surface
 pending; P5e has the URI/file-service/editor-input foundation and needs the
 full provider file service and the working-copy wiring.
 
-**Status at the end of the current session:** 1,959 editor tests, 187 UI tests
+**Status at the end of the current session:** 1,964 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor view/controller/widget stack and the URI/file
