@@ -57,17 +57,27 @@ pub const DefaultConfiguration = struct {
 
     /// Updates the given properties (or all when `properties == null`).
     pub fn onDidUpdateConfiguration(self: *DefaultConfiguration, properties: ?[]const []const u8) !void {
-        if (properties) |keys| {
-            for (keys) |key| try self.updateProperty(key);
-            return;
-        }
+        _ = properties;
+        // Rebuild from scratch so JSON default contributions layered over the
+        // registered property defaults are included (and later wins).
+        var fresh = try ConfigurationModel.initEmpty(self.allocator);
+        defer fresh.deinit();
         var iterator = self.registry.getConfigurationProperties().iterator();
-        while (iterator.next()) |entry| try self.setDefault(entry.key_ptr.*, entry.value_ptr.*);
+        while (iterator.next()) |entry| {
+            const value = try configuration.cloneValue(fresh.arena.allocator(), entry.value_ptr.default);
+            try fresh.setValue(entry.key_ptr.*, value);
+        }
         var excluded = self.registry.getExcludedConfigurationProperties().iterator();
         while (excluded.next()) |entry| {
             if (entry.value_ptr.experiment_mode == null) continue;
-            try self.setDefault(entry.key_ptr.*, entry.value_ptr.*);
+            const value = try configuration.cloneValue(fresh.arena.allocator(), entry.value_ptr.default);
+            try fresh.setValue(entry.key_ptr.*, value);
         }
+        var contributed = try self.registry.buildDefaultModel(self.allocator);
+        defer contributed.deinit();
+        const merged = try ConfigurationModel.merge(self.allocator, &.{ &fresh, &contributed });
+        self.model.deinit();
+        self.model.* = merged;
     }
 
     fn updateProperty(self: *DefaultConfiguration, key: []const u8) !void {

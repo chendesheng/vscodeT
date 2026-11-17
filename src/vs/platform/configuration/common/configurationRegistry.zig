@@ -449,6 +449,7 @@ pub const ConfigurationRegistry = struct {
         model.* = try ConfigurationModel.fromJson(self.allocator, text);
         errdefer model.deinit();
         try self.defaults.append(model);
+        self.on_did_update_configuration.fire(&.{}) catch {};
     }
 
     /// Produces the merged default model. The caller owns the returned model.

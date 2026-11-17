@@ -376,3 +376,19 @@ test "non-object workspace settings are ignored" {
     try service.loadWorkspaceJson("[]");
     try std.testing.expectEqual(@as(i64, 4), service.getValue("shape.setting").?.integer);
 }
+
+test "default configurations can contribute language overrides" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "editor.tabSize", .default = std.json.Value{ .integer = 4 } }});
+    try registry.registerDefaultsJson("{\"[typescript]\":{\"editor.tabSize\":2}}");
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try std.testing.expectEqual(@as(i64, 4), service.getValue("editor.tabSize").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), (try service.getValueWithOverrides("editor.tabSize", "typescript")).?.integer);
+
+    try registry.registerDefaultsJson("{\"[python]\":{\"editor.tabSize\":3}}");
+    try std.testing.expectEqual(@as(i64, 3), (try service.getValueWithOverrides("editor.tabSize", "python")).?.integer);
+}
