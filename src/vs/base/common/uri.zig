@@ -99,6 +99,10 @@ pub const URI = struct {
         return makeComponents(allocator, components, strict);
     }
 
+    pub fn revive(allocator: Allocator, components: Components) !URI {
+        return makeComponents(allocator, components, false);
+    }
+
     pub fn isUri(value: anytype) bool {
         const T = @TypeOf(value);
         if (T != URI and T != *const URI and T != *URI) return false;
@@ -159,6 +163,10 @@ pub fn extname(uri: *const URI) []const u8 {
     return pathExtname(uri.path);
 }
 
+pub fn uriToFsPath(uri: *const URI) []const u8 {
+    return uri.path;
+}
+
 pub fn isUriComponents(value: Components) bool {
     return std.mem.indexOfAny(u8, value.scheme, " \t") == null;
 }
@@ -189,6 +197,7 @@ fn referenceResolution(scheme: []const u8, path: []const u8, allocator: Allocato
 
 fn makeComponents(allocator: Allocator, components: Components, strict: bool) !URI {
     var scheme = components.scheme;
+    if (scheme.len == 0 and strict) return error.MissingScheme;
     if (scheme.len == 0 and !strict) scheme = "file";
     if (scheme.len > 0 and !schemeValid(scheme)) return error.InvalidScheme;
     if (components.path.len > 0) {
@@ -334,4 +343,23 @@ test "URI components round-trip" {
     const text = try uri.toString(allocator);
     defer allocator.free(text);
     try std.testing.expectEqualStrings("untitled:/Untitled-1", text);
+}
+
+test "URI parse defaults to file and strict validates missing schemes" {
+    const allocator = std.testing.allocator;
+    var parsed = try URI.parse(allocator, "foo/bar", false);
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("file", parsed.scheme);
+    try std.testing.expectEqualStrings("/foo/bar", parsed.path);
+    try std.testing.expectError(error.MissingScheme, URI.parse(allocator, "foo/bar", true));
+}
+
+test "URI revive preserves components" {
+    const allocator = std.testing.allocator;
+    var revived = try URI.revive(allocator, .{ .scheme = "vscode-test", .authority = "host", .path = "/p", .query = "q", .fragment = "f" });
+    defer revived.deinit();
+    const text = try revived.toString(allocator);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("vscode-test://host/p?q#f", text);
+    try std.testing.expectEqualStrings("/p", uriToFsPath(&revived));
 }
