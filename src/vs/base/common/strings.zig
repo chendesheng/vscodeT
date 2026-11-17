@@ -256,6 +256,20 @@ test "equalsIgnoreCase" {
     try std.testing.expect(!equalsIgnoreCase("abc", "abd"));
 }
 
+/// ASCII case-insensitive suffix test, mirroring upstream `endsWithIgnoreCase`.
+pub fn endsWithIgnoreCase(str: []const u8, candidate: []const u8) bool {
+    if (candidate.len > str.len) return false;
+    return equalsIgnoreCase(str[str.len - candidate.len ..], candidate);
+}
+
+test "endsWithIgnoreCase" {
+    try std.testing.expect(endsWithIgnoreCase("", ""));
+    try std.testing.expect(endsWithIgnoreCase("abc", "ABC"));
+    try std.testing.expect(endsWithIgnoreCase("abc", "bc"));
+    try std.testing.expect(!endsWithIgnoreCase("abc", "ab"));
+    try std.testing.expect(!endsWithIgnoreCase("abc", "abcd"));
+}
+
 /// ASCII case-insensitive prefix test, mirroring upstream `startsWithIgnoreCase`.
 pub fn startsWithIgnoreCase(str: []const u8, candidate: []const u8) bool {
     return candidate.len <= str.len and equalsIgnoreCase(str[0..candidate.len], candidate);

@@ -791,6 +791,13 @@ Editor contributions:
   portable URI/file-service/editor-input layer (P5e) still needs the full
   provider file service and the concrete working-copy wiring.
 
+- Language associations: `editor/common/services/languagesAssociations.zig` ports
+  the platform/configured association registry and matching (exact filename,
+  longest pattern, longest extension, registration order, first-line matchers,
+  data-URI labels) with the upstream test suite; `base/common/strings.zig` gained
+  `endsWithIgnoreCase`. The workbench `languageService.ts` registration surface
+  that would replace `src/tui/language.zig` still needs to be ported.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory

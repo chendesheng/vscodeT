@@ -905,8 +905,15 @@ customization settings). The extension-point theme enums/dynamic schema updates,
 the icon-theme getters and the `fontSize`->`lineHeight` token-customization
 rewrite remain.
 
-**P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
-registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
+**P5d status:** `editor/common/services/languagesAssociations.zig` ports the
+platform/configured language association registry, path/first-line matching
+(exact filename, longest pattern, longest extension, registration order,
+first-line predicates, data-URI labels) and the 10 upstream
+`languagesAssociations.test.ts` cases; `base/common/strings.zig` gained
+`endsWithIgnoreCase`. The editor `LanguageService` still uses its older
+path matcher and the workbench `languageService.ts` registration surface that
+would replace `src/tui/language.zig` remains. `languageConfigurationRegistry.zig`
+now carries the upstream registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
 change events) and the 11 `languageConfiguration.test.ts` cases pass; the TUI
 `languageConfiguration.zig` service consumes it. Still missing: the workbench
 `languageService.ts` registration surface that would replace `src/tui/language.zig`
@@ -1045,7 +1052,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,009 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,020 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1062,7 +1069,7 @@ ConfigurationService; P5d tests are ported with the service registration surface
 pending; P5e has the URI/file-service/editor-input foundation and needs the
 full provider file service and the working-copy wiring.
 
-**Status at the end of the current session:** 2,009 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,020 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor view/controller/widget stack and the URI/file
