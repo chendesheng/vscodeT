@@ -1059,7 +1059,8 @@ pending; P5e (URI/file/editor input) is not started.
   `matchesStrictPrefix` and `matchesCamelCase` are ported with their upstream
   cases (including camel-case heuristics, weak-first fuzzy scoring and the
   many-matches, graceful-permutation, #26423/#26995/#26511 and
-  separator-only cases, plus the `patternPos`/`wordPos` regressions; a signed
+  separator-only, top-score ranking and HTML closing-tag cases, plus the
+  `patternPos`/`wordPos` regressions; a signed
   skipped-character penalty fixes a pattern-start underflow found there); the Unicode/alternate-character WordFilter cases in
   `filters.test.ts` remain unported; separator equivalence, `C++`, punctuation
   boundaries and the basic word cases are covered by the recursive port.

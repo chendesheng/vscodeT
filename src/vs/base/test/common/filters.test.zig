@@ -182,6 +182,20 @@ test "topScore - fuzzyScore" {
     try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "onMess", &.{ "onmessage", "onMessage", "onThisMegaEscape" }));
     try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "CC", &.{ "camelCase", "CamelCase" }));
     try std.testing.expectEqual(@as(usize, 0), try topScoreIndex(allocator, "cC", &.{ "camelCase", "CamelCase" }));
+    try std.testing.expectEqual(@as(usize, 4), try topScoreIndex(allocator, "p", &.{ "parse", "posix", "pafdsa", "path", "p" }));
+    try std.testing.expectEqual(@as(usize, 0), try topScoreIndex(allocator, "pa", &.{ "parse", "pafdsa", "path" }));
+    try std.testing.expectEqual(@as(usize, 3), try topScoreIndex(allocator, "log", &.{ "HTMLOptGroupElement", "ScrollLogicalPosition", "SVGFEMorphologyElement", "log", "logger" }));
+    try std.testing.expectEqual(@as(usize, 2), try topScoreIndex(allocator, "e", &.{ "AbstractWorker", "ActiveXObject", "else" }));
+    try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "workbench.sideb", &.{ "workbench.editor.defaultSideBySideLayout", "workbench.sideBar.location" }));
+    try std.testing.expectEqual(@as(usize, 2), try topScoreIndex(allocator, "editor.r", &.{ "diffEditor.renderSideBySide", "editor.overviewRulerlanes", "editor.renderControlCharacter", "editor.renderWhitespace" }));
+    try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "-mo", &.{ "-ms-ime-mode", "-moz-columns" }));
+    try std.testing.expectEqual(@as(usize, 0), try topScoreIndex(allocator, "convertModelPosition", &.{ "convertModelPositionToViewPosition", "convertViewToModelPosition" }));
+    try std.testing.expectEqual(@as(usize, 0), try topScoreIndex(allocator, "is", &.{ "isValidViewletId", "import statement" }));
+    try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "title", &.{ "files.trimTrailingWhitespace", "window.title" }));
+    try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "const", &.{ "constructor", "const", "cuOnstrul" }));
+    try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "_lines", &.{ "_lineStarts", "_lines" }));
+    try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "_lines", &.{ "_lineS", "_lines" }));
+    try std.testing.expectEqual(@as(usize, 0), try topScoreIndex(allocator, "_lineS", &.{ "_lineS", "_lines" }));
 }
 
 fn expectWordMatch(allocator: std.mem.Allocator, word: []const u8, target: []const u8) !void {
@@ -562,4 +576,11 @@ test "pattern position #79815" {
     try assertMatchesAt(allocator, ":p", "proP", "pro^P", 1, 1, .{});
     try assertMatchesAt(allocator, ":p", "aprop", "a^prop", 1, 0, .{ .first_match_can_be_weak = true });
     try assertMatchesAt(allocator, ":p", "aprop", null, 1, 0, .{ .first_match_can_be_weak = false });
+}
+
+test "HTML closing tag proposal filtered out #38880" {
+    const allocator = std.testing.allocator;
+    try assertMatchesAt(allocator, "\t\t<", "\t\t</body>", "^\t^\t^</body>", 0, 0, .{});
+    try assertMatchesAt(allocator, "\t\t<", "\t\t</body>", "\t\t^</body>", 2, 0, .{});
+    try assertMatchesAt(allocator, "\t<", "\t</body>", "\t^</body>", 1, 0, .{});
 }
