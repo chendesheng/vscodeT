@@ -294,9 +294,10 @@ console API for raw mode, sizing and input polling.
   open, honors `.gitignore`/`.ignore` through the same ported `IgnoreFile`,
   skips `.git`, `.hg`, `.svn`, `node_modules`, `.zig-cache`, `zig-cache` and
   `zig-out`, does not follow symlinks, does not honor `search.exclude`, and
-  caps at 100,000 files. Matching uses the ported
-  `filters.fuzzyScore` scorer; the browser `fuzzyScorer.ts` path-aware scorer
-  and its identity/prefix boosts are not ported. Symbol (`@`), go-to-line
+  caps at 100,000 files. Matching uses the ported `fuzzyScorer.scoreItemFuzzy`
+  label/description/path scorer, including its path-identity, label-prefix and
+  match-compactness boosts; the scorer cache is not used by the picker.
+  Symbol (`@`), go-to-line
   (`:`), link and help providers, absolute/relative path queries, open-to-side,
   icons, quick-input buttons and keybinding labels are not ported. Command
   history is in memory for the session.
@@ -740,6 +741,7 @@ Editor contributions:
   home/end, page up/down) resolve through the registry. Unregistered
   combinations (Alt+Arrow line moves, Ctrl+Alt cursors, Alt+Shift smart
   selection) and the editing keys (enter/tab/backspace/delete/escape) still
-  use the hand-written dispatch until the core-command layer is ported. Quick open has no `fuzzyScorer.ts`
-  path-aware scoring, symbol/go-to-line/link providers, quick-input buttons,
+  use the hand-written dispatch until the core-command layer is ported. Quick open
+  uses the ported path-aware item scorer but has no symbol/go-to-line/link
+  providers, quick-input buttons,
   icons, keybinding labels or persisted command history.
