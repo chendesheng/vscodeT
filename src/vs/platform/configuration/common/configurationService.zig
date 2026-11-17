@@ -89,6 +89,25 @@ pub const ConfigurationService = struct {
         self.onDidChange.fire(.{ .source = .WORKSPACE, .keys = self.workspace.getKeys() }) catch {};
     }
 
+    /// Override-aware inspect; pointers live in the scratch arena until the
+    /// next override lookup.
+    pub fn inspectWithOverride(self: *ConfigurationService, key: []const u8, identifier: []const u8) !InspectValue {
+        _ = self.scratch.reset(.retain_capacity);
+        const scratch = self.scratch.allocator();
+        var workspace = try self.workspace.override(scratch, identifier);
+        var user = try self.user.override(scratch, identifier);
+        var defaults = try self.defaults.configurationModel().override(scratch, identifier);
+        const workspace_value = workspace.getValue(key);
+        const user_value = user.getValue(key);
+        const default_value = defaults.getValue(key);
+        return .{
+            .default_value = default_value,
+            .user_value = user_value,
+            .workspace_value = workspace_value,
+            .value = workspace_value orelse user_value orelse default_value,
+        };
+    }
+
     pub fn inspect(self: *ConfigurationService, key: []const u8) InspectValue {
         const user_value = self.user.getValue(key);
         const workspace_value = self.workspace.getValue(key);
