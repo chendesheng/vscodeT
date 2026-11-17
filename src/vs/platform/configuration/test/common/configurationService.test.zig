@@ -317,3 +317,17 @@ test "updating to the default value clears the user setting" {
     try std.testing.expect(!configurationService.isConfigured(service.inspect("clear.setting")));
     try std.testing.expectEqual(@as(i64, 4), service.getValue("clear.setting").?.integer);
 }
+
+test "invalid workspace settings reset to an empty workspace model" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "workspace.setting", .default = std.json.Value{ .integer = 4 } }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try service.loadWorkspaceJson("{\"workspace.setting\":2}");
+    try std.testing.expectEqual(@as(i64, 2), service.getValue("workspace.setting").?.integer);
+    try service.loadWorkspaceJson("{invalid");
+    try std.testing.expectEqual(@as(i64, 4), service.getValue("workspace.setting").?.integer);
+}

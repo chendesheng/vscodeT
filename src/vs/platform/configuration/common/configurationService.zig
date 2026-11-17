@@ -85,8 +85,9 @@ pub const ConfigurationService = struct {
 
     /// Replaces the workspace configuration from a JSON(C) document.
     pub fn loadWorkspaceJson(self: *ConfigurationService, text: []const u8) !void {
+        const parsed = try ConfigurationModel.fromJson(self.allocator, text);
         self.workspace.deinit();
-        self.workspace = try ConfigurationModel.fromJson(self.allocator, text);
+        self.workspace = parsed;
         self.onDidChange.fire(.{ .source = .WORKSPACE, .keys = self.workspace.getKeys() }) catch {};
     }
 
