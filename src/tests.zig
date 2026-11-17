@@ -389,6 +389,8 @@ comptime {
     _ = @import("./vs/platform/commands/test/common/commands.test.zig");
     _ = @import("./vs/base/common/errorMessage.zig");
     _ = @import("./vs/base/common/linkedText.zig");
+    _ = @import("./vs/base/common/severity.zig");
+    _ = @import("./vs/platform/progress/common/progress.zig");
     _ = @import("./vs/base/test/common/linkedText.test.zig");
     _ = @import("./vs/base/common/iconLabels.zig");
     _ = @import("./vs/platform/notification/common/notificationMessage.zig");
