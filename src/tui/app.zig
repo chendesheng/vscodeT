@@ -1582,7 +1582,35 @@ test "app: navigation keys resolve through the keybinding registry" {
     try std.testing.expect(try editor.dispatchShortcut(shift_left));
     try std.testing.expectEqualDeep(Selection.init(1, 2, 1, 1), editor.modelSelection());
 
-    // Unregistered combinations keep falling back to the legacy dispatch.
+    // Smart selection is registered now and resolves through the host.
     const alt_shift_left = input.KeyEvent{ .key = .left, .mods = .{ .alt = true, .shift = true } };
-    try std.testing.expect(!(try editor.dispatchShortcut(alt_shift_left)));
+    try std.testing.expect(try editor.dispatchShortcut(alt_shift_left));
+
+    // Unregistered combinations keep falling back to the legacy dispatch.
+    const ctrl_alt_left = input.KeyEvent{ .key = .left, .mods = .{ .ctrl = true, .alt = true } };
+    try std.testing.expect(!(try editor.dispatchShortcut(ctrl_alt_left)));
+}
+
+test "app: editing keys resolve through the keybinding registry" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setSelections(&[_]Selection{Selection.init(1, 3, 1, 3)});
+    try std.testing.expect(try editor.dispatchShortcut(.{ .key = .enter }));
+    try std.testing.expectEqual(@as(usize, 2), editor.model.getLineCount());
+
+    try std.testing.expect(try editor.dispatchShortcut(.{ .key = .backspace }));
+    try std.testing.expectEqual(@as(usize, 1), editor.model.getLineCount());
+
+    try std.testing.expect(try editor.dispatchShortcut(.{ .key = .tab }));
+    const line = try editor.model.getLineContent(1);
+    defer line.deinit();
+    // The default language configuration inserts spaces up to the tab stop;
+    // the caret sits after "ab" once the newline is removed.
+    try std.testing.expectEqualStrings("ab  c", line.items);
 }

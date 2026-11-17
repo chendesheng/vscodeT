@@ -360,14 +360,20 @@ pub const Editor = struct {
             .left, .right, .up, .down, .home, .end, .page_up, .page_down => true,
             else => false,
         };
-        if (!is_navigation) {
-            if (!is_char or (!event.mods.ctrl and !event.mods.alt)) return false;
+        const is_editing = switch (event.key) {
+            .enter, .tab, .backtab, .backspace, .delete, .escape => true,
+            else => false,
+        };
+        const blocked = event.mods.ctrl or event.mods.alt;
+        if (!is_navigation and !is_editing) {
+            if (!is_char or !blocked) return false;
         }
+        if (is_editing and blocked) return false;
 
         try self.ensureShortcutKeybindings();
         const command = try self.keybindings.?.dispatch(event, tui_keybindings.empty_context);
-        if (!is_navigation) return true;
-        return command != null or self.keybindings.?.inChordMode();
+        if (is_navigation or is_editing) return command != null or self.keybindings.?.inChordMode();
+        return true;
     }
 
     pub fn deinit(self: *Editor) void {
@@ -1827,6 +1833,15 @@ pub const Editor = struct {
         self.setMessage("Saved {s}", .{self.path});
     }
 
+    /// Escape behavior: drop secondary cursors first, otherwise cancel the
+    /// current selection.
+    pub fn cancelSelectionOrCursors(self: *Editor) !void {
+        if (self.cursorCount() > 1) {
+            return self.removeSecondaryCursors();
+        }
+        return self.cancelSelection();
+    }
+
     pub fn requestQuit(self: *Editor) bool {
         if (!self.isDirty()) return true;
         if (self.quit_armed) return true;
@@ -2751,6 +2766,20 @@ const shortcut_specs = [_]struct {
     .{ .id = "cursorTopSelect", .run = cmd_cursorTopSelect },
     .{ .id = "cursorBottom", .run = cmd_cursorBottom },
     .{ .id = "cursorBottomSelect", .run = cmd_cursorBottomSelect },
+    .{ .id = "editor.action.moveLinesUp", .run = cmd_editor_action_moveLinesUp },
+    .{ .id = "editor.action.copyLinesUp", .run = cmd_editor_action_copyLinesUp },
+    .{ .id = "editor.action.moveLinesDown", .run = cmd_editor_action_moveLinesDown },
+    .{ .id = "editor.action.copyLinesDown", .run = cmd_editor_action_copyLinesDown },
+    .{ .id = "editor.action.insertCursorAbove", .run = cmd_editor_action_insertCursorAbove },
+    .{ .id = "editor.action.insertCursorBelow", .run = cmd_editor_action_insertCursorBelow },
+    .{ .id = "editor.action.smartSelect.shrink", .run = cmd_editor_action_smartSelect_shrink },
+    .{ .id = "editor.action.smartSelect.expand", .run = cmd_editor_action_smartSelect_expand },
+    .{ .id = "lineBreakInsert", .run = cmd_lineBreakInsert },
+    .{ .id = "tab", .run = cmd_tab },
+    .{ .id = "outdent", .run = cmd_outdent },
+    .{ .id = "deleteLeft", .run = cmd_deleteLeft },
+    .{ .id = "deleteRight", .run = cmd_deleteRight },
+    .{ .id = "editor.action.cancelSelection", .run = cmd_editor_action_cancelSelection },
 };
 
 fn editorOf(context: *anyopaque) *Editor {
@@ -2882,6 +2911,49 @@ fn cmd_cursorBottomSelect(context: *anyopaque) anyerror!void {
     return editorOf(context).moveDocEnd(true);
 }
 
+fn cmd_editor_action_moveLinesUp(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveLines(false);
+}
+fn cmd_editor_action_copyLinesUp(context: *anyopaque) anyerror!void {
+    return editorOf(context).copyLines(false);
+}
+fn cmd_editor_action_moveLinesDown(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveLines(true);
+}
+fn cmd_editor_action_copyLinesDown(context: *anyopaque) anyerror!void {
+    return editorOf(context).copyLines(true);
+}
+fn cmd_editor_action_insertCursorAbove(context: *anyopaque) anyerror!void {
+    return editorOf(context).addCursorAbove();
+}
+fn cmd_editor_action_insertCursorBelow(context: *anyopaque) anyerror!void {
+    return editorOf(context).addCursorBelow();
+}
+fn cmd_editor_action_smartSelect_shrink(context: *anyopaque) anyerror!void {
+    return editorOf(context).growSelection(false);
+}
+fn cmd_editor_action_smartSelect_expand(context: *anyopaque) anyerror!void {
+    return editorOf(context).growSelection(true);
+}
+fn cmd_lineBreakInsert(context: *anyopaque) anyerror!void {
+    return editorOf(context).newline();
+}
+fn cmd_tab(context: *anyopaque) anyerror!void {
+    return editorOf(context).insertTab();
+}
+fn cmd_outdent(context: *anyopaque) anyerror!void {
+    return editorOf(context).outdent();
+}
+fn cmd_deleteLeft(context: *anyopaque) anyerror!void {
+    return editorOf(context).deleteLeft();
+}
+fn cmd_deleteRight(context: *anyopaque) anyerror!void {
+    return editorOf(context).deleteRight();
+}
+fn cmd_editor_action_cancelSelection(context: *anyopaque) anyerror!void {
+    return editorOf(context).cancelSelectionOrCursors();
+}
+
 const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.files.save", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyS) } },
     .{ .id = "undo", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyZ) } },
@@ -2926,4 +2998,18 @@ const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "cursorTopSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Home) } },
     .{ .id = "cursorBottom", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.End) } },
     .{ .id = "cursorBottomSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.End) } },
+    .{ .id = "editor.action.moveLinesUp", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.UpArrow) } },
+    .{ .id = "editor.action.copyLinesUp", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.UpArrow) } },
+    .{ .id = "editor.action.moveLinesDown", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.DownArrow) } },
+    .{ .id = "editor.action.copyLinesDown", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.DownArrow) } },
+    .{ .id = "editor.action.insertCursorAbove", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.UpArrow) } },
+    .{ .id = "editor.action.insertCursorBelow", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.DownArrow) } },
+    .{ .id = "editor.action.smartSelect.shrink", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.LeftArrow) } },
+    .{ .id = "editor.action.smartSelect.expand", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.RightArrow) } },
+    .{ .id = "lineBreakInsert", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Enter), .secondary = &.{key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Enter)} } },
+    .{ .id = "tab", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Tab) } },
+    .{ .id = "outdent", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Tab) } },
+    .{ .id = "deleteLeft", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Backspace) } },
+    .{ .id = "deleteRight", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Delete) } },
+    .{ .id = "editor.action.cancelSelection", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Escape) } },
 };
