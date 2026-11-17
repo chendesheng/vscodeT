@@ -236,7 +236,7 @@ that make the later phases tractable.
 | Quick input | `vs/platform/quickinput/browser/quickAccess.zig`, `quickInput.zig`, `commandsQuickAccess.zig`, `vs/workbench/contrib/quickaccess/...`, `anythingQuickAccess.zig` | Ported; TUI widget is the terminal view |
 | Services | `history`, `undoRedo`, `notifications`, `workspaceContext`, `commands` | Ported |
 | Keys and chords | `vs/base/common/keyCodes.zig`, `keybindings.zig`, `platform.zig`, `keybindingLabels.zig`, `vs/platform/keybinding/common/{baseResolvedKeybinding,usLayoutResolvedKeybinding}.zig` | Ported with the `keyCodes.test.ts` (4) and `keybindingLabels.test.ts` (5) cases; P3 foundation (no registry/resolver yet) |
-| Context keys | `vs/platform/contextkey/common/scanner.zig` | Scanner ported with the 34 `scanner.test.ts` cases; expression model/parser/service still to port |
+| Context keys | `vs/platform/contextkey/common/scanner.zig`, `contextkey.zig` | Scanner (34 upstream cases) and the expression model ported: all non-regex expression types, normalization (sort/dedupe/OR distribution/redundant-term checks), evaluation, serialization, keys, negation, `cmp`/equality and `implies`; parser, regex expressions and `contextKeyService` still to port |
 | Language configuration | `vs/editor/common/languages/languageConfigurationRegistry.zig` (`LanguageConfigurationRegistry`, `LanguageConfigurationRegistration`) | Ported priority registration/merging, default plaintext contribution and invalidation; the TUI service promotes `LanguageService` configurations into it; 11 `languageConfiguration.test.ts` cases ported |
 | Theme | `vs/platform/theme/common/themeService.zig`, `theme.zig` | Minimal; no workbench color registry or theme service |
 | Editor widget contracts | `vs/editor/browser/editorBrowser.zig` (149 lines), `editorExtensions.zig` (117 lines) | Partial contracts; no widget/controller implementation |
@@ -717,8 +717,10 @@ commands as actions.
   `keybindingLabels.zig` and `platform/keybinding/common/baseResolvedKeybinding.zig`
   + `usLayoutResolvedKeybinding.zig`; the 4 `keyCodes.test.ts` and 5
   `keybindingLabels.test.ts` cases are ported. `platform/contextkey/common/scanner.zig`
-  ports the context-key scanner and its 34 upstream cases; the expression
-  model/parser and `contextKeyService` remain.
+  ports the context-key scanner and its 34 upstream cases;
+  `platform/contextkey/common/contextkey.zig` ports the expression model
+  (evaluation/normalization/negation/`implies`). The `when`-clause parser,
+  regex expressions and `contextKeyService` remain.
 - `platform/actions/common/actions.zig` — `Action2`, `MenuId`,
   `MenuRegistry`, menu contributions; port `menuService` as needed for the
   command picker.
