@@ -34,6 +34,8 @@ pub const ConfigurationService = struct {
     onDidChange: @import("../../../base/common/event.zig").Emitter(configuration.Change),
     scratch: std.heap.ArenaAllocator,
     registry_listener: ?usize = null,
+    /// When false, workspace values for restricted settings are ignored.
+    trusted: bool = true,
 
     pub fn init(allocator: Allocator, registry: *configurationRegistry.ConfigurationRegistry) !*ConfigurationService {
         const self = try allocator.create(ConfigurationService);
@@ -83,8 +85,10 @@ pub const ConfigurationService = struct {
         const identifier = override_identifier orelse return self.getValue(key);
         _ = self.scratch.reset(.retain_capacity);
         const scratch = self.scratch.allocator();
-        var workspace = try self.workspace.override(scratch, identifier);
-        if (workspace.getValue(key)) |value| return value;
+        if (self.trusted) {
+            var workspace = try self.workspace.override(scratch, identifier);
+            if (workspace.getValue(key)) |value| return value;
+        }
         var user = try self.user.override(scratch, identifier);
         if (user.getValue(key)) |value| return value;
         var defaults = try self.defaults.configurationModel().override(scratch, identifier);
@@ -93,7 +97,7 @@ pub const ConfigurationService = struct {
     }
 
     pub fn getValue(self: *ConfigurationService, key: []const u8) ?*const std.json.Value {
-        if (self.workspace.getValue(key)) |value| return value;
+        if (self.workspaceValue(key)) |value| return value;
         if (self.user.getValue(key)) |value| return value;
         return self.defaults.configurationModel().getValue(key);
     }
@@ -114,7 +118,7 @@ pub const ConfigurationService = struct {
         var workspace = try self.workspace.override(scratch, identifier);
         var user = try self.user.override(scratch, identifier);
         var defaults = try self.defaults.configurationModel().override(scratch, identifier);
-        const workspace_value = workspace.getValue(key);
+        const workspace_value = if (self.trusted) workspace.getValue(key) else null;
         const user_value = user.getValue(key);
         const default_value = defaults.getValue(key);
         return .{
@@ -127,7 +131,7 @@ pub const ConfigurationService = struct {
 
     pub fn inspect(self: *ConfigurationService, key: []const u8) InspectValue {
         const user_value = self.user.getValue(key);
-        const workspace_value = self.workspace.getValue(key);
+        const workspace_value = self.workspaceValue(key);
         const default_value = self.defaults.configurationModel().getValue(key);
         return .{
             .default_value = default_value,
@@ -135,6 +139,15 @@ pub const ConfigurationService = struct {
             .workspace_value = workspace_value,
             .value = workspace_value orelse user_value orelse default_value,
         };
+    }
+
+    fn workspaceValue(self: *ConfigurationService, key: []const u8) ?*const std.json.Value {
+        if (!self.trusted) {
+            if (self.defaults.registry.getConfigurationProperties().get(key)) |property| {
+                if (property.restricted) return null;
+            }
+        }
+        return self.workspace.getValue(key);
     }
 
     /// Updates the user configuration. Passing null removes the value; writing

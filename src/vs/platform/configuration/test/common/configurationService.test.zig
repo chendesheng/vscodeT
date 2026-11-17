@@ -434,3 +434,20 @@ test "registry default changes emit DEFAULT change events" {
     try std.testing.expectEqual(configuration.ConfigurationTarget.DEFAULT, events.items[0].source);
     try std.testing.expectEqualStrings("events.setting", events.items[0].keys[0]);
 }
+
+test "untrusted workspaces ignore restricted workspace values" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "restricted.setting", .default = std.json.Value{ .integer = 4 }, .restricted = true }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try service.loadWorkspaceJson("{\"restricted.setting\":8}");
+    try std.testing.expectEqual(@as(i64, 8), service.getValue("restricted.setting").?.integer);
+
+    service.trusted = false;
+    try std.testing.expectEqual(@as(i64, 4), service.getValue("restricted.setting").?.integer);
+    try std.testing.expect(service.inspect("restricted.setting").workspace_value == null);
+    try std.testing.expectEqual(@as(i64, 4), (try service.getValueWithOverrides("restricted.setting", "typescript")).?.integer);
+}
