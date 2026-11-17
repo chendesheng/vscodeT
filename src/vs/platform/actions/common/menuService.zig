@@ -1494,3 +1494,49 @@ test "one-shot menus give actions their group title and keep plain separators" {
         }
     }
 }
+
+test "latest menu group description applies until disposed" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.group.stack" };
+    const item_registration = try registry.appendMenuItemTracked(menu_id, .{
+        .command = .{ .id = "create", .title = "Create a Canvas" },
+        .group = "3_discover",
+    });
+    defer item_registration.dispose();
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+
+    const title = struct {
+        fn get(menu_value: *Menu) ?[]const u8 {
+            const action: *MenuItemAction = @ptrCast(@alignCast(menu_value.getActions()[0].actions[0].context));
+            return action.group_title;
+        }
+    }.get;
+
+    try std.testing.expect(title(menu) == null);
+    const original = try registry.appendMenuGroupTracked(menu_id, "3_discover", "Discover More");
+    try std.testing.expectEqualStrings("Discover More", title(menu).?);
+    const override = try registry.appendMenuGroupTracked(menu_id, "3_discover", "Explore");
+    try std.testing.expectEqualStrings("Explore", title(menu).?);
+    override.dispose();
+    try std.testing.expectEqualStrings("Discover More", title(menu).?);
+    original.dispose();
+    try std.testing.expect(title(menu) == null);
+}

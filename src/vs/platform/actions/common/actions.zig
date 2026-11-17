@@ -336,7 +336,7 @@ pub const MenuChangeEvent = struct {
 pub const MenuRegistry = struct {
     allocator: Allocator,
     menus: std.StringHashMap(std.array_list.Managed(MenuEntry)),
-    groups: std.StringHashMap(std.StringHashMap([]const u8)),
+    groups: std.StringHashMap(std.StringHashMap(std.array_list.Managed([]const u8))),
     commands: std.StringHashMap(ICommandAction),
     implicit_items: std.array_list.Managed(MenuEntry),
     get_menu_items_calls: std.StringHashMap(usize),
@@ -346,7 +346,7 @@ pub const MenuRegistry = struct {
         return .{
             .allocator = allocator,
             .menus = std.StringHashMap(std.array_list.Managed(MenuEntry)).init(allocator),
-            .groups = std.StringHashMap(std.StringHashMap([]const u8)).init(allocator),
+            .groups = std.StringHashMap(std.StringHashMap(std.array_list.Managed([]const u8))).init(allocator),
             .commands = std.StringHashMap(ICommandAction).init(allocator),
             .implicit_items = std.array_list.Managed(MenuEntry).init(allocator),
             .get_menu_items_calls = std.StringHashMap(usize).init(allocator),
@@ -359,7 +359,11 @@ pub const MenuRegistry = struct {
         while (iterator.next()) |list| list.deinit();
         self.menus.deinit();
         var group_iterator = self.groups.valueIterator();
-        while (group_iterator.next()) |map| map.deinit();
+        while (group_iterator.next()) |map| {
+            var titles = map.valueIterator();
+            while (titles.next()) |list| list.deinit();
+            map.deinit();
+        }
         self.groups.deinit();
         self.commands.deinit();
         self.implicit_items.deinit();
@@ -369,12 +373,19 @@ pub const MenuRegistry = struct {
 
     /// Describes the title of a menu group; contributors only add items to it.
     pub fn appendMenuGroup(self: *MenuRegistry, id: MenuId, group: []const u8, title: []const u8) !void {
+        _ = try self.appendMenuGroupTracked(id, group, title);
+    }
+
+    pub fn appendMenuGroupTracked(self: *MenuRegistry, id: MenuId, group: []const u8, title: []const u8) !Registration {
         const entry = try self.groups.getOrPut(id.id);
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.StringHashMap([]const u8).init(self.allocator);
+            entry.value_ptr.* = std.StringHashMap(std.array_list.Managed([]const u8)).init(self.allocator);
         }
-        try entry.value_ptr.put(group, title);
+        const list = try entry.value_ptr.getOrPut(group);
+        if (!list.found_existing) list.value_ptr.* = std.array_list.Managed([]const u8).init(self.allocator);
+        try list.value_ptr.append(title);
         try self.on_did_change.fire(.{ .menu = id });
+        return .{ .registry = self, .menu = id, .group = group, .group_title = title };
     }
 
     pub fn getMenuItemsCallCount(self: *MenuRegistry, id: MenuId) usize {
@@ -383,7 +394,9 @@ pub const MenuRegistry = struct {
 
     pub fn getMenuGroupTitle(self: *MenuRegistry, id: MenuId, group: []const u8) ?[]const u8 {
         const groups = self.groups.getPtr(id.id) orelse return null;
-        return groups.get(group);
+        const list = groups.getPtr(group) orelse return null;
+        if (list.items.len == 0) return null;
+        return list.items[list.items.len - 1];
     }
 
     fn menuList(self: *MenuRegistry, id: MenuId) !*std.array_list.Managed(MenuEntry) {
@@ -406,8 +419,14 @@ pub const MenuRegistry = struct {
         command_id: ?[]const u8 = null,
         submenu: ?MenuId = null,
         when: ?*const contextkey.Expr = null,
+        group: ?[]const u8 = null,
+        group_title: ?[]const u8 = null,
 
         pub fn dispose(self: Registration) void {
+            if (self.group) |group| {
+                self.registry.removeMenuGroup(self.menu, group, self.group_title orelse return);
+                return;
+            }
             if (self.command_id) |command_id| {
                 if (MenuId.eql(self.menu, menu_ids.CommandPalette)) {
                     self.registry.removeCommand(command_id);
@@ -426,6 +445,20 @@ pub const MenuRegistry = struct {
     pub fn appendSubmenuItemTracked(self: *MenuRegistry, id: MenuId, item: ISubmenuItem) !Registration {
         try self.appendSubmenuItem(id, item);
         return .{ .registry = self, .menu = id, .submenu = item.submenu, .when = item.when };
+    }
+
+    fn removeMenuGroup(self: *MenuRegistry, id: MenuId, group: []const u8, title: []const u8) void {
+        const groups = self.groups.getPtr(id.id) orelse return;
+        const list = groups.getPtr(group) orelse return;
+        var index = list.items.len;
+        while (index > 0) {
+            index -= 1;
+            if (std.mem.eql(u8, list.items[index], title)) {
+                _ = list.orderedRemove(index);
+                break;
+            }
+        }
+        self.on_did_change.fire(.{ .menu = id }) catch {};
     }
 
     fn removeRegistration(self: *MenuRegistry, registration: Registration) void {
