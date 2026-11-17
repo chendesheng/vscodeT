@@ -255,3 +255,27 @@ test "hidden experimental settings registered after initialization become visibl
     }});
     try std.testing.expectEqual(@as(bool, true), defaults.configurationModel().getValue("hidden.late").?.bool);
 }
+
+test "property registered before initialize is part of the model" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("before", &.{.{ .key = "before.prop", .value_type = "boolean", .default = std.json.Value{ .bool = false } }});
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    try std.testing.expectEqual(@as(bool, false), defaults.configurationModel().getValue("before.prop").?.bool);
+}
+
+test "deregistering a property removes it from the model" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    try registry.registerConfiguration("deregister", &.{.{ .key = "deregister.prop", .value_type = "boolean", .default = std.json.Value{ .bool = true } }});
+    try std.testing.expectEqual(@as(bool, true), defaults.configurationModel().getValue("deregister.prop").?.bool);
+    registry.deregisterConfigurations("deregister");
+    try std.testing.expect(defaults.configurationModel().getValue("deregister.prop") == null);
+}
