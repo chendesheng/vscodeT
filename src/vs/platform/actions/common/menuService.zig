@@ -1775,3 +1775,63 @@ test "menu hidden-by-default state tracks divergence and resets" {
     const reset = try Flags.read(allocator, &service, menu_id);
     try std.testing.expectEqual([2]bool{ false, false }, reset);
 }
+
+test "one-shot menu contexts observe changes to registered expressions" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.context.mutations" };
+
+    const item = try registry.appendMenuItemTracked(menu_id, .{
+        .command = .{
+            .id = "command",
+            .title = "Command",
+            .precondition = try factory.has("enabled"),
+            .toggled = try factory.has("toggled"),
+        },
+        .when = try factory.has("visible"),
+    });
+    defer item.dispose();
+
+    const Sort = struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    };
+    const Contexts = struct {
+        fn read(alloc: Allocator, svc: *MenuService, id: MenuId) ![]const []const u8 {
+            const contexts = try svc.getMenuContexts(alloc, id);
+            std.mem.sort([]const u8, @constCast(contexts), {}, Sort.lessThan);
+            return contexts;
+        }
+    };
+    const Free = struct {
+        fn run(alloc: Allocator, contexts: []const []const u8) void {
+            for (contexts) |key| alloc.free(key);
+            alloc.free(contexts);
+        }
+    };
+
+    const first = try Contexts.read(allocator, &service, menu_id);
+    defer Free.run(allocator, first);
+    try std.testing.expectEqual(@as(usize, 3), first.len);
+    try std.testing.expectEqualStrings("enabled", first[0]);
+    try std.testing.expectEqualStrings("toggled", first[1]);
+    try std.testing.expectEqualStrings("visible", first[2]);
+
+    const mutable = registry.getMenuItemPtr(menu_id, "command").?;
+    mutable.when = try factory.has("newVisible");
+    mutable.command.precondition = try factory.has("newEnabled");
+    mutable.command.toggled = try factory.has("newToggled");
+
+    const second = try Contexts.read(allocator, &service, menu_id);
+    defer Free.run(allocator, second);
+    try std.testing.expectEqual(@as(usize, 3), second.len);
+    try std.testing.expectEqualStrings("newEnabled", second[0]);
+    try std.testing.expectEqualStrings("newToggled", second[1]);
+    try std.testing.expectEqualStrings("newVisible", second[2]);
+}
