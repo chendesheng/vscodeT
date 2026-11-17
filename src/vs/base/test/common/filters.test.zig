@@ -595,3 +595,35 @@ test "highlighting regressions #113404, #85826, #147423" {
     try assertMatches(allocator, "i", "machine/{id}", "machine/{^id}", .{});
     try assertMatches(allocator, "ok", "obobobf{ok}/user", "^obobobf{o^k}/user", .{});
 }
+
+fn assertAnyScore(allocator: std.mem.Allocator, pattern: []const u8, word: []const u8, decorated_word: []const u8) !void {
+    const pattern_low = try lower(allocator, pattern);
+    defer allocator.free(pattern_low);
+    const word_low = try lower(allocator, word);
+    defer allocator.free(word_low);
+    const value = try filters.anyScore(allocator, pattern, pattern_low, 0, word, word_low, 0);
+    defer value.deinit(allocator);
+    const matches = try filters.createScorerMatches(allocator, value);
+    defer allocator.free(matches);
+    var actual = std.array_list.Managed(u8).init(allocator);
+    defer actual.deinit();
+    var position: usize = 0;
+    for (matches) |match| {
+        try actual.appendSlice(word[position..match.start]);
+        var index = match.start;
+        while (index < match.end) : (index += 1) {
+            try actual.append('^');
+            try actual.append(word[index]);
+        }
+        position = match.end;
+    }
+    try actual.appendSlice(word[position..]);
+    try std.testing.expectEqualStrings(decorated_word, actual.items);
+}
+
+test "IntelliSense completion highlighting #115250" {
+    const allocator = std.testing.allocator;
+    try assertMatches(allocator, "lo", "log", "^l^og", .{});
+    try assertAnyScore(allocator, ".lo", "log", "^l^og");
+    try assertAnyScore(allocator, ".", "log", "log");
+}
