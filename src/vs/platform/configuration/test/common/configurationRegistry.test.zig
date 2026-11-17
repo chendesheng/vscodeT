@@ -418,3 +418,12 @@ test "policy reference lists accumulate keys" {
     try std.testing.expectEqualStrings("ref.one", list.items[0]);
     try std.testing.expectEqualStrings("ref.two", list.items[1]);
 }
+
+test "discarding a registry snapshot frees its state" {
+    const allocator = std.testing.allocator;
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("discard", &.{.{ .key = "discard.setting", .default = std.json.Value{ .bool = true } }});
+    var snapshot = try registry.record(allocator);
+    snapshot.deinit();
+}

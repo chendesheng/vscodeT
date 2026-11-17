@@ -255,6 +255,13 @@ pub const ConfigurationRegistry = struct {
     /// snapshot owns a detached registry; `restore` consumes it.
     pub const Snapshot = struct {
         registry: *ConfigurationRegistry,
+
+        /// Discards a snapshot that will not be restored. Must not be called
+        /// after `restore` (the snapshot's registry is consumed there).
+        pub fn deinit(self: *Snapshot) void {
+            self.registry.deinit();
+            self.registry = undefined;
+        }
     };
 
     pub fn record(self: *ConfigurationRegistry, allocator: Allocator) !Snapshot {
