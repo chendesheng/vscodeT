@@ -773,7 +773,7 @@ pub const FuzzyScorer = struct {
 
         var score_final = final_score;
         if (word_len - word_start == pattern_len and options.boost_full_match) score_final += 2;
-        score_final -= @intCast(max_match_column - pattern_len);
+        score_final -= @as(i32, @intCast(max_match_column)) - @as(i32, @intCast(pattern_len));
 
         return .{ .score = score_final, .word_start = word_start, .matches = try matches.toOwnedSlice() };
     }

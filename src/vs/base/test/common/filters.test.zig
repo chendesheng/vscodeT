@@ -499,3 +499,67 @@ test "fuzzyScore #26511 does not crash on long patterns" {
     const value = try scorer.score(&pattern, &pattern, 0, &word, &word, 0, .{});
     if (value) |score| score.deinit(allocator);
 }
+
+fn assertMatchesAt(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    word: []const u8,
+    decorated_word: ?[]const u8,
+    pattern_pos: usize,
+    word_pos: usize,
+    options: filters.FuzzyScoreOptions,
+) !void {
+    var scorer = try filters.FuzzyScorer.init(allocator);
+    defer scorer.deinit();
+    const pattern_low = try lower(allocator, pattern);
+    defer allocator.free(pattern_low);
+    const word_low = try lower(allocator, word);
+    defer allocator.free(word_low);
+    const value = try scorer.score(pattern, pattern_low, pattern_pos, word, word_low, word_pos, options);
+    if (decorated_word == null) {
+        try std.testing.expect(value == null);
+        return;
+    }
+    const score_value = value.?;
+    defer score_value.deinit(allocator);
+    const matches = try filters.createScorerMatches(allocator, score_value);
+    defer allocator.free(matches);
+
+    var actual = std.array_list.Managed(u8).init(allocator);
+    defer actual.deinit();
+    var position: usize = 0;
+    for (matches) |match| {
+        try actual.appendSlice(word[position..match.start]);
+        var index = match.start;
+        while (index < match.end) : (index += 1) {
+            try actual.append('^');
+            try actual.append(word[index]);
+        }
+        position = match.end;
+    }
+    try actual.appendSlice(word[position..]);
+    try std.testing.expectEqualStrings(decorated_word.?, actual.items);
+}
+
+test "pattern position and #26096" {
+    const allocator = std.testing.allocator;
+    try assertMatchesAt(allocator, "  ", "  group", null, 2, 0, .{});
+    try assertMatchesAt(allocator, "  g", "  group", "  ^group", 2, 0, .{});
+    try assertMatchesAt(allocator, "g", "  group", "  ^group", 0, 0, .{});
+    try assertMatchesAt(allocator, "g g", "  groupGroup", null, 0, 0, .{});
+    try assertMatchesAt(allocator, "g g", "  group Group", "  ^group^ ^Group", 0, 0, .{});
+    try assertMatchesAt(allocator, " g g", "  group Group", "  ^group^ ^Group", 1, 0, .{});
+    try assertMatchesAt(allocator, "zz", "zzGroup", "^z^zGroup", 0, 0, .{});
+    try assertMatchesAt(allocator, "zzg", "zzGroup", "^z^z^Group", 0, 0, .{});
+    try assertMatchesAt(allocator, "g", "zzGroup", "zz^Group", 0, 0, .{});
+}
+
+test "pattern position #79815" {
+    const allocator = std.testing.allocator;
+    try assertMatchesAt(allocator, "p", "prop", "^prop", 0, 0, .{});
+    try assertMatchesAt(allocator, ":p", "prop", "^prop", 1, 0, .{});
+    try assertMatchesAt(allocator, ":p", "prop", null, 2, 0, .{});
+    try assertMatchesAt(allocator, ":p", "proP", "pro^P", 1, 1, .{});
+    try assertMatchesAt(allocator, ":p", "aprop", "a^prop", 1, 0, .{ .first_match_can_be_weak = true });
+    try assertMatchesAt(allocator, ":p", "aprop", null, 1, 0, .{ .first_match_can_be_weak = false });
+}
