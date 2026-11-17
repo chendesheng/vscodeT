@@ -182,3 +182,40 @@ test "configuration files and icons are registered" {
     try std.testing.expectEqualStrings("/icons/lang-dark.svg", uriPath(icon.dark));
     try std.testing.expect(service.getIcon("missing") == null);
 }
+
+test "guessing uses the association matcher priorities" {
+    const allocator = std.testing.allocator;
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var service = LanguageService.init(allocator, &codec);
+    defer service.deinit();
+
+    // Extensions are matched case-insensitively.
+    try service.registerLanguage(.{ .id = "typescript", .extensions = &.{".ts"} });
+    try std.testing.expectEqualStrings("typescript", service.guessLanguageIdByFilepathOrFirstLine("dir/FILE.TS", null).?);
+
+    // The longest extension wins.
+    try service.registerLanguage(.{ .id = "short", .extensions = &.{".foo"} });
+    try service.registerLanguage(.{ .id = "long", .extensions = &.{".foo.bar"} });
+    try std.testing.expectEqualStrings("short", service.guessLanguageIdByFilepathOrFirstLine("x.foo", null).?);
+    try std.testing.expectEqualStrings("long", service.guessLanguageIdByFilepathOrFirstLine("x.foo.bar", null).?);
+
+    // An exact filename wins over an extension.
+    try service.registerLanguage(.{ .id = "ext", .extensions = &.{".mk"} });
+    try service.registerLanguage(.{ .id = "name", .filenames = &.{"Makefile"} });
+    try std.testing.expectEqualStrings("name", service.guessLanguageIdByFilepathOrFirstLine("dir/Makefile", null).?);
+    try std.testing.expectEqualStrings("ext", service.guessLanguageIdByFilepathOrFirstLine("dir/build.mk", null).?);
+
+    // File patterns win over extensions, and later registrations win ties.
+    try service.registerLanguage(.{ .id = "pattern", .filenamePatterns = &.{"*.special"} });
+    try service.registerLanguage(.{ .id = "special-ext", .extensions = &.{".special"} });
+    try std.testing.expectEqualStrings("pattern", service.guessLanguageIdByFilepathOrFirstLine("file.special", null).?);
+
+    try service.registerLanguage(.{ .id = "first-pattern", .filenamePatterns = &.{"Docker*"} });
+    try service.registerLanguage(.{ .id = "last-pattern", .filenamePatterns = &.{"Docker*"} });
+    try std.testing.expectEqualStrings("last-pattern", service.guessLanguageIdByFilepathOrFirstLine("Dockerfile", null).?);
+
+    // Filenames are case-insensitive too.
+    try service.registerLanguage(.{ .id = "codefile", .filenames = &.{"Codefile"} });
+    try std.testing.expectEqualStrings("codefile", service.guessLanguageIdByFilepathOrFirstLine("dir/codefile", null).?);
+}

@@ -795,8 +795,11 @@ Editor contributions:
   the platform/configured association registry and matching (exact filename,
   longest pattern, longest extension, registration order, first-line matchers,
   data-URI labels) with the upstream test suite; `base/common/strings.zig` gained
-  `endsWithIgnoreCase`. The workbench `languageService.ts` registration surface
-  that would replace `src/tui/language.zig` still needs to be ported.
+  `endsWithIgnoreCase`, and the editor `LanguageService` now resolves file paths
+  through the associations (case-insensitive filename/extension, longest
+  extension, pattern priority, registration order). The workbench
+  `languageService.ts` registration surface that would replace
+  `src/tui/language.zig` still needs to be ported.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON

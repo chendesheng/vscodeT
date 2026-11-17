@@ -6,6 +6,7 @@ const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const LanguageConfiguration = @import("../languages/languageConfiguration.zig").LanguageConfiguration;
 
 const language = @import("../languages/language.zig");
+const languages_associations = @import("./languagesAssociations.zig");
 const PLAINTEXT_LANGUAGE_ID = "plaintext";
 
 const LanguageRegistryEntry = struct {
@@ -42,6 +43,9 @@ pub const LanguageService = struct {
     language_names: std.StringHashMap([]const u8),
     changed: Emitter(void),
     selections: std.array_list.Managed(*Selection),
+    /// Path/first-line language associations, created on the first language
+    /// registration (upstream keeps a module-level registry).
+    associations: ?*languages_associations.LanguageAssociations,
 
     // An event emitted when basic language features are requested for the first time.
     // This event is emitted when embedded languages are encountered (e.g. JS code block inside Markdown)
@@ -72,6 +76,7 @@ pub const LanguageService = struct {
             .language_names = std.StringHashMap([]const u8).init(allocator),
             .changed = Emitter(void).init(allocator),
             .selections = std.array_list.Managed(*Selection).init(allocator),
+            .associations = null,
             .onDidRequestBasicLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidRequestRichLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidChange = Emitter(void).init(allocator),
@@ -94,6 +99,7 @@ pub const LanguageService = struct {
             }
             if (def.icon) |icon| existing.icon = icon;
             if (def.configuration) |configuration| existing.configuration = configuration;
+            try self.registerAssociations(def);
             try self.changed.fire({});
             for (self.selections.items) |selection| try selection.refresh();
             return;
@@ -125,6 +131,7 @@ pub const LanguageService = struct {
         });
         for (mime_types) |mime| try self.mime_types.put(try arena.dupe(u8, mime), id);
         for (aliases) |alias| try self.language_names.put(try arena.dupe(u8, alias), id);
+        try self.registerAssociations(def);
         try self.changed.fire({});
         for (self.selections.items) |selection| try selection.refresh();
     }
@@ -135,6 +142,37 @@ pub const LanguageService = struct {
         @memcpy(result[0..old.len], old);
         @memcpy(result[old.len..], extra);
         return result;
+    }
+
+    fn ensureAssociations(self: *LanguageService) !*languages_associations.LanguageAssociations {
+        if (self.associations) |associations| return associations;
+        const associations = try languages_associations.LanguageAssociations.init(self.allocator);
+        self.associations = associations;
+        return associations;
+    }
+
+    /// Registers the path/first-line associations of a language contribution.
+    /// `firstLine` stays in the language registry: upstream stores a `RegExp`,
+    /// the terminal matcher keeps the simple prefix/suffix form.
+    fn registerAssociations(self: *LanguageService, def: ILanguageExtensionPoint) !void {
+        if (def.extensions == null and def.filenames == null and def.filenamePatterns == null) return;
+        const associations = try self.ensureAssociations();
+        const mime = self.getMimeType(def.id) orelse try std.fmt.allocPrint(self.arena.allocator(), "text/x-{s}", .{def.id});
+        if (def.extensions) |extensions| {
+            for (extensions) |extension| {
+                try associations.registerPlatform(.{ .id = def.id, .mime = mime, .extension = extension });
+            }
+        }
+        if (def.filenames) |filenames| {
+            for (filenames) |filename| {
+                try associations.registerPlatform(.{ .id = def.id, .mime = mime, .filename = filename });
+            }
+        }
+        if (def.filenamePatterns) |patterns| {
+            for (patterns) |pattern| {
+                try associations.registerPlatform(.{ .id = def.id, .mime = mime, .filepattern = pattern });
+            }
+        }
     }
 
     pub fn isRegisteredLanguageId(self: *LanguageService, language_id: []const u8) bool {
@@ -254,33 +292,23 @@ pub const LanguageService = struct {
         return selection;
     }
 
-    /// Guesses a language id from a path extension/filename or a first line.
+    /// Guesses a language id from a path extension/filename/pattern or a first
+    /// line. Path matching goes through the ported language associations
+    /// (filename > pattern > longest extension, later registrations win).
     pub fn guessLanguageIdByFilepathOrFirstLine(self: *LanguageService, path: ?[]const u8, first_line: ?[]const u8) ?[]const u8 {
-        const basename = if (path) |value| std.fs.path.basename(value) else null;
-        var iterator = self.languages.iterator();
-        while (iterator.next()) |entry| {
-            const registry_entry = entry.value_ptr;
-            if (basename) |name| {
-                if (registry_entry.filenames) |filenames| {
-                    for (filenames) |filename| {
-                        if (std.mem.eql(u8, filename, name)) return registry_entry.id;
-                    }
-                }
-                if (registry_entry.extensions) |extensions| {
-                    for (extensions) |extension| {
-                        if (std.mem.endsWith(u8, name, extension)) return registry_entry.id;
-                    }
-                }
-                if (registry_entry.filename_patterns) |patterns| {
-                    for (patterns) |pattern| {
-                        var arena = std.heap.ArenaAllocator.init(self.allocator);
-                        defer arena.deinit();
-                        var expression = @import("../../../base/common/glob.zig").Expression.init(arena.allocator(), &.{pattern}, .{}) catch continue;
-                        if (expression.matches(name)) return registry_entry.id;
-                    }
-                }
+        if (self.associations) |associations| {
+            if (path) |value| {
+                const result = associations.getAssociationsForPath(value, null);
+                const id = result.items[0].id;
+                if (!std.mem.eql(u8, id, languages_associations.UNKNOWN_ID)) return id;
             }
-            if (first_line) |line| {
+        }
+
+        // First line has the lowest priority.
+        if (first_line) |line| {
+            var iterator = self.languages.iterator();
+            while (iterator.next()) |entry| {
+                const registry_entry = entry.value_ptr;
                 if (registry_entry.first_line) |pattern| {
                     var prefix = pattern;
                     if (prefix.len > 0 and prefix[0] == '^') prefix = prefix[1..];
@@ -326,6 +354,7 @@ pub const LanguageService = struct {
             self.allocator.destroy(selection);
         }
         self.selections.deinit();
+        if (self.associations) |associations| associations.deinit();
         self.languages.deinit();
         self.mime_types.deinit();
         self.language_names.deinit();

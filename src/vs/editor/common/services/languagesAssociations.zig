@@ -134,15 +134,22 @@ pub const LanguageAssociations = struct {
     /// the plaintext fallback (or the unknown association).
     pub fn getAssociations(self: *const LanguageAssociations, resource: ?*const URI, first_line: ?[]const u8) Result {
         const path = pathForResource(resource) orelse return unknownResult();
-        if (path.len == 0) return unknownResult();
-        const filename = std.fs.path.basename(path);
+        return self.getAssociationsForPath(path, first_line);
+    }
+
+    /// Like `getAssociations`, for a filesystem path that has no URI (the
+    /// terminal language service stores paths).
+    pub fn getAssociationsForPath(self: *const LanguageAssociations, path: ?[]const u8, first_line: ?[]const u8) Result {
+        const resolved_path = path orelse return unknownResult();
+        if (resolved_path.len == 0) return unknownResult();
+        const filename = std.fs.path.basename(resolved_path);
 
         // 1.) User configured mappings have the highest priority.
-        if (self.getAssociationByPath(path, filename, self.user.items)) |association| {
+        if (self.getAssociationByPath(resolved_path, filename, self.user.items)) |association| {
             return matchedResult(association);
         }
         // 2.) Registered mappings have middle priority.
-        if (self.getAssociationByPath(path, filename, self.non_user.items)) |association| {
+        if (self.getAssociationByPath(resolved_path, filename, self.non_user.items)) |association| {
             return matchedResult(association);
         }
         // 3.) First line has the lowest priority.
