@@ -45,6 +45,8 @@ pub const MenuItemAction = struct {
     item: ICommandAction,
     enabled: bool,
     checked: ?bool,
+    hidden: bool,
+    is_modified_from_default: bool,
     label: []const u8,
     tooltip: []const u8,
     group_title: ?[]const u8,
@@ -151,13 +153,99 @@ pub const SubmenuItemAction = struct {
     fn run(_: *anyopaque, _: ?*const anyopaque) anyerror!void {}
 };
 
+/// In-memory view of the persisted "hidden menu items" state. Upstream stores
+/// this in the profile storage (`menu.hiddenCommands`) and reloads it on change;
+/// the terminal host has no storage service yet, so the state lives in memory
+/// for the session and `MenuService.deinit` releases it.
+pub const MenuHideState = struct {
+    allocator: Allocator,
+    hidden: std.StringHashMap(std.StringHashMap(bool)),
+    defaults: std.StringHashMap(std.StringHashMap(bool)),
+
+    pub fn init(allocator: Allocator) MenuHideState {
+        return .{
+            .allocator = allocator,
+            .hidden = std.StringHashMap(std.StringHashMap(bool)).init(allocator),
+            .defaults = std.StringHashMap(std.StringHashMap(bool)).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *MenuHideState) void {
+        var hidden_iterator = self.hidden.valueIterator();
+        while (hidden_iterator.next()) |map| map.deinit();
+        self.hidden.deinit();
+        var defaults_iterator = self.defaults.valueIterator();
+        while (defaults_iterator.next()) |map| map.deinit();
+        self.defaults.deinit();
+    }
+
+    pub fn setDefaultState(self: *MenuHideState, menu: MenuId, command_id: []const u8, hidden: bool) void {
+        const map = self.defaults.getOrPut(menu.id) catch return;
+        if (!map.found_existing) map.value_ptr.* = std.StringHashMap(bool).init(self.allocator);
+        map.value_ptr.put(command_id, hidden) catch {};
+    }
+
+    pub fn isHidden(self: *MenuHideState, menu: MenuId, command_id: []const u8) bool {
+        const hidden_by_default = self.isHiddenByDefault(menu, command_id);
+        const state = if (self.hidden.getPtr(menu.id)) |map| map.get(command_id) orelse false else false;
+        return if (hidden_by_default) !state else state;
+    }
+
+    pub fn isModifiedFromDefault(self: *MenuHideState, menu: MenuId, command_id: []const u8) bool {
+        return self.isHidden(menu, command_id) != self.isHiddenByDefault(menu, command_id);
+    }
+
+    pub fn updateHidden(self: *MenuHideState, menu: MenuId, command_id: []const u8, hidden: bool) void {
+        const hidden_by_default = self.isHiddenByDefault(menu, command_id);
+        const value = if (hidden_by_default) !hidden else hidden;
+        const map = self.hidden.getOrPut(menu.id) catch return;
+        if (!map.found_existing) map.value_ptr.* = std.StringHashMap(bool).init(self.allocator);
+        if (value) {
+            map.value_ptr.put(command_id, true) catch {};
+        } else {
+            _ = map.value_ptr.remove(command_id);
+            if (map.value_ptr.count() == 0) {
+                _ = self.hidden.remove(menu.id);
+            }
+        }
+    }
+
+    pub fn reset(self: *MenuHideState, menu: ?MenuId) void {
+        if (menu) |id| {
+            if (self.hidden.getPtr(id.id)) |map| {
+                map.deinit();
+                _ = self.hidden.remove(id.id);
+            }
+            return;
+        }
+        var iterator = self.hidden.valueIterator();
+        while (iterator.next()) |map| map.deinit();
+        self.hidden.clearRetainingCapacity();
+    }
+
+    fn isHiddenByDefault(self: *MenuHideState, menu: MenuId, command_id: []const u8) bool {
+        if (self.defaults.getPtr(menu.id)) |map| return map.get(command_id) orelse false;
+        return false;
+    }
+};
+
 pub const MenuService = struct {
     allocator: Allocator,
     registry: *MenuRegistry,
     command_registry: ?*commands.CommandRegistry,
+    hide_state: MenuHideState,
 
     pub fn init(allocator: Allocator, registry: *MenuRegistry, command_registry: ?*commands.CommandRegistry) MenuService {
-        return .{ .allocator = allocator, .registry = registry, .command_registry = command_registry };
+        return .{
+            .allocator = allocator,
+            .registry = registry,
+            .command_registry = command_registry,
+            .hide_state = MenuHideState.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *MenuService) void {
+        self.hide_state.deinit();
     }
 
     /// Resolves a menu: visibility filtering, upstream sorting/grouping, group
@@ -196,11 +284,14 @@ pub const MenuService = struct {
             for (visible.items[start..index]) |entry| {
                 switch (entry.*) {
                     .command => |item| {
+                        self.hide_state.setDefaultState(id, item.command.id, item.is_hidden_by_default);
                         const action = try allocator.create(MenuItemAction);
                         action.* = .{
                             .item = item.command,
                             .enabled = if (item.command.precondition) |when| when.evaluate(context) else true,
                             .checked = if (item.command.toggled) |toggled| toggled.evaluate(context) else null,
+                            .hidden = self.hide_state.isHidden(id, item.command.id),
+                            .is_modified_from_default = self.hide_state.isModifiedFromDefault(id, item.command.id),
                             .label = item.command.title,
                             .tooltip = item.command.tooltip orelse "",
                             .group_title = group_title,
@@ -212,6 +303,8 @@ pub const MenuService = struct {
                                 .item = alt,
                                 .enabled = if (alt.precondition) |when| when.evaluate(context) else true,
                                 .checked = if (alt.toggled) |toggled| toggled.evaluate(context) else null,
+                                .hidden = self.hide_state.isHidden(id, alt.id),
+                                .is_modified_from_default = self.hide_state.isModifiedFromDefault(id, alt.id),
                                 .label = alt.title,
                                 .tooltip = alt.tooltip orelse "",
                                 .group_title = group_title,
@@ -341,6 +434,7 @@ test "menu grouping, visibility, enablement and toggled state" {
     });
 
     var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
     const Context = struct {
         enabled: bool = false,
         checked: bool = false,
@@ -389,6 +483,7 @@ test "menu submenus flatten and drop empty branches" {
     try registry.appendMenuItem(child, .{ .command = .{ .id = "child.command", .title = "Child Command" } });
 
     var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
     const Context = struct {
         fn context() contextkey.IContext {
             return .{ .context = @ptrFromInt(1), .get_value = getValue };
@@ -404,4 +499,32 @@ test "menu submenus flatten and drop empty branches" {
     try std.testing.expectEqual(@as(usize, 1), menu.groups.len);
     try std.testing.expectEqual(@as(usize, 1), menu.groups[0].actions.len);
     try std.testing.expectEqualStrings("submenuitem.test.child", menu.groups[0].actions[0].id());
+}
+
+test "menu hide state inverts hidden-by-default items" {
+    const allocator = std.testing.allocator;
+    var state = MenuHideState.init(allocator);
+    defer state.deinit();
+
+    const menu = MenuId{ .id = "test.hide" };
+    state.setDefaultState(menu, "visible", false);
+    state.setDefaultState(menu, "hiddenByDefault", true);
+
+    try std.testing.expect(!state.isHidden(menu, "visible"));
+    try std.testing.expect(state.isHidden(menu, "hiddenByDefault"));
+    try std.testing.expect(!state.isModifiedFromDefault(menu, "visible"));
+
+    state.updateHidden(menu, "visible", true);
+    try std.testing.expect(state.isHidden(menu, "visible"));
+    try std.testing.expect(state.isModifiedFromDefault(menu, "visible"));
+
+    // Showing a hidden-by-default item stores the inverse.
+    state.updateHidden(menu, "hiddenByDefault", false);
+    try std.testing.expect(!state.isHidden(menu, "hiddenByDefault"));
+    try std.testing.expect(state.isModifiedFromDefault(menu, "hiddenByDefault"));
+
+    state.reset(menu);
+    try std.testing.expect(!state.isHidden(menu, "visible"));
+    try std.testing.expect(state.isHidden(menu, "hiddenByDefault"));
+    try std.testing.expect(!state.isModifiedFromDefault(menu, "visible"));
 }
