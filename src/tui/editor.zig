@@ -148,6 +148,10 @@ pub const Editor = struct {
     on_did_change_dirty: Emitter(void),
     screen_width: usize,
     screen_height: usize,
+    /// The screen height includes a one-row status line when true. The
+    /// multi-group workbench uses a workbench-level status bar and disables
+    /// this fallback row for its editor panes.
+    status_row: bool,
     gutter_width: usize,
     /// Rightmost columns reserved by the view for the overview ruler and
     /// scrollbar. Zero for the read-only preview and for editors used without
@@ -280,6 +284,7 @@ pub const Editor = struct {
             .on_did_change_dirty = Emitter(void).init(allocator),
             .screen_width = @max(width, 1),
             .screen_height = @max(height, 1),
+            .status_row = true,
             .gutter_width = gutter,
             .scrollbar_width = 0,
             .top_view_line = 1,
@@ -369,7 +374,17 @@ pub const Editor = struct {
     }
 
     pub fn textHeight(self: *const Editor) usize {
-        return @max(@as(usize, 1), self.screen_height - 1);
+        const reserved: usize = if (self.status_row) 1 else 0;
+        return @max(@as(usize, 1), self.screen_height -| reserved);
+    }
+
+    /// Enables or disables the editor's own fallback status row. Workbench
+    /// panes disable it because the status bar is a workbench part.
+    pub fn setStatusRow(self: *Editor, visible: bool) void {
+        if (self.status_row == visible) return;
+        self.status_row = visible;
+        self.refreshLayout() catch {};
+        self.ensureCursorVisible();
     }
 
     pub fn viewLineCount(self: *Editor) usize {

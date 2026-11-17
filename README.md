@@ -232,11 +232,22 @@ console API for raw mode, sizing and input polling.
   files uses an empty workspace, as upstream does.
 - The editor is rendered through the library (`src/tui/view.zig`): text,
   syntax colors, right-aligned line numbers, wrapped-line markers, selections,
-  the current line, a hardware cursor and the status row. The row is fed by the
-  ported `StatusbarModel`/`StatusbarPart`
-  (`src/vs/workbench/browser/parts/statusbar/`), so entry alignment and
-  priority follow upstream; the editor view keeps the fallback status string
-  for standalone tests and the read-only preview. The
+  the current line and a hardware cursor. The workbench status bar is a
+  full-width bottom row built from the ported
+  `StatusbarModel`/`StatusbarPart`/`StatusbarService`
+  (`src/vs/workbench/browser/parts/statusbar/`): entries use upstream
+  alignment/priority/compact rules, the bar builds a one-row flex `ui` surface
+  (left items grow and right items are row-reverse), and the right side
+  shows selection, indentation, encoding, EOL and language. Clicking an entry
+  focuses it and runs its command when one is registered; Arrow keys,
+  Home/End, Enter/Space and Escape navigate while focused, `Ctrl-Alt-S` toggles
+  editor/status focus, and the `Focus Status Bar` command is in the palette.
+  The editor view keeps its fallback status row for standalone tests and the
+  read-only preview. The bar's terminal adaptations are documented in
+  `docs/terminal-ui.md`: codicons are plain text, text ellipsis is
+  pre-truncation, focus is an underline, the tooltip is plain text, hidden
+  entry state is in memory, and the context menu/auxiliary parts are not
+  ported. The
   `zig build run -- --preview <file>` read-only mode uses the same token
   renderer and adds Up/Down, PageUp/PageDown, Home, End and mouse-wheel
   scrolling; Ctrl-Q quits. Overlay widgets and a single-line terminal input box

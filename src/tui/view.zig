@@ -246,6 +246,9 @@ pub const View = struct {
     status_left_len: usize = 0,
     status_right: [256]u8 = undefined,
     status_right_len: usize = 0,
+    /// Whether this view paints the editor's fallback status row. The
+    /// multi-group workbench disables it in favour of its status-bar part.
+    status_bar_visible: bool = true,
 
     const LineEntry = struct {
         node: *ui.Node,
@@ -347,7 +350,17 @@ pub const View = struct {
         try self.refresh();
     }
 
-    /// Supplies the status row from the workbench status-bar model.
+    /// Enables or disables the view's own status row. Disabling it gives the
+    /// surface's last row back to editor text.
+    pub fn setStatusBarVisible(self: *View, visible: bool) !void {
+        if (self.status_bar_visible == visible) return;
+        self.status_bar_visible = visible;
+        self.editor.setStatusRow(visible);
+        try self.refresh();
+    }
+
+    /// Supplies the standalone editor view's fallback status text. Workbench
+    /// tabs disable this row and use the workbench status bar instead.
     pub fn setStatusText(self: *View, left: []const u8, right: []const u8) void {
         const left_len = @min(left.len, self.status_left.len);
         @memcpy(self.status_left[0..left_len], left[0..left_len]);
@@ -1624,7 +1637,7 @@ fn applyScrollPosition(editor: *Editor, desired: f64) usize {
 }
 
 fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !void {
-    if (rows == 0) return;
+    if (rows == 0 or !view.status_bar_visible) return;
     const editor = view.editor;
     const status_row: f64 = @floatFromInt(rows - 1);
 

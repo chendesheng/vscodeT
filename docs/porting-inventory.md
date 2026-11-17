@@ -37,7 +37,10 @@ P1 and P2 are implemented.
 **P2 (workbench shell):**
 - Added `activitybarPart.zig`, `activityService.zig`,
   `paneCompositePart.zig`, `sidebarPart.zig`, `layout.zig`,
-  `statusbarModel.zig` and `statusbarPart.zig` under the upstream paths.
+  `statusbarModel.zig`, `statusbarItem.zig`, `statusbarPart.zig`,
+  `statusbarActions.zig` and the statusbar service contract under the upstream
+  paths. The workbench status bar is now a full-width flex `ui` surface with
+  entry focus, hover/tooltips and command activation.
 - `src/tui/activityBar.zig` is now the terminal view over the activity model.
 - `src/tui/workbench.zig` uses the activity model, sidebar model, layout model
   and status-bar model/part for its shell state.
@@ -560,9 +563,11 @@ longer lists the gap.
 - `workbench/browser/parts/sidebar/sidebarPart.zig` and
   `paneCompositePart.zig` — side-bar visibility, width/position, active
   container.
-- `workbench/browser/parts/statusbar/statusbarModel.zig` and
-  `statusbarPart.zig` — status entries, alignment, priority; replace the
-  editor’s single status string where it represents workbench state.
+- `workbench/browser/parts/statusbar/statusbarModel.zig`,
+  `statusbarPart.zig`, `statusbarItem.zig`, `statusbarActions.zig` and
+  `workbench/services/statusbar/browser/statusbar.zig` — status entries,
+  alignment, priority, flex part/item, focus, overrides and actions; the
+  full-width workbench row replaces the editor-local status string.
 - `workbench/browser/layout.zig` — the portable part-visibility/size subset.
 - Keep terminal paint/hit testing and the compositor in `workbench.zig`.
 

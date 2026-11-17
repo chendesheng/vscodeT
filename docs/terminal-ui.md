@@ -703,10 +703,27 @@ Library constraints:
     them through `LineDecoration.filter`/`extractWrapped`, the same per-wrapped-
     line route as find ranges. Highlights are hidden while a widget owns focus
     and update on typing or cursor movement.
-  - Builds the whole screen (editor area plus the status row) as one tree; the
-    row is fed by the ported `StatusbarModel`/`StatusbarPart`, so a
-    single `Surface.render` diff covers it. `Document.clear` rebuilds the tree
+  - Builds the editor tree as one surface; `Document.clear` rebuilds the tree
     between frames while keeping the previous grid for the diff.
+- The workbench status bar is a separate one-row `ui.Surface` owned by the
+  ported `StatusbarPart`. `StatusbarPart.render` rebuilds a flex document
+  (root row, left `flex_grow` container, right `row_reverse` container with a
+  fixed content width, item containers and label containers), paints it, and
+  blits the resulting
+  grid into the workbench frame's bottom row. The row spans the full window
+  (including under the sidebar) and the activity/sidebar/editor part
+  rectangles end above it. The ported `StatusbarModel` owns order, priority,
+  visibility, overrides and focus; `StatusbarItem` owns the label, kind colors,
+  progress/beak prefix and truncation; `StatusbarPart` owns hit testing,
+  hover/tooltip and command activation. The item max width is the cell
+  equivalent of upstream's `40vw`. Upstream wraps the right group; the terminal
+  keeps it on one line and clips at the row edge, while the left group yields
+  width to the right group so the editor path truncates first. `Ctrl-Alt-S` is
+  a TUI-specific
+  focus toggle, and `Focus Status Bar` is available from the command palette.
+  Not ported: DOM context menus, extension management, window-focus/inactive
+  backgrounds, auxiliary/scoped status bars, storage persistence of hidden
+  entries and codicon rendering.
 - `src/tui/preview.zig` remains the read-only `--preview` variant, adding
   Up/Down, PageUp/PageDown, Home/End and mouse-wheel scrolling.
 - Overlay widgets use the terminal adaptation of upstream `IOverlayWidget`

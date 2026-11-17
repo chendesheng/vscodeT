@@ -688,7 +688,7 @@ pub const TextModel = struct {
     }
 
     pub fn getCharacterCountInRange(self: *TextModel, rawRange: Range, eol: ?EndOfLinePreference) usize {
-        return self._buffer.getCharacterCountInRange(self.validateRange(rawRange), eol orelse EndOfLinePreference.TextDefined);
+        return self._buffer.getCharacterCountInRange(self.validateRange(rawRange), eol orelse EndOfLinePreference.TextDefined) catch 0;
     }
 
     pub fn getLineCount(self: *const TextModel) usize {

@@ -184,7 +184,11 @@ pub fn main(init: std.process.Init) !void {
     var file_serializer: ?FileEditorSerializer = null;
     var registry: ?EditorFactoryRegistry = null;
     if (args.session != null) {
-        file_serializer = FileEditorSerializer.init(allocator, io, size.width, size.height -| 1);
+        // The workbench status bar takes one row and each group's tab strip
+        // takes one; restored editors are opened as workbench panes, so their
+        // content height is the remaining rows.
+        const restored_editor_height = @max(size.height -| 2, 1);
+        file_serializer = FileEditorSerializer.init(allocator, io, size.width, restored_editor_height);
         registry = EditorFactoryRegistry.init(allocator);
         try registry.?.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.?.interface());
     }
@@ -328,9 +332,9 @@ pub fn main(init: std.process.Init) !void {
                 if (workbench.activeTab()) |current| {
                     current.onEditorChanged(now_ms);
                     workbench.onSearchEditorChanged();
-                    workbench.refreshStatus();
                     try current.view.refresh();
                 }
+                workbench.refreshStatus();
                 try workbench.render(out);
                 try workbench.syncCursor(out);
                 try out.flush();
@@ -356,9 +360,11 @@ pub fn main(init: std.process.Init) !void {
                         continue;
                     }
                     workbench.clearQuitArmed();
+                    workbench.clearStatusHover();
 
                     if (try workbench.handleQuickAccessKey(event)) continue;
                     if (try workbench.handleSidebarKey(event)) continue;
+                    if (try workbench.handleStatusbarKey(event)) continue;
 
                     switch (try workbench.handleTabKey(event)) {
                         .quit => return,
@@ -385,15 +391,19 @@ pub fn main(init: std.process.Init) !void {
                 },
                 .mouse => |*event| {
                     if (workbench.handleTabDragMouse(event)) continue;
-                    if (workbench.handleSashMouse(event)) continue;
                     if (workbench.handleQuickAccessMouse(event)) continue;
+                    if (workbench.handleStatusbarMouse(event)) continue;
+                    if (workbench.handleSashMouse(event)) continue;
                     if (workbench.handleSidebarMouse(event)) continue;
                     if (workbench.handleTabMouse(event)) continue;
                     workbench.clearQuitArmed();
 
                     var adjusted = workbench.editorMouseEvent(event.*) orelse continue;
                     const current = workbench.activeTab() orelse continue;
-                    if (event.kind == .down) current.editor.clearCloseTabArmed();
+                    if (event.kind == .down) {
+                        workbench.focusEditor();
+                        current.editor.clearCloseTabArmed();
+                    }
                     const tab_controllers = current.controllers orelse blk: {
                         try current.ensureControllers();
                         break :blk current.controllers.?;
@@ -416,9 +426,9 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.activeTab()) |current| {
             current.onEditorChanged(time_compat.milliTimestamp());
             workbench.onSearchEditorChanged();
-            workbench.refreshStatus();
             try current.view.refresh();
         }
+        workbench.refreshStatus();
         try tui.hideCursor(out);
         try workbench.render(out);
         try workbench.syncCursor(out);

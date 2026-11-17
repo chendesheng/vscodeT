@@ -53,8 +53,11 @@ const activity_bar_mod = @import("./activityBar.zig");
 const ActivityBarPart = @import("../vs/workbench/browser/parts/activitybar/activitybarPart.zig").ActivityBarPart;
 const SidebarPart = @import("../vs/workbench/browser/parts/sidebar/sidebarPart.zig").SidebarPart;
 const LayoutModel = @import("../vs/workbench/browser/layout.zig").LayoutModel;
-const StatusbarModel = @import("../vs/workbench/browser/parts/statusbar/statusbarModel.zig").StatusbarModel;
-const StatusbarPart = @import("../vs/workbench/browser/parts/statusbar/statusbarPart.zig").StatusbarPart;
+const statusbar_mod = @import("../vs/workbench/browser/parts/statusbar/statusbarPart.zig");
+const StatusbarService = statusbar_mod.StatusbarService;
+const EntryAccessor = statusbar_mod.EntryAccessor;
+const statusbar_types = @import("../vs/workbench/services/statusbar/browser/statusbar.zig");
+const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
 const ActivityService = @import("../vs/workbench/services/activity/browser/activityService.zig").ActivityService;
 const history_mod = @import("../vs/workbench/services/history/common/history.zig");
 const HistoryService = history_mod.HistoryService;
@@ -84,11 +87,12 @@ const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 const Range = @import("../vs/editor/common/core/range.zig").Range;
+const Position = @import("../vs/editor/common/core/position.zig").Position;
 const SearchOption = @import("./searchWidget.zig").Option;
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
-pub const Focus = enum { editor, sidebar };
+pub const Focus = enum { editor, sidebar, statusbar };
 
 /// Pane chrome for the terminal editor part. The active pane's outline uses
 /// the focused border colour and priority 1, so it wins a shared edge in a
@@ -134,10 +138,18 @@ pub const Workbench = struct {
     layout_model: LayoutModel,
     activity_bar_part: ActivityBarPart,
     sidebar_part: SidebarPart,
-    statusbar: StatusbarModel,
-    statusbar_part: StatusbarPart,
+    statusbar: StatusbarService,
     activity_service: ActivityService,
+    status_editor_accessor: ?EntryAccessor = null,
+    status_selection_accessor: ?EntryAccessor = null,
+    status_indentation_accessor: ?EntryAccessor = null,
+    status_encoding_accessor: ?EntryAccessor = null,
+    status_eol_accessor: ?EntryAccessor = null,
+    status_mode_accessor: ?EntryAccessor = null,
+    status_hint_accessor: ?EntryAccessor = null,
     status_editor_buf: [768]u8 = undefined,
+    status_selection_buf: [128]u8 = undefined,
+    status_indentation_buf: [64]u8 = undefined,
     search_badge_buf: [32]u8 = undefined,
     search_badge_count: usize = 0,
     workspace: *WorkspaceContextService,
@@ -266,6 +278,7 @@ pub const Workbench = struct {
             if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
             const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
             const tab = try Tab.initFromInput(allocator, file_input);
+            try tab.view.setStatusBarVisible(false);
             try pane.addTab(tab);
             try self.history.add(file_input.editor.path);
         }
@@ -331,6 +344,7 @@ pub const Workbench = struct {
                 if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
                 const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
                 const tab = try Tab.initFromInput(allocator, file_input);
+                try tab.view.setStatusBarVisible(false);
                 try pane.addTab(tab);
                 try self.history.add(file_input.editor.path);
             }
@@ -359,7 +373,7 @@ pub const Workbench = struct {
     }
 
     pub fn createFileSerializer(self: *Workbench) FileEditorSerializer {
-        return FileEditorSerializer.init(self.allocator, self.io, self.cols, editorHeight(self.rows));
+        return FileEditorSerializer.init(self.allocator, self.io, self.cols, self.editorContentHeight());
     }
 
     fn initShellModels(self: *Workbench) !void {
@@ -369,9 +383,8 @@ pub const Workbench = struct {
         errdefer self.activity_bar_part.deinit();
         self.sidebar_part = SidebarPart.init(self.allocator);
         errdefer self.sidebar_part.deinit();
-        self.statusbar = StatusbarModel.init(self.allocator);
+        self.statusbar = try StatusbarService.init(self.allocator);
         errdefer self.statusbar.deinit();
-        self.statusbar_part = StatusbarPart.init(&self.statusbar);
         self.activity_service = ActivityService.init(self.allocator);
         errdefer self.activity_service.deinit();
 
@@ -390,19 +403,44 @@ pub const Workbench = struct {
         try self.sidebar_part.pane.addComposite(.{ .id = "settings", .name = "Settings", .order = 3 });
         try self.sidebar_part.setWidth(28);
 
-        try self.statusbar.add(.{
-            .id = "workbench.editor",
+        try self.initStatusEntries();
+    }
+
+    fn initStatusEntries(self: *Workbench) !void {
+        self.status_editor_accessor = try self.statusbar.addEntry(.{
             .name = "Editor status",
-            .alignment = .left,
-            .priority = .{ .primary = .{ .number = 1 }, .secondary = 1 },
-        });
-        try self.statusbar.add(.{
-            .id = "workbench.hint",
+            .text = "",
+        }, "workbench.editor", .left, .{ .number = 1 });
+
+        self.status_selection_accessor = try self.statusbar.addEntry(.{
+            .name = "Editor Selection",
+            .text = "",
+            .tooltip = "Go to Line/Column",
+        }, "status.editor.selection", .right, .{ .number = 100.5 });
+        self.status_indentation_accessor = try self.statusbar.addEntry(.{
+            .name = "Editor Indentation",
+            .text = "",
+            .tooltip = "Select Indentation",
+        }, "status.editor.indentation", .right, .{ .number = 100.4 });
+        self.status_encoding_accessor = try self.statusbar.addEntry(.{
+            .name = "Editor Encoding",
+            .text = "",
+            .tooltip = "Select Encoding",
+        }, "status.editor.encoding", .right, .{ .number = 100.3 });
+        self.status_eol_accessor = try self.statusbar.addEntry(.{
+            .name = "Editor End of Line",
+            .text = "",
+            .tooltip = "Select End of Line Sequence",
+        }, "status.editor.eol", .right, .{ .number = 100.2 });
+        self.status_mode_accessor = try self.statusbar.addEntry(.{
+            .name = "Editor Language",
+            .text = "",
+            .tooltip = "Select Language Mode",
+        }, "status.editor.mode", .right, .{ .number = 100.1 });
+        self.status_hint_accessor = try self.statusbar.addEntry(.{
             .name = "Quit hint",
-            .text = " Ctrl-Q quit ",
-            .alignment = .right,
-            .priority = .{ .primary = .{ .number = 0 }, .secondary = 1 },
-        });
+            .text = "Ctrl-Q quit",
+        }, "workbench.hint", .right, .{ .number = 0 });
     }
 
     fn deinitShellModels(self: *Workbench) void {
@@ -437,6 +475,10 @@ pub const Workbench = struct {
         errdefer self.quick_access.deinit();
 
         try self.registerDefaultCommands();
+        self.statusbar.setCommandExecutor(.{
+            .context = self,
+            .execute = executeStatusbarCommand,
+        });
     }
 
     fn registerDefaultCommands(self: *Workbench) !void {
@@ -447,6 +489,7 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
             .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
+            .{ .id = "workbench.action.focusStatusBar", .label = "Focus Status Bar", .category = "View", .context = self, .run = commandFocusStatusBar },
             .{ .id = "workbench.action.findInFiles", .label = "Find in Files", .category = "Search", .context = self, .run = commandFindInFiles },
             .{ .id = "workbench.action.replaceInFiles", .label = "Replace in Files", .category = "Search", .context = self, .run = commandReplaceInFiles },
             .{ .id = "toggleSearchCaseSensitive", .label = "Toggle Case Sensitive", .category = "Search", .context = self, .run = commandToggleSearchCase },
@@ -569,8 +612,30 @@ pub const Workbench = struct {
         self.allocator.destroy(self);
     }
 
-    fn editorHeight(rows: usize) usize {
-        return @max(rows -| 1, 1);
+    pub fn statusBarVisible(self: *const Workbench) bool {
+        return self.layout_model.isVisible(.statusbar) and self.rows >= 2;
+    }
+
+    /// The workbench status row in global cells. It spans the full window,
+    /// including under the sidebar and activity bar.
+    pub fn statusBarRect(self: *const Workbench) ui.Rect {
+        if (!self.statusBarVisible()) return .{};
+        return .{
+            .x = 0,
+            .y = @floatFromInt(self.rows - 1),
+            .w = @floatFromInt(self.cols),
+            .h = 1,
+        };
+    }
+
+    fn editorRows(self: *const Workbench) usize {
+        return if (self.statusBarVisible()) self.rows - 1 else self.rows;
+    }
+
+    /// Editor content height: the rows above the workbench status bar minus the
+    /// group's one-row tab strip.
+    fn editorContentHeight(self: *const Workbench) usize {
+        return @max(self.editorRows() -| 1, 1);
     }
 
     fn sidebarWidth(self: *const Workbench) usize {
@@ -619,7 +684,7 @@ pub const Workbench = struct {
             .x = 0,
             .y = 0,
             .w = @floatFromInt(self.activityBarWidth()),
-            .h = @floatFromInt(self.rows),
+            .h = @floatFromInt(self.editorRows()),
         };
     }
 
@@ -628,7 +693,7 @@ pub const Workbench = struct {
             .x = @floatFromInt(self.activityBarWidth()),
             .y = 0,
             .w = @floatFromInt(self.sidebarWidth()),
-            .h = @floatFromInt(self.rows),
+            .h = @floatFromInt(self.editorRows()),
         };
     }
 
@@ -807,6 +872,7 @@ pub const Workbench = struct {
         try self.setSidebarVisible(true);
         try self.layout_model.setVisible(.activitybar, true);
         self.focus = .sidebar;
+        self.statusbar.main_part.clearFocus();
         if (std.mem.eql(u8, activity.id, "search")) {
             if (self.search_view) |view| view.focus();
         }
@@ -822,12 +888,14 @@ pub const Workbench = struct {
         const visible = !self.layout_model.isVisible(.sidebar);
         try self.setSidebarVisible(visible);
         self.focus = if (visible) .sidebar else .editor;
+        self.statusbar.main_part.clearFocus();
         self.layoutAll();
     }
 
     pub fn focusSidebar(self: *Workbench) void {
         if (!self.sidebarShown()) return;
         self.focus = .sidebar;
+        self.statusbar.main_part.clearFocus();
         if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) {
             if (self.search_view) |view| view.focus();
         }
@@ -835,6 +903,22 @@ pub const Workbench = struct {
 
     pub fn focusEditor(self: *Workbench) void {
         self.focus = .editor;
+        self.statusbar.main_part.clearFocus();
+        if (self.search_view) |view| view.blur();
+    }
+
+    pub fn focusStatusBar(self: *Workbench) void {
+        if (!self.statusBarVisible()) return;
+        self.focus = .statusbar;
+        if (self.statusbar.main_part.focusedHandle() == null) {
+            if (self.statusbar.main_part.lastFocusedHandle()) |handle| {
+                self.statusbar.main_part.setFocused(handle);
+            }
+            if (self.statusbar.main_part.focusedHandle() == null) {
+                _ = self.statusbar.main_part.focusNextEntry();
+            }
+        }
+        if (self.activeTab()) |tab| tab.view.focusEditor();
         if (self.search_view) |view| view.blur();
     }
 
@@ -843,7 +927,7 @@ pub const Workbench = struct {
             .x = 0,
             .y = 0,
             .w = @floatFromInt(self.cols),
-            .h = @floatFromInt(self.rows),
+            .h = @floatFromInt(self.editorRows()),
         };
         if (self.sidebarShown()) {
             const width = self.sidebarWidth();
@@ -851,7 +935,7 @@ pub const Workbench = struct {
                 .x = @floatFromInt(self.activityBarWidth() + width + 1),
                 .y = 0,
                 .w = @floatFromInt(self.cols - self.activityBarWidth() - width - 1),
-                .h = @floatFromInt(self.rows),
+                .h = @floatFromInt(self.editorRows()),
             };
         }
         self.part.layout(rect);
@@ -895,7 +979,7 @@ pub const Workbench = struct {
     /// already open in another group, the service reveals that group and the
     /// newly created input is discarded.
     pub fn openPath(self: *Workbench, path: []const u8) !void {
-        const editor = try Editor.create(self.allocator, self.io, path, self.cols, editorHeight(self.rows));
+        const editor = try Editor.create(self.allocator, self.io, path, self.cols, self.editorContentHeight());
         errdefer {
             editor.deinit();
             self.allocator.destroy(editor);
@@ -925,6 +1009,7 @@ pub const Workbench = struct {
         }
 
         const tab = try Tab.initFromInput(self.allocator, input);
+        try tab.view.setStatusBarVisible(false);
         try pane.addTab(tab);
         try tab.ensureControllers();
         try self.history.add(path);
@@ -940,6 +1025,7 @@ pub const Workbench = struct {
         const tab = ordered.items[index];
         try pane.activateTab(tab);
         try tab.ensureControllers();
+        self.focusEditor();
         tab.view.focusEditor();
         tab.onEditorChanged(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
         try tab.refresh();
@@ -1294,6 +1380,115 @@ pub const Workbench = struct {
         }
     }
 
+    /// Routes pointer input on the workbench status row. The row is outside
+    /// every editor pane, so it is handled before sash/sidebar/editor routing.
+    pub fn handleStatusbarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        if (!self.statusBarVisible()) return false;
+        const rect = self.statusBarRect();
+        const part = self.statusbar.main_part;
+        if (event.y != ui.cell.snap(rect.y)) {
+            if (event.kind == .move) part.clearHover();
+            return false;
+        }
+        switch (event.kind) {
+            .move => {
+                const hit = part.hitAt(event.x, event.y) catch null;
+                if (hit) |value| {
+                    switch (value) {
+                        .entry => |handle| part.setHovered(handle),
+                        .part => part.clearHover(),
+                    }
+                } else {
+                    part.clearHover();
+                }
+                self.leaveEditorHover();
+                return true;
+            },
+            .down => {
+                self.leaveEditorHover();
+                part.clearHover();
+                self.focusStatusBar();
+                if (part.hitAt(event.x, event.y) catch null) |hit| {
+                    switch (hit) {
+                        .entry => |handle| {
+                            part.setFocused(handle);
+                            _ = part.executeEntry(handle) catch |err| {
+                                if (self.activeTab()) |tab| {
+                                    tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
+                                }
+                            };
+                        },
+                        .part => part.clearFocus(),
+                    }
+                } else {
+                    part.clearFocus();
+                }
+                return true;
+            },
+            .up, .click, .wheel => return true,
+        }
+    }
+
+    /// Keyboard input while the status bar owns focus. `Ctrl-Alt-S` is a
+    /// TUI-specific shortcut for the upstream `focusStatusBar` command because
+    /// the TUI does not port F6 part navigation.
+    pub fn handleStatusbarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+        if (event.mods.ctrl and event.mods.alt and !event.mods.shift) {
+            if (event.key == .char and (event.key.char == 's' or event.key.char == 'S')) {
+                if (self.focus == .statusbar) {
+                    self.focusEditor();
+                } else {
+                    self.focusStatusBar();
+                }
+                return true;
+            }
+        }
+        if (self.focus != .statusbar) return false;
+
+        const part = self.statusbar.main_part;
+        switch (event.key) {
+            .left, .up => _ = part.focusPreviousEntry(),
+            .right, .down => _ = part.focusNextEntry(),
+            .home => _ = part.focusFirstEntry(),
+            .end => _ = part.focusLastEntry(),
+            .escape => {
+                if (part.focusedHandle() != null) {
+                    part.clearFocus();
+                } else {
+                    self.focusEditor();
+                }
+            },
+            .enter => {
+                _ = part.executeFocused() catch |err| {
+                    if (self.activeTab()) |tab| {
+                        tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
+                    }
+                };
+            },
+            .char => |ch| {
+                if (ch == ' ') {
+                    _ = part.executeFocused() catch |err| {
+                        if (self.activeTab()) |tab| {
+                            tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
+                        }
+                    };
+                }
+            },
+            else => {},
+        }
+        return true;
+    }
+
+    pub fn clearStatusHover(self: *Workbench) void {
+        self.statusbar.main_part.clearHover();
+    }
+
+    pub fn leaveEditorHover(self: *Workbench) void {
+        if (self.activeTab()) |tab| {
+            if (tab.controllers) |controllers| controllers.hover.hideContentHover();
+        }
+    }
+
     pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         if (isCtrlChar(event, 'b')) {
             try self.toggleSidebar();
@@ -1421,7 +1616,7 @@ pub const Workbench = struct {
 
         if (event.kind == .down) {
             self.pending_tab_drag = null;
-            if (self.search_view) |view| view.blur();
+            self.focusEditor();
         }
         const pane = self.paneAt(event.x, event.y) orelse return false;
         if (ui.cell.snap(pane.rect.y) != event.y) {
@@ -1482,35 +1677,145 @@ pub const Workbench = struct {
         }) catch {};
     }
 
-    /// Rebuilds the workbench status row from the ported `StatusbarModel`.
-    /// The model owns alignment/priority; the active editor view receives the
-    /// final left and right strings.
+    /// Rebuilds every status-bar entry from the active editor. Values use the
+    /// upstream editor-status labels; picker commands remain unset until the
+    /// corresponding quick pickers are ported.
     pub fn refreshStatus(self: *Workbench) void {
-        const tab = self.activeTab() orelse return;
-        const editor = tab.editor;
-        const position = editor.modelCursorPosition();
-        const message = editor.message();
-        const editor_text = std.fmt.bufPrint(
-            &self.status_editor_buf,
-            " {s}{s}  Ln {d}, Col {d}  {s}{s}{s}",
-            .{
-                editor.path,
-                if (editor.isDirty()) "*" else "",
-                position.lineNumber,
-                position.column,
-                editor.languageId(),
-                if (message.len > 0) "  " else "",
-                message,
-            },
-        ) catch self.status_editor_buf[0..0];
-        self.statusbar.setText("workbench.editor", editor_text);
+        var editor_text: []const u8 = "";
+        var selection_text: []const u8 = "";
+        var indentation_text: []const u8 = "";
+        var eol_text: []const u8 = "";
+        var mode_text: []const u8 = "";
+        var encoding_text: []const u8 = "";
 
-        self.statusbar_part.layout();
-        for (self.part.group_views.items) |pane| {
-            if (pane.activeTab()) |active| {
-                active.view.setStatusText(self.statusbar_part.leftText(), self.statusbar_part.rightText());
-            }
+        if (self.activeTab()) |tab| {
+            const editor = tab.editor;
+            const message = editor.message();
+            editor_text = std.fmt.bufPrint(
+                &self.status_editor_buf,
+                "{s}{s}{s}{s}",
+                .{
+                    editor.path,
+                    if (editor.isDirty()) "*" else "",
+                    if (message.len > 0) "  " else "",
+                    message,
+                },
+            ) catch self.status_editor_buf[0..0];
+
+            selection_text = self.formatSelection(editor) catch "";
+            const options = editor.model.getOptions();
+            indentation_text = if (options.insertSpaces) blk: {
+                if (options.tabSize == options.indentSize) {
+                    break :blk std.fmt.bufPrint(&self.status_indentation_buf, "Spaces: {d}", .{options.indentSize}) catch "";
+                }
+                break :blk std.fmt.bufPrint(
+                    &self.status_indentation_buf,
+                    "Spaces: {d} (Tab Size: {d})",
+                    .{ options.indentSize, options.tabSize },
+                ) catch "";
+            } else std.fmt.bufPrint(&self.status_indentation_buf, "Tab Size: {d}", .{options.tabSize}) catch "";
+            eol_text = if (editor.model.getEOL() == .CRLF) "CRLF" else "LF";
+            mode_text = editor.languageId();
+            encoding_text = "UTF-8";
         }
+
+        if (self.status_editor_accessor) |accessor| {
+            accessor.update(.{ .name = "Editor status", .text = editor_text, .aria_label = editor_text });
+        }
+        if (self.status_selection_accessor) |accessor| {
+            accessor.update(.{
+                .name = "Editor Selection",
+                .text = selection_text,
+                .aria_label = selection_text,
+                .tooltip = "Go to Line/Column",
+            });
+        }
+        if (self.status_indentation_accessor) |accessor| {
+            accessor.update(.{
+                .name = "Editor Indentation",
+                .text = indentation_text,
+                .aria_label = indentation_text,
+                .tooltip = "Select Indentation",
+            });
+        }
+        if (self.status_encoding_accessor) |accessor| {
+            accessor.update(.{
+                .name = "Editor Encoding",
+                .text = encoding_text,
+                .aria_label = encoding_text,
+                .tooltip = "Select Encoding",
+            });
+        }
+        if (self.status_eol_accessor) |accessor| {
+            accessor.update(.{
+                .name = "Editor End of Line",
+                .text = eol_text,
+                .aria_label = eol_text,
+                .tooltip = "Select End of Line Sequence",
+            });
+        }
+        if (self.status_mode_accessor) |accessor| {
+            accessor.update(.{
+                .name = "Editor Language",
+                .text = mode_text,
+                .aria_label = mode_text,
+                .tooltip = "Select Language Mode",
+            });
+        }
+        if (self.status_hint_accessor) |accessor| {
+            accessor.update(.{ .name = "Quit hint", .text = "Ctrl-Q quit" });
+        }
+    }
+
+    fn formatSelection(self: *Workbench, editor: *Editor) ![]const u8 {
+        const selections = try editor.getSelections();
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return "";
+
+        var characters: usize = 0;
+        for (selections) |selection| {
+            characters += editor.model.getCharacterCountInRange(
+                Range.init(
+                    selection.startLineNumber,
+                    selection.startColumn,
+                    selection.endLineNumber,
+                    selection.endColumn,
+                ),
+                null,
+            );
+        }
+
+        if (selections.len == 1) {
+            const selection = selections[0];
+            const position = Position.init(selection.positionLineNumber, selection.positionColumn);
+            const line = editor.model.getLineContent(position.lineNumber) catch null;
+            defer if (line) |value| value.deinit();
+            const column = if (line) |value|
+                CursorColumns.toStatusbarColumn(value.items, position.column, editor.tabSize())
+            else
+                position.column;
+            if (characters > 0) {
+                return std.fmt.bufPrint(
+                    &self.status_selection_buf,
+                    "Ln {d}, Col {d} ({d} selected)",
+                    .{ position.lineNumber, column, characters },
+                );
+            }
+            return std.fmt.bufPrint(
+                &self.status_selection_buf,
+                "Ln {d}, Col {d}",
+                .{ position.lineNumber, column },
+            );
+        }
+
+        if (characters > 0) {
+            return std.fmt.bufPrint(
+                &self.status_selection_buf,
+                "{d} selections ({d} selected)",
+                .{ selections.len, characters },
+            );
+        }
+        return std.fmt.bufPrint(&self.status_selection_buf, "{d} selections", .{selections.len});
     }
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
@@ -1538,7 +1843,7 @@ pub const Workbench = struct {
                 .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
             };
             var row: usize = 0;
-            while (row < self.rows) : (row += 1) {
+            while (row < self.editorRows()) : (row += 1) {
                 self.frame.next.putCodepoint(divider_x, row, '│', 1, style);
             }
         }
@@ -1554,6 +1859,12 @@ pub const Workbench = struct {
             if (self.drag_target) |target| self.renderDropTarget(target);
         } else {
             self.renderDividers(self.part.root);
+        }
+        if (self.statusBarVisible()) {
+            try self.statusbar.main_part.render(&self.frame.next, self.statusBarRect(), .{
+                .no_folder = self.workspace.getWorkbenchState() == .EMPTY,
+                .part_focused = self.focus == .statusbar,
+            });
         }
         try self.quick_access.render(&self.frame.next);
 
@@ -1698,13 +2009,13 @@ pub const Workbench = struct {
 
     pub fn cursorCell(self: *Workbench) ?ViewCell {
         if (self.quick_access.isOpen()) return null;
-        if (self.focus == .sidebar) return null;
+        if (self.focus != .editor) return null;
         const pane = self.activePane() orelse return null;
         const active = pane.activeTab() orelse return null;
         const cell = active.view.cursorCell() orelse return null;
         const row = ui.cell.snap(pane.rect.y) + 1 + cell.row;
         const col = ui.cell.snap(pane.rect.x) + cell.col;
-        if (row >= self.rows or col >= self.cols) return null;
+        if (row >= self.editorRows() or col >= self.cols) return null;
         return .{ .row = row, .col = col };
     }
 
@@ -1807,6 +2118,17 @@ fn commandSplitEditor(context: *anyopaque) anyerror!void {
 fn commandToggleSidebar(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.toggleSidebar();
+}
+
+fn commandFocusStatusBar(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.focusStatusBar();
+}
+
+fn executeStatusbarCommand(context: *anyopaque, command: statusbar_types.StatusbarCommand) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (statusbar_types.isTooltipCommand(command)) return;
+    _ = try self.commands.platform.execute(command.id);
 }
 
 fn commandFind(context: *anyopaque) anyerror!void {
@@ -3182,4 +3504,128 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     defer after.deinit();
     try workbench.render(&after.writer);
     try std.testing.expect(view.scroll > scroll_before);
+}
+
+test "Workbench: status bar spans the window and shows editor state" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "status.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 120, 10);
+    defer workbench.deinit();
+
+    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expectEqual(@as(usize, 9), ui.cell.snap(workbench.statusBarRect().y));
+
+    const pane = workbench.part.group_views.items[0];
+    try std.testing.expectEqual(@as(usize, 9), ui.cell.snap(pane.rect.h));
+    try std.testing.expectEqual(@as(usize, 8), workbench.activeTab().?.editor.screen_height);
+
+    workbench.refreshStatus();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const status = try workbench.frame.prev.rowText(allocator, 9);
+    defer allocator.free(status);
+    try std.testing.expect(std.mem.indexOf(u8, status, "status.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "Ln 1, Col 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "Spaces: 4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "LF") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "UTF-8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "plaintext") != null);
+
+    workbench.focusStatusBar();
+    try std.testing.expectEqual(Focus.statusbar, workbench.focus);
+    try std.testing.expect(workbench.statusbar.main_part.focusedHandle() != null);
+    try std.testing.expect(workbench.cursorCell() == null);
+
+    const right = ui.KeyEvent{ .key = .right };
+    try std.testing.expect(try workbench.handleStatusbarKey(&right));
+    const escape = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(try workbench.handleStatusbarKey(&escape));
+    try std.testing.expect(workbench.statusbar.main_part.focusedHandle() == null);
+    try std.testing.expect(try workbench.handleStatusbarKey(&escape));
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+}
+
+test "Workbench: Ctrl-Alt-S toggles status bar focus" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "focus.txt", "x");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 8);
+    defer workbench.deinit();
+
+    const toggle = ui.KeyEvent{ .key = .{ .char = 's' }, .mods = .{ .ctrl = true, .alt = true } };
+    try std.testing.expect(try workbench.handleStatusbarKey(&toggle));
+    try std.testing.expectEqual(Focus.statusbar, workbench.focus);
+    try std.testing.expect(try workbench.handleStatusbarKey(&toggle));
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+}
+
+test "Workbench: clicking a status entry focuses it and runs its command" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "click.txt", "x");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 8);
+    defer workbench.deinit();
+
+    const State = struct {
+        hits: usize = 0,
+        fn run(context: *anyopaque) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.hits += 1;
+        }
+    };
+    var state = State{};
+    try workbench.commands.register(.{
+        .id = "test.statusbar.command",
+        .label = "Status Command",
+        .context = &state,
+        .run = State.run,
+    });
+    const accessor = try workbench.statusbar.addEntry(.{
+        .name = "Status command",
+        .text = "CMD",
+        .command = .{ .id = "test.statusbar.command" },
+    }, "test.statusbar.command", .right, .{ .number = 50 });
+
+    workbench.refreshStatus();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const y = ui.cell.snap(workbench.statusBarRect().y);
+    var hit_x: ?usize = null;
+    var x: usize = 0;
+    while (x < 100) : (x += 1) {
+        const hit = workbench.statusbar.main_part.hitAt(x, y) catch null;
+        if (hit) |value| {
+            switch (value) {
+                .entry => |handle| if (handle == accessor.handle) {
+                    hit_x = x;
+                    break;
+                },
+                .part => {},
+            }
+        }
+    }
+    const click_x = hit_x orelse return error.StatusEntryNotFound;
+    var click = ui.MouseEvent{ .kind = .down, .x = click_x, .y = y, .button = .left };
+    try std.testing.expect(workbench.handleStatusbarMouse(&click));
+    try std.testing.expectEqual(@as(usize, 1), state.hits);
+    try std.testing.expectEqual(Focus.statusbar, workbench.focus);
+    try std.testing.expectEqual(accessor.handle, workbench.statusbar.main_part.focusedHandle().?);
 }
