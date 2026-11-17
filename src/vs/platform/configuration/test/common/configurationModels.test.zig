@@ -330,3 +330,34 @@ test "parse configuration model with scope and registration filters" {
         try std.testing.expect(model.getValue("windowSetting") != null);
     }
 }
+
+test "nested restricted and scoped settings are filtered" {
+    const allocator = std.testing.allocator;
+    const schemas = [_]configuration_models.PropertySchemaEntry{
+        .{ .key = "a.b", .restricted = true },
+        .{ .key = "a.machine", .scope = .MACHINE },
+    };
+    {
+        var dotted = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"a.b\":1,\"a.c\":2}", .{ .skip_restricted = true, .schemas = &schemas });
+        defer dotted.deinit();
+        var nested = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"a\":{\"b\":1,\"c\":2}}", .{ .skip_restricted = true, .schemas = &schemas });
+        defer nested.deinit();
+        try std.testing.expect(dotted.getValue("a.b") == null);
+        try std.testing.expect(nested.getValue("a.b") == null);
+        try std.testing.expectEqual(@as(i64, 2), dotted.getValue("a.c").?.integer);
+        try std.testing.expectEqual(@as(i64, 2), nested.getValue("a.c").?.integer);
+    }
+    {
+        const restricted_parent = [_]configuration_models.PropertySchemaEntry{.{ .key = "a", .restricted = true }};
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"a\":{\"b\":1},\"c\":2}", .{ .skip_restricted = true, .schemas = &restricted_parent });
+        defer model.deinit();
+        try std.testing.expect(model.getValue("a") == null);
+        try std.testing.expectEqual(@as(i64, 2), model.getValue("c").?.integer);
+    }
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"a\":{\"machine\":1,\"allowed\":2}}", .{ .scopes = &.{.WINDOW}, .schemas = &schemas });
+        defer model.deinit();
+        try std.testing.expect(model.getValue("a.machine") == null);
+        try std.testing.expectEqual(@as(i64, 2), model.getValue("a.allowed").?.integer);
+    }
+}

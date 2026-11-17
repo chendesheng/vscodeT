@@ -99,7 +99,8 @@ pub const ConfigurationModel = struct {
                     .object => |object| {
                         var inner = object.iterator();
                         while (inner.next()) |inner_entry| {
-                            try configuration.addToValueTree(arena, &override_contents, inner_entry.key_ptr.*, inner_entry.value_ptr.*);
+                            const filtered = try filterValue(arena, inner_entry.key_ptr.*, inner_entry.value_ptr.*, options) orelse continue;
+                            try configuration.addToValueTree(arena, &override_contents, inner_entry.key_ptr.*, filtered);
                             try override_keys.append(try arena.dupe(u8, inner_entry.key_ptr.*));
                         }
                     },
@@ -108,9 +109,8 @@ pub const ConfigurationModel = struct {
                 try overrides.append(.{ .identifiers = identifiers, .keys = try override_keys.toOwnedSlice(), .contents = override_contents });
                 continue;
             }
-            if (isExcluded(entry.key_ptr.*, options.exclude)) continue;
-            if (!shouldInclude(entry.key_ptr.*, options)) continue;
-            try configuration.addToValueTree(arena, &normalized, entry.key_ptr.*, entry.value_ptr.*);
+            const filtered = try filterValue(arena, entry.key_ptr.*, entry.value_ptr.*, options) orelse continue;
+            try configuration.addToValueTree(arena, &normalized, entry.key_ptr.*, filtered);
             try model.keys.append(try arena.dupe(u8, entry.key_ptr.*));
         }
         model.contents = normalized;
@@ -394,11 +394,13 @@ fn parseOverrideIdentifiers(arena: Allocator, key: []const u8) ![]const []const 
     return identifiers.toOwnedSlice();
 }
 
-fn shouldInclude(key: []const u8, options: ParseOptions) bool {
+fn shouldInclude(key: []const u8, schema: ?PropertySchemaEntry, options: ParseOptions) bool {
+    for (options.exclude) |excluded| {
+        if (std.mem.eql(u8, key, excluded)) return false;
+    }
     for (options.include) |included| {
         if (std.mem.eql(u8, key, included)) return true;
     }
-    const schema = findSchema(key, options.schemas);
     if (options.skip_restricted and schema != null and schema.?.restricted) return false;
     if (options.skip_unregistered and schema == null) return false;
     if (schema == null or options.scopes.len == 0) return true;
@@ -406,6 +408,47 @@ fn shouldInclude(key: []const u8, options: ParseOptions) bool {
         if (schema.?.scope == scope) return true;
     }
     return false;
+}
+
+/// Filters a value tree following upstream `filterProperty`: registered keys
+/// keep their subtree, unregistered objects recurse per child, and a subtree
+/// disappears when every child is filtered out.
+fn filterValue(arena: Allocator, path: []const u8, value: std.json.Value, options: ParseOptions) !?std.json.Value {
+    for (options.exclude) |excluded| {
+        if (std.mem.eql(u8, path, excluded)) return null;
+    }
+    const schema = findSchema(path, options.schemas);
+    if (schema != null) {
+        if (!shouldInclude(path, schema, options)) return null;
+        return try configuration.cloneValue(arena, value);
+    }
+    for (options.include) |included| {
+        if (std.mem.eql(u8, path, included)) return try configuration.cloneValue(arena, value);
+    }
+    switch (value) {
+        .object => |object| {
+            if (object.count() == 0) {
+                return if (shouldInclude(path, null, options)) try configuration.cloneValue(arena, value) else null;
+            }
+            var result: std.json.Value = .{ .object = .{} };
+            var included_any = false;
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                var child_path = std.array_list.Managed(u8).init(arena);
+                try child_path.appendSlice(path);
+                try child_path.append('.');
+                try child_path.appendSlice(entry.key_ptr.*);
+                const filtered = try filterValue(arena, child_path.items, entry.value_ptr.*, options) orelse continue;
+                try result.object.put(arena, try arena.dupe(u8, entry.key_ptr.*), filtered);
+                included_any = true;
+            }
+            return if (included_any) result else null;
+        },
+        else => {
+            if (!shouldInclude(path, null, options)) return null;
+            return try configuration.cloneValue(arena, value);
+        },
+    }
 }
 
 fn findSchema(key: []const u8, schemas: []const PropertySchemaEntry) ?PropertySchemaEntry {
