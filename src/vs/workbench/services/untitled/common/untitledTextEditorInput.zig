@@ -48,6 +48,18 @@ pub const UntitledTextEditorInput = struct {
         return std.mem.eql(u8, self.path, other_input.path);
     }
 
+    pub fn getPreferredName(self: *const UntitledTextEditorInput) []const u8 {
+        return self.base.getName();
+    }
+
+    pub fn getPreferredResource(self: *const UntitledTextEditorInput) []const u8 {
+        return self.path;
+    }
+
+    pub fn getPreferredContents(self: *const UntitledTextEditorInput) []const u8 {
+        return self.getText();
+    }
+
     pub fn getText(self: *const UntitledTextEditorInput) []const u8 {
         return self.content orelse "";
     }
@@ -72,6 +84,8 @@ test "UntitledTextEditorInput tracks content and dirty state" {
     defer input.destroy();
     try std.testing.expectEqualStrings("untitled:/Untitled-1", input.base.resource.?);
     try std.testing.expectEqualStrings("Untitled-1", input.base.getName());
+    try std.testing.expectEqualStrings("Untitled-1", input.getPreferredName());
+    try std.testing.expectEqualStrings("untitled:/Untitled-1", input.getPreferredResource());
     try std.testing.expectEqualStrings("", input.getText());
     try std.testing.expect(!input.base.isDirty());
 
