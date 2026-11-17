@@ -426,6 +426,7 @@ test "an owning policy applies to its owner and references" {
         .value_type = "boolean",
         .default = std.json.Value{ .bool = true },
         .policy = "SharedBool",
+        .policy_restricted_value = std.json.Value{ .bool = true },
     }});
     try registry.registerConfiguration("reference", &.{.{
         .key = "policy.ref",
@@ -447,4 +448,7 @@ test "an owning policy applies to its owner and references" {
     try std.testing.expectEqual(@as(bool, false), model.getValue("policy.owner").?.bool);
     try std.testing.expectEqual(@as(bool, false), model.getValue("policy.ref").?.bool);
     try std.testing.expectEqual(@as(usize, 2), model.getKeys().len);
+    const definition = policy_service.definitions.get("SharedBool").?;
+    try std.testing.expectEqual(@import("../../../../platform/policy/common/policy.zig").PolicyType.boolean, definition.value_type);
+    try std.testing.expectEqual(@as(bool, true), definition.restricted_value.?.boolean);
 }

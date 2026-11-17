@@ -191,13 +191,23 @@ pub const PolicyConfiguration = struct {
         const owner = self.defaults.registry.getPolicyConfigurations().get(name);
         if (owner) |key| {
             if (self.propertyFor(key)) |property| {
-                return .{ .name = name, .value_type = policyType(property.value_type) };
+                return .{
+                    .name = name,
+                    .value_type = policyType(property.value_type),
+                    .managed_settings = property.policy_managed_settings,
+                    .restricted_value = tryPolicyValue(property.policy_restricted_value),
+                };
             }
         }
         if (self.defaults.registry.getPolicyReferenceConfigurations().get(name)) |list| {
             for (list.items) |key| {
                 if (self.propertyFor(key)) |property| {
-                    return .{ .name = name, .value_type = policyType(property.value_type) };
+                    return .{
+                        .name = name,
+                        .value_type = policyType(property.value_type),
+                        .managed_settings = property.policy_managed_settings,
+                        .restricted_value = tryPolicyValue(property.policy_restricted_value),
+                    };
                 }
             }
         }
@@ -272,4 +282,15 @@ fn policyType(value_type: []const u8) PolicyType {
     if (std.mem.eql(u8, value_type, "number")) return .number;
     if (std.mem.eql(u8, value_type, "boolean")) return .boolean;
     return .string;
+}
+
+fn tryPolicyValue(value: ?std.json.Value) ?PolicyValue {
+    const json = value orelse return null;
+    return switch (json) {
+        .string => |text| .{ .string = text },
+        .integer => |number| .{ .number = @floatFromInt(number) },
+        .float => |number| .{ .number = number },
+        .bool => |boolean| .{ .boolean = boolean },
+        else => null,
+    };
 }
