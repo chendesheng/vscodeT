@@ -13,17 +13,19 @@ const EventHandlerCallbacks = viewEventHandler.EventHandlerCallbacks;
 const ViewContext = viewContext.ViewContext;
 
 pub const DynamicViewOverlay = struct {
+    view_context: *ViewContext,
     handler: ViewEventHandler,
-    prepare_render_fn: *const fn (overlay: *DynamicViewOverlay, context: *RenderingContext) void,
+    prepare_render_fn: *const fn (overlay: *DynamicViewOverlay, context: *const RenderingContext) void,
     render_fn: *const fn (overlay: *DynamicViewOverlay, start_line_number: usize, line_number: usize) []const u8,
 
     pub fn init(
         context: *ViewContext,
         callbacks: EventHandlerCallbacks,
-        prepare_render_fn: *const fn (overlay: *DynamicViewOverlay, context: *RenderingContext) void,
+        prepare_render_fn: *const fn (overlay: *DynamicViewOverlay, context: *const RenderingContext) void,
         render_fn: *const fn (overlay: *DynamicViewOverlay, start_line_number: usize, line_number: usize) []const u8,
     ) DynamicViewOverlay {
         var overlay = DynamicViewOverlay{
+            .view_context = context,
             .handler = ViewEventHandler.init(context, callbacks),
             .prepare_render_fn = prepare_render_fn,
             .render_fn = render_fn,
@@ -33,10 +35,10 @@ pub const DynamicViewOverlay = struct {
     }
 
     pub fn deinit(self: *DynamicViewOverlay) void {
-        self.handler.context.removeEventHandler(&self.handler);
+        self.view_context.removeEventHandler(&self.handler);
     }
 
-    pub fn prepareRender(self: *DynamicViewOverlay, context: *RenderingContext) void {
+    pub fn prepareRender(self: *DynamicViewOverlay, context: *const RenderingContext) void {
         self.prepare_render_fn(self, context);
     }
 

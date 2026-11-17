@@ -142,7 +142,7 @@ pub const ViewOverlays = struct {
         return self.lines.onZonesChanged(event);
     }
 
-    pub fn prepareRender(self: *ViewOverlays, context: *RenderingContext) void {
+    pub fn prepareRender(self: *ViewOverlays, context: *const RenderingContext) void {
         for (self.dynamic_overlays.items) |overlay| {
             if (!overlay.handler.shouldRender()) continue;
             overlay.prepareRender(context);
@@ -150,7 +150,168 @@ pub const ViewOverlays = struct {
         }
     }
 
-    pub fn render(self: *ViewOverlays, context: *RestrictedRenderingContext, sb: *StringBuilder) !void {
-        try self.lines.renderLines(&context.viewportData, sb);
+    pub fn render(self: *ViewOverlays, context: *const RestrictedRenderingContext, sb: *StringBuilder) !void {
+        try self.lines.renderLines(context.viewportData, sb);
     }
 };
+
+test "view overlays concatenate dynamic overlays per line" {
+    const theme_service = @import("../../../platform/theme/common/themeService.zig");
+    const view_model = @import("../../common/viewModel.zig");
+    const editor_configuration = @import("../../common/config/editorConfiguration.zig");
+    const actions = @import("../../../platform/actions/common/actions.zig");
+
+    const Theme = struct {
+        const vtable = theme_service.IColorTheme.VTable{
+            .getColor = getColor,
+            .defines = defines,
+            .getTokenStyleMetadata = getTokenStyleMetadata,
+        };
+        fn getColor(_: *anyopaque, _: []const u8, _: bool) ?@import("../../../base/common/color.zig").Color {
+            return null;
+        }
+        fn defines(_: *anyopaque, _: []const u8) bool {
+            return false;
+        }
+        fn getTokenStyleMetadata(_: *anyopaque, _: []const u8, _: []const []const u8, _: []const u8) ?theme_service.ITokenStyle {
+            return null;
+        }
+    };
+    var theme_state: u8 = 0;
+    const theme = theme_service.IColorTheme.init(.DARK, "test", &theme_state, &Theme.vtable);
+
+    const Layout = struct {
+        fn scrollWidth(_: *anyopaque) f64 {
+            return 0;
+        }
+        fn scrollHeight(_: *anyopaque) f64 {
+            return 0;
+        }
+        fn viewport(_: *anyopaque) view_model.Viewport {
+            return .{ .top = 0, .left = 0, .width = 10, .height = 40 };
+        }
+        fn verticalOffset(_: *anyopaque, _: usize, _: bool) f64 {
+            return 0;
+        }
+        fn lineHeight(_: *anyopaque, _: usize) f64 {
+            return 20;
+        }
+    };
+    var layout_state: u8 = 0;
+    const layout = view_model.IViewLayout{
+        .context = &layout_state,
+        .get_scroll_width = Layout.scrollWidth,
+        .get_scroll_height = Layout.scrollHeight,
+        .get_current_viewport = Layout.viewport,
+        .get_vertical_offset_for_line_number = Layout.verticalOffset,
+        .get_vertical_offset_after_line_number = Layout.verticalOffset,
+        .get_line_height_for_line_number = Layout.lineHeight,
+    };
+    const model = view_model.IViewModel{
+        .context = &layout_state,
+        .view_layout = layout,
+        .getLineMinColumn = struct {
+            fn f(_: *anyopaque, _: usize) usize {
+                return 1;
+            }
+        }.f,
+        .getLineMaxColumn = struct {
+            fn f(_: *anyopaque, _: usize) usize {
+                return 1;
+            }
+        }.f,
+        .getViewportViewLineRenderingData = struct {
+            fn f(_: *anyopaque, _: @import("../../common/core/range.zig").Range, _: usize) anyerror!view_model.ViewLineRenderingData {
+                return error.Unsupported;
+            }
+        }.f,
+        .getViewLineContinuesWithWrappedLine = struct {
+            fn f(_: *anyopaque, _: usize) bool {
+                return false;
+            }
+        }.f,
+        .getDecorationsInViewport = struct {
+            fn f(_: *anyopaque, _: @import("../../common/core/range.zig").Range) anyerror![]view_model.ViewModelDecoration {
+                return @constCast(&[_]view_model.ViewModelDecoration{});
+            }
+        }.f,
+    };
+
+    const Overlay = struct {
+        base: DynamicViewOverlay,
+        text: []const u8,
+        prepared: usize = 0,
+
+        fn prepare(overlay: *DynamicViewOverlay, _: *const RenderingContext) void {
+            const self: *@This() = @fieldParentPtr("base", overlay);
+            self.prepared += 1;
+        }
+        fn render(overlay: *DynamicViewOverlay, _: usize, _: usize) []const u8 {
+            const self: *@This() = @fieldParentPtr("base", overlay);
+            return self.text;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    var configuration = editor_configuration.IEditorConfiguration{ .is_simple_widget = false, .context_menu_id = actions.menu_ids.EditorContext };
+    var context = ViewContext.init(&configuration, theme, model);
+    const overlays = try ViewOverlays.init(allocator, &context);
+    defer overlays.deinit();
+
+    var first = Overlay{ .base = undefined, .text = "A" };
+    first.base = DynamicViewOverlay.init(&context, .{}, Overlay.prepare, Overlay.render);
+    defer first.base.deinit();
+    overlays.addDynamicOverlay(&first.base);
+
+    const offsets = [_]f64{ 0, 20 };
+    const viewport = @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData{
+        .selections = &.{},
+        .startLineNumber = 5,
+        .endLineNumber = 6,
+        .relativeVerticalOffset = &offsets,
+        .visibleRange = @import("../../common/core/range.zig").Range.init(5, 1, 6, 1),
+        .bigNumbersDelta = 0,
+        .whitespaceViewportData = &.{},
+        .lineHeight = 20,
+        ._model = undefined,
+    };
+    const view_lines = rendering_context.IViewLines{
+        .context = @ptrFromInt(@alignOf(usize)),
+        .lines_visible_ranges_for_range = struct {
+            fn f(_: *anyopaque, _: @import("../../common/core/range.zig").Range, _: bool) ?[]const rendering_context.LineVisibleRanges {
+                return null;
+            }
+        }.f,
+        .visible_range_for_position = struct {
+            fn f(_: *anyopaque, _: @import("../../common/core/position.zig").Position) ?rendering_context.HorizontalPosition {
+                return null;
+            }
+        }.f,
+    };
+    const rendering = RenderingContext.init(layout, &viewport, view_lines);
+    const restricted = restricted_context_from(rendering);
+    var sb = try StringBuilder.init(allocator, 32);
+    defer sb.deinit();
+
+    overlays.prepareRender(&rendering);
+    try std.testing.expectEqual(@as(usize, 1), first.prepared);
+    try overlays.render(&restricted, &sb);
+    try std.testing.expectEqualStrings("AA", sb.build());
+
+    var second = Overlay{ .base = undefined, .text = "B" };
+    second.base = DynamicViewOverlay.init(&context, .{}, Overlay.prepare, Overlay.render);
+    defer second.base.deinit();
+    overlays.addDynamicOverlay(&second.base);
+    sb.reset();
+    try overlays.render(&restricted, &sb);
+    try std.testing.expectEqualStrings("ABAB", sb.build());
+
+    first.text = "C";
+    sb.reset();
+    try overlays.render(&restricted, &sb);
+    try std.testing.expectEqualStrings("CBCB", sb.build());
+}
+
+fn restricted_context_from(rendering: RenderingContext) RestrictedRenderingContext {
+    return rendering.restricted;
+}
