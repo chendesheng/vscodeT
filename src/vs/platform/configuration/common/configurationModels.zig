@@ -192,6 +192,38 @@ pub const ConfigurationModel = struct {
         const arena = self.arena.allocator();
         try configuration.addToValueTree(arena, &self.contents, key, value);
         if (!self.hasKey(key)) try self.keys.append(try arena.dupe(u8, key));
+        if (isOverrideIdentifierKey(key)) try self.updateOverride(key, value, arena);
+    }
+
+    fn updateOverride(self: *ConfigurationModel, key: []const u8, value: Value, arena: Allocator) !void {
+        const identifiers = try parseOverrideIdentifiers(arena, key);
+        var override_keys = std.array_list.Managed([]const u8).init(arena);
+        if (value == .object) {
+            var iterator = value.object.iterator();
+            while (iterator.next()) |entry| try override_keys.append(try arena.dupe(u8, entry.key_ptr.*));
+        }
+        var overrides = std.array_list.Managed(OverrideIdentifier).init(arena);
+        var replaced = false;
+        for (self.overrides) |existing| {
+            if (!replaced and sameIdentifiers(existing.identifiers, identifiers)) {
+                try overrides.append(.{
+                    .identifiers = identifiers,
+                    .keys = try override_keys.toOwnedSlice(),
+                    .contents = try configuration.cloneValue(arena, value),
+                });
+                replaced = true;
+            } else {
+                try overrides.append(existing);
+            }
+        }
+        if (!replaced) {
+            try overrides.append(.{
+                .identifiers = identifiers,
+                .keys = try override_keys.toOwnedSlice(),
+                .contents = try configuration.cloneValue(arena, value),
+            });
+        }
+        self.overrides = try overrides.toOwnedSlice();
     }
 
     pub fn removeValue(self: *ConfigurationModel, key: []const u8) void {
@@ -199,8 +231,17 @@ pub const ConfigurationModel = struct {
         for (self.keys.items, 0..) |existing, index| {
             if (std.mem.eql(u8, existing, key)) {
                 _ = self.keys.orderedRemove(index);
-                return;
+                break;
             }
+        }
+        if (isOverrideIdentifierKey(key)) {
+            const arena = self.arena.allocator();
+            const identifiers = parseOverrideIdentifiers(arena, key) catch return;
+            var overrides = std.array_list.Managed(OverrideIdentifier).init(arena);
+            for (self.overrides) |existing| {
+                if (!sameIdentifiers(existing.identifiers, identifiers)) overrides.append(existing) catch return;
+            }
+            self.overrides = overrides.toOwnedSlice() catch return;
         }
     }
 

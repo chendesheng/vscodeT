@@ -65,3 +65,50 @@ test "registering the same property again replaces its default" {
     try defaults.initialize();
     try std.testing.expectEqualStrings("second", defaults.configurationModel().getValue("test.prop").?.string);
 }
+
+fn jsonValue(arena: std.mem.Allocator, text: []const u8) !std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{});
+}
+
+test "registering an override identifier" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+
+    try registry.registerDefaultConfigurations(&.{.{ .key = "[a]", .value = try jsonValue(arena.allocator(), "{\"b\":true}") }});
+    try defaults.initialize();
+    const model = defaults.configurationModel();
+    try std.testing.expect(model.getValue("[a]") != null);
+    try std.testing.expectEqual(@as(usize, 1), model.overrides.len);
+    try std.testing.expectEqualStrings("a", model.overrides[0].identifiers[0]);
+    try std.testing.expectEqual(@as(usize, 1), model.overrides[0].keys.len);
+    try std.testing.expectEqualStrings("b", model.overrides[0].keys[0]);
+    try std.testing.expectEqual(@as(bool, true), model.overrides[0].contents.object.get("b").?.bool);
+    try std.testing.expectEqualStrings("[a]", model.getKeys()[0]);
+    var overridden = try model.override(allocator, "a");
+    defer overridden.deinit();
+    try std.testing.expectEqual(@as(bool, true), overridden.getValue("b").?.bool);
+}
+
+test "registering a normal property and override identifier" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+
+    try registry.registerConfiguration("a", &.{.{ .key = "b", .value_type = "boolean", .default = std.json.Value{ .bool = false } }});
+    try registry.registerDefaultConfigurations(&.{.{ .key = "[a]", .value = try jsonValue(arena.allocator(), "{\"b\":true}") }});
+    try defaults.initialize();
+    const model = defaults.configurationModel();
+    try std.testing.expectEqual(@as(bool, false), model.getValue("b").?.bool);
+    try std.testing.expect(model.getValue("[a]") != null);
+    try std.testing.expectEqual(@as(usize, 1), model.overrides.len);
+    try std.testing.expectEqual(@as(usize, 2), model.getKeys().len);
+}
