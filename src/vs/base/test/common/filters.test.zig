@@ -358,3 +358,35 @@ test "fuzzyScore, many matches" {
     }
     try assertMatches(allocator, "aaaaaa", target, expected, .{});
 }
+
+test "anyScore should not require a strong first match" {
+    const allocator = std.testing.allocator;
+    const Check = struct {
+        fn run(alloc: std.mem.Allocator, word: []const u8, target: []const u8, expected: []const u8) !void {
+            const pattern_low = try lower(alloc, word);
+            defer alloc.free(pattern_low);
+            const target_low = try lower(alloc, target);
+            defer alloc.free(target_low);
+            const value = try filters.anyScore(alloc, word, pattern_low, 0, target, target_low, 0);
+            defer value.deinit(alloc);
+            const matches = try filters.createScorerMatches(alloc, value);
+            defer alloc.free(matches);
+            var actual = std.array_list.Managed(u8).init(alloc);
+            defer actual.deinit();
+            var position: usize = 0;
+            for (matches) |match| {
+                try actual.appendSlice(target[position..match.start]);
+                var index = match.start;
+                while (index < match.end) : (index += 1) {
+                    try actual.append('^');
+                    try actual.append(target[index]);
+                }
+                position = match.end;
+            }
+            try actual.appendSlice(target[position..]);
+            try std.testing.expectEqualStrings(expected, actual.items);
+        }
+    };
+    try Check.run(allocator, "bar", "foobAr", "foo^b^A^r");
+    try Check.run(allocator, "bar", "foobar", "foo^b^a^r");
+}

@@ -779,6 +779,29 @@ pub const FuzzyScorer = struct {
     }
 };
 
+/// Port of `anyScore`: tries pattern starts up to 13 characters looking for a
+/// score that may begin weakly. Falls back to a zero score at `word_start`.
+pub fn anyScore(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    pattern_low: []const u8,
+    pattern_start: usize,
+    word: []const u8,
+    word_low: []const u8,
+    word_start: usize,
+) !FuzzyScoreValue {
+    var scorer = try FuzzyScorer.init(allocator);
+    defer scorer.deinit();
+    const max = @min(13, pattern.len);
+    var pattern_pos = pattern_start;
+    while (pattern_pos < max) : (pattern_pos += 1) {
+        if (try scorer.score(pattern, pattern_low, pattern_pos, word, word_low, word_start, .{ .first_match_can_be_weak = true })) |value| {
+            return value;
+        }
+    }
+    return .{ .score = 0, .word_start = word_start, .matches = try allocator.alloc(usize, 0) };
+}
+
 /// Port of upstream `createMatches`: converts the backtracked columns into
 /// ascending single-character ranges.
 pub fn createScorerMatches(allocator: std.mem.Allocator, value: FuzzyScoreValue) ![]Match {
