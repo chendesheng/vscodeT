@@ -413,3 +413,173 @@ pub fn scoreFuzzy2(
     };
     return doScoreFuzzy2Single(allocator, target, piece, pattern_start, word_start);
 }
+
+//#region Item (label, description, path) scorer
+
+pub const ItemScore = struct {
+    score: i64,
+    label_match: ?[]Match,
+    description_match: ?[]Match,
+
+    pub fn deinit(self: *const ItemScore, allocator: Allocator) void {
+        if (self.label_match) |matches| allocator.free(matches);
+        if (self.description_match) |matches| allocator.free(matches);
+    }
+};
+
+pub const ItemAccessor = struct {
+    context: *anyopaque,
+    get_item_label: *const fn (context: *anyopaque, item: *const anyopaque) ?[]const u8,
+    get_item_description: *const fn (context: *anyopaque, item: *const anyopaque) ?[]const u8,
+    get_item_path: *const fn (context: *anyopaque, item: *const anyopaque) ?[]const u8,
+};
+
+const PATH_IDENTITY_SCORE: i64 = 1 << 18;
+const LABEL_PREFIX_SCORE_THRESHOLD: i64 = 1 << 17;
+const LABEL_SCORE_THRESHOLD: i64 = 1 << 16;
+
+fn matchesPrefix(word: []const u8, target: []const u8) ?Match {
+    if (target.len < word.len) return null;
+    if (!std.ascii.eqlIgnoreCase(target[0..word.len], word)) return null;
+    return .{ .start = 0, .end = word.len };
+}
+
+fn createMatchesFromPositions(allocator: Allocator, positions: []const usize) ![]Match {
+    return matchesFromPositions(allocator, positions);
+}
+
+fn scoreSingleItem(
+    allocator: Allocator,
+    label: []const u8,
+    description: ?[]const u8,
+    path: ?[]const u8,
+    piece: PreparedQueryPiece,
+    prefer_label_matches: bool,
+    allow_non_contiguous_matches: bool,
+) !ItemScore {
+    if (prefer_label_matches or description == null) {
+        const label_score = try scoreFuzzy(allocator, label, piece.normalized, piece.normalizedLowercase, allow_non_contiguous_matches and !piece.expectContiguousMatch);
+        defer label_score.deinit(allocator);
+        if (label_score.score != 0) {
+            const prefix_match = matchesPrefix(piece.normalized, label);
+            var base_score = LABEL_SCORE_THRESHOLD;
+            if (prefix_match != null) {
+                base_score = LABEL_PREFIX_SCORE_THRESHOLD;
+                const prefix_length_boost = @divTrunc(@as(i64, @intCast(piece.normalized.len)) * 100, @as(i64, @intCast(label.len)));
+                base_score += prefix_length_boost;
+            }
+            const matches = if (prefix_match) |prefix| blk: {
+                const result = try allocator.alloc(Match, 1);
+                result[0] = prefix;
+                break :blk result;
+            } else try createMatchesFromPositions(allocator, label_score.positions);
+            return .{ .score = base_score + label_score.score, .label_match = matches, .description_match = null };
+        }
+    }
+
+    if (description) |description_value| {
+        var prefix = std.array_list.Managed(u8).init(allocator);
+        defer prefix.deinit();
+        try prefix.appendSlice(description_value);
+        if (path != null) try prefix.append('/');
+        const description_prefix_length = prefix.items.len;
+        try prefix.appendSlice(label);
+        const combined = prefix.items;
+        const combined_score = try scoreFuzzy(allocator, combined, piece.normalized, piece.normalizedLowercase, allow_non_contiguous_matches and !piece.expectContiguousMatch);
+        defer combined_score.deinit(allocator);
+        if (combined_score.score != 0) {
+            const all_matches = try createMatchesFromPositions(allocator, combined_score.positions);
+            defer allocator.free(all_matches);
+            var label_matches = std.array_list.Managed(Match).init(allocator);
+            var description_matches = std.array_list.Managed(Match).init(allocator);
+            for (all_matches) |match| {
+                if (match.start < description_prefix_length and match.end > description_prefix_length) {
+                    try label_matches.append(.{ .start = 0, .end = match.end - description_prefix_length });
+                    try description_matches.append(.{ .start = match.start, .end = description_prefix_length });
+                } else if (match.start >= description_prefix_length) {
+                    try label_matches.append(.{ .start = match.start - description_prefix_length, .end = match.end - description_prefix_length });
+                } else {
+                    try description_matches.append(match);
+                }
+            }
+            return .{
+                .score = combined_score.score,
+                .label_match = try label_matches.toOwnedSlice(),
+                .description_match = try description_matches.toOwnedSlice(),
+            };
+        }
+    }
+
+    return .{ .score = 0, .label_match = try allocator.alloc(Match, 0), .description_match = null };
+}
+
+pub fn scoreItemFuzzy(
+    allocator: Allocator,
+    item: *const anyopaque,
+    query: *const PreparedQuery,
+    allow_non_contiguous_matches: bool,
+    accessor: ItemAccessor,
+) !ItemScore {
+    if (query.normalized.len == 0) return .{ .score = 0, .label_match = null, .description_match = null };
+    const label = accessor.get_item_label(accessor.context, item) orelse return .{ .score = 0, .label_match = null, .description_match = null };
+    const description = accessor.get_item_description(accessor.context, item);
+    const path = accessor.get_item_path(accessor.context, item);
+    const prefer_label_matches = path == null or !query.containsPathSeparator;
+
+    if (path) |path_value| {
+        if (std.mem.eql(u8, query.pathNormalized, path_value)) {
+            const label_match = try allocator.alloc(Match, 1);
+            label_match[0] = .{ .start = 0, .end = label.len };
+            var description_match: ?[]Match = null;
+            if (description) |description_value| {
+                const matches = try allocator.alloc(Match, 1);
+                matches[0] = .{ .start = 0, .end = description_value.len };
+                description_match = matches;
+            }
+            return .{ .score = PATH_IDENTITY_SCORE, .label_match = label_match, .description_match = description_match };
+        }
+    }
+
+    if (query.values) |values| {
+        if (values.len > 1) {
+            var total_score: i64 = 0;
+            var label_matches = std.array_list.Managed(Match).init(allocator);
+            defer label_matches.deinit();
+            var description_matches = std.array_list.Managed(Match).init(allocator);
+            defer description_matches.deinit();
+            for (values) |piece| {
+                const single = try scoreSingleItem(allocator, label, description, path, piece, prefer_label_matches, allow_non_contiguous_matches);
+                defer single.deinit(allocator);
+                if (single.score == 0) return .{ .score = 0, .label_match = null, .description_match = null };
+                total_score += single.score;
+                if (single.label_match) |matches| try label_matches.appendSlice(matches);
+                if (single.description_match) |matches| try description_matches.appendSlice(matches);
+            }
+            std.mem.sort(Match, label_matches.items, {}, struct {
+                fn lessThan(_: void, a: Match, b: Match) bool {
+                    return a.start < b.start;
+                }
+            }.lessThan);
+            std.mem.sort(Match, description_matches.items, {}, struct {
+                fn lessThan(_: void, a: Match, b: Match) bool {
+                    return a.start < b.start;
+                }
+            }.lessThan);
+            return .{
+                .score = total_score,
+                .label_match = try normalizeMatches(allocator, label_matches.items),
+                .description_match = try normalizeMatches(allocator, description_matches.items),
+            };
+        }
+    }
+
+    const piece = PreparedQueryPiece{
+        .original = query.original,
+        .originalLowercase = query.originalLowercase,
+        .pathNormalized = query.pathNormalized,
+        .normalized = query.normalized,
+        .normalizedLowercase = query.normalizedLowercase,
+        .expectContiguousMatch = query.expectContiguousMatch,
+    };
+    return scoreSingleItem(allocator, label, description, path, piece, prefer_label_matches, allow_non_contiguous_matches);
+}

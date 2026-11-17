@@ -221,3 +221,81 @@ test "fuzzyScore2 (#95716)" {
     try std.testing.expect(result.score != null);
     try std.testing.expect(result.matches.len > 0);
 }
+
+const TestItem = struct {
+    label: []const u8,
+    description: ?[]const u8,
+    path_value: ?[]const u8,
+
+    fn accessor() fuzzy.ItemAccessor {
+        return .{
+            .context = @ptrFromInt(@alignOf(usize)),
+            .get_item_label = labelFn,
+            .get_item_description = descriptionFn,
+            .get_item_path = pathFn,
+        };
+    }
+    fn labelFn(_: *anyopaque, item: *const anyopaque) ?[]const u8 {
+        const value: *const TestItem = @ptrCast(@alignCast(item));
+        return value.label;
+    }
+    fn descriptionFn(_: *anyopaque, item: *const anyopaque) ?[]const u8 {
+        const value: *const TestItem = @ptrCast(@alignCast(item));
+        return value.description;
+    }
+    fn pathFn(_: *anyopaque, item: *const anyopaque) ?[]const u8 {
+        const value: *const TestItem = @ptrCast(@alignCast(item));
+        return value.path_value;
+    }
+};
+
+test "scoreItem - identity, prefix, camelcase and description matches" {
+    const allocator = std.testing.allocator;
+    const item = TestItem{
+        .label = "someFile123.txt",
+        .description = "/xyz/some/path",
+        .path_value = "/xyz/some/path/someFile123.txt",
+    };
+
+    const Identity = struct {
+        fn score(alloc: std.mem.Allocator, value: *const TestItem, query: []const u8) !fuzzy.ItemScore {
+            const prepared = try fuzzy.prepareQuery(alloc, query);
+            defer prepared.deinit(alloc);
+            return fuzzy.scoreItemFuzzy(alloc, value, &prepared, true, TestItem.accessor());
+        }
+    };
+
+    const identity = try Identity.score(allocator, &item, "/xyz/some/path/someFile123.txt");
+    defer identity.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1 << 18), identity.score);
+    try std.testing.expectEqual(@as(usize, 1), identity.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 0), identity.label_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 1), identity.description_match.?.len);
+
+    const prefix = try Identity.score(allocator, &item, "som");
+    defer prefix.deinit(allocator);
+    try std.testing.expect(prefix.score > 0);
+    try std.testing.expect(prefix.description_match == null);
+    try std.testing.expectEqual(@as(usize, 1), prefix.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 0), prefix.label_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 3), prefix.label_match.?[0].end);
+
+    const camel = try Identity.score(allocator, &item, "sF");
+    defer camel.deinit(allocator);
+    try std.testing.expect(camel.score > 0);
+    try std.testing.expect(camel.description_match == null);
+    try std.testing.expectEqual(@as(usize, 2), camel.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 0), camel.label_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 1), camel.label_match.?[0].end);
+    try std.testing.expectEqual(@as(usize, 4), camel.label_match.?[1].start);
+    try std.testing.expectEqual(@as(usize, 5), camel.label_match.?[1].end);
+
+    const description = try Identity.score(allocator, &item, "xyz");
+    defer description.deinit(allocator);
+    try std.testing.expect(description.score > 0);
+    try std.testing.expect(description.description_match != null);
+
+    const quoted = try Identity.score(allocator, &item, "\"someFile123.txt\"");
+    defer quoted.deinit(allocator);
+    try std.testing.expect(quoted.score > 0);
+}
