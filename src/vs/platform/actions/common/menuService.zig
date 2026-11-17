@@ -39,6 +39,18 @@ pub const MenuGroup = struct {
     actions: []const IAction,
 };
 
+pub const MenuActionOptions = struct {
+    render_short_title: bool = false,
+    arg: ?[]const u8 = null,
+    args: []const []const u8 = &.{},
+    should_forward_args: bool = false,
+};
+
+pub const CommandInvoker = struct {
+    context: *anyopaque,
+    run: *const fn (context: *anyopaque, command_id: []const u8, args: []const []const u8) anyerror!void,
+};
+
 pub const MenuActions = struct {
     arena: std.heap.ArenaAllocator,
     groups: []const MenuGroup,
@@ -84,7 +96,7 @@ pub const Menu = struct {
         self.arena = std.heap.ArenaAllocator.init(self.allocator);
         freeMenuIds(self.allocator, &self.menu_ids);
         freeMenuIds(self.allocator, &self.context_keys);
-        self.groups = try self.service.buildGroups(self.arena.allocator(), self.id, self.context, &self.menu_ids, &self.context_keys);
+        self.groups = try self.service.buildGroups(self.arena.allocator(), self.id, self.context, &self.menu_ids, &self.context_keys, .{});
     }
 
     fn onRegistryChange(event: actions.MenuChangeEvent, menu: *Menu) anyerror!void {
@@ -126,6 +138,26 @@ pub const MenuItemAction = struct {
     command_registry: ?*commands.CommandRegistry,
     menu: MenuId,
     hide_state: *MenuHideState,
+    allocator: Allocator,
+    options: MenuActionOptions,
+    invoker: ?CommandInvoker,
+
+    pub fn runWithArgs(self: *MenuItemAction, forwarded: []const []const u8) !void {
+        var args = std.array_list.Managed([]const u8).init(self.allocator);
+        defer args.deinit();
+        if (self.options.args.len > 0) {
+            try args.appendSlice(self.options.args);
+        } else if (self.options.arg) |arg| {
+            try args.append(arg);
+        }
+        if (self.options.should_forward_args) try args.appendSlice(forwarded);
+        if (self.invoker) |invoker| {
+            try invoker.run(invoker.context, self.item.id, args.items);
+            return;
+        }
+        const registry = self.command_registry orelse return;
+        _ = try registry.execute(self.item.id);
+    }
 
     pub fn toggleHidden(self: *MenuItemAction) void {
         self.hide_state.updateHidden(self.menu, self.item.id, !self.hide_state.isHidden(self.menu, self.item.id));
@@ -181,8 +213,7 @@ pub const MenuItemAction = struct {
 
     fn run(context: *anyopaque, _: ?*const anyopaque) anyerror!void {
         const self: *MenuItemAction = @ptrCast(@alignCast(context));
-        const registry = self.command_registry orelse return;
-        _ = try registry.execute(self.item.id);
+        try self.runWithArgs(&.{});
     }
 };
 
@@ -436,6 +467,7 @@ pub const MenuService = struct {
     hide_state: MenuHideState,
     keybindings: ?*keybinding_registry_mod.KeybindingsRegistry = null,
     context_service: ?*contextkey.ContextKeyService = null,
+    invoker: ?CommandInvoker = null,
     os: platform.OperatingSystem = platform.OS,
 
     pub fn useContextService(self: *MenuService, service: *contextkey.ContextKeyService) void {
@@ -498,13 +530,17 @@ pub const MenuService = struct {
 
     /// One-shot resolution without listeners (upstream `getMenuActions`).
     pub fn getMenuActions(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext) !MenuActions {
+        return self.getMenuActionsWithOptions(allocator, id, context, .{});
+    }
+
+    pub fn getMenuActionsWithOptions(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext, options: MenuActionOptions) !MenuActions {
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         var menu_ids = std.StringHashMap(void).init(allocator);
         defer freeMenuIds(allocator, &menu_ids);
         var context_keys = std.StringHashMap(void).init(allocator);
         defer freeMenuIds(allocator, &context_keys);
-        const groups = try self.buildGroups(arena.allocator(), id, context, &menu_ids, &context_keys);
+        const groups = try self.buildGroups(arena.allocator(), id, context, &menu_ids, &context_keys, options);
         return .{ .arena = arena, .groups = groups };
     }
 
@@ -520,7 +556,7 @@ pub const MenuService = struct {
             .context = @ptrFromInt(1),
             .get_value = emptyGetValue,
         };
-        _ = try self.buildGroups(arena.allocator(), id, empty_context, &menu_ids, &context_keys);
+        _ = try self.buildGroups(arena.allocator(), id, empty_context, &menu_ids, &context_keys, .{});
         const result = try allocator.alloc([]const u8, context_keys.count());
         var index: usize = 0;
         var iterator = context_keys.iterator();
@@ -545,7 +581,7 @@ pub const MenuService = struct {
         errdefer freeMenuIds(allocator, &menu_ids);
         var context_keys = std.StringHashMap(void).init(allocator);
         errdefer freeMenuIds(allocator, &context_keys);
-        const groups = try self.buildGroups(arena.allocator(), id, context, &menu_ids, &context_keys);
+        const groups = try self.buildGroups(arena.allocator(), id, context, &menu_ids, &context_keys, .{});
         menu.* = .{
             .allocator = allocator,
             .service = self,
@@ -564,7 +600,7 @@ pub const MenuService = struct {
         return menu;
     }
 
-    fn buildGroups(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext, menu_ids: *std.StringHashMap(void), context_keys: *std.StringHashMap(void)) ![]const MenuGroup {
+    fn buildGroups(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext, menu_ids: *std.StringHashMap(void), context_keys: *std.StringHashMap(void), options: MenuActionOptions) ![]const MenuGroup {
         const meta_allocator = self.allocator;
         try addMenuId(meta_allocator, menu_ids, id);
         var visible = ArrayList(*const MenuEntry).init(allocator);
@@ -596,12 +632,16 @@ pub const MenuService = struct {
                     .command => |item| {
                         self.hide_state.setDefaultState(id, item.command.id, item.is_hidden_by_default);
                         const checked = toggleState(item.command, context);
+                        const base_label = if (options.render_short_title and item.command.short_title != null)
+                            item.command.short_title.?
+                        else
+                            item.command.title;
                         const label = if (checked == true) blk: {
                             if (item.command.toggle_info) |info| {
                                 if (info.title) |title| break :blk title;
                             }
-                            break :blk item.command.title;
-                        } else item.command.title;
+                            break :blk base_label;
+                        } else base_label;
                         const action = try allocator.create(MenuItemAction);
                         action.* = .{
                             .item = item.command,
@@ -616,6 +656,9 @@ pub const MenuService = struct {
                             .command_registry = self.command_registry,
                             .menu = id,
                             .hide_state = &self.hide_state,
+                            .allocator = self.allocator,
+                            .options = options,
+                            .invoker = self.invoker,
                         };
                         if (item.alt) |alt| {
                             const alt_action = try allocator.create(MenuItemAction);
@@ -638,6 +681,9 @@ pub const MenuService = struct {
                                 .command_registry = self.command_registry,
                                 .menu = id,
                                 .hide_state = &self.hide_state,
+                                .allocator = self.allocator,
+                                .options = options,
+                                .invoker = self.invoker,
                             };
                             const alt_interface = alt_action.interface();
                             const alt_storage = try allocator.create(IAction);
@@ -647,7 +693,7 @@ pub const MenuService = struct {
                         try group_actions.append(action.interface());
                     },
                     .submenu => |submenu| {
-                        const submenu_groups = try self.buildGroups(allocator, submenu.submenu, context, menu_ids, context_keys);
+                        const submenu_groups = try self.buildGroups(allocator, submenu.submenu, context, menu_ids, context_keys, options);
                         var flattened = ArrayList(IAction).init(allocator);
                         var first_group = true;
                         for (submenu_groups) |submenu_group| {
@@ -1898,4 +1944,93 @@ test "one-shot menus observe implicit palette exclusions from alternate changes"
     try std.testing.expectEqual(@as(usize, 2), second_snapshot.len);
     try std.testing.expectEqualStrings("Explicit", second_snapshot[0]);
     try std.testing.expectEqualStrings("First", second_snapshot[1]);
+}
+
+test "one-shot menus preserve per-call options, hidden state and forwarded args" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.options" };
+
+    const item = try registry.appendMenuItemTracked(menu_id, .{
+        .command = .{ .id = "command", .title = "Long title", .short_title = "Short" },
+        .is_hidden_by_default = true,
+    });
+    defer item.dispose();
+
+    const Recorder = struct {
+        const Call = struct { id: []const u8, args: []const []const u8 };
+
+        arena: std.heap.ArenaAllocator,
+        calls: std.array_list.Managed(Call),
+
+        fn init(alloc: Allocator) @This() {
+            return .{
+                .arena = std.heap.ArenaAllocator.init(alloc),
+                .calls = std.array_list.Managed(Call).init(alloc),
+            };
+        }
+        fn deinit(self: *@This(), alloc: Allocator) void {
+            self.calls.deinit();
+            self.arena.deinit();
+            _ = alloc;
+        }
+        fn run(context: *anyopaque, command_id: []const u8, args: []const []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            var copied = std.array_list.Managed([]const u8).init(self.arena.allocator());
+            for (args) |arg| try copied.append(try self.arena.allocator().dupe(u8, arg));
+            try self.calls.append(.{ .id = try self.arena.allocator().dupe(u8, command_id), .args = try copied.toOwnedSlice() });
+        }
+    };
+    var recorder = Recorder.init(allocator);
+    defer recorder.deinit(allocator);
+    service.invoker = .{ .context = &recorder, .run = Recorder.run };
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var first_actions = try service.getMenuActionsWithOptions(allocator, menu_id, Context.context(), .{
+        .render_short_title = true,
+        .args = &.{"first"},
+        .should_forward_args = true,
+    });
+    defer first_actions.deinit();
+    const first: *MenuItemAction = @ptrCast(@alignCast(first_actions.groups[0].actions[0].context));
+    try std.testing.expectEqualStrings("Short", first.label);
+    try std.testing.expect(first.hidden);
+    try std.testing.expect(!first.is_modified_from_default);
+    first.toggleHidden();
+
+    var second_actions = try service.getMenuActionsWithOptions(allocator, menu_id, Context.context(), .{ .arg = "second" });
+    defer second_actions.deinit();
+    const second: *MenuItemAction = @ptrCast(@alignCast(second_actions.groups[0].actions[0].context));
+    try std.testing.expectEqualStrings("Long title", second.label);
+    try std.testing.expect(!second.hidden);
+    try std.testing.expect(second.is_modified_from_default);
+
+    service.resetHiddenStates(menu_id);
+    var third_actions = try service.getMenuActions(allocator, menu_id, Context.context());
+    defer third_actions.deinit();
+    const third: *MenuItemAction = @ptrCast(@alignCast(third_actions.groups[0].actions[0].context));
+    try std.testing.expect(third.hidden);
+    try std.testing.expect(!third.is_modified_from_default);
+
+    try first.runWithArgs(&.{"forwarded"});
+    try second.runWithArgs(&.{});
+
+    try std.testing.expectEqual(@as(usize, 2), recorder.calls.items.len);
+    try std.testing.expectEqualStrings("command", recorder.calls.items[0].id);
+    try std.testing.expectEqual(@as(usize, 2), recorder.calls.items[0].args.len);
+    try std.testing.expectEqualStrings("first", recorder.calls.items[0].args[0]);
+    try std.testing.expectEqualStrings("forwarded", recorder.calls.items[0].args[1]);
+    try std.testing.expectEqual(@as(usize, 1), recorder.calls.items[1].args.len);
+    try std.testing.expectEqualStrings("second", recorder.calls.items[1].args[0]);
 }
