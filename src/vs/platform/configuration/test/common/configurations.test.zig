@@ -416,3 +416,35 @@ test "deregistering a policy owner falls back to the reference" {
     try std.testing.expect(policy_config.configurationModel().getValue("policy.owner") == null);
     try std.testing.expectEqualStrings("on", policy_config.configurationModel().getValue("policy.ref").?.string);
 }
+
+test "an owning policy applies to its owner and references" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("owner", &.{.{
+        .key = "policy.owner",
+        .value_type = "boolean",
+        .default = std.json.Value{ .bool = true },
+        .policy = "SharedBool",
+    }});
+    try registry.registerConfiguration("reference", &.{.{
+        .key = "policy.ref",
+        .value_type = "boolean",
+        .default = std.json.Value{ .bool = true },
+        .policy_reference = "SharedBool",
+    }});
+    var policy_service = @import("../../../../platform/policy/common/policy.zig").InMemoryPolicyService.init(allocator);
+    defer policy_service.deinit();
+    try policy_service.setPolicyValue("SharedBool", .{ .boolean = false });
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    var policy_config = try configurations.PolicyConfiguration.init(allocator, &defaults, &policy_service);
+    defer policy_config.deinit();
+    try policy_config.initialize();
+
+    const model = policy_config.configurationModel();
+    try std.testing.expectEqual(@as(bool, false), model.getValue("policy.owner").?.bool);
+    try std.testing.expectEqual(@as(bool, false), model.getValue("policy.ref").?.bool);
+    try std.testing.expectEqual(@as(usize, 2), model.getKeys().len);
+}
