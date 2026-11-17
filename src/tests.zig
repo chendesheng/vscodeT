@@ -201,6 +201,8 @@ comptime {
     _ = @import("./vs/platform/theme/common/theme.zig");
     _ = @import("./vs/platform/theme/common/themeService.zig");
     _ = @import("./vs/platform/theme/common/colorUtils.zig");
+    _ = @import("./vs/platform/theme/common/sizeUtils.zig");
+    _ = @import("./vs/platform/theme/test/common/sizeRegistry.test.zig");
     _ = @import("./vs/platform/theme/test/common/colorUtils.test.zig");
     _ = @import("./vs/editor/common/editorCommon.zig");
     _ = @import("./vs/editor/common/viewEvents.zig");

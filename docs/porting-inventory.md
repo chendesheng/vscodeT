@@ -880,7 +880,10 @@ session format left.
 `platform/theme/common/colorUtils.zig` are ported: color transforms (three
 upstream `colorUtils.test.ts` cases) and an explicit `ColorRegistry`
 (contributions, per-theme defaults, update/deregister/resolve, schema-change
-event). `workbench/services/themes/common/colorThemeData.zig` ports the
+event). `platform/theme/common/sizeUtils.zig` ports the size registry core
+(values/defaults/customizations/circular-reference detection, CSS helpers) and
+seven of the ten `sizeRegistry.test.ts` cases; JSON-schema cases and the base
+size contribution files remain. `workbench/services/themes/common/colorThemeData.zig` ports the
 in-memory theme data (theme/custom/transient colors, derived defaults, base
 theme, token background cache and profile-storage round-trip); four of the five
 `colorThemeData.test.ts` cases pass, while plist/tmTheme loading needs the
