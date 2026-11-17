@@ -714,9 +714,12 @@ Editor contributions:
   in-place-replace decoration is an underline instead of the browser's 2 px
   outline; and the
   browser-facing editor controllers and menus are not part of this port. The
-  keybinding registry/resolver and the context-key scanner/parser/expression
-  model are ported, with `src/tui/keybindings.zig` as the terminal host
-  (dispatch strings, chords, command execution). Workbench tab/group shortcuts
+  keybinding registry/resolver, the abstract keybinding service and the
+  context-key scanner/parser/expression model plus a flat context-key service
+  are ported; all 21 upstream `abstractKeybindingService.test.ts` cases and the
+  registry/resolver/label/store suites pass. `src/tui/keybindings.zig` remains
+  the terminal host (dispatch strings, chords, command execution) until it is
+  rewired onto the abstract service. Workbench tab/group shortcuts
   already dispatch through a `KeybindingsRegistry` + `KeybindingResolver`
   (`workbench.action.closeActiveEditor`, next/previous editor, focus group
   left/right, `openEditorAtIndex1-9`). Workbench-global shortcuts also resolve
