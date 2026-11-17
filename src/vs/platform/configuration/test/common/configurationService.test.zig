@@ -411,3 +411,26 @@ test "restoring a snapshot updates an initialized service" {
     try registry.restore(&snapshot);
     try std.testing.expectEqual(@as(bool, true), service.getValue("snapshot.setting").?.bool);
 }
+
+test "registry default changes emit DEFAULT change events" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+
+    var events = std.array_list.Managed(configuration.Change).init(allocator);
+    defer events.deinit();
+    const Listener = struct {
+        fn onChange(change: configuration.Change, list: *std.array_list.Managed(configuration.Change)) anyerror!void {
+            try list.append(change);
+        }
+    };
+    _ = try service.onDidChange.listen(&events, Listener.onChange);
+
+    try registry.registerConfiguration("events", &.{.{ .key = "events.setting", .default = std.json.Value{ .bool = true } }});
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expectEqual(configuration.ConfigurationTarget.DEFAULT, events.items[0].source);
+    try std.testing.expectEqualStrings("events.setting", events.items[0].keys[0]);
+}

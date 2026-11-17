@@ -33,6 +33,7 @@ pub const ConfigurationService = struct {
     workspace: ConfigurationModel,
     onDidChange: @import("../../../base/common/event.zig").Emitter(configuration.Change),
     scratch: std.heap.ArenaAllocator,
+    registry_listener: ?usize = null,
 
     pub fn init(allocator: Allocator, registry: *configurationRegistry.ConfigurationRegistry) !*ConfigurationService {
         const self = try allocator.create(ConfigurationService);
@@ -45,10 +46,24 @@ pub const ConfigurationService = struct {
             .onDidChange = @import("../../../base/common/event.zig").Emitter(configuration.Change).init(allocator),
             .scratch = std.heap.ArenaAllocator.init(allocator),
         };
+        errdefer {
+            self.defaults.deinit();
+            self.user.deinit();
+            self.workspace.deinit();
+            self.onDidChange.deinit();
+            self.scratch.deinit();
+            allocator.destroy(self);
+        }
+        self.registry_listener = try self.defaults.registry.on_did_update_configuration.listen(self, onRegistryDefaultsChanged);
         return self;
     }
 
+    fn onRegistryDefaultsChanged(keys: []const []const u8, self: *ConfigurationService) anyerror!void {
+        self.onDidChange.fire(.{ .source = .DEFAULT, .keys = keys }) catch {};
+    }
+
     pub fn deinit(self: *ConfigurationService) void {
+        if (self.registry_listener) |id| self.defaults.registry.on_did_update_configuration.unlisten(id);
         self.defaults.deinit();
         self.user.deinit();
         self.workspace.deinit();
