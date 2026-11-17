@@ -18,6 +18,7 @@ pub const Color = struct {
 
     pub const white = Color{ .r = 255, .g = 255, .b = 255, .a = 1 };
     pub const black = Color{ .r = 0, .g = 0, .b = 0, .a = 1 };
+    pub const transparent_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0 };
 
     /// Parses `#RGB`, `#RGBA`, `#RRGGBB` or `#RRGGBBAA`; the leading `#` is
     /// optional.
@@ -82,9 +83,64 @@ pub const Color = struct {
         return HSLA.init(hsl.h, hsl.s, hsl.l - hsl.l * factor, hsl.a).toRGBA();
     }
 
+    /// Replaces the alpha channel, clamping like the upstream `RGBA` ctor.
+    pub fn withAlpha(self: Color, alpha: f32) Color {
+        return .{
+            .r = self.r,
+            .g = self.g,
+            .b = self.b,
+            .a = roundFloat(std.math.clamp(alpha, 0, 1), 3),
+        };
+    }
+
     /// Scales the existing alpha by `factor`.
     pub fn transparent(self: Color, factor: f32) Color {
         return .{ .r = self.r, .g = self.g, .b = self.b, .a = self.a * factor };
+    }
+
+    pub fn isOpaque(self: Color) bool {
+        return self.a == 1;
+    }
+
+    pub fn isTransparent(self: Color) bool {
+        return self.a == 0;
+    }
+
+    pub fn mix(self: Color, other: Color, factor: f32) Color {
+        const normalized = std.math.clamp(factor, 0, 1);
+        return rgba(
+            @as(f32, @floatFromInt(self.r)) + (@as(f32, @floatFromInt(other.r)) - @as(f32, @floatFromInt(self.r))) * normalized,
+            @as(f32, @floatFromInt(self.g)) + (@as(f32, @floatFromInt(other.g)) - @as(f32, @floatFromInt(self.g))) * normalized,
+            @as(f32, @floatFromInt(self.b)) + (@as(f32, @floatFromInt(other.b)) - @as(f32, @floatFromInt(self.b))) * normalized,
+            self.a + (other.a - self.a) * normalized,
+        );
+    }
+
+    /// Blends a non-opaque color onto an opaque background.
+    pub fn makeOpaque(self: Color, background: Color) Color {
+        if (self.isOpaque() or background.a != 1) return self;
+        return rgba(
+            @as(f32, @floatFromInt(background.r)) - self.a * (@as(f32, @floatFromInt(background.r)) - @as(f32, @floatFromInt(self.r))),
+            @as(f32, @floatFromInt(background.g)) - self.a * (@as(f32, @floatFromInt(background.g)) - @as(f32, @floatFromInt(self.g))),
+            @as(f32, @floatFromInt(background.b)) - self.a * (@as(f32, @floatFromInt(background.b)) - @as(f32, @floatFromInt(self.b))),
+            1,
+        );
+    }
+
+    pub fn getLighterColor(of: Color, relative: Color, factor: f32) Color {
+        if (of.isLighterThan(relative)) return of;
+        const lum1 = of.getRelativeLuminance();
+        const lum2 = relative.getRelativeLuminance();
+        if (lum2 == 0) return of;
+        return of.lighten(@floatCast(factor * (lum2 - lum1) / lum2));
+    }
+
+    pub fn getDarkerColor(of: Color, relative: Color, factor: f32) Color {
+        if (of.isDarkerThan(relative)) return of;
+        const lum1 = of.getRelativeLuminance();
+        const lum2 = relative.getRelativeLuminance();
+        if (lum1 == 0) return of;
+        return of.darken(@floatCast(factor * (lum1 - lum2) / lum1));
     }
 
     pub fn isDarkerThan(self: Color, another: Color) bool {
@@ -215,6 +271,17 @@ pub const HSLA = struct {
         };
     }
 };
+
+/// Creates a color with the upstream `RGBA` constructor semantics: channels are
+/// clamped and truncated, alpha is clamped and rounded to three decimals.
+fn rgba(r: f32, g: f32, b: f32, a: f32) Color {
+    return .{
+        .r = @intFromFloat(std.math.clamp(r, 0, 255)),
+        .g = @intFromFloat(std.math.clamp(g, 0, 255)),
+        .b = @intFromFloat(std.math.clamp(b, 0, 255)),
+        .a = roundFloat(std.math.clamp(a, 0, 1), 3),
+    };
+}
 
 fn roundFloat(value: f32, decimals: u32) f32 {
     const factor = std.math.pow(f32, 10, @floatFromInt(decimals));

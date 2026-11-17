@@ -876,6 +876,11 @@ editor part through storage + memento under `memento/editorPart` (the explicit
 older single-group save/load helpers were retired; the part path is the only
 session format left.
 
+**P5c status:** the `Color` HSL/mix/opacity helpers and
+`platform/theme/common/colorUtils.zig` color transforms are ported, with the
+three upstream `colorUtils.test.ts` cases. The global `ColorRegistry`, JSON
+schema contribution and `workbenchThemeService`/`colorThemeData` remain.
+
 **P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
 registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
 change events) and the 11 `languageConfiguration.test.ts` cases pass; the TUI
