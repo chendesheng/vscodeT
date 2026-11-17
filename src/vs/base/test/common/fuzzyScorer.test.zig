@@ -483,3 +483,31 @@ test "compareFilesByScore - avoid match scattering (path segments)" {
         try expectOrder(allocator, &items, "ui/icons", &[_]*TestItem{ &b, &a });
     }
 }
+
+test "compareFilesByScore - avoid match scattering (deep paths)" {
+    const allocator = std.testing.allocator;
+    {
+        var a = TestItem{ .label = "index.js", .description = "app/containers/Services/NetworkData/ServiceDetails/ServiceLoad", .path_value = "app/containers/Services/NetworkData/ServiceDetails/ServiceLoad/index.js" };
+        var b = TestItem{ .label = "index.js", .description = "app/containers/Services/NetworkData/ServiceDetails/ServiceDistribution", .path_value = "app/containers/Services/NetworkData/ServiceDetails/ServiceDistribution/index.js" };
+        var c = TestItem{ .label = "index.js", .description = "app/containers/Services/NetworkData/ServiceDetailTabs/ServiceTabs/StatVideo", .path_value = "app/containers/Services/NetworkData/ServiceDetailTabs/ServiceTabs/StatVideo/index.js" };
+        const items = [_]*TestItem{ &a, &b, &c };
+        var copy = items;
+        try sortItems(allocator, &copy, "StatVideoindex");
+        try std.testing.expectEqual(&c, copy[0]);
+    }
+    {
+        var a = TestItem{ .label = "redux.ts", .description = "src/build-helper/store", .path_value = "src/build-helper/store/redux.ts" };
+        var b = TestItem{ .label = "redux.ts", .description = "src/repository/store", .path_value = "src/repository/store/redux.ts" };
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "reproreduxts", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = TestItem{ .label = "index.js", .description = "photobook/src/components/AddPagesButton", .path_value = "photobook/src/components/AddPagesButton/index.js" };
+        var b = TestItem{ .label = "index.js", .description = "photobook/src/components/ApprovalPageHeader", .path_value = "photobook/src/components/ApprovalPageHeader/index.js" };
+        var c = TestItem{ .label = "index.js", .description = "photobook/src/canvasComponents/BookPage", .path_value = "photobook/src/canvasComponents/BookPage/index.js" };
+        const items = [_]*TestItem{ &a, &b, &c };
+        var copy = items;
+        try sortItems(allocator, &copy, "bookpageIndex");
+        try std.testing.expectEqual(&c, copy[0]);
+    }
+}
