@@ -763,7 +763,7 @@ Editor contributions:
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
-  round-trip, fs-path decoding) plus portable `extpath` helpers; the in-memory
+  round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory
   policy service with `PolicyConfiguration` (types, restricted/managed metadata,
   changes and owner/reference fallback); and the token-classification registry
   with TextMate scope matching and `ColorThemeData` token-style resolution
