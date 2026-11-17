@@ -452,3 +452,26 @@ test "an owning policy applies to its owner and references" {
     try std.testing.expectEqual(@import("../../../../platform/policy/common/policy.zig").PolicyType.boolean, definition.value_type);
     try std.testing.expectEqual(@as(bool, true), definition.restricted_value.?.boolean);
 }
+
+test "an orphan policy reference resolves and preserves a nullable default" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("orphan", &.{.{
+        .key = "policy.nullable",
+        .value_type = "boolean",
+        .default = std.json.Value.null,
+        .policy_reference = "OrphanPolicy",
+    }});
+    var policy_service = @import("../../../../platform/policy/common/policy.zig").InMemoryPolicyService.init(allocator);
+    defer policy_service.deinit();
+    try policy_service.setPolicyValue("OrphanPolicy", .{ .boolean = false });
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    try std.testing.expect(std.meta.activeTag(defaults.configurationModel().getValue("policy.nullable").?.*) == .null);
+    var policy_config = try configurations.PolicyConfiguration.init(allocator, &defaults, &policy_service);
+    defer policy_config.deinit();
+    try policy_config.initialize();
+    try std.testing.expectEqual(@as(bool, false), policy_config.configurationModel().getValue("policy.nullable").?.bool);
+}
