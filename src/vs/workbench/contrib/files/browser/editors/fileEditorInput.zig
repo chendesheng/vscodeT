@@ -255,9 +255,13 @@ test "FileEditorSerializer round-trips the resource" {
     _ = input.interface();
     var serializer = FileEditorSerializer.init(allocator, &text_files);
     const interface = serializer.interface();
-    const data = (try interface.serialize(interface.context, &input.base, allocator)).?;
+    var registry = factory_mod.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerEditorSerializer(TYPE_ID, interface);
+    const registered = registry.getEditorSerializer(&input.base).?;
+    const data = (try registered.serialize(registered.context, &input.base, allocator)).?;
     defer allocator.free(data);
-    const restored = (try interface.deserialize(interface.context, data)).?;
+    const restored = (try registered.deserialize(registered.context, data)).?;
     const restored_input: *FileEditorInput = @ptrCast(@alignCast(restored.impl.?));
     defer {
         restored_input.deinit();
