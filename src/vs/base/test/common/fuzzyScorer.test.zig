@@ -511,3 +511,42 @@ test "compareFilesByScore - avoid match scattering (deep paths)" {
         try std.testing.expectEqual(&c, copy[0]);
     }
 }
+
+fn itemScore(allocator: std.mem.Allocator, item: *const TestItem, query: []const u8) !fuzzy.ItemScore {
+    const prepared = try fuzzy.prepareQuery(allocator, query);
+    defer prepared.deinit(allocator);
+    return fuzzy.scoreItemFuzzy(allocator, item, &prepared, true, TestItem.accessor());
+}
+
+test "scoreItem - invalid input and query containment" {
+    const allocator = std.testing.allocator;
+    var empty = TestItem{ .label = "", .description = null, .path_value = null };
+    const invalid = try itemScore(allocator, &empty, "");
+    defer invalid.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), invalid.score);
+
+    var item = TestItem{ .label = "abcde", .description = null, .path_value = null };
+    const reversed = try itemScore(allocator, &item, "edcda");
+    defer reversed.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), reversed.score);
+}
+
+test "scoreItem - proper target offset" {
+    const allocator = std.testing.allocator;
+    var item = TestItem{ .label = "ede", .description = null, .path_value = null };
+    const result = try itemScore(allocator, &item, "de");
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), result.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 1), result.label_match.?[0].start);
+    try std.testing.expectEqual(@as(usize, 3), result.label_match.?[0].end);
+}
+
+test "scoreItem - slash and backslash queries match path separators" {
+    const allocator = std.testing.allocator;
+    var item = TestItem{ .label = "duper", .description = "abcde/super", .path_value = "abcde/super/duper" };
+    for ([_][]const u8{ "abcde\\super\\duper", "abcde/super/duper" }) |query| {
+        const result = try itemScore(allocator, &item, query);
+        defer result.deinit(allocator);
+        try std.testing.expect(result.score > 0);
+    }
+}
