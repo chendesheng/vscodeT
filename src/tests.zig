@@ -112,6 +112,8 @@ comptime {
     _ = @import("./vs/platform/configuration/common/configuration.zig");
     _ = @import("./vs/platform/configuration/common/configurationVariables.zig");
     _ = @import("./vs/platform/configuration/common/configurations.zig");
+    _ = @import("./vs/platform/configuration/common/configurationService.zig");
+    _ = @import("./vs/platform/configuration/test/common/configurationService.test.zig");
     _ = @import("./vs/platform/configuration/test/common/configurations.test.zig");
     _ = @import("./vs/platform/configuration/test/common/configurationVariables.test.zig");
     _ = @import("./vs/platform/configuration/test/common/configurationRegistry.test.zig");

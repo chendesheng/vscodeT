@@ -937,7 +937,10 @@ values), the setValue/removeValue segmented-key cases, and override-model/merge 
 has explicit property registration with default merging, disallowed defaults and
 policy deduplication, policy references, and hidden/excluded and agent-host settings, node deregistration, source-tracked default contributions (including the effective value source) with deregistration/rebuild, covering the `configurationRegistry.test.ts` cases through deregistration;
 schema/scope/policy-reference/excluded-property cases remain. `configurationVariables.zig` (variable parsing/scanning) and its test suite are
-ported too. `configurations.zig` ports the explicit `DefaultConfiguration` model lifecycle
+ported too. `configurationService.zig` ports an in-memory user-target `ConfigurationService`
+(getValue/inspect/updateValue, default-value removal, non-user target rejection),
+with the update cases from `configurationService.test.ts`; workspace/file/policy
+configuration remains unported. `configurations.zig` ports the explicit `DefaultConfiguration` model lifecycle
 (initialize/reload/property updates, override-identifier values), with the
 registration, override and deregistration cases (including merged language object defaults) from `configurations.test.ts`. The merge/remove helper cases in `configuration.test.ts` are also ported
 (except the `__proto__` pollution case, which is N/A for Zig maps). The

@@ -304,3 +304,32 @@ test "configuration change: affects nested keys" {
     try std.testing.expect(!affectsConfiguration(change, "file"));
     try std.testing.expect(!affectsConfiguration(change, "explorer.excludeGitIgnore"));
 }
+
+/// Structural JSON value equality (used by configuration updates).
+pub fn jsonValuesEqual(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .bool => |value| value == b.bool,
+        .integer => |value| value == b.integer,
+        .float => |value| value == b.float,
+        .number_string => |value| std.mem.eql(u8, value, b.number_string),
+        .string => |value| std.mem.eql(u8, value, b.string),
+        .array => |array| blk: {
+            if (array.items.len != b.array.items.len) break :blk false;
+            for (array.items, b.array.items) |item_a, item_b| {
+                if (!jsonValuesEqual(item_a, item_b)) break :blk false;
+            }
+            break :blk true;
+        },
+        .object => |object| blk: {
+            if (object.count() != b.object.count()) break :blk false;
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                const other = b.object.get(entry.key_ptr.*) orelse break :blk false;
+                if (!jsonValuesEqual(entry.value_ptr.*, other)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
