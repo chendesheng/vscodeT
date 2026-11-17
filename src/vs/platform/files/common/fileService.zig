@@ -38,6 +38,16 @@ pub const DiskFileService = struct {
         return true;
     }
 
+    pub fn existsFile(self: *DiskFileService, path: []const u8) bool {
+        const info = self.stat(path) catch return false;
+        return info.isFile();
+    }
+
+    pub fn existsDirectory(self: *DiskFileService, path: []const u8) bool {
+        const info = self.stat(path) catch return false;
+        return info.isDirectory();
+    }
+
     pub fn stat(self: *DiskFileService, path: []const u8) !files.FileStat {
         const info = try Io.Dir.cwd().statFile(self.io, path, .{ .follow_symlinks = false });
         const type_flags: u8 = switch (info.kind) {
@@ -198,6 +208,8 @@ test "DiskFileService reads, writes, stats and removes files" {
     defer data.deinit(allocator);
     try service.writeFile(path, data);
     try std.testing.expect(service.exists(path));
+    try std.testing.expect(service.existsFile(path));
+    try std.testing.expect(!service.existsDirectory(path));
     const stat = try service.stat(path);
     try std.testing.expect(stat.isFile());
     try std.testing.expectEqual(@as(u64, 5), stat.size);
