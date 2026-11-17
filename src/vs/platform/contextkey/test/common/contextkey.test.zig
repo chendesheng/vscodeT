@@ -129,6 +129,8 @@ test "negate" {
         .{ .input = "a", .expected = "!a" },
         .{ .input = "a && b || c", .expected = "!a && !c || !b && !c" },
         .{ .input = "a && b || c || d", .expected = "!a && !c && !d || !b && !c && !d" },
+        .{ .input = "!a && !b || !c && !d", .expected = "a && c || a && d || b && c || b && d" },
+        .{ .input = "!a && !b || !c && !d || !e && !f", .expected = "a && c && e || a && c && f || a && d && e || a && d && f || b && c && e || b && c && f || b && d && e || b && d && f" },
     };
     for (cases) |case| {
         const expression = try parse(arena.allocator(), case.input);
