@@ -433,3 +433,21 @@ test "nested restricted descendants and language overrides are filtered" {
         try std.testing.expectEqual(@as(i64, 2), model.overrides[0].contents.object.get("a").?.object.get("c").?.integer);
     }
 }
+
+test "recursive merge and overrides preserve existing keys" {
+    const allocator = std.testing.allocator;
+    var base = try modelFrom(allocator, "{\"a\":{\"b\":1},\"f\":1}", &.{ "a.b", "f" });
+    defer base.deinit();
+    var add = try modelFrom(allocator, "{\"a\":{\"c\":2},\"g\":3}", &.{ "a.c", "g" });
+    defer add.deinit();
+    var result = try configuration_models.ConfigurationModel.merge(allocator, &.{ &base, &add });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 1), result.getValue("a.b").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), result.getValue("a.c").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), result.getValue("f").?.integer);
+    try std.testing.expectEqual(@as(i64, 3), result.getValue("g").?.integer);
+
+    var overridden = try result.override(allocator, "typescript");
+    defer overridden.deinit();
+    try std.testing.expectEqual(@as(i64, 1), overridden.getValue("a.b").?.integer);
+}
