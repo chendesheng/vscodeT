@@ -273,3 +273,52 @@ test "FileEditorSerializer round-trips the resource" {
     }
     try std.testing.expectEqualStrings(path, restored_input.path);
 }
+
+test "Side-by-side serializer round-trips file inputs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = buffer[0..root_len];
+    const primary_path = try std.fs.path.join(allocator, &.{ root, "primary.txt" });
+    defer allocator.free(primary_path);
+    const secondary_path = try std.fs.path.join(allocator, &.{ root, "secondary.txt" });
+    defer allocator.free(secondary_path);
+
+    var files = @import("../../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+    defer files.deinit();
+    var text_files = TextFileService.init(allocator, &files);
+    var primary = try FileEditorInput.init(allocator, &text_files, primary_path);
+    defer primary.deinit();
+    _ = primary.interface();
+    var secondary = try FileEditorInput.init(allocator, &text_files, secondary_path);
+    defer secondary.deinit();
+    _ = secondary.interface();
+
+    var file_serializer = FileEditorSerializer.init(allocator, &text_files);
+    var registry = factory_mod.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerEditorSerializer(TYPE_ID, file_serializer.interface());
+    var side_serializer = @import("../../../../common/editor/sideBySideEditorInput.zig").SideBySideEditorSerializer.init(allocator, &registry);
+    const serializer = side_serializer.interface();
+
+    const composite = try @import("../../../../common/editor/sideBySideEditorInput.zig").SideBySideEditorInput.init(allocator, null, null, &secondary.base, &primary.base);
+    defer composite.destroy();
+    const data = (try serializer.serialize(serializer.context, &composite.base, allocator)).?;
+    defer allocator.free(data);
+    const restored = (try serializer.deserialize(serializer.context, data)).?;
+    const restored_composite = @import("../../../../common/editor/sideBySideEditorInput.zig").is(restored) orelse return error.TestUnexpectedResult;
+    defer restored_composite.destroy();
+    const restored_primary: *FileEditorInput = @ptrCast(@alignCast(restored_composite.primary.impl.?));
+    const restored_secondary: *FileEditorInput = @ptrCast(@alignCast(restored_composite.secondary.impl.?));
+    defer {
+        restored_primary.deinit();
+        allocator.destroy(restored_primary);
+        restored_secondary.deinit();
+        allocator.destroy(restored_secondary);
+    }
+    try std.testing.expectEqualStrings(primary_path, restored_primary.path);
+    try std.testing.expectEqualStrings(secondary_path, restored_secondary.path);
+}
