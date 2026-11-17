@@ -379,3 +379,17 @@ test "duplicate property registration keeps the first schema" {
     try std.testing.expectEqual(@as(bool, true), property.default.bool);
     try std.testing.expectEqualStrings("dupPolicy", property.policy.?);
 }
+
+test "policy and policy reference registrations are tracked" {
+    const allocator = std.testing.allocator;
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("policy", &.{
+        .{ .key = "policy.setting", .default = std.json.Value{ .bool = true }, .policy = "policyName" },
+        .{ .key = "reference.setting", .default = std.json.Value{ .bool = true }, .policy_reference = "referenceName" },
+        .{ .key = "both.setting", .default = std.json.Value{ .bool = true }, .policy = "policyName", .policy_reference = "referenceName" },
+    });
+    try std.testing.expectEqualStrings("policy.setting", registry.getPolicyConfigurations().get("policyName").?);
+    try std.testing.expect(registry.getPolicyReferenceConfigurations().get("referenceName") != null);
+    try std.testing.expect(registry.getConfigurationProperties().get("both.setting") == null);
+}
