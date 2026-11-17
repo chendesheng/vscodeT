@@ -70,7 +70,6 @@ const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
 const ConfigurationService = configuration_mod.ConfigurationService;
 const settings_watcher_mod = @import("./settingsWatcher.zig");
-const tui_keybindings = @import("./keybindings.zig");
 const keybinding_service = @import("./keybindingService.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
 const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
