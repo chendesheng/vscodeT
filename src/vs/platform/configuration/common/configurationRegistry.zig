@@ -235,3 +235,29 @@ test "ConfigurationRegistry: terminal defaults hide VCS metadata and ignore file
     try std.testing.expect(exclude.object.get("**/.git").?.bool);
     try std.testing.expect(exclude.object.get("**/.DS_Store").?.bool);
 }
+
+pub const ExtensionSource = struct {
+    id: []const u8,
+    display_name: ?[]const u8 = null,
+};
+
+pub const ConfigurationDefaultSource = union(enum) {
+    string: []const u8,
+    extension: ExtensionSource,
+};
+
+/// Port of `isConfigurationDefaultSourceEquals`: same kind and value/id.
+pub fn isConfigurationDefaultSourceEquals(a: ?ConfigurationDefaultSource, b: ?ConfigurationDefaultSource) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    return switch (a.?) {
+        .string => |value| switch (b.?) {
+            .string => |other| std.mem.eql(u8, value, other),
+            else => false,
+        },
+        .extension => |value| switch (b.?) {
+            .extension => |other| std.mem.eql(u8, value.id, other.id),
+            else => false,
+        },
+    };
+}

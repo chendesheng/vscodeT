@@ -111,3 +111,22 @@ test "registering multiple settings with the same policy keeps only the first" {
     try std.testing.expect(props.get("policy1") != null);
     try std.testing.expect(props.get("policy2") == null);
 }
+
+test "isConfigurationDefaultSourceEquals" {
+    const registry_mod = configuration_registry;
+    try std.testing.expect(registry_mod.isConfigurationDefaultSourceEquals(null, null));
+    try std.testing.expect(!registry_mod.isConfigurationDefaultSourceEquals(.{ .string = "source" }, null));
+    try std.testing.expect(!registry_mod.isConfigurationDefaultSourceEquals(null, .{ .string = "source" }));
+    try std.testing.expect(!registry_mod.isConfigurationDefaultSourceEquals(.{ .extension = .{ .id = "ext" } }, null));
+    try std.testing.expect(!registry_mod.isConfigurationDefaultSourceEquals(null, .{ .extension = .{ .id = "ext" } }));
+
+    try std.testing.expect(registry_mod.isConfigurationDefaultSourceEquals(.{ .string = "source" }, .{ .string = "source" }));
+    try std.testing.expect(!registry_mod.isConfigurationDefaultSourceEquals(.{ .string = "source1" }, .{ .string = "source2" }));
+    try std.testing.expect(registry_mod.isConfigurationDefaultSourceEquals(.{ .extension = .{ .id = "ext" } }, .{ .extension = .{ .id = "ext" } }));
+    try std.testing.expect(!registry_mod.isConfigurationDefaultSourceEquals(.{ .extension = .{ .id = "ext1" } }, .{ .extension = .{ .id = "ext2" } }));
+    try std.testing.expect(!registry_mod.isConfigurationDefaultSourceEquals(.{ .string = "ext" }, .{ .extension = .{ .id = "ext" } }));
+    try std.testing.expect(!registry_mod.isConfigurationDefaultSourceEquals(.{ .extension = .{ .id = "ext" } }, .{ .string = "ext" }));
+
+    const source = registry_mod.ConfigurationDefaultSource{ .extension = .{ .id = "ext", .display_name = "Extension" } };
+    try std.testing.expect(registry_mod.isConfigurationDefaultSourceEquals(source, source));
+}
