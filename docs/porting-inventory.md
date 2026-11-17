@@ -872,7 +872,9 @@ value is a `std.json.ObjectMap` mutated through `put/get/remove/clear`; all four
 `memento.test.ts` cases are ported at
 `workbench/test/common/memento.test.zig`. `src/tui/session.zig` writes the
 editor part through storage + memento under `memento/editorPart` (the explicit
-`--session` file hosts the value) and still loads legacy bare-part files.
+`--session` file hosts the value) and still loads legacy bare-part files. The
+older single-group save/load helpers were retired; the part path is the only
+session format left.
 
 **P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
 registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
