@@ -91,6 +91,20 @@ pub const URI = struct {
         return self.with(allocator, changes);
     }
 
+    pub fn make(allocator: Allocator, components: Components, strict: bool) !URI {
+        return makeComponents(allocator, components, strict);
+    }
+
+    pub fn from(allocator: Allocator, components: Components, strict: bool) !URI {
+        return makeComponents(allocator, components, strict);
+    }
+
+    pub fn isUri(value: anytype) bool {
+        const T = @TypeOf(value);
+        if (T != URI and T != *const URI and T != *URI) return false;
+        return true;
+    }
+
     pub fn equals(a: *const URI, b: *const URI) bool {
         return std.ascii.eqlIgnoreCase(a.scheme, b.scheme) and
             std.mem.eql(u8, a.authority, b.authority) and
@@ -99,6 +113,55 @@ pub const URI = struct {
             std.mem.eql(u8, a.fragment, b.fragment);
     }
 };
+
+/// `path.posix.dirname`-compatible directory part.
+fn pathDirname(path: []const u8) []const u8 {
+    if (path.len == 0) return ".";
+    if (std.mem.eql(u8, path, "/")) return "/";
+    var end = path.len;
+    while (end > 1 and path[end - 1] == '/') end -= 1;
+    const slash = std.mem.lastIndexOfScalar(u8, path[0..end], '/') orelse return ".";
+    if (slash == 0) return "/";
+    return path[0..slash];
+}
+
+fn pathBasename(path: []const u8) []const u8 {
+    if (path.len == 0) return "";
+    var end = path.len;
+    while (end > 1 and path[end - 1] == '/') end -= 1;
+    const slash = std.mem.lastIndexOfScalar(u8, path[0..end], '/');
+    return if (slash) |index| path[index + 1 .. end] else path[0..end];
+}
+
+fn pathExtname(path: []const u8) []const u8 {
+    const base = pathBasename(path);
+    if (base.len == 0) return "";
+    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return "";
+    if (dot == 0) return "";
+    return base[dot..];
+}
+
+pub fn dirname(uri: *const URI, allocator: Allocator) !URI {
+    return URI.make(allocator, .{
+        .scheme = uri.scheme,
+        .authority = uri.authority,
+        .path = pathDirname(uri.path),
+        .query = uri.query,
+        .fragment = uri.fragment,
+    }, true);
+}
+
+pub fn basename(uri: *const URI) []const u8 {
+    return pathBasename(uri.path);
+}
+
+pub fn extname(uri: *const URI) []const u8 {
+    return pathExtname(uri.path);
+}
+
+pub fn isUriComponents(value: Components) bool {
+    return std.mem.indexOfAny(u8, value.scheme, " \t") == null;
+}
 
 fn schemeValid(scheme: []const u8) bool {
     if (scheme.len == 0) return false;
@@ -124,7 +187,7 @@ fn referenceResolution(scheme: []const u8, path: []const u8, allocator: Allocato
     return allocator.dupe(u8, path);
 }
 
-pub fn make(allocator: Allocator, components: Components, strict: bool) !URI {
+fn makeComponents(allocator: Allocator, components: Components, strict: bool) !URI {
     var scheme = components.scheme;
     if (scheme.len == 0 and !strict) scheme = "file";
     if (scheme.len > 0 and !schemeValid(scheme)) return error.InvalidScheme;
@@ -154,7 +217,7 @@ fn filePath(allocator: Allocator, path: []const u8) !URI {
     var normalized = std.array_list.Managed(u8).init(allocator);
     defer normalized.deinit();
     for (path) |ch| try normalized.append(if (ch == '\\') '/' else ch);
-    return make(allocator, .{ .scheme = "file", .path = normalized.items }, true);
+    return makeComponents(allocator, .{ .scheme = "file", .path = normalized.items }, true);
 }
 
 fn parseText(allocator: Allocator, text: []const u8, strict: bool) !URI {
@@ -185,7 +248,7 @@ fn parseText(allocator: Allocator, text: []const u8, strict: bool) !URI {
         query = path[question + 1 ..];
         path = path[0..question];
     }
-    return make(allocator, .{
+    return makeComponents(allocator, .{
         .scheme = scheme,
         .authority = authority,
         .path = path,
@@ -236,6 +299,39 @@ test "URI joinPath, with and equality" {
 
 test "URI rejects invalid schemes and paths" {
     const allocator = std.testing.allocator;
-    try std.testing.expectError(error.InvalidScheme, make(allocator, .{ .scheme = "bad scheme" }, true));
-    try std.testing.expectError(error.InvalidPath, make(allocator, .{ .scheme = "file", .authority = "host", .path = "relative" }, true));
+    try std.testing.expectError(error.InvalidScheme, makeComponents(allocator, .{ .scheme = "bad scheme" }, true));
+    try std.testing.expectError(error.InvalidPath, URI.make(allocator, .{ .scheme = "file", .authority = "host", .path = "relative" }, true));
+}
+
+test "URI dirname, basename and extname" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.file(allocator, "/foo/bar.txt");
+    defer uri.deinit();
+    try std.testing.expectEqualStrings("bar.txt", basename(&uri));
+    try std.testing.expectEqualStrings(".txt", extname(&uri));
+    var parent = try dirname(&uri, allocator);
+    defer parent.deinit();
+    try std.testing.expectEqualStrings("/foo", parent.path);
+    var root = try URI.file(allocator, "/foo");
+    defer root.deinit();
+    var root_parent = try dirname(&root, allocator);
+    defer root_parent.deinit();
+    try std.testing.expectEqualStrings("/", root_parent.path);
+    var top = try URI.file(allocator, "/");
+    defer top.deinit();
+    var top_parent = try dirname(&top, allocator);
+    defer top_parent.deinit();
+    try std.testing.expectEqualStrings("/", top_parent.path);
+}
+
+test "URI components round-trip" {
+    const allocator = std.testing.allocator;
+    const components = Components{ .scheme = "untitled", .path = "/Untitled-1" };
+    try std.testing.expect(isUriComponents(components));
+    var uri = try URI.from(allocator, components, true);
+    defer uri.deinit();
+    try std.testing.expect(URI.isUri(uri));
+    const text = try uri.toString(allocator);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("untitled:/Untitled-1", text);
 }
