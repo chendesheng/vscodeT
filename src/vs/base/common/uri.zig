@@ -98,6 +98,37 @@ pub const URI = struct {
         return out.toOwnedSlice();
     }
 
+    pub fn toJson(self: *const URI, allocator: Allocator) ![]u8 {
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        var root = std.json.ObjectMap{};
+        try root.put(scratch.allocator(), "scheme", .{ .string = self.scheme });
+        try root.put(scratch.allocator(), "authority", .{ .string = self.authority });
+        try root.put(scratch.allocator(), "path", .{ .string = self.path });
+        try root.put(scratch.allocator(), "query", .{ .string = self.query });
+        try root.put(scratch.allocator(), "fragment", .{ .string = self.fragment });
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        try std.json.Stringify.value(std.json.Value{ .object = root }, .{}, &out.writer);
+        return out.toOwnedSlice();
+    }
+
+    pub fn fromJson(allocator: Allocator, text: []const u8) !URI {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
+        defer parsed.deinit();
+        const object = switch (parsed.value) {
+            .object => |object| object,
+            else => return error.InvalidComponents,
+        };
+        return makeComponents(allocator, .{
+            .scheme = stringField(object, "scheme"),
+            .authority = stringField(object, "authority"),
+            .path = stringField(object, "path"),
+            .query = stringField(object, "query"),
+            .fragment = stringField(object, "fragment"),
+        }, false);
+    }
+
     pub fn withChanges(self: *const URI, allocator: Allocator, changes: WithChanges) !URI {
         return makeComponents(allocator, .{
             .scheme = resolveChange(self.scheme, changes.scheme),
@@ -225,6 +256,13 @@ pub fn uriToFsPath(uri: *const URI, allocator: Allocator) ![]u8 {
 
 pub fn isUriComponents(value: Components) bool {
     return std.mem.indexOfAny(u8, value.scheme, " \t") == null;
+}
+
+fn stringField(object: std.json.ObjectMap, name: []const u8) []const u8 {
+    if (object.get(name)) |value| {
+        if (value == .string) return value.string;
+    }
+    return "";
 }
 
 fn appendEncoded(out: *std.array_list.Managed(u8), text: []const u8, extra_allowed: []const u8) !void {
@@ -538,4 +576,15 @@ test "URI toStringEncoded escapes path and query delimiters" {
     const encoded = try uri.toStringEncoded(allocator);
     defer allocator.free(encoded);
     try std.testing.expectEqualStrings("file:///tmp/a%20b%2525.txt?q%3D1#f%20g", encoded);
+}
+
+test "URI JSON round-trip" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.parse(allocator, "scheme://host/path?q#f", true);
+    defer uri.deinit();
+    const json = try uri.toJson(allocator);
+    defer allocator.free(json);
+    var revived = try URI.fromJson(allocator, json);
+    defer revived.deinit();
+    try std.testing.expect(URI.equals(&uri, &revived));
 }
