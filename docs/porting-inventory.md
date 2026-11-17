@@ -1057,7 +1057,8 @@ pending; P5e (URI/file/editor input) is not started.
 - P5c token-style resolving needs `tokenClassificationRegistry.ts`.
 - `matchesContiguousSubString`, `matchesSubString`, `matchesPrefix`,
   `matchesStrictPrefix` and `matchesCamelCase` are ported with their upstream
-  cases; the Unicode/alternate-character WordFilter cases in
+  cases (including camel-case heuristics, weak-first fuzzy scoring and the
+  many-matches case); the Unicode/alternate-character WordFilter cases in
   `filters.test.ts` remain unported; separator equivalence, `C++`, punctuation
   boundaries and the basic word cases are covered by the recursive port.
 - The remaining workbench configuration-service cases cover experiment

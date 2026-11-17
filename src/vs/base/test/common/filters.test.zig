@@ -318,3 +318,43 @@ test "matchesCamelCase" {
     try expectCamel(allocator, "c2d", "canvasCreation2D", &.{ .{ 0, 1 }, .{ 14, 16 } });
     try expectCamel(allocator, "cce", "_canvasCreationEvent", &.{ .{ 1, 2 }, .{ 7, 8 }, .{ 15, 16 } });
 }
+
+test "CamelCaseFilter - #19256" {
+    const allocator = std.testing.allocator;
+    const first = try filters.matchesCamelCase(allocator, "Debug Console", "Open: Debug Console");
+    defer if (first) |matches| allocator.free(matches);
+    try std.testing.expect(first != null);
+    const second = try filters.matchesCamelCase(allocator, "Debug console", "Open: Debug Console");
+    defer if (second) |matches| allocator.free(matches);
+    try std.testing.expect(second != null);
+    const third = try filters.matchesCamelCase(allocator, "debug console", "Open: Debug Console");
+    defer if (third) |matches| allocator.free(matches);
+    try std.testing.expect(third != null);
+}
+
+test "fuzzyScore (first match can be weak)" {
+    const allocator = std.testing.allocator;
+    try assertMatches(allocator, "Three", "HTMLHRElement", "H^TML^H^R^El^ement", .{ .first_match_can_be_weak = true });
+    try assertMatches(allocator, "tor", "constructor", "construc^t^o^r", .{ .first_match_can_be_weak = true });
+    try assertMatches(allocator, "ur", "constructor", "constr^ucto^r", .{ .first_match_can_be_weak = true });
+    try std.testing.expectEqual(@as(usize, 2), try topScoreIndex(allocator, "tor", &.{ "constructor", "Thor", "cTor" }));
+}
+
+test "fuzzyScore, many matches" {
+    const allocator = std.testing.allocator;
+    const target = try allocator.alloc(u8, 220);
+    defer allocator.free(target);
+    @memset(target, 'a');
+    const expected = try allocator.alloc(u8, target.len + 6);
+    defer allocator.free(expected);
+    var expected_index: usize = 0;
+    for (target, 0..) |character, index| {
+        if (index < 6) {
+            expected[expected_index] = '^';
+            expected_index += 1;
+        }
+        expected[expected_index] = character;
+        expected_index += 1;
+    }
+    try assertMatches(allocator, "aaaaaa", target, expected, .{});
+}
