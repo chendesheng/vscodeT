@@ -507,16 +507,6 @@ fn handleKeyEvent(
         find.onEditorChanged();
         return false;
     }
-    if (isCtrlChar(event.*, 'f')) {
-        if (suggest) |controller| controller.cancel();
-        find.startFind() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
-        return false;
-    }
-    if (isCtrlChar(event.*, 'r')) {
-        if (suggest) |controller| controller.cancel();
-        find.startReplace() catch |err| editor.setMessage("find failed: {s}", .{@errorName(err)});
-        return false;
-    }
     if (view.dispatchKey(event)) return false;
     if (suggest) |controller| {
         switch (event.key) {
@@ -986,6 +976,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
         .set = setViewDecorations,
     });
     defer find.deinit();
+    editor.setFindController(find, FindController.startFromContext);
     try view.addOverlayWidget(find.widget().interface());
 
     const hover = try ContentHoverController.init(allocator, editor.model, &.{}, .{}, .{

@@ -77,6 +77,13 @@ pub const FindController = struct {
 
     /// Ctrl-F: opens the bar, or refocuses its input when it is already open
     /// (upstream `StartFindAction` focuses rather than closing).
+    /// Callback form used by the editor keybinding host.
+    pub fn startFromContext(context: *anyopaque, replace: bool) anyerror!void {
+        const self: *FindController = @ptrCast(@alignCast(context));
+        if (replace) return self.startReplace();
+        return self.startFind();
+    }
+
     pub fn startFind(self: *FindController) !void {
         if (self.state.is_revealed) {
             self.find_widget.open();

@@ -178,6 +178,9 @@ pub const Editor = struct {
     /// registry; text editing itself stays on the editor methods below.
     keybindings: ?*tui_keybindings.TuiKeybindings = null,
     shortcut_commands: CommandRegistry,
+    /// Find controller hooks, installed by the per-tab controllers.
+    find_context: ?*anyopaque = null,
+    find_start_fn: ?*const fn (context: *anyopaque, replace: bool) anyerror!void = null,
 
     pub fn create(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Editor {
         return createInternal(allocator, io, path, width, height, null);
@@ -307,6 +310,8 @@ pub const Editor = struct {
             .tokens_need_refresh = false,
             .keybindings = null,
             .shortcut_commands = CommandRegistry.init(allocator),
+            .find_context = null,
+            .find_start_fn = null,
         };
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
         if (editor.character_pair) |*pair_support| {
@@ -331,6 +336,16 @@ pub const Editor = struct {
         try model.onDidChangeContentWithContext(editor, contentChangedCallback);
 
         return editor;
+    }
+
+    /// Installs the find/replace callbacks used by the editor keybindings.
+    pub fn setFindController(
+        self: *Editor,
+        context: *anyopaque,
+        start_fn: *const fn (context: *anyopaque, replace: bool) anyerror!void,
+    ) void {
+        self.find_context = context;
+        self.find_start_fn = start_fn;
     }
 
     fn ensureShortcutKeybindings(self: *Editor) !void {
@@ -2780,6 +2795,8 @@ const shortcut_specs = [_]struct {
     .{ .id = "deleteLeft", .run = cmd_deleteLeft },
     .{ .id = "deleteRight", .run = cmd_deleteRight },
     .{ .id = "editor.action.cancelSelection", .run = cmd_editor_action_cancelSelection },
+    .{ .id = "actions.find", .run = cmdFind },
+    .{ .id = "editor.action.startFindReplaceAction", .run = cmdStartFindReplace },
 };
 
 fn editorOf(context: *anyopaque) *Editor {
@@ -2954,6 +2971,18 @@ fn cmd_editor_action_cancelSelection(context: *anyopaque) anyerror!void {
     return editorOf(context).cancelSelectionOrCursors();
 }
 
+fn cmdFind(context: *anyopaque) anyerror!void {
+    const editor = editorOf(context);
+    const start = editor.find_start_fn orelse return;
+    return start(editor.find_context.?, false);
+}
+
+fn cmdStartFindReplace(context: *anyopaque) anyerror!void {
+    const editor = editorOf(context);
+    const start = editor.find_start_fn orelse return;
+    return start(editor.find_context.?, true);
+}
+
 const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.files.save", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyS) } },
     .{ .id = "undo", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyZ) } },
@@ -3012,4 +3041,6 @@ const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "deleteLeft", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Backspace) } },
     .{ .id = "deleteRight", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Delete) } },
     .{ .id = "editor.action.cancelSelection", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Escape) } },
+    .{ .id = "actions.find", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyF) } },
+    .{ .id = "editor.action.startFindReplaceAction", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyR) } },
 };

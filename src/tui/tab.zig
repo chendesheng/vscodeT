@@ -166,6 +166,7 @@ pub const Controllers = struct {
             .set = View.ModelDecorationSink.set,
         });
         errdefer self.find.deinit();
+        editor.setFindController(self.find, FindController.startFromContext);
 
         self.hover_sink = .{ .model = editor.model, .owner = 4 };
         self.word_sink = .{ .model = editor.model, .owner = 3 };
