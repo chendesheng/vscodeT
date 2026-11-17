@@ -235,7 +235,7 @@ that make the later phases tractable.
 | Configuration and files | `vs/workbench/services/configuration/...`, `vs/platform/configuration/...`, `vs/platform/files/...` | Ported; settings and watcher are wired |
 | Quick input | `vs/platform/quickinput/browser/quickAccess.zig`, `quickInput.zig`, `commandsQuickAccess.zig`, `vs/workbench/contrib/quickaccess/...`, `anythingQuickAccess.zig` | Ported; TUI widget is the terminal view |
 | Services | `history`, `undoRedo`, `notifications`, `workspaceContext`, `commands` | Ported |
-| Actions | `vs/base/common/actions.zig` (`Action`, `ActionRunner`, `Separator`, `SubmenuAction`, `EmptySubmenuAction`, `toAction`, `getActionForAltMode`) | Ported; the platform `Action2`/`MenuRegistry` and menu service are next |
+| Actions | `vs/base/common/actions.zig` (action/runner/separator/submenu) and `vs/platform/action{,s}/common/*.zig` (`ICommandAction`, the 262 `MenuId`s, `MenuRegistry`, `Action2`) | Ported; the menu service (visibility/ordering resolution) is next |
 | Keys and chords | `vs/base/common/keyCodes.zig`, `keybindings.zig`, `platform.zig`, `keybindingLabels.zig`, `vs/platform/keybinding/common/{baseResolvedKeybinding,usLayoutResolvedKeybinding,resolvedKeybindingItem,keybindingResolver,keybindingsRegistry}.zig` | Ported with the `keyCodes.test.ts` (4) and `keybindingLabels.test.ts` (5) cases; P3 foundation (no registry/resolver yet) |
 | Context keys | `vs/platform/contextkey/common/scanner.zig`, `contextkey.zig` | Scanner (34 upstream cases), the expression model (all types including regex `=~`, normalization with OR distribution/redundant-term checks, evaluation, serialization, keys, negation, `cmp`/equality, `implies`) and the `when`-clause parser (all 33 `parser.test.ts` cases) are ported. `contextKeyService` and late-bound constants still to port; `contextkey.test.ts` is gated on the constants |
 | Language configuration | `vs/editor/common/languages/languageConfigurationRegistry.zig` (`LanguageConfigurationRegistry`, `LanguageConfigurationRegistration`) | Ported priority registration/merging, default plaintext contribution and invalidation; the TUI service promotes `LanguageService` configurations into it; 11 `languageConfiguration.test.ts` cases ported |
@@ -720,7 +720,9 @@ commands as actions.
   `keybindingResolver.zig` (removals/aliases/resolution) and
   `keybindingsRegistry.zig` (default/extension rules, per-OS bindings,
   registration disposal); the full 36-case `keybindingResolver.test.ts` is
-  ported; `base/common/actions.zig` ports the base action/runner layer; `src/tui/keybindings.zig` is the terminal host (event -> dispatch
+  ported; `base/common/actions.zig` ports the base action/runner layer, and
+  `platform/action(s)/common` ports `ICommandAction`, the `MenuId` set,
+  `MenuRegistry` and `Action2` (command + keybinding + menu registration); `src/tui/keybindings.zig` is the terminal host (event -> dispatch
   string, multi-chord state, command execution) and the workbench tab/group
   shortcuts are wired through it (`workbench.action.closeActiveEditor`,
   next/previous editor, focus group, `openEditorAtIndex1-9`); the 4
