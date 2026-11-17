@@ -88,3 +88,56 @@ test "prepareQuery" {
     try std.testing.expectEqualStrings("/some/path", backslash.normalized);
     try std.testing.expect(backslash.containsPathSeparator);
 }
+
+fn doScore(allocator: std.mem.Allocator, target: []const u8, query: []const u8, allow_non_contiguous: bool) !fuzzy.FuzzyScore {
+    const prepared = try fuzzy.prepareQuery(allocator, query);
+    defer prepared.deinit(allocator);
+    return fuzzy.scoreFuzzy(allocator, target, prepared.normalized, prepared.normalizedLowercase, allow_non_contiguous);
+}
+
+test "score (fuzzy)" {
+    const allocator = std.testing.allocator;
+    const target = "HelLo-World";
+    const queries = [_][]const u8{ "HelLo-World", "hello-world", "HW", "hw", "H", "h", "W", "Ld", "ld", "w", "L", "l", "4" };
+    var previous: i64 = std.math.maxInt(i64);
+    for (queries) |query| {
+        const score = try doScore(allocator, target, query, true);
+        defer score.deinit(allocator);
+        try std.testing.expect(score.score <= previous);
+        previous = score.score;
+    }
+}
+
+test "score (non fuzzy)" {
+    const allocator = std.testing.allocator;
+    const target = "HelLo-World";
+
+    const identity = try doScore(allocator, target, "HelLo-World", false);
+    defer identity.deinit(allocator);
+    try std.testing.expect(identity.score > 0);
+    try std.testing.expectEqual(target.len, identity.positions.len);
+
+    const mixed = try doScore(allocator, target, "hello-world", false);
+    defer mixed.deinit(allocator);
+    try std.testing.expect(mixed.score > 0);
+
+    const non_contiguous = try doScore(allocator, target, "HW", false);
+    defer non_contiguous.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), non_contiguous.score);
+
+    const prefix = try doScore(allocator, target, "h", false);
+    defer prefix.deinit(allocator);
+    try std.testing.expect(prefix.score > 0);
+
+    const middle = try doScore(allocator, target, "ello", false);
+    defer middle.deinit(allocator);
+    try std.testing.expect(middle.score > 0);
+
+    const suffix = try doScore(allocator, target, "ld", false);
+    defer suffix.deinit(allocator);
+    try std.testing.expect(suffix.score > 0);
+
+    const gap = try doScore(allocator, target, "eo", false);
+    defer gap.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), gap.score);
+}
