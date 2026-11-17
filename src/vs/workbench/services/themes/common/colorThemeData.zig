@@ -516,6 +516,44 @@ pub const ColorThemeData = struct {
                 }
             }
         }
+        if (object.get("semanticTokenColors")) |semantic_colors| {
+            if (semantic_colors == .object) {
+                var inputs = std.array_list.Managed(SemanticRuleInput).init(allocator);
+                var semantic_iterator = semantic_colors.object.iterator();
+                while (semantic_iterator.next()) |entry| {
+                    const selector = entry.key_ptr.*;
+                    if (std.mem.eql(u8, selector, "enabled") or std.mem.eql(u8, selector, "semanticHighlighting")) continue;
+                    var input = SemanticRuleInput{ .selector = selector };
+                    switch (entry.value_ptr.*) {
+                        .string => |foreground| input.foreground = foreground,
+                        .bool => |enabled| if (!enabled) continue,
+                        .object => |style| {
+                            if (style.get("foreground")) |foreground| {
+                                if (foreground == .string) input.foreground = foreground.string;
+                            }
+                            if (style.get("fontStyle")) |font_style| {
+                                if (font_style == .string) input.font_style = font_style.string;
+                            }
+                            if (style.get("bold")) |value| if (value == .bool) {
+                                input.bold = value.bool;
+                            };
+                            if (style.get("underline")) |value| if (value == .bool) {
+                                input.underline = value.bool;
+                            };
+                            if (style.get("strikethrough")) |value| if (value == .bool) {
+                                input.strikethrough = value.bool;
+                            };
+                            if (style.get("italic")) |value| if (value == .bool) {
+                                input.italic = value.bool;
+                            };
+                        },
+                        else => continue,
+                    }
+                    try inputs.append(input);
+                }
+                try self.setCustomSemanticTokenColors(inputs.items);
+            }
+        }
         if (object.get("tokenColors")) |token_colors| {
             if (token_colors == .array) {
                 var rules = std.array_list.Managed(TokenColor).init(allocator);

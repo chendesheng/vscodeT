@@ -389,3 +389,30 @@ test "ColorThemeData: wildcard semantic rules merge by specificity" {
     try std.testing.expectEqual(@as(?bool, true), class_async_static.underline);
     try std.testing.expectEqual(@as(?bool, true), class_async_static.bold);
 }
+
+const semantic_theme_json =
+    \\{
+    \\  "type": "dark",
+    \\  "colors": { "editor.background": "#1E1E1E" },
+    \\  "semanticTokenColors": {
+    \\    "type": "#ff0000",
+    \\    "class": { "foreground": "#0000ff", "italic": true }
+    \\  }
+    \\}
+;
+
+test "ColorThemeData: loads theme semanticTokenColors" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+    const theme = try ColorThemeData.createUnloadedTheme(allocator, &fixture.registry, "test-dark", &.{});
+    defer theme.deinit();
+    theme.location = "semantic-theme.json";
+    var reader = TokenFixture{ .text = semantic_theme_json };
+    try theme.ensureLoaded(.{ .context = &reader, .read = TokenFixture.read });
+
+    try expectTokenColor(theme, "type", "#ff0000");
+    try expectTokenColor(theme, "class", "#0000ff");
+    const class_style = theme.getTokenStyleMetadata("class", &.{}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), class_style.italic);
+}
