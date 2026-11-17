@@ -154,3 +154,25 @@ test "TextFileEditorModel reports missing files" {
     try std.testing.expectError(error.FileNotFound, model.load());
     try std.testing.expectEqualStrings("", model.getText());
 }
+
+test "TextFileEditorModel creates missing parents when saving" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = buffer[0..root_len];
+    const path = try std.fs.path.join(allocator, &.{ root, "a", "b", "model.txt" });
+    defer allocator.free(path);
+
+    var files = @import("../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+    defer files.deinit();
+    var text_files = TextFileService.init(allocator, &files);
+    var model = try TextFileEditorModel.create(allocator, &text_files, path);
+    defer model.destroy();
+    try model.updateContent("created");
+    try model.save();
+    try std.testing.expect(files.existsFile(path));
+    try std.testing.expect(!model.isDirty());
+}
