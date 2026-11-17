@@ -918,8 +918,9 @@ are ported and registered. The `filters.fuzzyScore` dynamic-programming scorer
 (`filters.ts`) is ported as an explicit `FuzzyScorer` (scratch tables, no
 globals), with its `fuzzyScore` regression and top-score cases, and `scoreFuzzy2` now uses it.
 The #134723 item case passes; only the exact upstream cache-hash identity cases
-remain (the terminal cache key is a readable composite), and `fileIndex.zig`
-still uses its simpler matcher.
+remain (the terminal cache key is a readable composite). `fileIndex.zig` now
+scores via `scoreItemFuzzy` (label/description/path, all query words required)
+instead of its ad-hoc matcher.
 
 **Exit criteria per slice:** the upstream module exists under the mirrored
 path, its upstream tests are ported and registered, the TUI consumes it, and

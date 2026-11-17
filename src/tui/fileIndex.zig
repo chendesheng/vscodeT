@@ -8,8 +8,8 @@
 // fixed exclude list for version control metadata and Zig build output, skips
 // symbolic links and caps the index. `search.exclude` is not honored.
 //
-// Matching uses the ported `filters.fuzzyScore` subsequence scorer rather
-// than the browser `fuzzyScorer.ts` path-aware scorer. Every whitespace-
+// Matching uses the ported `fuzzyScorer.scoreItemFuzzy` label/description/path
+// scorer (all query words must match). Every whitespace-
 // separated query word must match the label or the relative directory; label
 // matches win when both match. Results are ordered by score, then shorter
 // label, shorter path and path.
@@ -18,6 +18,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const filters = @import("../vs/base/common/filters.zig");
+const fuzzy_scorer = @import("../vs/base/common/fuzzyScorer.zig");
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const ignore_file_module = @import("../vs/workbench/services/search/common/ignoreFile.zig");
@@ -308,9 +309,11 @@ pub const WorkspaceFileIndex = struct {
 
         var scored = std.array_list.Managed(ScoredFile).init(allocator);
         defer scored.deinit();
+        const query = try fuzzy_scorer.prepareQuery(allocator, trimmed);
+        defer query.deinit(allocator);
 
         for (self.entries.items) |entry| {
-            const match = try scoreEntry(allocator, trimmed, entry) orelse continue;
+            const match = try scoreEntry(allocator, &query, entry) orelse continue;
             try scored.append(match);
         }
 
@@ -331,59 +334,63 @@ pub const WorkspaceFileIndex = struct {
         return try result.toOwnedSlice();
     }
 
-    fn scoreEntry(allocator: Allocator, filter: []const u8, entry: Entry) !?ScoredFile {
-        var words = std.mem.tokenizeAny(u8, filter, " \t");
-        var total: i32 = 0;
-        var label_matches = std.array_list.Managed(filters.Match).init(allocator);
-        var description_matches = std.array_list.Managed(filters.Match).init(allocator);
-
-        while (words.next()) |word| {
-            if (try filters.fuzzyScoreWithPositions(allocator, word, entry.label)) |scored| {
-                defer allocator.free(scored.positions);
-                total += scored.score;
-                try appendPositions(&label_matches, scored.positions);
-                continue;
-            }
-            if (try filters.fuzzyScoreWithPositions(allocator, word, entry.description)) |scored| {
-                defer allocator.free(scored.positions);
-                total += scored.score;
-                try appendPositions(&description_matches, scored.positions);
-                continue;
-            }
-            label_matches.deinit();
-            description_matches.deinit();
+    fn scoreEntry(allocator: Allocator, query: *const fuzzy_scorer.PreparedQuery, entry: Entry) !?ScoredFile {
+        const score = try fuzzy_scorer.scoreItemFuzzy(allocator, &entry, query, true, EntryAccessor.accessor());
+        if (score.score == 0) {
+            var mutable = score;
+            mutable.deinit(allocator);
             return null;
         }
-
+        const label_matches = try convertMatches(allocator, score.label_match);
+        const description_matches = try convertMatches(allocator, score.description_match);
+        var mutable_score = score;
+        mutable_score.deinit(allocator);
         return .{
             .file = .{
                 .path = entry.path,
                 .label = entry.label,
                 .description = entry.description,
-                .label_matches = try label_matches.toOwnedSlice(),
-                .description_matches = try description_matches.toOwnedSlice(),
+                .label_matches = label_matches,
+                .description_matches = description_matches,
             },
-            .score = total,
+            .score = score.score,
         };
     }
 };
 
 const ScoredFile = struct {
     file: FileMatch,
-    score: i32,
+    score: i64,
 };
 
-fn appendPositions(
-    matches: *std.array_list.Managed(filters.Match),
-    positions: []const usize,
-) !void {
-    for (positions) |position| {
-        if (matches.items.len > 0 and matches.items[matches.items.len - 1].end == position) {
-            matches.items[matches.items.len - 1].end = position + 1;
-        } else {
-            try matches.append(.{ .start = position, .end = position + 1 });
-        }
+const EntryAccessor = struct {
+    fn accessor() fuzzy_scorer.ItemAccessor {
+        return .{
+            .context = @ptrFromInt(@alignOf(usize)),
+            .get_item_label = label,
+            .get_item_description = description,
+            .get_item_path = path,
+        };
     }
+    fn label(_: *anyopaque, item: *const anyopaque) ?[]const u8 {
+        const entry: *const Entry = @ptrCast(@alignCast(item));
+        return entry.label;
+    }
+    fn description(_: *anyopaque, item: *const anyopaque) ?[]const u8 {
+        const entry: *const Entry = @ptrCast(@alignCast(item));
+        return entry.description;
+    }
+    fn path(_: *anyopaque, item: *const anyopaque) ?[]const u8 {
+        const entry: *const Entry = @ptrCast(@alignCast(item));
+        return entry.path;
+    }
+};
+
+fn convertMatches(allocator: Allocator, matches: ?[]const fuzzy_scorer.Match) ![]filters.Match {
+    const source = matches orelse return allocator.alloc(filters.Match, 0);
+    const result = try allocator.alloc(filters.Match, source.len);
+    for (source, 0..) |match, index| result[index] = .{ .start = match.start, .end = match.end };
+    return result;
 }
 
 fn relativeDirectory(root: []const u8, directory: []const u8) []const u8 {
