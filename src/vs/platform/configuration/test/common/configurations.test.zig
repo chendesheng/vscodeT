@@ -236,3 +236,22 @@ test "registry changes update the default configuration automatically" {
     registry.deregisterConfigurations("auto");
     try std.testing.expect(defaults.configurationModel().getValue("auto.prop") == null);
 }
+
+test "hidden experimental settings registered after initialization become visible" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    try std.testing.expect(defaults.configurationModel().getValue("hidden.late") == null);
+
+    try registry.registerConfiguration("hidden", &.{.{
+        .key = "hidden.late",
+        .value_type = "boolean",
+        .default = std.json.Value{ .bool = true },
+        .included = false,
+        .experiment_mode = "auto",
+    }});
+    try std.testing.expectEqual(@as(bool, true), defaults.configurationModel().getValue("hidden.late").?.bool);
+}
