@@ -149,3 +149,36 @@ test "filename patterns are matched when guessing" {
     try std.testing.expectEqualStrings("patternLang", service.guessLanguageIdByFilepathOrFirstLine("dir/file.testpat", null).?);
     try std.testing.expect(service.guessLanguageIdByFilepathOrFirstLine("dir/file.other", null) == null);
 }
+
+fn uriPath(uri: std.Uri) []const u8 {
+    return switch (uri.path) {
+        .raw => |value| value,
+        .percent_encoded => |value| value,
+    };
+}
+
+test "configuration files and icons are registered" {
+    const allocator = std.testing.allocator;
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var service = LanguageService.init(allocator, &codec);
+    defer service.deinit();
+
+    const configuration = try std.Uri.parse("file:///configs/lang.json");
+    const light = try std.Uri.parse("file:///icons/lang-light.svg");
+    const dark = try std.Uri.parse("file:///icons/lang-dark.svg");
+    try service.registerLanguage(.{
+        .id = "langId",
+        .configuration = configuration,
+        .icon = .{ .light = light, .dark = dark },
+    });
+
+    const files = try service.getConfigurationFiles("langId", allocator);
+    defer allocator.free(files);
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expectEqualStrings("/configs/lang.json", uriPath(files[0]));
+    const icon = service.getIcon("langId").?;
+    try std.testing.expectEqualStrings("/icons/lang-light.svg", uriPath(icon.light));
+    try std.testing.expectEqualStrings("/icons/lang-dark.svg", uriPath(icon.dark));
+    try std.testing.expect(service.getIcon("missing") == null);
+}
