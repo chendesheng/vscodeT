@@ -48,11 +48,7 @@ pub const URI = struct {
             try out.appendSlice(self.scheme);
             try out.append(':');
         }
-        if (self.authority.len > 0 or
-            std.mem.eql(u8, self.scheme, "file") or
-            std.mem.eql(u8, self.scheme, "http") or
-            std.mem.eql(u8, self.scheme, "https"))
-        {
+        if (self.authority.len > 0 or std.mem.eql(u8, self.scheme, "file")) {
             try out.appendSlice("//");
             try out.appendSlice(self.authority);
         }
@@ -362,4 +358,23 @@ test "URI revive preserves components" {
     defer allocator.free(text);
     try std.testing.expectEqualStrings("vscode-test://host/p?q#f", text);
     try std.testing.expectEqualStrings("/p", uriToFsPath(&revived));
+}
+
+test "URI with changes updates components" {
+    const allocator = std.testing.allocator;
+    var base = try URI.parse(allocator, "before:some/file/path", false);
+    defer base.deinit();
+    var changed = try base.with(allocator, .{ .scheme = "after" });
+    defer changed.deinit();
+    const changed_text = try changed.toString(allocator);
+    defer allocator.free(changed_text);
+    try std.testing.expectEqualStrings("after:some/file/path", changed_text);
+
+    var empty = try URI.from(allocator, .{ .scheme = "s" }, true);
+    defer empty.deinit();
+    var http = try empty.with(allocator, .{ .scheme = "http", .path = "/api/files/test.me", .query = "t=1234" });
+    defer http.deinit();
+    const http_text = try http.toString(allocator);
+    defer allocator.free(http_text);
+    try std.testing.expectEqualStrings("http:/api/files/test.me?t=1234", http_text);
 }
