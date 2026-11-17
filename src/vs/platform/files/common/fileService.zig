@@ -11,9 +11,26 @@ const VSBuffer = buffer_mod.VSBuffer;
 pub const DiskFileService = struct {
     allocator: Allocator,
     io: Io,
+    onDidChange: @import("../../../base/common/event.zig").Emitter(files.FileChange),
 
     pub fn init(allocator: Allocator, io: Io) DiskFileService {
-        return .{ .allocator = allocator, .io = io };
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .onDidChange = @import("../../../base/common/event.zig").Emitter(files.FileChange).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *DiskFileService) void {
+        self.onDidChange.deinit();
+    }
+
+    pub fn listen(self: *DiskFileService, context: anytype, callback: fn (files.FileChange, @TypeOf(context)) anyerror!void) !usize {
+        return self.onDidChange.listen(context, callback);
+    }
+
+    fn notify(self: *DiskFileService, resource: []const u8, change_type: files.FileChangeType) void {
+        self.onDidChange.fire(.{ .resource = resource, .type = change_type }) catch {};
     }
 
     pub fn exists(self: *DiskFileService, path: []const u8) bool {
@@ -43,15 +60,20 @@ pub const DiskFileService = struct {
     }
 
     pub fn writeFile(self: *DiskFileService, path: []const u8, data: VSBuffer) !void {
+        const existed = self.exists(path);
         try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = data.bytes });
+        self.notify(path, if (existed) .UPDATED else .ADDED);
     }
 
     pub fn deleteFile(self: *DiskFileService, path: []const u8) !void {
         try Io.Dir.cwd().deleteFile(self.io, path);
+        self.notify(path, .DELETED);
     }
 
     pub fn rename(self: *DiskFileService, from: []const u8, to: []const u8) !void {
         try Io.Dir.renameAbsolute(from, to, self.io);
+        self.notify(from, .DELETED);
+        self.notify(to, .ADDED);
     }
 
     pub fn createDirectory(self: *DiskFileService, path: []const u8) !void {
@@ -132,6 +154,15 @@ test "DiskFileService reads, writes, stats and removes files" {
     defer allocator.free(copy_path);
 
     var service = DiskFileService.init(allocator, io);
+    defer service.deinit();
+    const Listener = struct {
+        fn onChange(change: files.FileChange, changes: *std.array_list.Managed(files.FileChangeType)) anyerror!void {
+            try changes.append(change.type);
+        }
+    };
+    var changes = std.array_list.Managed(files.FileChangeType).init(allocator);
+    defer changes.deinit();
+    _ = try service.listen(&changes, Listener.onChange);
     try std.testing.expect(!service.exists(path));
     var data = try VSBuffer.fromString(allocator, "hello");
     defer data.deinit(allocator);
@@ -152,6 +183,7 @@ test "DiskFileService reads, writes, stats and removes files" {
     try service.rename(copy_path, path);
     try service.deleteFile(path);
     try std.testing.expect(!service.exists(path));
+    try std.testing.expect(changes.items.len >= 4);
 }
 
 test "DiskFileService lists directories" {
