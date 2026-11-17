@@ -1057,7 +1057,7 @@ of scope:
 | `platform/keybinding/test/common/keybindingLabels.test.ts` | 177 | 5 | P3 |
 | `platform/contextkey/test/common/scanner.test.ts` | 251 | 34 | P3 |
 | `platform/contextkey/test/common/parser.test.ts` | 233 | 33 | P3 |
-| `platform/contextkey/test/common/contextkey.test.ts` | 435 | 24 | P3 |
+| `platform/contextkey/test/common/contextkey.test.ts` | 435 | 24 | P3 (expression cases ported) |
 | `platform/keybinding/test/common/keybindingResolver.test.ts` | 638 | 36 | P3 |
 | `platform/keybinding/test/common/abstractKeybindingService.test.ts` | 773 | 21 | P3 |
 | `platform/actions/test/common/menuService.test.ts` | 644 | 23 | P3 |
