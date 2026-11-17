@@ -473,3 +473,29 @@ test "fuzzyScoreGraceful permutations" {
     try assertGraceful(allocator, "cno", "co_new", "^c^o_^new", false);
     try assertGraceful(allocator, "cno", "co_new", "^c^o_^new", true);
 }
+
+test "fuzzyScore issue #26423" {
+    const allocator = std.testing.allocator;
+    try assertMatches(allocator, "baba", "abababab", null, .{});
+    try assertMatches(allocator, "fsfsfs", "dsafdsafdsafdsafdsafdsafdsafasdfdsa", null, .{});
+    try assertMatches(allocator, "fsfsfsfsfsfsfsf", "dsafdsafdsafdsafdsafdsafdsafasdfdsafdsafdsafdsafdsfdsafdsfdfdfasdnfdsajfndsjnafjndsajlknfdsa", null, .{});
+}
+
+test "fuzzyScore #26995 and separator-only #79558" {
+    const allocator = std.testing.allocator;
+    try assertMatches(allocator, "f", ":Foo", ":^Foo", .{});
+    try assertMatches(allocator, "f", ":foo", ":^foo", .{});
+    try assertMatches(allocator, ".", "foo.bar", "foo^.bar", .{});
+}
+
+test "fuzzyScore #26511 does not crash on long patterns" {
+    const allocator = std.testing.allocator;
+    var word: [122]u8 = undefined;
+    @memset(&word, 'a');
+    var pattern: [119]u8 = undefined;
+    @memset(&pattern, 'a');
+    var scorer = try filters.FuzzyScorer.init(allocator);
+    defer scorer.deinit();
+    const value = try scorer.score(&pattern, &pattern, 0, &word, &word, 0, .{});
+    if (value) |score| score.deinit(allocator);
+}

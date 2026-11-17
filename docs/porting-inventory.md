@@ -1058,7 +1058,8 @@ pending; P5e (URI/file/editor input) is not started.
 - `matchesContiguousSubString`, `matchesSubString`, `matchesPrefix`,
   `matchesStrictPrefix` and `matchesCamelCase` are ported with their upstream
   cases (including camel-case heuristics, weak-first fuzzy scoring and the
-  many-matches and configurable full-match-boost cases); the Unicode/alternate-character WordFilter cases in
+  many-matches, graceful-permutation, #26423/#26995/#26511 and
+  separator-only cases); the Unicode/alternate-character WordFilter cases in
   `filters.test.ts` remain unported; separator equivalence, `C++`, punctuation
   boundaries and the basic word cases are covered by the recursive port.
 - The remaining workbench configuration-service cases cover experiment
