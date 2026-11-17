@@ -752,3 +752,9 @@ Editor contributions:
   uses the ported path-aware item scorer but has no symbol/go-to-line/link
   providers, quick-input buttons,
   icons, keybinding labels or persisted command history.
+
+- The remaining porting roadmap and its blockers live in
+  [`docs/porting-inventory.md`](docs/porting-inventory.md). The two largest open
+  prerequisites are `editor/common/config/editorOptions.ts` (needed by the
+  P4 view/controller stack) and the portable URI/file-service/editor-input
+  layer (P5e).
