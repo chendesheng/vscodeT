@@ -2118,3 +2118,24 @@ test "SideBySideEditorInput names the two sides" {
     defer same.destroy();
     try std.testing.expectEqualStrings("one", same.base.getName());
 }
+
+test "DiffEditorInput labels and forced descriptions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const input1 = try newInput(allocator, .serializable, "1", "/one");
+    const input2 = try newInput(allocator, .serializable, "2", "/two");
+    input1.name = "one";
+    input2.name = "two";
+    const diff_mod = @import("../../../../common/editor/diffEditorInput.zig");
+    const diff = try diff_mod.DiffEditorInput.init(allocator, null, null, input1, input2);
+    defer diff.destroy();
+    try std.testing.expectEqualStrings("one ↔ two", diff.base.getName());
+    try std.testing.expect(diff.base.capabilities & workbench_editor.EditorInputCapabilities.ForceDescription == 0);
+
+    input2.name = "one";
+    const same_name = try diff_mod.DiffEditorInput.init(allocator, "preferred", "desc", input1, input2);
+    defer same_name.destroy();
+    try std.testing.expectEqualStrings("preferred", same_name.base.getName());
+    try std.testing.expect(same_name.base.capabilities & workbench_editor.EditorInputCapabilities.ForceDescription != 0);
+}
