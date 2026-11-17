@@ -405,6 +405,7 @@ comptime {
     _ = @import("./vs/platform/files/common/fileService.zig");
     _ = @import("./vs/workbench/common/memento.zig");
     _ = @import("./vs/workbench/services/themes/common/colorThemeData.zig");
+    _ = @import("./vs/workbench/services/textfile/common/textFileService.zig");
     _ = @import("./vs/workbench/services/themes/common/textMateScopeMatcher.zig");
     _ = @import("./vs/workbench/services/themes/browser/workbenchThemeService.zig");
     _ = @import("./vs/workbench/services/themes/common/plistParser.zig");
