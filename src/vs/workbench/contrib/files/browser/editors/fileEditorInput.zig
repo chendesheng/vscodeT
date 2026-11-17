@@ -129,4 +129,12 @@ test "FileEditorInput loads, edits, saves and reverts" {
     _ = input.interface();
     const candidate = editor_input.Candidate{ .input = &same.base };
     try std.testing.expect(input.base.matches(candidate));
+
+    const other_path = try std.fs.path.join(allocator, &.{ root, "other.txt" });
+    defer allocator.free(other_path);
+    var other = try FileEditorInput.init(allocator, &text_files, other_path);
+    defer other.deinit();
+    _ = other.interface();
+    const other_candidate = editor_input.Candidate{ .input = &other.base };
+    try std.testing.expect(!input.base.matches(other_candidate));
 }
