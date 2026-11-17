@@ -358,3 +358,24 @@ test "record and restore keep declared defaults, hidden settings and contributio
     try std.testing.expect(restored.getExcludedConfigurationProperties().get("restore.hidden") == null);
     try std.testing.expect(restored.getAgentHostSyncConfigurations().get("restore.hidden") == null);
 }
+
+test "duplicate property registration keeps the first schema" {
+    const allocator = std.testing.allocator;
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("dup", &.{.{
+        .key = "dup.setting",
+        .value_type = "boolean",
+        .default = std.json.Value{ .bool = true },
+        .policy = "dupPolicy",
+    }});
+    try registry.registerConfiguration("dup", &.{.{
+        .key = "dup.setting",
+        .value_type = "string",
+        .default = std.json.Value{ .string = "second" },
+    }});
+    const property = registry.getConfigurationProperties().get("dup.setting").?;
+    try std.testing.expectEqualStrings("boolean", property.value_type);
+    try std.testing.expectEqual(@as(bool, true), property.default.bool);
+    try std.testing.expectEqualStrings("dupPolicy", property.policy.?);
+}
