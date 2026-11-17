@@ -40,6 +40,7 @@ pub const Property = struct {
     included: bool = true,
     agent_host_key: ?[]const u8 = null,
     experiment_mode: ?[]const u8 = null,
+    default_value_source: ?ConfigurationDefaultSource = null,
 };
 
 pub const AgentHostConfig = struct {
@@ -200,6 +201,7 @@ pub const ConfigurationRegistry = struct {
             if (self.base_defaults.get(entry.key_ptr.*)) |base| {
                 entry.value_ptr.default = try cloneValue(arena, base);
             }
+            entry.value_ptr.default_value_source = null;
         }
         // Drop properties that only existed because of default overrides.
         var removals = std.array_list.Managed([]const u8).init(self.allocator);
@@ -217,6 +219,7 @@ pub const ConfigurationRegistry = struct {
                 if (!entry.found_existing) entry.value_ptr.* = .{ .value_type = "object", .default = .{ .object = .{} } };
                 const property = entry.value_ptr;
                 if (property.disallow_configuration_default) continue;
+                if (contribution.source != null) property.default_value_source = contribution.source;
                 switch (property.default) {
                     .object => {
                         if (override_value.value == .object) {

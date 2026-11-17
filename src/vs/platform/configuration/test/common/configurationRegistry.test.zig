@@ -297,3 +297,29 @@ test "hidden properties and node deregistration" {
     try std.testing.expect(registry.getAgentHostSyncConfigurations().get("restore.hiddenMirrored") == null);
     try std.testing.expect(registry.getExcludedConfigurationProperties().get("restore.hiddenExperiment") == null);
 }
+
+test "configuration defaults track their string source" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test_default", &.{.{ .key = "config" }});
+
+    const overrides1 = try defaultEntries(arena.allocator(), "config", "{\"a\":1,\"b\":2}");
+    const overrides2 = try defaultEntries(arena.allocator(), "config", "{\"a\":2,\"c\":3}");
+    const source1 = configuration_registry.ConfigurationDefaultSource{ .string = "source1" };
+    const source2 = configuration_registry.ConfigurationDefaultSource{ .string = "source2" };
+    try registry.registerDefaultConfigurationsWithSource(overrides1, source1);
+    try registry.registerDefaultConfigurationsWithSource(overrides2, source2);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{\"a\":2,\"b\":2,\"c\":3}", arena.allocator());
+    try std.testing.expect(registry.getConfigurationProperties().get("config").?.default_value_source != null);
+    try std.testing.expect(std.mem.eql(u8, registry.getConfigurationProperties().get("config").?.default_value_source.?.string, "source2"));
+
+    try registry.deregisterDefaultConfigurations(overrides2, source2);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{\"a\":1,\"b\":2}", arena.allocator());
+    try std.testing.expect(std.mem.eql(u8, registry.getConfigurationProperties().get("config").?.default_value_source.?.string, "source1"));
+    try registry.deregisterDefaultConfigurations(overrides1, source1);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{}", arena.allocator());
+    try std.testing.expect(registry.getConfigurationProperties().get("config").?.default_value_source == null);
+}
