@@ -472,6 +472,7 @@ comptime {
     _ = @import("./vs/editor/common/config/editorConfiguration.zig");
     _ = @import("./vs/editor/browser/config/editorConfiguration.zig");
     _ = @import("./vs/editor/browser/viewParts/viewLines/viewLineOptions.zig");
+    _ = @import("./vs/editor/browser/viewParts/viewLines/viewLine.zig");
     _ = @import("./vs/editor/browser/viewParts/lineNumbers/lineNumbers.zig");
     _ = @import("./vs/editor/browser/viewParts/currentLineHighlight/currentLineHighlight.zig");
     _ = @import("./vs/editor/browser/viewParts/selections/selections.zig");

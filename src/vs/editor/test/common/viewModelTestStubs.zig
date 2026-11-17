@@ -128,6 +128,7 @@ pub const TestViewModel = struct {
     line_lengths: []const usize = &.{},
     decorations: []const view_model.ViewModelDecoration = &.{},
     wrapped_lines: []const bool = &.{},
+    view_line_data: ?view_model.ViewLineRenderingData = null,
     viewport_data_calls: usize = 0,
     added_handlers: usize = 0,
     removed_handlers: usize = 0,
@@ -176,7 +177,7 @@ pub const TestViewModel = struct {
     fn getViewportViewLineRenderingData(self: *anyopaque, _: Range, _: usize) anyerror!view_model.ViewLineRenderingData {
         const model: *TestViewModel = @ptrCast(@alignCast(self));
         model.viewport_data_calls += 1;
-        return error.Unsupported;
+        return model.view_line_data orelse error.Unsupported;
     }
     fn getViewLineContinuesWithWrappedLine(self: *anyopaque, line_number: usize) bool {
         const model: *TestViewModel = @ptrCast(@alignCast(self));
