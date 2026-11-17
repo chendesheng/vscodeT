@@ -719,8 +719,8 @@ Editor contributions:
   are ported; all 21 upstream `abstractKeybindingService.test.ts` cases and the
   registry/resolver/label/store suites pass. `src/tui/keybindings.zig` remains
   the terminal host for status/search/editor shortcuts, while
-  `src/tui/keybindingService.zig` runs the workbench-global and editor-tab
-  group shortcuts through the abstract service (flat context, no-op
+  `src/tui/keybindingService.zig` runs the workbench-global, editor-tab group
+  and status-bar shortcuts through the abstract service (flat context, no-op
   notifications, command execution; tab-command results such as quit are
   carried back to the caller). Workbench tab/group shortcuts
   already dispatch through a `KeybindingsRegistry` + `KeybindingResolver`

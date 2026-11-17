@@ -165,7 +165,7 @@ pub const Workbench = struct {
     tab_service: ?*keybinding_service.KeybindingService,
     tab_command_result: ?TabKeyResult = null,
     global_service: ?*keybinding_service.KeybindingService,
-    statusbar_keybindings: ?*tui_keybindings.TuiKeybindings,
+    statusbar_service: ?*keybinding_service.KeybindingService,
     quick_access: *QuickAccessService,
     focus: Focus = .editor,
     is_pasting: bool = false,
@@ -187,7 +187,7 @@ pub const Workbench = struct {
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
-        self.statusbar_keybindings = null;
+        self.statusbar_service = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -246,7 +246,7 @@ pub const Workbench = struct {
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
-        self.statusbar_keybindings = null;
+        self.statusbar_service = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -320,7 +320,7 @@ pub const Workbench = struct {
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
-        self.statusbar_keybindings = null;
+        self.statusbar_service = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -615,10 +615,7 @@ pub const Workbench = struct {
         if (self.global_service) |service| {
             service.deinit();
         }
-        if (self.statusbar_keybindings) |keybindings| {
-            keybindings.deinit();
-            self.allocator.destroy(keybindings);
-        }
+        if (self.statusbar_service) |service| service.deinit();
         self.quick_access.deinit();
         self.commands.deinit();
         self.history.deinit();
@@ -1517,13 +1514,14 @@ pub const Workbench = struct {
         }
     }
 
-    fn ensureStatusbarKeybindings(self: *Workbench) !*tui_keybindings.TuiKeybindings {
-        if (self.statusbar_keybindings) |keybindings| return keybindings;
-        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
-        errdefer self.allocator.destroy(keybindings);
-        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &statusbar_keybinding_rules, null);
-        self.statusbar_keybindings = keybindings;
-        return keybindings;
+    fn ensureStatusbarService(self: *Workbench) !*keybinding_service.KeybindingService {
+        if (self.statusbar_service) |service| return service;
+        const service = try keybinding_service.KeybindingService.init(self.allocator, &statusbar_keybinding_rules, .{
+            .context = self,
+            .execute = executeStatusbarKeyCommand,
+        });
+        self.statusbar_service = service;
+        return service;
     }
 
     fn runStatusbarCommand(self: *Workbench, command: []const u8) bool {
@@ -1579,11 +1577,9 @@ pub const Workbench = struct {
         }
         if (self.focus != .statusbar) return false;
 
-        const keybindings = self.ensureStatusbarKeybindings() catch null;
-        if (keybindings) |host| {
-            if (host.dispatch(event.*, tui_keybindings.empty_context) catch null) |command| {
-                if (self.runStatusbarCommand(command)) return true;
-            }
+        const service = self.ensureStatusbarService() catch null;
+        if (service) |host| {
+            if (host.dispatch(event.*)) return true;
         }
 
         const part = self.statusbar.main_part;
@@ -3823,6 +3819,11 @@ const statusbar_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
 fn executeTabCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (try self.runTabCommand(command_id)) |result| self.tab_command_result = result;
+}
+
+fn executeStatusbarKeyCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = self.runStatusbarCommand(command_id);
 }
 
 fn executeGlobalCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
