@@ -863,7 +863,11 @@ storage service (scopes/targets, value stringification, key-target bookkeeping,
 change events, `storeAll`, `remove`, `keys`, `isNew`, `flush`). Async
 initialization, database persistence, profile/workspace switching and
 cross-window propagation are terminal deviations; the 10-case
-`storageService.test.ts` still needs the async harness and `memento.ts` is next.
+`storageService.test.ts` still needs the async harness.
+`workbench/common/memento.zig` is ported on top of it: the upstream static maps
+become an explicit `MementoStore` (shared id -> scoped object), and a memento
+value is a `std.json.ObjectMap` mutated through `put/get/remove/clear`; two
+inline tests cover save/load/removal, same-id sharing and clearing.
 
 **P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
 registry (priority ordering, `combineLanguageConfigurations`, plaintext default,

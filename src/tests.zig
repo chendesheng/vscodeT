@@ -379,6 +379,7 @@ comptime {
     _ = @import("./vs/base/common/filters.zig");
     _ = @import("./vs/platform/commands/common/commands.zig");
     _ = @import("./vs/platform/storage/common/storage.zig");
+    _ = @import("./vs/workbench/common/memento.zig");
     _ = @import("./vs/platform/commands/test/common/commands.test.zig");
     _ = @import("./vs/base/common/errorMessage.zig");
     _ = @import("./vs/base/common/actions.zig");
