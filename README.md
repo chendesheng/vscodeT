@@ -831,6 +831,12 @@ Editor contributions:
   absent (documented in the file header); the TUI compositor paints the parts'
   structured data.
 
+- The file-system provider contract and the in-memory provider are ported
+  (`platform/files/common/files.zig` provider types, `inMemoryFilesystemProvider.zig`
+  with tree/stat/readdir/read/write/append/open/read/write/close/rename/delete,
+  capability flags, synchronous change listeners and provider error codes);
+  the provider-registry `FileService` that consumes them is next.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory

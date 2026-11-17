@@ -277,7 +277,7 @@ pub const FileType = struct {
     pub const Unknown: u8 = 0;
     pub const File: u8 = 1;
     pub const Directory: u8 = 2;
-    pub const SymbolicLink: u8 = 4;
+    pub const SymbolicLink: u8 = 64;
 
     pub fn isFile(value: u8) bool {
         return value & File != 0;
@@ -339,3 +339,176 @@ test "FileStat type helpers" {
     try std.testing.expect(file.isFile());
     try std.testing.expect(file.isSymbolicLink());
 }
+
+// ---------------------------------------------------------------------------
+// File system provider contracts
+// (port of the provider-facing subset of the same upstream `files.ts`)
+// ---------------------------------------------------------------------------
+
+/// Bit values of upstream `FilePermission`.
+pub const FilePermission = struct {
+    pub const Readonly: u8 = 1 << 0;
+};
+
+/// Mirrors upstream `IStat`.
+pub const IStat = struct {
+    /// `FileType` bits.
+    type: u8,
+    mtime: i64,
+    ctime: i64,
+    size: u64,
+    permissions: ?u8 = null,
+};
+
+/// Mirrors upstream `IFileStat` (the `FileService`-resolved stat).
+pub const IFileStat = struct {
+    name: []const u8,
+    resource: []const u8,
+    type: u8,
+    mtime: i64,
+    ctime: i64,
+    size: u64,
+    etag: ?[]const u8 = null,
+    readonly: bool = false,
+    executable: bool = false,
+    children: ?[]IFileStat = null,
+    isRoot: bool = false,
+};
+
+/// Bit values of upstream `FileSystemProviderCapabilities`.
+pub const FileSystemProviderCapabilities = struct {
+    pub const None: u32 = 0;
+    pub const FileReadWrite: u32 = 1 << 1;
+    pub const FileOpenReadWriteClose: u32 = 1 << 2;
+    pub const FileReadStream: u32 = 1 << 4;
+    pub const FileFolderCopy: u32 = 1 << 3;
+    pub const PathCaseSensitive: u32 = 1 << 10;
+    pub const Readonly: u32 = 1 << 11;
+    pub const Trash: u32 = 1 << 12;
+    pub const FileWriteUnlock: u32 = 1 << 13;
+    pub const FileAtomicRead: u32 = 1 << 14;
+    pub const FileAtomicWrite: u32 = 1 << 15;
+    pub const FileAtomicDelete: u32 = 1 << 16;
+    pub const FileClone: u32 = 1 << 17;
+    pub const FileRealpath: u32 = 1 << 18;
+    pub const FileAppend: u32 = 1 << 19;
+    pub const FileAtomicRename: u32 = 1 << 20;
+};
+
+/// Mirrors upstream `FileSystemProviderErrorCode`; Zig errors replace the
+/// thrown error object.
+pub const FileSystemProviderError = error{
+    FileNotFound,
+    FileExists,
+    FileNotADirectory,
+    FileIsADirectory,
+    FileReadonly,
+    NoPermissions,
+    Unavailable,
+    Unknown,
+    OutOfMemory,
+};
+
+/// Mirrors the provider's `onDidChangeFile` payload.
+pub const IFileChange = struct {
+    type: FileChangeType,
+    resource: []const u8,
+};
+
+pub const IFileDeleteOptions = struct {
+    recursive: bool = false,
+    useTrash: bool = false,
+    atomic: bool = false,
+};
+
+pub const IFileOverwriteOptions = struct {
+    overwrite: bool = false,
+    atomic: bool = false,
+    unlock: bool = false,
+};
+
+pub const IFileWriteOptions = struct {
+    create: bool,
+    overwrite: bool,
+    append: bool = false,
+    atomic: bool = false,
+    unlock: bool = false,
+};
+
+pub const IFileOpenOptions = struct {
+    create: bool,
+    overwrite: bool,
+    append: bool = false,
+    unlock: bool = false,
+};
+
+pub const IWatchOptions = struct {
+    recursive: bool = false,
+    excludes: []const []const u8 = &.{},
+    filter: ?u8 = null,
+};
+
+pub const IFileChangeListener = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque, changes: []const IFileChange) void,
+};
+
+/// The terminal provider contract. Resources are canonical path strings (the
+/// repository-wide terminal substitution for `URI`). Mutations are synchronous;
+/// `readFile`/`readdir` allocate results that the caller frees with the same
+/// allocator.
+pub const IFileSystemProvider = struct {
+    context: *anyopaque,
+    capabilities: *const fn (context: *anyopaque) u32,
+    stat: *const fn (context: *anyopaque, resource: []const u8) FileSystemProviderError!IStat,
+    mkdir: *const fn (context: *anyopaque, resource: []const u8) FileSystemProviderError!void,
+    readdir: *const fn (context: *anyopaque, resource: []const u8) FileSystemProviderError![]DirectoryEntry,
+    delete: *const fn (context: *anyopaque, resource: []const u8, options: IFileDeleteOptions) FileSystemProviderError!void,
+    rename: *const fn (context: *anyopaque, from: []const u8, to: []const u8, options: IFileOverwriteOptions) FileSystemProviderError!void,
+    read_file: *const fn (context: *anyopaque, resource: []const u8) FileSystemProviderError![]u8,
+    write_file: *const fn (context: *anyopaque, resource: []const u8, content: []const u8, options: IFileWriteOptions) FileSystemProviderError!void,
+    open: *const fn (context: *anyopaque, resource: []const u8, options: IFileOpenOptions) FileSystemProviderError!u32,
+    close: *const fn (context: *anyopaque, fd: u32) FileSystemProviderError!void,
+    read: *const fn (context: *anyopaque, fd: u32, position: usize, data: []u8, offset: usize, length: usize) FileSystemProviderError!usize,
+    write: *const fn (context: *anyopaque, fd: u32, position: usize, data: []const u8, offset: usize, length: usize) FileSystemProviderError!usize,
+    watch: *const fn (context: *anyopaque, resource: []const u8, options: IWatchOptions) FileSystemProviderError!void,
+    add_change_listener: *const fn (context: *anyopaque, listener: IFileChangeListener) void,
+    remove_change_listener: *const fn (context: *anyopaque, listener: IFileChangeListener) void,
+
+    pub fn getCapabilities(self: IFileSystemProvider) u32 {
+        return self.capabilities(self.context);
+    }
+    pub fn getStat(self: IFileSystemProvider, resource: []const u8) FileSystemProviderError!IStat {
+        return self.stat(self.context, resource);
+    }
+    pub fn makeDirectory(self: IFileSystemProvider, resource: []const u8) FileSystemProviderError!void {
+        return self.mkdir(self.context, resource);
+    }
+    pub fn getDirectoryEntries(self: IFileSystemProvider, resource: []const u8) FileSystemProviderError![]DirectoryEntry {
+        return self.readdir(self.context, resource);
+    }
+    pub fn deleteResource(self: IFileSystemProvider, resource: []const u8, options: IFileDeleteOptions) FileSystemProviderError!void {
+        return self.delete(self.context, resource, options);
+    }
+    pub fn renameResource(self: IFileSystemProvider, from: []const u8, to: []const u8, options: IFileOverwriteOptions) FileSystemProviderError!void {
+        return self.rename(self.context, from, to, options);
+    }
+    pub fn readFile(self: IFileSystemProvider, resource: []const u8) FileSystemProviderError![]u8 {
+        return self.read_file(self.context, resource);
+    }
+    pub fn writeFile(self: IFileSystemProvider, resource: []const u8, content: []const u8, options: IFileWriteOptions) FileSystemProviderError!void {
+        return self.write_file(self.context, resource, content, options);
+    }
+    pub fn addChangeListener(self: IFileSystemProvider, listener: IFileChangeListener) void {
+        self.add_change_listener(self.context, listener);
+    }
+    pub fn removeChangeListener(self: IFileSystemProvider, listener: IFileChangeListener) void {
+        self.remove_change_listener(self.context, listener);
+    }
+};
+
+/// One `readdir` result.
+pub const DirectoryEntry = struct {
+    name: []const u8,
+    type: u8,
+};
