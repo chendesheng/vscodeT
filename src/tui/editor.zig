@@ -209,6 +209,9 @@ pub const Editor = struct {
         errdefer allocator.destroy(language_service);
         language_service.* = LanguageService.init(allocator, codec);
         errdefer language_service.deinit();
+        for (language.bundled_languages) |bundled| {
+            try language_service.registerLanguage(.{ .id = bundled.id, .extensions = bundled.extensions });
+        }
 
         var language_config = language_configuration.empty();
         var has_language_config = false;
@@ -3047,3 +3050,20 @@ const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "actions.find", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyF) } },
     .{ .id = "editor.action.startFindReplaceAction", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyR) } },
 };
+
+test "Editor: bundled languages are registered on the language service" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "const x = 1;", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try std.testing.expectEqualStrings("zig", editor.language_service.guessLanguageIdByFilepathOrFirstLine("src/main.zig", null).?);
+    try std.testing.expectEqualStrings("typescript", editor.language_service.guessLanguageIdByFilepathOrFirstLine("app.ts", null).?);
+    try std.testing.expectEqualStrings("markdown", editor.language_service.guessLanguageIdByFilepathOrFirstLine("README.md", null).?);
+    const selection = try editor.language_service.createByFilepathOrFirstLine("src/component.tsx", null);
+    defer selection.deinit();
+    try std.testing.expectEqualStrings("typescriptreact", selection.interface().languageId());
+}

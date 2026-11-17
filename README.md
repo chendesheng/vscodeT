@@ -357,8 +357,9 @@ Bracket-pair colorization:
   contributions (generated `text/x-<id>` mimetypes, first-mimetype-wins),
   extension/filename/filename-pattern and first-line detection, sorted
   language names, and `createById`/`createByMimeType`/`createByFilepathOrFirstLine`
-  selections that re-emit when languages are registered. Workbench extension
-  contribution registration is not ported yet.
+  selections that re-emit when languages are registered. The TUI editor
+  registers its bundled language table (extensions per language) on the service
+  at startup. Workbench extension contribution registration is not ported yet.
 - The language-support helpers are ported: rich bracket grouping and
   forward/reversed bracket search (`RichEditBrackets`, `BracketsUtils`),
   `ScopedLineTokens`, electric-character matching, and `OnEnterSupport`

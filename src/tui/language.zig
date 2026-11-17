@@ -10,32 +10,47 @@ var standard_brackets = [_]CharacterPair{
     .{ "(", ")" },
 };
 
+pub const BundledLanguage = struct {
+    id: []const u8,
+    extensions: []const []const u8,
+};
+
+/// Languages whose grammars are bundled with textmate.zig, grouped by language
+/// id so the editor can register them on the ported `LanguageService`.
+pub const bundled_languages = [_]BundledLanguage{
+    .{ .id = "zig", .extensions = &.{".zig"} },
+    .{ .id = "json", .extensions = &.{".json"} },
+    .{ .id = "jsonc", .extensions = &.{".jsonc"} },
+    .{ .id = "javascript", .extensions = &.{ ".js", ".mjs", ".cjs" } },
+    .{ .id = "javascriptreact", .extensions = &.{".jsx"} },
+    .{ .id = "typescript", .extensions = &.{ ".ts", ".mts", ".cts" } },
+    .{ .id = "typescriptreact", .extensions = &.{".tsx"} },
+    .{ .id = "python", .extensions = &.{".py"} },
+    .{ .id = "rust", .extensions = &.{".rs"} },
+    .{ .id = "go", .extensions = &.{".go"} },
+    .{ .id = "c", .extensions = &.{ ".c", ".h" } },
+    .{ .id = "cpp", .extensions = &.{ ".cpp", ".cc", ".cxx", ".hpp" } },
+    .{ .id = "java", .extensions = &.{".java"} },
+    .{ .id = "html", .extensions = &.{ ".html", ".htm" } },
+    .{ .id = "css", .extensions = &.{".css"} },
+    .{ .id = "scss", .extensions = &.{".scss"} },
+    .{ .id = "markdown", .extensions = &.{ ".md", ".markdown" } },
+    .{ .id = "yaml", .extensions = &.{ ".yaml", ".yml" } },
+    .{ .id = "toml", .extensions = &.{".toml"} },
+    .{ .id = "shellscript", .extensions = &.{ ".sh", ".bash" } },
+};
+
 /// TUI-local stand-in for vscode's language association registry. Only the
-/// grammars bundled with textmate.zig are recognized.
+/// grammars bundled with textmate.zig are recognized; the editor also registers
+/// `bundled_languages` on the ported `LanguageService`.
 pub fn languageIdForPath(path: []const u8) []const u8 {
     const basename = std.fs.path.basename(path);
-    const dot = std.mem.lastIndexOfScalar(u8, basename, '.') orelse return "plaintext";
-    const ext = basename[dot + 1 ..];
-    const map = .{
-        .{ "zig", "zig" },             .{ "json", "json" },
-        .{ "jsonc", "jsonc" },         .{ "js", "javascript" },
-        .{ "mjs", "javascript" },      .{ "cjs", "javascript" },
-        .{ "jsx", "javascriptreact" }, .{ "ts", "typescript" },
-        .{ "mts", "typescript" },      .{ "cts", "typescript" },
-        .{ "tsx", "typescriptreact" }, .{ "py", "python" },
-        .{ "rs", "rust" },             .{ "go", "go" },
-        .{ "c", "c" },                 .{ "h", "c" },
-        .{ "cpp", "cpp" },             .{ "cc", "cpp" },
-        .{ "cxx", "cpp" },             .{ "hpp", "cpp" },
-        .{ "java", "java" },           .{ "html", "html" },
-        .{ "htm", "html" },            .{ "css", "css" },
-        .{ "scss", "scss" },           .{ "md", "markdown" },
-        .{ "markdown", "markdown" },   .{ "yaml", "yaml" },
-        .{ "yml", "yaml" },            .{ "toml", "toml" },
-        .{ "sh", "shellscript" },      .{ "bash", "shellscript" },
-    };
-    inline for (map) |entry| {
-        if (std.ascii.eqlIgnoreCase(entry[0], ext)) return entry[1];
+    for (bundled_languages) |language| {
+        for (language.extensions) |extension| {
+            if (basename.len >= extension.len and std.ascii.eqlIgnoreCase(basename[basename.len - extension.len ..], extension)) {
+                return language.id;
+            }
+        }
     }
     return "plaintext";
 }
