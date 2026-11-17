@@ -439,3 +439,26 @@ test "ColorThemeData: language-specific default styling rules probe scopes" {
     try expectTokenColor(theme, "type:javascript1", "#aa0000");
     try expectTokenColor(theme, "type:typescript1", "#bb0000");
 }
+
+test "ColorThemeData: applies custom semantic and token color settings JSON" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+    const theme = try ColorThemeData.createLoadedEmptyTheme(allocator, &fixture.registry, "test-dark");
+    defer theme.deinit();
+    try theme.setCustomSemanticTokenColorsJson(
+        \\{"enabled":true,"rules":{"type":"#ff0000","class":{"foreground":"#0000ff","italic":true}}}
+    );
+    try expectTokenColor(theme, "type", "#ff0000");
+    try expectTokenColor(theme, "class", "#0000ff");
+    const class_style = theme.getTokenStyleMetadata("class", &.{}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), class_style.italic);
+
+    try theme.setCustomTokenColorsJson(
+        \\{"textMateRules":[{"scope":"variable","settings":{"foreground":"#aa0000","fontStyle":"bold"}}]}
+    );
+    const resolved = (try theme.resolveScopes(&.{&.{"variable"}})) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(?bool, true), resolved.bold);
+    const resolved_color = resolved.foreground orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u8, 0xaa), resolved_color.r);
+}

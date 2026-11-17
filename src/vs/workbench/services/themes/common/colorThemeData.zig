@@ -268,6 +268,83 @@ pub const ColorThemeData = struct {
         self.custom_token_colors = try result.toOwnedSlice();
     }
 
+    /// Applies `workbench.colorCustomizations`-shaped semantic token settings:
+    /// `{ "enabled": bool, "rules": { selector: style } }`.
+    pub fn setCustomSemanticTokenColorsJson(self: *ColorThemeData, text: []const u8) !void {
+        const allocator = self.arena.allocator();
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{}) catch return;
+        const root = switch (parsed) {
+            .object => |object| object,
+            else => return,
+        };
+        if (root.get("enabled")) |enabled| if (enabled == .bool and !enabled.bool) {
+            self.semantic_token_rules = &.{};
+            return;
+        };
+        const rules_value = root.get("rules") orelse return;
+        const rules_object = switch (rules_value) {
+            .object => |object| object,
+            else => return,
+        };
+        var inputs = std.array_list.Managed(SemanticRuleInput).init(self.allocator);
+        defer inputs.deinit();
+        var iterator = rules_object.iterator();
+        while (iterator.next()) |entry| {
+            const selector = entry.key_ptr.*;
+            if (std.mem.eql(u8, selector, "enabled") or std.mem.eql(u8, selector, "semanticHighlighting")) continue;
+            var input = SemanticRuleInput{ .selector = selector };
+            switch (entry.value_ptr.*) {
+                .string => |foreground| input.foreground = foreground,
+                .bool => |enabled| if (!enabled) continue,
+                .object => |style| {
+                    if (style.get("foreground")) |foreground| if (foreground == .string) {
+                        input.foreground = foreground.string;
+                    };
+                    if (style.get("fontStyle")) |font_style| if (font_style == .string) {
+                        input.font_style = font_style.string;
+                    };
+                    if (style.get("bold")) |value| if (value == .bool) {
+                        input.bold = value.bool;
+                    };
+                    if (style.get("underline")) |value| if (value == .bool) {
+                        input.underline = value.bool;
+                    };
+                    if (style.get("strikethrough")) |value| if (value == .bool) {
+                        input.strikethrough = value.bool;
+                    };
+                    if (style.get("italic")) |value| if (value == .bool) {
+                        input.italic = value.bool;
+                    };
+                },
+                else => continue,
+            }
+            try inputs.append(input);
+        }
+        try self.setCustomSemanticTokenColors(inputs.items);
+    }
+
+    /// Applies `workbench.colorCustomizations`-shaped token color settings:
+    /// `{ "textMateRules": [{ "scope": ..., "settings": ... }] }`.
+    pub fn setCustomTokenColorsJson(self: *ColorThemeData, text: []const u8) !void {
+        const allocator = self.arena.allocator();
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{}) catch return;
+        const root = switch (parsed) {
+            .object => |object| object,
+            else => return,
+        };
+        const rules_value = root.get("textMateRules") orelse return;
+        if (rules_value != .array) return;
+        var rules = std.array_list.Managed(TokenColor).init(allocator);
+        for (rules_value.array.items) |entry| {
+            const rule_object = switch (entry) {
+                .object => |rule| rule,
+                else => continue,
+            };
+            if (try parseTokenColor(allocator, rule_object)) |rule| try rules.append(rule);
+        }
+        self.custom_token_colors = try rules.toOwnedSlice();
+    }
+
     /// Foreground colors of the token rules, index 1-based. Index 0 is unused
     /// (the upstream token-color index uses 0 for "no foreground").
     pub fn getTokenColorMap(self: *ColorThemeData) ![]const Color {
