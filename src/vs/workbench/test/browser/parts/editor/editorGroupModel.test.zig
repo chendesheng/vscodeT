@@ -1962,3 +1962,25 @@ test "EditorGroupModel: locked group serialization" {
     try std.testing.expectEqual(@as(usize, 0), deserialized.count());
     try std.testing.expect(deserialized.isLocked());
 }
+
+test "EditorGroupModel: direct indexOf and contains" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const input1 = try newInput(allocator, .serializable, "1", null);
+    const input2 = try newInput(allocator, .serializable, "2", null);
+    _ = try group.openEditor(input1, .{ .pinned = true, .active = true });
+    _ = try group.openEditor(input2, .{ .pinned = true, .active = true });
+
+    try std.testing.expectEqual(@as(?usize, 0), group.indexOf(.{ .input = input1 }));
+    try std.testing.expectEqual(@as(?usize, 1), group.indexOf(.{ .input = input2 }));
+    try std.testing.expect(group.contains(.{ .input = input1 }, .{ .strict_equals = true }));
+    try std.testing.expect(!group.contains(.{ .input = try newInput(allocator, .serializable, "3", null) }, .{}));
+
+    _ = try group.closeEditor(input1, .UNKNOWN, true);
+    try std.testing.expect(!group.contains(.{ .input = input1 }, .{}));
+    try std.testing.expectEqual(@as(?usize, 0), group.indexOf(.{ .input = input2 }));
+}
