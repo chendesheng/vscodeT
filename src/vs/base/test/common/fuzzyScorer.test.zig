@@ -628,3 +628,60 @@ test "compareFilesByScore - additional scattering regressions" {
         try expectOrder(allocator, &items, "paymentmodel", &[_]*TestItem{ &a, &b });
     }
 }
+
+test "compareFilesByScore - multi-item scattering regressions" {
+    const allocator = std.testing.allocator;
+    {
+        var a = fixture("adsys/protected/config.php");
+        var b = fixture("adsys/protected/framework/smarty/sysplugins/smarty_internal_config.php");
+        var c = fixture("duowanVideo/wap/protected/config.php");
+        const items = [_]*TestItem{ &a, &b, &c };
+        try expectOrder(allocator, &items, "protectedconfig.php", &[_]*TestItem{ &a, &c, &b });
+    }
+    {
+        var a = fixture("src/vs/workbench/contrib/files/common/explorerViewModel.ts");
+        var b = fixture("src/vs/workbench/contrib/files/browser/views/explorerView.ts");
+        var c = fixture("src/vs/workbench/contrib/files/browser/views/explorerViewer.ts");
+        const items = [_]*TestItem{ &a, &b, &c };
+        var copy = items;
+        try sortItems(allocator, &copy, "filesexplorerview.ts");
+        try std.testing.expectEqual(&b, copy[0]);
+        copy = [_]*TestItem{ &a, &c, &b };
+        try sortItems(allocator, &copy, "filesexplorerview.ts");
+        try std.testing.expectEqual(&b, copy[0]);
+    }
+}
+
+test "scoreItem - optimize for file paths and scattering" {
+    const allocator = std.testing.allocator;
+    {
+        var item = fixture("/xyz/others/spath/some/xsp/file123.txt");
+        const result = try itemScore(allocator, &item, "xspfile123");
+        defer result.deinit(allocator);
+        try std.testing.expect(result.score > 0);
+        try std.testing.expectEqual(@as(usize, 1), result.label_match.?.len);
+        try std.testing.expectEqual(@as(usize, 0), result.label_match.?[0].start);
+        try std.testing.expectEqual(@as(usize, 7), result.label_match.?[0].end);
+        try std.testing.expectEqual(@as(usize, 1), result.description_match.?.len);
+        try std.testing.expectEqual(@as(usize, 23), result.description_match.?[0].start);
+        try std.testing.expectEqual(@as(usize, 26), result.description_match.?[0].end);
+    }
+    {
+        var item = fixture("projects/ui/cula/ats/target.mk");
+        const result = try itemScore(allocator, &item, "tcltarget.mk");
+        defer result.deinit(allocator);
+        try std.testing.expect(result.score > 0);
+        try std.testing.expectEqual(@as(usize, 1), result.label_match.?.len);
+        try std.testing.expectEqual(@as(usize, 0), result.label_match.?[0].start);
+        try std.testing.expectEqual(@as(usize, 9), result.label_match.?[0].end);
+    }
+    {
+        var item = fixture("/1a111d1/11a1d1/something.txt");
+        const result = try itemScore(allocator, &item, "ad");
+        defer result.deinit(allocator);
+        try std.testing.expect(result.score > 0);
+        try std.testing.expectEqual(@as(usize, 2), result.description_match.?.len);
+        try std.testing.expectEqual(@as(usize, 11), result.description_match.?[0].start);
+        try std.testing.expectEqual(@as(usize, 13), result.description_match.?[1].start);
+    }
+}
