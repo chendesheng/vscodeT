@@ -59,6 +59,7 @@ const InsertFinalNewLineCommand = @import("../vs/editor/contrib/insertFinalNewLi
 const bracket_matching = @import("../vs/editor/contrib/bracketMatching/browser/bracketMatching.zig");
 const BracketMatchingController = bracket_matching.BracketMatchingController;
 const language_configuration_service = @import("./languageConfiguration.zig");
+const languagesAssociations = @import("../vs/editor/common/services/languagesAssociations.zig");
 const input = @import("ui").input;
 const keybinding_service = @import("./keybindingService.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
@@ -131,6 +132,9 @@ pub const Editor = struct {
     undo_redo: *UndoRedoService,
     codec: *LanguageIdCodec,
     language_service: *LanguageService,
+    /// Owns the strings of the configured `files.associations` patterns; the
+    /// language service stores slices into this arena.
+    associations_arena: std.heap.ArenaAllocator,
     view_lines: ProjectedViewModelLines,
     converter: CoordinatesConverter,
     cursor_config: CursorConfiguration,
@@ -282,6 +286,7 @@ pub const Editor = struct {
             .undo_redo = undo_redo,
             .codec = codec,
             .language_service = language_service,
+            .associations_arena = std.heap.ArenaAllocator.init(allocator),
             .view_lines = view_lines,
             .converter = undefined,
             .cursor_config = cursor_config,
@@ -417,6 +422,7 @@ pub const Editor = struct {
         self.allocator.destroy(self.model);
         self.undo_redo.deinit();
         self.allocator.destroy(self.undo_redo);
+        self.associations_arena.deinit();
         self.language_service.deinit();
         self.allocator.destroy(self.language_service);
         self.codec.deinit();
@@ -545,6 +551,54 @@ pub const Editor = struct {
 
     pub fn languageId(self: *Editor) []const u8 {
         return self.model.getLanguageId();
+    }
+
+    /// Applies configured `files.associations` patterns and re-detects the
+    /// editor's language when the detected id changes. The association strings
+    /// are copied into an editor-owned arena because the language service keeps
+    /// slices into them.
+    pub fn applyFileAssociations(self: *Editor, associations: []const languagesAssociations.ILanguageAssociation) !void {
+        _ = self.associations_arena.reset(.retain_capacity);
+        const arena = self.associations_arena.allocator();
+        self.language_service.clearConfiguredLanguageAssociations();
+        for (associations) |association| {
+            try self.language_service.registerConfiguredLanguageAssociation(.{
+                .id = try arena.dupe(u8, association.id),
+                .mime = try arena.dupe(u8, association.mime),
+                .filename = if (association.filename) |value| try arena.dupe(u8, value) else null,
+                .extension = if (association.extension) |value| try arena.dupe(u8, value) else null,
+                .filepattern = if (association.filepattern) |value| try arena.dupe(u8, value) else null,
+                .firstline = association.firstline,
+            });
+        }
+
+        const language_id = self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null) orelse "plaintext";
+        if (std.mem.eql(u8, language_id, self.model.getLanguageId())) return;
+
+        self.model.setLanguage(language_id);
+        try self.codec.register(language_id);
+
+        var config = language_configuration.empty();
+        var has_config = false;
+        if (language.commentRuleFor(language_id)) |comments| {
+            config.comments = comments;
+            has_config = true;
+        }
+        if (language.bracketsFor(language_id)) |brackets| {
+            config.brackets = brackets;
+            has_config = true;
+        }
+        if (has_config) try self.language_service.registerLanguageConfiguration(language_id, config);
+        if (self.language_service.getLanguageConfiguration(language_id)) |resolved_config| {
+            self.character_pair = try CharacterPairSupport.init(resolved_config);
+            if (self.character_pair) |*pair_support| {
+                self.cursor_config.auto_closing_pairs = pair_support.getAutoClosingPairs();
+                self.cursor_config.auto_close_before_quotes = pair_support.getAutoCloseBeforeSet(true);
+                self.cursor_config.auto_close_before_brackets = pair_support.getAutoCloseBeforeSet(false);
+            }
+        } else {
+            self.character_pair = null;
+        }
     }
 
     pub fn message(self: *Editor) []const u8 {
@@ -3068,4 +3122,27 @@ test "Editor: bundled languages are registered on the language service" {
     const selection = try editor.language_service.createByFilepathOrFirstLine("src/component.tsx", null);
     defer selection.deinit();
     try std.testing.expectEqualStrings("typescriptreact", selection.interface().languageId());
+}
+
+test "editor applies configured files.associations" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "body", "sample.custom", 20, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try std.testing.expectEqualStrings("plaintext", editor.languageId());
+
+    const associations = [_]languagesAssociations.ILanguageAssociation{
+        .{ .id = "zig", .mime = "", .filepattern = "*.custom" },
+    };
+    try editor.applyFileAssociations(&associations);
+    try std.testing.expectEqualStrings("zig", editor.languageId());
+
+    // Clearing the configured associations restores the bundled detection.
+    try editor.applyFileAssociations(&.{});
+    try std.testing.expectEqualStrings("plaintext", editor.languageId());
 }

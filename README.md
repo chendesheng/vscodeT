@@ -362,8 +362,9 @@ Bracket-pair colorization:
   at startup and resolves file paths through the ported language associations
   (the old hard-coded extension map is gone). `workbench/services/language/common/languageService.zig`
   ports the workbench registration surface, including `files.associations` →
-  configured associations; feeding the TUI's settings into it remains host
-  wiring.
+  configured associations. The TUI workbench feeds `files.associations` into
+  every opened editor (re-detecting the language and rebuilding comment/bracket
+  support) and re-applies it after a settings reload.
 - The language-support helpers are ported: rich bracket grouping and
   forward/reversed bracket search (`RichEditBrackets`, `BracketsUtils`),
   `ScopedLineTokens`, electric-character matching, and `OnEnterSupport`

@@ -1075,7 +1075,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,061 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,063 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1089,10 +1089,11 @@ workbench theme service (+ its test suite) and the size registry; P5h has the
 configuration model parser/filters/merges/overrides, registry defaults/policies/
 deregistration, variables, DefaultConfiguration and an in-memory user-target
 ConfigurationService; P5d is ported (associations, workbench registration
-surface, TUI path matching), with only `files.associations` host wiring left; P5e has the URI/file-service/editor-input foundation and needs the
+surface, TUI path matching and settings-driven `files.associations` applied to
+opened editors and on settings reload); P5e has the URI/file-service/editor-input foundation and needs the
 full provider file service and the working-copy wiring.
 
-**Status at the end of the current session:** 2,061 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,063 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor view/controller/widget stack and the URI/file

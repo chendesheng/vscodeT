@@ -70,6 +70,7 @@ const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
 const ConfigurationService = configuration_mod.ConfigurationService;
 const settings_watcher_mod = @import("./settingsWatcher.zig");
+const languages_associations = @import("../vs/editor/common/services/languagesAssociations.zig");
 const keybinding_service = @import("./keybindingService.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
 const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
@@ -770,6 +771,55 @@ pub const Workbench = struct {
             },
         );
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
+        if (self.settings_watcher) |watcher| {
+            watcher.setOnReload(.{ .context = self, .callback = onSettingsReloaded });
+        }
+    }
+
+    fn onSettingsReloaded(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.applyConfiguredLanguageAssociationsToAllEditors();
+    }
+
+    /// Applies `files.associations` from the current configuration to `editor`.
+    fn applyConfiguredLanguageAssociations(self: *Workbench, editor: *Editor) void {
+        self.ensureConfiguration() catch {};
+        const configuration = self.configuration orelse {
+            editor.applyFileAssociations(&.{}) catch {};
+            return;
+        };
+        const value = configuration.getValue("files.associations", .{}) orelse {
+            editor.applyFileAssociations(&.{}) catch {};
+            return;
+        };
+        switch (value.*) {
+            .object => |object| {
+                var associations = std.array_list.Managed(languages_associations.ILanguageAssociation).init(self.allocator);
+                defer associations.deinit();
+                var iterator = object.iterator();
+                while (iterator.next()) |entry| {
+                    const language_id = switch (entry.value_ptr.*) {
+                        .string => |text| text,
+                        else => continue,
+                    };
+                    associations.append(.{
+                        .id = language_id,
+                        .mime = "",
+                        .filepattern = entry.key_ptr.*,
+                    }) catch {};
+                }
+                editor.applyFileAssociations(associations.items) catch {};
+            },
+            else => editor.applyFileAssociations(&.{}) catch {},
+        }
+    }
+
+    fn applyConfiguredLanguageAssociationsToAllEditors(self: *Workbench) void {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                self.applyConfiguredLanguageAssociations(tab.editor);
+            }
+        }
     }
 
     /// Drives the settings watcher. Returns true when a settings reload was
@@ -1005,6 +1055,7 @@ pub const Workbench = struct {
             editor.deinit();
             self.allocator.destroy(editor);
         }
+        self.applyConfiguredLanguageAssociations(editor);
         const input = try FileEditorInput.init(self.allocator, editor);
         errdefer input.deinit();
 
@@ -3828,4 +3879,29 @@ fn executeStatusbarKeyCommand(context: *anyopaque, command_id: []const u8) anyer
 fn executeGlobalCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.commands.execute(command_id);
+}
+
+test "Workbench: files.associations change the opened editor language" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var settings_file = try tmp.dir.createFile(io, "settings.json", .{});
+    try settings_file.writeStreamingAll(io, "{\"files.associations\":{\"*.custom\":\"zig\"}}");
+    settings_file.close(io);
+    var settings_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const settings_dir_len = try tmp.dir.realPath(io, &settings_buffer);
+    const settings_path = try std.fs.path.join(allocator, &.{ settings_buffer[0..settings_dir_len], "settings.json" });
+    defer allocator.free(settings_path);
+
+    const path = try seedFile(allocator, io, &tmp, "sample.custom", "body");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 40, 9);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPath(settings_path);
+    try workbench.openPath(path);
+
+    try std.testing.expectEqualStrings("zig", workbench.activeTab().?.editor.languageId());
 }
