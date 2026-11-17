@@ -1540,3 +1540,80 @@ test "latest menu group description applies until disposed" {
     original.dispose();
     try std.testing.expect(title(menu) == null);
 }
+
+test "one-shot menus observe registered title, order and group changes" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.mutations" };
+
+    const dynamic_registration = try registry.appendMenuItemTracked(menu_id, .{
+        .command = .{ .id = "dynamic", .title = "A" },
+        .group = "primary",
+    });
+    defer dynamic_registration.dispose();
+    const fixed_registration = try registry.appendMenuItemTracked(menu_id, .{
+        .command = .{ .id = "fixed", .title = "B" },
+        .group = "primary",
+    });
+    defer fixed_registration.dispose();
+
+    const Snapshot = struct {
+        const Group = struct { id: []const u8, labels: []const []const u8 };
+        fn run(alloc: Allocator, svc: *MenuService, id: MenuId) ![]const Group {
+            var menu_actions = try svc.getMenuActions(alloc, id, context());
+            defer menu_actions.deinit();
+            var result = std.array_list.Managed(Group).init(alloc);
+            for (menu_actions.groups) |group| {
+                var labels = std.array_list.Managed([]const u8).init(alloc);
+                for (group.actions) |action| try labels.append(try alloc.dupe(u8, action.label()));
+                try result.append(.{ .id = try alloc.dupe(u8, group.id), .labels = try labels.toOwnedSlice() });
+            }
+            return result.toOwnedSlice();
+        }
+        fn free(alloc: Allocator, groups: []const Group) void {
+            for (groups) |group| {
+                alloc.free(group.id);
+                for (group.labels) |label| alloc.free(label);
+                alloc.free(group.labels);
+            }
+            alloc.free(groups);
+        }
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    const first = try Snapshot.run(allocator, &service, menu_id);
+    defer Snapshot.free(allocator, first);
+    try std.testing.expectEqual(@as(usize, 1), first.len);
+    try std.testing.expectEqualStrings("A", first[0].labels[0]);
+    try std.testing.expectEqualStrings("B", first[0].labels[1]);
+
+    const dynamic = registry.getMenuItemPtr(menu_id, "dynamic").?;
+    dynamic.command.title = "Z";
+    const second = try Snapshot.run(allocator, &service, menu_id);
+    defer Snapshot.free(allocator, second);
+    try std.testing.expectEqualStrings("B", second[0].labels[0]);
+    try std.testing.expectEqualStrings("Z", second[0].labels[1]);
+
+    dynamic.order = -1;
+    const third = try Snapshot.run(allocator, &service, menu_id);
+    defer Snapshot.free(allocator, third);
+    try std.testing.expectEqualStrings("Z", third[0].labels[0]);
+    try std.testing.expectEqualStrings("B", third[0].labels[1]);
+
+    dynamic.group = "navigation";
+    const fourth = try Snapshot.run(allocator, &service, menu_id);
+    defer Snapshot.free(allocator, fourth);
+    try std.testing.expectEqual(@as(usize, 2), fourth.len);
+    try std.testing.expectEqualStrings("navigation", fourth[0].id);
+    try std.testing.expectEqualStrings("Z", fourth[0].labels[0]);
+    try std.testing.expectEqualStrings("primary", fourth[1].id);
+    try std.testing.expectEqualStrings("B", fourth[1].labels[0]);
+}

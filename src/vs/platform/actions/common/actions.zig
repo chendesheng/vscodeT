@@ -388,6 +388,23 @@ pub const MenuRegistry = struct {
         return .{ .registry = self, .menu = id, .group = group, .group_title = title };
     }
 
+    /// Mutable view of the newest command item for the id (test/authoring seam;
+    /// upstream callers mutate the JS `IMenuItem` object directly).
+    pub fn getMenuItemPtr(self: *MenuRegistry, id: MenuId, command_id: []const u8) ?*IMenuItem {
+        const list = self.menus.getPtr(id.id) orelse return null;
+        var index = list.items.len;
+        while (index > 0) {
+            index -= 1;
+            switch (list.items[index]) {
+                .command => |*item| {
+                    if (std.mem.eql(u8, item.command.id, command_id)) return item;
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
     pub fn getMenuItemsCallCount(self: *MenuRegistry, id: MenuId) usize {
         return self.get_menu_items_calls.get(id.id) orelse 0;
     }
