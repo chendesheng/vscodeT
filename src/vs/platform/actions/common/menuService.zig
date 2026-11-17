@@ -2034,3 +2034,80 @@ test "one-shot menus preserve per-call options, hidden state and forwarded args"
     try std.testing.expectEqual(@as(usize, 1), recorder.calls.items[1].args.len);
     try std.testing.expectEqualStrings("second", recorder.calls.items[1].args[0]);
 }
+
+test "command palette menu includes explicit and implicit items" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+
+    const explicit = try registry.appendMenuItemTracked(actions.menu_ids.CommandPalette, .{
+        .command = .{ .id = "a", .title = "Explicit" },
+    });
+    defer explicit.dispose();
+    const implicit = try registry.addCommandTracked(.{ .id = "b", .title = "Implicit" });
+    defer implicit.dispose();
+
+    var found_a = false;
+    var found_b = false;
+    for (registry.getMenuItems(actions.menu_ids.CommandPalette)) |entry| {
+        if (!is_command_entry(entry)) continue;
+        const command = entry.command.command;
+        if (std.mem.eql(u8, command.id, "a")) {
+            try std.testing.expectEqualStrings("Explicit", command.title);
+            found_a = true;
+        }
+        if (std.mem.eql(u8, command.id, "b")) {
+            try std.testing.expectEqualStrings("Implicit", command.title);
+            found_b = true;
+        }
+    }
+    try std.testing.expect(found_a);
+    try std.testing.expect(found_b);
+}
+
+fn is_command_entry(entry: MenuEntry) bool {
+    return entry == .command;
+}
+
+test "live menus emit changes for nested submenu registrations" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const parent = MenuId{ .id = "test.nested.events.parent" };
+    const child = MenuId{ .id = "test.nested.events.child" };
+    const parent_registration = try registry.appendSubmenuItemTracked(parent, .{ .title = "Submenu", .submenu = child });
+    defer parent_registration.dispose();
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var menu = try service.createMenu(allocator, parent, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+    try std.testing.expectEqual(@as(usize, 0), menu.getActions().len);
+
+    var changes: usize = 0;
+    const Listener = struct {
+        fn onChange(_: void, counter: *usize) anyerror!void {
+            counter.* += 1;
+        }
+    };
+    _ = try menu.onDidChange.listen(&changes, Listener.onChange);
+
+    const nested = try registry.appendMenuItemTracked(child, .{ .command = .{ .id = "nested", .title = "Nested" } });
+    defer nested.dispose();
+    try std.testing.expectEqual(@as(usize, 1), changes);
+    try std.testing.expectEqual(@as(usize, 1), menu.getActions().len);
+    const submenu: *SubmenuItemAction = @ptrCast(@alignCast(menu.getActions()[0].actions[0].context));
+    try std.testing.expectEqualStrings("nested", submenu.actions[0].id());
+}
