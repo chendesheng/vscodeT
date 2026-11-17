@@ -353,7 +353,8 @@ pub const ColorThemeData = struct {
                 var style: ?TokenStyle = null;
                 if (rule.defaults.scopes_to_probe) |probes| {
                     for (probes) |probe| {
-                        if (try self.resolveScopes(probe)) |resolved| {
+                        const path = [_][]const u8{probe};
+                        if (try self.resolveScopes(&.{&path})) |resolved| {
                             style = resolved;
                             break;
                         }
@@ -373,31 +374,34 @@ pub const ColorThemeData = struct {
         return result;
     }
 
-    fn resolveScopes(self: *ColorThemeData, probe: []const u8) !?TokenStyle {
-        const path = [_][]const u8{probe};
-        var foreground: ?[]const u8 = null;
-        var font_style: ?[]const u8 = null;
-        var foreground_score: i32 = -1;
-        var font_style_score: i32 = -1;
-        for ([_][]const TokenColor{ self.theme_token_colors, self.custom_token_colors }) |rules| {
-            for (rules) |rule| {
-                const scopes = rule.scope orelse continue;
-                for (scopes) |scope| {
-                    const score = try scope_matcher.matchesSelector(self.allocator, scope, &path, self, scopeNameMatcher);
-                    if (score < 0) continue;
-                    if (score >= foreground_score and rule.settings.foreground != null) {
-                        foreground = rule.settings.foreground;
-                        foreground_score = score;
-                    }
-                    if (score >= font_style_score and rule.settings.font_style != null) {
-                        font_style = rule.settings.font_style;
-                        font_style_score = score;
+    pub fn resolveScopes(self: *ColorThemeData, probes: []const scope_matcher.ProbeScope) !?TokenStyle {
+        for (probes) |path| {
+            var foreground: ?[]const u8 = null;
+            var font_style: ?[]const u8 = null;
+            var foreground_score: i32 = -1;
+            var font_style_score: i32 = -1;
+            for ([_][]const TokenColor{ self.theme_token_colors, self.custom_token_colors }) |rules| {
+                for (rules) |rule| {
+                    const scopes = rule.scope orelse continue;
+                    for (scopes) |scope| {
+                        const score = try scope_matcher.matchesSelector(self.allocator, scope, path, self, scopeNameMatcher);
+                        if (score < 0) continue;
+                        if (score >= foreground_score and rule.settings.foreground != null) {
+                            foreground = rule.settings.foreground;
+                            foreground_score = score;
+                        }
+                        if (score >= font_style_score and rule.settings.font_style != null) {
+                            font_style = rule.settings.font_style;
+                            font_style_score = score;
+                        }
                     }
                 }
             }
+            if (foreground != null or font_style != null) {
+                return TokenStyle.fromSettings(foreground, font_style, null, null, null, null);
+            }
         }
-        if (foreground == null and font_style == null) return null;
-        return TokenStyle.fromSettings(foreground, font_style, null, null, null, null);
+        return null;
     }
 
     pub fn getTokenColors(self: *const ColorThemeData) []const TokenColor {

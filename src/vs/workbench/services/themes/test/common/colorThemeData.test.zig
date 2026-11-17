@@ -6,6 +6,7 @@ const Color = @import("../../../../../base/common/color.zig").Color;
 const color_utils = @import("../../../../../platform/theme/common/colorUtils.zig");
 const storage_mod = @import("../../../../../platform/storage/common/storage.zig");
 const ColorThemeData = @import("../../common/colorThemeData.zig").ColorThemeData;
+const TokenStyle = @import("../../../../../platform/theme/common/tokenClassificationRegistry.zig").TokenStyle;
 
 const foreground = "foreground";
 const editor_background = "editor.background";
@@ -252,4 +253,51 @@ test "ColorThemeData: semantic token rules merge by score" {
     const class_static = theme.getTokenStyleMetadata("class", &.{"static"}, "typescript").?;
     try std.testing.expectEqual(@as(?bool, true), class_static.italic);
     try std.testing.expectEqual(@as(?bool, true), class_static.bold);
+}
+
+fn assertResolvedStyle(theme: *ColorThemeData, probe: []const []const u8, expected_hex: ?[]const u8, expected_font: ?[]const u8) !void {
+    const style = try theme.resolveScopes(&.{probe});
+    if (expected_hex == null and expected_font == null) {
+        try std.testing.expect(style == null);
+        return;
+    }
+    const resolved = style orelse return error.TestUnexpectedResult;
+    if (expected_hex) |hex| {
+        const expected = try Color.fromHex(hex);
+        const actual = resolved.foreground orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(expected.r, actual.r);
+        try std.testing.expectEqual(expected.g, actual.g);
+        try std.testing.expectEqual(expected.b, actual.b);
+    } else try std.testing.expect(resolved.foreground == null);
+    if (expected_font) |font| {
+        const expected = TokenStyle.fromSettings(null, font, null, null, null, null);
+        try std.testing.expectEqual(expected.bold, resolved.bold);
+        try std.testing.expectEqual(expected.italic, resolved.italic);
+        try std.testing.expectEqual(expected.underline, resolved.underline);
+    }
+}
+
+test "ColorThemeData: resolveScopes matches rule scopes and specificity" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+    const theme = try ColorThemeData.createLoadedEmptyTheme(allocator, &fixture.registry, "test-dark");
+    defer theme.deinit();
+    try theme.setCustomTokenColors(&.{
+        .{ .scope = &.{"variable"}, .settings = .{ .foreground = "#F8F8F2", .font_style = "" } },
+        .{ .scope = &.{"keyword.operator"}, .settings = .{ .foreground = "#F92672", .font_style = "italic bold underline" } },
+        .{ .scope = &.{"storage"}, .settings = .{ .foreground = "#F92672", .font_style = "italic" } },
+        .{ .scope = &.{ "storage.type", "meta.structure.dictionary.json string.quoted.double.json" }, .settings = .{ .foreground = "#66D9EF" } },
+        .{ .scope = &.{"entity.name.type"}, .settings = .{ .foreground = "#A6E22E", .font_style = "underline" } },
+        .{ .scope = &.{"entity.name.type.class"}, .settings = .{ .foreground = "#FF00FF" } },
+        .{ .scope = &.{"entity.name"}, .settings = .{ .foreground = "#FFFFFF" } },
+    });
+
+    try assertResolvedStyle(theme, &.{"variable"}, "#F8F8F2", "");
+    try assertResolvedStyle(theme, &.{"keyword.operator"}, "#F92672", "italic bold underline");
+    try assertResolvedStyle(theme, &.{"keyword"}, null, null);
+    try assertResolvedStyle(theme, &.{"keyword.operators"}, null, null);
+    try assertResolvedStyle(theme, &.{"storage.type"}, "#66D9EF", "italic");
+    try assertResolvedStyle(theme, &.{ "meta.structure.dictionary.json", "string.quoted.double.json" }, "#66D9EF", null);
+    try assertResolvedStyle(theme, &.{"entity.name.type.class"}, "#FF00FF", "underline");
 }
