@@ -449,6 +449,37 @@ pub const ConfigurationRegistry = struct {
             }
         }
         for (removed_agents.items) |key| _ = self.agent_host_configurations.remove(key);
+        // Policy owner entries and reference keys point at this node's settings.
+        var removed_policies = std.array_list.Managed([]const u8).init(self.allocator);
+        defer removed_policies.deinit();
+        var owners = self.policy_configurations.iterator();
+        while (owners.next()) |entry| {
+            for (keys.items) |key| {
+                if (std.mem.eql(u8, entry.value_ptr.*, key)) removed_policies.append(entry.key_ptr.*) catch break;
+            }
+        }
+        for (removed_policies.items) |policy| {
+            _ = self.policy_configurations.remove(policy);
+            _ = self.policies.remove(policy);
+        }
+        var references = self.policy_reference_configurations.iterator();
+        while (references.next()) |entry| {
+            var index: usize = 0;
+            while (index < entry.value_ptr.items.len) {
+                var remove = false;
+                for (keys.items) |key| {
+                    if (std.mem.eql(u8, entry.value_ptr.items[index], key)) {
+                        remove = true;
+                        break;
+                    }
+                }
+                if (remove) {
+                    _ = entry.value_ptr.orderedRemove(index);
+                } else {
+                    index += 1;
+                }
+            }
+        }
         _ = self.nodes.remove(id);
         self.on_did_update_configuration.fire(keys.items) catch {};
     }

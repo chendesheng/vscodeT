@@ -428,3 +428,27 @@ test "discarding a registry snapshot frees its state" {
     var snapshot = try registry.record(allocator);
     snapshot.deinit();
 }
+
+test "deregistering a node clears owner policies and reference keys" {
+    const allocator = std.testing.allocator;
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("owner", &.{.{
+        .key = "policy.owner",
+        .value_type = "boolean",
+        .default = std.json.Value{ .bool = true },
+        .policy = "SharedPolicy",
+    }});
+    try registry.registerConfiguration("reference", &.{.{
+        .key = "policy.reference",
+        .value_type = "boolean",
+        .default = std.json.Value{ .bool = true },
+        .policy_reference = "SharedPolicy",
+    }});
+    try std.testing.expect(registry.getPolicyConfigurations().get("SharedPolicy") != null);
+    registry.deregisterConfigurations("owner");
+    try std.testing.expect(registry.getPolicyConfigurations().get("SharedPolicy") == null);
+    const references = registry.getPolicyReferenceConfigurations().get("SharedPolicy").?;
+    try std.testing.expectEqual(@as(usize, 1), references.items.len);
+    try std.testing.expectEqualStrings("policy.reference", references.items[0]);
+}
