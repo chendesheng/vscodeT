@@ -394,6 +394,7 @@ comptime {
     _ = @import("./vs/base/test/common/linkedText.test.zig");
     _ = @import("./vs/base/common/iconLabels.zig");
     _ = @import("./vs/platform/notification/common/notificationMessage.zig");
+    _ = @import("./vs/platform/notification/common/notification.zig");
     _ = @import("./vs/platform/notification/test/common/notificationMessage.test.zig");
     _ = @import("./vs/base/common/actions.zig");
     _ = @import("./vs/platform/action/common/action.zig");
