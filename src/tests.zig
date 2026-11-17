@@ -382,6 +382,7 @@ comptime {
     _ = @import("./vs/editor/contrib/inPlaceReplace/test/browser/inPlaceReplace.test.zig");
     _ = @import("./vs/workbench/test/browser/parts/editor/editorGroupModel.test.zig");
     _ = @import("./vs/base/common/filters.zig");
+    _ = @import("./vs/base/test/common/filters.test.zig");
     _ = @import("./vs/platform/commands/common/commands.zig");
     _ = @import("./vs/platform/storage/common/storage.zig");
     _ = @import("./vs/workbench/common/memento.zig");

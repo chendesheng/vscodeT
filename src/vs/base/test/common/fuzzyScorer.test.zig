@@ -784,3 +784,14 @@ test "scoreItem - cache separates scoring inputs and preserves results" {
     try std.testing.expectEqual(@as(i64, 0), no_match.score);
     try std.testing.expectEqual(@as(usize, 3), cache.count());
 }
+
+test "scoreItem - upper case bonus only applies on non-consecutive matches (bug #134723)" {
+    const allocator = std.testing.allocator;
+    var lower_item = fixture("asdfasdfasdf");
+    var upper_item = fixture("ASDFasdfasdf");
+    const lower_score = try itemScore(allocator, &lower_item, "asdf");
+    defer lower_score.deinit(allocator);
+    const upper_score = try itemScore(allocator, &upper_item, "asdf");
+    defer upper_score.deinit(allocator);
+    try std.testing.expect(lower_score.score > upper_score.score);
+}

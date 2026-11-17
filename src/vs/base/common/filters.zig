@@ -242,3 +242,336 @@ test "filters: word-start matching" {
     try std.testing.expect(try matchesWords(allocator, "save file", "File: Save") == null);
     try std.testing.expect(try matchesWords(allocator, "zz", "File: Save") == null);
 }
+
+//#region Dynamic-programming fuzzy scorer (upstream `fuzzyScore`)
+
+pub const FuzzyScoreOptions = struct {
+    first_match_can_be_weak: bool = false,
+    boost_full_match: bool = true,
+};
+
+pub const FuzzyScoreValue = struct {
+    score: i32,
+    word_start: usize,
+    /// Matched character columns relative to `word_start`, in the order
+    /// produced by the upstream backtrack (createMatches walks them reversed).
+    matches: []usize,
+
+    pub fn deinit(self: FuzzyScoreValue, allocator: std.mem.Allocator) void {
+        allocator.free(self.matches);
+    }
+};
+
+const MAX_SCORER_LEN = 128;
+const MIN_SAFE_INTEGER: i32 = -1000000;
+const ARROW_DIAG: u8 = 1;
+const ARROW_LEFT: u8 = 2;
+const ARROW_LEFT_LEFT: u8 = 3;
+
+fn isUpperCode(code: u8) bool {
+    return code >= 'A' and code <= 'Z';
+}
+
+fn isWhitespaceAtPos(value: []const u8, index: isize) bool {
+    if (index < 0 or index >= @as(isize, @intCast(value.len))) return false;
+    const code = value[@intCast(index)];
+    return code == ' ' or code == '\t';
+}
+
+fn isSeparatorAtPos(value: []const u8, index: isize) bool {
+    if (index < 0 or index >= @as(isize, @intCast(value.len))) return false;
+    return switch (value[@intCast(index)]) {
+        '_', '-', '.', ' ', '/', '\\', '\'', '"', ':', '$', '<', '>', '(', ')', '[', ']', '{', '}' => true,
+        else => false,
+    };
+}
+
+fn isUpperCaseAtPos(pos: usize, word: []const u8, word_low: []const u8) bool {
+    return word[pos] != word_low[pos];
+}
+
+pub const FuzzyScorer = struct {
+    allocator: std.mem.Allocator,
+    table: []i32,
+    diag: []i32,
+    arrows: []u8,
+    min_word_match_pos: [MAX_SCORER_LEN]usize = undefined,
+    max_word_match_pos: [MAX_SCORER_LEN]usize = undefined,
+
+    pub fn init(allocator: std.mem.Allocator) !FuzzyScorer {
+        const cells = (MAX_SCORER_LEN + 1) * (MAX_SCORER_LEN + 1);
+        const table = try allocator.alloc(i32, cells);
+        errdefer allocator.free(table);
+        const diag = try allocator.alloc(i32, cells);
+        errdefer allocator.free(diag);
+        return .{
+            .allocator = allocator,
+            .table = table,
+            .diag = diag,
+            .arrows = try allocator.alloc(u8, cells),
+        };
+    }
+
+    pub fn deinit(self: *FuzzyScorer) void {
+        self.allocator.free(self.table);
+        self.allocator.free(self.diag);
+        self.allocator.free(self.arrows);
+    }
+
+    fn tableAt(self: *FuzzyScorer, row: usize, column: usize) *i32 {
+        return &self.table[row * (MAX_SCORER_LEN + 1) + column];
+    }
+
+    fn diagAt(self: *FuzzyScorer, row: usize, column: usize) *i32 {
+        return &self.diag[row * (MAX_SCORER_LEN + 1) + column];
+    }
+
+    fn arrowAt(self: *FuzzyScorer, row: usize, column: usize) *u8 {
+        return &self.arrows[row * (MAX_SCORER_LEN + 1) + column];
+    }
+
+    fn isPatternInWord(pattern_low: []const u8, pattern_pos: usize, pattern_len: usize, word_low: []const u8, word_pos: usize, word_len: usize, fill_min: bool, min_pos: *[MAX_SCORER_LEN]usize) bool {
+        var pp = pattern_pos;
+        var wp = word_pos;
+        while (pp < pattern_len and wp < word_len) {
+            if (pattern_low[pp] == word_low[wp]) {
+                if (fill_min) min_pos[pp] = wp;
+                pp += 1;
+            }
+            wp += 1;
+        }
+        return pp == pattern_len;
+    }
+
+    fn fillInMaxWordMatchPos(self: *FuzzyScorer, pattern_len: usize, word_len: usize, pattern_start: usize, word_start: usize, pattern_low: []const u8, word_low: []const u8, max_pos: *[MAX_SCORER_LEN]usize) void {
+        _ = self;
+        var pattern_pos: isize = @as(isize, @intCast(pattern_len)) - 1;
+        var word_pos: isize = @as(isize, @intCast(word_len)) - 1;
+        while (pattern_pos >= @as(isize, @intCast(pattern_start)) and word_pos >= @as(isize, @intCast(word_start))) : (word_pos -= 1) {
+            if (pattern_low[@intCast(pattern_pos)] == word_low[@intCast(word_pos)]) {
+                max_pos[@intCast(pattern_pos)] = @intCast(word_pos);
+                pattern_pos -= 1;
+            }
+        }
+    }
+
+    fn doScore(
+        pattern: []const u8,
+        pattern_low: []const u8,
+        pattern_pos: usize,
+        pattern_start: usize,
+        word: []const u8,
+        word_low: []const u8,
+        word_pos: usize,
+        word_len: usize,
+        word_start: usize,
+        new_match_start: bool,
+        out_first_match_strong: *bool,
+    ) i32 {
+        if (pattern_low[pattern_pos] != word_low[word_pos]) return MIN_SAFE_INTEGER;
+
+        var char_score: i32 = 1;
+        var is_gap_location = false;
+        if (word_pos == pattern_pos - pattern_start) {
+            char_score = if (pattern[pattern_pos] == word[word_pos]) 7 else 5;
+        } else if (isUpperCaseAtPos(word_pos, word, word_low) and (word_pos == 0 or !isUpperCaseAtPos(word_pos - 1, word, word_low))) {
+            char_score = if (pattern[pattern_pos] == word[word_pos]) 7 else 5;
+            is_gap_location = true;
+        } else if (isSeparatorAtPos(word_low, @intCast(word_pos)) and (word_pos == 0 or !isSeparatorAtPos(word_low, @as(isize, @intCast(word_pos)) - 1))) {
+            char_score = 5;
+        } else if (isSeparatorAtPos(word_low, @as(isize, @intCast(word_pos)) - 1) or isWhitespaceAtPos(word_low, @as(isize, @intCast(word_pos)) - 1)) {
+            char_score = 5;
+            is_gap_location = true;
+        }
+
+        if (char_score > 1 and pattern_pos == pattern_start) out_first_match_strong.* = true;
+
+        if (!is_gap_location) {
+            is_gap_location = isUpperCaseAtPos(word_pos, word, word_low) or
+                isSeparatorAtPos(word_low, @as(isize, @intCast(word_pos)) - 1) or
+                isWhitespaceAtPos(word_low, @as(isize, @intCast(word_pos)) - 1);
+        }
+
+        if (pattern_pos == pattern_start) {
+            if (word_pos > word_start) {
+                char_score -= if (is_gap_location) 3 else 5;
+            }
+        } else {
+            if (new_match_start) {
+                char_score += if (is_gap_location) 2 else 0;
+            } else {
+                char_score += if (is_gap_location) 0 else 1;
+            }
+        }
+
+        if (word_pos + 1 == word_len) {
+            char_score -= if (is_gap_location) 3 else 5;
+        }
+
+        return char_score;
+    }
+
+    /// Port of upstream `fuzzyScore`. Returns null when there is no score.
+    pub fn score(
+        self: *FuzzyScorer,
+        pattern: []const u8,
+        pattern_low: []const u8,
+        pattern_start: usize,
+        word: []const u8,
+        word_low: []const u8,
+        word_start: usize,
+        options: FuzzyScoreOptions,
+    ) !?FuzzyScoreValue {
+        const pattern_len = @min(pattern.len, MAX_SCORER_LEN);
+        const word_len = @min(word.len, MAX_SCORER_LEN);
+        if (pattern_start >= pattern_len or word_start >= word_len or (pattern_len - pattern_start) > (word_len - word_start)) return null;
+
+        if (!isPatternInWord(pattern_low, pattern_start, pattern_len, word_low, word_start, word_len, true, &self.min_word_match_pos)) return null;
+        self.fillInMaxWordMatchPos(pattern_len, word_len, pattern_start, word_start, pattern_low, word_low, &self.max_word_match_pos);
+
+        @memset(self.table, 0);
+        @memset(self.diag, 0);
+        @memset(self.arrows, 0);
+
+        var row: usize = 1;
+        var column: usize = 1;
+        var has_strong_first_match = false;
+
+        var pattern_pos = pattern_start;
+        while (pattern_pos < pattern_len) : ({
+            pattern_pos += 1;
+            row += 1;
+        }) {
+            const min_word_match_pos = self.min_word_match_pos[pattern_pos];
+            const max_word_match_pos = self.max_word_match_pos[pattern_pos];
+            const next_max_word_match_pos = if (pattern_pos + 1 < pattern_len) self.max_word_match_pos[pattern_pos + 1] else word_len;
+
+            column = min_word_match_pos - word_start + 1;
+            var word_pos = min_word_match_pos;
+            while (word_pos < next_max_word_match_pos) : ({
+                column += 1;
+                word_pos += 1;
+            }) {
+                var score_value: i32 = MIN_SAFE_INTEGER;
+                var can_come_diag = false;
+
+                if (word_pos <= max_word_match_pos) {
+                    score_value = doScore(
+                        pattern,
+                        pattern_low,
+                        pattern_pos,
+                        pattern_start,
+                        word,
+                        word_low,
+                        word_pos,
+                        word_len,
+                        word_start,
+                        self.diagAt(row - 1, column - 1).* == 0,
+                        &has_strong_first_match,
+                    );
+                }
+
+                var diag_score: i32 = 0;
+                if (score_value != MIN_SAFE_INTEGER) {
+                    can_come_diag = true;
+                    diag_score = score_value + self.tableAt(row - 1, column - 1).*;
+                }
+
+                const can_come_left = word_pos > min_word_match_pos;
+                const left_score: i32 = if (can_come_left)
+                    self.tableAt(row, column - 1).* + (if (self.diagAt(row, column - 1).* > 0) @as(i32, -5) else 0)
+                else
+                    0;
+
+                const can_come_left_left = word_pos > min_word_match_pos + 1 and self.diagAt(row, column - 1).* > 0;
+                const left_left_score: i32 = if (can_come_left_left)
+                    self.tableAt(row, column - 2).* + (if (self.diagAt(row, column - 2).* > 0) @as(i32, -5) else 0)
+                else
+                    0;
+
+                if (can_come_left_left and (!can_come_left or left_left_score >= left_score) and (!can_come_diag or left_left_score >= diag_score)) {
+                    self.tableAt(row, column).* = left_left_score;
+                    self.arrowAt(row, column).* = ARROW_LEFT_LEFT;
+                    self.diagAt(row, column).* = 0;
+                } else if (can_come_left and (!can_come_diag or left_score >= diag_score)) {
+                    self.tableAt(row, column).* = left_score;
+                    self.arrowAt(row, column).* = ARROW_LEFT;
+                    self.diagAt(row, column).* = 0;
+                } else if (can_come_diag) {
+                    self.tableAt(row, column).* = diag_score;
+                    self.arrowAt(row, column).* = ARROW_DIAG;
+                    self.diagAt(row, column).* = self.diagAt(row - 1, column - 1).* + 1;
+                } else {
+                    return error.InternalScorerError;
+                }
+            }
+        }
+
+        if (!has_strong_first_match and !options.first_match_can_be_weak) return null;
+
+        row -= 1;
+        column -= 1;
+
+        const final_score = self.tableAt(row, column).*;
+        var matches = std.array_list.Managed(usize).init(self.allocator);
+        errdefer matches.deinit();
+        var backwards_diag_length: i32 = 0;
+        var max_match_column: usize = 0;
+
+        while (row >= 1) {
+            var diag_column = column;
+            while (diag_column >= 1) {
+                const arrow = self.arrowAt(row, diag_column).*;
+                if (arrow == ARROW_LEFT_LEFT) {
+                    if (diag_column < 2) break;
+                    diag_column -= 2;
+                } else if (arrow == ARROW_LEFT) {
+                    diag_column -= 1;
+                } else break;
+            }
+
+            if (backwards_diag_length > 1 and
+                pattern_low[pattern_start + row - 1] == word_low[word_start + column - 1] and
+                !isUpperCaseAtPos(diag_column + word_start - 1, word, word_low) and
+                backwards_diag_length + 1 > self.diagAt(row, diag_column).*)
+            {
+                diag_column = column;
+            }
+
+            if (diag_column == column) {
+                backwards_diag_length += 1;
+            } else {
+                backwards_diag_length = 1;
+            }
+
+            if (max_match_column == 0) max_match_column = diag_column;
+
+            row -= 1;
+            column = diag_column - 1;
+            try matches.append(column);
+        }
+
+        var score_final = final_score;
+        if (word_len - word_start == pattern_len and options.boost_full_match) score_final += 2;
+        score_final -= @intCast(max_match_column - pattern_len);
+
+        return .{ .score = score_final, .word_start = word_start, .matches = try matches.toOwnedSlice() };
+    }
+};
+
+/// Port of upstream `createMatches`: converts the backtracked columns into
+/// ascending single-character ranges.
+pub fn createScorerMatches(allocator: std.mem.Allocator, value: FuzzyScoreValue) ![]Match {
+    var result = std.array_list.Managed(Match).init(allocator);
+    defer result.deinit();
+    var index = value.matches.len;
+    while (index > 0) : (index -= 1) {
+        const pos = value.matches[index - 1] + value.word_start;
+        if (result.items.len > 0 and result.items[result.items.len - 1].end == pos) {
+            result.items[result.items.len - 1].end = pos + 1;
+        } else {
+            try result.append(.{ .start = pos, .end = pos + 1 });
+        }
+    }
+    return result.toOwnedSlice();
+}
