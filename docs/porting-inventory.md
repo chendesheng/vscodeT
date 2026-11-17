@@ -1,13 +1,13 @@
 # TUI porting inventory
 
-Status: P1 and P2 implemented; P3-P5 remain. The file table is the
-pre-P1/P2 audit snapshot.
+Status: P1, P2 and the Search view/result-list port are implemented; P3-P5
+remain. The file table (§7) and the UI/view code map (§7.1) are current at the
+snapshot HEAD.
 
-- Local snapshot: `src/tui/` at HEAD `5559512`, plus the in-progress
-  `editorPart`/`editorGroupView`/`editorPanes` extraction in the working tree.
+- Local snapshot: `src/tui/` at HEAD `413fa55` (28 files, 18,878 lines).
 - Upstream: VS Code **1.147.0**, `../vscode` at commit `e31c2e52`.
 - Date: 2026-11-16.
-- Scope: the existing 29 files in `src/tui/`. This is not a feature wishlist;
+- Scope: the existing 28 files in `src/tui/`. This is not a feature wishlist;
   it answers which terminal-side code is actually portable VS Code logic,
   where that logic belongs, and in what order it can be moved.
 
@@ -40,7 +40,9 @@ P1 and P2 are implemented.
   `statusbarModel.zig`, `statusbarItem.zig`, `statusbarPart.zig`,
   `statusbarActions.zig` and the statusbar service contract under the upstream
   paths. The workbench status bar is now a full-width flex `ui` surface with
-  entry focus, hover/tooltips and command activation.
+  entry focus, hover/tooltips and command activation; it owns hit testing and
+  entry actions, and `src/tui/workbench.zig` paints it on the bottom row and
+  disables the per-pane fallback status row.
 - `src/tui/activityBar.zig` is now the terminal view over the activity model.
 - `src/tui/workbench.zig` uses the activity model, sidebar model, layout model
   and status-bar model/part for its shell state.
@@ -49,9 +51,14 @@ P1 and P2 are implemented.
   rail's rightmost cell.
 - Ported model tests are registered in `src/tests.zig`.
 
-The table in §7 is the pre-P1/P2 snapshot, so its `sidebar.zig` row and its
-`activityBar.zig`/`workbench.zig` descriptions record the old boundary. P3-P5
-below are still pending.
+**Search view (post-P2):**
+- `f10e1a6` ported the Search view controller, data source, comparers,
+  renderers and action helpers under
+  `src/vs/workbench/contrib/search/browser/`; `src/tui/searchView.zig` is the
+  terminal adapter over them.
+
+§7 and the new §7.1 are current at the snapshot HEAD. P3-P5 below are still
+pending.
 
 ## 1. Purpose
 
@@ -125,41 +132,41 @@ over a larger port that needs missing services.
 ## 4. Headline findings
 
 1. **The largest unported portable block is the editor browser stack.**
-   `src/tui/editor.zig` (2,639 lines) and `src/tui/view.zig` (3,295 lines)
-   together hold 5,934 lines. `editor.zig` is currently model + editor widget
-   + cursor controller + command host + editor configuration. `view.zig`
-   collapses `view`, `viewLayer`, `viewOverlays`, `viewPart` and most
-   `viewParts` into one file. The substrate they need is already ported
-   (§6), so the remaining work is structural, not a model rewrite.
+   `src/tui/editor.zig` (2,654 lines) and `src/tui/view.zig` (3,346 lines)
+   together hold 6,000 lines (3,789 excluding inline tests). `editor.zig` is
+   currently model + editor widget + cursor controller + command host + editor
+   configuration. `view.zig` collapses `view`, `viewLayer`, `viewOverlays`,
+   `viewPart` and most `viewParts` into one file. The substrate they need is
+   already ported (§6), so the remaining work is structural, not a model
+   rewrite.
 2. **Key dispatch is a hand-written table, not a keybinding service.**
-   `app.zig:430-490` and `app.zig:678-825` route terminal keys directly to
-   `Editor` methods; `workbench.zig:967-1037` and `1213-1284` add tab, group
-   and sidebar maps; `searchView.zig:609-750`, `quickAccess.zig:162-193` and
-   `explorerTreeSidebar.zig:231-259` add view-specific maps. Roughly 600 lines
+   `app.zig:444-495` and `app.zig:692-841` route terminal keys directly to
+   `Editor` methods; `workbench.zig:1137-1207` (tabs/groups),
+   `1385-1485` (status bar) and `1492-1564` (sidebar/activity) add workbench
+   maps; `searchView.zig:604-772`, `quickAccess.zig:162-193` and
+   `explorerTreeSidebar.zig:236-258` add view-specific maps. About 700 lines
    of routing have no registry, resolver, context keys or command metadata.
    `src/vs/editor/browser/editorExtensions.zig` already defines action and
    keybinding metadata, but nothing consumes it.
-3. **The Explorer contains about 700 lines of dead duplicate view code.**
-   `sidebar.zig:253-948` defines a legacy direct-painted `Sidebar` that the
-   workbench no longer uses; `explorerTreeSidebar.zig` is the live tree view.
-   Only `FilesFilter` (`sidebar.zig:52-245`) and `Action` are still consumed.
-   `FilesFilter` belongs in
-   `workbench/contrib/files/browser/views/explorerViewer.ts`, and the
-   documented missing exclusion behavior has an upstream implementation and
-   test.
-4. **The workbench shell is still mostly TUI-local.** After the recent
-   `grid`, `editorDropTarget`, `editorPart`, `editorGroupView` and
-   `editorPanes` extraction, `workbench.zig` still owns part layout
-   (`layoutAll`, `sidebarRect`, `activityRect`), activity-container switching,
-   sidebar visibility, status-row placement and rendering. The upstream
-   counterparts are `workbench/browser/layout.ts` and the part implementations
-   under `workbench/browser/parts/`.
+3. **The Search view still owns a flattened results model.**
+   `searchView.zig` is 1,329 lines with no inline tests. The portable
+   controller, data source, renderers, comparers and action helpers are ported,
+   but the adapter keeps its own collapse/selection/scroll state and row
+   painting (`rebuildRows` 427, `applyDefaultCollapse` 457, `moveToNextMatch`
+   551, `renderRow` 950) instead of using the ported
+   `ObjectTree`/`CompressibleObjectTree` the Explorer already renders through.
+4. **The workbench shell is mostly ported; the actions above it are not.**
+   The status bar, activity bar, sidebar and layout models/parts are ported and
+   wired. `workbench.zig` still owns the terminal composition, tab/group action
+   orchestration (`openPath` 981, `splitActive` 1075, `closeActive` 1096) and
+   input routing. Those are the workbench action/keybinding layer (P3), not new
+   shell state.
 5. **Theme, storage, language and file/editor-input services are TUI
-   stand-ins.** About 70 hard-coded color/style constants live across
-   `view.zig`, `tabBar.zig`, `activityBar.zig`, `sidebar.zig`,
-   `searchView.zig`, `searchWidget.zig` and `quickInput.zig`; `theme.zig` only
-   maps token color ids. `session.zig` invents a JSON session format instead
-   of using `platform/storage` + `workbench/common/memento.ts`.
+   stand-ins.** 56 hard-coded color/style constants live across `view.zig`
+   (29), `searchView.zig` (11), `searchWidget.zig`/`quickInput.zig` (5 each),
+   `preview.zig` (3), `workbench.zig` (2) and `syntaxTheme.zig` (1);
+   `theme.zig` only maps token color ids. `session.zig` invents a JSON session
+   format instead of using `platform/storage` + `workbench/common/memento.ts`.
    `language.zig` hard-codes an extension map instead of the workbench
    language service, and `editorInput.zig` owns the `Editor` instead of a text
    file working copy/editor service.
@@ -174,15 +181,15 @@ over a larger port that needs missing services.
 
 | Category | Files | Lines | Contents |
 | --- | ---: | ---: | --- |
-| Editor core | 4 | 6,714 | `editor.zig`, `view.zig`, `tab.zig`, `preview.zig` |
-| Workbench shell and commands | 5 | 4,894 | `app.zig`, `workbench.zig`, `activityBar.zig`, `tabBar.zig`, `commands.zig` |
-| Views and pickers | 7 | 4,573 | Explorer, search, quick open, quick input, file index |
+| Editor core | 4 | 6,780 | `editor.zig`, `view.zig`, `tab.zig`, `preview.zig` |
+| Workbench shell and commands | 5 | 5,690 | `app.zig`, `workbench.zig`, `activityBar.zig`, `tabBar.zig`, `commands.zig` |
+| Views and pickers | 6 | 3,995 | Explorer, search, quick open, quick input, file index |
 | Services, theme and language | 9 | 1,494 | Session, editor input, settings, theme, language, logger, hover |
 | Terminal host | 4 | 919 | Raw mode, ANSI, cell-border probe, UTF-8 helpers |
-| **Total** | **29** | **18,594** | 164 inline tests |
+| **Total** | **28** | **18,878** | 160 inline tests |
 
-The numbers are current `wc -l` values and include tests. The editor core and
-the shell are 62% of the terminal tree.
+The numbers are current `wc -l` values and include tests (13,318 non-test
+lines). The editor core and the shell are 66% of the terminal tree.
 
 ## 6. Already-ported substrate
 
@@ -197,7 +204,8 @@ that make the later phases tractable.
 | Cursors and edit operations | `vs/editor/common/cursor/...`, `cursorCommon.zig`, `cursorMoveCommands.zig`, `cursorTypeOperations.zig`, `cursorCollection.zig` | Ported; exercised through `editor.zig` |
 | Editor contributions | Find, hover, suggest, bracket matching, word highlighter, smart select, in-place replace, comment, indentation, multicursor, line selection, line operations, snippet, insert-final-newline, word operations | Ported under `vs/editor/contrib/...` |
 | Workbench editor group | `vs/workbench/common/editor/editorGroupModel.zig`, `vs/workbench/services/editor/common/editorGroupsService.zig` | Ported |
-| Editor part shell | `vs/base/browser/ui/grid/grid.zig`, `vs/workbench/browser/parts/editor/editorPart.zig`, `editorGroupView.zig`, `editorPanes.zig`, `editorDropTarget.zig` | Ported/being extracted in this working tree |
+| Editor part shell | `vs/base/browser/ui/grid/grid.zig`, `vs/workbench/browser/parts/editor/editorPart.zig`, `editorGroupView.zig`, `editorPanes.zig`, `editorDropTarget.zig` | Ported and wired into `workbench.zig` |
+| Status bar | `vs/workbench/browser/parts/statusbar/` (`statusbarModel.zig`, `statusbarItem.zig`, `statusbarPart.zig`, `statusbarActions.zig`), `vs/workbench/services/statusbar/browser/statusbar.zig` | Ported; terminal part renders one flex row, workbench paints it full-width |
 | Lists and trees | `vs/base/browser/ui/list/...`, `vs/base/browser/ui/tree/...` | Ported; Explorer renders through `CompressibleObjectTree` |
 | Search | `vs/workbench/services/search/common/searchService.zig`, `search.zig`, `replace.zig`, `ignoreFile.zig`, `vs/workbench/contrib/search/browser/searchTreeModel/...` | Ported; wired to the TUI view |
 | Configuration and files | `vs/workbench/services/configuration/...`, `vs/platform/configuration/...`, `vs/platform/files/...` | Ported; settings and watcher are wired |
@@ -208,52 +216,115 @@ that make the later phases tractable.
 
 ## 7. File-by-file inventory
 
-The table covers all 29 files. Phase values refer to §9; “—” means the file is
-not scheduled for a port.
+The table covers all 28 files. Phase values refer to §9; “—” means the file is
+not scheduled for a port. §7.1 breaks the UI/view files down by code block.
 
 | TUI file | Upstream source(s) | Portable content and evidence | Status | Phase | Effort | Upstream tests |
 | --- | --- | --- | --- | --- | --- | --- |
 | `activityBar.zig` | `workbench/browser/parts/activitybar/activitybarPart.ts` (46), `workbench/browser/parts/compositeBar.ts`, `workbench/services/activity/common/activity.ts`, `workbench/services/activity/browser/activityService.ts` | Activity order/active container, next/previous, hit rectangle; glyph paint is terminal-only | `mixed` | P2 | S | `workbench/test/browser/parts/activitybar/activitybarPart.test.ts` (38) |
 | `ansi.zig` | none | ANSI tokenization/encoding for the terminal boundary | `terminal-only` | — | — | none |
-| `app.zig` | `workbench/browser/workbench.ts` (66), `workbench/services/keybinding/browser/keybindingService.ts`, `editor/browser/coreCommands.ts` | Host loop/CLI is terminal-only; `handleKeyEvent` (430-490), mouse routing (492-535) and `dispatch` (678-825) are portable key/command behavior | `mixed` | P3 | M | `platform/keybinding/test/common/keybindingResolver.test.ts`, `platform/actions/test/common/menuService.test.ts` |
+| `app.zig` | `workbench/browser/workbench.ts` (66), `workbench/services/keybinding/browser/keybindingService.ts`, `editor/browser/coreCommands.ts` | Host loop/CLI is terminal-only; `handleKeyEvent` (444-495), mouse routing (506-540) and `dispatch` (692-841) are portable key/command behavior | `mixed` | P3 | M | `platform/keybinding/test/common/keybindingResolver.test.ts`, `platform/actions/test/common/menuService.test.ts` |
 | `cellBorders.zig` | none | DCS capability probe and byte-stream handling | `terminal-only` | — | — | none |
 | `commands.zig` | `platform/actions/common/actions.ts` (801), `workbench/browser/actions/layoutActions.ts`, `workbench/browser/parts/editor/editorActions.ts`, `editor/browser/editorExtensions.ts`, `editor/browser/coreCommands.ts` | Command metadata, editor availability, picker source; replace with the actions registry | `portable-embedded` | P3 | M | `platform/actions/test/common/menuService.test.ts` (23) |
 | `editorInput.zig` | `workbench/contrib/files/browser/editors/fileEditorInput.ts` (39), `workbench/services/textfile/common/textFileEditorModel.ts` (56) | Input identity, dirty/save, serialization; needs file service and working-copy model | `tui-adapter` + missing service | P5e | L | `workbench/contrib/files/test/browser/fileEditorInput.test.ts` (17), `workbench/services/textfile/test/browser/textFileEditorModel.test.ts` (55) |
-| `editor.zig` | `editor/browser/widget/codeEditor/codeEditorWidget.ts` (70), `editor/browser/view/viewController.ts` (51), `editor/browser/coreCommands.ts`, `editor/browser/config/editorConfiguration.ts` (40) | Model/widget/controller/command host: creation (177-320), cursor/edit wrappers (700-1790), bracket/word/selection actions | `portable-embedded` | P4 | XL | `editor/test/browser/widget/codeEditorWidget.test.ts` (13), `editor/test/browser/controller/cursor.test.ts` (206), `editor/test/browser/controller/cursorMoveCommand.test.ts` (55) |
-| `explorerTreeSidebar.zig` | `workbench/contrib/files/browser/views/explorerView.ts`, `workbench/contrib/files/browser/views/explorerViewer.ts` (ExplorerDelegate 75, ExplorerDataSource 89, FilesRenderer 822) | Tree wiring, filter integration, row label/description/decoration decisions; cell painting is terminal-only | `mixed` | P1/P2 | M | `workbench/contrib/files/test/browser/explorerView.test.ts`, `workbench/contrib/files/test/browser/explorerFilesFilter.test.ts` (2) |
+| `editor.zig` | `editor/browser/widget/codeEditor/codeEditorWidget.ts` (70), `editor/browser/view/viewController.ts` (51), `editor/browser/coreCommands.ts`, `editor/browser/config/editorConfiguration.ts` (40) | Model/widget/controller/command host: creation (181-324), cursor/edit wrappers (715-1747), bracket/word/selection actions | `portable-embedded` | P4 | XL | `editor/test/browser/widget/codeEditorWidget.test.ts` (13), `editor/test/browser/controller/cursor.test.ts` (206), `editor/test/browser/controller/cursorMoveCommand.test.ts` (55) |
+| `explorerTreeSidebar.zig` | `workbench/contrib/files/browser/views/explorerView.ts` (178), `workbench/contrib/files/browser/views/explorerViewer.ts` (ExplorerDelegate 75, ExplorerDataSource 89, FilesRenderer 822, ExplorerCompressionDelegate 2073, FileSorter 1415) | Tree wiring, filter integration and row paint (368-540); compressed label, sort order and incompressible-chain rules are still inline | `mixed` | P1/P2 | M | `workbench/contrib/files/test/browser/explorerView.test.ts`, `workbench/contrib/files/test/browser/explorerFilesFilter.test.ts` (2) |
 | `fileIndex.zig` | `base/common/fuzzyScorer.ts` (25), `workbench/services/search/common/searchService.ts`, `workbench/contrib/search/browser/anythingQuickAccess.ts` | Workspace walk, ignore/exclude handling; replace simple matcher with `scoreItemFuzzy`; honor `search.exclude` | `portable-embedded` | P5b/P5g | M | `base/test/common/fuzzyScorer.test.ts` (68), `workbench/services/search/test/common/search.test.ts`, `workbench/contrib/search/test/browser/anythingQuickAccess.test.ts` |
 | `hoverProvider.zig` | none (requires language extension host) | Word/token stand-in for the ported hover contribution | `terminal-only` | — | — | none |
 | `languageConfiguration.zig` | `editor/common/languages/languageConfigurationRegistry.ts`, `workbench/services/language/common/languageService.ts` | `ILanguageConfigurationService` implementation and global activation | `portable-embedded` | P5d | M | `editor/test/common/modes/languageConfiguration.test.ts` |
 | `language.zig` | `workbench/services/language/common/languageService.ts` (223), language association extension point | Hard-coded extension→language map, comment rules, brackets | `portable-embedded` | P5d | S | none direct |
 | `logger.zig` | `platform/log/common/log.ts` (233), `platform/log/common/logService.ts` (10), `platform/log/common/fileLog.ts` | File logger and formatting | `tui-adapter` | P5f | S | `platform/log/test/common/log.test.ts` |
-| `preview.zig` | none (read-only host) | Read-only token renderer and scroll keys | `terminal-only` | — | — | none |
+| `preview.zig` | none (read-only host) | Read-only duplicate of the view renderer (gutter/tokens/scroll); fold into a read-only `Editor`/`View` instead of keeping a second renderer | `terminal-only` (duplicate view code) | — | S | none |
 | `quickAccess.zig` | `workbench/browser/quickaccess.ts`, `platform/quickinput/common/quickAccess.ts`, `platform/quickinput/browser/quickAccess.ts` | Provider/controller host and terminal key/mouse routing | `tui-adapter` | P3/P5 | S | `platform/quickinput/test/browser/quickinput.test.ts` |
 | `quickInput.zig` | `platform/quickinput/browser/quickInput.ts`, `platform/quickinput/browser/quickInputList.ts` | Terminal picker layout/paint; model/controller already ported | `tui-adapter` | — | S | `platform/quickinput/test/browser/quickinput.test.ts` |
-| `searchView.zig` | `workbench/contrib/search/browser/searchView.ts` (128), `searchResultsView.ts`, `searchActions*.ts` | Terminal adapter over the ported controller/data source/action helpers; flattened rows and painting are terminal-only | `tui-adapter` | P2/P5g | L | `workbench/contrib/search/test/browser/searchView.test.ts`, `searchActions.test.ts` (6), `searchCompare.test.ts` |
+| `searchView.zig` | `workbench/contrib/search/browser/searchView.ts` (128), `searchResultsView.ts` (SearchDelegate 79, renderers 103-505), `searchActions*.ts` | Terminal adapter over the ported controller/data source/action helpers; still owns flattened rows, collapse/selection/scroll and painting (427-1017); no inline tests | `mixed` | P2/P3/P5g | L | `workbench/contrib/search/test/browser/searchView.test.ts`, `searchActions.test.ts` (6), `searchCompare.test.ts` |
 | `searchWidget.zig` | `workbench/contrib/search/browser/searchWidget.ts` (115) | Query fields, option toggles, details rows; terminal form | `tui-adapter` | P5g | S | `workbench/contrib/search/test/browser/searchWidget.test.ts` (1) |
 | `session.zig` | `platform/storage/common/storage.ts` (61), `workbench/common/memento.ts` (12), editor-part serialization | Group/session JSON, atomic write, restore; replace host format with storage/memento | `tui-adapter` | P5a | M | `platform/storage/test/common/storageService.test.ts` (10), `workbench/test/common/memento.test.ts` (4) |
 | `settingsWatcher.zig` | `workbench/services/configuration/browser/configurationService.zig`, file watcher | Watch user/workspace/folder settings, reload | `tui-adapter` | P5h | S | `workbench/services/configuration/test/browser/configurationService.test.ts` (existing) |
-| `sidebar.zig` | `workbench/contrib/files/browser/views/explorerViewer.ts` (FilesFilter 1177), `workbench/contrib/files/browser/views/explorerView.ts` | `FilesFilter` (52-245) with exclusion/ignore logic; legacy `Sidebar` (253-948) is dead | `portable-embedded` + dead code | P1 | M | `workbench/contrib/files/test/browser/explorerFilesFilter.test.ts` (2), `base/test/common/glob.test.ts` (63) |
 | `syntaxTheme.zig` | `workbench/services/themes/browser/workbenchThemeService.ts` (80), `workbench/services/themes/common/colorThemeData.ts` (54) | JSONC theme loading, token rules, color map; reduce to a theme-service consumer | `portable-embedded` | P5c | M | `workbench/services/themes/test/common/workbenchThemeService.test.ts` (4), `workbench/services/themes/test/common/colorThemeData.test.ts` (5) |
-| `tab.zig` | `workbench/browser/parts/editor/editorPane.ts`, `workbench/browser/parts/editor/textEditor.ts`, `workbench/browser/parts/editor/textCodeEditor.ts`, `editor/browser/widget/codeEditor/codeEditorContributions.ts` | Per-tab editor/controllers/overlays and contribution host | `mixed` | P4/P2 | M | `workbench/test/browser/parts/editor/editorPane.test.ts`, `workbench/test/browser/parts/editor/textEditorPane.test.ts` |
-| `tabBar.zig` | `workbench/browser/parts/editor/editorTabsControl.ts` (100), `workbench/browser/parts/editor/editorTitleControl.ts` (36), `workbench/browser/parts/editor/singleEditorTabsControl.ts` | Strip layout/hit/reveal/dirty marker; tab order/state already in `EditorGroupModel` | `tui-adapter` | P2 | S | `workbench/test/browser/parts/editor/multiEditorTabsControl.test.ts` |
+| `tab.zig` | `workbench/browser/parts/editor/editorPane.ts` (49), `workbench/browser/parts/editor/textEditor.ts` (49), `workbench/browser/parts/editor/textCodeEditor.ts` (24), `editor/browser/widget/codeEditor/codeEditorContributions.ts` (14) | Per-tab editor/controllers/overlays and contribution host (43-270) | `mixed` | P4 | M | `workbench/test/browser/parts/editor/editorPane.test.ts`, `workbench/test/browser/parts/editor/textEditorPane.test.ts` |
+| `tabBar.zig` | `workbench/browser/parts/editor/editorTabsControl.ts` (100), `workbench/browser/parts/editor/singleEditorTabsControl.ts` (28), `workbench/browser/parts/editor/editorTitleControl.ts` (36) | Strip layout/hit/reveal/dirty marker (82-159); tab order/state already in `EditorGroupModel` | `tui-adapter` | P2 | S | `workbench/test/browser/parts/editor/multiEditorTabsControl.test.ts` |
 | `theme.zig` | `platform/theme/common/themeService.ts`, `platform/theme/common/colorRegistry.ts`, token styles | Token color id → RGB and fallback palette | `missing-service` | P5c | S | `workbench/services/themes/test/common/colorThemeData.test.ts` |
 | `tui.zig` | none | Raw mode, alternate screen, mouse capture, poll, SIGWINCH | `terminal-only` | — | — | none |
 | `utf8Helper.zig` | none direct; compare with `base/common/strings.ts` utilities | UTF-8 safe slicing/codepoint helpers | `terminal-only`/utility | — | S | none |
-| `view.zig` | `editor/browser/view.ts` (87), `editor/browser/view/viewLayer.ts`, `editor/browser/view/viewOverlays.ts`, `editor/browser/view/viewPart.ts`, `editor/browser/viewParts/*` | Gutter/line rendering, decorations, selection, cursor, scrollbar, overlays/content widgets, mouse targets, status row | `portable-embedded` | P4 | XL | `editor/test/browser/view/viewController.test.ts` (17), `editor/test/browser/view/viewLayer.test.ts` (4), existing TUI snapshots |
-| `workbench.zig` | `workbench/browser/parts/editor/editorPart.ts` (partly ported), `workbench/browser/layout.ts` (158), `workbench/browser/parts/sidebar/sidebarPart.ts` (42), `workbench/browser/parts/paneCompositePart.ts`, `workbench/browser/parts/statusbar/statusbarModel.ts`, `workbench/browser/parts/statusbar/statusbarPart.ts` | Part layout/visibility, activity switching, sidebar/tab mouse, pane compositing, status placement | `mixed` | P2/P3 | L | `workbench/test/browser/layout.test.ts` (2), `workbench/test/browser/parts/sidebar/sidebarPart.test.ts` (1), `workbench/test/browser/parts/statusbar/statusbarModel.test.ts` (10) |
+| `view.zig` | `editor/browser/view.ts` (87), `editor/browser/view/viewLayer.ts`, `editor/browser/view/viewOverlays.ts`, `editor/browser/view/viewPart.ts`, `editor/browser/viewParts/*` | Gutter/line rendering, decorations, selection, cursor, scrollbar, overlays/content widgets, mouse targets; the status row is now a standalone fallback (355, 1639), disabled by workbench tabs | `portable-embedded` | P4 | XL | `editor/test/browser/view/viewController.test.ts` (17), `editor/test/browser/view/viewLayer.test.ts` (4), existing TUI snapshots |
+| `workbench.zig` | `workbench/browser/parts/editor/editorPart.ts` (128), `workbench/browser/layout.ts` (158), `workbench/browser/parts/sidebar/sidebarPart.ts` (42), `workbench/browser/parts/paneCompositePart.ts`, `workbench/browser/parts/statusbar/*` | Terminal composition, part rects (621-700, 925), tab/group actions (981-1136), key/mouse routing (1137-1640), status entry refresh (1683), render (1821) | `mixed` | P2/P3 | L | `workbench/test/browser/layout.test.ts` (2), `workbench/test/browser/parts/sidebar/sidebarPart.test.ts` (1), `workbench/test/browser/parts/statusbar/statusbarModel.test.ts`, `statusbarPart.test.ts`, `statusbarItem.test.ts` |
+
+### 7.1 UI/view code map at HEAD
+
+The editor and workbench view code is the largest remaining portable block.
+This table breaks it down by code block; it is the list to work from for P3
+and P4. `Extract` means the portable decision logic moves to the mirrored
+`src/vs/...` module and the TUI keeps only the cell paint; `move` means the
+code is a command/action wrapper that belongs in the ported command layer;
+`keep` means the block is a terminal adaptation of an already-ported model or
+has no upstream counterpart.
+
+**Editor view (`view.zig`)**
+
+| TUI block | Upstream target | Portable logic still inside | Disposition |
+| --- | --- | --- | --- |
+| `view.zig:204-457` | `editor/browser/view.ts` (`View` 87), `editor/browser/view/viewPart.ts` | View state/lifecycle, widget registration, decoration sinks, document rebuild driver | extract |
+| `view.zig:843-1182` | `editor/browser/view/viewLayer.ts` (`RenderedLinesCollection` 43, `VisibleLinesCollection` 253), `editor/browser/viewParts/viewLines/viewLines.ts` (97), `editor/browser/viewParts/viewLines/viewLine.ts` (52), `editor/browser/viewParts/lineNumbers/lineNumbers.ts` (21), `editor/browser/viewParts/currentLineHighlight/currentLineHighlight.ts` (207) | Per-view-line nodes, gutter numbers/wrap arrows, current-line background, token runs, guide composition | extract |
+| `view.zig:1699-1834`, `1863-1910` | `editor/browser/viewParts/viewLines/viewLines.ts`/`viewLine.ts` on the ported `viewLineRenderer.zig` | Run emission, inline decoration classes, column↔cell mapping, wrapped-segment clipping | extract |
+| `view.zig:1794-1834` | `editor/browser/viewParts/selections/selections.ts` (62) | Selection cell flags (inverted cells) | extract |
+| `view.zig:816-831` | `editor/browser/viewParts/viewCursors/viewCursors.ts` (30), `editor/browser/viewParts/viewCursors/viewCursor.ts` | Hardware cursor cell and offset | extract |
+| `view.zig:1183-1236` | `editor/browser/viewParts/decorations/decorations.ts` (15) | Model decoration classes → cell flags | extract |
+| `view.zig:1237-1387` | `editor/browser/viewParts/editorScrollbar/editorScrollbar.ts` (23) + the ported `decorationsOverviewRuler.zig` | Scrollbar column, thumb, overview markers, cursor markers | extract |
+| `view.zig:1388-1524` | `editor/browser/viewParts/overlayWidgets/overlayWidgets.ts` (33), `editor/browser/viewParts/contentWidgets/contentWidgets.ts` (25) | Widget anchoring, preference, clamping, focus restore | extract |
+| `view.zig:481-756` | `editor/browser/controller/mouseTarget.ts` (`MouseTargetFactory` 517), `editor/browser/controller/mouseHandler.ts` (59), `editor/browser/controller/pointerHandler.ts` (23), `editor/browser/view/viewController.ts` (51) | Hit testing, drag selection, scrollbar drag, click synthesis | extract |
+| `view.zig:355-375`, `1639-1698` | `workbench/browser/parts/statusbar/statusbarPart.ts` (122) | Standalone fallback status row; workbench tabs disable it and use the ported status bar | keep (documented fallback) |
+| 29 palette literals in `view.zig` | `platform/theme/common/colorRegistry.ts`, `workbench/services/themes/...` | Direct RGB styles | keep until P5c |
+
+**Editor widget (`editor.zig`) and tab pane (`tab.zig`)**
+
+| TUI block | Upstream target | Portable logic still inside | Disposition |
+| --- | --- | --- | --- |
+| `editor.zig:181-324` | `editor/browser/widget/codeEditor/codeEditorWidget.ts` (70), `editor/browser/config/editorConfiguration.ts` (40), `editor/common/config/editorOptions.zig` | Lifecycle, model/view-model/cursor/contribution/options wiring | extract |
+| `editor.zig:715-928`, `1375-1402` | `editor/browser/view/viewController.ts` (51) | Cursor movement, selection extension, set-position/set-selection | extract |
+| `editor.zig:929-1111` | `editor/browser/coreCommands.ts` | Typing, newline, tab/outdent, replace commands | move |
+| `editor.zig:1112-1229` | `editor/browser/coreCommands.ts`, indentation contribution | Indent/outdent/reindent/indentation conversion | move |
+| `editor.zig:1230-1302` | `editor/browser/coreCommands.ts` | Delete left/right, undo/redo wrappers | move |
+| `editor.zig:1335-1517` | `editor/browser/coreCommands.ts`, `editor/browser/editorExtensions.zig` | Line operations and command dispatch | move |
+| `editor.zig:1518-1747` | `editor/browser/widget/codeEditor/codeEditorContributions.ts` (14) + the ported contributions | Action wrappers for bracket matching, comments, smart select, in-place replace, final newline | move |
+| `editor.zig:630-714` | multicursor contribution + `editor/browser/view/viewController.ts` | Multi-cursor session plumbing, add-cursor/select-occurrence | move |
+| `editor.zig:1748-1802` | `workbench/contrib/files/browser/editors/fileEditorInput.ts` (39), editor part | Save, quit/close confirmation | move (P5e) |
+| `tab.zig:43-270` | `workbench/browser/parts/editor/editorPane.ts` (49), `workbench/browser/parts/editor/textEditor.ts` (49), `workbench/browser/parts/editor/textCodeEditor.ts` (24), `editor/browser/widget/codeEditor/codeEditorContributions.ts` (14) | Per-tab editor/view/controller/overlay wiring, lazy contribution activation | extract |
+
+**Workbench chrome and panels**
+
+| TUI block | Upstream target | Portable logic still inside | Disposition |
+| --- | --- | --- | --- |
+| `workbench.zig:621-700`, `925-946` | `workbench/browser/layout.ts` (158), `workbench/browser/parts/*` | Part rectangles and the editor area above the status row | keep (terminal composition) |
+| `workbench.zig:981-1136` | `workbench/browser/parts/editor/editorPart.ts` (128), `editorGroupView.ts` (67), `editorActions.ts` | Open/activate/switch/split/close actions | move |
+| `workbench.zig:1137-1640` | `workbench/browser/actions/layoutActions.ts`, `workbench/browser/parts/editor/editorActions.ts`, keybinding service | Tab/group/sidebar/status key and mouse routing | P3 |
+| `workbench.zig:1683-1769` | `workbench/browser/parts/statusbar/statusbarPart.ts` (122) | Entry text refresh; the bar itself is a ported part | keep adapter |
+| `workbench.zig:1821-1990` | none | Pane compositing and cell paint | terminal-only |
+| `tabBar.zig:82-159` | `workbench/browser/parts/editor/editorTabsControl.ts` (100), `workbench/browser/parts/editor/singleEditorTabsControl.ts` (28), `workbench/browser/parts/editor/editorTitleControl.ts` (36) | Strip layout, label truncation, active/dirty marker, reveal, hit testing | extract small / keep paint |
+| `activityBar.zig:32-106` | `workbench/browser/parts/activitybar/activitybarPart.ts` (46), `workbench/browser/parts/compositeBar.ts`, activity service | Rail hit testing and glyphs; model ported | keep adapter |
+| `explorerTreeSidebar.zig:368-540` | `workbench/contrib/files/browser/views/explorerViewer.ts` (`FilesRenderer` 822, `ExplorerCompressionDelegate` 2073, `CompressedNavigationController` 715, `FileSorter` 1415) | Compressed label join, sort order, incompressible-chain rules | move small |
+| `searchView.zig:427-1017` | `workbench/contrib/search/browser/searchView.ts` (128), `workbench/contrib/search/browser/searchResultsView.ts` (`SearchDelegate` 79, renderers 103-505), `workbench/contrib/search/browser/searchActions*.ts` | Flattened row model, collapse/selection/scroll, key/mouse, row paint | mixed: use the ported tree; P3 for keys |
+| `searchWidget.zig:79-433` | `workbench/contrib/search/browser/searchWidget.ts` (115) | Terminal form fields/toggles/details | keep adapter |
+| `quickAccess.zig:64-319` | `workbench/browser/quickaccess.ts`, `platform/quickinput/browser/quickAccess.zig` | Provider/controller host + key routing | keep adapter; P3 for keys |
+| `quickInput.zig:43-408` | `platform/quickinput/browser/quickInput.ts` (524, 1182), `quickInputList.ts` (709) | Terminal list layout/paint | keep adapter |
+| `app.zig:444-540`, `692-841` | `workbench/browser/workbench.ts` (66), `workbench/services/keybinding/browser/keybindingService.ts`, `editor/browser/coreCommands.ts` | Input routing and the editor shortcut table | P3 |
+| `preview.zig:1-332` | none | Duplicate gutter/token/scroll renderer | fold into a read-only `Editor`/`View` |
+
+The 37 `view.zig` tests (from line 1936) and the 31 `editor.zig` tests (from
+line 1855) move with their subjects; they are the regression net for the
+extraction.
 
 ## 8. Subsystem notes
 
 ### 8.1 Editor core (`editor.zig`, `tab.zig`)
 
-`Editor` (121-320) creates a `TextModel`, language codec/service,
+`Editor` (181-324) creates a `TextModel`, language codec/service,
 `ProjectedViewModelLines`, `CoordinatesConverter`, `CursorContext`,
 `CursorCollection`, bracket matching, smart select, multicursor session and
 undo/redo. The public surface then wraps ported contributions and cursor
-operations: `moveLeft` through `movePageDown` (700-899), typing/editing
-(960-1070), indentation (1097-1214), delete/undo (1215-1319), line operations
-(1320-1360), selection/edits (1360-1495), contribution actions (1495-1785).
+operations: `moveLeft` through `movePageDown` (715-928), typing/editing
+(929-1111), indentation (1112-1229), delete/undo (1230-1302), line operations
+(1335-1375), selection/edits (1375-1517), contribution actions (1518-1747).
 
 Upstream, those responsibilities are split across:
 
@@ -289,18 +360,19 @@ wiring should move to the widget and contribution host in P4.
 `View` (204) keeps the `ui.Surface`, guides, overlay/content widgets,
 line entries, scrollbar drag state and mouse press state. The main pipeline is:
 
-- `dispatchKey` (441), `dispatchMouse` (451), `mouseTargetAt` (634) — terminal
+- `dispatchKey` (471), `dispatchMouse` (481), `mouseTargetAt` (664) — terminal
   input and hit testing;
-- `refresh` (750) and `rebuild` (813) — full document rebuild;
+- `refresh` (780) and `rebuild` (843) — full document rebuild;
 - line/gutter/current-line render and token runs inside `rebuild`;
-- `markDecorations` (1153) — model decorations through
+- `markDecorations` (1183) — model decorations through
   `LineDecoration.filter`/`extractWrapped`;
-- `buildScrollbar` (1207) — the ported `decorationsOverviewRuler` plus
+- `buildScrollbar` (1237) — the ported `decorationsOverviewRuler` plus
   `ScrollbarState`;
-- `buildOverlays` (1358), `buildContentWidgets` (1414) — widget anchoring;
-- `appendStatus` (1609) — the status row (an editor status string, not the
-  workbench status-bar part);
-- `appendRuns` (1648), `markSelections` (1743).
+- `buildOverlays` (1388), `buildContentWidgets` (1444) — widget anchoring;
+- `appendStatus` (1639) — the standalone fallback status row; workbench tabs
+  call `setStatusBarVisible(false)` (355) and the ported `StatusbarPart` paints
+  the workbench bar instead;
+- `appendRuns` (1699), `markSelections` (1794).
 
 The upstream pipeline is `view.ts` (`View`, view parts, rendering context) →
 `viewLayer`/`viewOverlays` → `viewParts` (`viewLines`, `lineNumbers`,
@@ -320,19 +392,20 @@ not the browser DOM.
 
 `app.zig` routes decoded terminal events:
 
-- `handleKeyEvent` (430-490) gives focused widgets the keyboard, then opens
+- `handleKeyEvent` (444-495) gives focused widgets the keyboard, then opens
   find, then falls through to `dispatch`;
-- `dispatch` (678-825) is a switch over keys/modifiers that calls `Editor`
+- `dispatch` (692-841) is a switch over keys/modifiers that calls `Editor`
   methods directly;
-- `handleMouseEvent` (492-535) routes mouse events through the view and the
+- `handleMouseEvent` (506-540) routes mouse events through the view and the
   hover controller.
 
 Component-specific maps add more:
 
-- `workbench.zig:967-1037` — close tab, split, tab/group switching, Alt-1..9;
-- `workbench.zig:1213-1284` — sidebar/activity focus and activation;
-- `explorerTreeSidebar.zig:231-259` — tree navigation;
-- `searchView.zig:609-750` — search fields/results/replace keys;
+- `workbench.zig:1137-1207` — close tab, split, tab/group switching, Alt-1..9;
+- `workbench.zig:1385-1485` — status-bar pointer and key navigation;
+- `workbench.zig:1492-1564` — sidebar/activity focus and activation;
+- `explorerTreeSidebar.zig:236-258` — tree navigation;
+- `searchView.zig:604-772` — search fields/results/replace keys;
 - `quickAccess.zig:162-193` — Ctrl-P/Alt-P and picker navigation.
 
 Upstream has no such tables in the views. `Action2` (801) + `MenuId` (86) +
@@ -350,14 +423,17 @@ inventing a new one.
 
 `workbench.zig` currently owns:
 
-- part rectangles: `activity_width` (528), `sidebarWidth` (523),
-  `sidebarShown` (530), `activityRect` (535), `sidebarRect` (544);
-- layout: `layoutAll` (757);
-- activity switching and sidebar visibility: `showActivity` (721),
-  `toggleSidebar` (733), `focusSidebar`/`focusEditor` (744/752);
-- tab/group key and mouse routing: `handleTabKey` (967), `handleSidebarMouse`
-  (1285), `handleTabMouse` (1319);
-- compositing and the activity/sidebar divider: `render` (1380-1476);
+- part rectangles and the status row: `statusBarRect` (621), `sidebarWidth`
+  (641), `sidebarShown` (650), `activityRect` (682), `sidebarRect` (691);
+- layout: `layoutAll` (925);
+- activity switching and sidebar visibility: `showActivity` (867),
+  `toggleSidebar` (882), `focusSidebar`/`focusEditor` (895/904),
+  `focusStatusBar` (910);
+- tab/group key and mouse routing: `handleTabKey` (1137),
+  `handleStatusbarMouse`/`handleStatusbarKey` (1385/1435),
+  `handleSidebarMouse` (1566), `handleTabMouse` (1601);
+- status entry refresh: `refreshStatus` (1683);
+- compositing and the activity/sidebar divider: `render` (1821-1990);
 - placeholders and pane borders.
 
 Upstream targets:
@@ -367,16 +443,15 @@ Upstream targets:
   composite bar;
 - `workbench/browser/parts/sidebar/sidebarPart.ts` and
   `paneCompositePart.ts` — side bar/pane container;
-- `workbench/browser/parts/statusbar/statusbarModel.ts` and
-  `statusbarPart.ts` — status entries and bar;
+- `workbench/browser/parts/statusbar/` — status model, item, part and actions;
+  ported, with `workbench.zig` painting the full-width row and routing focus;
 - `workbench/browser/parts/editor/editorTabsControl.ts` and
   `editorTitleControl.ts` — title/tabs control. The tab *model* is already
   `EditorGroupModel`; `tabBar.zig` is only strip layout/hit/paint.
 
-The recent extraction already removed grid, drop-target, group-view and pane
-bookkeeping from `workbench.zig`. What remains is the part layout/visibility
-model and the terminal compositor. P2 targets the model; the compositor and
-cell painting stay in the terminal.
+The P2 extraction already removed grid, drop-target, group-view, pane
+bookkeeping and the status bar from `workbench.zig`. What remains is the
+terminal compositor, tab/group actions and the input maps that P3 replaces.
 
 ### 8.5 Explorer (`explorerViewer.zig`, `explorerTreeSidebar.zig`)
 
@@ -396,10 +471,12 @@ and exception-leading-folder handling; `explorerFilesFilter.test.zig` covers
 the behavior.
 
 `explorerTreeSidebar.zig` renders through the ported compressed tree. Its
-renderer callback (`renderRow`) is the terminal equivalent of `FilesRenderer`
-(822): label, description, icon/decoration decisions and the compressed
-label. The portable label/description/decoration logic should move to the
-upstream-shaped renderer module; the cell paint stays in the TUI.
+renderer callback (`renderRow`, 470) is the terminal equivalent of
+`FilesRenderer` (822): label, description/icon decisions and the compressed
+label join. `readSortOrder` (454), `isIncompressible` (448) and
+`readCompactFolders` (435) duplicate `FileSorter` (1415) and
+`ExplorerCompressionDelegate` (2073). The portable sort/compression decisions
+should move to those upstream-shaped modules; the cell paint stays in the TUI.
 
 Explorer actions (new file/folder, rename, delete, refresh, collapse all) are
 not wired in the TUI. If they are added, they belong in
@@ -419,8 +496,13 @@ comparers, and `browser/searchActions*.zig` hold the action helpers/runners.
 `files.exclude`/`search.exclude` are applied by the service through the ported
 glob expression, including `!` exceptions and `{ when: ... }` clauses.
 `searchView.zig` is now the terminal adapter: flattened rows, painting, focus
-and mouse routing. `searchWidget.zig` remains the terminal form for the
-upstream `searchWidget.ts` fields/toggles.
+and mouse routing. The flattened path is still a second view model:
+`rebuildRows` (427), `applyDefaultCollapse` (457) and `moveToNextMatch` (551)
+maintain their own collapse/selection/scroll state instead of using the ported
+`ObjectTree`/`CompressibleObjectTree`, and the file has no inline tests. Moving
+it onto the ported tree (as the Explorer did) would delete that state and let
+the renderer decisions stay in `searchResultsView.zig`. `searchWidget.zig`
+remains the terminal form for the upstream `searchWidget.ts` fields/toggles.
 
 Remaining portable pieces:
 
@@ -507,9 +589,11 @@ These have no VS Code counterpart and should not be moved into `src/vs`:
   mode.
 
 Cell painting and hit rectangles in `view.zig`, `tabBar.zig`,
-`activityBar.zig`, `sidebar.zig`, `searchWidget.zig` and `quickInput.zig` are
-also terminal-only. Porting the model must not move cell geometry into
-`src/vs`.
+`activityBar.zig`, `searchWidget.zig` and `quickInput.zig` are also
+terminal-only. Porting the model must not move cell geometry into `src/vs`.
+The editor view's fallback status row (`view.zig:355-375, 1639-1698`) is a
+standalone/preview adaptation: workbench tabs disable it and use the ported
+`StatusbarPart`, so it is not part of the port backlog.
 
 ## 9. Prioritized roadmap
 
@@ -525,15 +609,15 @@ upstream-shaped module, including the documented exclusion-exception behavior.
 
 **Scope:**
 
-- Port `FilesFilter` from `sidebar.zig:52-245` to
+- Move `FilesFilter` from the deleted `src/tui/sidebar.zig` to
   `vs/workbench/contrib/files/browser/views/explorerViewer.zig`.
 - Port the missing exclusion expression/traversal pieces from
   `base/common/glob.ts` (`parseExcludeExpression` 735,
   `evaluateExcludeTreeEntry` 817) into `vs/base/common/glob.zig`.
 - Keep the TUI tree/filter wiring in `explorerTreeSidebar.zig`; adapt the
   upstream filter through a terminal configuration/ignore adapter.
-- Delete the unused `Sidebar` (253-948) from `sidebar.zig`; keep `Action`
-  where the live tree consumes it.
+- Delete the unused direct-painted `Sidebar` and keep `Action` where the live
+  tree consumes it.
 - Port `workbench/contrib/files/test/browser/explorerFilesFilter.test.ts`
   and the relevant `base/test/common/glob.test.ts` cases.
 - Update README/docs to remove the “exception-leading folders not ported”
@@ -575,6 +659,8 @@ longer lists the gap.
 `workbench/test/browser/parts/activitybar/activitybarPart.test.ts` (38),
 `workbench/test/browser/parts/sidebar/sidebarPart.test.ts` (1),
 `workbench/test/browser/parts/statusbar/statusbarModel.test.ts` (10),
+`workbench/test/browser/parts/statusbar/statusbarPart.test.ts` (7),
+`workbench/test/browser/parts/statusbar/statusbarItem.test.ts` (10),
 `workbench/test/browser/layout.test.ts` (2),
 `workbench/test/browser/parts/editor/multiEditorTabsControl.test.ts` (102).
 
@@ -605,9 +691,12 @@ commands as actions.
   and their keybindings; use the already-ported cursor operations.
 - Workbench/editor action subsets: tab/group actions, sidebar/activity
   actions, search actions, quick-open commands.
-- Replace `app.zig` dispatch, `workbench.zig` tab/sidebar maps,
-  `searchView.zig`/`quickAccess.zig`/`explorerTreeSidebar.zig` key maps.
-- Feed `CommandRegistry`/`CommandPickSource` from the action registry.
+- Replace `app.zig` dispatch (444-540, 692-841), `workbench.zig` tab/sidebar/
+  status maps (1137-1640), `searchView.zig` (604-772), `quickAccess.zig`
+  (162-193) and `explorerTreeSidebar.zig` (236-258) key maps.
+- Feed `CommandRegistry`/`CommandPickSource` from the action registry. The
+  status-bar commands already execute through `statusbarActions.zig`; keep
+  `Ctrl-Alt-S` as the documented TUI focus shortcut.
 
 **Upstream tests:**
 `platform/keybinding/test/common/keybindingResolver.test.ts` (36),
@@ -626,9 +715,9 @@ limitation is removed.
 
 ### P4 — Editor browser stack
 
-**Goal:** split the 5,934-line editor/view monolith into the upstream widget,
-controller and view-part layers, reusing the ported model/view model and
-contributions.
+**Goal:** split the 6,000-line editor/view monolith (3,789 non-test lines)
+into the upstream widget, controller and view-part layers, reusing the ported
+model/view model and contributions.
 
 **Suggested commits:**
 
@@ -639,24 +728,30 @@ contributions.
    `editor/browser/viewParts/viewLines/viewLine.zig`,
    `editor/browser/viewParts/lineNumbers/lineNumbers.zig`,
    `editor/browser/viewParts/currentLineHighlight/currentLineHighlight.zig`;
-   move gutter/line/token rendering out of `view.zig`.
+   move the `rebuild` line loop (843-1182) and the run/inline-decoration
+   helpers (1699-1910) out of `view.zig`.
 3. `editor/browser/viewParts/selections/selections.zig`,
-   `editor/browser/viewParts/viewCursors/viewCursors.zig`; move
-   selection/cursor cell state.
+   `editor/browser/viewParts/viewCursors/viewCursors.zig` +
+   `viewCursor.zig`; move selection/cursor cell state (816-831, 1794-1834).
 4. `editor/browser/viewParts/decorations/decorations.zig`,
    `editor/browser/viewParts/contentWidgets/contentWidgets.zig`,
    `editor/browser/viewParts/overlayWidgets/overlayWidgets.zig`; move the
-   current overlay/content/widget anchoring.
+   current decoration classes and overlay/content anchoring (1183-1236,
+   1388-1524).
 5. `editor/browser/viewParts/editorScrollbar/editorScrollbar.zig`; keep the
-   ported overview ruler and `ScrollbarState`.
+   ported overview ruler and `ScrollbarState` (1237-1387).
 6. `editor/browser/view/viewController.zig`; move position/selection commands
-   out of `Editor`.
-7. `editor/browser/controller/mouseHandler.zig`,
-   `editor/browser/controller/pointerHandler.zig`; move mouse target/drag
-   behavior.
+   out of `Editor` (715-928, 1375-1402).
+7. `editor/browser/controller/mouseTarget.zig`,
+   `editor/browser/controller/mouseHandler.zig`,
+   `editor/browser/controller/pointerHandler.zig`; move hit testing and
+   mouse target/drag behavior (481-756).
 8. `editor/browser/widget/codeEditor/codeEditorWidget.zig` +
    `editor/browser/widget/codeEditor/codeEditorContributions.zig`; move editor
-   lifecycle/config/contribution host out of `editor.zig` and `tab.zig`.
+   lifecycle/config/command wrappers/contribution host out of `editor.zig`
+   (181-324, 929-1747) and `tab.zig` (43-270). Move the `tabBar.zig` strip
+   rules to `editorTabsControl.zig`/`singleEditorTabsControl.zig` in the same
+   slice.
 
 `editor/browser/config/editorConfiguration.zig` and the used subset of
 `editor/common/config/editorOptions.ts` should land with step 8 (or step 1 if
@@ -667,7 +762,9 @@ the view needs options first).
 `editor/test/browser/widget/codeEditorWidget.test.ts` (13),
 `editor/test/browser/controller/cursor.test.ts` (206),
 `editor/test/browser/viewModel/viewModelDecorations.test.ts`, plus the
-existing TUI snapshot tests which must keep passing.
+existing TUI snapshot tests which must keep passing. The 37 `view.zig` tests
+(starting at line 1936) and 31 `editor.zig` tests (starting at line 1855)
+move with their subjects.
 
 **Effort/risk:** XL, high risk; split into the commits above and keep the TUI
 snapshot tests as the regression net.
@@ -737,7 +834,8 @@ of scope:
   (`app.zig` host portion).
 - Cell painting, clipping, hit rectangles, hardware cursor placement and the
   terminal compositor.
-- Read-only preview mode (`preview.zig`).
+- Read-only preview mode (`preview.zig`); the mode stays, but its duplicate
+  renderer should be folded into a read-only `Editor`/`View` (see §7.1).
 - The word/token hover stand-in (`hoverProvider.zig`) until a language
   extension host exists.
 - Browser-only editor features already documented as deviations in
@@ -750,6 +848,9 @@ of scope:
 
 **Assumptions**
 
+- This snapshot is `src/tui/` at HEAD `413fa55` (28 files, 18,878 lines);
+  the status bar (`413fa55`), the Search view (`f10e1a6`) and P1/P2 landed
+  after the original audit. Refresh the line numbers when HEAD moves.
 - Upstream is pinned to VS Code 1.147.0 at `e31c2e52`. If the checkout moves,
   paths and line numbers must be refreshed before starting a phase.
 - “Port” means an upstream-shaped Zig module plus the upstream tests under
@@ -763,8 +864,11 @@ of scope:
 
 **Open questions**
 
-- Should P2 (shell) or P3 (commands) start first? P2 is more visible; P3
-  unblocks P4 and removes the largest architectural duplication.
+- Should P3 (commands) or P4's view-part steps start first? P3 unblocks the
+  input/caller side; P4 steps 1-5 (the view parts) can start in parallel if the
+  `View` orchestrator boundary stays explicit.
+- Should the `preview.zig` duplicate renderer be folded into a read-only
+  `View` (small, removes ~300 lines) before or during P4?
 - Should P4 be split by view part (as suggested) or by widget lifecycle
   (view first, then controller, then widget)?
 - Do we want a full workbench theme service, or a terminal color adapter that
@@ -788,6 +892,8 @@ of scope:
 | `workbench/test/browser/parts/activitybar/activitybarPart.test.ts` | 1,146 | 38 | P2 |
 | `workbench/test/browser/parts/sidebar/sidebarPart.test.ts` | 75 | 1 | P2 |
 | `workbench/test/browser/parts/statusbar/statusbarModel.test.ts` | 294 | 10 | P2 |
+| `workbench/test/browser/parts/statusbar/statusbarPart.test.ts` | 329 | 7 | P2 |
+| `workbench/test/browser/parts/statusbar/statusbarItem.test.ts` | 237 | 10 | P2 |
 | `workbench/test/browser/layout.test.ts` | 121 | 2 | P2 |
 | `workbench/test/browser/parts/editor/multiEditorTabsControl.test.ts` | 4,786 | 102 | P2 |
 | `platform/keybinding/test/common/keybindingResolver.test.ts` | 638 | 36 | P3 |

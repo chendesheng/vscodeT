@@ -1091,8 +1091,8 @@ Since this list was written, the editor view model (`ViewModelLines`,
 `ViewModelDecorations`, `CoordinatesConverter`) has landed. The remaining
 editor-view work is the view/controller/widget split, not the view model.
 The file-by-file mapping of `src/tui/` to these upstream modules, including
-the P1-P5 sequencing and upstream test map, is tracked in the
-[TUI porting inventory](porting-inventory.md).
+the current UI/view code map (§7.1), the P1-P5 sequencing and upstream test
+map, is tracked in the [TUI porting inventory](porting-inventory.md).
 
 ## 11. Testing strategy
 

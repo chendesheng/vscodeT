@@ -53,8 +53,9 @@ console API for raw mode, sizing and input polling.
   unmodified, port the workbench side (RPC codec, `MainThread*` actors,
   scanner, contribution points, TUI wiring) to Zig.
 - [TUI porting inventory](docs/porting-inventory.md) — file-by-file mapping of
-  `src/tui/` to the VS Code internals it should port, with a prioritized,
-  dependency-ordered roadmap.
+  `src/tui/` to the VS Code internals it should port, with a UI/view code map
+  (what is still collapsed into `view.zig`/`editor.zig` and where it belongs)
+  and a prioritized, dependency-ordered roadmap.
 
 ## Terminal UI library
 
