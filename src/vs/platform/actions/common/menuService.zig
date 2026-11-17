@@ -1420,3 +1420,77 @@ test "one-shot menus evaluate submenu toggle state without checking children" {
     try std.testing.expectEqual(@as(usize, 1), contexts.len);
     try std.testing.expectEqualStrings("submenuActive", contexts[0]);
 }
+
+test "one-shot menus give actions their group title and keep plain separators" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const parent = MenuId{ .id = "test.titles.parent" };
+    const canvas = MenuId{ .id = "test.titles.canvas" };
+
+    const files = try registry.appendMenuItemTracked(parent, .{ .command = .{ .id = "files", .title = "Files" }, .group = "navigation" });
+    defer files.dispose();
+    const canvas_submenu = try registry.appendSubmenuItemTracked(parent, .{ .title = "Canvas", .submenu = canvas, .group = "2_tools" });
+    defer canvas_submenu.dispose();
+    const recent = try registry.appendMenuItemTracked(canvas, .{ .command = .{ .id = "recent", .title = "Recent Plan" }, .group = "0_recent" });
+    defer recent.dispose();
+    const plan = try registry.appendMenuItemTracked(canvas, .{ .command = .{ .id = "plan", .title = "Plan" }, .group = "1_available" });
+    defer plan.dispose();
+    const hidden = try registry.appendMenuItemTracked(canvas, .{
+        .command = .{ .id = "hidden", .title = "Hidden" },
+        .group = "3_discover",
+        .when = try factory.has("missing"),
+    });
+    defer hidden.dispose();
+    const create = try registry.appendMenuItemTracked(canvas, .{ .command = .{ .id = "create", .title = "Create a Canvas" }, .group = "3_discover", .order = 1 });
+    defer create.dispose();
+    const browse = try registry.appendMenuItemTracked(canvas, .{ .command = .{ .id = "browse", .title = "Browse Canvases" }, .group = "3_discover", .order = 2 });
+    defer browse.dispose();
+
+    try registry.appendMenuGroup(parent, "2_tools", "Tools");
+    try registry.appendMenuGroup(canvas, "0_recent", "Recent");
+    try registry.appendMenuGroup(canvas, "3_discover", "Discover More");
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var menu_actions = try service.getMenuActions(allocator, parent, Context.context());
+    defer menu_actions.deinit();
+    try std.testing.expectEqual(@as(usize, 2), menu_actions.groups.len);
+    try std.testing.expectEqualStrings("navigation", menu_actions.groups[0].id);
+    try std.testing.expectEqual(@as(usize, 1), menu_actions.groups[0].actions.len);
+    const files_action: *MenuItemAction = @ptrCast(@alignCast(menu_actions.groups[0].actions[0].context));
+    try std.testing.expect(files_action.group_title == null);
+
+    try std.testing.expectEqualStrings("2_tools", menu_actions.groups[1].id);
+    const canvas_action: *SubmenuItemAction = @ptrCast(@alignCast(menu_actions.groups[1].actions[0].context));
+    try std.testing.expectEqualStrings("Tools", canvas_action.group_title.?);
+    try std.testing.expectEqual(@as(usize, 6), canvas_action.actions.len);
+
+    const expected_ids = [_][]const u8{ "recent", "sep", "plan", "sep", "create", "browse" };
+    const expected_titles = [_]?[]const u8{ "Recent", null, null, null, "Discover More", "Discover More" };
+    for (canvas_action.actions, 0..) |action, index| {
+        try std.testing.expectEqualStrings(expected_ids[index], action.id());
+        if (std.mem.eql(u8, action.id(), "sep")) {
+            const separator_action: *base_actions.Separator = @ptrCast(@alignCast(action.context));
+            try std.testing.expect(separator_action.label_text == null);
+        } else {
+            const item_action: *MenuItemAction = @ptrCast(@alignCast(action.context));
+            if (expected_titles[index]) |title| {
+                try std.testing.expectEqualStrings(title, item_action.group_title.?);
+            } else {
+                try std.testing.expect(item_action.group_title == null);
+            }
+        }
+    }
+}
