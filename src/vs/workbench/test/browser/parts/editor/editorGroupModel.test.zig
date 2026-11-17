@@ -1941,3 +1941,24 @@ test "EditorGroupModel: active events" {
     _ = try group.setActive(null);
     try std.testing.expectEqual(@as(usize, 1), events.active);
 }
+
+test "EditorGroupModel: locked group serialization" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+    const group_id = group.id;
+    try group.lock(true);
+
+    var registry = @import("../../../../common/editor/editorFactory.zig").EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    var data = try group.serialize(allocator, &registry);
+    defer data.deinit(allocator);
+    const deserialized = try makeGroup(allocator, .{});
+    defer deserialized.deinit();
+    try deserialized.deserialize(data, &registry);
+    try std.testing.expectEqual(group_id, deserialized.id);
+    try std.testing.expectEqual(@as(usize, 0), deserialized.count());
+    try std.testing.expect(deserialized.isLocked());
+}
