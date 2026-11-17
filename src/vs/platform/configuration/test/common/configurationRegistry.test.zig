@@ -173,3 +173,95 @@ test "policy and policyReference on the same setting are rejected" {
     try std.testing.expect(registry.getPolicyConfigurations().get("policyBoth") == null);
     try std.testing.expect(registry.getPolicyReferenceConfigurations().get("policyBothReference") == null);
 }
+
+fn defaultEntries(allocator: std.mem.Allocator, key: []const u8, text: []const u8) ![]configuration_registry.DefaultOverride {
+    const entries = try allocator.alloc(configuration_registry.DefaultOverride, 1);
+    entries[0] = .{ .key = key, .value = try value(allocator, text) };
+    return entries;
+}
+
+test "deregister merged object default overrides" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test_default", &.{.{ .key = "config" }});
+
+    const overrides1 = try defaultEntries(arena.allocator(), "config", "{\"a\":1,\"b\":2}");
+    const overrides2 = try defaultEntries(arena.allocator(), "config", "{\"a\":2,\"c\":3}");
+    const source1 = configuration_registry.ConfigurationDefaultSource{ .extension = .{ .id = "source1", .display_name = "source1" } };
+    const source2 = configuration_registry.ConfigurationDefaultSource{ .extension = .{ .id = "source2", .display_name = "source2" } };
+    try registry.registerDefaultConfigurationsWithSource(overrides1, source1);
+    try registry.registerDefaultConfigurationsWithSource(overrides2, source2);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{\"a\":2,\"b\":2,\"c\":3}", arena.allocator());
+
+    try registry.deregisterDefaultConfigurations(overrides2, source2);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{\"a\":1,\"b\":2}", arena.allocator());
+    try registry.deregisterDefaultConfigurations(overrides1, source1);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{}", arena.allocator());
+}
+
+test "deregister merged object default overrides without source" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test_default", &.{.{ .key = "config" }});
+
+    const overrides1 = try defaultEntries(arena.allocator(), "config", "{\"a\":1,\"b\":2}");
+    const overrides2 = try defaultEntries(arena.allocator(), "config", "{\"a\":2,\"c\":3}");
+    try registry.registerDefaultConfigurations(overrides1);
+    try registry.registerDefaultConfigurations(overrides2);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{\"a\":2,\"b\":2,\"c\":3}", arena.allocator());
+
+    try registry.deregisterDefaultConfigurations(overrides2, null);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{\"a\":1,\"b\":2}", arena.allocator());
+    try registry.deregisterDefaultConfigurations(overrides1, null);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{}", arena.allocator());
+}
+
+test "deregister merged object default language overrides" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test_default", &.{.{ .key = "config" }});
+
+    const overrides1 = try defaultEntries(arena.allocator(), "[lang]", "{\"config\":{\"a\":1,\"b\":2}}");
+    const overrides2 = try defaultEntries(arena.allocator(), "[lang]", "{\"config\":{\"a\":2,\"c\":3}}");
+    const source1 = configuration_registry.ConfigurationDefaultSource{ .string = "source1" };
+    const source2 = configuration_registry.ConfigurationDefaultSource{ .string = "source2" };
+    try registry.registerDefaultConfigurationsWithSource(overrides1, source1);
+    try registry.registerDefaultConfigurationsWithSource(overrides2, source2);
+    try expectDefault(registry.getConfigurationProperties(), "[lang]", "{\"config\":{\"a\":2,\"b\":2,\"c\":3}}", arena.allocator());
+
+    try registry.deregisterDefaultConfigurations(overrides2, source2);
+    try expectDefault(registry.getConfigurationProperties(), "[lang]", "{\"config\":{\"a\":1,\"b\":2}}", arena.allocator());
+    try registry.deregisterDefaultConfigurations(overrides1, source1);
+    try std.testing.expect(registry.getConfigurationProperties().get("[lang]") == null);
+}
+
+test "deregister with string and extension sources" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test_default", &.{.{ .key = "config" }});
+
+    const overrides1 = try defaultEntries(arena.allocator(), "config", "{\"a\":1,\"b\":2}");
+    const overrides2 = try defaultEntries(arena.allocator(), "config", "{\"a\":2,\"c\":3}");
+    const string_source = configuration_registry.ConfigurationDefaultSource{ .string = "stringSource" };
+    const extension_source = configuration_registry.ConfigurationDefaultSource{ .extension = .{ .id = "extSource", .display_name = "Extension Source" } };
+    try registry.registerDefaultConfigurationsWithSource(overrides1, string_source);
+    try registry.registerDefaultConfigurationsWithSource(overrides2, extension_source);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{\"a\":2,\"b\":2,\"c\":3}", arena.allocator());
+
+    try registry.deregisterDefaultConfigurations(overrides1, string_source);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{\"a\":2,\"c\":3}", arena.allocator());
+    try registry.deregisterDefaultConfigurations(overrides2, extension_source);
+    try expectDefault(registry.getConfigurationProperties(), "config", "{}", arena.allocator());
+}

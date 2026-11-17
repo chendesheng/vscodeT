@@ -935,7 +935,7 @@ supports the `exclude` parse option, and ports the ConfigurationModel parsing
 cases (override identifiers, exclude/exclude-with-include, invalid keys, null
 values), the setValue/removeValue segmented-key cases, and override-model/merge cases (with `ConfigurationModel.override`, override-preserving merges and identifier precedence). `configurationRegistry.zig` also
 has explicit property registration with default merging, disallowed defaults and
-policy deduplication and policy references, covering the first `configurationRegistry.test.ts` cases;
+policy deduplication, policy references, and source-tracked default contributions with deregistration/rebuild, covering the `configurationRegistry.test.ts` cases through deregistration;
 schema/scope/policy-reference/excluded-property cases remain. The registry/scope-dependent cases (`configurationRegistry`,
 `configuration.test`, `configurations`, `policyConfiguration`,
 `configurationService`, `configurationVariables`) remain, as does the TUI

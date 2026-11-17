@@ -46,6 +46,7 @@ pub const Property = struct {
 pub const DefaultOverride = struct {
     key: []const u8,
     value: std.json.Value,
+    source: ?ConfigurationDefaultSource = null,
 };
 
 pub const ConfigurationRegistry = struct {
@@ -56,6 +57,13 @@ pub const ConfigurationRegistry = struct {
     policies: std.StringHashMap(void),
     policy_configurations: std.StringHashMap([]const u8),
     policy_reference_configurations: std.StringHashMap(std.array_list.Managed([]const u8)),
+    base_defaults: std.StringHashMap(std.json.Value),
+    contributions: std.array_list.Managed(Contribution),
+
+    const Contribution = struct {
+        source: ?ConfigurationDefaultSource,
+        entries: []const DefaultOverride,
+    };
 
     pub fn init(allocator: Allocator) !*ConfigurationRegistry {
         const self = try allocator.create(ConfigurationRegistry);
@@ -68,6 +76,8 @@ pub const ConfigurationRegistry = struct {
             .policies = std.StringHashMap(void).init(allocator),
             .policy_configurations = std.StringHashMap([]const u8).init(allocator),
             .policy_reference_configurations = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
+            .base_defaults = std.StringHashMap(std.json.Value).init(allocator),
+            .contributions = std.array_list.Managed(Contribution).init(allocator),
         };
         return self;
     }
@@ -84,6 +94,8 @@ pub const ConfigurationRegistry = struct {
         var references = self.policy_reference_configurations.valueIterator();
         while (references.next()) |list| list.deinit();
         self.policy_reference_configurations.deinit();
+        self.base_defaults.deinit();
+        self.contributions.deinit();
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -105,7 +117,9 @@ pub const ConfigurationRegistry = struct {
                 if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed([]const u8).init(arena);
                 try entry.value_ptr.append(try arena.dupe(u8, schema.key));
             }
-            const default_value = if (schema.default) |value| try cloneValue(arena, value) else std.json.Value.null;
+            const base_value = if (schema.default) |value| try cloneValue(arena, value) else std.json.Value{ .object = .{} };
+            try self.base_defaults.put(try arena.dupe(u8, schema.key), try cloneValue(arena, base_value));
+            const default_value = try cloneValue(arena, base_value);
             try self.properties.put(try arena.dupe(u8, schema.key), .{
                 .value_type = try arena.dupe(u8, schema.value_type),
                 .default = default_value,
@@ -121,23 +135,71 @@ pub const ConfigurationRegistry = struct {
     /// Merges registered default overrides into the property defaults. Later
     /// object defaults merge recursively; a disallowing property is untouched.
     pub fn registerDefaultConfigurations(self: *ConfigurationRegistry, overrides: []const DefaultOverride) !void {
+        return self.registerDefaultConfigurationsWithSource(overrides, null);
+    }
+
+    pub fn registerDefaultConfigurationsWithSource(self: *ConfigurationRegistry, overrides: []const DefaultOverride, source: ?ConfigurationDefaultSource) !void {
         const arena = self.arena.allocator();
+        var entries = std.array_list.Managed(DefaultOverride).init(arena);
         for (overrides) |override_value| {
-            const entry = try self.properties.getOrPut(try arena.dupe(u8, override_value.key));
-            if (!entry.found_existing) {
-                entry.value_ptr.* = .{ .value_type = "object" };
+            try entries.append(.{
+                .key = try arena.dupe(u8, override_value.key),
+                .value = try cloneValue(arena, override_value.value),
+                .source = source,
+            });
+        }
+        try self.contributions.append(.{ .source = source, .entries = try entries.toOwnedSlice() });
+        try self.rebuildDefaults();
+    }
+
+    /// Removes the first contribution matching `overrides` (and source when
+    /// given), then rebuilds the effective defaults.
+    pub fn deregisterDefaultConfigurations(self: *ConfigurationRegistry, overrides: []const DefaultOverride, source: ?ConfigurationDefaultSource) !void {
+        var index: usize = 0;
+        while (index < self.contributions.items.len) : (index += 1) {
+            const contribution = self.contributions.items[index];
+            if (!isConfigurationDefaultSourceEquals(contribution.source, source)) continue;
+            if (!sameOverrides(contribution.entries, overrides)) continue;
+            _ = self.contributions.orderedRemove(index);
+            try self.rebuildDefaults();
+            return;
+        }
+    }
+
+    fn rebuildDefaults(self: *ConfigurationRegistry) !void {
+        const arena = self.arena.allocator();
+        var iterator = self.properties.iterator();
+        while (iterator.next()) |entry| {
+            if (self.base_defaults.get(entry.key_ptr.*)) |base| {
+                entry.value_ptr.default = try cloneValue(arena, base);
             }
-            const property = entry.value_ptr;
-            if (property.disallow_configuration_default) continue;
-            switch (property.default) {
-                .object => {
-                    if (override_value.value == .object) {
-                        try mergeObjects(arena, &property.default, override_value.value);
-                    } else {
-                        property.default = try cloneValue(arena, override_value.value);
-                    }
-                },
-                else => property.default = try cloneValue(arena, override_value.value),
+        }
+        // Drop properties that only existed because of default overrides.
+        var removals = std.array_list.Managed([]const u8).init(self.allocator);
+        defer removals.deinit();
+        iterator = self.properties.iterator();
+        while (iterator.next()) |entry| {
+            if (self.base_defaults.contains(entry.key_ptr.*)) continue;
+            try removals.append(entry.key_ptr.*);
+        }
+        for (removals.items) |key| _ = self.properties.remove(key);
+
+        for (self.contributions.items) |contribution| {
+            for (contribution.entries) |override_value| {
+                const entry = try self.properties.getOrPut(try arena.dupe(u8, override_value.key));
+                if (!entry.found_existing) entry.value_ptr.* = .{ .value_type = "object", .default = .{ .object = .{} } };
+                const property = entry.value_ptr;
+                if (property.disallow_configuration_default) continue;
+                switch (property.default) {
+                    .object => {
+                        if (override_value.value == .object) {
+                            try mergeObjects(arena, &property.default, override_value.value);
+                        } else {
+                            property.default = try cloneValue(arena, override_value.value);
+                        }
+                    },
+                    else => property.default = try cloneValue(arena, override_value.value),
+                }
             }
         }
     }
@@ -173,6 +235,43 @@ pub const ConfigurationRegistry = struct {
         return ConfigurationModel.merge(allocator, models.items);
     }
 };
+
+fn sameOverrides(a: []const DefaultOverride, b: []const DefaultOverride) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (!std.mem.eql(u8, left.key, right.key)) return false;
+        if (!valueEquals(left.value, right.value)) return false;
+    }
+    return true;
+}
+
+fn valueEquals(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .bool => |value| value == b.bool,
+        .integer => |value| value == b.integer,
+        .float => |value| value == b.float,
+        .number_string => |value| std.mem.eql(u8, value, b.number_string),
+        .string => |value| std.mem.eql(u8, value, b.string),
+        .array => |array| blk: {
+            if (array.items.len != b.array.items.len) break :blk false;
+            for (array.items, b.array.items) |item_a, item_b| {
+                if (!valueEquals(item_a, item_b)) break :blk false;
+            }
+            break :blk true;
+        },
+        .object => |object| blk: {
+            if (object.count() != b.object.count()) break :blk false;
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                const other = b.object.get(entry.key_ptr.*) orelse break :blk false;
+                if (!valueEquals(entry.value_ptr.*, other)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
 
 fn cloneValue(arena: Allocator, value: std.json.Value) !std.json.Value {
     return switch (value) {
