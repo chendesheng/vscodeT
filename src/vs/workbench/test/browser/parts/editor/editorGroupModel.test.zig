@@ -2003,3 +2003,29 @@ test "EditorGroupModel: contains untyped inputs by resource" {
     try std.testing.expect(group.contains(.{ .untyped = .{ .resource = "/input1" } }, .{}));
     try std.testing.expect(group.contains(.{ .untyped = .{ .resource = "/input2" } }, .{}));
 }
+
+test "EditorGroupModel: side-by-side matching unwraps composites" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const input1 = try newInput(allocator, .serializable, "1", "/one");
+    const input2 = try newInput(allocator, .serializable, "2", "/two");
+    const input3 = try newInput(allocator, .serializable, "3", "/three");
+    const composite = try @import("../../../../common/editor/sideBySideEditorInput.zig").SideBySideEditorInput.init(allocator, null, null, input2, input1);
+    defer composite.destroy();
+    _ = try group.openEditor(&composite.base, .{ .pinned = true, .active = true });
+
+    const any = workbench_editor.MatchEditorOptions{ .support_side_by_side = .ANY };
+    const both = workbench_editor.MatchEditorOptions{ .support_side_by_side = .BOTH };
+    try std.testing.expect(group.contains(.{ .input = input1 }, any));
+    try std.testing.expect(!group.contains(.{ .input = input1 }, both));
+    try std.testing.expect(group.contains(.{ .input = input2 }, any));
+    try std.testing.expect(!group.contains(.{ .input = input3 }, any));
+    try std.testing.expect(!group.contains(.{ .input = input1 }, .{}));
+
+    _ = try group.openEditor(input1, .{ .pinned = true, .active = true });
+    try std.testing.expectEqual(@as(?usize, 1), group.indexOfWith(.{ .input = input1 }, any));
+}

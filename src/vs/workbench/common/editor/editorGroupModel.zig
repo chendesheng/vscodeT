@@ -23,6 +23,7 @@ const Emitter = @import("../../../base/common/event.zig").Emitter;
 const editor = @import("../editor.zig");
 const editor_input = @import("editorInput.zig");
 const editor_factory = @import("editorFactory.zig");
+const side_by_side = @import("sideBySideEditorInput.zig");
 
 const EditorInput = editor_input.EditorInput;
 const Candidate = editor_input.Candidate;
@@ -366,9 +367,15 @@ pub const EditorGroupModel = struct {
         options: MatchEditorOptions,
     ) ?usize {
         var index: ?usize = null;
+        const candidate_is_side_by_side = switch (candidate) {
+            .input => |other| side_by_side.is(other) != null,
+            .untyped => false,
+        };
         for (editors, 0..) |input, i| {
             if (self.matchesEditor(input, candidate, options)) {
                 index = i;
+                // Prefer a later direct match over an earlier side-by-side match.
+                if (options.support_side_by_side != null and side_by_side.is(input) != null and !candidate_is_side_by_side) continue;
                 break;
             }
         }
@@ -841,13 +848,29 @@ pub const EditorGroupModel = struct {
         candidate: Candidate,
         options: MatchEditorOptions,
     ) bool {
-        _ = self;
         const editor_input_value = input orelse return false;
 
-        // Upstream unwraps `SideBySideEditorInput` when supportSideBySide is
-        // set. That composite input is not ported yet, so there is nothing to
-        // unwrap and the match remains direct.
-        _ = options.support_side_by_side;
+        if (options.support_side_by_side) |support| {
+            if (side_by_side.is(editor_input_value)) |composite| {
+                const candidate_is_side_by_side = switch (candidate) {
+                    .input => |other| side_by_side.is(other) != null,
+                    .untyped => false,
+                };
+                if (!candidate_is_side_by_side) {
+                    switch (support) {
+                        .ANY => {
+                            if (self.matchesEditor(composite.primary, candidate, options) or
+                                self.matchesEditor(composite.secondary, candidate, options)) return true;
+                        },
+                        .BOTH => {
+                            if (self.matchesEditor(composite.primary, candidate, options) and
+                                self.matchesEditor(composite.secondary, candidate, options)) return true;
+                        },
+                        else => {},
+                    }
+                }
+            }
+        }
 
         const strict_equals = switch (candidate) {
             .input => |other| editor_input_value == other,
