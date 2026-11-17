@@ -302,3 +302,33 @@ test "ConfigurationService: application and machine settings ignore workspace va
     try std.testing.expectEqual(@as(i64, 2), service.getValue("machine.setting", .{ .resource = resource }).?.integer);
     try std.testing.expect(service.inspect("machine.setting", .{ .resource = resource }).workspace == null);
 }
+
+test "ConfigurationService: untrusted workspaces ignore unregistered workspace values" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(&tmp, io, "user-settings.json", "{\"unregistered.setting\": \"userValue\"}");
+    try tmp.dir.createDirPath(io, ".vscode");
+    try writeFile(&tmp, io, ".vscode/settings.json", "{\"unregistered.setting\": \"workspaceValue\"}");
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = try absoluteRoot(&tmp, io, &buffer);
+    var user_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const user_len = try tmp.dir.realPath(io, &user_buffer);
+    const user_path = try std.fmt.allocPrint(allocator, "{s}/user-settings.json", .{user_buffer[0..user_len]});
+    defer allocator.free(user_path);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const service = try ConfigurationService.init(allocator, io, context, .{ .user_settings_path = user_path });
+    defer service.deinit();
+
+    const resource = try std.fmt.allocPrint(allocator, "{s}/main.zig", .{root});
+    defer allocator.free(resource);
+    try std.testing.expectEqualStrings("workspaceValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);
+    service.trusted = false;
+    try std.testing.expectEqualStrings("userValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);
+
+    try service.registry.registerConfiguration("test", &.{.{ .key = "unregistered.setting", .value_type = "string", .default = std.json.Value{ .string = "default" } }});
+    try std.testing.expectEqualStrings("workspaceValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);
+}

@@ -201,18 +201,18 @@ pub const ConfigurationService = struct {
         section: []const u8,
         overrides: configuration.Overrides,
     ) ?*const Value {
-        if (self.registry.getConfigurationProperties().get(section)) |property| {
-            if (!self.allowsWorkspaceValue(property)) {
-                _ = self.scratch.reset(.retain_capacity);
-                var merged = mergeModels(self.scratch.allocator(), &.{ &self.defaults, &self.user }) catch return null;
-                if (overrides.override_identifier) |identifier| {
-                    var overridden = merged.override(self.scratch.allocator(), identifier) catch return null;
-                    if (overridden.getValue(section)) |value| return value;
-                    return &property.default;
-                }
-                if (merged.getValue(section)) |value| return value;
-                return &property.default;
+        const property = self.registry.getConfigurationProperties().get(section);
+        const ignore_workspace = if (property) |registered| !self.allowsWorkspaceValue(registered) else !self.trusted;
+        if (ignore_workspace) {
+            _ = self.scratch.reset(.retain_capacity);
+            var merged = mergeModels(self.scratch.allocator(), &.{ &self.defaults, &self.user }) catch return null;
+            if (overrides.override_identifier) |identifier| {
+                var overridden = merged.override(self.scratch.allocator(), identifier) catch return null;
+                if (overridden.getValue(section)) |value| return value;
+                return if (property) |registered| &registered.default else null;
             }
+            if (merged.getValue(section)) |value| return value;
+            return if (property) |registered| &registered.default else null;
         }
         const model = self.effectiveModel(overrides) orelse return null;
         if (overrides.override_identifier) |identifier| {
@@ -243,6 +243,8 @@ pub const ConfigurationService = struct {
         var allow_workspace = true;
         if (self.registry.getConfigurationProperties().get(section)) |property| {
             allow_workspace = self.allowsWorkspaceValue(property);
+        } else if (!self.trusted) {
+            allow_workspace = false;
         }
         if (!allow_workspace) {
             _ = self.scratch.reset(.retain_capacity);
