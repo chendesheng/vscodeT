@@ -304,7 +304,7 @@ test "Side-by-side serializer round-trips file inputs" {
     var side_serializer = @import("../../../../common/editor/sideBySideEditorInput.zig").SideBySideEditorSerializer.init(allocator, &registry);
     const serializer = side_serializer.interface();
 
-    const composite = try @import("../../../../common/editor/sideBySideEditorInput.zig").SideBySideEditorInput.init(allocator, null, null, &secondary.base, &primary.base);
+    const composite = try @import("../../../../common/editor/sideBySideEditorInput.zig").SideBySideEditorInput.init(allocator, "custom", "desc", &secondary.base, &primary.base);
     defer composite.destroy();
     try primary.setText("saved");
     _ = try composite.base.save(1);
@@ -329,6 +329,8 @@ test "Side-by-side serializer round-trips file inputs" {
     }
     try std.testing.expectEqualStrings(primary_path, restored_primary.path);
     try std.testing.expectEqualStrings(secondary_path, restored_secondary.path);
+    try std.testing.expectEqualStrings("custom", restored_composite.base.getName());
+    try std.testing.expectEqualStrings("desc", restored_composite.base.getDescription(.LONG).?);
 }
 
 test "Diff editor serializer round-trips file inputs" {
