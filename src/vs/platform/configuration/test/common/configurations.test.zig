@@ -4,6 +4,7 @@
 const std = @import("std");
 const configurationRegistry = @import("../../common/configurationRegistry.zig");
 const configurations = @import("../../common/configurations.zig");
+const configurationModels = @import("../../common/configurationModels.zig");
 
 test "registering a property before initialize" {
     const allocator = std.testing.allocator;
@@ -304,4 +305,51 @@ test "registered properties stay out of the model until initialize" {
     try std.testing.expect(defaults.configurationModel().getValue("later.prop") == null);
     try defaults.initialize();
     try std.testing.expectEqual(@as(bool, false), defaults.configurationModel().getValue("later.prop").?.bool);
+}
+
+test "policy configuration applies policy values and changes" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("policy", &.{
+        .{ .key = "policy.a", .value_type = "string", .default = std.json.Value{ .string = "default" }, .policy = "PolicyA" },
+        .{ .key = "policy.obj", .value_type = "object", .default = std.json.Value{ .object = std.json.ObjectMap{} }, .policy = "PolicyObject" },
+        .{ .key = "policy.arr", .value_type = "array", .default = std.json.Value{ .array = std.json.Array.init(allocator) }, .policy = "PolicyArray" },
+        .{ .key = "policy.bool", .value_type = "boolean", .default = std.json.Value{ .bool = true }, .policy = "PolicyBool" },
+        .{ .key = "policy.plain", .value_type = "boolean", .default = std.json.Value{ .bool = true } },
+    });
+    var policy_service = @import("../../../../platform/policy/common/policy.zig").InMemoryPolicyService.init(allocator);
+    defer policy_service.deinit();
+    try policy_service.setPolicyValue("PolicyA", .{ .string = "on" });
+    try policy_service.setPolicyValue("PolicyObject", .{ .string = "{\"key\":1}" });
+    try policy_service.setPolicyValue("PolicyArray", .{ .string = "[1,2]" });
+    try policy_service.setPolicyValue("PolicyBool", .{ .boolean = false });
+
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    var policy_config = try configurations.PolicyConfiguration.init(allocator, &defaults, &policy_service);
+    defer policy_config.deinit();
+    try policy_config.initialize();
+
+    const model = policy_config.configurationModel();
+    try std.testing.expectEqualStrings("on", model.getValue("policy.a").?.string);
+    try std.testing.expectEqual(@as(i64, 1), model.getValue("policy.obj").?.object.get("key").?.integer);
+    try std.testing.expectEqual(@as(usize, 2), model.getValue("policy.arr").?.array.items.len);
+    try std.testing.expectEqual(@as(bool, false), model.getValue("policy.bool").?.bool);
+    try std.testing.expect(model.getValue("policy.plain") == null);
+
+    const Listener = struct {
+        fn onChange(_: configurationModels.ConfigurationModel, count: *usize) anyerror!void {
+            count.* += 1;
+        }
+    };
+    var changes: usize = 0;
+    _ = try policy_config.onDidChangeConfiguration.listen(&changes, Listener.onChange);
+    try policy_service.setPolicyValue("PolicyA", .{ .string = "off" });
+    try std.testing.expectEqualStrings("off", policy_config.configurationModel().getValue("policy.a").?.string);
+    try std.testing.expectEqual(@as(usize, 1), changes);
+
+    try policy_service.setPolicyValue("PolicyA", null);
+    try std.testing.expect(policy_config.configurationModel().getValue("policy.a") == null);
 }
