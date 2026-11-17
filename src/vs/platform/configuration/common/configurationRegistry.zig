@@ -344,6 +344,7 @@ pub const ConfigurationRegistry = struct {
             list.* = rebound;
         }
         self.allocator.destroy(clone);
+        self.on_did_update_configuration.fire(&.{}) catch {};
     }
 
     fn clearState(self: *ConfigurationRegistry) void {

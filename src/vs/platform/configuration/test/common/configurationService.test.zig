@@ -392,3 +392,22 @@ test "default configurations can contribute language overrides" {
     try registry.registerDefaultsJson("{\"[python]\":{\"editor.tabSize\":3}}");
     try std.testing.expectEqual(@as(i64, 3), (try service.getValueWithOverrides("editor.tabSize", "python")).?.integer);
 }
+
+test "restoring a snapshot updates an initialized service" {
+    const allocator = std.testing.allocator;
+    const source_registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer source_registry.deinit();
+    try source_registry.registerConfiguration("snapshot", &.{.{ .key = "snapshot.setting", .default = std.json.Value{ .bool = false } }});
+    try source_registry.registerDefaultConfigurations(&.{.{ .key = "snapshot.setting", .value = std.json.Value{ .bool = true } }});
+    var snapshot = try source_registry.record(allocator);
+
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try std.testing.expect(service.getValue("snapshot.setting") == null);
+
+    try registry.restore(&snapshot);
+    try std.testing.expectEqual(@as(bool, true), service.getValue("snapshot.setting").?.bool);
+}
