@@ -1,10 +1,10 @@
 # TUI porting inventory
 
-Status: P1, P2 and the Search view/result-list port are implemented; P3-P5
-remain. The file table (§7) and the UI/view code map (§7.1) are current at the
-snapshot HEAD.
+Status: P1, P2, the Search view/result-list port and P5f (log service) are
+implemented; P3, P4 and the remaining P5 slices remain. The file table (§7) and
+the UI/view code map (§7.1) are current at the snapshot HEAD.
 
-- Local snapshot: `src/tui/` at HEAD `413fa55` (28 files, 18,878 lines).
+- Local snapshot: `src/tui/` at HEAD `cd69afb` (28 files, 19,012 lines).
 - Upstream: VS Code **1.147.0**, `../vscode` at commit `e31c2e52`.
 - Date: 2026-11-16.
 - Scope: the existing 28 files in `src/tui/`. This is not a feature wishlist;
@@ -20,7 +20,7 @@ are local; when written without a `src/` prefix (`vs/...`, `platform/...`,
 
 ## 0. Implementation status
 
-P1 and P2 are implemented.
+P1, P2 and P5f are implemented.
 
 **P1 (Explorer filter):**
 - `FilesFilter` moved to
@@ -57,7 +57,28 @@ P1 and P2 are implemented.
   `src/vs/workbench/contrib/search/browser/`; `src/tui/searchView.zig` is the
   terminal adapter over them.
 
-§7 and the new §7.1 are current at the snapshot HEAD. P3-P5 below are still
+**P5f (log service):**
+- `src/vs/platform/log/common/log.zig` ports `LogLevel`, `canLog`, `log`,
+  `format`, `AbstractLogger`, `AbstractMessageLogger`, `AdapterLogger`,
+  `MultiplexLogger`, `NullLogger`, `NullLogService`,
+  `createUnexpectedErrorHandler`, `parseLogLevel` and the level helpers;
+  `logService.zig` ports `LogService`.
+- `src/vs/base/common/errorMessage.zig` ports `toErrorMessage`, which
+  `createUnexpectedErrorHandler` needs.
+- `src/vs/platform/log/test/common/log.test.zig` ports the 10 upstream tests
+  (adapter forwarding/no-swallow behavior, duplicate suppression window,
+  native-error and stackless formatting, per-handler suppression, level
+  filtering).
+- `src/tui/logger.zig` is now the terminal host over that core: one synchronous
+  `main.log` in upstream `FileLogger` line format with UTC timestamps, and
+  `app.zig` reports startup, session outcomes and errors through the log
+  service. `VSCODE_TEXTBUFFER_LOG` overrides the path.
+- Documented gap: the console loggers, the URI-keyed `ILoggerService` registry
+  and the log-output picker are not ported. The TUI owns the terminal and has a
+  single log file instead of per-channel resources.
+
+§7 and the new §7.1 are current at the snapshot HEAD. P3, P4 and the remaining
+P5 slices below are still
 pending.
 
 ## 1. Purpose
@@ -182,14 +203,15 @@ over a larger port that needs missing services.
 | Category | Files | Lines | Contents |
 | --- | ---: | ---: | --- |
 | Editor core | 4 | 6,780 | `editor.zig`, `view.zig`, `tab.zig`, `preview.zig` |
-| Workbench shell and commands | 5 | 5,690 | `app.zig`, `workbench.zig`, `activityBar.zig`, `tabBar.zig`, `commands.zig` |
+| Workbench shell and commands | 5 | 5,732 | `app.zig`, `workbench.zig`, `activityBar.zig`, `tabBar.zig`, `commands.zig` |
 | Views and pickers | 6 | 3,995 | Explorer, search, quick open, quick input, file index |
-| Services, theme and language | 9 | 1,494 | Session, editor input, settings, theme, language, logger, hover |
+| Services, theme and language | 9 | 1,586 | Session, editor input, settings, theme, language, logger, hover |
 | Terminal host | 4 | 919 | Raw mode, ANSI, cell-border probe, UTF-8 helpers |
-| **Total** | **28** | **18,878** | 160 inline tests |
+| **Total** | **28** | **19,012** | 161 inline tests |
 
-The numbers are current `wc -l` values and include tests (13,318 non-test
-lines). The editor core and the shell are 66% of the terminal tree.
+The numbers are current `wc -l` values and include tests (13,434 non-test
+lines and 5,578 lines in the trailing test sections). The editor core and the
+shell are 66% of the terminal tree.
 
 ## 6. Already-ported substrate
 
@@ -233,7 +255,7 @@ not scheduled for a port. §7.1 breaks the UI/view files down by code block.
 | `hoverProvider.zig` | none (requires language extension host) | Word/token stand-in for the ported hover contribution | `terminal-only` | — | — | none |
 | `languageConfiguration.zig` | `editor/common/languages/languageConfigurationRegistry.ts`, `workbench/services/language/common/languageService.ts` | `ILanguageConfigurationService` implementation and global activation | `portable-embedded` | P5d | M | `editor/test/common/modes/languageConfiguration.test.ts` |
 | `language.zig` | `workbench/services/language/common/languageService.ts` (223), language association extension point | Hard-coded extension→language map, comment rules, brackets | `portable-embedded` | P5d | S | none direct |
-| `logger.zig` | `platform/log/common/log.ts` (233), `platform/log/common/logService.ts` (10), `platform/log/common/fileLog.ts` | File logger and formatting | `tui-adapter` | P5f | S | `platform/log/test/common/log.test.ts` |
+| `logger.zig` | `platform/log/common/log.ts` (233), `platform/log/common/logService.ts` (10), `platform/log/common/fileLog.ts` (18) | Terminal host over the ported log core: one synchronous `main.log` in upstream `FileLogger` line format with UTC timestamps; `app.zig` reports lifecycle and errors through the service | `ported` | — | — | `platform/log/test/common/log.test.ts` (10, ported) |
 | `preview.zig` | none (read-only host) | Read-only duplicate of the view renderer (gutter/tokens/scroll); fold into a read-only `Editor`/`View` instead of keeping a second renderer | `terminal-only` (duplicate view code) | — | S | none |
 | `quickAccess.zig` | `workbench/browser/quickaccess.ts`, `platform/quickinput/common/quickAccess.ts`, `platform/quickinput/browser/quickAccess.ts` | Provider/controller host and terminal key/mouse routing | `tui-adapter` | P3/P5 | S | `platform/quickinput/test/browser/quickinput.test.ts` |
 | `quickInput.zig` | `platform/quickinput/browser/quickInput.ts`, `platform/quickinput/browser/quickInputList.ts` | Terminal picker layout/paint; model/controller already ported | `tui-adapter` | — | S | `platform/quickinput/test/browser/quickinput.test.ts` |
@@ -556,11 +578,15 @@ command/file providers live under `vs/platform/quickinput` and
   `active_service` (23). Upstream is `WorkbenchLanguageService` (223) and the
   language-configuration registry. The editor-side registry and language
   configuration types are already ported; P5d replaces the stand-ins.
-- **Logger.** `logger.zig` opens a file and formats into a 4 KiB buffer.
-  Upstream `ILogService` (`platform/log/common/log.ts:233`), `LogService`
-  (`platform/log/common/logService.ts:10`) and `FileLoggerService`
-  (`platform/log/common/fileLog.ts:105`) add levels, channels and lifecycle.
-  P5f is small and independent.
+- **Logger (P5f, implemented).** `platform/log/common/log.zig` and
+  `logService.zig` port `ILogService`/`LogService` (`log.ts:233`,
+  `logService.ts:10`), `AbstractLogger`/`AbstractMessageLogger`,
+  `AdapterLogger`, `MultiplexLogger`, `NullLogger` and
+  `createUnexpectedErrorHandler`. `logger.zig` is the terminal file host over
+  them; `app.zig` logs startup/session/exit. Still missing: console loggers,
+  the URI-keyed logger registry (`AbstractLoggerService`) and the log-output
+  picker (`fileLog.ts`), which need a URI/file-service layer and a workbench
+  log picker; the TUI has one `main.log`.
 - **Settings watcher.** `settingsWatcher.zig` watches the user settings file,
   workspace file and each folder’s `.vscode/settings.json` and reloads the
   configuration service. Upstream configuration service normally owns this
@@ -786,9 +812,15 @@ independently shippable slices.
 | P5c Theme service | `theme.zig`, `syntaxTheme.zig`, hard-coded palettes | `workbench/services/themes/browser/workbenchThemeService.ts`, `platform/theme/common/themeService.ts` | `workbench/services/themes/test/common/workbenchThemeService.test.ts` (4), `workbench/services/themes/test/common/colorThemeData.test.ts` (5) | M/L |
 | P5d Language service | `language.zig`, `languageConfiguration.zig` | `workbench/services/language/common/languageService.ts`, `editor/common/languages/languageConfigurationRegistry.ts` | `editor/test/common/modes/languageConfiguration.test.ts` | M |
 | P5e File/editor input | `editorInput.zig` | `workbench/contrib/files/browser/editors/fileEditorInput.ts`, `workbench/services/textfile/common/textFileEditorModel.ts`, file service | `workbench/contrib/files/test/browser/fileEditorInput.test.ts` (17), `workbench/services/textfile/test/browser/textFileEditorModel.test.ts` (55) | L |
-| P5f Log service | `logger.zig` | `platform/log/common/log.ts`, `platform/log/common/logService.ts` | `platform/log/test/common/log.test.ts` (10) | S |
+| P5f Log service (implemented) | `logger.zig` | `platform/log/common/log.ts`, `platform/log/common/logService.ts` | `platform/log/test/common/log.test.ts` (10) | S |
 | P5g Search actions/config | `searchView.zig`, `searchWidget.zig`, `fileIndex.zig` | `workbench/contrib/search/browser/searchActions*.ts`, `workbench/contrib/search/browser/searchView.ts`, `workbench/contrib/search/browser/searchWidget.ts`, search service | `workbench/contrib/search/test/browser/searchActions.test.ts` (6), `workbench/contrib/search/test/browser/searchWidget.test.ts` (1), `workbench/contrib/search/test/browser/searchView.test.ts` (2) | M |
 | P5h Settings watch | `settingsWatcher.zig` | `workbench/services/configuration/browser/configurationService.zig`, file service | `workbench/services/configuration/test/browser/configurationService.test.ts` | S |
+
+**P5f status:** `log.zig`, `logService.zig` and `errorMessage.zig` exist under
+the mirrored paths, the 10 upstream `log.test.ts` cases are ported and
+registered, and `app.zig`/`logger.zig` consume `ILogService`. The console
+loggers and the URI-keyed logger registry remain unported for the reasons in
+§8.6; README documents the single-file logging scope.
 
 **Exit criteria per slice:** the upstream module exists under the mirrored
 path, its upstream tests are ported and registered, the TUI consumes it, and
@@ -838,6 +870,8 @@ of scope:
   renderer should be folded into a read-only `Editor`/`View` (see §7.1).
 - The word/token hover stand-in (`hoverProvider.zig`) until a language
   extension host exists.
+- Console loggers, the URI-keyed `ILoggerService` registry and the log-output
+  picker; the TUI has one `main.log` and owns the terminal (see §8.6).
 - Browser-only editor features already documented as deviations in
   `docs/terminal-ui.md` (DOM/CSS, subpixel geometry, IME, native selection,
   minimap, pixel lanes, HTML/CSS parsers, compositor).
@@ -848,9 +882,10 @@ of scope:
 
 **Assumptions**
 
-- This snapshot is `src/tui/` at HEAD `413fa55` (28 files, 18,878 lines);
-  the status bar (`413fa55`), the Search view (`f10e1a6`) and P1/P2 landed
-  after the original audit. Refresh the line numbers when HEAD moves.
+- This snapshot is `src/tui/` at HEAD `cd69afb` (28 files, 19,012 lines);
+  the status bar (`413fa55`), the Search view (`f10e1a6`), P1/P2 and P5f
+  (`cd69afb`) landed after the original audit. Refresh the line numbers when
+  HEAD moves.
 - Upstream is pinned to VS Code 1.147.0 at `e31c2e52`. If the checkout moves,
   paths and line numbers must be refreshed before starting a phase.
 - “Port” means an upstream-shaped Zig module plus the upstream tests under
