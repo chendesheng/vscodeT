@@ -1058,9 +1058,9 @@ input infrastructure described below.
 | Slice | Remaining upstream work |
 | --- | --- |
 | P4 | `editor/common/config/editorOptions.ts` (`ComputedEditorOptions`), `editor/browser/view.ts`, `editor/browser/view/viewController.ts`, `editor/browser/widget/codeEditor/codeEditorWidget.ts`, and the layout-dependent overlays |
-| P5e | `base/common/uri.ts`, the file service and `TextResourceEditorInput`/`FileEditorInput`/untitled/diff/side-by-side editor inputs |
-| P5c | `platform/theme/common/tokenClassificationRegistry.ts` and the remaining `themeConfiguration.ts`/workbench theme service pieces |
-| P5h | the workbench browser `configurationService.test.ts` experiment/remote/policy suites and policy configuration |
+| P5e | core `base/common/uri.ts` (parse/file/toString/encoding/joinPath/dirname/revive) and `FileChangesEvent`/`isParent` are ported; the file service and `TextResourceEditorInput`/`FileEditorInput`/untitled/diff/side-by-side editor inputs remain |
+| P5c | `tokenClassificationRegistry`, the TextMate scope matcher and `ColorThemeData` token-style resolution are ported; the workbench theme-service plumbing remains |
+| P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering are ported; the workbench experiment/remote suites remain |
 | P2 | `multiEditorTabsControl.test.ts`, browser tooltip cases in `statusbarItem.test.ts`, and the `explorerView.test.ts` tree cases that construct diff/side-by-side inputs |
 | filters | multi-byte highlight selection (#113404) and `Intl.Collator` locale ordering |
 
