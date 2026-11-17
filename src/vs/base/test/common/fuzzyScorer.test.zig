@@ -751,3 +751,36 @@ test "scoreItem - proper target offset #3" {
     try std.testing.expectEqual(@as(usize, 20), result.label_match.?[1].start);
     try std.testing.expectEqual(@as(usize, 21), result.label_match.?[1].end);
 }
+
+test "scoreItem - cache separates scoring inputs and preserves results" {
+    const allocator = std.testing.allocator;
+    var cache = fuzzy.FuzzyScorerCache.init(allocator);
+    defer fuzzy.deinitItemScoreCache(&cache, allocator);
+
+    var item = fixture("/xyz/some/path/someFile123.txt");
+    const prepared = try fuzzy.prepareQuery(allocator, "some");
+    defer prepared.deinit(allocator);
+    const first = try fuzzy.scoreItemFuzzyCached(allocator, &item, &prepared, true, TestItem.accessor(), &cache);
+    defer first.deinit(allocator);
+    try std.testing.expect(first.score > 0);
+    try std.testing.expectEqual(@as(usize, 1), cache.count());
+
+    const warm = try fuzzy.scoreItemFuzzyCached(allocator, &item, &prepared, true, TestItem.accessor(), &cache);
+    defer warm.deinit(allocator);
+    try std.testing.expectEqual(first.score, warm.score);
+    try std.testing.expectEqual(first.label_match.?.len, warm.label_match.?.len);
+    try std.testing.expectEqual(@as(usize, 1), cache.count());
+
+    const other = try fuzzy.prepareQuery(allocator, "xyz sm");
+    defer other.deinit(allocator);
+    const multi = try fuzzy.scoreItemFuzzyCached(allocator, &item, &other, true, TestItem.accessor(), &cache);
+    defer multi.deinit(allocator);
+    try std.testing.expect(multi.score > 0);
+
+    const quoted = try fuzzy.prepareQuery(allocator, "xyz \"sm\"");
+    defer quoted.deinit(allocator);
+    const no_match = try fuzzy.scoreItemFuzzyCached(allocator, &item, &quoted, true, TestItem.accessor(), &cache);
+    defer no_match.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), no_match.score);
+    try std.testing.expectEqual(@as(usize, 3), cache.count());
+}

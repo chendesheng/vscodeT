@@ -687,3 +687,77 @@ pub fn compareItemsByFuzzyScore(
     }
     return 0;
 }
+
+/// Optional scorer cache keyed by the scoring inputs (label, description,
+/// match mode and normalized query pieces). Upstream hashes these inputs; the
+/// terminal key is a readable composite so it stays debuggable.
+pub const FuzzyScorerCache = std.StringHashMap(ItemScore);
+
+fn cloneMatches(allocator: Allocator, matches: ?[]Match) !?[]Match {
+    if (matches) |value| return try allocator.dupe(Match, value);
+    return null;
+}
+
+pub fn cloneItemScore(allocator: Allocator, score: ItemScore) !ItemScore {
+    return .{
+        .score = score.score,
+        .label_match = try cloneMatches(allocator, score.label_match),
+        .description_match = try cloneMatches(allocator, score.description_match),
+    };
+}
+
+pub fn deinitItemScoreCache(cache: *FuzzyScorerCache, allocator: Allocator) void {
+    var iterator = cache.iterator();
+    while (iterator.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+        entry.value_ptr.deinit(allocator);
+    }
+    cache.deinit();
+}
+
+fn cacheKey(allocator: Allocator, label: []const u8, description: ?[]const u8, allow_non_contiguous_matches: bool, query: *const PreparedQuery) ![]u8 {
+    var key = std.array_list.Managed(u8).init(allocator);
+    defer key.deinit();
+    try key.appendSlice(if (allow_non_contiguous_matches) "1|" else "0|");
+    try key.appendSlice(label);
+    try key.append('|');
+    if (description) |value| try key.appendSlice(value);
+    try key.append('|');
+    try key.appendSlice(query.normalized);
+    try key.append('|');
+    if (query.values) |values| {
+        for (values) |piece| {
+            try key.appendSlice(piece.normalized);
+            try key.append(if (piece.expectContiguousMatch) '1' else '0');
+        }
+    }
+    return key.toOwnedSlice();
+}
+
+/// Cached variant of `scoreItemFuzzy`. Returned scores own their matches; the
+/// cache keeps an independent copy.
+pub fn scoreItemFuzzyCached(
+    allocator: Allocator,
+    item: *const anyopaque,
+    query: *const PreparedQuery,
+    allow_non_contiguous_matches: bool,
+    accessor: ItemAccessor,
+    cache: *FuzzyScorerCache,
+) !ItemScore {
+    if (query.normalized.len == 0) return .{ .score = 0, .label_match = null, .description_match = null };
+    const label = accessor.get_item_label(accessor.context, item) orelse return .{ .score = 0, .label_match = null, .description_match = null };
+    const description = accessor.get_item_description(accessor.context, item);
+    const key = try cacheKey(allocator, label, description, allow_non_contiguous_matches, query);
+    if (cache.get(key)) |cached| {
+        allocator.free(key);
+        return cloneItemScore(allocator, cached);
+    }
+    errdefer allocator.free(key);
+    const score = try scoreItemFuzzy(allocator, item, query, allow_non_contiguous_matches, accessor);
+    errdefer {
+        var mutable = score;
+        mutable.deinit(allocator);
+    }
+    try cache.put(key, try cloneItemScore(allocator, score));
+    return score;
+}
