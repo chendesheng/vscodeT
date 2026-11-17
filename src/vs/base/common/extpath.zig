@@ -36,6 +36,42 @@ pub fn getRoot(path: []const u8) []const u8 {
     return "/";
 }
 
+pub fn isWindowsDriveLetter(ch: u8) bool {
+    return (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z');
+}
+
+pub fn hasDriveLetter(path: []const u8, is_windows: bool) bool {
+    if (!is_windows) return false;
+    return path.len >= 2 and isWindowsDriveLetter(path[0]) and path[1] == ':';
+}
+
+pub fn getDriveLetter(path: []const u8, is_windows: bool) ?u8 {
+    if (!hasDriveLetter(path, is_windows)) return null;
+    return path[0];
+}
+
+fn normalizeSeparators(path: []const u8, allocator: Allocator) ![]u8 {
+    return toSlashes(path, allocator);
+}
+
+pub fn isRootOrDriveLetter(path: []const u8, is_windows: bool) bool {
+    if (is_windows) {
+        if (path.len > 3) return false;
+        const letter = hasDriveLetter(path, true);
+        if (!letter) return false;
+        return path.len == 2 or path[2] == '/' or path[2] == '\\';
+    }
+    return std.mem.eql(u8, path, "/");
+}
+
+pub fn removeTrailingPathSeparator(path: []const u8, allocator: Allocator, is_windows: bool) ![]u8 {
+    if (path.len == 0) return allocator.dupe(u8, path);
+    var end = path.len;
+    while (end > 1 and (path[end - 1] == '/' or (is_windows and path[end - 1] == '\\'))) end -= 1;
+    if (is_windows and end == 2 and path[1] == ':') end = 2;
+    return allocator.dupe(u8, path[0..end]);
+}
+
 pub fn isValidBasename(name: []const u8) bool {
     if (name.len == 0) return false;
     if (std.mem.indexOfScalar(u8, name, '/') != null) return false;
@@ -132,4 +168,29 @@ test "extpath parseLineAndColumnAware" {
     const invalid = parseLineAndColumnAware("/foo/bar:abb");
     try std.testing.expectEqualStrings("/foo/bar:abb", invalid.path);
     try std.testing.expect(invalid.line == null);
+}
+
+test "extpath drive letters and roots" {
+    try std.testing.expect(isWindowsDriveLetter('C'));
+    try std.testing.expect(isWindowsDriveLetter('z'));
+    try std.testing.expect(!isWindowsDriveLetter('1'));
+    try std.testing.expect(hasDriveLetter("c:/user", true));
+    try std.testing.expect(!hasDriveLetter("c:/user", false));
+    try std.testing.expectEqual(@as(?u8, 'c'), getDriveLetter("c:/user", true));
+    try std.testing.expect(isRootOrDriveLetter("/", false));
+    try std.testing.expect(!isRootOrDriveLetter("/foo", false));
+    try std.testing.expect(isRootOrDriveLetter("c:\\", true));
+}
+
+test "extpath trailing separators" {
+    const allocator = std.testing.allocator;
+    const trimmed = try removeTrailingPathSeparator("/foo/", allocator, false);
+    defer allocator.free(trimmed);
+    try std.testing.expectEqualStrings("/foo", trimmed);
+    const root = try removeTrailingPathSeparator("/", allocator, false);
+    defer allocator.free(root);
+    try std.testing.expectEqualStrings("/", root);
+    const drive = try removeTrailingPathSeparator("c:\\", allocator, true);
+    defer allocator.free(drive);
+    try std.testing.expectEqualStrings("c:", drive);
 }
