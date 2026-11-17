@@ -733,8 +733,9 @@ commands as actions.
   selection and the editing keys (enter/tab/outdent/backspace/delete/escape)
   resolve through the same host, together with the find/replace actions and the
   workbench-global shortcuts (quick open/commands, find/replace in files,
-  sidebar toggle, status-bar focus) and the search-view toggle/replace
-  shortcuts; the 4 `keyCodes.test.ts` and 5
+  sidebar toggle, status-bar focus, status-bar entry navigation, find-in-files
+  Alt+F) and the search-view toggle/replace shortcuts; the 4 `keyCodes.test.ts`
+  and 5
   `keybindingLabels.test.ts` cases are ported. `platform/contextkey/common/scanner.zig`
   ports the context-key scanner and its 34 upstream cases;
   `platform/contextkey/common/contextkey.zig` ports the expression model

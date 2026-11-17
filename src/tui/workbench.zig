@@ -163,6 +163,7 @@ pub const Workbench = struct {
     commands: CommandRegistry,
     keybindings: ?*tui_keybindings.TuiKeybindings,
     global_keybindings: ?*tui_keybindings.TuiKeybindings,
+    statusbar_keybindings: ?*tui_keybindings.TuiKeybindings,
     quick_access: *QuickAccessService,
     focus: Focus = .editor,
     is_pasting: bool = false,
@@ -184,6 +185,7 @@ pub const Workbench = struct {
         self.cols = @max(cols, 1);
         self.keybindings = null;
         self.global_keybindings = null;
+        self.statusbar_keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -242,6 +244,7 @@ pub const Workbench = struct {
         self.cols = @max(cols, 1);
         self.keybindings = null;
         self.global_keybindings = null;
+        self.statusbar_keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -315,6 +318,7 @@ pub const Workbench = struct {
         self.cols = @max(cols, 1);
         self.keybindings = null;
         self.global_keybindings = null;
+        self.statusbar_keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -610,6 +614,10 @@ pub const Workbench = struct {
             self.allocator.destroy(keybindings);
         }
         if (self.global_keybindings) |keybindings| {
+            keybindings.deinit();
+            self.allocator.destroy(keybindings);
+        }
+        if (self.statusbar_keybindings) |keybindings| {
             keybindings.deinit();
             self.allocator.destroy(keybindings);
         }
@@ -1514,6 +1522,52 @@ pub const Workbench = struct {
         }
     }
 
+    fn ensureStatusbarKeybindings(self: *Workbench) !*tui_keybindings.TuiKeybindings {
+        if (self.statusbar_keybindings) |keybindings| return keybindings;
+        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
+        errdefer self.allocator.destroy(keybindings);
+        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &statusbar_keybinding_rules, null);
+        self.statusbar_keybindings = keybindings;
+        return keybindings;
+    }
+
+    fn runStatusbarCommand(self: *Workbench, command: []const u8) bool {
+        const part = self.statusbar.main_part;
+        if (std.mem.eql(u8, command, "workbench.action.statusbar.focusPreviousEntry")) {
+            _ = part.focusPreviousEntry();
+            return true;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.statusbar.focusNextEntry")) {
+            _ = part.focusNextEntry();
+            return true;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.statusbar.focusFirstEntry")) {
+            _ = part.focusFirstEntry();
+            return true;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.statusbar.focusLastEntry")) {
+            _ = part.focusLastEntry();
+            return true;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.statusbar.executeFocused")) {
+            _ = part.executeFocused() catch |err| {
+                if (self.activeTab()) |tab| {
+                    tab.editor.setMessage("status bar: {s}", .{@errorName(err)});
+                }
+            };
+            return true;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.statusbar.escapeFocus")) {
+            if (part.focusedHandle() != null) {
+                part.clearFocus();
+            } else {
+                self.focusEditor();
+            }
+            return true;
+        }
+        return false;
+    }
+
     /// Keyboard input while the status bar owns focus. `Ctrl-Alt-S` is a
     /// TUI-specific shortcut for the upstream `focusStatusBar` command because
     /// the TUI does not port F6 part navigation.
@@ -1529,6 +1583,13 @@ pub const Workbench = struct {
             }
         }
         if (self.focus != .statusbar) return false;
+
+        const keybindings = self.ensureStatusbarKeybindings() catch null;
+        if (keybindings) |host| {
+            if (host.dispatch(event.*, tui_keybindings.empty_context) catch null) |command| {
+                if (self.runStatusbarCommand(command)) return true;
+            }
+        }
 
         const part = self.statusbar.main_part;
         switch (event.key) {
@@ -3735,7 +3796,7 @@ const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
 const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.quickOpen", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyP) } },
     .{ .id = "workbench.action.showCommands", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyP) } },
-    .{ .id = "workbench.action.findInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyF) } },
+    .{ .id = "workbench.action.findInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyF), .secondary = &.{key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyF)} } },
     .{ .id = "workbench.action.replaceInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyH) } },
     .{ .id = "workbench.action.toggleSidebarVisibility", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyB) } },
     .{ .id = "workbench.action.focusStatusBar", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyS) } },
@@ -3754,3 +3815,12 @@ test "workbench: global shortcuts dispatch through the keybinding registry" {
     // While quick access owns the keyboard the global host steps aside.
     try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_p)));
 }
+
+const statusbar_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
+    .{ .id = "workbench.action.statusbar.focusPreviousEntry", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.LeftArrow), .secondary = &.{@backingInt(key_codes.KeyCode.UpArrow)} } },
+    .{ .id = "workbench.action.statusbar.focusNextEntry", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.RightArrow), .secondary = &.{@backingInt(key_codes.KeyCode.DownArrow)} } },
+    .{ .id = "workbench.action.statusbar.focusFirstEntry", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Home) } },
+    .{ .id = "workbench.action.statusbar.focusLastEntry", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.End) } },
+    .{ .id = "workbench.action.statusbar.executeFocused", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Enter), .secondary = &.{@backingInt(key_codes.KeyCode.Space)} } },
+    .{ .id = "workbench.action.statusbar.escapeFocus", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Escape) } },
+};
