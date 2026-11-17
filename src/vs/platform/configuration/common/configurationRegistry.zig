@@ -234,6 +234,132 @@ pub const ConfigurationRegistry = struct {
         }
     }
 
+    /// Snapshot of the registry's property/default-contribution state. The
+    /// snapshot owns a detached registry; `restore` consumes it.
+    pub const Snapshot = struct {
+        registry: *ConfigurationRegistry,
+    };
+
+    pub fn record(self: *ConfigurationRegistry, allocator: Allocator) !Snapshot {
+        const clone = try ConfigurationRegistry.init(allocator);
+        const arena = clone.arena.allocator();
+        var properties = self.properties.iterator();
+        while (properties.next()) |entry| {
+            try clone.properties.put(try arena.dupe(u8, entry.key_ptr.*), try cloneProperty(arena, entry.value_ptr.*));
+        }
+        var excluded = self.excluded_properties.iterator();
+        while (excluded.next()) |entry| {
+            try clone.excluded_properties.put(try arena.dupe(u8, entry.key_ptr.*), try cloneProperty(arena, entry.value_ptr.*));
+        }
+        var bases = self.base_defaults.iterator();
+        while (bases.next()) |entry| {
+            try clone.base_defaults.put(try arena.dupe(u8, entry.key_ptr.*), try cloneValue(arena, entry.value_ptr.*));
+        }
+        var policies = self.policies.keyIterator();
+        while (policies.next()) |key| try clone.policies.put(try arena.dupe(u8, key.*), {});
+        var policy_configs = self.policy_configurations.iterator();
+        while (policy_configs.next()) |entry| {
+            try clone.policy_configurations.put(try arena.dupe(u8, entry.key_ptr.*), try arena.dupe(u8, entry.value_ptr.*));
+        }
+        var references = self.policy_reference_configurations.iterator();
+        while (references.next()) |entry| {
+            var keys = std.array_list.Managed([]const u8).init(arena);
+            for (entry.value_ptr.items) |key| try keys.append(try arena.dupe(u8, key));
+            try clone.policy_reference_configurations.put(try arena.dupe(u8, entry.key_ptr.*), keys);
+        }
+        var agents = self.agent_host_configurations.iterator();
+        while (agents.next()) |entry| {
+            try clone.agent_host_configurations.put(try arena.dupe(u8, entry.key_ptr.*), .{ .key = try arena.dupe(u8, entry.value_ptr.key) });
+        }
+        var nodes = self.nodes.iterator();
+        while (nodes.next()) |entry| {
+            var keys = std.array_list.Managed([]const u8).init(arena);
+            for (entry.value_ptr.items) |key| try keys.append(try arena.dupe(u8, key));
+            try clone.nodes.put(try arena.dupe(u8, entry.key_ptr.*), keys);
+        }
+        for (self.contributions.items) |contribution| {
+            var entries = std.array_list.Managed(DefaultOverride).init(arena);
+            for (contribution.entries) |entry| {
+                try entries.append(.{
+                    .key = try arena.dupe(u8, entry.key),
+                    .value = try cloneValue(arena, entry.value),
+                    .source = try cloneSource(arena, entry.source),
+                });
+            }
+            try clone.contributions.append(.{ .source = try cloneSource(arena, contribution.source), .entries = try entries.toOwnedSlice() });
+        }
+        return .{ .registry = clone };
+    }
+
+    /// Replaces this registry's property/contribution state with a snapshot.
+    /// The snapshot's registry is consumed.
+    pub fn restore(self: *ConfigurationRegistry, snapshot: *Snapshot) void {
+        self.clearState();
+        const clone = snapshot.registry;
+        self.arena = clone.arena;
+        self.properties = clone.properties;
+        self.excluded_properties = clone.excluded_properties;
+        self.base_defaults = clone.base_defaults;
+        self.policies = clone.policies;
+        self.policy_configurations = clone.policy_configurations;
+        self.policy_reference_configurations = clone.policy_reference_configurations;
+        self.agent_host_configurations = clone.agent_host_configurations;
+        self.nodes = clone.nodes;
+        self.contributions = clone.contributions;
+        self.allocator.destroy(clone);
+    }
+
+    fn clearState(self: *ConfigurationRegistry) void {
+        self.properties.deinit();
+        self.excluded_properties.deinit();
+        self.base_defaults.deinit();
+        self.policies.deinit();
+        self.policy_configurations.deinit();
+        var references = self.policy_reference_configurations.valueIterator();
+        while (references.next()) |list| list.deinit();
+        self.policy_reference_configurations.deinit();
+        self.agent_host_configurations.deinit();
+        var nodes = self.nodes.valueIterator();
+        while (nodes.next()) |keys| keys.deinit();
+        self.nodes.deinit();
+        self.contributions.deinit();
+        self.arena.deinit();
+        self.properties = std.StringHashMap(Property).init(self.allocator);
+        self.excluded_properties = std.StringHashMap(Property).init(self.allocator);
+        self.base_defaults = std.StringHashMap(std.json.Value).init(self.allocator);
+        self.policies = std.StringHashMap(void).init(self.allocator);
+        self.policy_configurations = std.StringHashMap([]const u8).init(self.allocator);
+        self.policy_reference_configurations = std.StringHashMap(std.array_list.Managed([]const u8)).init(self.allocator);
+        self.agent_host_configurations = std.StringHashMap(AgentHostConfig).init(self.allocator);
+        self.nodes = std.StringHashMap(std.array_list.Managed([]const u8)).init(self.allocator);
+        self.contributions = std.array_list.Managed(Contribution).init(self.allocator);
+        self.arena = std.heap.ArenaAllocator.init(self.allocator);
+    }
+
+    fn cloneProperty(arena: Allocator, property: Property) !Property {
+        return .{
+            .value_type = try arena.dupe(u8, property.value_type),
+            .default = try cloneValue(arena, property.default),
+            .scope = property.scope,
+            .restricted = property.restricted,
+            .disallow_configuration_default = property.disallow_configuration_default,
+            .policy = if (property.policy) |policy| try arena.dupe(u8, policy) else null,
+            .policy_reference = if (property.policy_reference) |reference| try arena.dupe(u8, reference) else null,
+            .included = property.included,
+            .agent_host_key = if (property.agent_host_key) |key| try arena.dupe(u8, key) else null,
+            .experiment_mode = if (property.experiment_mode) |mode| try arena.dupe(u8, mode) else null,
+            .default_value_source = try cloneSource(arena, property.default_value_source),
+        };
+    }
+
+    fn cloneSource(arena: Allocator, source: ?ConfigurationDefaultSource) !?ConfigurationDefaultSource {
+        const value = source orelse return null;
+        return switch (value) {
+            .string => |string| .{ .string = try arena.dupe(u8, string) },
+            .extension => |extension| .{ .extension = .{ .id = try arena.dupe(u8, extension.id), .display_name = if (extension.display_name) |name| try arena.dupe(u8, name) else null } },
+        };
+    }
+
     pub fn getConfigurationProperties(self: *ConfigurationRegistry) *std.StringHashMap(Property) {
         return &self.properties;
     }

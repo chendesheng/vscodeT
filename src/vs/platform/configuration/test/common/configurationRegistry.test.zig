@@ -323,3 +323,38 @@ test "configuration defaults track their string source" {
     try expectDefault(registry.getConfigurationProperties(), "config", "{}", arena.allocator());
     try std.testing.expect(registry.getConfigurationProperties().get("config").?.default_value_source == null);
 }
+
+test "record and restore keep declared defaults, hidden settings and contributions" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source_registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer source_registry.deinit();
+    try source_registry.registerConfiguration("restore.node", &.{
+        .{ .key = "restore.overridden", .value_type = "boolean", .default = std.json.Value{ .bool = false } },
+        .{ .key = "restore.hidden", .value_type = "string", .included = false, .agent_host_key = "restore.hidden" },
+    });
+    try source_registry.registerDefaultConfigurations(&.{.{ .key = "restore.overridden", .value = std.json.Value{ .bool = true } }});
+
+    var snapshot = try source_registry.record(allocator);
+
+    const restored = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer restored.deinit();
+    restored.restore(&snapshot);
+
+    try std.testing.expectEqual(@as(bool, true), restored.getConfigurationProperties().get("restore.overridden").?.default.bool);
+    try std.testing.expect(restored.getExcludedConfigurationProperties().get("restore.hidden") != null);
+    try std.testing.expect(restored.getAgentHostSyncConfigurations().get("restore.hidden") != null);
+
+    const entries = try restored.getRegisteredDefaultConfigurations(allocator);
+    defer allocator.free(entries);
+    try restored.deregisterDefaultConfigurations(entries, null);
+    try std.testing.expectEqual(@as(bool, false), restored.getConfigurationProperties().get("restore.overridden").?.default.bool);
+    try std.testing.expect(restored.getExcludedConfigurationProperties().get("restore.hidden") != null);
+
+    restored.deregisterConfigurations("restore.node");
+    try std.testing.expect(restored.getConfigurationProperties().get("restore.overridden") == null);
+    try std.testing.expect(restored.getExcludedConfigurationProperties().get("restore.hidden") == null);
+    try std.testing.expect(restored.getAgentHostSyncConfigurations().get("restore.hidden") == null);
+}
