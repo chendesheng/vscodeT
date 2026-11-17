@@ -162,7 +162,8 @@ pub const Workbench = struct {
     user_settings_path: ?[]u8,
     history: HistoryService,
     commands: CommandRegistry,
-    keybindings: ?*tui_keybindings.TuiKeybindings,
+    tab_service: ?*keybinding_service.KeybindingService,
+    tab_command_result: ?TabKeyResult = null,
     global_service: ?*keybinding_service.KeybindingService,
     statusbar_keybindings: ?*tui_keybindings.TuiKeybindings,
     quick_access: *QuickAccessService,
@@ -184,7 +185,7 @@ pub const Workbench = struct {
         self.allocator = allocator;
         self.io = io;
         self.cols = @max(cols, 1);
-        self.keybindings = null;
+        self.tab_service = null;
         self.global_service = null;
         self.statusbar_keybindings = null;
         self.rows = @max(rows, 1);
@@ -243,7 +244,7 @@ pub const Workbench = struct {
         self.allocator = allocator;
         self.io = io;
         self.cols = @max(cols, 1);
-        self.keybindings = null;
+        self.tab_service = null;
         self.global_service = null;
         self.statusbar_keybindings = null;
         self.rows = @max(rows, 1);
@@ -317,7 +318,7 @@ pub const Workbench = struct {
         self.allocator = allocator;
         self.io = io;
         self.cols = @max(cols, 1);
-        self.keybindings = null;
+        self.tab_service = null;
         self.global_service = null;
         self.statusbar_keybindings = null;
         self.rows = @max(rows, 1);
@@ -610,10 +611,7 @@ pub const Workbench = struct {
 
     pub fn deinit(self: *Workbench) void {
         self.deinitShellModels();
-        if (self.keybindings) |keybindings| {
-            keybindings.deinit();
-            self.allocator.destroy(keybindings);
-        }
+        if (self.tab_service) |service| service.deinit();
         if (self.global_service) |service| {
             service.deinit();
         }
@@ -1177,13 +1175,14 @@ pub const Workbench = struct {
         return service.dispatch(event.*);
     }
 
-    fn ensureTabKeybindings(self: *Workbench) !*tui_keybindings.TuiKeybindings {
-        if (self.keybindings) |keybindings| return keybindings;
-        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
-        errdefer self.allocator.destroy(keybindings);
-        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &tab_keybinding_rules, null);
-        self.keybindings = keybindings;
-        return keybindings;
+    fn ensureTabService(self: *Workbench) !*keybinding_service.KeybindingService {
+        if (self.tab_service) |service| return service;
+        const service = try keybinding_service.KeybindingService.init(self.allocator, &tab_keybinding_rules, .{
+            .context = self,
+            .execute = executeTabCommand,
+        });
+        self.tab_service = service;
+        return service;
     }
 
     fn runTabCommand(self: *Workbench, command: []const u8) !?TabKeyResult {
@@ -1217,9 +1216,11 @@ pub const Workbench = struct {
     }
 
     pub fn handleTabKey(self: *Workbench, event: *const ui.KeyEvent) !TabKeyResult {
-        const keybindings = try self.ensureTabKeybindings();
-        if (try keybindings.dispatch(event.*, tui_keybindings.empty_context)) |command| {
-            if (try self.runTabCommand(command)) |result| return result;
+        self.tab_command_result = null;
+        const service = try self.ensureTabService();
+        if (service.dispatch(event.*)) {
+            if (self.tab_command_result) |result| return result;
+            return .handled;
         }
 
         if (isCtrlChar(event, 'w')) {
@@ -3818,6 +3819,11 @@ const statusbar_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.statusbar.executeFocused", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Enter), .secondary = &.{@backingInt(key_codes.KeyCode.Space)} } },
     .{ .id = "workbench.action.statusbar.escapeFocus", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Escape) } },
 };
+
+fn executeTabCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (try self.runTabCommand(command_id)) |result| self.tab_command_result = result;
+}
 
 fn executeGlobalCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));

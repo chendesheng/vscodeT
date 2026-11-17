@@ -718,10 +718,11 @@ Editor contributions:
   context-key scanner/parser/expression model plus a flat context-key service
   are ported; all 21 upstream `abstractKeybindingService.test.ts` cases and the
   registry/resolver/label/store suites pass. `src/tui/keybindings.zig` remains
-  the terminal host for tab/status/search/editor shortcuts, while
-  `src/tui/keybindingService.zig` now runs the workbench-global shortcuts
-  through the abstract service (flat context, no-op notifications, command
-  execution). Workbench tab/group shortcuts
+  the terminal host for status/search/editor shortcuts, while
+  `src/tui/keybindingService.zig` runs the workbench-global and editor-tab
+  group shortcuts through the abstract service (flat context, no-op
+  notifications, command execution; tab-command results such as quit are
+  carried back to the caller). Workbench tab/group shortcuts
   already dispatch through a `KeybindingsRegistry` + `KeybindingResolver`
   (`workbench.action.closeActiveEditor`, next/previous editor, focus group
   left/right, `openEditorAtIndex1-9`). Workbench-global shortcuts also resolve
