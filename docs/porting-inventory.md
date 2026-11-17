@@ -1024,6 +1024,20 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
+**Current implementation snapshot (clean build, 1,797 editor tests + 187 UI
+tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
+shell/parts models, actions/menus/keybindings/context keys); P4 has the view
+stack scaffolding (rendering/view contexts, view parts, user input translation,
+dynamic overlays, rendered/visible lines, view overlays) with `viewLayer.test.ts`
+ported, while the `View` orchestrator, `viewController.ts` and `codeEditorWidget`
+remain blocked on `IEditorConfiguration`/`ComputedEditorOptions`. P5a/P5b/P5f/P5g
+are complete; P5c has color-theme data/registry/loading, a terminal
+workbench theme service (+ its test suite) and the size registry; P5h has the
+configuration model parser/filters/merges/overrides, registry defaults/policies/
+deregistration, variables, DefaultConfiguration and an in-memory user-target
+ConfigurationService; P5d tests are ported with the service registration surface
+pending; P5e (URI/file/editor input) is not started.
+
 **Open questions**
 
 - Should P3 (commands) or P4's view-part steps start first? P3 unblocks the
