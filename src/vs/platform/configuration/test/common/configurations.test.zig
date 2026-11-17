@@ -54,7 +54,7 @@ test "registering nested properties" {
     try std.testing.expectEqual(@as(i64, 2), defaults.configurationModel().getValue("a.b.d").?.integer);
 }
 
-test "registering the same property again replaces its default" {
+test "registering the same property again keeps the first default" {
     const allocator = std.testing.allocator;
     const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
     defer registry.deinit();
@@ -63,7 +63,7 @@ test "registering the same property again replaces its default" {
     try registry.registerConfiguration("test", &.{.{ .key = "test.prop", .default = std.json.Value{ .string = "first" } }});
     try registry.registerConfiguration("test2", &.{.{ .key = "test.prop", .default = std.json.Value{ .string = "second" } }});
     try defaults.initialize();
-    try std.testing.expectEqualStrings("second", defaults.configurationModel().getValue("test.prop").?.string);
+    try std.testing.expectEqualStrings("first", defaults.configurationModel().getValue("test.prop").?.string);
 }
 
 fn jsonValue(arena: std.mem.Allocator, text: []const u8) !std.json.Value {

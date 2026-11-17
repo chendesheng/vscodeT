@@ -153,13 +153,17 @@ pub const ConfigurationRegistry = struct {
                 .experiment_mode = if (schema.experiment_mode) |mode| try arena.dupe(u8, mode) else null,
             };
             if (schema.included) {
-                try self.base_defaults.put(try arena.dupe(u8, schema.key), try cloneValue(arena, base_value));
-                try self.properties.put(try arena.dupe(u8, schema.key), property);
-            } else {
+                if (!self.properties.contains(schema.key)) {
+                    try self.base_defaults.put(try arena.dupe(u8, schema.key), try cloneValue(arena, base_value));
+                    try self.properties.put(try arena.dupe(u8, schema.key), property);
+                }
+            } else if (!self.excluded_properties.contains(schema.key)) {
                 try self.excluded_properties.put(try arena.dupe(u8, schema.key), property);
             }
             if (schema.agent_host_key) |agent_key| {
-                try self.agent_host_configurations.put(try arena.dupe(u8, agent_key), .{ .key = try arena.dupe(u8, schema.key) });
+                if (!self.agent_host_configurations.contains(agent_key)) {
+                    try self.agent_host_configurations.put(try arena.dupe(u8, agent_key), .{ .key = try arena.dupe(u8, schema.key) });
+                }
             }
         }
         var keys = std.array_list.Managed([]const u8).init(arena);
