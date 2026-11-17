@@ -12,6 +12,8 @@ const defaultWordRegExp = @import("../core/wordHelper.zig").defaultWordRegExp;
 const EditorAutoIndentStrategy = @import("../config/editorOptions.zig").EditorAutoIndentStrategy;
 const EnterAction = @import("./languageConfiguration.zig").EnterAction;
 const OnEnterSupport = @import("./supports/onEnter.zig").OnEnterSupport;
+const RichEditBrackets = @import("./supports/richEditBrackets.zig").RichEditBrackets;
+const BracketElectricCharacterSupport = @import("./supports/electricCharacter.zig").BracketElectricCharacterSupport;
 const AutoClosingPairs = @import("./languageConfiguration.zig").AutoClosingPairs;
 const IAutoClosingPair = @import("./languageConfiguration.zig").IAutoClosingPair;
 const Emitter = @import("../../../base/common/event.zig").Emitter;
@@ -43,8 +45,9 @@ pub const LanguageConfigurationServiceChangeEvent = struct {
 };
 
 pub const ResolvedLanguageConfiguration = struct {
-    // _brackets: ?RichEditBrackets,
-    // _electricCharacter: ?BracketElectricCharacterSupport,
+    allocator: Allocator,
+    brackets: ?RichEditBrackets,
+    electric_character: ?BracketElectricCharacterSupport,
     // _onEnterSupport: ?OnEnterSupport,
 
     comments: ?ICommentsConfiguration,
@@ -59,6 +62,15 @@ pub const ResolvedLanguageConfiguration = struct {
     on_enter_support: ?OnEnterSupport,
 
     pub fn init(allocator: Allocator, languageId: []const u8, underlyingConfig: LanguageConfiguration) !ResolvedLanguageConfiguration {
+        const brackets: ?RichEditBrackets = if (underlyingConfig.brackets) |raw_brackets|
+            (RichEditBrackets.init(allocator, languageId, raw_brackets) catch null)
+        else
+            null;
+        const electric_character: ?BracketElectricCharacterSupport = if (brackets) |*rich_brackets|
+            BracketElectricCharacterSupport.init(rich_brackets)
+        else
+            null;
+
         const on_enter_support: ?OnEnterSupport = if (underlyingConfig.brackets != null or
             underlyingConfig.indentationRules != null or
             underlyingConfig.onEnterRules != null)
@@ -70,6 +82,9 @@ pub const ResolvedLanguageConfiguration = struct {
             null;
 
         return .{
+            .allocator = allocator,
+            .brackets = brackets,
+            .electric_character = electric_character,
             .languageId = languageId,
             .underlyingConfig = underlyingConfig,
             .on_enter_support = on_enter_support,
@@ -87,20 +102,15 @@ pub const ResolvedLanguageConfiguration = struct {
         return ensureValidWordDefinition(self.wordDefinition);
     }
 
-    // TODO: Implement this
-    // pub fn getBrackets(self: *ResolvedLanguageConfiguration) ?RichEditBrackets {
-    //     if (!self._brackets and self.underlyingConfig.brackets) {
-    //         self._brackets = RichEditBrackets.init(self.languageId, self.underlyingConfig.brackets);
-    //     }
-    //     return self._brackets;
-    // }
+    /// Rich bracket groups for the language, built eagerly during resolution
+    /// (upstream builds them lazily; resolved configurations are cached here).
+    pub fn getBrackets(self: *const ResolvedLanguageConfiguration) ?*const RichEditBrackets {
+        return if (self.brackets) |*brackets| brackets else null;
+    }
 
-    // pub fn getElectricCharacter(self: *ResolvedLanguageConfiguration) ?BracketElectricCharacterSupport {
-    //     if (!self._electricCharacter) {
-    //         self._electricCharacter = BracketElectricCharacterSupport.init(self.brackets);
-    //     }
-    //     return self._electricCharacter;
-    // }
+    pub fn getElectricCharacter(self: *const ResolvedLanguageConfiguration) ?*const BracketElectricCharacterSupport {
+        return if (self.electric_character) |*electric_character| electric_character else null;
+    }
 
     pub fn onEnter(self: *const ResolvedLanguageConfiguration, autoIndent: EditorAutoIndentStrategy, previousLineText: []const u8, beforeEnterText: []const u8, afterEnterText: []const u8) ?EnterAction {
         const support = self.on_enter_support orelse return null;
@@ -112,6 +122,9 @@ pub const ResolvedLanguageConfiguration = struct {
     pub fn deinit(self: *ResolvedLanguageConfiguration) void {
         if (self.on_enter_support) |*support| support.deinit();
         self.on_enter_support = null;
+        if (self.brackets) |*brackets| brackets.deinit();
+        self.brackets = null;
+        self.electric_character = null;
     }
 
     pub fn getAutoClosingPairs(self: *ResolvedLanguageConfiguration) AutoClosingPairs {

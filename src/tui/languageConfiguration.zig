@@ -21,6 +21,8 @@ const OpeningBracketKind = @import("../vs/editor/common/languages/supports/langu
 const ClosingBracketKind = @import("../vs/editor/common/languages/supports/languageBracketsConfiguration.zig").ClosingBracketKind;
 const IndentRulesSupport = @import("../vs/editor/common/languages/supports/indentRules.zig").IndentRulesSupport;
 const OnEnterSupport = @import("../vs/editor/common/languages/supports/onEnter.zig").OnEnterSupport;
+const RichEditBrackets = @import("../vs/editor/common/languages/supports/richEditBrackets.zig").RichEditBrackets;
+const BracketElectricCharacterSupport = @import("../vs/editor/common/languages/supports/electricCharacter.zig").BracketElectricCharacterSupport;
 const defaultWordRegExp = @import("../vs/editor/common/core/wordHelper.zig").defaultWordRegExp;
 const LanguageService = @import("../vs/editor/common/services/languageService.zig").LanguageService;
 
@@ -100,6 +102,15 @@ fn buildResolved(
     language_id: []const u8,
     config: language_configuration.LanguageConfiguration,
 ) !ResolvedLanguageConfiguration {
+    const rich_brackets: ?RichEditBrackets = if (config.brackets) |raw_brackets|
+        (RichEditBrackets.init(allocator, language_id, raw_brackets) catch null)
+    else
+        null;
+    const electric_character: ?BracketElectricCharacterSupport = if (rich_brackets) |*brackets|
+        BracketElectricCharacterSupport.init(brackets)
+    else
+        null;
+
     const on_enter_support: ?OnEnterSupport = if (config.brackets != null or
         config.indentationRules != null or
         config.onEnterRules != null)
@@ -111,6 +122,9 @@ fn buildResolved(
         null;
 
     return .{
+        .allocator = allocator,
+        .brackets = rich_brackets,
+        .electric_character = electric_character,
         .languageId = language_id,
         .on_enter_support = on_enter_support,
         .comments = ResolvedLanguageConfiguration._handleComments(config),

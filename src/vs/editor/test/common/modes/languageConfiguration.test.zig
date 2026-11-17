@@ -187,3 +187,41 @@ test "onEnter uses the default brackets when the language has onEnter rules" {
         resolved.onEnter(.Advanced, "", "[", "]").?.indentAction,
     );
 }
+
+test "resolved configuration exposes rich brackets and electric characters" {
+    const allocator = std.testing.allocator;
+    var registry = try LanguageConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+
+    var brackets = [_]language_configuration.CharacterPair{
+        .{ "{", "}" },
+        .{ "(", ")" },
+    };
+    var config = language_configuration.empty();
+    config.brackets = &brackets;
+
+    var registration = try registry.register("bracketLang", config, 0);
+    defer registration.dispose();
+
+    const resolved = registry.getLanguageConfiguration("bracketLang") orelse return error.MissingConfiguration;
+    try std.testing.expect(resolved.getBrackets() != null);
+    try std.testing.expectEqual(@as(usize, 2), resolved.getBrackets().?.brackets.len);
+
+    const electric = resolved.getElectricCharacter() orelse return error.MissingElectricCharacter;
+    var characters = std.array_list.Managed([]const u8).init(allocator);
+    defer characters.deinit();
+    try electric.getElectricCharacters(&characters);
+    try std.testing.expectEqual(@as(usize, 2), characters.items.len);
+    try std.testing.expectEqualStrings("}", characters.items[0]);
+    try std.testing.expectEqualStrings(")", characters.items[1]);
+
+    // A language without brackets exposes neither.
+    var plain = language_configuration.empty();
+    var plain_registration = try registry.register("noBracketLang", plain, 0);
+    defer plain_registration.dispose();
+    const plain_resolved = registry.getLanguageConfiguration("noBracketLang") orelse return error.MissingConfiguration;
+    try std.testing.expect(plain_resolved.getBrackets() == null);
+    try std.testing.expect(plain_resolved.getElectricCharacter() == null);
+
+    _ = &plain;
+}

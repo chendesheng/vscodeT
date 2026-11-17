@@ -797,6 +797,9 @@ fn setupBracketLanguage(allocator: Allocator) !void {
     // configuration registry; the test builds one directly so that it does not
     // depend on a service implementation.
     TestLanguage.configuration = .{
+        .allocator = allocator,
+        .brackets = null,
+        .electric_character = null,
         .languageId = "test",
         .comments = null,
         .characterPair = try CharacterPairSupport.init(configuration),

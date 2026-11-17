@@ -926,9 +926,12 @@ releases its bracket/rule regexes when the resolved configuration is
 invalidated; the editor/TUI `onEnter` call sites use the service configuration.
 The upstream `onEnter.test.ts` cases (including the JavaScript rule fixture)
 and registry integration/lifecycle tests pass.
-Still missing: the workbench `languageService.ts` registration surface that
-would replace `src/tui/language.zig` (extension→language contributions) and the
-editor's rich-bracket getters that the registry file keeps as TODOs.
+The resolved configuration also builds `RichEditBrackets` and
+`BracketElectricCharacterSupport` eagerly (upstream lazily) and exposes
+`getBrackets`/`getElectricCharacter`, releasing the bracket regexes when the
+configuration is invalidated. Still missing: the workbench `languageService.ts`
+registration surface that would replace `src/tui/language.zig`
+(extension→language contributions).
 
 **P5f status:** `log.zig`, `logService.zig`, `bufferLog.zig` and
 `errorMessage.zig` exist under the mirrored paths, the 10 upstream
@@ -1062,7 +1065,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,029 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,030 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1079,7 +1082,7 @@ ConfigurationService; P5d tests are ported with the service registration surface
 pending; P5e has the URI/file-service/editor-input foundation and needs the
 full provider file service and the working-copy wiring.
 
-**Status at the end of the current session:** 2,029 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,030 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor view/controller/widget stack and the URI/file

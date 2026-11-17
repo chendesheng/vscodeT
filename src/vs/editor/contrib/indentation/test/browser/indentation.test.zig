@@ -49,6 +49,9 @@ fn setupConfiguration(allocator: Allocator, rules: IndentationRule) !void {
     var configuration = language_configuration.empty();
     configuration.indentationRules = rules;
     test_configuration = .{
+        .allocator = allocator,
+        .brackets = null,
+        .electric_character = null,
         .languageId = "indentTestLanguage",
         .comments = null,
         .characterPair = try CharacterPairSupport.init(configuration),

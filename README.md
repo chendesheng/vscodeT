@@ -364,7 +364,9 @@ Bracket-pair colorization:
   forward/reversed bracket search (`RichEditBrackets`, `BracketsUtils`),
   `ScopedLineTokens`, electric-character matching, and `OnEnterSupport`
   (`languages/supports/onEnter.zig`, wired into the resolved language
-  configuration with the upstream `onEnter.test.ts` cases).
+  configuration with the upstream `onEnter.test.ts` cases). The resolved
+  configuration also exposes `getBrackets`/`getElectricCharacter` backed by the
+  ported `RichEditBrackets`/`BracketElectricCharacterSupport`.
 - The TUI paints TextMate syntax colors for supported file extensions.
 - Bracket-pair decorations remain model-level only; the TUI does not paint
   inline decoration classes yet.
