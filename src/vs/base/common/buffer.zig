@@ -1,0 +1,110 @@
+// Port of the core `VSBuffer` byte-buffer subset of
+// `src/vs/base/common/buffer.ts`. The terminal port owns a plain byte slice;
+// slices/concat copy rather than sharing reference-counted storage.
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+pub const VSBuffer = struct {
+    bytes: []u8,
+
+    pub fn alloc(allocator: Allocator, size: usize) !VSBuffer {
+        return .{ .bytes = try allocator.alloc(u8, size) };
+    }
+
+    pub fn fromString(allocator: Allocator, text: []const u8) !VSBuffer {
+        return .{ .bytes = try allocator.dupe(u8, text) };
+    }
+
+    pub fn deinit(self: *VSBuffer, allocator: Allocator) void {
+        if (self.bytes.len > 0) allocator.free(self.bytes);
+    }
+
+    pub fn byteLength(self: *const VSBuffer) usize {
+        return self.bytes.len;
+    }
+
+    pub fn toString(self: *const VSBuffer, allocator: Allocator) ![]u8 {
+        return allocator.dupe(u8, self.bytes);
+    }
+
+    pub fn slice(self: *const VSBuffer, allocator: Allocator, start: usize, end: usize) !VSBuffer {
+        if (start > end or end > self.bytes.len) return error.InvalidSlice;
+        return .{ .bytes = try allocator.dupe(u8, self.bytes[start..end]) };
+    }
+
+    pub fn concat(allocator: Allocator, buffers: []const VSBuffer) !VSBuffer {
+        var total: usize = 0;
+        for (buffers) |buffer| total += buffer.bytes.len;
+        const result = try allocator.alloc(u8, total);
+        var offset: usize = 0;
+        for (buffers) |buffer| {
+            @memcpy(result[offset .. offset + buffer.bytes.len], buffer.bytes);
+            offset += buffer.bytes.len;
+        }
+        return .{ .bytes = result };
+    }
+
+    pub fn equals(self: *const VSBuffer, other: *const VSBuffer) bool {
+        return std.mem.eql(u8, self.bytes, other.bytes);
+    }
+
+    pub fn indexOf(self: *const VSBuffer, byte: u8, from: usize) ?usize {
+        if (from >= self.bytes.len) return null;
+        const offset = std.mem.indexOfScalar(u8, self.bytes[from..], byte) orelse return null;
+        return from + offset;
+    }
+
+    pub fn readUInt8(self: *const VSBuffer, offset: usize) ?u8 {
+        if (offset >= self.bytes.len) return null;
+        return self.bytes[offset];
+    }
+
+    pub fn readUInt32BE(self: *const VSBuffer, offset: usize) ?u32 {
+        if (offset + 4 > self.bytes.len) return null;
+        return std.mem.readInt(u32, self.bytes[offset..][0..4], .big);
+    }
+
+    pub fn writeUInt32BE(self: *VSBuffer, value: u32, offset: usize) void {
+        std.mem.writeInt(u32, self.bytes[offset..][0..4], value, .big);
+    }
+};
+
+test "VSBuffer string, slice, concat and equality" {
+    const allocator = std.testing.allocator;
+    var hello = try VSBuffer.fromString(allocator, "hello");
+    defer hello.deinit(allocator);
+    const text = try hello.toString(allocator);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("hello", text);
+    try std.testing.expectEqual(@as(usize, 5), hello.byteLength());
+
+    var slice = try hello.slice(allocator, 1, 4);
+    defer slice.deinit(allocator);
+    const slice_text = try slice.toString(allocator);
+    defer allocator.free(slice_text);
+    try std.testing.expectEqualStrings("ell", slice_text);
+
+    var world = try VSBuffer.fromString(allocator, " world");
+    defer world.deinit(allocator);
+    var joined = try VSBuffer.concat(allocator, &.{ hello, world });
+    defer joined.deinit(allocator);
+    const joined_text = try joined.toString(allocator);
+    defer allocator.free(joined_text);
+    try std.testing.expectEqualStrings("hello world", joined_text);
+
+    var copy = try VSBuffer.fromString(allocator, "hello");
+    defer copy.deinit(allocator);
+    try std.testing.expect(hello.equals(&copy));
+    try std.testing.expectEqual(@as(?usize, 1), hello.indexOf('e', 0));
+    try std.testing.expect(hello.indexOf('z', 0) == null);
+}
+
+test "VSBuffer integer access" {
+    const allocator = std.testing.allocator;
+    var buffer = try VSBuffer.alloc(allocator, 8);
+    defer buffer.deinit(allocator);
+    buffer.writeUInt32BE(0xA1B2C3D4, 0);
+    try std.testing.expectEqual(@as(?u32, 0xA1B2C3D4), buffer.readUInt32BE(0));
+    try std.testing.expectEqual(@as(?u8, 0xA1), buffer.readUInt8(0));
+    try std.testing.expect(buffer.readUInt32BE(6) == null);
+}

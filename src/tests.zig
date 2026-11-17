@@ -6,6 +6,7 @@ comptime {
     _ = @import("./watcher_tests.zig");
     _ = @import("./vs/base/common/glob.zig");
     _ = @import("./vs/base/common/comparers.zig");
+    _ = @import("./vs/base/common/buffer.zig");
     _ = @import("./vs/base/common/network.zig");
     _ = @import("./vs/base/common/extpath.zig");
     _ = @import("./vs/base/common/uri.zig");
