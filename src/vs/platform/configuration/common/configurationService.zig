@@ -31,6 +31,7 @@ pub const ConfigurationService = struct {
     defaults: configurations.DefaultConfiguration,
     user: ConfigurationModel,
     workspace: ConfigurationModel,
+    onDidChange: @import("../../../base/common/event.zig").Emitter(configuration.Change),
 
     pub fn init(allocator: Allocator, registry: *configurationRegistry.ConfigurationRegistry) !*ConfigurationService {
         const self = try allocator.create(ConfigurationService);
@@ -40,6 +41,7 @@ pub const ConfigurationService = struct {
             .defaults = try configurations.DefaultConfiguration.init(allocator, registry),
             .user = try ConfigurationModel.initEmpty(allocator),
             .workspace = try ConfigurationModel.initEmpty(allocator),
+            .onDidChange = @import("../../../base/common/event.zig").Emitter(configuration.Change).init(allocator),
         };
         return self;
     }
@@ -48,6 +50,7 @@ pub const ConfigurationService = struct {
         self.defaults.deinit();
         self.user.deinit();
         self.workspace.deinit();
+        self.onDidChange.deinit();
         self.allocator.destroy(self);
     }
 
@@ -65,6 +68,7 @@ pub const ConfigurationService = struct {
     pub fn loadWorkspaceJson(self: *ConfigurationService, text: []const u8) !void {
         self.workspace.deinit();
         self.workspace = try ConfigurationModel.fromJson(self.allocator, text);
+        self.onDidChange.fire(.{ .source = .WORKSPACE, .keys = self.workspace.getKeys() }) catch {};
     }
 
     pub fn inspect(self: *ConfigurationService, key: []const u8) InspectValue {
@@ -85,14 +89,17 @@ pub const ConfigurationService = struct {
         if (target != .USER) return error.UnsupportedConfigurationTarget;
         if (value == null or std.meta.activeTag(value.?) == .null) {
             self.user.removeValue(key);
+            self.onDidChange.fire(.{ .source = .USER, .keys = &.{key} }) catch {};
             return;
         }
         if (self.defaults.configurationModel().getValue(key)) |default_value| {
             if (configuration.jsonValuesEqual(default_value.*, value.?)) {
                 self.user.removeValue(key);
+                self.onDidChange.fire(.{ .source = .USER, .keys = &.{key} }) catch {};
                 return;
             }
         }
         try self.user.setValue(key, value.?);
+        self.onDidChange.fire(.{ .source = .USER, .keys = &.{key} }) catch {};
     }
 };

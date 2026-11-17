@@ -175,3 +175,28 @@ test "late registered defaults become visible automatically" {
     try registry.registerConfiguration("late", &.{.{ .key = "late.setting", .default = std.json.Value{ .string = "default" } }});
     try std.testing.expectEqualStrings("default", service.getValue("late.setting").?.string);
 }
+
+test "configuration changes emit the changed source and keys" {
+    const allocator = std.testing.allocator;
+    var fixture = try setup(allocator);
+    defer teardown(fixture.registry, fixture.service);
+
+    var events = std.array_list.Managed(configuration.Change).init(allocator);
+    defer events.deinit();
+    const Listener = struct {
+        fn onChange(change: configuration.Change, list: *std.array_list.Managed(configuration.Change)) anyerror!void {
+            try list.append(change);
+        }
+    };
+    _ = try fixture.service.onDidChange.listen(&events, Listener.onChange);
+
+    try fixture.service.updateValue("configurationService.testSetting", .{ .string = "value" }, .USER);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expectEqual(configuration.ConfigurationTarget.USER, events.items[0].source);
+    try std.testing.expectEqualStrings("configurationService.testSetting", events.items[0].keys[0]);
+
+    try fixture.service.loadWorkspaceJson("{\"configurationService.testSetting\":\"workspace\"}");
+    try std.testing.expectEqual(@as(usize, 2), events.items.len);
+    try std.testing.expectEqual(configuration.ConfigurationTarget.WORKSPACE, events.items[1].source);
+    try std.testing.expectEqualStrings("configurationService.testSetting", events.items[1].keys[0]);
+}
