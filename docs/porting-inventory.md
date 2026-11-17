@@ -929,6 +929,15 @@ search action/view tests under `contrib/search/test/browser` are ported for the
 terminal tree model. Search quick-access and anything quick-access remain tied
 to the quick-input widget gaps.
 
+**P5h status:** `platform/configuration/common/configurationModels.zig` now
+parses language-override blocks (`[x][y]`, duplicate identifiers dropped),
+supports the `exclude` parse option, and ports the ConfigurationModel parsing
+cases (override identifiers, exclude/exclude-with-include, invalid keys, null
+values). The registry/scope-dependent cases (`configurationRegistry`,
+`configuration.test`, `configurations`, `policyConfiguration`,
+`configurationService`, `configurationVariables`) remain, as does the TUI
+settings watcher's upstream parity pass.
+
 **Exit criteria per slice:** the upstream module exists under the mirrored
 path, its upstream tests are ported and registered, the TUI consumes it, and
 README/docs drop the corresponding limitation.

@@ -20,11 +20,23 @@ const Value = configuration.Value;
 /// An immutable settings snapshot. The arena owns the whole JSON tree; a
 /// reload builds a new model and releases the old one, so value lifetimes stay
 /// simple and no recursive per-value `deinit` is needed.
+pub const OverrideIdentifier = struct {
+    identifiers: []const []const u8,
+    keys: []const []const u8,
+    contents: Value,
+};
+
+pub const ParseOptions = struct {
+    exclude: []const []const u8 = &.{},
+    include: []const []const u8 = &.{},
+};
+
 pub const ConfigurationModel = struct {
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
     contents: Value = .{ .object = .empty },
     keys: std.array_list.Managed([]const u8),
+    overrides: []const OverrideIdentifier = &.{},
 
     pub fn initEmpty(allocator: Allocator) !ConfigurationModel {
         return .{
@@ -32,6 +44,7 @@ pub const ConfigurationModel = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .contents = .{ .object = .empty },
             .keys = std.array_list.Managed([]const u8).init(allocator),
+            .overrides = &.{},
         };
     }
 
@@ -43,6 +56,10 @@ pub const ConfigurationModel = struct {
     /// Parses one settings document. Invalid JSON yields an empty model, as
     /// upstream's parser reports the error and keeps the previous model.
     pub fn fromJson(allocator: Allocator, text: []const u8) !ConfigurationModel {
+        return fromJsonWithOptions(allocator, text, .{});
+    }
+
+    pub fn fromJsonWithOptions(allocator: Allocator, text: []const u8, options: ParseOptions) !ConfigurationModel {
         var model = try initEmpty(allocator);
         errdefer model.deinit();
 
@@ -58,20 +75,34 @@ pub const ConfigurationModel = struct {
 
         const arena = model.arena.allocator();
         var normalized: Value = .{ .object = .empty };
+        var overrides = std.array_list.Managed(OverrideIdentifier).init(arena);
+        defer overrides.deinit();
         var iterator = raw.object.iterator();
         while (iterator.next()) |entry| {
             if (std.mem.eql(u8, entry.key_ptr.*, "__proto__")) continue;
             if (isOverrideIdentifierKey(entry.key_ptr.*)) {
-                // Keep language override blocks intact even though resolving
-                // them is not part of this port yet.
-                const key = try arena.dupe(u8, entry.key_ptr.*);
-                try normalized.object.put(arena, key, try configuration.cloneValue(arena, entry.value_ptr.*));
-            } else {
-                try configuration.addToValueTree(arena, &normalized, entry.key_ptr.*, entry.value_ptr.*);
+                const identifiers = try parseOverrideIdentifiers(arena, entry.key_ptr.*);
+                var override_contents: Value = .{ .object = .empty };
+                var override_keys = std.array_list.Managed([]const u8).init(arena);
+                switch (entry.value_ptr.*) {
+                    .object => |object| {
+                        var inner = object.iterator();
+                        while (inner.next()) |inner_entry| {
+                            try configuration.addToValueTree(arena, &override_contents, inner_entry.key_ptr.*, inner_entry.value_ptr.*);
+                            try override_keys.append(try arena.dupe(u8, inner_entry.key_ptr.*));
+                        }
+                    },
+                    else => continue,
+                }
+                try overrides.append(.{ .identifiers = identifiers, .keys = try override_keys.toOwnedSlice(), .contents = override_contents });
+                continue;
             }
+            if (isExcluded(entry.key_ptr.*, options.exclude)) continue;
+            try configuration.addToValueTree(arena, &normalized, entry.key_ptr.*, entry.value_ptr.*);
             try model.keys.append(try arena.dupe(u8, entry.key_ptr.*));
         }
         model.contents = normalized;
+        model.overrides = try overrides.toOwnedSlice();
         return model;
     }
 
@@ -169,6 +200,34 @@ fn isOverrideIdentifierKey(key: []const u8) bool {
 /// Replaces comments and trailing commas with spaces while preserving the
 /// original byte positions. This is the settings-file subset of upstream's
 /// JSONC parser; it deliberately does not build a visitor tree.
+fn isExcluded(key: []const u8, excluded: []const []const u8) bool {
+    for (excluded) |pattern| {
+        if (std.mem.eql(u8, key, pattern)) return true;
+    }
+    return false;
+}
+
+/// Parses `[x][y]` into identifiers, dropping duplicates while keeping order.
+fn parseOverrideIdentifiers(arena: Allocator, key: []const u8) ![]const []const u8 {
+    var identifiers = std.array_list.Managed([]const u8).init(arena);
+    var index: usize = 0;
+    while (index < key.len) {
+        if (key[index] != '[') break;
+        const end = std.mem.indexOfScalarPos(u8, key, index, ']') orelse break;
+        const identifier = key[index + 1 .. end];
+        var exists = false;
+        for (identifiers.items) |existing| {
+            if (std.mem.eql(u8, existing, identifier)) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) try identifiers.append(try arena.dupe(u8, identifier));
+        index = end + 1;
+    }
+    return identifiers.toOwnedSlice();
+}
+
 pub fn stripJsonc(allocator: Allocator, text: []const u8) ![]u8 {
     const output = try allocator.dupe(u8, text);
 
