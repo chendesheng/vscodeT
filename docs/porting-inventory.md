@@ -1060,6 +1060,10 @@ pending; P5e (URI/file/editor input) is not started.
   browser harness.
 - Workbench extension-contribution registration is absent by design (no
   extension host).
+- The `base/test/browser/comparers.test.ts` suite depends on `Intl.Collator`
+  locale rules (punctuation order, case grouping); the terminal
+  `compareFileNames` is a documented natural/unicode approximation, so that
+  browser suite stays unported (its inline terminal cases remain).
 
 **Open questions**
 
