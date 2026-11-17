@@ -40,6 +40,9 @@ pub const ParseOptions = struct {
     skip_restricted: bool = false,
     skip_unregistered: bool = false,
     schemas: []const PropertySchemaEntry = &.{},
+    /// Excluded (`included: false`) property schemas: they bypass
+    /// `skipRestricted` but still participate in scope filtering.
+    excluded_schemas: []const PropertySchemaEntry = &.{},
 };
 
 pub const ConfigurationModel = struct {
@@ -394,7 +397,7 @@ fn parseOverrideIdentifiers(arena: Allocator, key: []const u8) ![]const []const 
     return identifiers.toOwnedSlice();
 }
 
-fn shouldInclude(key: []const u8, schema: ?PropertySchemaEntry, options: ParseOptions) bool {
+fn shouldInclude(key: []const u8, schema: ?PropertySchemaEntry, excluded_schema: ?PropertySchemaEntry, options: ParseOptions) bool {
     for (options.exclude) |excluded| {
         if (std.mem.eql(u8, key, excluded)) return false;
     }
@@ -402,10 +405,11 @@ fn shouldInclude(key: []const u8, schema: ?PropertySchemaEntry, options: ParseOp
         if (std.mem.eql(u8, key, included)) return true;
     }
     if (options.skip_restricted and schema != null and schema.?.restricted) return false;
-    if (options.skip_unregistered and schema == null) return false;
-    if (schema == null or options.scopes.len == 0) return true;
+    if (options.skip_unregistered and schema == null and excluded_schema == null) return false;
+    const effective = schema orelse excluded_schema;
+    if (effective == null or options.scopes.len == 0) return true;
     for (options.scopes) |scope| {
-        if (schema.?.scope == scope) return true;
+        if (effective.?.scope == scope) return true;
     }
     return false;
 }
@@ -418,8 +422,13 @@ fn filterValue(arena: Allocator, path: []const u8, value: std.json.Value, option
         if (std.mem.eql(u8, path, excluded)) return null;
     }
     const schema = findSchema(path, options.schemas);
+    const excluded_schema = findSchema(path, options.excluded_schemas);
     if (schema != null) {
-        if (!shouldInclude(path, schema, options)) return null;
+        if (!shouldInclude(path, schema, excluded_schema, options)) return null;
+        return try configuration.cloneValue(arena, value);
+    }
+    if (excluded_schema != null) {
+        if (!shouldInclude(path, null, excluded_schema, options)) return null;
         return try configuration.cloneValue(arena, value);
     }
     for (options.include) |included| {
@@ -428,7 +437,7 @@ fn filterValue(arena: Allocator, path: []const u8, value: std.json.Value, option
     switch (value) {
         .object => |object| {
             if (object.count() == 0) {
-                return if (shouldInclude(path, null, options)) try configuration.cloneValue(arena, value) else null;
+                return if (shouldInclude(path, null, null, options)) try configuration.cloneValue(arena, value) else null;
             }
             var result: std.json.Value = .{ .object = .{} };
             var included_any = false;
@@ -445,7 +454,7 @@ fn filterValue(arena: Allocator, path: []const u8, value: std.json.Value, option
             return if (included_any) result else null;
         },
         else => {
-            if (!shouldInclude(path, null, options)) return null;
+            if (!shouldInclude(path, null, null, options)) return null;
             return try configuration.cloneValue(arena, value);
         },
     }

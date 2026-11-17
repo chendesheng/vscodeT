@@ -361,3 +361,48 @@ test "nested restricted and scoped settings are filtered" {
         try std.testing.expectEqual(@as(i64, 2), model.getValue("a.allowed").?.integer);
     }
 }
+
+test "excluded property schemas bypass skipRestricted but respect scope" {
+    const allocator = std.testing.allocator;
+    const schemas = [_]configuration_models.PropertySchemaEntry{
+        .{ .key = "regularProperty" },
+        .{ .key = "restrictedProperty", .restricted = true },
+    };
+    const excluded = [_]configuration_models.PropertySchemaEntry{
+        .{ .key = "excludedProperty", .restricted = true },
+        .{ .key = "excludedNonRestrictedProperty" },
+        .{ .key = "excludedApplicationProperty", .scope = .APPLICATION },
+    };
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(
+            allocator,
+            "{\"regularProperty\":\"regularValue\",\"restrictedProperty\":\"restrictedValue\",\"excludedProperty\":\"excludedValue\",\"excludedNonRestrictedProperty\":\"excludedNonRestrictedValue\"}",
+            .{ .skip_restricted = true, .schemas = &schemas, .excluded_schemas = &excluded },
+        );
+        defer model.deinit();
+        try std.testing.expectEqualStrings("regularValue", model.getValue("regularProperty").?.string);
+        try std.testing.expect(model.getValue("restrictedProperty") == null);
+        try std.testing.expectEqualStrings("excludedValue", model.getValue("excludedProperty").?.string);
+        try std.testing.expectEqualStrings("excludedNonRestrictedValue", model.getValue("excludedNonRestrictedProperty").?.string);
+    }
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(
+            allocator,
+            "{\"regularProperty\":\"regularValue\",\"excludedApplicationProperty\":\"excludedApplicationValue\"}",
+            .{ .scopes = &.{.WINDOW}, .schemas = &schemas, .excluded_schemas = &excluded },
+        );
+        defer model.deinit();
+        try std.testing.expectEqualStrings("regularValue", model.getValue("regularProperty").?.string);
+        try std.testing.expect(model.getValue("excludedApplicationProperty") == null);
+    }
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(
+            allocator,
+            "{\"regularProperty\":\"regularValue\",\"excludedProperty\":\"excludedValue\"}",
+            .{ .include = &.{"excludedProperty"}, .schemas = &schemas, .excluded_schemas = &excluded },
+        );
+        defer model.deinit();
+        try std.testing.expectEqualStrings("regularValue", model.getValue("regularProperty").?.string);
+        try std.testing.expectEqualStrings("excludedValue", model.getValue("excludedProperty").?.string);
+    }
+}
