@@ -178,8 +178,24 @@ pub fn extname(uri: *const URI) []const u8 {
     return pathExtname(uri.path);
 }
 
-pub fn uriToFsPath(uri: *const URI) []const u8 {
-    return uri.path;
+pub fn uriToFsPath(uri: *const URI, allocator: Allocator) ![]u8 {
+    var out = std.array_list.Managed(u8).init(allocator);
+    errdefer out.deinit();
+    var index: usize = 0;
+    while (index < uri.path.len) {
+        if (uri.path[index] == '%' and index + 2 < uri.path.len) {
+            const high = std.fmt.charToDigit(uri.path[index + 1], 16) catch 255;
+            const low = std.fmt.charToDigit(uri.path[index + 2], 16) catch 255;
+            if (high != 255 and low != 255) {
+                try out.append(high * 16 + low);
+                index += 3;
+                continue;
+            }
+        }
+        try out.append(uri.path[index]);
+        index += 1;
+    }
+    return out.toOwnedSlice();
 }
 
 pub fn isUriComponents(value: Components) bool {
@@ -381,7 +397,9 @@ test "URI revive preserves components" {
     const text = try revived.toString(allocator);
     defer allocator.free(text);
     try std.testing.expectEqualStrings("vscode-test://host/p?q#f", text);
-    try std.testing.expectEqualStrings("/p", uriToFsPath(&revived));
+    const fs_path = try uriToFsPath(&revived, allocator);
+    defer allocator.free(fs_path);
+    try std.testing.expectEqualStrings("/p", fs_path);
 }
 
 test "URI with changes updates components" {
@@ -426,4 +444,13 @@ test "URI with validates resulting components" {
     defer uri.deinit();
     try std.testing.expectError(error.InvalidScheme, uri.with(allocator, .{ .scheme = "fai:l" }));
     try std.testing.expectError(error.InvalidPath, uri.with(allocator, .{ .path = "//fail" }));
+}
+
+test "uriToFsPath decodes percent escapes" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.parse(allocator, "file:///tmp/a%20b%2Fc.txt", true);
+    defer uri.deinit();
+    const fs_path = try uriToFsPath(&uri, allocator);
+    defer allocator.free(fs_path);
+    try std.testing.expectEqualStrings("/tmp/a b/c.txt", fs_path);
 }
