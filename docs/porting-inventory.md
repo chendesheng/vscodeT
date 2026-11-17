@@ -782,9 +782,11 @@ limitation is removed.
 into the upstream widget, controller and view-part layers, reusing the ported
 model/view model and contributions.
 
-**Status:** step 1 started. `editor/browser/view/renderingContext.zig` and the
-`IViewLayout` subset in `common/viewModel.zig` are ported (restricted/rendering
-contexts, visible ranges, horizontal positions); `viewPart.zig`, `viewLayer.zig`,
+**Status:** step 1 in progress. `editor/browser/view/renderingContext.zig`, the
+`IViewLayout` subset in `common/viewModel.zig`, and
+`editor/browser/view/viewUserInputEvents.zig` (view-to-model mouse target
+conversion incl. view zones) are ported, together with the extended
+`MouseTargetType`/view-zone detail; `viewPart.zig`, `viewLayer.zig`,
 `viewOverlays.zig` and the thin `View` orchestrator are next.
 
 **Suggested commits:**

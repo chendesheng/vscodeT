@@ -92,13 +92,20 @@ pub const IContentWidget = struct {
 /// Mirrors the portable subset of upstream `MouseTargetType`.
 pub const MouseTargetType = enum {
     unknown,
+    textarea,
+    gutter_glyph_margin,
     gutter_line_numbers,
+    gutter_line_decorations,
+    gutter_view_zone,
     content_text,
     content_empty,
     content_widget,
+    content_view_zone,
     scrollbar,
+    overview_ruler,
     overlay_widget,
     status,
+    outside_editor,
 };
 
 pub const ContentEmptyDetail = struct {
@@ -110,8 +117,17 @@ pub const ContentEmptyDetail = struct {
     horizontal_distance_to_text: usize = 0,
 };
 
+pub const ViewZoneTargetData = struct {
+    view_zone_id: []const u8,
+    position_before: ?Position = null,
+    position_after: ?Position = null,
+    position: Position,
+    after_line_number: usize,
+};
+
 pub const MouseTargetDetail = union(enum) {
     content_empty: ContentEmptyDetail,
+    view_zone: ViewZoneTargetData,
 };
 
 /// Mirrors upstream `IMouseTarget`.
