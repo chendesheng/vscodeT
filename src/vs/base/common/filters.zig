@@ -123,65 +123,80 @@ pub fn matchesBaseContiguousSubString(word: []const u8, target: []const u8) ?Mat
 ///
 /// Unlike upstream this is ASCII-only (no alternate-codepoint tables) and
 /// does not memoize the recursive matcher; command labels are short.
-pub fn matchesWords(
+/// Port of upstream `matchesWords` (without the Unicode alternate-character
+/// normalization, which the terminal does not have). Word separators form an
+/// equivalence class; matched separator characters are not included in the
+/// returned ranges.
+pub fn matchesWords(allocator: std.mem.Allocator, word: []const u8, target: []const u8) !?[]Match {
+    if (target.len == 0) return null;
+    var target_index: usize = 0;
+    while (target_index < target.len) {
+        if (try matchWordsAt(allocator, word, target, 0, target_index, false)) |matches| {
+            return matches;
+        }
+        target_index = nextWord(target, target_index + 1);
+    }
+    return null;
+}
+
+fn matchWordsAt(
     allocator: std.mem.Allocator,
     word: []const u8,
     target: []const u8,
+    word_index: usize,
+    target_index: usize,
+    contiguous: bool,
 ) !?[]Match {
-    if (target.len == 0) return null;
+    if (word_index == word.len) return try allocator.alloc(Match, 0);
+    if (target_index >= target.len) return null;
 
-    var visited = std.array_list.Managed(usize).init(allocator);
-    defer visited.deinit();
+    if (!charactersMatch(word[word_index], target[target_index])) return null;
 
-    var cursor: usize = 0;
-    var force_next_word = false;
-    for (word) |query_char| {
-        if (query_char == ' ' or query_char == '\t') {
-            force_next_word = true;
-            continue;
-        }
-
-        const wanted = std.ascii.toLower(query_char);
-        var matched: ?usize = null;
-
-        // Consecutive matching is allowed even without a word boundary, which
-        // is what makes prefixes such as "git" match "Git".
-        if (!force_next_word and cursor < target.len and
-            std.ascii.toLower(target[cursor]) == wanted)
-        {
-            matched = cursor;
-        } else {
-            // Otherwise jump to the next word start.
-            const start = if (force_next_word)
-                nextWordStart(target, cursor)
-            else
-                nextWordStart(target, cursor +| 1);
-            var index = start;
-            while (index < target.len) : (index = nextWordStart(target, index + 1)) {
-                if (std.ascii.toLower(target[index]) == wanted) {
-                    matched = index;
-                    break;
-                }
-            }
-        }
-
-        const position = matched orelse return null;
-        try visited.append(position);
-        cursor = position + 1;
-        force_next_word = false;
-    }
-
-    // Coalesce consecutive positions into ranges.
-    var result = std.array_list.Managed(Match).init(allocator);
-    errdefer result.deinit();
-    for (visited.items) |position| {
-        if (result.items.len > 0 and result.items[result.items.len - 1].end == position) {
-            result.items[result.items.len - 1].end = position + 1;
-        } else {
-            try result.append(.{ .start = position, .end = position + 1 });
+    var result = try matchWordsAt(allocator, word, target, word_index + 1, target_index + 1, contiguous);
+    if (!contiguous) {
+        var next_index = target_index + 1;
+        while (result == null and nextWord(target, next_index) < target.len) {
+            next_index = nextWord(target, next_index);
+            result = try matchWordsAt(allocator, word, target, word_index + 1, next_index, contiguous);
+            next_index += 1;
         }
     }
-    return try result.toOwnedSlice();
+
+    if (result == null) return null;
+
+    // Different characters mean both are word separators; keep the recursive
+    // result but do not include the separator in the match ranges.
+    if (std.ascii.toLower(word[word_index]) != std.ascii.toLower(target[target_index])) return result;
+
+    const tail = result.?;
+    if (tail.len > 0 and tail[0].start == target_index + 1) {
+        tail[0].start = target_index;
+        return tail;
+    }
+    defer allocator.free(tail);
+    const joined = try allocator.alloc(Match, tail.len + 1);
+    joined[0] = .{ .start = target_index, .end = target_index + 1 };
+    @memcpy(joined[1..], tail);
+    return joined;
+}
+
+fn charactersMatch(a: u8, b: u8) bool {
+    const left = std.ascii.toLower(a);
+    const right = std.ascii.toLower(b);
+    if (left == right) return true;
+    return isWordsSeparator(left) and isWordsSeparator(right);
+}
+
+fn isWordsSeparator(ch: u8) bool {
+    return !std.ascii.isAlphanumeric(ch);
+}
+
+fn nextWord(value: []const u8, start: usize) usize {
+    var index = start;
+    while (index < value.len) : (index += 1) {
+        if (isWordsSeparator(value[index]) or (index > 0 and isWordsSeparator(value[index - 1]))) return index;
+    }
+    return value.len;
 }
 
 fn nextWordStart(target: []const u8, from: usize) usize {
@@ -236,7 +251,8 @@ test "filters: word-start matching" {
 
     const multi = (try matchesWords(allocator, "save file", "Save File")) orelse unreachable;
     defer allocator.free(multi);
-    try std.testing.expectEqual(@as(usize, 2), multi.len);
+    // The exact matching space is part of the match, so the ranges coalesce.
+    try std.testing.expectEqual(@as(usize, 1), multi.len);
 
     try std.testing.expect(try matchesWords(allocator, "save file", "File: Save") == null);
     try std.testing.expect(try matchesWords(allocator, "zz", "File: Save") == null);

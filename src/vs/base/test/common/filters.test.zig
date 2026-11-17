@@ -216,4 +216,13 @@ test "matchesWords basic word filters" {
     try std.testing.expect((try filters.matchesWords(allocator, "for", "foo-bar test")) == null);
     try expectWordMatch(allocator, "foo bar", "123 foo-bar 456");
     try expectWordMatch(allocator, "foo:bar", "foo:bar");
+    try expectWordMatch(allocator, "C++", "C/C++: command");
+    try expectWordMatch(allocator, "foo bar", "foo-bar");
+    try expectWordMatch(allocator, "foo-bar", "foo bar");
+    {
+        const separator_only = (try filters.matchesWords(allocator, ".", ":")) orelse return error.TestUnexpectedResult;
+        defer allocator.free(separator_only);
+        try std.testing.expectEqual(@as(usize, 0), separator_only.len);
+    }
+    try expectWordMatch(allocator, ".", ".");
 }
