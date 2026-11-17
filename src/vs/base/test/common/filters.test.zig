@@ -584,3 +584,14 @@ test "HTML closing tag proposal filtered out #38880" {
     try assertMatchesAt(allocator, "\t\t<", "\t\t</body>", "\t\t^</body>", 2, 0, .{});
     try assertMatchesAt(allocator, "\t<", "\t</body>", "\t^</body>", 1, 0, .{});
 }
+
+test "highlighting regressions #113404, #85826, #147423" {
+    const allocator = std.testing.allocator;
+    try assertMatches(allocator, "di", "adiv classname=\"\"></div>", "adiv classname=\"\"></^d^iv>", .{});
+
+    try assertMatches(allocator, "SemanticTokens", "SemanticTokensEdits", "^S^e^m^a^n^t^i^c^T^o^k^e^n^sEdits", .{});
+    try assertGraceful(allocator, "SemanticTokens", "SemanticTokensEdits", "^S^e^m^a^n^t^i^c^T^o^k^e^n^sEdits", true);
+
+    try assertMatches(allocator, "i", "machine/{id}", "machine/{^id}", .{});
+    try assertMatches(allocator, "ok", "obobobf{ok}/user", "^obobobf{o^k}/user", .{});
+}

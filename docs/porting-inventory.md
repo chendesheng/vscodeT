@@ -1055,6 +1055,9 @@ pending; P5e (URI/file/editor input) is not started.
 - Remaining `editorGroupModel`/`explorerView` cases construct diff and
   side-by-side editor inputs.
 - P5c token-style resolving needs `tokenClassificationRegistry.ts`.
+- Fuzzy highlighting across multi-byte characters (emoji #113404) selects a later
+  match than upstream; filter positions are byte-based, so that case stays
+  unported.
 - `matchesContiguousSubString`, `matchesSubString`, `matchesPrefix`,
   `matchesStrictPrefix` and `matchesCamelCase` are ported with their upstream
   cases (including camel-case heuristics, weak-first fuzzy scoring and the
