@@ -6,6 +6,16 @@ const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const LanguageConfiguration = @import("../languages/languageConfiguration.zig").LanguageConfiguration;
 
 const language = @import("../languages/language.zig");
+const PLAINTEXT_LANGUAGE_ID = "plaintext";
+
+const LanguageRegistryEntry = struct {
+    id: []const u8,
+    aliases: ?[]const []const u8 = null,
+    extensions: ?[]const []const u8 = null,
+    filenames: ?[]const []const u8 = null,
+    mimetypes: ?[]const []const u8 = null,
+    first_line: ?[]const u8 = null,
+};
 
 // The payload types are declared by the interface module (`language.zig`);
 // they are re-exported here so existing callers keep their import path.
@@ -22,6 +32,12 @@ pub const LanguageService = struct {
     languageIdCodec: *LanguageIdCodec,
 
     _languageConfigurations: std.StringHashMap(LanguageConfiguration),
+    allocator: Allocator,
+    languages: std.StringHashMap(LanguageRegistryEntry),
+    mime_types: std.StringHashMap([]const u8),
+    language_names: std.StringHashMap([]const u8),
+    changed: Emitter(void),
+    selections: std.array_list.Managed(*Selection),
 
     // An event emitted when basic language features are requested for the first time.
     // This event is emitted when embedded languages are encountered (e.g. JS code block inside Markdown)
@@ -41,88 +57,104 @@ pub const LanguageService = struct {
     // An event emitted when languages have changed.
     onDidChange: Emitter(void),
 
-    // Register a language.
-    registerLanguage: *const fn (def: ILanguageExtensionPoint) void,
-
-    // Check if `languageId` is registered.
-    isRegisteredLanguageId: *const fn (languageId: []const u8) bool,
-
-    // Get a list of all registered languages.
-    getRegisteredLanguageIds: *const fn () []const []const u8,
-
-    // Get a list of all registered languages with a name.
-    // If a language is explicitly registered without a name, it will not be part of the result.
-    // The result is sorted using by name case insensitive.
-    getSortedRegisteredLanguageNames: *const fn () []LanguageNameIdPair,
-
-    // Get the preferred language name for a language.
-    getLanguageName: *const fn (languageId: []const u8) ?[]const u8,
-
-    // Get the mimetype for a language.
-    getMimeType: *const fn (languageId: []const u8) ?[]const u8,
-
-    // Get the default icon for the language.
-    getIcon: *const fn (languageId: []const u8) ?LanguageIcon,
-
-    // Get all file extensions for a language.
-    getExtensions: *const fn (languageId: []const u8) []const []const u8,
-
-    // Get all file names for a language.
-    getFilenames: *const fn (languageId: []const u8) []const []const u8,
-
-    // Get all language configuration files for a language.
-    getConfigurationFiles: *const fn (languageId: []const u8) []const Uri,
-
-    // Look up a language by its name case insensitive.
-    getLanguageIdByLanguageName: *const fn (languageName: []const u8) ?[]const u8,
-
-    // Look up a language by its mime type.
-    getLanguageIdByMimeType: *const fn (mimeType: ?[]const u8) ?[]const u8,
-
-    // Guess the language id for a resource.
-    guessLanguageIdByFilepathOrFirstLine: *const fn (resource: Uri, firstLine: ?[]const u8) ?[]const u8,
-
-    // Will fall back to 'plaintext' if `languageId` is unknown.
-    createById: *const fn (languageId: ?[]const u8) LanguageSelection,
-
-    // Will fall back to 'plaintext' if `mimeType` is unknown.
-    createByMimeType: *const fn (mimeType: ?[]const u8) LanguageSelection,
-
-    // Will fall back to 'plaintext' if the `languageId` cannot be determined.
-    createByFilepathOrFirstLine: *const fn (resource: ?Uri, firstLine: ?[]const u8) LanguageSelection,
-
-    // Request basic language features for a language.
-    requestBasicLanguageFeatures: *const fn (languageId: []const u8) void,
-
-    // Request rich language features for a language.
-    requestRichLanguageFeatures: *const fn (languageId: []const u8) void,
-
     pub fn init(allocator: Allocator, languageIdCodec: *LanguageIdCodec) LanguageService {
         return LanguageService{
             .languageIdCodec = languageIdCodec,
             ._languageConfigurations = std.StringHashMap(LanguageConfiguration).init(allocator),
+            .allocator = allocator,
+            .languages = std.StringHashMap(LanguageRegistryEntry).init(allocator),
+            .mime_types = std.StringHashMap([]const u8).init(allocator),
+            .language_names = std.StringHashMap([]const u8).init(allocator),
+            .changed = Emitter(void).init(allocator),
+            .selections = std.array_list.Managed(*Selection).init(allocator),
             .onDidRequestBasicLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidRequestRichLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidChange = Emitter(void).init(allocator),
-            .registerLanguage = undefined,
-            .isRegisteredLanguageId = undefined,
-            .getRegisteredLanguageIds = undefined,
-            .getSortedRegisteredLanguageNames = undefined,
-            .getLanguageName = undefined,
-            .getMimeType = undefined,
-            .getIcon = undefined,
-            .getExtensions = undefined,
-            .getFilenames = undefined,
-            .getConfigurationFiles = undefined,
-            .getLanguageIdByLanguageName = undefined,
-            .getLanguageIdByMimeType = undefined,
-            .guessLanguageIdByFilepathOrFirstLine = undefined,
-            .createById = undefined,
-            .createByMimeType = undefined,
-            .createByFilepathOrFirstLine = undefined,
-            .requestBasicLanguageFeatures = defaultRequestBasicLanguageFeatures,
-            .requestRichLanguageFeatures = defaultRequestRichLanguageFeatures,
         };
+    }
+
+    pub fn registerLanguage(self: *LanguageService, def: ILanguageExtensionPoint) !void {
+        const id = try self.allocator.dupe(u8, def.id);
+        try self.languages.put(id, .{
+            .id = id,
+            .aliases = def.aliases,
+            .extensions = def.extensions,
+            .filenames = def.filenames,
+            .mimetypes = def.mimetypes,
+            .first_line = def.firstLine,
+        });
+        if (def.mimetypes) |mime_types| {
+            for (mime_types) |mime| try self.mime_types.put(try self.allocator.dupe(u8, mime), id);
+        }
+        if (def.aliases) |aliases| {
+            for (aliases) |alias| try self.language_names.put(try self.allocator.dupe(u8, alias), id);
+        }
+        try self.changed.fire({});
+        for (self.selections.items) |selection| try selection.refresh();
+    }
+
+    pub fn isRegisteredLanguageId(self: *LanguageService, language_id: []const u8) bool {
+        return self.languages.contains(language_id);
+    }
+
+    pub fn getRegisteredLanguageIds(self: *LanguageService, allocator: Allocator) ![]const []const u8 {
+        var result = std.array_list.Managed([]const u8).init(allocator);
+        var iterator = self.languages.keyIterator();
+        while (iterator.next()) |key| try result.append(key.*);
+        return result.toOwnedSlice();
+    }
+
+    pub fn getLanguageName(self: *LanguageService, language_id: []const u8) ?[]const u8 {
+        if (self.languages.get(language_id)) |entry| {
+            if (entry.aliases) |aliases| {
+                if (aliases.len > 0) return aliases[0];
+            }
+        }
+        return null;
+    }
+
+    pub fn getMimeType(self: *LanguageService, language_id: []const u8) ?[]const u8 {
+        if (self.languages.get(language_id)) |entry| {
+            if (entry.mimetypes) |mime_types| {
+                if (mime_types.len > 0) return mime_types[0];
+            }
+        }
+        return null;
+    }
+
+    pub fn getLanguageIdByMimeType(self: *LanguageService, mime_type: []const u8) ?[]const u8 {
+        return self.mime_types.get(mime_type);
+    }
+
+    pub fn getExtensions(self: *LanguageService, language_id: []const u8) []const []const u8 {
+        if (self.languages.get(language_id)) |entry| return entry.extensions orelse &.{};
+        return &.{};
+    }
+
+    pub fn getFilenames(self: *LanguageService, language_id: []const u8) []const []const u8 {
+        if (self.languages.get(language_id)) |entry| return entry.filenames orelse &.{};
+        return &.{};
+    }
+
+    pub fn createById(self: *LanguageService, language_id: ?[]const u8) !*Selection {
+        const selection = try self.allocator.create(Selection);
+        selection.* = .{ .service = self, .requested_id = language_id, .emitter = Emitter([]const u8).init(self.allocator) };
+        try self.selections.append(selection);
+        return selection;
+    }
+
+    pub fn createByMimeType(self: *LanguageService, mime_type: ?[]const u8) !*Selection {
+        const language_id = if (mime_type) |mime| self.getLanguageIdByMimeType(mime) else null;
+        return self.createById(language_id);
+    }
+
+    pub fn requestBasicLanguageFeatures(self: *LanguageService, language_id: []const u8) void {
+        self.onDidRequestBasicLanguageFeatures.fire(language_id) catch {};
+    }
+
+    pub fn requestRichLanguageFeatures(self: *LanguageService, language_id: []const u8) void {
+        self.requestBasicLanguageFeatures(language_id);
+        self.onDidRequestRichLanguageFeatures.fire(language_id) catch {};
     }
 
     pub fn registerLanguageConfiguration(self: *LanguageService, languageId: []const u8, configuration: LanguageConfiguration) !void {
@@ -142,9 +174,58 @@ pub const LanguageService = struct {
     pub fn deinit(self: *LanguageService) void {
         var keyIter = self._languageConfigurations.keyIterator();
         while (keyIter.next()) |key| self._languageConfigurations.allocator.free(key.*);
+        for (self.selections.items) |selection| {
+            selection.emitter.deinit();
+            self.allocator.destroy(selection);
+        }
+        self.selections.deinit();
+        var language_keys = self.languages.keyIterator();
+        while (language_keys.next()) |key| self.allocator.free(key.*);
+        self.languages.deinit();
+        var mime_keys = self.mime_types.keyIterator();
+        while (mime_keys.next()) |key| self.allocator.free(key.*);
+        self.mime_types.deinit();
+        var name_keys = self.language_names.keyIterator();
+        while (name_keys.next()) |key| self.allocator.free(key.*);
+        self.language_names.deinit();
+        self.changed.deinit();
         self._languageConfigurations.deinit();
         self.onDidRequestBasicLanguageFeatures.deinit();
         self.onDidRequestRichLanguageFeatures.deinit();
         self.onDidChange.deinit();
+    }
+};
+
+pub const Selection = struct {
+    service: *LanguageService,
+    requested_id: ?[]const u8,
+    emitter: Emitter([]const u8),
+
+    pub fn interface(self: *Selection) language.ILanguageSelection {
+        return .{ .context = self, .get_language_id = getLanguageId, .onDidChange = &self.emitter };
+    }
+
+    fn getLanguageId(context: *anyopaque) []const u8 {
+        const self: *Selection = @ptrCast(@alignCast(context));
+        if (self.requested_id) |id| {
+            if (self.service.isRegisteredLanguageId(id)) return id;
+        }
+        return PLAINTEXT_LANGUAGE_ID;
+    }
+
+    pub fn refresh(self: *Selection) !void {
+        try self.emitter.fire(getLanguageId(self));
+    }
+
+    pub fn deinit(self: *Selection) void {
+        const allocator = self.service.allocator;
+        for (self.service.selections.items, 0..) |candidate, index| {
+            if (candidate == self) {
+                _ = self.service.selections.orderedRemove(index);
+                break;
+            }
+        }
+        self.emitter.deinit();
+        allocator.destroy(self);
     }
 };

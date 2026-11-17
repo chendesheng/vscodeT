@@ -35,10 +35,15 @@ pub const ILanguageExtensionPoint = struct {
 
 /// A language selection that tracks changes of the document.
 pub const ILanguageSelection = struct {
-    languageId: []const u8,
+    context: *anyopaque,
+    get_language_id: *const fn (context: *anyopaque) []const u8,
     /// Upstream this is an `Event<string>`; this port exposes the `Emitter`
     /// directly because it has no separate `Event` function type.
     onDidChange: *Emitter([]const u8),
+
+    pub fn languageId(self: ILanguageSelection) []const u8 {
+        return self.get_language_id(self.context);
+    }
 };
 
 pub const ILanguageNameIdPair = struct {
