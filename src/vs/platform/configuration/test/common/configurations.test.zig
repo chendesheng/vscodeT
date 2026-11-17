@@ -279,3 +279,17 @@ test "deregistering a property removes it from the model" {
     registry.deregisterConfigurations("deregister");
     try std.testing.expect(defaults.configurationModel().getValue("deregister.prop") == null);
 }
+
+test "deregistering an unknown or already removed node is a no-op" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    try registry.registerConfiguration("removed", &.{.{ .key = "removed.prop", .default = std.json.Value{ .bool = true } }});
+    registry.deregisterConfigurations("removed");
+    registry.deregisterConfigurations("removed");
+    registry.deregisterConfigurations("missing");
+    try std.testing.expect(defaults.configurationModel().getValue("removed.prop") == null);
+}
