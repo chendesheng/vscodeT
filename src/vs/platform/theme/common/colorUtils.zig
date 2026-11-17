@@ -7,9 +7,12 @@
 // - Nested transforms use a pointer operand (`ColorValue.transform`), because a
 //   Zig tagged union cannot contain itself by value.
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Emitter = @import("../../../base/common/event.zig").Emitter;
 const Color = @import("../../../base/common/color.zig").Color;
 const theme_service = @import("./themeService.zig");
 const IColorTheme = theme_service.IColorTheme;
+const theme_mod = @import("./theme.zig");
 const ColorIdentifier = theme_service.ColorIdentifier;
 
 pub const ColorTransformType = enum(u8) {
@@ -126,4 +129,165 @@ pub fn resolveColorValue(value: ColorValue, theme: *const IColorTheme) ?Color {
         },
         .transform => |transform| executeTransform(transform.*, theme),
     };
+}
+
+pub const ColorDefaults = struct {
+    light: ?ColorValue = null,
+    dark: ?ColorValue = null,
+    hc_dark: ?ColorValue = null,
+    hc_light: ?ColorValue = null,
+
+    fn forTheme(self: *const ColorDefaults, theme_type: theme_mod.ColorScheme) ?ColorValue {
+        return switch (theme_type) {
+            .LIGHT => self.light,
+            .DARK => self.dark,
+            .HIGH_CONTRAST_DARK => self.hc_dark,
+            .HIGH_CONTRAST_LIGHT => self.hc_light,
+        };
+    }
+};
+
+pub const ColorContribution = struct {
+    id: ColorIdentifier,
+    description: []const u8,
+    defaults: ?ColorDefaults = null,
+    /// A single default value shared by all theme types.
+    default_value: ?ColorValue = null,
+    needs_transparency: bool = false,
+    deprecation_message: ?[]const u8 = null,
+};
+
+/// Port of the `ColorRegistry` part of `colorUtils.ts`. The JSON schema
+/// contribution is not ported (the terminal has no settings-schema UI); the
+/// registry keeps the contributions and resolves theme defaults.
+pub const ColorRegistry = struct {
+    allocator: Allocator,
+    colors: std.StringHashMap(ColorContribution),
+    onDidChangeSchema: Emitter(void),
+
+    pub fn init(allocator: Allocator) ColorRegistry {
+        return .{
+            .allocator = allocator,
+            .colors = std.StringHashMap(ColorContribution).init(allocator),
+            .onDidChangeSchema = Emitter(void).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *ColorRegistry) void {
+        self.colors.deinit();
+        self.onDidChangeSchema.deinit();
+    }
+
+    pub fn registerColor(
+        self: *ColorRegistry,
+        id: ColorIdentifier,
+        defaults: ?ColorDefaults,
+        default_value: ?ColorValue,
+        description: []const u8,
+        needs_transparency: bool,
+    ) !ColorIdentifier {
+        try self.colors.put(id, .{
+            .id = id,
+            .description = description,
+            .defaults = defaults,
+            .default_value = default_value,
+            .needs_transparency = needs_transparency,
+        });
+        try self.onDidChangeSchema.fire({});
+        return id;
+    }
+
+    pub fn updateDefaultColor(self: *ColorRegistry, id: ColorIdentifier, defaults: ?ColorDefaults, default_value: ?ColorValue) void {
+        if (self.colors.getPtr(id)) |contribution| {
+            contribution.defaults = defaults;
+            contribution.default_value = default_value;
+        }
+    }
+
+    pub fn deregisterColor(self: *ColorRegistry, id: ColorIdentifier) void {
+        _ = self.colors.remove(id);
+        self.onDidChangeSchema.fire({}) catch {};
+    }
+
+    /// Contributions in insertion order; the returned slice is caller-owned.
+    pub fn getColors(self: *ColorRegistry, allocator: Allocator) ![]const *const ColorContribution {
+        var result = std.array_list.Managed(*const ColorContribution).init(allocator);
+        errdefer result.deinit();
+        var iterator = self.colors.valueIterator();
+        while (iterator.next()) |contribution| try result.append(contribution);
+        return result.toOwnedSlice();
+    }
+
+    pub fn getColor(self: *ColorRegistry, id: ColorIdentifier) ?ColorContribution {
+        return self.colors.get(id);
+    }
+
+    pub fn resolveDefaultColor(self: *ColorRegistry, id: ColorIdentifier, theme: *const IColorTheme) ?Color {
+        const contribution = self.colors.get(id) orelse return null;
+        if (contribution.default_value) |value| return resolveColorValue(value, theme);
+        if (contribution.defaults) |defaults| {
+            const value = defaults.forTheme(theme.theme_type) orelse return null;
+            return resolveColorValue(value, theme);
+        }
+        return null;
+    }
+};
+
+const TestTheme = struct {
+    theme_type: theme_mod.ColorScheme = .DARK,
+
+    fn interface(self: *TestTheme) IColorTheme {
+        return .{
+            .theme_type = self.theme_type,
+            .label = "test",
+            .context = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable = IColorTheme.VTable{
+        .getColor = getColor,
+        .defines = defines,
+        .getTokenStyleMetadata = getTokenStyleMetadata,
+    };
+
+    fn getColor(_: *anyopaque, _: []const u8, _: bool) ?Color {
+        return null;
+    }
+    fn defines(_: *anyopaque, _: []const u8) bool {
+        return false;
+    }
+    fn getTokenStyleMetadata(_: *anyopaque, _: []const u8, _: []const []const u8, _: []const u8) ?theme_service.ITokenStyle {
+        return null;
+    }
+};
+
+test "color registry resolves per-theme defaults and updates" {
+    const allocator = std.testing.allocator;
+    var registry = ColorRegistry.init(allocator);
+    defer registry.deinit();
+
+    _ = try registry.registerColor("editor.background", .{
+        .dark = .{ .string = "#000000" },
+        .light = .{ .string = "#ffffff" },
+    }, null, "Editor background", false);
+
+    var dark = TestTheme{ .theme_type = .DARK };
+    var light = TestTheme{ .theme_type = .LIGHT };
+    const dark_color = registry.resolveDefaultColor("editor.background", &dark.interface()).?;
+    try std.testing.expectEqual(@as(u8, 0), dark_color.r);
+    const light_color = registry.resolveDefaultColor("editor.background", &light.interface()).?;
+    try std.testing.expectEqual(@as(u8, 255), light_color.r);
+
+    registry.updateDefaultColor("editor.background", null, .{ .string = "#ff0000" });
+    const updated = registry.resolveDefaultColor("editor.background", &dark.interface()).?;
+    try std.testing.expectEqual(@as(u8, 255), updated.r);
+    try std.testing.expectEqual(@as(u8, 0), updated.g);
+
+    const colors = try registry.getColors(allocator);
+    defer allocator.free(colors);
+    try std.testing.expectEqual(@as(usize, 1), colors.len);
+
+    registry.deregisterColor("editor.background");
+    try std.testing.expect(registry.resolveDefaultColor("editor.background", &dark.interface()) == null);
 }

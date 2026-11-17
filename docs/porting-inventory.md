@@ -877,9 +877,11 @@ older single-group save/load helpers were retired; the part path is the only
 session format left.
 
 **P5c status:** the `Color` HSL/mix/opacity helpers and
-`platform/theme/common/colorUtils.zig` color transforms are ported, with the
-three upstream `colorUtils.test.ts` cases. The global `ColorRegistry`, JSON
-schema contribution and `workbenchThemeService`/`colorThemeData` remain.
+`platform/theme/common/colorUtils.zig` are ported: color transforms (three
+upstream `colorUtils.test.ts` cases) and an explicit `ColorRegistry`
+(contributions, per-theme defaults, update/deregister/resolve, schema-change
+event). The JSON schema contribution, `workbenchThemeService` and
+`colorThemeData` remain.
 
 **P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
 registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
