@@ -585,14 +585,21 @@ pub const MenuService = struct {
                 switch (entry.*) {
                     .command => |item| {
                         self.hide_state.setDefaultState(id, item.command.id, item.is_hidden_by_default);
+                        const checked = toggleState(item.command, context);
+                        const label = if (checked == true) blk: {
+                            if (item.command.toggle_info) |info| {
+                                if (info.title) |title| break :blk title;
+                            }
+                            break :blk item.command.title;
+                        } else item.command.title;
                         const action = try allocator.create(MenuItemAction);
                         action.* = .{
                             .item = item.command,
                             .enabled = if (item.command.precondition) |when| when.evaluate(context) else true,
-                            .checked = if (item.command.toggled) |toggled| toggled.evaluate(context) else null,
+                            .checked = checked,
                             .hidden = self.hide_state.isHidden(id, item.command.id),
                             .is_modified_from_default = self.hide_state.isModifiedFromDefault(id, item.command.id),
-                            .label = item.command.title,
+                            .label = label,
                             .keybinding_label = self.keybindingLabel(allocator, item.command.id, context) catch null,
                             .tooltip = item.command.tooltip orelse "",
                             .group_title = group_title,
@@ -600,13 +607,19 @@ pub const MenuService = struct {
                         };
                         if (item.alt) |alt| {
                             const alt_action = try allocator.create(MenuItemAction);
+                            const alt_checked = toggleState(alt, context);
                             alt_action.* = .{
                                 .item = alt,
                                 .enabled = if (alt.precondition) |when| when.evaluate(context) else true,
-                                .checked = if (alt.toggled) |toggled| toggled.evaluate(context) else null,
+                                .checked = alt_checked,
                                 .hidden = self.hide_state.isHidden(id, alt.id),
                                 .is_modified_from_default = self.hide_state.isModifiedFromDefault(id, alt.id),
-                                .label = alt.title,
+                                .label = if (alt_checked == true) blk: {
+                                    if (alt.toggle_info) |info| {
+                                        if (info.title) |title| break :blk title;
+                                    }
+                                    break :blk alt.title;
+                                } else alt.title,
                                 .keybinding_label = self.keybindingLabel(allocator, alt.id, context) catch null,
                                 .tooltip = alt.tooltip orelse "",
                                 .group_title = group_title,
@@ -661,6 +674,12 @@ fn separator(allocator: Allocator, label: ?[]const u8) !IAction {
     const value = try allocator.create(base_actions.Separator);
     value.* = .{ .label_text = label };
     return value.interface();
+}
+
+fn toggleState(command: ICommandAction, context: contextkey.IContext) ?bool {
+    if (command.toggled) |toggled| return toggled.evaluate(context);
+    if (command.toggle_info) |info| return info.condition.evaluate(context);
+    return null;
 }
 
 fn groupOf(entry: *const MenuEntry) []const u8 {
@@ -1616,4 +1635,72 @@ test "one-shot menus observe registered title, order and group changes" {
     try std.testing.expectEqualStrings("Z", fourth[0].labels[0]);
     try std.testing.expectEqualStrings("primary", fourth[1].id);
     try std.testing.expectEqualStrings("B", fourth[1].labels[0]);
+}
+
+test "one-shot menus reevaluate enablement, toggled state and alternates" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    var context_keys = contextkey.ContextKeyService.init(allocator);
+    defer context_keys.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    service.useContextService(&context_keys);
+    const menu_id = MenuId{ .id = "test.reevaluate" };
+
+    try registry.appendMenuItem(menu_id, .{
+        .command = .{
+            .id = "command",
+            .title = "Command",
+            .precondition = try factory.has("enabled"),
+            .toggled = try factory.has("toggled"),
+            .toggle_info = .{ .condition = try factory.has("toggled"), .title = "Toggled" },
+        },
+        .alt = .{ .id = "alt", .title = "Alternate", .precondition = try factory.has("enabled") },
+    });
+
+    const enabled = try context_keys.createKey("enabled", .{ .boolean = true });
+    const toggled = try context_keys.createKey("toggled", .{ .boolean = false });
+    const context = context_keys.interface().getContext();
+
+    var menu = try service.createMenu(allocator, menu_id, context);
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+
+    const Check = struct {
+        fn run(groups: []const MenuGroup, iteration: usize) !void {
+            const action: *MenuItemAction = @ptrCast(@alignCast(groups[0].actions[0].context));
+            if (iteration == 0) {
+                try std.testing.expect(action.enabled);
+                try std.testing.expectEqual(@as(?bool, false), action.checked);
+                try std.testing.expectEqualStrings("Command", action.label);
+                try std.testing.expect(action.alt.?.enabled());
+            } else {
+                try std.testing.expect(!action.enabled);
+                try std.testing.expectEqual(@as(?bool, true), action.checked);
+                try std.testing.expectEqualStrings("Toggled", action.label);
+                try std.testing.expect(!action.alt.?.enabled());
+            }
+        }
+    };
+
+    for (0..2) |pass| {
+        enabled.set(.{ .boolean = true });
+        toggled.set(.{ .boolean = false });
+        for (0..2) |iteration| {
+            if (pass == 0) {
+                try Check.run(menu.getActions(), iteration);
+            } else {
+                var one_shot = try service.getMenuActions(allocator, menu_id, context);
+                defer one_shot.deinit();
+                try Check.run(one_shot.groups, iteration);
+            }
+            enabled.set(.{ .boolean = false });
+            toggled.set(.{ .boolean = true });
+        }
+    }
 }
