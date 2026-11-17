@@ -142,3 +142,15 @@ test "TextFileEditorModel tracks content, version and dirty state" {
     try std.testing.expectEqualStrings("two", model.getText());
     try std.testing.expect(!model.isDirty());
 }
+
+test "TextFileEditorModel reports missing files" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var files = @import("../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+    defer files.deinit();
+    var text_files = TextFileService.init(allocator, &files);
+    var model = try TextFileEditorModel.create(allocator, &text_files, "/definitely/not/here.txt");
+    defer model.destroy();
+    try std.testing.expectError(error.FileNotFound, model.load());
+    try std.testing.expectEqualStrings("", model.getText());
+}
