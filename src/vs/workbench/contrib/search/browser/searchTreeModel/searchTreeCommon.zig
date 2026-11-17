@@ -800,6 +800,23 @@ pub const TextSearchHeading = struct {
         self.notifyChange(.{ .elements = &.{}, .removed = true, .clearing_all = true });
     }
 
+    pub fn removeFolder(self: *TextSearchHeading, folder: *FolderMatch) void {
+        if (self.other) |other| {
+            if (other == folder) {
+                other.deinit();
+                self.other = null;
+                return;
+            }
+        }
+        for (self.folders.items, 0..) |candidate, index| {
+            if (candidate == folder) {
+                _ = self.folders.orderedRemove(index);
+                folder.deinit();
+                return;
+            }
+        }
+    }
+
     pub fn notifyChange(self: *TextSearchHeading, event: ChangeEvent) void {
         emit(&self.on_change, event);
         self.parent_result.forwardChange(event);
@@ -892,7 +909,64 @@ pub const SearchResult = struct {
         _ = self;
         match.parent_file.remove(match);
     }
+
+    /// Port of upstream `ISearchResult.batchRemove` for text results. Elements
+    /// are expected to be distinct; callers remove ancestors before children.
+    pub fn batchRemove(self: *SearchResult, elements: []const Node) void {
+        for (elements) |element| {
+            switch (element) {
+                .heading => self.clear(),
+                .folder => |folder| {
+                    if (folder.parent_folder) |parent| {
+                        parent.removeFolder(folder);
+                    } else {
+                        self.heading.removeFolder(folder);
+                    }
+                },
+                .file => |file| file.parent_folder.removeFile(file),
+                .match => |match| match.parent_file.remove(match),
+            }
+        }
+    }
 };
+
+/// Node-level helpers used by the view and action ports.
+pub fn nodeParent(node: Node) ?Node {
+    return switch (node) {
+        .heading => null,
+        .folder => |folder| if (folder.parent_folder) |parent|
+            Node{ .folder = parent }
+        else
+            Node{ .heading = folder.heading },
+        .file => |file| Node{ .folder = file.parent_folder },
+        .match => |match| Node{ .file = match.parent_file },
+    };
+}
+
+pub fn nodeEql(a: Node, b: Node) bool {
+    return switch (a) {
+        .heading => |value| b == .heading and b.heading == value,
+        .folder => |value| b == .folder and b.folder == value,
+        .file => |value| b == .file and b.file == value,
+        .match => |value| b == .match and b.match == value,
+    };
+}
+
+pub fn isSearchTreeMatch(node: Node) bool {
+    return node == .match;
+}
+
+pub fn isSearchTreeFileMatch(node: Node) bool {
+    return node == .file;
+}
+
+pub fn isSearchTreeFolderMatch(node: Node) bool {
+    return node == .folder;
+}
+
+pub fn isTextSearchHeading(node: Node) bool {
+    return node == .heading;
+}
 
 fn isSeparator(ch: u8) bool {
     return ch == '/' or ch == '\\';

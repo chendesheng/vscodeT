@@ -937,8 +937,8 @@ Library constraints:
   activity service model
   (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
   terminal view (`src/tui/activityBar.zig`). The Search activity shows a badge
-  with the current match count; the service also supports view and global
-  badges. It
+  dot while matches are present (the exact count is in the panel); the service
+  also supports view and global badges. It
   switches fixed Explorer,
   Search and Settings containers; Settings remains a placeholder. The model
   owns activity order, visibility, the active container and compact width.
@@ -953,14 +953,23 @@ Library constraints:
   files, directory-only patterns and `!` negations. `glob.zig` grew the
   pattern language that port needs: `**`, `?`, `{}` groups, `[...]` character
   classes, `trimForExclusions` and `ignoreCase`. `searchTreeModel` ports the result
-  hierarchy, replacement pattern and change events. `src/tui/searchWidget.zig`
-  renders the input/replace/details rows on a `ui.Surface`;
-  `src/tui/searchView.zig` owns focus, mouse routing, the flattened result
-  rows and the replace/open callbacks. Completed match selections write a
-  `rangeHighlight` model decoration through `View.setSearchHighlights`.
-  Remaining gaps are the browser tree's compression/virtualization,
-  multi-selection, drag/drop, context menus, AI/notebook/search-editor results,
-  `search.exclude` configuration, replace preview and Settings view.
+  hierarchy, replacement pattern and change events. `queryBuilder.zig` builds
+  the text query and `searchService.zig` applies `files.exclude`/
+  `search.exclude` through the ported glob expression, including `false`
+  entries, `!` exceptions and `{ when: ... }` sibling clauses.
+  `src/vs/workbench/contrib/search/browser/searchView.zig` is the portable view
+  controller (query lifecycle, focus state, counts/messages and replace-all
+  request/execute); `searchResultsView.zig` owns the data source, ordering,
+  row labels and accessibility labels; `searchCompare.zig` and
+  `searchActions*.zig` port the comparers and action helpers.
+  `src/tui/searchWidget.zig` renders the input/replace/details rows on a
+  `ui.Surface`; `src/tui/searchView.zig` is the terminal adapter that owns
+  focus, mouse routing, flattened row painting and the replace/open callbacks.
+  Completed match selections write a `rangeHighlight` model decoration through
+  `View.setSearchHighlights`. Remaining gaps are the browser tree's
+  compression/virtualization, multi-selection, drag/drop, context menus,
+  clipboard/history storage, AI/notebook/search-editor results, compressed
+  folder chains, search-path expansion and Settings view.
 - Configuration lives in
   `src/vs/workbench/services/configuration/browser/configurationService.zig`,
   over the platform `configuration.zig`, `configurationModels.zig` and

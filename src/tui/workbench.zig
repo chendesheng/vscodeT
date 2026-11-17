@@ -75,8 +75,8 @@ const SearchService = search_service_mod.SearchService;
 const search_types = @import("../vs/workbench/services/search/common/search.zig");
 const FileContentProvider = search_types.FileContentProvider;
 const replace_service_mod = @import("../vs/workbench/contrib/search/browser/replaceService.zig");
-const ReplaceService = replace_service_mod.ReplaceService;
 const replace_types = replace_service_mod;
+const search_configuration = @import("../vs/workbench/contrib/search/common/searchConfiguration.zig");
 const tree = @import("../vs/workbench/contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
 const group_mod = @import("../vs/workbench/common/editor/editorGroupModel.zig");
 const editor_groups = @import("../vs/workbench/services/editor/common/editorGroupsService.zig");
@@ -131,7 +131,6 @@ pub const Workbench = struct {
     sidebar: ?*Sidebar = null,
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
-    search_replace: ?*ReplaceService = null,
     layout_model: LayoutModel,
     activity_bar_part: ActivityBarPart,
     sidebar_part: SidebarPart,
@@ -177,7 +176,6 @@ pub const Workbench = struct {
         self.sidebar = null;
         self.search_view = null;
         self.search_service = null;
-        self.search_replace = null;
         try self.initShellModels();
         errdefer self.deinitShellModels();
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
@@ -234,7 +232,6 @@ pub const Workbench = struct {
         self.sidebar = null;
         self.search_view = null;
         self.search_service = null;
-        self.search_replace = null;
         try self.initShellModels();
         errdefer self.deinitShellModels();
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
@@ -305,7 +302,6 @@ pub const Workbench = struct {
         self.sidebar = null;
         self.search_view = null;
         self.search_service = null;
-        self.search_replace = null;
         try self.initShellModels();
         errdefer self.deinitShellModels();
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
@@ -682,7 +678,10 @@ pub const Workbench = struct {
             self.allocator,
             self.io,
             self.workspace,
-            .{ .user_settings_path = self.user_settings_path },
+            .{
+                .user_settings_path = self.user_settings_path,
+                .defaults_json = &.{search_configuration.defaults_json},
+            },
         );
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
     }
@@ -691,7 +690,11 @@ pub const Workbench = struct {
     /// performed (or an event was emitted) and the host should repaint.
     pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
         const watcher = self.settings_watcher orelse return false;
-        return watcher.poll(now_ms) catch false;
+        const changed = watcher.poll(now_ms) catch false;
+        if (changed) {
+            if (self.search_view) |view| view.onConfigurationChanged();
+        }
+        return changed;
     }
 
     pub fn fileWatcherFd(self: *const Workbench) ?std.posix.fd_t {
@@ -766,18 +769,11 @@ pub const Workbench = struct {
             .extra_files = searchExtraFiles,
             .free_paths = searchFreePaths,
         });
-        const replace = try self.allocator.create(ReplaceService);
-        errdefer self.allocator.destroy(replace);
-        replace.* = ReplaceService.init(self.allocator, .{
-            .context = self,
-            .apply_edits = searchApplyEdits,
-            .save_file = searchSaveFile,
-        });
         const view = try SearchView.init(
             self.allocator,
             self.workspace,
+            self.configuration.?,
             service.interface(),
-            replace,
             .{
                 .context = self,
                 .open_match = searchOpenMatch,
@@ -793,15 +789,12 @@ pub const Workbench = struct {
         );
         errdefer view.deinit();
         self.search_service = service;
-        self.search_replace = replace;
         self.search_view = view;
     }
 
     fn destroySearch(self: *Workbench) void {
         if (self.search_view) |view| view.deinit();
         self.search_view = null;
-        if (self.search_replace) |replace| self.allocator.destroy(replace);
-        self.search_replace = null;
         if (self.search_service) |service| self.allocator.destroy(service);
         self.search_service = null;
     }
@@ -2714,7 +2707,7 @@ test "Workbench: workspace search streams results and opens a match" {
     const rendered = out.written();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "SEARCH") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "alpha") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "2 results in 1 files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "2 results in 1 file") != null);
 }
 
 test "Workbench: opening a search match selects its range" {
@@ -3037,4 +3030,156 @@ test "Workbench: quick open renders and an outside click only closes it" {
     try std.testing.expect(workbench.handleQuickAccessMouse(&click));
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
+}
+
+test "Workbench: search shows no-results and honors showLineNumbers" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "settings_search.txt", "alpha beta\n");
+    defer allocator.free(path);
+    var settings_file = try tmp.dir.createFile(io, "search-settings.json", .{});
+    try settings_file.writeStreamingAll(io, "{\"search.showLineNumbers\": true}");
+    settings_file.close(io);
+    var settings_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const settings_dir_len = try tmp.dir.realPath(io, &settings_buffer);
+    const settings_path = try std.fs.path.join(allocator, &.{ settings_buffer[0..settings_dir_len], "search-settings.json" });
+    defer allocator.free(settings_path);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPath(settings_path);
+    try workbench.initSidebar(root);
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+
+    try view.widget.setValue(.search, "zzz-not-found");
+    try view.startSearch();
+    var guard: usize = 0;
+    while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    }
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "No results found") != null);
+
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    guard = 0;
+    while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    }
+    var rendered: std.Io.Writer.Allocating = .init(allocator);
+    defer rendered.deinit();
+    try workbench.render(&rendered.writer);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.written(), "1: ") != null);
+}
+
+test "Workbench: typing a search query restarts results without stale collapse keys" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "typed_search.txt", "test tester testing\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+
+    for ([_][]const u8{ "t", "te", "tes", "test" }) |query| {
+        try view.widget.setValue(.search, query);
+        try view.startSearch();
+        var guard: usize = 0;
+        while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
+            _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+        }
+    }
+
+    var saw_file = false;
+    var saw_match = false;
+    for (view.rows.items, view.depths.items) |row, depth| {
+        switch (row) {
+            .file => {
+                saw_file = true;
+                // List mode places files at the root; only tree mode nests them.
+                try std.testing.expectEqual(@as(usize, 0), depth);
+            },
+            .match => {
+                saw_match = true;
+                try std.testing.expectEqual(@as(usize, 1), depth);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_file);
+    try std.testing.expect(saw_match);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "test") != null);
+}
+
+test "Workbench: wheel scrolls search results without moving the selection" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var paths = std.array_list.Managed([]const u8).init(allocator);
+    defer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit();
+    }
+    for (0..14) |index| {
+        var name_buffer: [48]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "scroll_{d}.txt", .{index});
+        const path = try seedFile(allocator, io, &tmp, name, "alpha\n");
+        try paths.append(path);
+    }
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, paths.items, 80, 16);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+    }
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(view.rows.items.len > view.visible_rows);
+
+    const selected_before = view.selected;
+    const scroll_before = view.scroll;
+    const x = ui.cell.snap(view.last_rect.x) + 2;
+    const y = ui.cell.snap(view.last_rect.y) + 1 + view.widget.layout.height + 2;
+    const wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 1 };
+    try std.testing.expect(workbench.handleSidebarMouse(&wheel));
+    try std.testing.expect(view.scroll > scroll_before);
+    try std.testing.expectEqual(selected_before, view.selected);
+
+    var after: std.Io.Writer.Allocating = .init(allocator);
+    defer after.deinit();
+    try workbench.render(&after.writer);
+    try std.testing.expect(view.scroll > scroll_before);
 }

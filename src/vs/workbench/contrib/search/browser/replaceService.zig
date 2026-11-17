@@ -29,7 +29,7 @@ pub const IReplaceService = struct {
     replace_files: *const fn (
         context: *anyopaque,
         allocator: Allocator,
-        files: []*FileMatch,
+        files: []const *FileMatch,
         pattern: *const ReplacePattern,
         preserve_case: bool,
     ) anyerror!void,
@@ -52,7 +52,7 @@ pub const ReplaceService = struct {
     pub fn replaceMatches(
         self: *ReplaceService,
         allocator: Allocator,
-        matches: []*Match,
+        matches: []const *Match,
         pattern: *const ReplacePattern,
         preserve_case: bool,
     ) !void {
@@ -68,7 +68,7 @@ pub const ReplaceService = struct {
     pub fn replaceFiles(
         self: *ReplaceService,
         allocator: Allocator,
-        files: []*FileMatch,
+        files: []const *FileMatch,
         pattern: *const ReplacePattern,
         preserve_case: bool,
     ) !void {
@@ -104,7 +104,7 @@ const OwnedEdit = struct {
 fn replaceFilesCallback(
     context: *anyopaque,
     allocator: Allocator,
-    files: []*FileMatch,
+    files: []const *FileMatch,
     pattern: *const ReplacePattern,
     preserve_case: bool,
 ) anyerror!void {

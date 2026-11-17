@@ -8,8 +8,58 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const configuration = @import("../../../../platform/configuration/common/configuration.zig");
+const glob = @import("../../../../base/common/glob.zig");
 
 pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 20_000;
+pub const SEARCH_EXCLUDE_CONFIG = "search.exclude";
+
+/// Port of upstream `ViewMode`.
+pub const ViewMode = enum {
+    list,
+    tree,
+
+    pub fn fromString(value: []const u8) ViewMode {
+        return if (std.mem.eql(u8, value, "tree")) .tree else .list;
+    }
+
+    pub fn toString(self: ViewMode) []const u8 {
+        return switch (self) {
+            .list => "list",
+            .tree => "tree",
+        };
+    }
+};
+
+/// Port of upstream `SearchSortOrder`.
+pub const SearchSortOrder = enum {
+    default,
+    file_names,
+    type,
+    modified,
+    count_descending,
+    count_ascending,
+
+    pub fn fromString(value: []const u8) SearchSortOrder {
+        if (std.mem.eql(u8, value, "fileNames")) return .file_names;
+        if (std.mem.eql(u8, value, "type")) return .type;
+        if (std.mem.eql(u8, value, "modified")) return .modified;
+        if (std.mem.eql(u8, value, "countDescending")) return .count_descending;
+        if (std.mem.eql(u8, value, "countAscending")) return .count_ascending;
+        return .default;
+    }
+
+    pub fn toString(self: SearchSortOrder) []const u8 {
+        return switch (self) {
+            .default => "default",
+            .file_names => "fileNames",
+            .type => "type",
+            .modified => "modified",
+            .count_descending => "countDescending",
+            .count_ascending => "countAscending",
+        };
+    }
+};
 
 pub const SEARCH_ELIDED_PREFIX = "⟪ ";
 pub const SEARCH_ELIDED_SUFFIX = " characters skipped ⟫";
@@ -32,6 +82,17 @@ pub const FolderQuery = struct {
     folder: []const u8,
 };
 
+/// Options that upstream's query builder attaches to a text query. The
+/// terminal service applies `exclude_entries` through
+/// `glob.ParsedExcludeExpression` and uses `use_ignore_files` to decide whether
+/// `.gitignore`/`.ignore` files are loaded.
+pub const TextQueryOptions = struct {
+    preview: PreviewOptions = .{},
+    max_results: usize = DEFAULT_MAX_SEARCH_RESULTS,
+    use_ignore_files: bool = true,
+    exclude_entries: []const glob.ExcludeEntry = &.{},
+};
+
 /// Owned text query. The view builds it from the inputs and workspace; the
 /// search model keeps it alive for the duration of the job and result heading.
 pub const TextQuery = struct {
@@ -44,7 +105,9 @@ pub const TextQuery = struct {
     folder_paths: [][]u8,
     include_pattern: []u8,
     exclude_pattern: []u8,
+    exclude_entries: []glob.ExcludeEntry,
     extra_files: [][]u8,
+    use_ignore_files: bool = true,
     preview: PreviewOptions = .{},
     max_results: usize = DEFAULT_MAX_SEARCH_RESULTS,
 
@@ -55,6 +118,26 @@ pub const TextQuery = struct {
         include_pattern: []const u8,
         exclude_pattern: []const u8,
         extra_files: []const []const u8,
+    ) !TextQuery {
+        return initWithOptions(
+            allocator,
+            pattern,
+            folder_paths,
+            include_pattern,
+            exclude_pattern,
+            extra_files,
+            .{},
+        );
+    }
+
+    pub fn initWithOptions(
+        allocator: Allocator,
+        pattern: []const u8,
+        folder_paths: []const []const u8,
+        include_pattern: []const u8,
+        exclude_pattern: []const u8,
+        extra_files: []const []const u8,
+        options: TextQueryOptions,
     ) !TextQuery {
         const pattern_copy = try allocator.dupe(u8, pattern);
         errdefer allocator.free(pattern_copy);
@@ -87,6 +170,25 @@ pub const TextQuery = struct {
             queries[index] = .{ .folder = path };
         }
 
+        const exclude_entries = try allocator.alloc(glob.ExcludeEntry, options.exclude_entries.len);
+        errdefer allocator.free(exclude_entries);
+        var entries_copied: usize = 0;
+        errdefer for (exclude_entries[0..entries_copied]) |entry| {
+            allocator.free(entry.pattern);
+            if (entry.when) |when| allocator.free(when);
+        };
+        for (options.exclude_entries, 0..) |entry, index| {
+            const entry_pattern = try allocator.dupe(u8, entry.pattern);
+            errdefer allocator.free(entry_pattern);
+            const when = if (entry.when) |value| try allocator.dupe(u8, value) else null;
+            exclude_entries[index] = .{
+                .pattern = entry_pattern,
+                .enabled = entry.enabled,
+                .when = when,
+            };
+            entries_copied += 1;
+        }
+
         return .{
             .allocator = allocator,
             .pattern = pattern_copy,
@@ -94,7 +196,11 @@ pub const TextQuery = struct {
             .folder_paths = folders,
             .include_pattern = include_copy,
             .exclude_pattern = exclude_copy,
+            .exclude_entries = exclude_entries,
             .extra_files = extras,
+            .use_ignore_files = options.use_ignore_files,
+            .preview = options.preview,
+            .max_results = options.max_results,
         };
     }
 
@@ -102,6 +208,11 @@ pub const TextQuery = struct {
         self.allocator.free(self.pattern);
         self.allocator.free(self.include_pattern);
         self.allocator.free(self.exclude_pattern);
+        for (self.exclude_entries) |entry| {
+            self.allocator.free(entry.pattern);
+            if (entry.when) |when| self.allocator.free(when);
+        }
+        self.allocator.free(self.exclude_entries);
         for (self.folder_paths) |path| self.allocator.free(path);
         self.allocator.free(self.folder_paths);
         self.allocator.free(self.folder_queries);
@@ -118,6 +229,86 @@ pub const TextQuery = struct {
         };
     }
 };
+
+/// Port of upstream `getExcludes`: merges `files.exclude` and `search.exclude`
+/// into the ordered entries consumed by `glob.ParsedExcludeExpression`.
+/// `search.exclude` wins for duplicate patterns.
+pub fn getExcludes(
+    allocator: Allocator,
+    file_excludes: ?*const configuration.Value,
+    search_excludes: ?*const configuration.Value,
+) ![]glob.ExcludeEntry {
+    var entries = std.array_list.Managed(glob.ExcludeEntry).init(allocator);
+    errdefer {
+        for (entries.items) |entry| {
+            allocator.free(entry.pattern);
+            if (entry.when) |when| allocator.free(when);
+        }
+        entries.deinit();
+    }
+
+    if (file_excludes) |value| try appendExcludeEntries(allocator, &entries, value);
+    if (search_excludes) |value| try appendExcludeEntries(allocator, &entries, value);
+    return try entries.toOwnedSlice();
+}
+
+fn appendExcludeEntries(
+    allocator: Allocator,
+    entries: *std.array_list.Managed(glob.ExcludeEntry),
+    value: *const configuration.Value,
+) !void {
+    if (value.* != .object) return;
+    var iterator = value.object.iterator();
+    while (iterator.next()) |item| {
+        if (std.mem.eql(u8, item.key_ptr.*, "__proto__")) continue;
+        var enabled = true;
+        var when: ?[]const u8 = null;
+        switch (item.value_ptr.*) {
+            .bool => |enabled_value| enabled = enabled_value,
+            .object => |object| {
+                if (object.get("when")) |clause| {
+                    if (clause == .string) when = clause.string;
+                }
+            },
+            else => continue,
+        }
+
+        const pattern = try allocator.dupe(u8, item.key_ptr.*);
+        errdefer allocator.free(pattern);
+        const clause = if (when) |string_value| try allocator.dupe(u8, string_value) else null;
+        errdefer if (clause) |clause_text| allocator.free(clause_text);
+
+        var replaced = false;
+        for (entries.items) |*existing| {
+            if (!std.mem.eql(u8, existing.pattern, item.key_ptr.*)) continue;
+            allocator.free(existing.pattern);
+            if (existing.when) |old| allocator.free(old);
+            existing.* = .{
+                .pattern = pattern,
+                .enabled = enabled,
+                .when = clause,
+            };
+            replaced = true;
+            break;
+        }
+        if (replaced) continue;
+
+        try entries.append(.{
+            .pattern = pattern,
+            .enabled = enabled,
+            .when = clause,
+        });
+    }
+}
+
+pub fn freeExcludes(allocator: Allocator, entries: []glob.ExcludeEntry) void {
+    if (entries.len == 0) return;
+    for (entries) |entry| {
+        allocator.free(entry.pattern);
+        if (entry.when) |when| allocator.free(when);
+    }
+    allocator.free(entries);
+}
 
 pub const SearchRange = struct {
     start_line_number: usize,

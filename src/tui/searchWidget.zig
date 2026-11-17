@@ -36,6 +36,7 @@ pub const Layout = struct {
     replace_y: ?usize = null,
     includes_y: ?usize = null,
     excludes_y: ?usize = null,
+    use_excludes_y: ?usize = null,
 };
 
 const ToggleHit = struct {
@@ -59,12 +60,13 @@ pub const SearchWidget = struct {
     contexts: [4]FieldContext,
     callbacks: ?Callbacks = null,
     focus_field: Field = .search,
-    replace_visible: bool = true,
+    replace_visible: bool = false,
     details_visible: bool = false,
     match_case: bool = false,
     whole_word: bool = false,
     regex: bool = false,
     preserve_case: bool = false,
+    use_excludes: bool = true,
     surface: ?ui.Surface = null,
     surface_width: usize = 0,
     surface_height: usize = 0,
@@ -194,6 +196,7 @@ pub const SearchWidget = struct {
         self.layout.replace_y = null;
         self.layout.includes_y = null;
         self.layout.excludes_y = null;
+        self.layout.use_excludes_y = null;
         if (self.replace_visible) {
             self.layout.replace_y = row;
             row += 1;
@@ -202,6 +205,8 @@ pub const SearchWidget = struct {
             self.layout.includes_y = row;
             row += 1;
             self.layout.excludes_y = row;
+            row += 1;
+            self.layout.use_excludes_y = row;
             row += 1;
         }
         self.layout.height = row;
@@ -263,6 +268,13 @@ pub const SearchWidget = struct {
         if (layout.excludes_y) |row| {
             try appendTextAt(doc, root, 0, row, "Ex", .{ .color = dim });
             self.nodes[3] = try self.appendInput(doc, root, &self.excludes, 3, row, @max(@as(usize, 1), width -| 3));
+        }
+        if (layout.use_excludes_y) |row| {
+            const label = if (self.use_excludes)
+                "[x] use exclude settings & ignore files"
+            else
+                "[ ] use exclude settings & ignore files";
+            try appendTextAt(doc, root, 0, row, label[0..@min(label.len, width)], .{ .color = dim });
         }
 
         doc.setRoot(root);
@@ -356,6 +368,17 @@ pub const SearchWidget = struct {
             }
             return true;
         }
+        if (self.layout.use_excludes_y) |row| {
+            if (y == row) {
+                if (event.kind == .down or event.kind == .click) {
+                    self.use_excludes = !self.use_excludes;
+                    if (self.callbacks) |callbacks| {
+                        if (callbacks.on_change) |callback| callback(callbacks.context, .excludes, self.excludes.getValue());
+                    }
+                }
+                return true;
+            }
+        }
         const field = self.fieldAt(y) orelse return false;
         self.focus_field = field;
         var local = event.*;
@@ -420,6 +443,10 @@ test "SearchWidget: renders search row and toggle controls" {
     try std.testing.expect(std.mem.indexOf(u8, row, "Aa") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, ".*") != null);
 
+    try std.testing.expectEqual(@as(usize, 1), widget.layout.height);
+
+    widget.replace_visible = true;
+    try widget.render(28);
     const replace_row = try widget.grid().rowText(allocator, 1);
     defer allocator.free(replace_row);
     try std.testing.expect(std.mem.indexOf(u8, replace_row, "All") != null);

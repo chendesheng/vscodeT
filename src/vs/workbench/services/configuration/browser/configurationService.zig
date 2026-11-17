@@ -39,6 +39,9 @@ pub const Options = struct {
     /// Absolute path to the user settings file. When null only defaults and
     /// workspace/folder settings are read.
     user_settings_path: ?[]const u8 = null,
+    /// Additional JSON default fragments registered by the composition root
+    /// after the generic terminal defaults (later defaults win).
+    defaults_json: []const []const u8 = &.{},
 };
 
 pub const ConfigurationService = struct {
@@ -69,6 +72,9 @@ pub const ConfigurationService = struct {
         const registry = try ConfigurationRegistry.init(allocator);
         errdefer registry.deinit();
         try registry.registerDefaultsJson(registry_mod.tui_defaults_json);
+        for (options.defaults_json) |defaults| {
+            try registry.registerDefaultsJson(defaults);
+        }
 
         const user_settings_path = if (options.user_settings_path) |path|
             try allocator.dupe(u8, path)

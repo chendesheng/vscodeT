@@ -27,7 +27,8 @@ const SearchStep = search.SearchStep;
 const FileContentProvider = search.FileContentProvider;
 const ISearchJob = search.ISearchJob;
 const ISearchService = search.ISearchService;
-const glob = @import("../../../../base/common/glob.zig").GlobList;
+const glob_module = @import("../../../../base/common/glob.zig");
+const glob = glob_module.GlobList;
 const ignore_file_module = @import("ignoreFile.zig");
 const IgnoreFile = ignore_file_module.IgnoreFile;
 const ignore_file_names = ignore_file_module.ignore_file_names;
@@ -109,6 +110,11 @@ const SearchJob = struct {
     word_classifier: ?WordCharacterClassifier = null,
     include_list: glob,
     exclude_list: glob,
+    exclude_expression: ?glob_module.ParsedExcludeExpression = null,
+    /// Directory currently being iterated, used by the `{ when: ... }`
+    /// sibling callback. The slice points into the queue and stays valid until
+    /// the job is deinitialized.
+    last_scanned_dir: ?[]const u8 = null,
     queue: std.array_list.Managed(QueueEntry),
     /// Owns every ignore file loaded during the walk; a child points at its
     /// parent, so the chain stays valid until the job is deinitialized.
@@ -141,6 +147,10 @@ const SearchJob = struct {
             .search_data = search_data,
             .include_list = try glob.init(service.allocator, query.include_pattern),
             .exclude_list = try glob.init(service.allocator, query.exclude_pattern),
+            .exclude_expression = if (query.exclude_entries.len > 0)
+                try glob_module.ParsedExcludeExpression.init(service.allocator, query.exclude_entries, .{})
+            else
+                null,
             .queue = std.array_list.Managed(QueueEntry).init(service.allocator),
             .ignore_files = std.array_list.Managed(*IgnoreFile).init(service.allocator),
         };
@@ -153,6 +163,7 @@ const SearchJob = struct {
             if (self.word_classifier) |*classifier| classifier.deinit();
             self.include_list.deinit();
             self.exclude_list.deinit();
+            if (self.exclude_expression) |*expression| expression.deinit();
             self.queue.deinit();
             for (self.ignore_files.items) |ignore_file| ignore_file.deinit();
             self.ignore_files.deinit();
@@ -240,6 +251,7 @@ const SearchJob = struct {
         self.ignore_files.deinit();
         self.include_list.deinit();
         self.exclude_list.deinit();
+        if (self.exclude_expression) |*expression| expression.deinit();
         self.search_data.regex.deinit();
         if (self.word_classifier) |*classifier| classifier.deinit();
         self.allocator.destroy(self);
@@ -295,8 +307,13 @@ const SearchJob = struct {
         var dir = Io.Dir.cwd().openDir(self.io, entry.path, .{ .iterate = true }) catch return;
         defer dir.close(self.io);
 
-        // The ignore file of this directory excludes its children.
-        const ignore = try self.loadIgnoreFiles(entry.path, entry.ignore);
+        // The ignore file of this directory excludes its children. When
+        // `search.useIgnoreFiles` is disabled the inherited chain is kept, but
+        // no new ignore file is loaded.
+        const ignore = if (self.query.use_ignore_files)
+            try self.loadIgnoreFiles(entry.path, entry.ignore)
+        else
+            entry.ignore;
 
         var iterator = dir.iterate();
         while (iterator.next(self.io) catch null) |child| {
@@ -307,6 +324,21 @@ const SearchJob = struct {
             }
             const path = try std.fs.path.join(self.allocator, &.{ entry.path, child.name });
             defer self.allocator.free(path);
+            const relative = self.relativePathOf(path, entry.root_index);
+            self.last_scanned_dir = entry.path;
+            if (self.isExcludedByConfig(relative, child.name)) {
+                // An excluded directory is still visited when a `!` exception
+                // could match beneath it, matching upstream's exclude tree
+                // walker.
+                if (child.kind == .directory) {
+                    if (self.exclude_expression) |*expression| {
+                        if (expression.couldExceptionMatchBeneath(relative)) {
+                            try self.enqueue(path, entry.root_index, false, ignore);
+                        }
+                    }
+                }
+                continue;
+            }
             switch (child.kind) {
                 .sym_link => continue,
                 .directory => {
@@ -367,6 +399,8 @@ const SearchJob = struct {
             if (!self.include_list.hasPositiveRule() or !self.include_list.matches(relative)) return null;
         }
         if (!self.exclude_list.isEmpty() and self.exclude_list.matches(relative)) return null;
+        self.last_scanned_dir = std.fs.path.dirname(entry.path) orelse "";
+        if (self.isExcludedByConfig(relative, std.fs.path.basename(entry.path))) return null;
 
         const content = self.readContent(entry.path) orelse return null;
         defer self.allocator.free(content);
@@ -476,16 +510,52 @@ const SearchJob = struct {
     }
 
     fn relativePath(self: *const SearchJob, entry: QueueEntry) []const u8 {
-        if (entry.root_index == extra_root_sentinel or entry.root_index >= self.query.folder_paths.len) {
-            return std.fs.path.basename(entry.path);
+        return self.relativePathOf(entry.path, entry.root_index);
+    }
+
+    fn relativePathOf(self: *const SearchJob, path: []const u8, root_index: usize) []const u8 {
+        if (root_index == extra_root_sentinel or root_index >= self.query.folder_paths.len) {
+            return std.fs.path.basename(path);
         }
-        const root = self.query.folder_paths[entry.root_index];
-        if (std.mem.startsWith(u8, entry.path, root)) {
+        const root = self.query.folder_paths[root_index];
+        if (std.mem.startsWith(u8, path, root)) {
             var index = root.len;
-            if (index < entry.path.len and entry.path[index] == '/') index += 1;
-            return entry.path[index..];
+            if (index < path.len and (path[index] == '/' or path[index] == '\\')) index += 1;
+            return path[index..];
         }
-        return entry.path;
+        return path;
+    }
+
+    fn isExcludedByConfig(
+        self: *const SearchJob,
+        relative: []const u8,
+        basename: []const u8,
+    ) bool {
+        const expression = if (self.exclude_expression) |*value| value else return false;
+        return expression.matchesWithSiblings(relative, basename, .{
+            .context = @constCast(self),
+            .callback = hasSiblingCallback,
+        });
+    }
+
+    fn hasSiblingCallback(context: *anyopaque, clause: []const u8) bool {
+        const self: *SearchJob = @ptrCast(@alignCast(context));
+        return self.hasSiblingInCurrentDirectory(clause);
+    }
+
+    /// Checks the parent directory of the path currently being scanned for a
+    /// sibling named by a `{ when: ... }` clause. `exclude_expression` is
+    /// evaluated while the directory iterator is open, so `last_scanned_dir`
+    /// names the directory to inspect.
+    fn hasSiblingInCurrentDirectory(self: *SearchJob, clause: []const u8) bool {
+        const directory = self.last_scanned_dir orelse return false;
+        var dir = Io.Dir.cwd().openDir(self.io, directory, .{ .iterate = true }) catch return false;
+        defer dir.close(self.io);
+        var iterator = dir.iterate();
+        while (iterator.next(self.io) catch null) |child| {
+            if (std.mem.eql(u8, child.name, clause)) return true;
+        }
+        return false;
     }
 
     fn readContent(self: *SearchJob, path: []const u8) ?[]u8 {
@@ -800,4 +870,93 @@ test "SearchService: honors .gitignore and .ignore files" {
     try std.testing.expect(!found.contains("ignored.txt"));
     try std.testing.expect(!found.contains("other.txt"));
     try std.testing.expect(!found.contains("sub/more.txt"));
+}
+
+test "SearchService: configuration excludes honor negations and sibling clauses" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestFile(&tmp, io, "keep.txt", "alpha\n");
+    try writeTestFile(&tmp, io, "vendor/drop.txt", "alpha\n");
+    try writeTestFile(&tmp, io, "sibling.js", "alpha\n");
+    try writeTestFile(&tmp, io, "sibling.ts", "alpha\n");
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    var service = SearchService.init(allocator, io, context, .{
+        .context = undefined,
+        .read = null,
+        .extra_files = null,
+        .free_paths = null,
+    });
+
+    const entries = [_]glob_module.ExcludeEntry{
+        .{ .pattern = "**/vendor" },
+        .{ .pattern = "**/*.js", .when = "$(basename).ts" },
+    };
+    var q = try TextQuery.initWithOptions(
+        allocator,
+        "alpha",
+        &.{root},
+        "",
+        "",
+        &.{},
+        .{ .exclude_entries = &entries },
+    );
+    defer q.deinit();
+    const result = try runQuery(&service, &q, allocator);
+    try std.testing.expectEqual(@as(usize, 2), result.matches);
+
+    const with_exception = [_]glob_module.ExcludeEntry{
+        .{ .pattern = "**/vendor" },
+        .{ .pattern = "!vendor" },
+        .{ .pattern = "**/*.js", .when = "$(basename).ts" },
+    };
+    var exception_query = try TextQuery.initWithOptions(
+        allocator,
+        "alpha",
+        &.{root},
+        "",
+        "",
+        &.{},
+        .{ .exclude_entries = &with_exception },
+    );
+    defer exception_query.deinit();
+    const exception_result = try runQuery(&service, &exception_query, allocator);
+    try std.testing.expectEqual(@as(usize, 3), exception_result.matches);
+}
+
+test "SearchService: useIgnoreFiles=false does not load ignore files" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestFile(&tmp, io, ".gitignore", "ignored.txt\n");
+    try writeTestFile(&tmp, io, "ignored.txt", "alpha\n");
+    try writeTestFile(&tmp, io, "kept.txt", "alpha\n");
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    var service = SearchService.init(allocator, io, context, .{
+        .context = undefined,
+        .read = null,
+        .extra_files = null,
+        .free_paths = null,
+    });
+
+    var q = try TextQuery.init(allocator, "alpha", &.{root}, "", "", &.{});
+    defer q.deinit();
+    try std.testing.expectEqual(@as(usize, 1), (try runQuery(&service, &q, allocator)).matches);
+
+    q.use_ignore_files = false;
+    try std.testing.expectEqual(@as(usize, 2), (try runQuery(&service, &q, allocator)).matches);
 }

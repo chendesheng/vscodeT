@@ -1,11 +1,11 @@
-// Terminal Search view: the TUI counterpart of
-// `src/vs/workbench/contrib/search/browser/searchView.ts` and
-// `searchResultsView.ts`.
+// Terminal Search view: the TUI adapter over the portable controller in
+// `src/vs/workbench/contrib/search/browser/searchView.zig`.
 //
-// The portable tree/query/replace behavior lives under
-// `src/vs/workbench/contrib/search` and `src/vs/workbench/services/search`.
-// This file owns terminal layout, focus, row painting, mouse handling and the
-// workbench callbacks that open editors or apply replacement edits.
+// The query lifecycle, messages, focus state, data source, ordering and action
+// helpers live under `src/vs/workbench/contrib/search` and
+// `src/vs/workbench/services/search`. This file owns terminal layout, focus,
+// flattened row painting, mouse handling and the workbench callbacks that open
+// editors or apply replacement edits.
 //
 // Terminal adaptations:
 // - the result tree is flattened into one windowed column instead of a
@@ -20,9 +20,17 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 const search = @import("../vs/workbench/services/search/common/search.zig");
-const TextQuery = search.TextQuery;
 const search_model = @import("../vs/workbench/contrib/search/browser/searchTreeModel/searchModel.zig");
 const SearchModel = search_model.SearchModel;
+const controller_mod = @import("../vs/workbench/contrib/search/browser/searchView.zig");
+const Controller = controller_mod.SearchView;
+const ControllerField = controller_mod.Field;
+const ControllerOption = controller_mod.Option;
+const results_view = @import("../vs/workbench/contrib/search/browser/searchResultsView.zig");
+const actions_base = @import("../vs/workbench/contrib/search/browser/searchActionsBase.zig");
+const remove_replace = @import("../vs/workbench/contrib/search/browser/searchActionsRemoveReplace.zig");
+const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
+const ConfigurationService = configuration_mod.ConfigurationService;
 const tree = @import("../vs/workbench/contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
 const SearchResult = tree.SearchResult;
 const FileMatch = tree.FileMatch;
@@ -30,13 +38,10 @@ const FolderMatch = tree.FolderMatch;
 const Match = tree.Match;
 const ChangeEvent = tree.ChangeEvent;
 const replace_service = @import("../vs/workbench/contrib/search/browser/replaceService.zig");
-const ReplaceService = replace_service.ReplaceService;
 const Edit = replace_service.Edit;
 const SearchWidget = @import("searchWidget.zig").SearchWidget;
 const Field = @import("searchWidget.zig").Field;
 const Option = @import("searchWidget.zig").Option;
-const comparers = @import("../vs/base/common/comparers.zig");
-const time_compat = @import("../vs/base/common/timeCompat.zig");
 const Range = @import("../vs/editor/common/core/range.zig").Range;
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
@@ -49,6 +54,8 @@ const selected_background = ui.Color{ .r = 55, .g = 65, .b = 80 };
 const folder_color = ui.Color{ .r = 170, .g = 190, .b = 210 };
 const match_color = ui.Color{ .r = 240, .g = 190, .b = 90 };
 const replace_color = ui.Color{ .r = 120, .g = 210, .b = 120 };
+const scrollbar_track_color = ui.Color{ .r = 30, .g = 32, .b = 40 };
+const scrollbar_thumb_color = ui.Color{ .r = 105, .g = 108, .b = 122 };
 
 pub const Action = enum { unhandled, handled, focus_editor };
 
@@ -72,63 +79,136 @@ pub const Host = struct {
     active_editor: *const fn (context: *anyopaque) ?EditorInfo,
 };
 
-pub const Row = union(enum) {
-    heading,
-    folder: *FolderMatch,
-    file: *FileMatch,
-    match: *Match,
+pub const Row = tree.Node;
+
+/// Collapse state keyed by a node id. The ids are owned copies because search
+/// nodes (and therefore their id slices) are freed and recreated whenever a
+/// query restarts; storing borrowed ids would leave dangling keys while the
+/// user types.
+const OwnedStringSet = struct {
+    allocator: Allocator,
+    map: std.StringHashMap(void),
+
+    fn init(allocator: Allocator) OwnedStringSet {
+        return .{ .allocator = allocator, .map = std.StringHashMap(void).init(allocator) };
+    }
+
+    fn deinit(self: *OwnedStringSet) void {
+        self.clear();
+        self.map.deinit();
+    }
+
+    fn contains(self: *const OwnedStringSet, key: []const u8) bool {
+        return self.map.contains(key);
+    }
+
+    fn put(self: *OwnedStringSet, key: []const u8) void {
+        if (self.map.contains(key)) return;
+        const copy = self.allocator.dupe(u8, key) catch return;
+        self.map.put(copy, {}) catch self.allocator.free(copy);
+    }
+
+    fn remove(self: *OwnedStringSet, key: []const u8) bool {
+        if (self.map.fetchRemove(key)) |entry| {
+            self.allocator.free(entry.key);
+            return true;
+        }
+        return false;
+    }
+
+    fn clear(self: *OwnedStringSet) void {
+        var iterator = self.map.keyIterator();
+        while (iterator.next()) |key| self.allocator.free(key.*);
+        self.map.clearRetainingCapacity();
+    }
 };
 
 pub const SearchView = struct {
     allocator: Allocator,
     workspace: *WorkspaceContextService,
+    configuration: *ConfigurationService,
     host: Host,
+    controller: *Controller,
     model: *SearchModel,
-    replace_service: *ReplaceService,
     widget: *SearchWidget,
     rows: std.array_list.Managed(Row),
-    collapsed: std.StringHashMap(void),
+    depths: std.array_list.Managed(usize),
+    collapsed: OwnedStringSet,
+    collapse_seen: OwnedStringSet,
     selected: usize = 0,
     scroll: usize = 0,
+    visible_rows: usize = 0,
+    scrollbar_drag: bool = false,
     last_rect: ui.Rect = .{},
     focus_field: Field = .search,
     results_focused: bool = false,
-    status: std.array_list.Managed(u8),
-    status_is_error: bool = false,
-    debounce_at: ?i64 = null,
-    refresh_at: ?i64 = null,
-    result_dirty: bool = false,
     suppress_refresh: bool = false,
-    last_editor_path: std.array_list.Managed(u8),
-    last_editor_version: u32 = 0,
     panel_focused: bool = false,
     started_once: bool = false,
+    replace_confirmation: ?controller_mod.ReplaceAllRequest = null,
 
     pub fn init(
         allocator: Allocator,
         workspace: *WorkspaceContextService,
+        configuration: *ConfigurationService,
         service: search.ISearchService,
-        replace: *ReplaceService,
         host: Host,
     ) !*SearchView {
         const self = try allocator.create(SearchView);
         errdefer allocator.destroy(self);
-        const model = try SearchModel.init(allocator, service);
-        errdefer model.deinit();
         const widget = try SearchWidget.init(allocator);
         errdefer widget.deinit();
         self.* = .{
             .allocator = allocator,
             .workspace = workspace,
+            .configuration = configuration,
             .host = host,
-            .model = model,
-            .replace_service = replace,
+            .controller = undefined,
+            .model = undefined,
             .widget = widget,
             .rows = std.array_list.Managed(Row).init(allocator),
-            .collapsed = std.StringHashMap(void).init(allocator),
-            .status = std.array_list.Managed(u8).init(allocator),
-            .last_editor_path = std.array_list.Managed(u8).init(allocator),
+            .depths = std.array_list.Managed(usize).init(allocator),
+            .collapsed = OwnedStringSet.init(allocator),
+            .collapse_seen = OwnedStringSet.init(allocator),
         };
+
+        const controller = try Controller.init(
+            allocator,
+            workspace,
+            configuration,
+            service,
+            .{
+                .context = self,
+                .open_match = hostOpenMatch,
+                .highlight_range = hostHighlightRange,
+                .apply_edits = hostApplyEdits,
+                .save_file = hostSaveFile,
+                .active_selection_text = hostActiveSelectionText,
+                .extra_files = hostExtraFiles,
+                .free_paths = hostFreePaths,
+                .active_editor = hostActiveEditor,
+            },
+            .{
+                .context = self,
+                .value = widgetValue,
+                .set_value = widgetSetValue,
+                .clear = widgetClear,
+                .option = widgetOption,
+                .set_option = widgetSetOption,
+                .replace_visible = widgetReplaceVisible,
+                .set_replace_visible = widgetSetReplaceVisible,
+                .details_visible = widgetDetailsVisible,
+                .set_details_visible = widgetSetDetailsVisible,
+                .use_excludes = widgetUseExcludes,
+                .focus = widgetFocus,
+                .cycle_focus = widgetCycleFocus,
+            },
+            viewerInterface(self),
+        );
+        errdefer controller.deinit();
+        self.controller = controller;
+        self.model = controller.searchModel();
+
         widget.callbacks = .{
             .context = self,
             .on_change = onWidgetChange,
@@ -137,26 +217,30 @@ pub const SearchView = struct {
             .on_toggle = onWidgetToggle,
             .on_replace_all = onWidgetReplaceAll,
         };
-        try model.result.listen(self, onResultChanged);
         try self.setWidgetValueFromSelection();
         return self;
     }
 
     pub fn deinit(self: *SearchView) void {
         self.clearHighlight();
+        if (self.replace_confirmation) |*request| {
+            self.allocator.free(request.confirmation);
+            self.allocator.free(request.after);
+            self.replace_confirmation = null;
+        }
+        self.controller.deinit();
         self.widget.deinit();
-        self.model.deinit();
         self.rows.deinit();
+        self.depths.deinit();
         self.collapsed.deinit();
-        self.status.deinit();
-        self.last_editor_path.deinit();
+        self.collapse_seen.deinit();
         self.allocator.destroy(self);
     }
 
     /// Number of current search matches, used as the activity-bar badge
     /// source while a search is populated.
     pub fn matchCount(self: *const SearchView) usize {
-        return self.model.result.count();
+        return self.controller.matchCount();
     }
 
     pub fn focus(self: *SearchView) void {
@@ -164,14 +248,20 @@ pub const SearchView = struct {
         self.results_focused = false;
         self.focus_field = .search;
         self.widget.focus_field = .search;
+        self.controller.setPanelFocused(true);
+        self.controller.focus = .search;
+        self.controller.last_focus_input = true;
     }
 
     pub fn focusReplace(self: *SearchView) void {
+        self.panel_focused = true;
+        self.results_focused = false;
         self.widget.replace_visible = true;
         self.widget.focus_field = .replace;
         self.focus_field = .replace;
-        self.panel_focused = true;
-        self.results_focused = false;
+        self.controller.setPanelFocused(true);
+        self.controller.focus = .replace;
+        self.controller.last_focus_input = true;
     }
 
     pub fn seedFromSelection(self: *SearchView) !void {
@@ -180,11 +270,15 @@ pub const SearchView = struct {
 
     pub fn blur(self: *SearchView) void {
         self.panel_focused = false;
+        self.controller.setPanelFocused(false);
     }
 
     pub fn focusResults(self: *SearchView) void {
         self.panel_focused = true;
         self.results_focused = true;
+        self.controller.setPanelFocused(true);
+        self.controller.focus = .results;
+        self.controller.last_focus_input = false;
     }
 
     pub fn isFocused(self: *const SearchView) bool {
@@ -192,62 +286,13 @@ pub const SearchView = struct {
     }
 
     pub fn wantsTick(self: *const SearchView) bool {
-        return self.debounce_at != null or self.refresh_at != null or self.model.isSearching();
+        return self.controller.wantsTick();
     }
 
     pub fn tick(self: *SearchView, now: i64) bool {
-        var changed = false;
-        if (self.refresh_at) |deadline| {
-            if (now >= deadline) {
-                self.refresh_at = null;
-                self.startSearch() catch |err| self.report(err);
-                changed = true;
-            }
-        }
-        if (self.debounce_at) |deadline| {
-            if (now >= deadline) {
-                self.debounce_at = null;
-                self.startSearch() catch |err| self.report(err);
-                changed = true;
-            }
-        }
-        if (self.model.isSearching()) {
-            if (self.model.poll(16) catch |err| blk: {
-                _ = self.model.cancelSearch();
-                self.report(err);
-                break :blk false;
-            }) {
-                self.result_dirty = true;
-                changed = true;
-            }
-        }
-        if (!self.model.isSearching() and std.mem.eql(u8, self.status.items, "Searching...")) {
-            self.status.clearRetainingCapacity();
-        }
-        if (self.result_dirty) {
-            self.result_dirty = false;
-            self.rebuildRows();
-            changed = true;
-        }
+        const changed = self.controller.tick(now) catch false;
+        if (changed) self.rebuildRows();
         return changed;
-    }
-
-    fn onResultChanged(event: ChangeEvent, context: *SearchView) !void {
-        _ = event;
-        context.result_dirty = true;
-    }
-
-    pub fn setStatus(self: *SearchView, text: []const u8, is_error: bool) void {
-        self.status.clearRetainingCapacity();
-        self.status.appendSlice(text) catch {};
-        self.status_is_error = is_error;
-    }
-
-    fn report(self: *SearchView, err: anyerror) void {
-        var buffer: [160]u8 = undefined;
-        const message = std.fmt.bufPrint(&buffer, "search failed: {s}", .{@errorName(err)}) catch "search failed";
-        self.setStatus(message, true);
-        self.rebuildRows();
     }
 
     fn setWidgetValueFromSelection(self: *SearchView) !void {
@@ -258,23 +303,17 @@ pub const SearchView = struct {
     }
 
     fn onWidgetChange(context: ?*anyopaque, field: Field, value: []const u8) void {
+        _ = value;
         const self: *SearchView = @ptrCast(@alignCast(context orelse return));
-        switch (field) {
-            .search, .includes, .excludes => {
-                self.debounce_at = time_compat.milliTimestamp() + 200;
-            },
-            .replace => {
-                self.model.setReplaceString(value) catch {};
-            },
-        }
+        self.controller.onQueryInputChanged(controllerField(field));
     }
 
     fn onWidgetSubmit(context: ?*anyopaque, field: Field) void {
         const self: *SearchView = @ptrCast(@alignCast(context orelse return));
         switch (field) {
             .search, .includes, .excludes => {
-                self.debounce_at = null;
-                self.startSearch() catch |err| self.report(err);
+                self.controller.submitQuery() catch {};
+                self.rebuildRows();
             },
             .replace => {
                 self.model.setReplaceString(self.widget.value(.replace)) catch {};
@@ -288,9 +327,11 @@ pub const SearchView = struct {
         if (self.widget.replace_visible and self.focus_field == .replace) {
             self.widget.toggleReplace();
             self.focus_field = .search;
+            self.setControllerFocusFromField();
             return;
         }
         self.panel_focused = false;
+        self.controller.setPanelFocused(false);
     }
 
     fn onWidgetToggle(context: ?*anyopaque, option: Option) void {
@@ -304,94 +345,60 @@ pub const SearchView = struct {
     }
 
     fn toggleOption(self: *SearchView, option: Option) void {
-        switch (option) {
-            .match_case => self.widget.match_case = !self.widget.match_case,
-            .whole_word => self.widget.whole_word = !self.widget.whole_word,
-            .regex => self.widget.regex = !self.widget.regex,
-            .preserve_case => {
-                self.widget.preserve_case = !self.widget.preserve_case;
-                self.model.setPreserveCase(self.widget.preserve_case);
-                return;
-            },
-        }
-        self.debounce_at = null;
-        self.startSearch() catch |err| self.report(err);
+        self.controller.toggleOption(controllerOption(option)) catch {};
     }
 
     pub fn startSearch(self: *SearchView) !void {
-        const pattern = std.mem.trim(u8, self.widget.value(.search), " \t\r\n");
-        if (pattern.len == 0) {
-            self.model.clear();
-            self.rows.clearRetainingCapacity();
-            self.selected = 0;
-            self.scroll = 0;
-            self.setStatus("", false);
-            self.clearHighlight();
-            return;
-        }
-
-        var folder_paths = std.array_list.Managed([]const u8).init(self.allocator);
-        defer folder_paths.deinit();
-        for (self.workspace.getWorkspace().folders.items) |*folder| {
-            try folder_paths.append(folder.resource);
-        }
-
-        const extras = self.host.extra_files(self.host.context, self.allocator) catch null;
-        defer if (extras) |paths| self.host.free_paths(self.host.context, self.allocator, paths);
-        var extra_slices = std.array_list.Managed([]const u8).init(self.allocator);
-        defer extra_slices.deinit();
-        if (extras) |paths| {
-            for (paths) |path| try extra_slices.append(path);
-        }
-
-        var query = try TextQuery.init(
-            self.allocator,
-            pattern,
-            folder_paths.items,
-            self.widget.value(.includes),
-            self.widget.value(.excludes),
-            extra_slices.items,
-        );
-        query.is_regex = self.widget.regex;
-        query.is_word_match = self.widget.whole_word;
-        query.is_case_sensitive = self.widget.match_case;
-        query.preview = .{
-            .match_lines = 1,
-            .chars_per_line = if (self.widget.regex) 10000 else 1000,
-        };
-
-        self.rows.clearRetainingCapacity();
-        self.selected = 0;
-        self.scroll = 0;
-        self.clearHighlight();
-        self.setStatus("Searching...", false);
-        const accepted = try self.model.search(query);
-        if (!accepted) {
-            self.setStatus("Invalid regular expression", true);
-        }
-        self.result_dirty = true;
+        try self.controller.triggerQueryChange(false, false);
+        self.rebuildRows();
     }
 
     pub fn onEditorChanged(self: *SearchView, info: ?EditorInfo) void {
-        if (info == null) return;
-        const current = info.?;
-        if (current.version == self.last_editor_version and
-            std.mem.eql(u8, self.last_editor_path.items, current.path)) return;
-        self.last_editor_version = current.version;
-        self.last_editor_path.clearRetainingCapacity();
-        self.last_editor_path.appendSlice(current.path) catch {};
         if (self.suppress_refresh) return;
-        if (self.model.query == null) return;
-        if (self.model.result.isEmpty()) return;
-        self.refresh_at = time_compat.milliTimestamp() + 500;
+        self.controller.onEditorChanged(if (info) |value| .{
+            .path = value.path,
+            .version = value.version,
+        } else null);
     }
 
     pub fn setWorkspace(self: *SearchView, workspace: *WorkspaceContextService) void {
         self.workspace = workspace;
+        self.controller.workspace = workspace;
+    }
+
+    pub fn onConfigurationChanged(self: *SearchView) void {
+        self.controller.onConfigurationChanged();
+        self.rebuildRows();
     }
 
     fn clearHighlight(self: *SearchView) void {
         self.host.highlight_range(self.host.context, "", null);
+    }
+
+    fn setControllerFocusFromField(self: *SearchView) void {
+        self.controller.focus = switch (self.focus_field) {
+            .search => .search,
+            .replace => .replace,
+            .includes => .includes,
+            .excludes => .excludes,
+        };
+        self.controller.setPanelFocused(true);
+        self.controller.last_focus_input = true;
+    }
+
+    fn syncFieldFromController(self: *SearchView) void {
+        self.focus_field = switch (self.controller.focus) {
+            .search => .search,
+            .replace => .replace,
+            .includes => .includes,
+            .excludes => .excludes,
+            .results => .search,
+        };
+        self.widget.focus_field = self.focus_field;
+        self.results_focused = self.controller.focus == .results;
+        if (self.results_focused) {
+            self.panel_focused = true;
+        }
     }
 
     fn selectedRow(self: *const SearchView) ?Row {
@@ -400,12 +407,7 @@ pub const SearchView = struct {
     }
 
     fn rowId(row: Row) []const u8 {
-        return switch (row) {
-            .heading => "heading",
-            .folder => |folder| folder.id,
-            .file => |file| file.id,
-            .match => |match| match.id,
-        };
+        return row.id();
     }
 
     fn rowExpanded(self: *const SearchView, row: Row) bool {
@@ -417,51 +419,68 @@ pub const SearchView = struct {
         if (self.collapsed.contains(id)) {
             _ = self.collapsed.remove(id);
         } else {
-            self.collapsed.put(id, {}) catch {};
+            self.collapsed.put(id);
         }
         self.rebuildRows();
     }
 
     fn rebuildRows(self: *SearchView) void {
         self.rows.clearRetainingCapacity();
-        self.rows.append(.heading) catch return;
-        if (!self.rowExpanded(.heading)) {
-            self.clampSelection();
-            return;
+        self.depths.clearRetainingCapacity();
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const data_source = results_view.SearchViewDataSource.init(self.model.result, .{
+            .mode = self.controller.viewMode(),
+            .sort_order = self.controller.sortOrder(),
+            .show_line_numbers = self.controller.showLineNumbers(),
+        });
+        const visible = data_source.visibleRows(arena.allocator(), .{
+            .context = self,
+            .is_collapsed = viewerIsCollapsed,
+            .on_visit = visitCollapseNode,
+        }) catch return;
+        for (visible) |row| {
+            self.rows.append(row.node) catch return;
+            self.depths.append(row.depth) catch return;
         }
-        const folders = self.model.result.folderMatches(self.allocator) catch return;
-        defer self.allocator.free(folders);
-        std.sort.heap(*FolderMatch, folders, {}, folderLessThan);
-        for (folders) |folder| self.appendFolder(folder, 0);
         self.clampSelection();
+        self.ensureSelectionVisible();
     }
 
-    fn folderLessThan(_: void, a: *FolderMatch, b: *FolderMatch) bool {
-        return a.index < b.index;
+    fn visitCollapseNode(context: *anyopaque, node: Row) void {
+        const self: *SearchView = @ptrCast(@alignCast(context));
+        _ = self.applyDefaultCollapse(node);
     }
 
-    fn appendFolder(self: *SearchView, folder: *FolderMatch, depth: usize) void {
-        self.rows.append(.{ .folder = folder }) catch return;
-        if (!self.rowExpanded(.{ .folder = folder })) return;
-        var folders = std.array_list.Managed(*FolderMatch).init(self.allocator);
-        defer folders.deinit();
-        folders.appendSlice(folder.folders.items) catch {};
-        std.sort.heap(*FolderMatch, folders.items, {}, folderLessThan);
-        for (folders.items) |child| self.appendFolder(child, depth + 1);
-
-        var files = std.array_list.Managed(*FileMatch).init(self.allocator);
-        defer files.deinit();
-        files.appendSlice(folder.files.items) catch {};
-        std.sort.heap(*FileMatch, files.items, {}, fileLessThan);
-        for (files.items) |file| {
-            self.rows.append(.{ .file = file }) catch return;
-            if (!self.rowExpanded(.{ .file = file })) continue;
-            for (file.matches()) |match| self.rows.append(.{ .match = match }) catch return;
-        }
-    }
-
-    fn fileLessThan(_: void, a: *FileMatch, b: *FileMatch) bool {
-        return comparers.comparePaths(a.path, b.path) < 0;
+    /// Applies `search.collapseResults` the first time a node is seen. Later
+    /// rebuilds preserve the user's explicit collapse state.
+    fn applyDefaultCollapse(self: *SearchView, node: Row) bool {
+        const id = rowId(node);
+        if (self.collapse_seen.contains(id)) return self.collapsed.contains(id);
+        self.collapse_seen.put(id);
+        const collapse = switch (node) {
+            .match => false,
+            else => blk: {
+                const value = self.configuration.getValue("search.collapseResults", .{}) orelse
+                    break :blk false;
+                const setting = switch (value.*) {
+                    .string => |text| text,
+                    else => "alwaysExpand",
+                };
+                if (std.mem.eql(u8, setting, "alwaysCollapse")) break :blk true;
+                if (std.mem.eql(u8, setting, "auto")) {
+                    const count = switch (node) {
+                        .folder => |folder| folder.recursiveMatchCount(),
+                        .file => |file| file.count(),
+                        else => 0,
+                    };
+                    break :blk count > 10;
+                }
+                break :blk false;
+            },
+        };
+        if (collapse) self.collapsed.put(id);
+        return collapse;
     }
 
     fn clampSelection(self: *SearchView) void {
@@ -476,7 +495,26 @@ pub const SearchView = struct {
     fn selectRow(self: *SearchView, index: usize) void {
         if (index >= self.rows.items.len) return;
         self.selected = index;
+        self.ensureSelectionVisible();
         self.highlightSelected();
+    }
+
+    fn maxScroll(self: *const SearchView) usize {
+        return self.rows.items.len -| self.visible_rows;
+    }
+
+    fn clampScroll(self: *SearchView) void {
+        self.scroll = @min(self.scroll, self.maxScroll());
+    }
+
+    fn ensureSelectionVisible(self: *SearchView) void {
+        if (self.visible_rows == 0) return;
+        if (self.selected < self.scroll) {
+            self.scroll = self.selected;
+        } else if (self.selected >= self.scroll + self.visible_rows) {
+            self.scroll = self.selected - self.visible_rows + 1;
+        }
+        self.clampScroll();
     }
 
     fn highlightSelected(self: *SearchView) void {
@@ -496,8 +534,8 @@ pub const SearchView = struct {
             .heading => self.toggleRow(row),
             .folder => self.toggleRow(row),
             .file => self.toggleRow(row),
-            .match => |match| {
-                self.host.open_match(self.host.context, match.parent_file.path, match.range()) catch |err| self.report(err);
+            .match => {
+                self.controller.openElement(row, false) catch {};
                 self.panel_focused = false;
             },
         }
@@ -532,95 +570,58 @@ pub const SearchView = struct {
 
     fn dismissSelected(self: *SearchView) void {
         const row = self.selectedRow() orelse return;
-        self.suppress_refresh = true;
-        defer self.suppress_refresh = false;
-        switch (row) {
-            .match => |match| self.model.result.removeMatch(match),
-            .file => |file| self.model.result.removeFile(file),
-            .folder => |folder| {
-                const files = folder.allDownstreamFiles(self.allocator) catch return;
-                defer self.allocator.free(files);
-                for (files) |file| self.model.result.removeFile(file);
-            },
-            .heading => return,
-        }
-        self.result_dirty = true;
+        remove_replace.removeElement(
+            self.allocator,
+            viewerInterface(self),
+            self.model.result,
+            row,
+        ) catch {};
         self.rebuildRows();
     }
 
     fn replaceSelected(self: *SearchView) void {
         const row = self.selectedRow() orelse return;
-        var files = std.array_list.Managed(*FileMatch).init(self.allocator);
-        defer files.deinit();
-        switch (row) {
-            .match => |match| {
-                const pattern = self.model.replacePattern() orelse {
-                    self.setStatus("No replace pattern", true);
-                    return;
-                };
-                self.suppress_refresh = true;
-                defer self.suppress_refresh = false;
-                var selected_matches = [1]*Match{match};
-                self.replace_service.replaceMatches(self.allocator, &selected_matches, pattern, self.model.preserve_case) catch |err| {
-                    self.report(err);
-                    return;
-                };
-                self.model.result.removeMatch(match);
-                self.result_dirty = true;
-                self.rebuildRows();
-                return;
-            },
-            .file => |file| files.append(file) catch return,
-            .folder => |folder| {
-                const all = folder.allDownstreamFiles(self.allocator) catch return;
-                defer self.allocator.free(all);
-                files.appendSlice(all) catch return;
-            },
-            .heading => {
-                self.replaceAll();
-                return;
-            },
-        }
-        self.replaceFiles(files.items);
+        self.suppress_refresh = true;
+        defer self.suppress_refresh = false;
+        self.controller.replaceElement(row) catch {};
+        self.rebuildRows();
     }
 
     fn replaceAll(self: *SearchView) void {
-        const files = self.model.result.matches(self.allocator) catch return;
-        defer self.allocator.free(files);
-        self.replaceFiles(files);
-        self.model.result.clear();
+        self.commandReplaceAll();
     }
 
-    fn replaceFiles(self: *SearchView, files: []*FileMatch) void {
-        const pattern = self.model.replacePattern() orelse {
-            self.setStatus("No replace pattern", true);
-            return;
-        };
-        self.suppress_refresh = true;
-        defer self.suppress_refresh = false;
-        self.replace_service.replaceFiles(
-            self.allocator,
-            files,
-            pattern,
-            self.model.preserve_case,
-        ) catch |err| {
-            self.report(err);
-            return;
-        };
-        for (files) |file| self.model.result.removeFile(file);
-        self.result_dirty = true;
-        self.rebuildRows();
+    pub fn confirmReplaceAll(self: *SearchView) void {
+        if (self.replace_confirmation) |*request| {
+            self.allocator.free(request.confirmation);
+            self.allocator.free(request.after);
+            self.replace_confirmation = null;
+            self.controller.executeReplaceAll() catch {};
+            self.rebuildRows();
+        }
     }
 
     pub fn handleKey(self: *SearchView, event: *const ui.KeyEvent) Action {
         if (event.key == .escape) {
+            if (self.replace_confirmation) |*request| {
+                self.allocator.free(request.confirmation);
+                self.allocator.free(request.after);
+                self.replace_confirmation = null;
+                return .handled;
+            }
             if (self.widget.replace_visible and self.focus_field == .replace) {
                 self.widget.toggleReplace();
                 self.focus_field = .search;
+                self.setControllerFocusFromField();
                 return .handled;
             }
-            _ = self.model.cancelSearch();
+            if (self.controller.stateValue() != .idle) {
+                _ = self.controller.cancelSearch();
+                self.rebuildRows();
+                return .handled;
+            }
             self.panel_focused = false;
+            self.controller.setPanelFocused(false);
             self.clearHighlight();
             return .focus_editor;
         }
@@ -629,6 +630,17 @@ pub const SearchView = struct {
             self.results_focused = false;
             self.widget.cycleFocus(event.key == .backtab);
             self.focus_field = self.widget.focus_field;
+            self.setControllerFocusFromField();
+            return .handled;
+        }
+
+        if (event.mods.ctrl and !event.mods.alt and (event.key == .down or event.key == .up)) {
+            if (event.key == .down) {
+                self.controller.focusNextInputBox();
+            } else {
+                self.controller.focusPreviousInputBox();
+            }
+            self.syncFieldFromController();
             return .handled;
         }
 
@@ -638,6 +650,7 @@ pub const SearchView = struct {
                 if (ch == 'r' or ch == 'R') {
                     self.widget.toggleReplace();
                     self.focus_field = if (self.widget.replace_visible) .replace else .search;
+                    self.setControllerFocusFromField();
                     return .handled;
                 }
             }
@@ -661,7 +674,7 @@ pub const SearchView = struct {
                     return .handled;
                 },
                 'd', 'D' => {
-                    self.widget.toggleDetails();
+                    self.controller.toggleQueryDetails(null);
                     return .handled;
                 },
                 else => {},
@@ -673,7 +686,11 @@ pub const SearchView = struct {
             return .handled;
         }
         if (event.mods.alt and event.mods.ctrl and event.key == .enter) {
-            self.replaceAll();
+            if (self.replace_confirmation != null) {
+                self.confirmReplaceAll();
+            } else if (self.controller.requestReplaceAll() catch null) |request| {
+                self.replace_confirmation = request;
+            }
             return .handled;
         }
 
@@ -744,8 +761,7 @@ pub const SearchView = struct {
             },
             .enter => {
                 if (self.focus_field == .search or self.focus_field == .includes or self.focus_field == .excludes) {
-                    self.debounce_at = null;
-                    self.startSearch() catch |err| self.report(err);
+                    self.startSearch() catch {};
                     return .handled;
                 }
             },
@@ -765,7 +781,7 @@ pub const SearchView = struct {
         const local_y = event.y - y0;
         if (local_y == 0) {
             if (event.kind == .down and local_x >= width -| 3) {
-                self.widget.toggleDetails();
+                self.controller.toggleQueryDetails(null);
                 return true;
             }
             return true;
@@ -781,25 +797,57 @@ pub const SearchView = struct {
             local.y = local_y - input_top;
             if (self.widget.handleMouse(local_x, local_y - input_top, &local)) {
                 self.focus_field = self.widget.focus_field;
+                self.setControllerFocusFromField();
             }
             return true;
         }
 
         const results_top = input_bottom + 1;
         if (local_y < results_top) return true;
-        const row = local_y - results_top + self.scroll;
-        if (row >= self.rows.items.len) return true;
+        const has_scrollbar = width > 1 and self.rows.items.len > self.visible_rows and self.visible_rows > 0;
+        if (has_scrollbar and local_x == width - 1) {
+            switch (event.kind) {
+                .down, .click => self.scrollbar_drag = true,
+                .up => {
+                    self.scrollbar_drag = false;
+                    return true;
+                },
+                .move => if (!self.scrollbar_drag) return true,
+                else => {},
+            }
+            const track_y = local_y - results_top;
+            if (track_y < self.visible_rows) {
+                const max_scroll = self.maxScroll();
+                const thumb_height = @min(
+                    self.visible_rows,
+                    @max(@as(usize, 1), (self.visible_rows * self.visible_rows) / self.rows.items.len),
+                );
+                if (self.visible_rows > thumb_height) {
+                    self.scroll = @min(
+                        max_scroll,
+                        (track_y * max_scroll) / (self.visible_rows - thumb_height),
+                    );
+                }
+            }
+            return true;
+        }
+        if (event.kind == .down or event.kind == .click) self.scrollbar_drag = false;
         if (event.kind == .wheel) {
             if (event.delta_y > 0) {
-                self.scroll = @min(self.rows.items.len -| 1, self.scroll + 3);
+                self.scroll = @min(self.maxScroll(), self.scroll + 3);
             } else if (event.delta_y < 0) {
                 self.scroll -|= 3;
             }
             return true;
         }
+        const row = local_y - results_top + self.scroll;
+        if (row >= self.rows.items.len) return true;
         if (event.kind == .move) return true;
         self.panel_focused = true;
         self.results_focused = true;
+        self.controller.setPanelFocused(true);
+        self.controller.focus = .results;
+        self.controller.last_focus_input = false;
         self.selectRow(row);
         if (event.kind == .click or event.kind == .down) {
             switch (self.rows.items[row]) {
@@ -832,21 +880,25 @@ pub const SearchView = struct {
         grid.blit(self.widget.grid(), x, y + 1, width, self.widget.layout.height);
 
         const status_y = y + 1 + self.widget.layout.height;
-        var status_buffer: [160]u8 = undefined;
-        const status = if (self.status.items.len > 0)
-            self.status.items
-        else if (self.model.isSearching())
-            "Searching..."
-        else if (self.model.limitHit())
-            "Result limit reached"
-        else if (self.model.result.count() == 0 and self.workspace.getWorkspace().folders.items.len == 0)
-            "No workspace folder"
-        else if (self.model.result.count() == 0)
-            "No results"
-        else
-            std.fmt.bufPrint(&status_buffer, "{d} results in {d} files", .{ self.model.result.count(), self.model.result.fileCount() }) catch "";
+        var status_buffer: [240]u8 = undefined;
+        var status = self.controller.messageText(&status_buffer);
+        if (self.replace_confirmation) |request| status = request.confirmation;
+        if (status.len == 0) {
+            if (self.controller.wantsTick()) {
+                status = "Searching...";
+            } else if (self.model.result.count() == 0 and self.workspace.getWorkspace().folders.items.len == 0) {
+                status = "No workspace folder";
+            }
+        }
+        var is_error = false;
+        for (self.controller.messages.items) |message| {
+            switch (message.kind) {
+                .err => is_error = true,
+                else => {},
+            }
+        }
         const status_style = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(if (self.status_is_error) ui.Color{ .r = 240, .g = 120, .b = 120 } else dim),
+            .fg = ui.cell.packColor(if (is_error) ui.Color{ .r = 240, .g = 120, .b = 120 } else dim),
             .bg = ui.cell.packColor(background),
         };
         if (status_y < y + height) {
@@ -855,9 +907,9 @@ pub const SearchView = struct {
 
         const top = status_y + 1;
         const rows = if (top < y + height) y + height - top else 0;
+        self.visible_rows = rows;
+        self.clampScroll();
         if (rows == 0) return;
-        if (self.selected < self.scroll) self.scroll = self.selected;
-        if (self.selected >= self.scroll + rows) self.scroll = self.selected - rows + 1;
 
         var visible: usize = 0;
         while (visible < rows) : (visible += 1) {
@@ -865,25 +917,43 @@ pub const SearchView = struct {
             if (index >= self.rows.items.len) break;
             const row_y = top + visible;
             const selected = index == self.selected;
+            const row_bg = if (selected) selected_background else background;
             if (selected) {
                 grid.fillRect(@floatFromInt(x), @floatFromInt(row_y), @floatFromInt(width), 1, .{
                     .fg = ui.cell.packColor(foreground),
-                    .bg = ui.cell.packColor(selected_background),
+                    .bg = ui.cell.packColor(row_bg),
                 });
             }
-            self.renderRow(grid, x, row_y, width, self.rows.items[index], selected);
+            self.renderRow(grid, x, row_y, width, self.rows.items[index], self.depths.items[index], row_bg);
+        }
+
+        if (width > 1 and self.rows.items.len > self.visible_rows and self.visible_rows > 0) {
+            const scrollbar_x = x + width - 1;
+            grid.fillRect(@floatFromInt(scrollbar_x), @floatFromInt(top), 1, @floatFromInt(self.visible_rows), .{
+                .bg = ui.cell.packColor(scrollbar_track_color),
+            });
+            const max_scroll = self.maxScroll();
+            const thumb_height = @min(
+                self.visible_rows,
+                @max(@as(usize, 1), (self.visible_rows * self.visible_rows) / self.rows.items.len),
+            );
+            const thumb_top = if (max_scroll == 0 or self.visible_rows <= thumb_height)
+                0
+            else
+                (self.scroll * (self.visible_rows - thumb_height)) / max_scroll;
+            grid.fillRect(@floatFromInt(scrollbar_x), @floatFromInt(top + thumb_top), 1, @floatFromInt(thumb_height), .{
+                .bg = ui.cell.packColor(scrollbar_thumb_color),
+            });
         }
     }
 
-    fn renderRow(self: *SearchView, grid: *ui.CellGrid, x: usize, y: usize, width: usize, row: Row, selected: bool) void {
-        _ = selected;
+    fn renderRow(self: *SearchView, grid: *ui.CellGrid, x: usize, y: usize, width: usize, row: Row, depth: usize, row_bg: ui.Color) void {
         const base_fg = ui.cell.packColor(foreground);
         const dim_fg = ui.cell.packColor(dim);
-        const bg = ui.cell.packColor(if (false) header_background else background);
-        _ = bg;
+        const bg = ui.cell.packColor(row_bg);
         switch (row) {
             .heading => {
-                _ = drawText(grid, x + 1, y, width -| 2, "Text Results", .{ .fg = base_fg, .attrs = ui.cell.Attr.bold });
+                _ = drawText(grid, x + 1, y, width -| 2, "Text Results", .{ .fg = base_fg, .bg = bg, .attrs = ui.cell.Attr.bold });
             },
             .folder => |folder| {
                 const expanded = self.rowExpanded(row);
@@ -893,8 +963,8 @@ pub const SearchView = struct {
                     folder.name,
                     folder.recursiveMatchCount(),
                 }) catch folder.name;
-                const indent = 1 + folderDepth(folder) * 2;
-                _ = drawText(grid, x + indent, y, width -| indent, text, .{ .fg = ui.cell.packColor(folder_color) });
+                const indent = results_view.indentCells(depth);
+                _ = drawText(grid, x + indent, y, width -| indent, text, .{ .fg = ui.cell.packColor(folder_color), .bg = bg });
             },
             .file => |file| {
                 const expanded = self.rowExpanded(row);
@@ -904,8 +974,16 @@ pub const SearchView = struct {
                     file.name,
                     file.count(),
                 }) catch file.name;
-                const indent = 1 + (folderDepth(file.parent_folder) + 1) * 2;
-                _ = drawText(grid, x + indent, y, width -| indent, text, .{ .fg = base_fg });
+                const indent = results_view.indentCells(depth);
+                var col = x + indent;
+                col += drawText(grid, col, y, width -| (col - x), text, .{ .fg = base_fg, .bg = bg });
+                const details = results_view.rowData(row, .{
+                    .mode = self.controller.viewMode(),
+                    .show_line_numbers = self.controller.showLineNumbers(),
+                });
+                if (details.description.len > 0 and !std.mem.eql(u8, details.description, file.name)) {
+                    col += drawText(grid, col + 1, y, width -| (col + 1 - x), details.description, .{ .fg = dim_fg, .bg = bg });
+                }
             },
             .match => |match| {
                 const preview = match.preview();
@@ -918,14 +996,21 @@ pub const SearchView = struct {
                 }
                 const inside = replacement orelse preview.inside;
                 const inside_color = if (replacement != null) replace_color else match_color;
+                const row_data = results_view.rowData(.{ .match = match }, .{
+                    .mode = self.controller.viewMode(),
+                    .show_line_numbers = self.controller.showLineNumbers(),
+                });
                 var line_buffer: [24]u8 = undefined;
-                const line = std.fmt.bufPrint(&line_buffer, "{d}: ", .{match.range().startLineNumber}) catch "";
-                const indent = 1 + (folderDepth(match.parent_file.parent_folder) + 1) * 2 + 1;
+                const line = if (row_data.line_number > 0)
+                    std.fmt.bufPrint(&line_buffer, "{d}: ", .{row_data.line_number}) catch ""
+                else
+                    "";
+                const indent = results_view.matchIndentCells(depth);
                 var col = x + indent;
-                col += drawText(grid, col, y, width -| (col - x), line, .{ .fg = dim_fg });
-                col += drawText(grid, col, y, width -| (col - x), preview.before, .{ .fg = base_fg });
-                col += drawText(grid, col, y, width -| (col - x), inside, .{ .fg = ui.cell.packColor(inside_color), .attrs = ui.cell.Attr.bold });
-                _ = drawText(grid, col, y, width -| (col - x), preview.after, .{ .fg = dim_fg });
+                col += drawText(grid, col, y, width -| (col - x), line, .{ .fg = dim_fg, .bg = bg });
+                col += drawText(grid, col, y, width -| (col - x), preview.before, .{ .fg = base_fg, .bg = bg });
+                col += drawText(grid, col, y, width -| (col - x), inside, .{ .fg = ui.cell.packColor(inside_color), .bg = bg, .attrs = ui.cell.Attr.bold });
+                _ = drawText(grid, col, y, width -| (col - x), preview.after, .{ .fg = dim_fg, .bg = bg });
             },
         }
     }
@@ -953,25 +1038,25 @@ pub const SearchView = struct {
     }
 
     pub fn commandReplaceAll(self: *SearchView) void {
-        self.replaceAll();
+        if (self.controller.requestReplaceAll() catch null) |request| {
+            self.allocator.free(request.confirmation);
+            self.allocator.free(request.after);
+        }
+        self.controller.executeReplaceAll() catch {};
+        self.rebuildRows();
     }
 
     pub fn commandClear(self: *SearchView) void {
-        self.model.clear();
-        self.widget.setValue(.search, "") catch {};
-        self.widget.setValue(.replace, "") catch {};
-        self.model.setReplaceString("") catch {};
-        self.debounce_at = null;
+        self.controller.clearResults(true);
         self.rows.clearRetainingCapacity();
-        self.status.clearRetainingCapacity();
-        self.status_is_error = false;
+        self.depths.clearRetainingCapacity();
         self.selected = 0;
         self.scroll = 0;
         self.clearHighlight();
     }
 
     pub fn commandToggleDetails(self: *SearchView) void {
-        self.widget.toggleDetails();
+        self.controller.toggleQueryDetails(null);
     }
 
     pub fn activeEditorInfo(self: *SearchView) ?EditorInfo {
@@ -980,11 +1065,252 @@ pub const SearchView = struct {
     }
 };
 
-fn folderDepth(folder: *FolderMatch) usize {
-    var depth: usize = 0;
-    var current: ?*FolderMatch = folder.parent_folder;
-    while (current) |parent| : (current = parent.parent_folder) depth += 1;
-    return depth;
+fn controllerField(field: Field) ControllerField {
+    return switch (field) {
+        .search => .search,
+        .replace => .replace,
+        .includes => .includes,
+        .excludes => .excludes,
+    };
+}
+
+fn tuiField(field: ControllerField) Field {
+    return switch (field) {
+        .search => .search,
+        .replace => .replace,
+        .includes => .includes,
+        .excludes => .excludes,
+    };
+}
+
+fn controllerOption(option: Option) ControllerOption {
+    return switch (option) {
+        .match_case => .match_case,
+        .whole_word => .whole_word,
+        .regex => .regex,
+        .preserve_case => .preserve_case,
+    };
+}
+
+fn widgetValue(context: *anyopaque, field: ControllerField) []const u8 {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.widget.value(tuiField(field));
+}
+
+fn widgetSetValue(context: *anyopaque, field: ControllerField, value: []const u8) anyerror!void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    try self.widget.setValue(tuiField(field), value);
+}
+
+fn widgetClear(context: *anyopaque, field: ControllerField) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.widget.setValue(tuiField(field), "") catch {};
+}
+
+fn widgetOption(context: *anyopaque, option: ControllerOption) bool {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return switch (option) {
+        .match_case => self.widget.match_case,
+        .whole_word => self.widget.whole_word,
+        .regex => self.widget.regex,
+        .preserve_case => self.widget.preserve_case,
+    };
+}
+
+fn widgetSetOption(context: *anyopaque, option: ControllerOption, value: bool) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    switch (option) {
+        .match_case => self.widget.match_case = value,
+        .whole_word => self.widget.whole_word = value,
+        .regex => self.widget.regex = value,
+        .preserve_case => self.widget.preserve_case = value,
+    }
+}
+
+fn widgetReplaceVisible(context: *anyopaque) bool {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.widget.replace_visible;
+}
+
+fn widgetSetReplaceVisible(context: *anyopaque, visible: bool) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.widget.replace_visible = visible;
+    if (!visible and self.widget.focus_field == .replace) self.widget.focus_field = .search;
+}
+
+fn widgetDetailsVisible(context: *anyopaque) bool {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.widget.details_visible;
+}
+
+fn widgetSetDetailsVisible(context: *anyopaque, visible: bool) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.widget.details_visible = visible;
+}
+
+fn widgetUseExcludes(context: *anyopaque) bool {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.widget.use_excludes;
+}
+
+fn widgetFocus(context: *anyopaque, field: ControllerField) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.widget.focus_field = tuiField(field);
+}
+
+fn widgetCycleFocus(context: *anyopaque, backwards: bool) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.widget.cycleFocus(backwards);
+}
+
+fn viewerInterface(self: *SearchView) actions_base.Viewer {
+    return .{
+        .context = self,
+        .row_count = viewerRowCount,
+        .row_at = viewerRowAt,
+        .index_of = viewerIndexOf,
+        .last_visible = viewerLastVisible,
+        .is_collapsed = viewerIsCollapsed,
+        .expand = viewerExpand,
+        .collapse = viewerCollapse,
+        .collapse_all = viewerCollapseAll,
+        .expand_all = viewerExpandAll,
+        .selected = viewerSelected,
+        .set_selected = viewerSetSelected,
+        .focus = viewerFocus,
+        .refresh = viewerRefresh,
+    };
+}
+
+fn viewerRowCount(context: *anyopaque) usize {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.rows.items.len;
+}
+
+fn viewerRowAt(context: *anyopaque, index: usize) ?Row {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    if (index >= self.rows.items.len) return null;
+    return self.rows.items[index];
+}
+
+fn viewerIndexOf(context: *anyopaque, node: Row) ?usize {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    for (self.rows.items, 0..) |row, index| {
+        if (tree.nodeEql(row, node)) return index;
+    }
+    return null;
+}
+
+fn viewerLastVisible(context: *anyopaque) ?Row {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    if (self.rows.items.len == 0) return null;
+    return self.rows.items[self.rows.items.len - 1];
+}
+
+fn viewerIsCollapsed(context: *anyopaque, node: Row) bool {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.collapsed.contains(node.id());
+}
+
+fn viewerExpand(context: *anyopaque, node: Row, recursive: bool) bool {
+    _ = recursive;
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    const changed = self.collapsed.remove(node.id());
+    if (changed) self.rebuildRows();
+    return changed;
+}
+
+fn viewerCollapse(context: *anyopaque, node: Row, recursive: bool) bool {
+    _ = recursive;
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    if (self.collapsed.contains(node.id())) return false;
+    self.collapsed.put(node.id());
+    self.rebuildRows();
+    return true;
+}
+
+fn viewerCollapseAll(context: *anyopaque) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    for (self.rows.items) |row| {
+        if (row != .match) self.collapsed.put(row.id());
+    }
+    self.rebuildRows();
+}
+
+fn viewerExpandAll(context: *anyopaque) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.collapsed.clear();
+    self.rebuildRows();
+}
+
+fn viewerSelected(context: *anyopaque) ?Row {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.selectedRow();
+}
+
+fn viewerSetSelected(context: *anyopaque, node: ?Row) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    if (node) |value| {
+        if (viewerIndexOf(context, value)) |index| {
+            self.selectRow(index);
+            return;
+        }
+    }
+    self.selected = 0;
+}
+
+fn viewerFocus(context: *anyopaque) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.panel_focused = true;
+    self.results_focused = true;
+}
+
+fn viewerRefresh(context: *anyopaque) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.rebuildRows();
+}
+
+fn hostOpenMatch(context: *anyopaque, path: []const u8, range: ?Range, preserve_focus: bool, side_by_side: bool) anyerror!void {
+    _ = side_by_side;
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    try self.host.open_match(self.host.context, path, range);
+    if (preserve_focus) self.host.highlight_range(self.host.context, path, range);
+}
+
+fn hostHighlightRange(context: *anyopaque, path: []const u8, range: ?Range) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.host.highlight_range(self.host.context, path, range);
+}
+
+fn hostApplyEdits(context: *anyopaque, path: []const u8, edits: []const Edit) anyerror!void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.host.apply_edits(self.host.context, path, edits);
+}
+
+fn hostSaveFile(context: *anyopaque, path: []const u8) anyerror!void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.host.save_file(self.host.context, path);
+}
+
+fn hostActiveSelectionText(context: *anyopaque, allocator: Allocator) anyerror!?[]u8 {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.host.active_selection_text(self.host.context, allocator);
+}
+
+fn hostExtraFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    return self.host.extra_files(self.host.context, allocator);
+}
+
+fn hostFreePaths(context: *anyopaque, allocator: Allocator, paths: [][]u8) void {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    self.host.free_paths(self.host.context, allocator, paths);
+}
+
+fn hostActiveEditor(context: *anyopaque) ?controller_mod.EditorInfo {
+    const self: *SearchView = @ptrCast(@alignCast(context));
+    const info = self.host.active_editor(self.host.context) orelse return null;
+    return .{ .path = info.path, .version = info.version };
 }
 
 fn drawText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []const u8, style: ui.cell.PaintStyle) usize {

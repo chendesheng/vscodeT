@@ -6,9 +6,10 @@
 // performs row hit testing; that is the same split as upstream's
 // `ActivitybarPart` view versus the view-container/activity services.
 //
-// Badges are terminal-adapted: the rail is three cells wide, so the first
-// character of the container's first badge description is painted in the
-// rightmost cell of the activity row.
+// Badges are terminal-adapted: the rail is three cells wide. A single-character
+// badge is painted as-is in the rightmost cell; a multi-character numeric
+// badge (the Search match count) becomes a dot, because showing only its first
+// digit next to the sidebar reads like part of the adjacent panel text.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -79,7 +80,7 @@ pub fn render(
             if (activity_service.getContainerBadgeDescription(activity.id)) |description| {
                 if (description.len > 0 and width > 0) {
                     const badge_col = x + width - 1;
-                    grid.putCodepoint(badge_col, row, description[0], 1, .{
+                    grid.putCodepoint(badge_col, row, badgeGlyph(description), 1, .{
                         .fg = badge_foreground,
                         .bg = paint.bg,
                         .attrs = ui.cell.Attr.bold,
@@ -93,6 +94,14 @@ pub fn render(
     if (focused and visible_index > 0 and active < visible_index) {
         grid.putCodepoint(x, y + 1 + active, '▎', 1, active_style);
     }
+}
+
+fn badgeGlyph(description: []const u8) u21 {
+    if (description.len <= 1) return description[0];
+    for (description) |character| {
+        if (!std.ascii.isDigit(character)) return description[0];
+    }
+    return '•';
 }
 
 test "activityBar: hit testing and cycling use the ported model" {
@@ -128,10 +137,10 @@ test "activityBar: draws the active entry from the model" {
     defer service.deinit();
     try service.showViewContainerActivity("search", .{
         .id = "search.results",
-        .badge = .{ .description = "7" },
+        .badge = .{ .description = "572" },
     });
     render(&part, &service, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true);
     const badge_row = try grid.rowText(allocator, 2);
     defer allocator.free(badge_row);
-    try std.testing.expect(std.mem.indexOf(u8, badge_row, "7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, badge_row, "•") != null);
 }

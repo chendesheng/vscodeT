@@ -175,8 +175,8 @@ console API for raw mode, sizing and input polling.
   activity service model
   (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
   terminal view (`src/tui/activityBar.zig`). The Search activity shows a badge
-  with the current match count; the service also supports view and global
-  badges. It
+  dot while matches are present (the exact count is in the panel); the service
+  also supports view and global badges. It
   switches between
   Explorer, Search and Settings containers; Explorer is wired to the file tree
   and Search to the workspace text-search panel, while Settings remains a
@@ -184,27 +184,43 @@ console API for raw mode, sizing and input polling.
   The model owns order, visibility, the active container and compact width.
   There is still no registered view-container contribution registry, live
   Explorer/Search file-change integration, context menu or drag-and-drop.
-- The Search panel (`src/tui/searchView.zig` and `src/tui/searchWidget.zig`) is
-  a plain-text workspace search over
-  `src/vs/workbench/services/search/common/searchService.zig` and the ported
-  search result tree. `Alt-F` opens it (Ctrl-Shift-F is indistinguishable from
-  Ctrl-F in a normal terminal), `Ctrl-R` toggles replace, `Alt-D` toggles the
-  files-to-include/exclude rows, and `Tab` cycles the inputs. Matching options
-  are `Alt-C` (case), `Alt-W` (whole word), `Alt-R` (regex) and `Alt-P`
-  (preserve case). `Enter` opens a match or toggles a folder/file; `Left`/
-  `Right` collapse/expand; `Delete` dismisses; `Alt-Enter` replaces the
-  selection and `Ctrl-Alt-Enter` replaces all. Results stream incrementally
-  and are grouped as Text Results -> workspace/nested folder -> file -> line.
-  The implementation honors `.gitignore` and `.ignore` through the ported
-  `IgnoreFile` (`src/vs/workbench/services/search/common/ignoreFile.zig`):
-  every directory's ignore file inherits the enclosing one, so nested files,
-  directory-only patterns and `!` negations behave like git. It still skips
-  symlinks, binary/invalid-UTF-8 files, files over 10 MB and version control
-  metadata (`.git`/`.hg`/`.svn`) plus `node_modules` and Zig build output. It
-  does not honor `search.exclude` or the Explorer's `files.exclude`
-  configuration, has no AI/notebook/search-editor results, no replace preview,
-  no multi-selection/context menus, and does not watch the filesystem; edits to
-  the active editor schedule a debounced re-search instead.
+- The Search panel is a terminal adapter (`src/tui/searchView.zig` and
+  `src/tui/searchWidget.zig`) over the upstream-shaped portable view:
+  `src/vs/workbench/contrib/search/browser/searchView.zig` owns the query
+  lifecycle, messages, focus state and replace flow;
+  `searchResultsView.zig` owns the data source, ordering, row labels and
+  accessibility labels; `searchCompare.zig` ports the comparers;
+  `searchActionsBase.zig`, `searchActionsNav.zig`, `searchActionsTopBar.zig`
+  and `searchActionsRemoveReplace.zig` hold the action helpers/runners; and
+  `src/vs/workbench/services/search/common/queryBuilder.zig` builds the text
+  query. `Alt-F` opens the panel (Ctrl-Shift-F is indistinguishable from Ctrl-F
+  in a normal terminal), `Ctrl-R` toggles the replace row (hidden by
+  default, as upstream), `Alt-D` toggles the files-to-include/exclude rows, and `Tab`/`Ctrl-Down`/`Ctrl-Up` cycle inputs.
+  Matching options are `Alt-C` (case), `Alt-W` (whole word), `Alt-R` (regex)
+  and `Alt-P` (preserve case). `Enter` opens a match or toggles a folder/file;
+  `Left`/`Right` collapse/expand; `Delete` dismisses; `Alt-Enter` replaces the
+  selection; `Ctrl-Alt-Enter` shows the upstream replace-all confirmation and a
+  second invocation performs it; `Escape` cancels an active search before
+  leaving the panel. Results stream incrementally and follow
+  `search.defaultViewMode` (list by default), `search.sortOrder` (`modified`
+  falls back to path order because the terminal search service does not collect
+  file stats), `search.collapseResults` and `search.showLineNumbers`; a single
+  workspace root is transparent and list mode flattens files, matching
+  upstream. The
+  result count and empty/limit messages use upstream grammar.
+  `files.exclude` and `search.exclude` are now honored through
+  `src/vs/workbench/services/search/common/search.zig` and the ported glob
+  expression, including `false` entries, `!` exceptions and `{ when: ... }`
+  sibling clauses; `search.useIgnoreFiles` disables ignore-file loading. The
+  implementation still honors `.gitignore`/`.ignore` through
+  `IgnoreFile` (`src/vs/workbench/services/search/common/ignoreFile.zig`) when
+  enabled, and skips symlinks, binary/invalid-UTF-8 files, files over 10 MB,
+  version control metadata and Zig build output. Not ported: AI/notebook/
+  search-editor results, only-open-editors and SCM changed-files modes,
+  multi-selection, context menus, drag/drop, clipboard actions, search history
+  and view-state persistence, compressed folder chains, and `./`/absolute
+  search-path expansion or per-folder settings. The filesystem is not watched;
+  edits to the active editor schedule a debounced re-search instead.
 - Folder opening follows the workspace model: a directory argument stat'd from
   the CLI becomes a `Workspace` folder through
   `src/vs/platform/workspace/common/workspace.zig` and

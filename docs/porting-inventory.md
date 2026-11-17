@@ -226,7 +226,7 @@ not scheduled for a port.
 | `preview.zig` | none (read-only host) | Read-only token renderer and scroll keys | `terminal-only` | — | — | none |
 | `quickAccess.zig` | `workbench/browser/quickaccess.ts`, `platform/quickinput/common/quickAccess.ts`, `platform/quickinput/browser/quickAccess.ts` | Provider/controller host and terminal key/mouse routing | `tui-adapter` | P3/P5 | S | `platform/quickinput/test/browser/quickinput.test.ts` |
 | `quickInput.zig` | `platform/quickinput/browser/quickInput.ts`, `platform/quickinput/browser/quickInputList.ts` | Terminal picker layout/paint; model/controller already ported | `tui-adapter` | — | S | `platform/quickinput/test/browser/quickinput.test.ts` |
-| `searchView.zig` | `workbench/contrib/search/browser/searchView.ts` (128), `workbench/contrib/search/browser/searchResultsView.ts`, `workbench/contrib/search/browser/searchActions*.ts` | Query/replace flow, result navigation, dismiss/replace actions; flattened rows are terminal-only | `mixed` | P2/P5g | L | `workbench/contrib/search/test/browser/searchView.test.ts` (2), `workbench/contrib/search/test/browser/searchActions.test.ts` (6) |
+| `searchView.zig` | `workbench/contrib/search/browser/searchView.ts` (128), `searchResultsView.ts`, `searchActions*.ts` | Terminal adapter over the ported controller/data source/action helpers; flattened rows and painting are terminal-only | `tui-adapter` | P2/P5g | L | `workbench/contrib/search/test/browser/searchView.test.ts`, `searchActions.test.ts` (6), `searchCompare.test.ts` |
 | `searchWidget.zig` | `workbench/contrib/search/browser/searchWidget.ts` (115) | Query fields, option toggles, details rows; terminal form | `tui-adapter` | P5g | S | `workbench/contrib/search/test/browser/searchWidget.test.ts` (1) |
 | `session.zig` | `platform/storage/common/storage.ts` (61), `workbench/common/memento.ts` (12), editor-part serialization | Group/session JSON, atomic write, restore; replace host format with storage/memento | `tui-adapter` | P5a | M | `platform/storage/test/common/storageService.test.ts` (10), `workbench/test/common/memento.test.ts` (4) |
 | `settingsWatcher.zig` | `workbench/services/configuration/browser/configurationService.zig`, file watcher | Watch user/workspace/folder settings, reload | `tui-adapter` | P5h | S | `workbench/services/configuration/test/browser/configurationService.test.ts` (existing) |
@@ -405,22 +405,30 @@ sidebar widget.
 
 ### 8.6 Search and quick open (`searchView.zig`, `searchWidget.zig`, `quickAccess.zig`, `quickInput.zig`, `fileIndex.zig`)
 
-The portable search model is already under
+The portable search model is under
 `workbench/contrib/search/browser/searchTreeModel/` and
-`workbench/services/search/`. `searchView.zig` adds terminal rows, focus and
-mouse routing, plus command methods for toggles, navigation, dismiss and
-replace. `searchWidget.zig` is the terminal form for the upstream
-`searchWidget.ts` fields/toggles.
+`workbench/services/search/`. The view layer now mirrors upstream:
+`browser/searchView.zig` is the portable controller (query lifecycle, focus,
+messages, replace-all request/execute), `browser/searchResultsView.zig` owns the
+data source, ordering and row labels, `browser/searchCompare.zig` ports the
+comparers, and `browser/searchActions*.zig` hold the action helpers/runners.
+`services/search/common/queryBuilder.zig` builds the text query and
+`files.exclude`/`search.exclude` are applied by the service through the ported
+glob expression, including `!` exceptions and `{ when: ... }` clauses.
+`searchView.zig` is now the terminal adapter: flattened rows, painting, focus
+and mouse routing. `searchWidget.zig` remains the terminal form for the
+upstream `searchWidget.ts` fields/toggles.
 
-Missing portable pieces:
+Remaining portable pieces:
 
-- `search.exclude`/`files.exclude` configuration is not consulted by the TUI
-  search view (README and `searchService.zig` both note the gap).
-- Search actions (`searchActionsTopBar.ts`, `searchActionsNav.ts`,
-  `searchActionsFind.ts`, `searchActionsRemoveReplace.ts`) exist upstream but
-  the TUI runs its own command methods.
-- Replace-all grouping/preview is model-side already; the view should consume
-  it rather than grow more row logic.
+- `searchActionsFind.ts` is context-menu-only (find in folder/workspace,
+  exclude folder/file type) and is not wired because the TUI has no search
+  context menu.
+- `searchActionsCopy.ts` needs a clipboard service that the terminal does not
+  have.
+- Search history/memento storage, AI/notebook/search-editor results,
+  multi-selection, compressed folder chains and `./`/absolute search-path
+  expansion remain unported.
 
 Quick open is mostly an adapter already: `quickAccess.zig` hosts the ported
 provider registry/controller, `quickInput.zig` is the terminal widget, and the
