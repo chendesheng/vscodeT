@@ -17,7 +17,13 @@ const ConfigurationTarget = configuration.ConfigurationTarget;
 pub const InspectValue = struct {
     default_value: ?*const std.json.Value,
     user_value: ?*const std.json.Value,
+    value: ?*const std.json.Value,
 };
+
+/// A setting is configured when the user (or any higher store) overrides it.
+pub fn isConfigured(value: InspectValue) bool {
+    return value.user_value != null;
+}
 
 pub const ConfigurationService = struct {
     allocator: Allocator,
@@ -51,9 +57,12 @@ pub const ConfigurationService = struct {
     }
 
     pub fn inspect(self: *ConfigurationService, key: []const u8) InspectValue {
+        const user_value = self.user.getValue(key);
+        const default_value = self.defaults.configurationModel().getValue(key);
         return .{
-            .default_value = self.defaults.configurationModel().getValue(key),
-            .user_value = self.user.getValue(key),
+            .default_value = default_value,
+            .user_value = user_value,
+            .value = user_value orelse default_value,
         };
     }
 

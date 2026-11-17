@@ -134,7 +134,7 @@ pub const ConfigurationRegistry = struct {
                 if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed([]const u8).init(arena);
                 try entry.value_ptr.append(try arena.dupe(u8, schema.key));
             }
-            const base_value = if (schema.default) |value| try cloneValue(arena, value) else std.json.Value{ .object = .{} };
+            const base_value = if (schema.default) |value| try cloneValue(arena, value) else if (std.mem.eql(u8, schema.value_type, "object")) std.json.Value{ .object = .{} } else std.json.Value.null;
             const default_value = try cloneValue(arena, base_value);
             const property = Property{
                 .value_type = try arena.dupe(u8, schema.value_type),

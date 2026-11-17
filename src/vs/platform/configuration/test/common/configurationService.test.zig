@@ -90,3 +90,47 @@ test "lookup nested default values" {
     try std.testing.expectEqual(@as(i64, 1), a.object.get("b").?.integer);
     try std.testing.expectEqual(@as(i64, 2), a.object.get("c").?.integer);
 }
+
+test "lookup missing and configured settings" {
+    const allocator = std.testing.allocator;
+    var fixture = try setup(allocator);
+    defer teardown(fixture.registry, fixture.service);
+
+    var result = fixture.service.inspect("something.missing");
+    try std.testing.expect(result.value == null);
+    try std.testing.expect(result.default_value == null);
+    try std.testing.expect(result.user_value == null);
+    try std.testing.expect(!configurationService.isConfigured(result));
+
+    result = fixture.service.inspect("configurationService.testSetting");
+    try std.testing.expectEqualStrings("isSet", result.default_value.?.string);
+    try std.testing.expectEqualStrings("isSet", result.value.?.string);
+    try std.testing.expect(result.user_value == null);
+    try std.testing.expect(!configurationService.isConfigured(result));
+
+    try fixture.service.updateValue("configurationService.testSetting", .{ .string = "bar" }, .USER);
+    result = fixture.service.inspect("configurationService.testSetting");
+    try std.testing.expectEqualStrings("isSet", result.default_value.?.string);
+    try std.testing.expectEqualStrings("bar", result.user_value.?.string);
+    try std.testing.expectEqualStrings("bar", result.value.?.string);
+    try std.testing.expect(configurationService.isConfigured(result));
+}
+
+test "lookup with null" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_testNull", &.{.{ .key = "lookup.service.testNullSetting", .value_type = "null" }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+
+    var result = service.inspect("lookup.service.testNullSetting");
+    try std.testing.expect(result.default_value.?.* == .null);
+    try std.testing.expect(result.value.?.* == .null);
+    try std.testing.expect(result.user_value == null);
+
+    try service.updateValue("lookup.service.testNullSetting", std.json.Value.null, .USER);
+    result = service.inspect("lookup.service.testNullSetting");
+    try std.testing.expect(result.user_value == null);
+}
