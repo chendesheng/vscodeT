@@ -148,6 +148,52 @@ pub const LanguageService = struct {
         return self.createById(language_id);
     }
 
+    pub fn createByFilepathOrFirstLine(self: *LanguageService, path: ?[]const u8, first_line: ?[]const u8) !*Selection {
+        const selection = try self.allocator.create(Selection);
+        selection.* = .{
+            .service = self,
+            .requested_id = null,
+            .path = path,
+            .first_line = first_line,
+            .emitter = Emitter([]const u8).init(self.allocator),
+        };
+        try self.selections.append(selection);
+        return selection;
+    }
+
+    /// Guesses a language id from a path extension/filename or a first line.
+    pub fn guessLanguageIdByFilepathOrFirstLine(self: *LanguageService, path: ?[]const u8, first_line: ?[]const u8) ?[]const u8 {
+        const basename = if (path) |value| std.fs.path.basename(value) else null;
+        var iterator = self.languages.iterator();
+        while (iterator.next()) |entry| {
+            const registry_entry = entry.value_ptr;
+            if (basename) |name| {
+                if (registry_entry.filenames) |filenames| {
+                    for (filenames) |filename| {
+                        if (std.mem.eql(u8, filename, name)) return registry_entry.id;
+                    }
+                }
+                if (registry_entry.extensions) |extensions| {
+                    for (extensions) |extension| {
+                        if (std.mem.endsWith(u8, name, extension)) return registry_entry.id;
+                    }
+                }
+            }
+            if (first_line) |line| {
+                if (registry_entry.first_line) |pattern| {
+                    var prefix = pattern;
+                    if (prefix.len > 0 and prefix[0] == '^') prefix = prefix[1..];
+                    if (prefix.len > 0 and prefix[prefix.len - 1] == '$') {
+                        if (std.mem.eql(u8, line, prefix[0 .. prefix.len - 1])) return registry_entry.id;
+                    } else if (std.mem.startsWith(u8, line, prefix)) {
+                        return registry_entry.id;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
     pub fn requestBasicLanguageFeatures(self: *LanguageService, language_id: []const u8) void {
         self.onDidRequestBasicLanguageFeatures.fire(language_id) catch {};
     }
@@ -199,6 +245,8 @@ pub const LanguageService = struct {
 pub const Selection = struct {
     service: *LanguageService,
     requested_id: ?[]const u8,
+    path: ?[]const u8 = null,
+    first_line: ?[]const u8 = null,
     emitter: Emitter([]const u8),
 
     pub fn interface(self: *Selection) language.ILanguageSelection {
@@ -209,7 +257,9 @@ pub const Selection = struct {
         const self: *Selection = @ptrCast(@alignCast(context));
         if (self.requested_id) |id| {
             if (self.service.isRegisteredLanguageId(id)) return id;
+            return PLAINTEXT_LANGUAGE_ID;
         }
+        if (self.service.guessLanguageIdByFilepathOrFirstLine(self.path, self.first_line)) |id| return id;
         return PLAINTEXT_LANGUAGE_ID;
     }
 

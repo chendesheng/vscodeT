@@ -51,3 +51,26 @@ test "LanguageSelection falls back to plaintext and tracks registry changes" {
     defer unknown.deinit();
     try std.testing.expectEqualStrings("plaintext", unknown.interface().languageId());
 }
+
+test "filename and first-line selections update with the registry" {
+    const allocator = std.testing.allocator;
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var service = LanguageService.init(allocator, &codec);
+    defer service.deinit();
+
+    const path_selection = try service.createByFilepathOrFirstLine("test:file.testLanguageSelection", null);
+    defer path_selection.deinit();
+    const line_selection = try service.createByFilepathOrFirstLine("test:file", "#!testLanguageSelection");
+    defer line_selection.deinit();
+    try std.testing.expectEqualStrings("plaintext", path_selection.interface().languageId());
+    try std.testing.expectEqualStrings("plaintext", line_selection.interface().languageId());
+
+    try service.registerLanguage(.{
+        .id = "testLanguageSelection",
+        .extensions = &.{".testLanguageSelection"},
+        .firstLine = "^#!testLanguageSelection",
+    });
+    try std.testing.expectEqualStrings("testLanguageSelection", path_selection.interface().languageId());
+    try std.testing.expectEqualStrings("testLanguageSelection", line_selection.interface().languageId());
+}
