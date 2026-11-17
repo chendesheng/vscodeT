@@ -21,20 +21,36 @@ pub const ViewPart = struct {
     prepare_render_fn: *const fn (part: *ViewPart, rendering: *RenderingContext) void,
     render_fn: *const fn (part: *ViewPart, restricted: *RestrictedRenderingContext) void,
 
+    /// Initializes the part in place and registers its handler. The part must
+    /// already live in its final location because the handler points at
+    /// `self.handler`.
     pub fn init(
+        self: *ViewPart,
         context: *ViewContext,
         callbacks: EventHandlerCallbacks,
         prepare_render_fn: *const fn (part: *ViewPart, rendering: *RenderingContext) void,
         render_fn: *const fn (part: *ViewPart, restricted: *RestrictedRenderingContext) void,
-    ) ViewPart {
-        var part = ViewPart{
+    ) void {
+        self.initWithHandlerContext(context, context, callbacks, prepare_render_fn, render_fn);
+    }
+
+    /// Like `init`, but the event callbacks receive `handler_context` (the
+    /// concrete part) so they can reach the part state.
+    pub fn initWithHandlerContext(
+        self: *ViewPart,
+        context: *ViewContext,
+        handler_context: *anyopaque,
+        callbacks: EventHandlerCallbacks,
+        prepare_render_fn: *const fn (part: *ViewPart, rendering: *RenderingContext) void,
+        render_fn: *const fn (part: *ViewPart, restricted: *RestrictedRenderingContext) void,
+    ) void {
+        self.* = .{
             .context = context,
-            .handler = ViewEventHandler.init(context, callbacks),
+            .handler = ViewEventHandler.init(handler_context, callbacks),
             .prepare_render_fn = prepare_render_fn,
             .render_fn = render_fn,
         };
-        context.addEventHandler(&part.handler);
-        return part;
+        context.addEventHandler(&self.handler);
     }
 
     pub fn deinit(self: *ViewPart) void {
@@ -190,7 +206,8 @@ test "view part registers renders and unregisters" {
         }
     };
 
-    var part = ViewPart.init(&context, .{}, Render.prepare, Render.render);
+    var part: ViewPart = undefined;
+    part.init(&context, .{}, Render.prepare, Render.render);
     try std.testing.expectEqual(@as(usize, 1), state.added);
     part.prepareRender(undefined);
     part.render(undefined);

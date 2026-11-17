@@ -271,7 +271,7 @@ test "view overlays concatenate dynamic overlays per line" {
     defer overlays.deinit();
 
     var first = Overlay{ .base = undefined, .text = "A" };
-    first.base = DynamicViewOverlay.init(&context, .{}, Overlay.prepare, Overlay.render);
+    first.base.init(&context, .{}, Overlay.prepare, Overlay.render);
     defer first.base.deinit();
     overlays.addDynamicOverlay(&first.base);
 
@@ -311,7 +311,7 @@ test "view overlays concatenate dynamic overlays per line" {
     try std.testing.expectEqualStrings("AA", sb.build());
 
     var second = Overlay{ .base = undefined, .text = "B" };
-    second.base = DynamicViewOverlay.init(&context, .{}, Overlay.prepare, Overlay.render);
+    second.base.init(&context, .{}, Overlay.prepare, Overlay.render);
     defer second.base.deinit();
     overlays.addDynamicOverlay(&second.base);
     sb.reset();

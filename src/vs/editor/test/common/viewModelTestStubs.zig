@@ -5,7 +5,11 @@
 // converter). The ported view scaffolding tests never convert coordinates, so
 // a round-tripping converter is enough to satisfy the interface. There is no
 // upstream file counterpart; this only exists to keep the stubs small.
+const std = @import("std");
 const coordinates = @import("../../common/coordinatesConverter.zig");
+const view_model = @import("../../common/viewModel.zig");
+const theme_service = @import("../../../platform/theme/common/themeService.zig");
+const Color = @import("../../../base/common/color.zig").Color;
 const Position = @import("../../common/core/position.zig").Position;
 const Range = @import("../../common/core/range.zig").Range;
 const PositionAffinity = @import("../../common/model.zig").PositionAffinity;
@@ -52,5 +56,134 @@ pub const TestCoordinatesConverter = struct {
     }
     fn getViewLineNumberOfModelPosition(_: *anyopaque, model_line_number: usize, _: usize) usize {
         return model_line_number;
+    }
+};
+
+/// A test color theme: no colors, no token styles.
+pub const TestColorTheme = struct {
+    const vtable = theme_service.IColorTheme.VTable{
+        .getColor = getColor,
+        .defines = defines,
+        .getTokenStyleMetadata = getTokenStyleMetadata,
+    };
+
+    pub fn dark() theme_service.IColorTheme {
+        return theme_service.IColorTheme.init(.DARK, "test", @ptrFromInt(@alignOf(usize)), &vtable);
+    }
+
+    fn getColor(_: *anyopaque, _: []const u8, _: bool) ?Color {
+        return null;
+    }
+    fn defines(_: *anyopaque, _: []const u8) bool {
+        return false;
+    }
+    fn getTokenStyleMetadata(_: *anyopaque, _: []const u8, _: []const []const u8, _: []const u8) ?theme_service.ITokenStyle {
+        return null;
+    }
+};
+
+/// A test view layout with configurable viewport and line height.
+pub const TestViewLayout = struct {
+    scroll_width: f64 = 0,
+    scroll_height: f64 = 0,
+    viewport: view_model.Viewport = .{ .top = 0, .left = 0, .width = 80, .height = 24 },
+    line_height: f64 = 1,
+
+    pub fn interface(self: *TestViewLayout) view_model.IViewLayout {
+        return .{
+            .context = self,
+            .get_scroll_width = getScrollWidth,
+            .get_scroll_height = getScrollHeight,
+            .get_current_viewport = getCurrentViewport,
+            .get_vertical_offset_for_line_number = getVerticalOffset,
+            .get_vertical_offset_after_line_number = getVerticalOffset,
+            .get_line_height_for_line_number = getLineHeight,
+        };
+    }
+
+    fn getScrollWidth(self: *anyopaque) f64 {
+        return @as(*TestViewLayout, @ptrCast(@alignCast(self))).scroll_width;
+    }
+    fn getScrollHeight(self: *anyopaque) f64 {
+        return @as(*TestViewLayout, @ptrCast(@alignCast(self))).scroll_height;
+    }
+    fn getCurrentViewport(self: *anyopaque) view_model.Viewport {
+        return @as(*TestViewLayout, @ptrCast(@alignCast(self))).viewport;
+    }
+    fn getVerticalOffset(_: *anyopaque, _: usize, _: bool) f64 {
+        return 0;
+    }
+    fn getLineHeight(self: *anyopaque, _: usize) f64 {
+        return @as(*TestViewLayout, @ptrCast(@alignCast(self))).line_height;
+    }
+};
+
+/// A configurable `IViewModel` stub for view-part tests.
+pub const TestViewModel = struct {
+    view_layout: view_model.IViewLayout,
+    line_count: usize = 1,
+    line_lengths: []const usize = &.{},
+    decorations: []const view_model.ViewModelDecoration = &.{},
+    added_handlers: usize = 0,
+    removed_handlers: usize = 0,
+
+    pub fn init(view_layout: view_model.IViewLayout) TestViewModel {
+        return .{ .view_layout = view_layout };
+    }
+
+    pub fn lineLengthAt(self: *const TestViewModel, line_number: usize) usize {
+        if (line_number == 0 or line_number > self.line_lengths.len) return 0;
+        return self.line_lengths[line_number - 1];
+    }
+
+    pub fn interface(self: *TestViewModel) view_model.IViewModel {
+        return .{
+            .context = self,
+            .view_layout = self.view_layout,
+            .coordinates_converter = TestCoordinatesConverter.interface(),
+            .getLineMinColumn = getLineMinColumn,
+            .getLineMaxColumn = getLineMaxColumn,
+            .getLineCount = getLineCount,
+            .getLineLength = getLineLength,
+            .getViewportViewLineRenderingData = getViewportViewLineRenderingData,
+            .getViewLineContinuesWithWrappedLine = getViewLineContinuesWithWrappedLine,
+            .getDecorationsInViewport = getDecorationsInViewport,
+            .add_view_event_handler = addViewEventHandler,
+            .remove_view_event_handler = removeViewEventHandler,
+        };
+    }
+
+    fn getLineMinColumn(_: *anyopaque, _: usize) usize {
+        return 1;
+    }
+    fn getLineMaxColumn(self: *anyopaque, line_number: usize) usize {
+        const model: *TestViewModel = @ptrCast(@alignCast(self));
+        return model.lineLengthAt(line_number) + 1;
+    }
+    fn getLineCount(self: *anyopaque) usize {
+        const model: *TestViewModel = @ptrCast(@alignCast(self));
+        return model.line_count;
+    }
+    fn getLineLength(self: *anyopaque, line_number: usize) usize {
+        const model: *TestViewModel = @ptrCast(@alignCast(self));
+        return model.lineLengthAt(line_number);
+    }
+    fn getViewportViewLineRenderingData(_: *anyopaque, _: Range, _: usize) anyerror!view_model.ViewLineRenderingData {
+        return error.Unsupported;
+    }
+    fn getViewLineContinuesWithWrappedLine(_: *anyopaque, _: usize) bool {
+        return false;
+    }
+    fn getDecorationsInViewport(self: *anyopaque, _: Range, allocator: std.mem.Allocator) anyerror![]view_model.ViewModelDecoration {
+        const model: *TestViewModel = @ptrCast(@alignCast(self));
+        return allocator.dupe(view_model.ViewModelDecoration, model.decorations);
+    }
+    fn addViewEventHandler(self: *anyopaque, _: *anyopaque) void {
+        const model: *TestViewModel = @ptrCast(@alignCast(self));
+        model.added_handlers += 1;
+    }
+    fn removeViewEventHandler(self: *anyopaque, _: *anyopaque) void {
+        const model: *TestViewModel = @ptrCast(@alignCast(self));
+        model.removed_handlers += 1;
     }
 };

@@ -270,6 +270,9 @@ pub const ExperimentalWhitespaceRendering = enum { svg, font, off };
 
 pub const GpuAcceleration = enum { off, on };
 
+/// Values of `EditorOption.fullwidthCharacterWidth` and its effective value.
+pub const FullwidthCharacterWidth = enum { font, two_cells };
+
 /// Upstream validates `'alt' | 'ctrlCmd'` into the pressed modifier key.
 pub const MultiCursorModifier = enum { alt_key, meta_key, ctrl_key };
 
@@ -443,6 +446,8 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .folding,
         .effectiveEditContext,
         .effectiveAllowVariableFonts,
+        .allowVariableFonts,
+        .allowVariableFontsInAccessibilityMode,
         => bool,
 
         .cursorHeight,
@@ -461,8 +466,9 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .lineHeight,
         .mouseWheelScrollSensitivity,
         .pixelRatio,
-        .effectiveFullwidthCharacterWidth,
         => f64,
+
+        .fullwidthCharacterWidth, .effectiveFullwidthCharacterWidth => FullwidthCharacterWidth,
 
         .editorClassName,
         .fontFamily,

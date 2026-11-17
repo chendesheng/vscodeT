@@ -18,20 +18,39 @@ pub const DynamicViewOverlay = struct {
     prepare_render_fn: *const fn (overlay: *DynamicViewOverlay, context: *const RenderingContext) void,
     render_fn: *const fn (overlay: *DynamicViewOverlay, start_line_number: usize, line_number: usize) []const u8,
 
+    /// Initializes the overlay in place and registers its handler.
+    ///
+    /// In-place initialization is required: the registered event handler points
+    /// at `self.handler`, so the overlay must already live in its final
+    /// location.
     pub fn init(
+        self: *DynamicViewOverlay,
         context: *ViewContext,
         callbacks: EventHandlerCallbacks,
         prepare_render_fn: *const fn (overlay: *DynamicViewOverlay, context: *const RenderingContext) void,
         render_fn: *const fn (overlay: *DynamicViewOverlay, start_line_number: usize, line_number: usize) []const u8,
-    ) DynamicViewOverlay {
-        var overlay = DynamicViewOverlay{
+    ) void {
+        self.initWithHandlerContext(context, context, callbacks, prepare_render_fn, render_fn);
+    }
+
+    /// Like `init`, but the event callbacks receive `handler_context` instead of
+    /// the `ViewContext`. Concrete overlays pass themselves so their handlers
+    /// can reach the overlay state, matching upstream `this` callbacks.
+    pub fn initWithHandlerContext(
+        self: *DynamicViewOverlay,
+        context: *ViewContext,
+        handler_context: *anyopaque,
+        callbacks: EventHandlerCallbacks,
+        prepare_render_fn: *const fn (overlay: *DynamicViewOverlay, context: *const RenderingContext) void,
+        render_fn: *const fn (overlay: *DynamicViewOverlay, start_line_number: usize, line_number: usize) []const u8,
+    ) void {
+        self.* = .{
             .view_context = context,
-            .handler = ViewEventHandler.init(context, callbacks),
+            .handler = ViewEventHandler.init(handler_context, callbacks),
             .prepare_render_fn = prepare_render_fn,
             .render_fn = render_fn,
         };
-        context.addEventHandler(&overlay.handler);
-        return overlay;
+        context.addEventHandler(&self.handler);
     }
 
     pub fn deinit(self: *DynamicViewOverlay) void {

@@ -764,7 +764,12 @@ Editor contributions:
   carries `ComputedEditorOptions` with the upstream defaults and the
   environment-dependent options; `editorLayoutProvider.test.ts` is ported.
   `IEditorConfiguration.options` is now a typed `IComputedEditorOptions` rather
-  than an opaque pointer. The open P4 work is the `View` orchestrator,
+  than an opaque pointer. The view-part slice has started:
+  `editor/browser/viewParts/viewLines/viewLineOptions.zig` and
+  `editor/browser/viewParts/lineNumbers/lineNumbers.zig` are ported, the latter
+  producing terminal line-number data (absolute/relative/interval/custom
+  numbering, final-newline and decoration class handling) instead of DOM HTML,
+  with focused tests. The open P4 work is the `View` orchestrator,
   `viewController.ts`, `codeEditorWidget.ts` and the remaining view parts. The
   portable URI/file-service/editor-input layer (P5e) still needs the full
   provider file service and the concrete working-copy wiring.

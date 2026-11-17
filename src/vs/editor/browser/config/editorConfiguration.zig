@@ -37,6 +37,7 @@ const CursorSurroundingLinesStyle = editorOptions.CursorSurroundingLinesStyle;
 const RenderFinalNewline = editorOptions.RenderFinalNewline;
 const ExperimentalWhitespaceRendering = editorOptions.ExperimentalWhitespaceRendering;
 const GpuAcceleration = editorOptions.GpuAcceleration;
+const FullwidthCharacterWidth = editorOptions.FullwidthCharacterWidth;
 const MultiCursorModifier = editorOptions.MultiCursorModifier;
 const WrappingIndent = editorOptions.WrappingIndent;
 const AccessibilitySupport = standaloneEnums.AccessibilitySupport;
@@ -70,6 +71,8 @@ const supported_options = [_]EditorOption{
     .folding,
     .effectiveEditContext,
     .effectiveAllowVariableFonts,
+    .allowVariableFonts,
+    .allowVariableFontsInAccessibilityMode,
     .cursorHeight,
     .cursorSurroundingLines,
     .cursorWidth,
@@ -99,6 +102,8 @@ const supported_options = [_]EditorOption{
     .renderWhitespace,
     .experimentalWhitespaceRendering,
     .experimentalGpuAcceleration,
+    .fullwidthCharacterWidth,
+    .effectiveFullwidthCharacterWidth,
     .wordWrap,
     .wordWrapOverride1,
     .wordWrapOverride2,
@@ -146,6 +151,8 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .folding => "folding",
         .effectiveEditContext => "effective_edit_context",
         .effectiveAllowVariableFonts => "effective_allow_variable_fonts",
+        .allowVariableFonts => "allow_variable_fonts",
+        .allowVariableFontsInAccessibilityMode => "allow_variable_fonts_in_accessibility_mode",
 
         .cursorHeight => "cursor_height",
         .cursorSurroundingLines => "cursor_surrounding_lines",
@@ -162,7 +169,6 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .lineHeight => "line_height",
         .mouseWheelScrollSensitivity => "mouse_wheel_scroll_sensitivity",
         .pixelRatio => "pixel_ratio",
-        .effectiveFullwidthCharacterWidth => "effective_fullwidth_character_width",
 
         .editorClassName => "editor_class_name",
         .fontFamily => "font_family",
@@ -178,6 +184,7 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .renderWhitespace => "render_whitespace",
         .experimentalWhitespaceRendering => "experimental_whitespace_rendering",
         .experimentalGpuAcceleration => "experimental_gpu_acceleration",
+        .fullwidthCharacterWidth, .effectiveFullwidthCharacterWidth => if (option == .fullwidthCharacterWidth) "fullwidth_character_width" else "effective_fullwidth_character_width",
         .wordWrap => "word_wrap",
         .wordWrapOverride1, .wordWrapOverride2 => if (option == .wordWrapOverride1) "word_wrap_override1" else "word_wrap_override2",
         .showFoldingControls => "show_folding_controls",
@@ -227,7 +234,9 @@ pub const ComputedEditorOptions = struct {
     word_wrap_indicator: bool = false,
     folding: bool = true,
     effective_edit_context: bool = false,
-    effective_allow_variable_fonts: bool = true,
+    effective_allow_variable_fonts: bool = false,
+    allow_variable_fonts: bool = true,
+    allow_variable_fonts_in_accessibility_mode: bool = false,
 
     cursor_height: i32 = 0,
     cursor_surrounding_lines: i32 = 0,
@@ -244,7 +253,8 @@ pub const ComputedEditorOptions = struct {
     line_height: f64 = fontInfo.EDITOR_FONT_DEFAULTS.lineHeight,
     mouse_wheel_scroll_sensitivity: f64 = 1,
     pixel_ratio: f64 = 1,
-    effective_fullwidth_character_width: f64 = 0,
+    fullwidth_character_width: FullwidthCharacterWidth = .font,
+    effective_fullwidth_character_width: FullwidthCharacterWidth = .font,
 
     editor_class_name: []const u8 = "",
     font_family: []const u8 = fontInfo.EDITOR_FONT_DEFAULTS.fontFamily,
@@ -361,7 +371,14 @@ pub const ComputedEditorOptions = struct {
         self.effective_cursor_style = self.cursor_style;
         // Terminal: there is no DOM EditContext.
         self.effective_edit_context = false;
-        self.effective_allow_variable_fonts = true;
+        self.effective_allow_variable_fonts = if (self.accessibility_support == .Enabled)
+            self.allow_variable_fonts_in_accessibility_mode
+        else
+            self.allow_variable_fonts;
+        self.effective_fullwidth_character_width = if (self.fullwidth_character_width == .two_cells and self.font_info.isMonospace)
+            .two_cells
+        else
+            .font;
     }
 };
 
@@ -373,5 +390,5 @@ test "ComputedEditorOptions exposes the supported options" {
         _ = options.read(option);
         _ = view.get(option);
     }
-    try std.testing.expectEqual(@as(usize, 68), supported_options.len);
+    try std.testing.expectEqual(@as(usize, 72), supported_options.len);
 }
