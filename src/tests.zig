@@ -407,6 +407,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/files/browser/editors/fileEditorInput.zig");
     _ = @import("./vs/workbench/services/themes/common/colorThemeData.zig");
     _ = @import("./vs/workbench/services/textfile/common/textFileService.zig");
+    _ = @import("./vs/workbench/services/textfile/common/textFileEditorModel.zig");
     _ = @import("./vs/workbench/services/untitled/common/untitledTextEditorInput.zig");
     _ = @import("./vs/workbench/services/themes/common/textMateScopeMatcher.zig");
     _ = @import("./vs/workbench/services/themes/browser/workbenchThemeService.zig");
