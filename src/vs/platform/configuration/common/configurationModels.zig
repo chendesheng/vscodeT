@@ -106,6 +106,16 @@ pub const ConfigurationModel = struct {
         return model;
     }
 
+    /// Builds a model from an already parsed JSON value and explicit keys.
+    pub fn init(allocator: Allocator, value: Value, keys: []const []const u8) !ConfigurationModel {
+        var model = try initEmpty(allocator);
+        errdefer model.deinit();
+        const arena = model.arena.allocator();
+        model.contents = try configuration.cloneValue(arena, value);
+        for (keys) |key| try model.keys.append(try arena.dupe(u8, key));
+        return model;
+    }
+
     /// Builds a model from an already parsed JSON object, for `.code-workspace`
     /// files whose `settings` member is itself the raw settings object.
     pub fn fromValue(allocator: Allocator, value: Value) !ConfigurationModel {

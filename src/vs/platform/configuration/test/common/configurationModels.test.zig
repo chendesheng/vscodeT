@@ -59,3 +59,82 @@ test "parse configuration model with invalid setting key" {
     try std.testing.expect(model.getValue("a.b") == null);
     try std.testing.expect(model.getValue("a.b.c") == null);
 }
+
+fn expectKeys(expected: []const []const u8, actual: []const []const u8) !void {
+    try std.testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |expected_key, actual_key| {
+        try std.testing.expectEqualStrings(expected_key, actual_key);
+    }
+}
+
+fn modelFrom(allocator: std.mem.Allocator, text: []const u8, keys: []const []const u8) !configuration_models.ConfigurationModel {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), text, .{});
+    return configuration_models.ConfigurationModel.init(allocator, value, keys);
+}
+
+test "setValue for keys with and without sections" {
+    const allocator = std.testing.allocator;
+    {
+        var model = try modelFrom(allocator, "{\"a\":{\"b\":1}}", &.{"a.b"});
+        defer model.deinit();
+        try model.setValue("f", .{ .integer = 1 });
+        try std.testing.expectEqual(@as(i64, 1), model.getValue("a.b").?.integer);
+        try std.testing.expectEqual(@as(i64, 1), model.getValue("f").?.integer);
+        try expectKeys(&.{ "a.b", "f" }, model.getKeys());
+    }
+    {
+        var model = try modelFrom(allocator, "{\"a\":{\"b\":1},\"f\":1}", &.{ "a.b", "f" });
+        defer model.deinit();
+        try model.setValue("f", .{ .integer = 3 });
+        try std.testing.expectEqual(@as(i64, 3), model.getValue("f").?.integer);
+        try expectKeys(&.{ "a.b", "f" }, model.getKeys());
+    }
+    {
+        var model = try modelFrom(allocator, "{\"a\":{\"b\":1},\"f\":1}", &.{ "a.b", "f" });
+        defer model.deinit();
+        try model.setValue("b.c", .{ .integer = 1 });
+        try std.testing.expectEqual(@as(i64, 1), model.getValue("b.c").?.integer);
+        try expectKeys(&.{ "a.b", "f", "b.c" }, model.getKeys());
+    }
+    {
+        var model = try modelFrom(allocator, "{\"a\":{\"b\":1},\"b\":{\"c\":1},\"f\":1}", &.{ "a.b", "b.c", "f" });
+        defer model.deinit();
+        try model.setValue("b.c", .{ .integer = 3 });
+        try std.testing.expectEqual(@as(i64, 3), model.getValue("b.c").?.integer);
+        try expectKeys(&.{ "a.b", "b.c", "f" }, model.getKeys());
+    }
+    {
+        var model = try modelFrom(allocator, "{\"a\":{\"b\":1},\"f\":1}", &.{ "a.b", "f" });
+        defer model.deinit();
+        try model.setValue("a.c", .{ .integer = 1 });
+        try std.testing.expectEqual(@as(i64, 1), model.getValue("a.c").?.integer);
+        try expectKeys(&.{ "a.b", "f", "a.c" }, model.getKeys());
+    }
+}
+
+test "removeValue removes segmented keys" {
+    const allocator = std.testing.allocator;
+    {
+        var model = try modelFrom(allocator, "{\"a\":{\"b\":2}}", &.{"a.b"});
+        defer model.deinit();
+        model.removeValue("a.b.c");
+        try std.testing.expectEqual(@as(i64, 2), model.getValue("a.b").?.integer);
+        try expectKeys(&.{"a.b"}, model.getKeys());
+    }
+    {
+        var model = try modelFrom(allocator, "{\"a\":1}", &.{"a"});
+        defer model.deinit();
+        model.removeValue("a");
+        try std.testing.expect(model.getValue("a") == null);
+        try std.testing.expectEqual(@as(usize, 0), model.getKeys().len);
+    }
+    {
+        var model = try modelFrom(allocator, "{\"a\":{\"b\":1}}", &.{"a.b"});
+        defer model.deinit();
+        model.removeValue("a.b");
+        try std.testing.expect(model.getValue("a.b") == null);
+        try std.testing.expectEqual(@as(usize, 0), model.getKeys().len);
+    }
+}
