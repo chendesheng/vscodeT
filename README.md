@@ -720,7 +720,7 @@ Editor contributions:
   registry/resolver/label/store suites pass. `src/tui/keybindings.zig` remains
   the terminal host for status/search/editor shortcuts, while
   `src/tui/keybindingService.zig` runs the workbench-global, editor-tab group,
-  status-bar and search-view shortcuts through the abstract service (flat context, no-op
+  status-bar, search-view and editor shortcuts through the abstract service (flat context, no-op
   notifications, command execution; tab-command results such as quit are
   carried back to the caller). Workbench tab/group shortcuts
   already dispatch through a `KeybindingsRegistry` + `KeybindingResolver`

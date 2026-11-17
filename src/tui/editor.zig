@@ -60,7 +60,7 @@ const bracket_matching = @import("../vs/editor/contrib/bracketMatching/browser/b
 const BracketMatchingController = bracket_matching.BracketMatchingController;
 const language_configuration_service = @import("./languageConfiguration.zig");
 const input = @import("ui").input;
-const tui_keybindings = @import("./keybindings.zig");
+const keybinding_service = @import("./keybindingService.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
 const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
 const CommandRegistry = @import("../vs/platform/commands/common/commands.zig").CommandRegistry;
@@ -176,7 +176,7 @@ pub const Editor = struct {
     multi_cursor_paste_spread: bool = true,
     /// Ctrl/Alt character shortcuts are resolved through the ported keybinding
     /// registry; text editing itself stays on the editor methods below.
-    keybindings: ?*tui_keybindings.TuiKeybindings = null,
+    keybindings: ?*keybinding_service.KeybindingService = null,
     shortcut_commands: CommandRegistry,
     /// Find controller hooks, installed by the per-tab controllers.
     find_context: ?*anyopaque = null,
@@ -359,10 +359,16 @@ pub const Editor = struct {
             });
         }
 
-        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
-        errdefer self.allocator.destroy(keybindings);
-        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &shortcut_keybinding_rules, &self.shortcut_commands);
-        self.keybindings = keybindings;
+        const service = try keybinding_service.KeybindingService.init(self.allocator, &shortcut_keybinding_rules, .{
+            .context = self,
+            .execute = executeShortcutCommand,
+        });
+        self.keybindings = service;
+    }
+
+    fn executeShortcutCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        _ = try self.shortcut_commands.execute(command_id);
     }
 
     /// Resolves a shortcut through the keybinding registry. Ctrl/Alt character
@@ -386,8 +392,8 @@ pub const Editor = struct {
         if (is_editing and blocked) return false;
 
         try self.ensureShortcutKeybindings();
-        const command = try self.keybindings.?.dispatch(event, tui_keybindings.empty_context);
-        if (is_navigation or is_editing) return command != null or self.keybindings.?.inChordMode();
+        const consumed = self.keybindings.?.dispatch(event);
+        if (is_navigation or is_editing) return consumed;
         return true;
     }
 
@@ -410,10 +416,7 @@ pub const Editor = struct {
         self.allocator.destroy(self.language_service);
         self.codec.deinit();
         self.allocator.destroy(self.codec);
-        if (self.keybindings) |keybindings| {
-            keybindings.deinit();
-            self.allocator.destroy(keybindings);
-        }
+        if (self.keybindings) |service| service.deinit();
         self.shortcut_commands.deinit();
         self.on_did_change_dirty.deinit();
         self.allocator.free(self.path);
