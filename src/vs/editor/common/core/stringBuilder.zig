@@ -4,6 +4,37 @@ const ArrayList = std.array_list.Managed;
 
 /// UTF-8 string builder. Upstream uses UTF-16 buffers; this port builds UTF-8
 /// directly because Zig strings and editor buffers are UTF-8.
+/// Decodes UTF-16LE code units to UTF-8. A leading BOM is preserved (upstream
+/// avoids the platform decoder for this reason). `offset` is a byte offset and
+/// `len` a count of 16-bit code units.
+pub fn decodeUTF16LE(allocator: Allocator, source: []const u8, offset: usize, len: usize) ![]u8 {
+    var result = std.array_list.Managed(u8).init(allocator);
+    errdefer result.deinit();
+    var index: usize = 0;
+    while (index < len) : (index += 1) {
+        const byte_index = offset + index * 2;
+        const unit = std.mem.readInt(u16, source[byte_index..][0..2], .little);
+        var codepoint: u21 = unit;
+        if (unit >= 0xD800 and unit <= 0xDBFF and index + 1 < len) {
+            const next_index = byte_index + 2;
+            const next_unit = std.mem.readInt(u16, source[next_index..][0..2], .little);
+            if (next_unit >= 0xDC00 and next_unit <= 0xDFFF) {
+                codepoint = 0x10000 + ((@as(u21, unit) - 0xD800) << 10) + (next_unit - 0xDC00);
+                index += 1;
+            }
+        }
+        var buffer: [4]u8 = undefined;
+        const encoded_len = std.unicode.utf8Encode(codepoint, &buffer) catch {
+            try result.append(0xEF);
+            try result.append(0xBF);
+            try result.append(0xBD);
+            continue;
+        };
+        try result.appendSlice(buffer[0..encoded_len]);
+    }
+    return result.toOwnedSlice();
+}
+
 pub const StringBuilder = struct {
     allocator: Allocator,
     buffer: ArrayList(u8),

@@ -85,6 +85,7 @@ comptime {
     _ = @import("./vs/editor/common/inputMode.zig");
     _ = @import("./vs/editor/common/viewLayout/linePart.zig");
     _ = @import("./vs/editor/common/core/stringBuilder.zig");
+    _ = @import("./vs/editor/test/common/core/stringBuilder.test.zig");
     _ = @import("./vs/editor/common/core/2d/point.zig");
     _ = @import("./vs/editor/common/core/2d/size.zig");
     _ = @import("./vs/editor/common/core/2d/rect.zig");
