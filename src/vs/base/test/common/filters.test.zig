@@ -183,3 +183,37 @@ test "topScore - fuzzyScore" {
     try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "CC", &.{ "camelCase", "CamelCase" }));
     try std.testing.expectEqual(@as(usize, 0), try topScoreIndex(allocator, "cC", &.{ "camelCase", "CamelCase" }));
 }
+
+fn expectWordMatch(allocator: std.mem.Allocator, word: []const u8, target: []const u8) !void {
+    const matches = (try filters.matchesWords(allocator, word, target)) orelse return error.TestUnexpectedResult;
+    defer allocator.free(matches);
+}
+
+test "matchesWords basic word filters" {
+    const allocator = std.testing.allocator;
+    try expectWordMatch(allocator, "alpha", "alpha");
+    try expectWordMatch(allocator, "alpha", "alphasomething");
+    try std.testing.expect((try filters.matchesWords(allocator, "alpha", "alp")) == null);
+    try expectWordMatch(allocator, "a", "alpha");
+    try std.testing.expect((try filters.matchesWords(allocator, "x", "alpha")) == null);
+    try expectWordMatch(allocator, "A", "alpha");
+    try expectWordMatch(allocator, "AlPh", "alPHA");
+    try expectWordMatch(allocator, "Debug Console", "Open: Debug Console");
+    try expectWordMatch(allocator, "gp", "Git: Pull");
+    try expectWordMatch(allocator, "g p", "Git: Pull");
+    try expectWordMatch(allocator, "gipu", "Git: Pull");
+    try expectWordMatch(allocator, "gp", "Category: Git: Pull");
+    try expectWordMatch(allocator, "gipu", "Category: Git: Pull");
+    try std.testing.expect((try filters.matchesWords(allocator, "it", "Git: Pull")) == null);
+    try std.testing.expect((try filters.matchesWords(allocator, "ll", "Git: Pull")) == null);
+    try expectWordMatch(allocator, "bar", "foo-bar");
+    try expectWordMatch(allocator, "bar test", "foo-bar test");
+    try expectWordMatch(allocator, "fbt", "foo-bar test");
+    try expectWordMatch(allocator, "bar test", "foo-bar (test)");
+    try expectWordMatch(allocator, "foo bar", "foo (bar)");
+    try std.testing.expect((try filters.matchesWords(allocator, "bar est", "foo-bar test")) == null);
+    try std.testing.expect((try filters.matchesWords(allocator, "fo ar", "foo-bar test")) == null);
+    try std.testing.expect((try filters.matchesWords(allocator, "for", "foo-bar test")) == null);
+    try expectWordMatch(allocator, "foo bar", "123 foo-bar 456");
+    try expectWordMatch(allocator, "foo:bar", "foo:bar");
+}

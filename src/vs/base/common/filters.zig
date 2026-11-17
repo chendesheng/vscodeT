@@ -195,8 +195,7 @@ fn nextWordStart(target: []const u8, from: usize) usize {
 fn isWordStart(target: []const u8, index: usize) bool {
     if (index == 0) return true;
     const previous = target[index - 1];
-    if (previous == ' ' or previous == '\t' or previous == '_' or previous == '-' or
-        previous == '.' or previous == ':' or previous == '/' or previous == '\\') return true;
+    if (!std.ascii.isAlphanumeric(previous)) return true;
     return std.ascii.isLower(previous) and std.ascii.isUpper(target[index]);
 }
 

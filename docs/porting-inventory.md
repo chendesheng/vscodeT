@@ -1055,6 +1055,8 @@ pending; P5e (URI/file/editor input) is not started.
 - Remaining `editorGroupModel`/`explorerView` cases construct diff and
   side-by-side editor inputs.
 - P5c token-style resolving needs `tokenClassificationRegistry.ts`.
+- The upstream WordFilter separator-swap/Unicode/C++ cases in
+  `filters.test.ts` remain unported; the ASCII word-boundary basics are covered.
 - The remaining workbench configuration-service cases cover experiment
   assignments, remote/folder scopes, policy configuration and the 198-case
   browser harness.
