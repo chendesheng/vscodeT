@@ -95,6 +95,21 @@ pub const DiskFileService = struct {
         allocator.free(entries);
     }
 
+    /// Deletes a file, or a directory tree when `recursive` is true.
+    pub fn delete(self: *DiskFileService, path: []const u8, recursive: bool) !void {
+        const info = try self.stat(path);
+        if (!info.isDirectory()) return self.deleteFile(path);
+        if (!recursive) return self.deleteDirectory(path);
+        const entries = try self.readDirectory(path, self.allocator);
+        defer DiskFileService.freeDirectory(self.allocator, entries);
+        for (entries) |entry| {
+            const child = try std.fs.path.join(self.allocator, &.{ path, entry.name });
+            defer self.allocator.free(child);
+            try self.delete(child, true);
+        }
+        try self.deleteDirectory(path);
+    }
+
     pub fn copy(self: *DiskFileService, from: []const u8, to: []const u8) !void {
         var data = try self.readFile(from);
         defer data.deinit(self.allocator);
@@ -164,8 +179,8 @@ test "DiskFileService lists directories" {
     try std.testing.expectEqualStrings("a.txt", entries[0].name);
     try std.testing.expect(files.FileType.isFile(entries[0].type));
 
-    try service.deleteFile(file);
-    try service.deleteDirectory(dir);
+    try service.delete(dir, true);
+    try std.testing.expect(!service.exists(dir));
 }
 
 test "DiskFileService reports missing files" {
