@@ -15,6 +15,8 @@ const LanguageRegistryEntry = struct {
     filenames: ?[]const []const u8 = null,
     mimetypes: ?[]const []const u8 = null,
     first_line: ?[]const u8 = null,
+    icon: ?LanguageIcon = null,
+    configuration: ?Uri = null,
 };
 
 // The payload types are declared by the interface module (`language.zig`);
@@ -33,6 +35,7 @@ pub const LanguageService = struct {
 
     _languageConfigurations: std.StringHashMap(LanguageConfiguration),
     allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
     languages: std.StringHashMap(LanguageRegistryEntry),
     mime_types: std.StringHashMap([]const u8),
     language_names: std.StringHashMap([]const u8),
@@ -62,6 +65,7 @@ pub const LanguageService = struct {
             .languageIdCodec = languageIdCodec,
             ._languageConfigurations = std.StringHashMap(LanguageConfiguration).init(allocator),
             .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
             .languages = std.StringHashMap(LanguageRegistryEntry).init(allocator),
             .mime_types = std.StringHashMap([]const u8).init(allocator),
             .language_names = std.StringHashMap([]const u8).init(allocator),
@@ -74,23 +78,61 @@ pub const LanguageService = struct {
     }
 
     pub fn registerLanguage(self: *LanguageService, def: ILanguageExtensionPoint) !void {
-        const id = try self.allocator.dupe(u8, def.id);
+        const arena = self.arena.allocator();
+        if (self.languages.getPtr(def.id)) |existing| {
+            if (def.extensions) |extensions| existing.extensions = try appendSlices(arena, existing.extensions, extensions);
+            if (def.filenames) |filenames| existing.filenames = try appendSlices(arena, existing.filenames, filenames);
+            if (def.aliases) |aliases| {
+                if (aliases.len > 0) {
+                    existing.aliases = aliases;
+                    for (aliases) |alias| try self.language_names.put(try arena.dupe(u8, alias), existing.id);
+                }
+            }
+            if (def.firstLine) |first_line| {
+                if (existing.first_line == null) existing.first_line = first_line;
+            }
+            if (def.icon) |icon| existing.icon = icon;
+            if (def.configuration) |configuration| existing.configuration = configuration;
+            try self.changed.fire({});
+            for (self.selections.items) |selection| try selection.refresh();
+            return;
+        }
+
+        const id = try arena.dupe(u8, def.id);
+        var aliases = def.aliases orelse &.{};
+        if (aliases.len == 0) {
+            const fallback = try arena.alloc([]const u8, 1);
+            fallback[0] = id;
+            aliases = fallback;
+        }
+        var mime_types = def.mimetypes orelse &.{};
+        if (mime_types.len == 0) {
+            const fallback = try arena.alloc([]const u8, 1);
+            fallback[0] = try std.fmt.allocPrint(arena, "text/x-{s}", .{id});
+            mime_types = fallback;
+        }
         try self.languages.put(id, .{
             .id = id,
-            .aliases = def.aliases,
+            .aliases = aliases,
             .extensions = def.extensions,
             .filenames = def.filenames,
-            .mimetypes = def.mimetypes,
+            .mimetypes = mime_types,
             .first_line = def.firstLine,
+            .icon = def.icon,
+            .configuration = def.configuration,
         });
-        if (def.mimetypes) |mime_types| {
-            for (mime_types) |mime| try self.mime_types.put(try self.allocator.dupe(u8, mime), id);
-        }
-        if (def.aliases) |aliases| {
-            for (aliases) |alias| try self.language_names.put(try self.allocator.dupe(u8, alias), id);
-        }
+        for (mime_types) |mime| try self.mime_types.put(try arena.dupe(u8, mime), id);
+        for (aliases) |alias| try self.language_names.put(try arena.dupe(u8, alias), id);
         try self.changed.fire({});
         for (self.selections.items) |selection| try selection.refresh();
+    }
+
+    fn appendSlices(arena: Allocator, existing: ?[]const []const u8, extra: []const []const u8) ![]const []const u8 {
+        const old = existing orelse &.{};
+        const result = try arena.alloc([]const u8, old.len + extra.len);
+        @memcpy(result[0..old.len], old);
+        @memcpy(result[old.len..], extra);
+        return result;
     }
 
     pub fn isRegisteredLanguageId(self: *LanguageService, language_id: []const u8) bool {
@@ -109,6 +151,7 @@ pub const LanguageService = struct {
             if (entry.aliases) |aliases| {
                 if (aliases.len > 0) return aliases[0];
             }
+            return entry.id;
         }
         return null;
     }
@@ -124,6 +167,54 @@ pub const LanguageService = struct {
 
     pub fn getLanguageIdByMimeType(self: *LanguageService, mime_type: []const u8) ?[]const u8 {
         return self.mime_types.get(mime_type);
+    }
+
+    pub fn getLanguageIdByLanguageName(self: *LanguageService, language_name: []const u8) ?[]const u8 {
+        if (self.language_names.get(language_name)) |id| return id;
+        var iterator = self.language_names.iterator();
+        while (iterator.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, language_name)) return entry.value_ptr.*;
+        }
+        return null;
+    }
+
+    pub fn getSortedRegisteredLanguageNames(self: *LanguageService, allocator: Allocator) ![]LanguageNameIdPair {
+        var result = std.array_list.Managed(LanguageNameIdPair).init(allocator);
+        var iterator = self.languages.valueIterator();
+        while (iterator.next()) |entry| {
+            if (entry.aliases) |aliases| {
+                if (aliases.len > 0) try result.append(.{ .languageName = aliases[0], .languageId = entry.id });
+            }
+        }
+        std.mem.sort(LanguageNameIdPair, result.items, {}, struct {
+            fn lessThan(_: void, a: LanguageNameIdPair, b: LanguageNameIdPair) bool {
+                const length = @min(a.languageName.len, b.languageName.len);
+                var index: usize = 0;
+                while (index < length) : (index += 1) {
+                    const ca = std.ascii.toLower(a.languageName[index]);
+                    const cb = std.ascii.toLower(b.languageName[index]);
+                    if (ca != cb) return ca < cb;
+                }
+                return a.languageName.len < b.languageName.len;
+            }
+        }.lessThan);
+        return result.toOwnedSlice();
+    }
+
+    pub fn getIcon(self: *LanguageService, language_id: []const u8) ?LanguageIcon {
+        if (self.languages.get(language_id)) |entry| return entry.icon;
+        return null;
+    }
+
+    pub fn getConfigurationFiles(self: *LanguageService, language_id: []const u8, allocator: Allocator) ![]const Uri {
+        if (self.languages.get(language_id)) |entry| {
+            if (entry.configuration) |configuration| {
+                const result = try allocator.alloc(Uri, 1);
+                result[0] = configuration;
+                return result;
+            }
+        }
+        return allocator.alloc(Uri, 0);
     }
 
     pub fn getExtensions(self: *LanguageService, language_id: []const u8) []const []const u8 {
@@ -225,15 +316,10 @@ pub const LanguageService = struct {
             self.allocator.destroy(selection);
         }
         self.selections.deinit();
-        var language_keys = self.languages.keyIterator();
-        while (language_keys.next()) |key| self.allocator.free(key.*);
         self.languages.deinit();
-        var mime_keys = self.mime_types.keyIterator();
-        while (mime_keys.next()) |key| self.allocator.free(key.*);
         self.mime_types.deinit();
-        var name_keys = self.language_names.keyIterator();
-        while (name_keys.next()) |key| self.allocator.free(key.*);
         self.language_names.deinit();
+        self.arena.deinit();
         self.changed.deinit();
         self._languageConfigurations.deinit();
         self.onDidRequestBasicLanguageFeatures.deinit();

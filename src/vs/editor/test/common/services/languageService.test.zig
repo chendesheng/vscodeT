@@ -74,3 +74,66 @@ test "filename and first-line selections update with the registry" {
     try std.testing.expectEqualStrings("testLanguageSelection", path_selection.interface().languageId());
     try std.testing.expectEqualStrings("testLanguageSelection", line_selection.interface().languageId());
 }
+
+test "language names fall back to the id and later aliases win" {
+    const allocator = std.testing.allocator;
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var service = LanguageService.init(allocator, &codec);
+    defer service.deinit();
+
+    try service.registerLanguage(.{ .id = "langId" });
+    const names = try service.getSortedRegisteredLanguageNames(allocator);
+    defer allocator.free(names);
+    try std.testing.expectEqual(@as(usize, 1), names.len);
+    try std.testing.expectEqualStrings("langId", names[0].languageName);
+    try std.testing.expectEqualStrings("langId", service.getLanguageName("langId").?);
+    try std.testing.expectEqualStrings("langId", service.getLanguageIdByLanguageName("langId").?);
+
+    try service.registerLanguage(.{ .id = "langId", .aliases = &.{"BetterLanguageName"} });
+    try std.testing.expectEqualStrings("BetterLanguageName", service.getLanguageName("langId").?);
+    try service.registerLanguage(.{ .id = "langId", .aliases = &.{} });
+    try std.testing.expectEqualStrings("BetterLanguageName", service.getLanguageName("langId").?);
+
+    const unnamed = try service.getSortedRegisteredLanguageNames(allocator);
+    defer allocator.free(unnamed);
+    try std.testing.expectEqualStrings("BetterLanguageName", unnamed[0].languageName);
+}
+
+test "mimetypes are generated and the first one wins" {
+    const allocator = std.testing.allocator;
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var service = LanguageService.init(allocator, &codec);
+    defer service.deinit();
+
+    try service.registerLanguage(.{ .id = "langId" });
+    try std.testing.expectEqualStrings("text/x-langId", service.getMimeType("langId").?);
+    try service.registerLanguage(.{ .id = "langId", .mimetypes = &.{"text/langId"} });
+    try std.testing.expectEqualStrings("text/x-langId", service.getMimeType("langId").?);
+
+    try service.registerLanguage(.{ .id = "other", .mimetypes = &.{ "text/other", "text/other2" } });
+    try std.testing.expectEqualStrings("text/other", service.getMimeType("other").?);
+}
+
+test "extensions and filenames accumulate with the primary registration first" {
+    const allocator = std.testing.allocator;
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var service = LanguageService.init(allocator, &codec);
+    defer service.deinit();
+
+    try service.registerLanguage(.{ .id = "langId", .extensions = &.{".ext1"}, .filenames = &.{"primary"} });
+    try service.registerLanguage(.{ .id = "langId", .extensions = &.{".ext2"}, .filenames = &.{"secondary"} });
+    const extensions = service.getExtensions("langId");
+    try std.testing.expectEqual(@as(usize, 2), extensions.len);
+    try std.testing.expectEqualStrings(".ext1", extensions[0]);
+    try std.testing.expectEqualStrings(".ext2", extensions[1]);
+    const filenames = service.getFilenames("langId");
+    try std.testing.expectEqual(@as(usize, 2), filenames.len);
+    try std.testing.expectEqualStrings("primary", filenames[0]);
+
+    try service.registerLanguage(.{ .id = "guess", .extensions = &.{".guess"}, .filenames = &.{"Guessfile"} });
+    try std.testing.expectEqualStrings("guess", service.guessLanguageIdByFilepathOrFirstLine("path/file.guess", null).?);
+    try std.testing.expectEqualStrings("guess", service.guessLanguageIdByFilepathOrFirstLine("path/Guessfile", null).?);
+}
