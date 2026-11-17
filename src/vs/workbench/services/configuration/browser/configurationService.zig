@@ -201,19 +201,17 @@ pub const ConfigurationService = struct {
         section: []const u8,
         overrides: configuration.Overrides,
     ) ?*const Value {
-        if (!self.trusted) {
-            if (self.registry.getConfigurationProperties().get(section)) |property| {
-                if (property.restricted) {
-                    _ = self.scratch.reset(.retain_capacity);
-                    var merged = mergeModels(self.scratch.allocator(), &.{ &self.defaults, &self.user }) catch return null;
-                    if (overrides.override_identifier) |identifier| {
-                        var overridden = merged.override(self.scratch.allocator(), identifier) catch return null;
-                        if (overridden.getValue(section)) |value| return value;
-                        return &property.default;
-                    }
-                    if (merged.getValue(section)) |value| return value;
+        if (self.registry.getConfigurationProperties().get(section)) |property| {
+            if (!self.allowsWorkspaceValue(property)) {
+                _ = self.scratch.reset(.retain_capacity);
+                var merged = mergeModels(self.scratch.allocator(), &.{ &self.defaults, &self.user }) catch return null;
+                if (overrides.override_identifier) |identifier| {
+                    var overridden = merged.override(self.scratch.allocator(), identifier) catch return null;
+                    if (overridden.getValue(section)) |value| return value;
                     return &property.default;
                 }
+                if (merged.getValue(section)) |value| return value;
+                return &property.default;
             }
         }
         const model = self.effectiveModel(overrides) orelse return null;
@@ -242,7 +240,20 @@ pub const ConfigurationService = struct {
         const folder_model = self.folderModel(overrides.resource);
         const effective = self.effectiveModel(overrides) orelse &self.workspace_consolidated;
         var value = effective.getValue(section);
-        if (overrides.override_identifier) |identifier| {
+        var allow_workspace = true;
+        if (self.registry.getConfigurationProperties().get(section)) |property| {
+            allow_workspace = self.allowsWorkspaceValue(property);
+        }
+        if (!allow_workspace) {
+            _ = self.scratch.reset(.retain_capacity);
+            var merged = mergeModels(self.scratch.allocator(), &.{ &self.defaults, &self.user }) catch return .{};
+            if (overrides.override_identifier) |identifier| {
+                const overridden = merged.override(self.scratch.allocator(), identifier) catch null;
+                value = if (overridden) |model| model.getValue(section) else merged.getValue(section);
+            } else {
+                value = merged.getValue(section);
+            }
+        } else if (overrides.override_identifier) |identifier| {
             _ = self.scratch.reset(.retain_capacity);
             const overridden = effective.override(self.scratch.allocator(), identifier) catch null;
             if (overridden) |model| value = model.getValue(section);
@@ -250,9 +261,17 @@ pub const ConfigurationService = struct {
         return .{
             .default = self.defaults.getValue(section),
             .user = self.user.getValue(section),
-            .workspace = self.workspace_model.getValue(section),
-            .workspace_folder = if (folder_model) |model| model.getValue(section) else null,
+            .workspace = if (allow_workspace) self.workspace_model.getValue(section) else null,
+            .workspace_folder = if (allow_workspace) (if (folder_model) |model| model.getValue(section) else null) else null,
             .value = value,
+        };
+    }
+
+    fn allowsWorkspaceValue(self: *ConfigurationService, property: registry_mod.Property) bool {
+        if (property.restricted and !self.trusted) return false;
+        return switch (property.scope) {
+            .APPLICATION, .MACHINE, .APPLICATION_MACHINE, .MACHINE_OVERRIDABLE => false,
+            else => true,
         };
     }
 
