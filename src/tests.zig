@@ -389,6 +389,8 @@ comptime {
     _ = @import("./vs/platform/keybinding/common/usLayoutResolvedKeybinding.zig");
     _ = @import("./vs/platform/keybinding/test/common/keybindingsTestUtils.zig");
     _ = @import("./vs/platform/keybinding/test/common/keybindingLabels.test.zig");
+    _ = @import("./vs/platform/contextkey/common/scanner.zig");
+    _ = @import("./vs/platform/contextkey/test/common/scanner.test.zig");
     _ = @import("./vs/platform/log/common/log.zig");
     _ = @import("./vs/platform/log/common/logService.zig");
     _ = @import("./vs/platform/log/test/common/log.test.zig");

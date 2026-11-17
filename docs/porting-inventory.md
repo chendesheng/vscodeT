@@ -234,6 +234,7 @@ that make the later phases tractable.
 | Quick input | `vs/platform/quickinput/browser/quickAccess.zig`, `quickInput.zig`, `commandsQuickAccess.zig`, `vs/workbench/contrib/quickaccess/...`, `anythingQuickAccess.zig` | Ported; TUI widget is the terminal view |
 | Services | `history`, `undoRedo`, `notifications`, `workspaceContext`, `commands` | Ported |
 | Keys and chords | `vs/base/common/keyCodes.zig`, `keybindings.zig`, `platform.zig`, `keybindingLabels.zig`, `vs/platform/keybinding/common/{baseResolvedKeybinding,usLayoutResolvedKeybinding}.zig` | Ported with the `keyCodes.test.ts` (4) and `keybindingLabels.test.ts` (5) cases; P3 foundation (no registry/resolver yet) |
+| Context keys | `vs/platform/contextkey/common/scanner.zig` | Scanner ported with the 34 `scanner.test.ts` cases; expression model/parser/service still to port |
 | Theme | `vs/platform/theme/common/themeService.zig`, `theme.zig` | Minimal; no workbench color registry or theme service |
 | Editor widget contracts | `vs/editor/browser/editorBrowser.zig` (149 lines), `editorExtensions.zig` (117 lines) | Partial contracts; no widget/controller implementation |
 
@@ -712,7 +713,9 @@ commands as actions.
   `OperatingSystem` subset of `base/common/platform.zig`,
   `keybindingLabels.zig` and `platform/keybinding/common/baseResolvedKeybinding.zig`
   + `usLayoutResolvedKeybinding.zig`; the 4 `keyCodes.test.ts` and 5
-  `keybindingLabels.test.ts` cases are ported.
+  `keybindingLabels.test.ts` cases are ported. `platform/contextkey/common/scanner.zig`
+  ports the context-key scanner and its 34 upstream cases; the expression
+  model/parser and `contextKeyService` remain.
 - `platform/actions/common/actions.zig` — `Action2`, `MenuId`,
   `MenuRegistry`, menu contributions; port `menuService` as needed for the
   command picker.
@@ -942,6 +945,9 @@ of scope:
 | `workbench/test/browser/parts/editor/multiEditorTabsControl.test.ts` | 4,786 | 102 | P2 |
 | `base/test/common/keyCodes.test.ts` | 138 | 4 | P3 |
 | `platform/keybinding/test/common/keybindingLabels.test.ts` | 177 | 5 | P3 |
+| `platform/contextkey/test/common/scanner.test.ts` | 251 | 34 | P3 |
+| `platform/contextkey/test/common/parser.test.ts` | 233 | 33 | P3 |
+| `platform/contextkey/test/common/contextkey.test.ts` | 435 | 24 | P3 |
 | `platform/keybinding/test/common/keybindingResolver.test.ts` | 638 | 36 | P3 |
 | `platform/keybinding/test/common/abstractKeybindingService.test.ts` | 773 | 21 | P3 |
 | `platform/actions/test/common/menuService.test.ts` | 644 | 23 | P3 |
