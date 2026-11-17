@@ -247,6 +247,7 @@ pub const ConfigurationService = struct {
         const folder_model = self.folderModel(overrides.resource);
         const effective = self.effectiveModel(overrides) orelse &self.workspace_consolidated;
         var value = effective.getValue(section);
+        var override_identifiers: []const []const u8 = &.{};
         var allow_workspace = true;
         if (self.registry.getConfigurationProperties().get(section)) |property| {
             allow_workspace = self.allowsWorkspaceValue(property);
@@ -267,12 +268,20 @@ pub const ConfigurationService = struct {
             const overridden = effective.override(self.scratch.allocator(), identifier) catch null;
             if (overridden) |model| value = model.getValue(section);
         }
+        if (overrides.override_identifier) |identifier| {
+            const ids = self.scratch.allocator().alloc([]const u8, 1) catch null;
+            if (ids) |slice| {
+                slice[0] = identifier;
+                override_identifiers = slice;
+            }
+        }
         return .{
             .default = self.defaults.getValue(section),
             .user = self.user.getValue(section),
             .workspace = if (allow_workspace) self.workspace_model.getValue(section) else null,
             .workspace_folder = if (allow_workspace) (if (folder_model) |model| model.getValue(section) else null) else null,
             .value = value,
+            .override_identifiers = override_identifiers,
         };
     }
 
