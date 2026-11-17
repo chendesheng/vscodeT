@@ -5,7 +5,9 @@
 //! (resolver + context + notification + command execution) instead of the
 //! `TuiKeybindings` id-dispatch host. Terminal adaptations: the flat context
 //! key service, a no-op notification service (no status bar for chord hints
-//! here), `Alt` as the only meta-like modifier, and no timers/IME.
+//! here), `Ctrl` as the command modifier on every host (terminals never
+//! deliver Cmd, so `CtrlCmd` rules resolve as Ctrl even on macOS), `Alt` as the
+//! only meta-like modifier, and no timers/IME.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const input = @import("ui").input;
@@ -25,6 +27,21 @@ const tui_keybindings = @import("./keybindings.zig");
 const ResolvedKeybindingItem = item_module.ResolvedKeybindingItem;
 const USLayoutResolvedKeybinding = us_module.USLayoutResolvedKeybinding;
 const AbstractKeybindingService = abstract_mod.AbstractKeybindingService;
+
+/// Operating system used to resolve bindings inside the terminal host.
+///
+/// Upstream maps `CtrlCmd` to Meta on macOS, which is right for the browser
+/// workbench but unreachable from a terminal: terminals only deliver Ctrl
+/// (Alt arrives as an ESC prefix, never Cmd). Resolving with Linux semantics
+/// on macOS keeps every `CtrlCmd` rule on Ctrl, matching the shortcuts the TUI
+/// documents. The registry also selects platform-specific rule variants from
+/// this value, so macOS uses the Ctrl-based (Linux) variants too.
+fn bindingOS() platform.OperatingSystem {
+    return switch (platform.OS) {
+        .Macintosh => .Linux,
+        else => platform.OS,
+    };
+}
 
 pub const KeybindingService = struct {
     allocator: Allocator,
@@ -48,8 +65,11 @@ pub const KeybindingService = struct {
             var registration = try registry.registerKeybindingRule(rule);
             registration.disposed = true;
         }
-        const registry_items = try registry.getDefaultKeybindings(allocator);
-        defer allocator.free(registry_items);
+        // Decode the rules for the terminal's modifier model, not the host
+        // GUI's. `getDefaultKeybindingsForOS` re-decodes the registered rules
+        // with the requested OS; the registry's own items are unused here.
+        const registry_items = try registry.getDefaultKeybindingsForOS(allocator, bindingOS());
+        defer registry_module.deinitKeybindings(allocator, registry_items);
 
         self.* = .{
             .allocator = allocator,
@@ -64,7 +84,7 @@ pub const KeybindingService = struct {
 
         for (registry_items) |item| {
             const keybinding = item.keybinding orelse continue;
-            const resolved_value = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, platform.OS)) orelse continue;
+            const resolved_value = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, bindingOS())) orelse continue;
             const held = try allocator.create(USLayoutResolvedKeybinding);
             held.* = resolved_value;
             try self.resolved.append(held);
@@ -151,7 +171,7 @@ pub const KeybindingService = struct {
             .alt_key = event.alt,
             .meta_key = false,
             .key_code = event.key_code,
-        } }} }, platform.OS)) orelse return null;
+        } }} }, bindingOS())) orelse return null;
         const held = try allocator.create(USLayoutResolvedKeybinding);
         held.* = resolved;
         return held.interface();
@@ -160,7 +180,7 @@ pub const KeybindingService = struct {
     fn resolveKeybinding(context: *anyopaque, _: Allocator, keybinding: key_bindings.Keybinding) anyerror![]key_bindings.ResolvedKeybinding {
         const self: *KeybindingService = @ptrCast(@alignCast(context));
         const allocator = self.arena.allocator();
-        var resolved = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, platform.OS)) orelse return &.{};
+        var resolved = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, bindingOS())) orelse return &.{};
         const result = try allocator.alloc(key_bindings.ResolvedKeybinding, 1);
         result[0] = resolved.interface();
         return result;

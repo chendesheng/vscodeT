@@ -738,7 +738,9 @@ Editor contributions:
   palette), Ctrl+Shift+F/H (find/replace in files), Ctrl+B (toggle sidebar) and
   Ctrl+Alt+S (focus status bar); quick access keeps owning the keyboard while
   its picker is open (Alt+F is the TUI binding for Find in Files, alongside
-  Ctrl+Shift+F). Status-bar keyboard navigation (arrows/home/end/enter/space/
+  Ctrl+Shift+F). Terminals never deliver Cmd, so the TUI resolves `CtrlCmd`
+  rules as Ctrl on every host, macOS included; labels and chord hints say Ctrl
+  there too. Status-bar keyboard navigation (arrows/home/end/enter/space/
   escape) dispatches through its own binding host while the bar owns focus. The
   search view's Ctrl+R and Alt+C/W/R/P/D/Enter shortcuts resolve through its own
   registry host as well. The editor's Ctrl/Alt character
