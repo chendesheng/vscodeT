@@ -268,7 +268,7 @@ not scheduled for a port. §7.1 breaks the UI/view files down by code block.
 | `quickInput.zig` | `platform/quickinput/browser/quickInput.ts`, `platform/quickinput/browser/quickInputList.ts` | Terminal picker layout/paint; model/controller already ported | `tui-adapter` | — | S | `platform/quickinput/test/browser/quickinput.test.ts` |
 | `searchView.zig` | `workbench/contrib/search/browser/searchView.ts` (128), `searchResultsView.ts` (SearchDelegate 79, renderers 103-505), `searchActions*.ts` | Terminal adapter over the ported controller/data source/action helpers; still owns flattened rows, collapse/selection/scroll and painting (427-1017); no inline tests | `mixed` | P2/P3/P5g | L | `workbench/contrib/search/test/browser/searchView.test.ts`, `searchActions.test.ts` (6), `searchCompare.test.ts` |
 | `searchWidget.zig` | `workbench/contrib/search/browser/searchWidget.ts` (115) | Query fields, option toggles, details rows; terminal form | `tui-adapter` | P5g | S | `workbench/contrib/search/test/browser/searchWidget.test.ts` (1) |
-| `session.zig` | `platform/storage/common/storage.ts` (61), `workbench/common/memento.ts` (12), editor-part serialization | Group/session JSON, atomic write, restore; replace host format with storage/memento | `tui-adapter` | P5a | M | `platform/storage/test/common/storageService.test.ts` (10), `workbench/test/common/memento.test.ts` (4) |
+| `session.zig` | `platform/storage/common/storage.ts` (61), `workbench/common/memento.ts` (12), editor-part serialization | Group/session JSON, atomic write, restore; replace host format with storage/memento | `tui-adapter` | P5a | M | `platform/storage/test/common/storageService.test.ts` (10, ported), `workbench/test/common/memento.test.ts` (4) |
 | `settingsWatcher.zig` | `workbench/services/configuration/browser/configurationService.zig`, file watcher | Watch user/workspace/folder settings, reload | `tui-adapter` | P5h | S | `workbench/services/configuration/test/browser/configurationService.test.ts` (existing) |
 | `syntaxTheme.zig` | `workbench/services/themes/browser/workbenchThemeService.ts` (80), `workbench/services/themes/common/colorThemeData.ts` (54) | JSONC theme loading, token rules, color map; reduce to a theme-service consumer | `portable-embedded` | P5c | M | `workbench/services/themes/test/common/workbenchThemeService.test.ts` (4), `workbench/services/themes/test/common/colorThemeData.test.ts` (5) |
 | `tab.zig` | `workbench/browser/parts/editor/editorPane.ts` (49), `workbench/browser/parts/editor/textEditor.ts` (49), `workbench/browser/parts/editor/textCodeEditor.ts` (24), `editor/browser/widget/codeEditor/codeEditorContributions.ts` (14) | Per-tab editor/controllers/overlays and contribution host (43-270) | `mixed` | P4 | M | `workbench/test/browser/parts/editor/editorPane.test.ts`, `workbench/test/browser/parts/editor/textEditorPane.test.ts` |
@@ -862,8 +862,10 @@ independently shippable slices.
 storage service (scopes/targets, value stringification, key-target bookkeeping,
 change events, `storeAll`, `remove`, `keys`, `isNew`, `flush`). Async
 initialization, database persistence, profile/workspace switching and
-cross-window propagation are terminal deviations; the 10-case
-`storageService.test.ts` still needs the async harness.
+cross-window propagation are terminal deviations. The full 10-case
+`storageService.test.ts` is ported at the upstream test path against the
+synchronous harness, including scoped/key-filtered change events and
+key/target bookkeeping.
 `workbench/common/memento.zig` is ported on top of it: the upstream static maps
 become an explicit `MementoStore` (shared id -> scoped object), and a memento
 value is a `std.json.ObjectMap` mutated through `put/get/remove/clear`; two

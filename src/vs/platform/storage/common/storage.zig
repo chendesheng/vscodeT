@@ -25,7 +25,10 @@ pub const StorageValue = union(enum) {
     string: []const u8,
     number: f64,
     boolean: bool,
+    /// Storing `null`/`undefined` removes the key (upstream
+    /// `isUndefinedOrNull`).
     null_value,
+    undefined_value,
     object: std.json.Value,
 };
 
@@ -81,6 +84,8 @@ pub const InMemoryStorageService = struct {
     onDidChangeValue: Emitter(IStorageValueChangeEvent),
     onDidChangeTarget: Emitter(IStorageTargetChangeEvent),
     onWillSaveState: Emitter(IWillSaveStateEvent),
+    filters: std.array_list.Managed(*ValueFilter),
+    filter_ids: std.AutoHashMap(usize, FilterHandle),
 
     pub fn init(allocator: Allocator) InMemoryStorageService {
         return .{
@@ -92,6 +97,8 @@ pub const InMemoryStorageService = struct {
             .onDidChangeValue = Emitter(IStorageValueChangeEvent).init(allocator),
             .onDidChangeTarget = Emitter(IStorageTargetChangeEvent).init(allocator),
             .onWillSaveState = Emitter(IWillSaveStateEvent).init(allocator),
+            .filters = std.array_list.Managed(*ValueFilter).init(allocator),
+            .filter_ids = std.AutoHashMap(usize, FilterHandle).init(allocator),
         };
     }
 
@@ -100,6 +107,16 @@ pub const InMemoryStorageService = struct {
         self.application.deinit(self.allocator);
         self.profile.deinit(self.allocator);
         self.workspace.deinit(self.allocator);
+        var filters = self.filters.items;
+        while (filters.len > 0) {
+            const filter = filters[0];
+            if (filter.key) |key| self.allocator.free(key);
+            self.allocator.destroy(filter);
+            _ = self.filters.orderedRemove(0);
+            filters = self.filters.items;
+        }
+        self.filters.deinit();
+        self.filter_ids.deinit();
         self.onDidChangeValue.deinit();
         self.onDidChangeTarget.deinit();
         self.onWillSaveState.deinit();
@@ -149,6 +166,13 @@ pub const InMemoryStorageService = struct {
     }
 
     fn storeInternal(self: *InMemoryStorageService, key: []const u8, value: StorageValue, scope: StorageScope, target: StorageTarget, external: bool) !void {
+        switch (value) {
+            .null_value, .undefined_value => {
+                self.removeInternal(key, scope, external);
+                return;
+            },
+            else => {},
+        }
         const scope_data = self.data(scope);
         const serialized = try serializeValue(self.allocator, value);
         errdefer self.allocator.free(serialized);
@@ -174,6 +198,10 @@ pub const InMemoryStorageService = struct {
     }
 
     pub fn remove(self: *InMemoryStorageService, key: []const u8, scope: StorageScope) void {
+        self.removeInternal(key, scope, false);
+    }
+
+    fn removeInternal(self: *InMemoryStorageService, key: []const u8, scope: StorageScope, external: bool) void {
         const scope_data = self.data(scope);
         const removed = scope_data.values.fetchRemove(key);
         if (removed) |entry| self.allocator.free(entry.value);
@@ -185,7 +213,7 @@ pub const InMemoryStorageService = struct {
             .scope = scope,
             .key = key,
             .target = null,
-            .external = false,
+            .external = external,
         }) catch {};
     }
 
@@ -198,6 +226,67 @@ pub const InMemoryStorageService = struct {
             if (entry.value_ptr.* == target) try result.append(entry.key_ptr.*);
         }
         return result.toOwnedSlice();
+    }
+
+    pub const ValueListener = struct {
+        context: *anyopaque,
+        callback: *const fn (event: IStorageValueChangeEvent, context: *anyopaque) anyerror!void,
+    };
+
+    const FilterHandle = struct {
+        filter: *ValueFilter,
+    };
+
+    const ValueFilter = struct {
+        scope: StorageScope,
+        key: ?[]u8,
+        listener: ValueListener,
+    };
+
+    /// Registers a scoped/key-filtered listener (upstream
+    /// `onDidChangeValue(scope, key)`); returns an id for
+    /// `unlistenDidChangeValue`.
+    pub fn listenDidChangeValue(
+        self: *InMemoryStorageService,
+        scope: StorageScope,
+        key: ?[]const u8,
+        listener: ValueListener,
+    ) !usize {
+        const filter = try self.allocator.create(ValueFilter);
+        errdefer self.allocator.destroy(filter);
+        filter.* = .{
+            .scope = scope,
+            .key = if (key) |value| try self.allocator.dupe(u8, value) else null,
+            .listener = listener,
+        };
+        errdefer if (filter.key) |value| self.allocator.free(value);
+        try self.filters.append(filter);
+        const id = try self.onDidChangeValue.listen(filter, filterEvent);
+        try self.filter_ids.put(id, .{ .filter = filter });
+        return id;
+    }
+
+    pub fn unlistenDidChangeValue(self: *InMemoryStorageService, id: usize) void {
+        const filter_id = self.filter_ids.get(id) orelse return;
+        const filter = filter_id.filter;
+        _ = self.filter_ids.remove(id);
+        self.onDidChangeValue.unlisten(id);
+        for (self.filters.items, 0..) |entry, index| {
+            if (entry == filter) {
+                _ = self.filters.orderedRemove(index);
+                break;
+            }
+        }
+        if (filter.key) |key| self.allocator.free(key);
+        self.allocator.destroy(filter);
+    }
+
+    fn filterEvent(event: IStorageValueChangeEvent, filter: *ValueFilter) anyerror!void {
+        if (event.scope != filter.scope) return;
+        if (filter.key) |key| {
+            if (!std.mem.eql(u8, event.key, key)) return;
+        }
+        try filter.listener.callback(event, filter.listener.context);
     }
 
     pub fn isNew(self: *InMemoryStorageService, scope: StorageScope) bool {
@@ -214,7 +303,7 @@ fn serializeValue(allocator: Allocator, value: StorageValue) ![]u8 {
         .string => |text| allocator.dupe(u8, text),
         .number => |number| std.fmt.allocPrint(allocator, "{d}", .{number}),
         .boolean => |boolean| allocator.dupe(u8, if (boolean) "true" else "false"),
-        .null_value => allocator.dupe(u8, "null"),
+        .null_value, .undefined_value => unreachable,
         .object => |object| blk: {
             var out: std.Io.Writer.Allocating = .init(allocator);
             errdefer out.deinit();
@@ -256,7 +345,9 @@ test "storage get/store/remove across scopes and targets" {
         .{ .key = "null", .value = .null_value, .scope = .application, .target = .machine },
     }, false);
     try std.testing.expectEqualStrings("4", storage.get("number", .application, null).?);
-    try std.testing.expectEqualStrings("null", storage.get("null", .application, null).?);
+    // Storing null removes the key; the fallback is returned instead.
+    try std.testing.expect(storage.get("null", .application, null) == null);
+    try std.testing.expectEqualStrings("null", storage.get("null", .application, "null").?);
 
     const object = try storage.getObject(allocator, "number", .application);
     try std.testing.expectEqual(@as(i64, 4), object.?.value.integer);
