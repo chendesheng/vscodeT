@@ -9,6 +9,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const input = @import("ui").input;
+const platform = @import("../vs/base/common/platform.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
 const key_bindings = @import("../vs/base/common/keybindings.zig");
 const contextkey = @import("../vs/platform/contextkey/common/contextkey.zig");
@@ -63,7 +64,7 @@ pub const KeybindingService = struct {
 
         for (registry_items) |item| {
             const keybinding = item.keybinding orelse continue;
-            const resolved_value = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, .Linux)) orelse continue;
+            const resolved_value = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, platform.OS)) orelse continue;
             const held = try allocator.create(USLayoutResolvedKeybinding);
             held.* = resolved_value;
             try self.resolved.append(held);
@@ -150,7 +151,7 @@ pub const KeybindingService = struct {
             .alt_key = event.alt,
             .meta_key = false,
             .key_code = event.key_code,
-        } }} }, .Linux)) orelse return null;
+        } }} }, platform.OS)) orelse return null;
         const held = try allocator.create(USLayoutResolvedKeybinding);
         held.* = resolved;
         return held.interface();
@@ -159,7 +160,7 @@ pub const KeybindingService = struct {
     fn resolveKeybinding(context: *anyopaque, _: Allocator, keybinding: key_bindings.Keybinding) anyerror![]key_bindings.ResolvedKeybinding {
         const self: *KeybindingService = @ptrCast(@alignCast(context));
         const allocator = self.arena.allocator();
-        var resolved = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, .Linux)) orelse return &.{};
+        var resolved = (try USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, platform.OS)) orelse return &.{};
         const result = try allocator.alloc(key_bindings.ResolvedKeybinding, 1);
         result[0] = resolved.interface();
         return result;
