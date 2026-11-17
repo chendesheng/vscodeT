@@ -2100,3 +2100,21 @@ test "EditorGroupModel: composite inputs match by both sides" {
     try std.testing.expect(!group.contains(.{ .input = input1 }, .{}));
     try std.testing.expect(group.contains(.{ .input = &diff1.base }, .{}));
 }
+
+test "SideBySideEditorInput names the two sides" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const input1 = try newInput(allocator, .serializable, "1", "/one");
+    const input2 = try newInput(allocator, .serializable, "2", "/two");
+    input1.name = "one";
+    input2.name = "two";
+    const side_mod = @import("../../../../common/editor/sideBySideEditorInput.zig");
+    const composite = try side_mod.SideBySideEditorInput.init(allocator, null, null, input2, input1);
+    defer composite.destroy();
+    try std.testing.expectEqualStrings("two - one", composite.base.getName());
+
+    const same = try side_mod.SideBySideEditorInput.init(allocator, null, null, input1, input1);
+    defer same.destroy();
+    try std.testing.expectEqualStrings("one", same.base.getName());
+}
