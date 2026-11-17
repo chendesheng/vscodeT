@@ -2064,3 +2064,39 @@ test "EditorGroupModel: diff inputs unwrap like side-by-side inputs" {
     _ = try group.openEditor(modified, .{ .pinned = true, .active = true });
     try std.testing.expectEqual(@as(?usize, 1), group.indexOfWith(.{ .input = modified }, any));
 }
+
+test "EditorGroupModel: composite inputs match by both sides" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const input1 = try newInput(allocator, .serializable, "1", "/one");
+    const input2 = try newInput(allocator, .serializable, "2", "/two");
+    const diff_mod = @import("../../../../common/editor/diffEditorInput.zig");
+    const side_mod = @import("../../../../common/editor/sideBySideEditorInput.zig");
+    const diff1 = try diff_mod.DiffEditorInput.init(allocator, null, null, input1, input2);
+    defer diff1.destroy();
+    const diff2 = try diff_mod.DiffEditorInput.init(allocator, null, null, input2, input1);
+    defer diff2.destroy();
+    const side_same = try side_mod.SideBySideEditorInput.init(allocator, null, null, input1, input1);
+    defer side_same.destroy();
+
+    _ = try group.openEditor(input1, .{ .pinned = true, .active = true });
+    try std.testing.expect(group.contains(.{ .input = input1 }, .{}));
+
+    _ = try group.openEditor(&diff1.base, .{ .pinned = true, .active = true });
+    try std.testing.expect(group.contains(.{ .input = &diff1.base }, .{}));
+    try std.testing.expect(!group.contains(.{ .input = &diff2.base }, .{}));
+
+    _ = try group.openEditor(&diff2.base, .{ .pinned = true, .active = true });
+    try std.testing.expect(group.contains(.{ .input = &diff2.base }, .{}));
+
+    _ = try group.openEditor(&side_same.base, .{ .pinned = true, .active = true });
+    try std.testing.expect(group.contains(.{ .input = &side_same.base }, .{}));
+
+    _ = try group.closeEditor(input1, .UNKNOWN, true);
+    try std.testing.expect(!group.contains(.{ .input = input1 }, .{}));
+    try std.testing.expect(group.contains(.{ .input = &diff1.base }, .{}));
+}
