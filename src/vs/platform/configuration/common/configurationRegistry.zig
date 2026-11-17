@@ -310,7 +310,7 @@ pub const ConfigurationRegistry = struct {
 
     /// Replaces this registry's property/contribution state with a snapshot.
     /// The snapshot's registry is consumed.
-    pub fn restore(self: *ConfigurationRegistry, snapshot: *Snapshot) void {
+    pub fn restore(self: *ConfigurationRegistry, snapshot: *Snapshot) !void {
         self.clearState();
         const clone = snapshot.registry;
         self.arena = clone.arena;
@@ -323,6 +323,20 @@ pub const ConfigurationRegistry = struct {
         self.agent_host_configurations = clone.agent_host_configurations;
         self.nodes = clone.nodes;
         self.contributions = clone.contributions;
+        // The moved lists were allocated by the snapshot's arena allocator.
+        // Rebind them to the (moved) arena so their allocator context is valid.
+        var references = self.policy_reference_configurations.valueIterator();
+        while (references.next()) |list| {
+            var rebound = std.array_list.Managed([]const u8).init(self.arena.allocator());
+            for (list.items) |key| try rebound.append(key);
+            list.* = rebound;
+        }
+        var nodes = self.nodes.valueIterator();
+        while (nodes.next()) |list| {
+            var rebound = std.array_list.Managed([]const u8).init(self.arena.allocator());
+            for (list.items) |key| try rebound.append(key);
+            list.* = rebound;
+        }
         self.allocator.destroy(clone);
     }
 
