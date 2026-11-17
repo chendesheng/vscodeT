@@ -88,6 +88,7 @@ pub const TestViewLayout = struct {
     scroll_height: f64 = 0,
     viewport: view_model.Viewport = .{ .top = 0, .left = 0, .width = 80, .height = 24 },
     line_height: f64 = 1,
+    line_heights: []const f64 = &.{},
 
     pub fn interface(self: *TestViewLayout) view_model.IViewLayout {
         return .{
@@ -113,8 +114,10 @@ pub const TestViewLayout = struct {
     fn getVerticalOffset(_: *anyopaque, _: usize, _: bool) f64 {
         return 0;
     }
-    fn getLineHeight(self: *anyopaque, _: usize) f64 {
-        return @as(*TestViewLayout, @ptrCast(@alignCast(self))).line_height;
+    fn getLineHeight(self: *anyopaque, line_number: usize) f64 {
+        const layout: *TestViewLayout = @ptrCast(@alignCast(self));
+        if (line_number == 0 or line_number > layout.line_heights.len) return layout.line_height;
+        return layout.line_heights[line_number - 1];
     }
 };
 
@@ -124,6 +127,8 @@ pub const TestViewModel = struct {
     line_count: usize = 1,
     line_lengths: []const usize = &.{},
     decorations: []const view_model.ViewModelDecoration = &.{},
+    wrapped_lines: []const bool = &.{},
+    viewport_data_calls: usize = 0,
     added_handlers: usize = 0,
     removed_handlers: usize = 0,
 
@@ -168,11 +173,15 @@ pub const TestViewModel = struct {
         const model: *TestViewModel = @ptrCast(@alignCast(self));
         return model.lineLengthAt(line_number);
     }
-    fn getViewportViewLineRenderingData(_: *anyopaque, _: Range, _: usize) anyerror!view_model.ViewLineRenderingData {
+    fn getViewportViewLineRenderingData(self: *anyopaque, _: Range, _: usize) anyerror!view_model.ViewLineRenderingData {
+        const model: *TestViewModel = @ptrCast(@alignCast(self));
+        model.viewport_data_calls += 1;
         return error.Unsupported;
     }
-    fn getViewLineContinuesWithWrappedLine(_: *anyopaque, _: usize) bool {
-        return false;
+    fn getViewLineContinuesWithWrappedLine(self: *anyopaque, line_number: usize) bool {
+        const model: *TestViewModel = @ptrCast(@alignCast(self));
+        if (line_number == 0 or line_number > model.wrapped_lines.len) return false;
+        return model.wrapped_lines[line_number - 1];
     }
     fn getDecorationsInViewport(self: *anyopaque, _: Range, allocator: std.mem.Allocator) anyerror![]view_model.ViewModelDecoration {
         const model: *TestViewModel = @ptrCast(@alignCast(self));
