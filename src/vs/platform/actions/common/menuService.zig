@@ -616,7 +616,7 @@ pub const MenuService = struct {
             }
             try visible.append(entry);
         }
-        std.mem.sort(*const MenuEntry, visible.items, {}, entryLessThan);
+        stableSortEntries(visible.items);
 
         var groups = ArrayList(MenuGroup).init(allocator);
         var index: usize = 0;
@@ -763,7 +763,7 @@ fn orderOf(entry: *const MenuEntry) i64 {
     };
 }
 
-fn entryLessThan(_: void, a: *const MenuEntry, b: *const MenuEntry) bool {
+fn entryLessThan(a: *const MenuEntry, b: *const MenuEntry) bool {
     const a_group = groupOf(a);
     const b_group = groupOf(b);
     if (!std.mem.eql(u8, a_group, b_group)) {
@@ -773,7 +773,7 @@ fn entryLessThan(_: void, a: *const MenuEntry, b: *const MenuEntry) bool {
         // `navigation` comes first.
         if (std.mem.eql(u8, a_group, "navigation")) return true;
         if (std.mem.eql(u8, b_group, "navigation")) return false;
-        const order = std.mem.order(u8, a_group, b_group);
+        const order = compareGroups(a_group, b_group);
         if (order != .eq) return order == .lt;
     }
 
@@ -782,6 +782,33 @@ fn entryLessThan(_: void, a: *const MenuEntry, b: *const MenuEntry) bool {
     if (a_order != b_order) return a_order < b_order;
 
     return std.mem.order(u8, titleOf(a), titleOf(b)) == .lt;
+}
+
+/// Stable insertion sort: equal items keep registry insertion order (upstream
+/// keeps JS sort stability for case-equivalent groups/titles).
+fn stableSortEntries(items: []*const MenuEntry) void {
+    var index: usize = 1;
+    while (index < items.len) : (index += 1) {
+        const current = items[index];
+        var position = index;
+        while (position > 0 and entryLessThan(current, items[position - 1])) : (position -= 1) {
+            items[position] = items[position - 1];
+        }
+        items[position] = current;
+    }
+}
+
+/// Locale-ish group comparison without a collator: case-insensitive lexical
+/// order (the TUI has no ICU); case variants compare equal and stay stable.
+fn compareGroups(a: []const u8, b: []const u8) std.math.Order {
+    const length = @min(a.len, b.len);
+    for (0..length) |index| {
+        const ca = std.ascii.toLower(a[index]);
+        const cb = std.ascii.toLower(b[index]);
+        if (ca != cb) return if (ca < cb) .lt else .gt;
+    }
+    if (a.len == b.len) return .eq;
+    return if (a.len < b.len) .lt else .gt;
 }
 
 test "menu grouping, visibility, enablement and toggled state" {
@@ -2110,4 +2137,151 @@ test "live menus emit changes for nested submenu registrations" {
     try std.testing.expectEqual(@as(usize, 1), menu.getActions().len);
     const submenu: *SubmenuItemAction = @ptrCast(@alignCast(menu.getActions()[0].actions[0].context));
     try std.testing.expectEqualStrings("nested", submenu.actions[0].id());
+}
+
+fn groupIds(allocator: Allocator, menu: *Menu) ![]const []const u8 {
+    const ids = try allocator.alloc([]const u8, menu.getActions().len);
+    for (menu.getActions(), 0..) |group, index| ids[index] = group.id;
+    return ids;
+}
+
+fn freeGroupIds(allocator: Allocator, ids: []const []const u8) void {
+    allocator.free(ids);
+}
+
+test "menu group sorting puts navigation first, falsy last and compares case-insensitively" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.sort.groups" };
+
+    inline for (.{
+        .{ "one", "0_hello" },
+        .{ "two", "hello" },
+        .{ "three", "Hello" },
+        .{ "four", "" },
+        .{ "five", "navigation" },
+    }) |spec| {
+        try registry.appendMenuItem(menu_id, .{ .command = .{ .id = spec[0], .title = "FOO" }, .group = spec[1] });
+    }
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+    const ids = try groupIds(allocator, menu);
+    defer freeGroupIds(allocator, ids);
+    try std.testing.expectEqual(@as(usize, 5), ids.len);
+    try std.testing.expectEqualStrings("navigation", ids[0]);
+    try std.testing.expectEqualStrings("0_hello", ids[1]);
+    try std.testing.expectEqualStrings("hello", ids[2]);
+    try std.testing.expectEqualStrings("Hello", ids[3]);
+    try std.testing.expectEqualStrings("", ids[4]);
+}
+
+fn actionIds(allocator: Allocator, group: MenuGroup) ![]const []const u8 {
+    const ids = try allocator.alloc([]const u8, group.actions.len);
+    for (group.actions, 0..) |action, index| ids[index] = action.id();
+    return ids;
+}
+
+test "menu items sort by title inside a group" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.sort.titles" };
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "a", .title = "aaa" }, .group = "Hello" });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "b", .title = "fff" }, .group = "Hello" });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "c", .title = "zzz" }, .group = "Hello" });
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+    try std.testing.expectEqual(@as(usize, 1), menu.getActions().len);
+    const ids = try actionIds(allocator, menu.getActions()[0]);
+    defer allocator.free(ids);
+    try std.testing.expectEqualSlices([]const u8, &.{ "a", "b", "c" }, ids);
+}
+
+test "menu items sort by order before title inside a group" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.sort.order" };
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "a", .title = "aaa" }, .group = "Hello", .order = 10 });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "b", .title = "fff" }, .group = "Hello" });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "c", .title = "zzz" }, .group = "Hello", .order = -1 });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "d", .title = "yyy" }, .group = "Hello", .order = -1 });
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+    const ids = try actionIds(allocator, menu.getActions()[0]);
+    defer allocator.free(ids);
+    try std.testing.expectEqualSlices([]const u8, &.{ "d", "c", "b", "a" }, ids);
+}
+
+test "menu navigation group sorts by explicit order" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.sort.navigation" };
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "a", .title = "aaa" }, .group = "navigation", .order = 1 });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "b", .title = "fff" }, .group = "navigation", .order = 2 });
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "c", .title = "zzz" }, .group = "navigation", .order = 3 });
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+    const ids = try actionIds(allocator, menu.getActions()[0]);
+    defer allocator.free(ids);
+    try std.testing.expectEqualSlices([]const u8, &.{ "a", "b", "c" }, ids);
 }
