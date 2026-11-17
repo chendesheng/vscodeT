@@ -104,6 +104,7 @@ pub const PolicyConfiguration = struct {
     submitted: std.StringHashMap(PolicyDefinition),
     name_by_key: std.StringHashMap([]const u8),
     listener_id: ?usize = null,
+    registry_listener: ?usize = null,
 
     pub fn init(allocator: Allocator, defaults: *DefaultConfiguration, policy_service: *InMemoryPolicyService) !PolicyConfiguration {
         return .{
@@ -119,6 +120,7 @@ pub const PolicyConfiguration = struct {
 
     pub fn deinit(self: *PolicyConfiguration) void {
         if (self.listener_id) |id| self.policy_service.unlisten(id);
+        if (self.registry_listener) |id| self.defaults.registry.on_did_update_configuration.unlisten(id);
         self.model.deinit();
         self.onDidChangeConfiguration.deinit();
         self.submitted.deinit();
@@ -138,6 +140,17 @@ pub const PolicyConfiguration = struct {
         try self.updateDefinitions(keys.items);
         try self.update(keys.items, false);
         self.listener_id = try self.policy_service.listen(self, onPolicyChanged);
+        self.registry_listener = try self.defaults.registry.on_did_update_configuration.listen(self, onRegistryChanged);
+    }
+
+    fn onRegistryChanged(_: []const []const u8, self: *PolicyConfiguration) anyerror!void {
+        var keys = std.array_list.Managed([]const u8).init(self.allocator);
+        defer keys.deinit();
+        for (self.defaults.configurationModel().getKeys()) |key| try keys.append(key);
+        var excluded = self.defaults.registry.getExcludedConfigurationProperties().keyIterator();
+        while (excluded.next()) |key| try keys.append(key.*);
+        try self.updateDefinitions(keys.items);
+        try self.update(keys.items, true);
     }
 
     fn onPolicyChanged(names: []const []const u8, self: *PolicyConfiguration) anyerror!void {

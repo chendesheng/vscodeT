@@ -353,3 +353,33 @@ test "policy configuration applies policy values and changes" {
     try policy_service.setPolicyValue("PolicyA", null);
     try std.testing.expect(policy_config.configurationModel().getValue("policy.a") == null);
 }
+
+test "policy configuration follows owner/reference registration changes" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("reference", &.{.{
+        .key = "policy.ref",
+        .value_type = "string",
+        .default = std.json.Value{ .string = "default" },
+        .policy_reference = "LatePolicy",
+    }});
+    var policy_service = @import("../../../../platform/policy/common/policy.zig").InMemoryPolicyService.init(allocator);
+    defer policy_service.deinit();
+    try policy_service.setPolicyValue("LatePolicy", .{ .string = "123" });
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    var policy_config = try configurations.PolicyConfiguration.init(allocator, &defaults, &policy_service);
+    defer policy_config.deinit();
+    try policy_config.initialize();
+    try std.testing.expectEqualStrings("123", policy_config.configurationModel().getValue("policy.ref").?.string);
+
+    try registry.registerConfiguration("owner", &.{.{
+        .key = "policy.owner",
+        .value_type = "number",
+        .default = std.json.Value{ .integer = 0 },
+        .policy = "LatePolicy",
+    }});
+    try std.testing.expectEqual(@as(i64, 123), policy_config.configurationModel().getValue("policy.owner").?.integer);
+}
