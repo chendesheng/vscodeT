@@ -1046,6 +1046,12 @@ deregistration, variables, DefaultConfiguration and an in-memory user-target
 ConfigurationService; P5d tests are ported with the service registration surface
 pending; P5e (URI/file/editor input) is not started.
 
+**Status at the end of the current session:** 1,861 editor tests, 187 UI tests
+and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
+P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
+The remaining work is the editor-options/view stack and the URI/file/editor
+input infrastructure described below.
+
 **Known blockers for the remaining work**
 
 - P4 `View`, `viewController` and `codeEditorWidget` need
