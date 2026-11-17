@@ -228,6 +228,7 @@ test "ColorThemeData: token color defaults resolve" {
     try expectTokenColor(theme, "string", "#444444");
     try expectTokenColor(theme, "number", "#555555");
     try expectTokenColor(theme, "keyword", "#666666");
+    try expectTokenColor(theme, "function", "#333333");
     const type_style = theme.getTokenStyleMetadata("type", &.{}, "typescript").?;
     try std.testing.expectEqual(@as(?bool, false), type_style.bold);
     try std.testing.expectEqual(@as(?bool, true), type_style.underline);
