@@ -2025,6 +2025,13 @@ test "EditorGroupModel: side-by-side matching unwraps composites" {
     try std.testing.expect(group.contains(.{ .input = input2 }, any));
     try std.testing.expect(!group.contains(.{ .input = input3 }, any));
     try std.testing.expect(!group.contains(.{ .input = input1 }, .{}));
+    const untyped_primary = workbench_editor.UntypedEditorInput{ .resource = "/one" };
+    const untyped_secondary = workbench_editor.UntypedEditorInput{ .resource = "/two" };
+    const untyped_composite = workbench_editor.UntypedEditorInput{ .primary = &untyped_primary, .secondary = &untyped_secondary };
+    try std.testing.expect(group.contains(.{ .untyped = untyped_composite }, .{}));
+    const untyped_wrong = workbench_editor.UntypedEditorInput{ .resource = "/three" };
+    const untyped_wrong_composite = workbench_editor.UntypedEditorInput{ .primary = &untyped_wrong, .secondary = &untyped_secondary };
+    try std.testing.expect(!group.contains(.{ .untyped = untyped_wrong_composite }, .{}));
 
     _ = try group.openEditor(input1, .{ .pinned = true, .active = true });
     try std.testing.expectEqual(@as(?usize, 1), group.indexOfWith(.{ .input = input1 }, any));
@@ -2049,6 +2056,10 @@ test "EditorGroupModel: diff inputs unwrap like side-by-side inputs" {
     try std.testing.expect(group.contains(.{ .input = modified }, any));
     try std.testing.expect(!group.contains(.{ .input = original }, both));
     try std.testing.expect(!group.contains(.{ .input = original }, .{}));
+    const untyped_modified = workbench_editor.UntypedEditorInput{ .resource = "/modified" };
+    const untyped_original = workbench_editor.UntypedEditorInput{ .resource = "/original" };
+    const untyped_diff = workbench_editor.UntypedEditorInput{ .primary = &untyped_modified, .secondary = &untyped_original };
+    try std.testing.expect(group.contains(.{ .untyped = untyped_diff }, .{}));
 
     _ = try group.openEditor(modified, .{ .pinned = true, .active = true });
     try std.testing.expectEqual(@as(?usize, 1), group.indexOfWith(.{ .input = modified }, any));

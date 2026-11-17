@@ -32,6 +32,7 @@ pub const DiffEditorInput = struct {
         var base = EditorInput.init(allocator, ID);
         base.impl = self;
         base.matches_fn = matches;
+        base.matches_untyped_fn = matchesUntyped;
         base.capabilities = modified.capabilities | editor.EditorInputCapabilities.MultipleEditors;
         base.description = preferred_description;
         self.* = .{
@@ -59,6 +60,14 @@ pub const DiffEditorInput = struct {
         if (self.owned_name) |name| self.allocator.free(name);
         self.base.deinit();
         self.allocator.destroy(self);
+    }
+
+    fn matchesUntyped(base: *const EditorInput, other: editor.UntypedEditorInput) bool {
+        const self: *const DiffEditorInput = @ptrCast(@alignCast(base.impl.?));
+        const other_primary = other.primary orelse return false;
+        const other_secondary = other.secondary orelse return false;
+        return self.modified.matches(.{ .untyped = other_primary.* }) and
+            self.original.matches(.{ .untyped = other_secondary.* });
     }
 
     fn matches(base: *EditorInput, other: *EditorInput) bool {

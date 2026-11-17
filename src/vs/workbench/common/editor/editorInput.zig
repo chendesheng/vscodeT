@@ -72,6 +72,7 @@ pub const EditorInput = struct {
     /// Optional overrides. A concrete input only sets the hooks whose upstream
     /// subclass overrides; everything else falls back to the base behavior.
     matches_fn: ?*const fn (self: *EditorInput, other: *EditorInput) bool = null,
+    matches_untyped_fn: ?*const fn (self: *const EditorInput, other: editor.UntypedEditorInput) bool = null,
     is_dirty_fn: ?*const fn (self: *const EditorInput) bool = null,
     save_fn: ?*const fn (self: *EditorInput, group: GroupIdentifier) anyerror!SaveResult = null,
     revert_fn: ?*const fn (self: *EditorInput, group: GroupIdentifier) anyerror!void = null,
@@ -164,6 +165,7 @@ pub const EditorInput = struct {
     }
 
     pub fn matchesUntyped(self: *const EditorInput, other: editor.UntypedEditorInput) bool {
+        if (self.matches_untyped_fn) |matches_untyped_fn| return matches_untyped_fn(self, other);
         if (self.editor_id != null and other.editor_id != null and
             !std.mem.eql(u8, self.editor_id.?, other.editor_id.?))
         {

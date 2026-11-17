@@ -94,6 +94,9 @@ pub const MatchEditorOptions = struct {
 pub const UntypedEditorInput = struct {
     resource: ?[]const u8 = null,
     editor_id: ?[]const u8 = null,
+    /// Composite (side-by-side/diff) untyped inputs carry both sides.
+    primary: ?*const UntypedEditorInput = null,
+    secondary: ?*const UntypedEditorInput = null,
 };
 
 test "capabilities keep upstream bit values" {

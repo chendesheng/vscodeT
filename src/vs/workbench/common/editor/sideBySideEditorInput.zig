@@ -33,6 +33,7 @@ pub const SideBySideEditorInput = struct {
         var base = EditorInput.init(allocator, ID);
         base.impl = self;
         base.matches_fn = matches;
+        base.matches_untyped_fn = matchesUntyped;
         base.capabilities = primary.capabilities | editor.EditorInputCapabilities.MultipleEditors;
         self.* = .{
             .allocator = allocator,
@@ -74,6 +75,14 @@ pub const SideBySideEditorInput = struct {
 
     pub fn getPreferredDescription(self: *const SideBySideEditorInput) ?[]const u8 {
         return self.owned_description;
+    }
+
+    fn matchesUntyped(base: *const EditorInput, other: editor.UntypedEditorInput) bool {
+        const self: *const SideBySideEditorInput = @ptrCast(@alignCast(base.impl.?));
+        const other_primary = other.primary orelse return false;
+        const other_secondary = other.secondary orelse return false;
+        return self.primary.matches(.{ .untyped = other_primary.* }) and
+            self.secondary.matches(.{ .untyped = other_secondary.* });
     }
 
     fn matches(base: *EditorInput, other: *EditorInput) bool {
