@@ -162,6 +162,7 @@ pub const Workbench = struct {
     history: HistoryService,
     commands: CommandRegistry,
     keybindings: ?*tui_keybindings.TuiKeybindings,
+    global_keybindings: ?*tui_keybindings.TuiKeybindings,
     quick_access: *QuickAccessService,
     focus: Focus = .editor,
     is_pasting: bool = false,
@@ -182,6 +183,7 @@ pub const Workbench = struct {
         self.io = io;
         self.cols = @max(cols, 1);
         self.keybindings = null;
+        self.global_keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -239,6 +241,7 @@ pub const Workbench = struct {
         self.io = io;
         self.cols = @max(cols, 1);
         self.keybindings = null;
+        self.global_keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -311,6 +314,7 @@ pub const Workbench = struct {
         self.io = io;
         self.cols = @max(cols, 1);
         self.keybindings = null;
+        self.global_keybindings = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
@@ -602,6 +606,10 @@ pub const Workbench = struct {
     pub fn deinit(self: *Workbench) void {
         self.deinitShellModels();
         if (self.keybindings) |keybindings| {
+            keybindings.deinit();
+            self.allocator.destroy(keybindings);
+        }
+        if (self.global_keybindings) |keybindings| {
             keybindings.deinit();
             self.allocator.destroy(keybindings);
         }
@@ -1143,6 +1151,28 @@ pub const Workbench = struct {
             try active.ensureControllers();
         }
         return false;
+    }
+
+    fn ensureGlobalKeybindings(self: *Workbench) !*tui_keybindings.TuiKeybindings {
+        if (self.global_keybindings) |keybindings| return keybindings;
+        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
+        errdefer self.allocator.destroy(keybindings);
+        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &global_keybinding_rules, null);
+        self.global_keybindings = keybindings;
+        return keybindings;
+    }
+
+    /// Workbench-global shortcuts (quick open/commands, find/replace in files,
+    /// sidebar visibility and status-bar focus). Skipped while quick access owns
+    /// the keyboard so Ctrl+P keeps cycling the open picker.
+    pub fn handleGlobalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+        if (self.quick_access.isOpen()) return false;
+        const keybindings = try self.ensureGlobalKeybindings();
+        if (try keybindings.dispatch(event.*, tui_keybindings.empty_context)) |command| {
+            try self.commands.execute(command);
+            return true;
+        }
+        return keybindings.inChordMode();
     }
 
     fn ensureTabKeybindings(self: *Workbench) !*tui_keybindings.TuiKeybindings {
@@ -3701,3 +3731,26 @@ const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.openEditorAtIndex8", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit8) } },
     .{ .id = "workbench.action.openEditorAtIndex9", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Digit9) } },
 };
+
+const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
+    .{ .id = "workbench.action.quickOpen", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyP) } },
+    .{ .id = "workbench.action.showCommands", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyP) } },
+    .{ .id = "workbench.action.findInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyF) } },
+    .{ .id = "workbench.action.replaceInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyH) } },
+    .{ .id = "workbench.action.toggleSidebarVisibility", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyB) } },
+    .{ .id = "workbench.action.focusStatusBar", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyS) } },
+};
+
+test "workbench: global shortcuts dispatch through the keybinding registry" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+
+    var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_p));
+    try std.testing.expect(workbench.isQuickAccessOpen());
+
+    // While quick access owns the keyboard the global host steps aside.
+    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_p)));
+}

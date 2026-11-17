@@ -404,6 +404,7 @@ pub fn main(init: std.process.Init) !void {
                     workbench.clearQuitArmed();
                     workbench.clearStatusHover();
 
+                    if (try workbench.handleGlobalKey(event)) continue;
                     if (try workbench.handleQuickAccessKey(event)) continue;
                     if (try workbench.handleSidebarKey(event)) continue;
                     if (try workbench.handleStatusbarKey(event)) continue;

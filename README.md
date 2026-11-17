@@ -719,7 +719,11 @@ Editor contributions:
   (dispatch strings, chords, command execution). Workbench tab/group shortcuts
   already dispatch through a `KeybindingsRegistry` + `KeybindingResolver`
   (`workbench.action.closeActiveEditor`, next/previous editor, focus group
-  left/right, `openEditorAtIndex1-9`). The editor's Ctrl/Alt character
+  left/right, `openEditorAtIndex1-9`). Workbench-global shortcuts also resolve
+  through a registry/resolver host: Ctrl+P (quick open), Ctrl+Shift+P (command
+  palette), Ctrl+Shift+F/H (find/replace in files), Ctrl+B (toggle sidebar) and
+  Ctrl+Alt+S (focus status bar); quick access keeps owning the keyboard while
+  its picker is open. The editor's Ctrl/Alt character
   shortcuts (save, undo/redo, select all, comment, bracket
   jump/select/remove, in-place replace, reindent, occurrences, line selection,
   indent) and the cursor navigation/selection keys (arrows, word moves,
