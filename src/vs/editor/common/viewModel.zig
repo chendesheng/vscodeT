@@ -452,3 +452,40 @@ fn testLineTokens(allocator: std.mem.Allocator, content: []const u8) !@import(".
     try line_content.appendSlice(content);
     return @import("./tokens/lineTokens.zig").LineTokens.createEmpty(allocator, line_content, &TestTokens.decoder);
 }
+
+/// The subset of upstream `IViewLayout` consumed by `view/renderingContext.ts`.
+/// The scroll/set operations, whitespace data and overlay-widget width are not
+/// ported until the view layout is split out of the terminal view.
+pub const IViewLayout = struct {
+    context: *anyopaque,
+    get_scroll_width: *const fn (context: *anyopaque) f64,
+    get_scroll_height: *const fn (context: *anyopaque) f64,
+    get_current_viewport: *const fn (context: *anyopaque) Viewport,
+    get_vertical_offset_for_line_number: *const fn (context: *anyopaque, line_number: usize, include_view_zones: bool) f64,
+    get_vertical_offset_after_line_number: *const fn (context: *anyopaque, line_number: usize, include_view_zones: bool) f64,
+    get_line_height_for_line_number: *const fn (context: *anyopaque, line_number: usize) f64,
+
+    pub fn getScrollWidth(self: IViewLayout) f64 {
+        return self.get_scroll_width(self.context);
+    }
+
+    pub fn getScrollHeight(self: IViewLayout) f64 {
+        return self.get_scroll_height(self.context);
+    }
+
+    pub fn getCurrentViewport(self: IViewLayout) Viewport {
+        return self.get_current_viewport(self.context);
+    }
+
+    pub fn getVerticalOffsetForLineNumber(self: IViewLayout, line_number: usize, include_view_zones: bool) f64 {
+        return self.get_vertical_offset_for_line_number(self.context, line_number, include_view_zones);
+    }
+
+    pub fn getVerticalOffsetAfterLineNumber(self: IViewLayout, line_number: usize, include_view_zones: bool) f64 {
+        return self.get_vertical_offset_after_line_number(self.context, line_number, include_view_zones);
+    }
+
+    pub fn getLineHeightForLineNumber(self: IViewLayout, line_number: usize) f64 {
+        return self.get_line_height_for_line_number(self.context, line_number);
+    }
+};

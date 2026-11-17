@@ -241,6 +241,7 @@ that make the later phases tractable.
 | Language configuration | `vs/editor/common/languages/languageConfigurationRegistry.zig` (`LanguageConfigurationRegistry`, `LanguageConfigurationRegistration`) | Ported priority registration/merging, default plaintext contribution and invalidation; the TUI service promotes `LanguageService` configurations into it; 11 `languageConfiguration.test.ts` cases ported |
 | Theme | `vs/platform/theme/common/themeService.zig`, `theme.zig` | Minimal; no workbench color registry or theme service |
 | Editor widget contracts | `vs/editor/browser/editorBrowser.zig` (149 lines), `editorExtensions.zig` (117 lines) | Partial contracts; no widget/controller implementation |
+| View plumbing (P4 start) | `vs/editor/browser/view/renderingContext.zig`, `IViewLayout` subset in `vs/editor/common/viewModel.zig` | `RestrictedRenderingContext`/`RenderingContext`, visible ranges/horizontal positions ported; `ViewPart`/`ViewLayer`/`ViewOverlays` and the `view.zig` split remain |
 
 ## 7. File-by-file inventory
 
@@ -779,6 +780,11 @@ limitation is removed.
 **Goal:** split the 6,000-line editor/view monolith (3,789 non-test lines)
 into the upstream widget, controller and view-part layers, reusing the ported
 model/view model and contributions.
+
+**Status:** step 1 started. `editor/browser/view/renderingContext.zig` and the
+`IViewLayout` subset in `common/viewModel.zig` are ported (restricted/rendering
+contexts, visible ranges, horizontal positions); `viewPart.zig`, `viewLayer.zig`,
+`viewOverlays.zig` and the thin `View` orchestrator are next.
 
 **Suggested commits:**
 
