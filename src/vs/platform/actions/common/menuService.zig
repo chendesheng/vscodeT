@@ -1328,3 +1328,95 @@ test "one-shot menus omit empty submenus and observe nested registrations" {
     defer after.deinit();
     try std.testing.expectEqual(@as(usize, 0), after.groups.len);
 }
+
+test "one-shot menus observe implicit command palette items synchronously" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+
+    const Contains = struct {
+        fn run(alloc: Allocator, svc: *MenuService) !bool {
+            var menu_actions = try svc.getMenuActions(alloc, actions.menu_ids.CommandPalette, context());
+            defer menu_actions.deinit();
+            for (menu_actions.groups) |group| {
+                for (group.actions) |action| {
+                    if (std.mem.eql(u8, action.id(), "implicit.command")) return true;
+                }
+            }
+            return false;
+        }
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    const before = try Contains.run(allocator, &service);
+    const registration = try registry.addCommandTracked(.{ .id = "implicit.command", .title = "Implicit" });
+    const during = try Contains.run(allocator, &service);
+    registration.dispose();
+    const after = try Contains.run(allocator, &service);
+
+    try std.testing.expect(!before);
+    try std.testing.expect(during);
+    try std.testing.expect(!after);
+}
+
+test "one-shot menus evaluate submenu toggle state without checking children" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    var context_keys = contextkey.ContextKeyService.init(allocator);
+    defer context_keys.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+
+    const parent = MenuId{ .id = "test.toggle.parent" };
+    const child = MenuId{ .id = "test.toggle.child" };
+    const parent_registration = try registry.appendSubmenuItemTracked(parent, .{
+        .title = "Submenu",
+        .submenu = child,
+        .toggled = try factory.has("submenuActive"),
+    });
+    defer parent_registration.dispose();
+    const child_registration = try registry.appendMenuItemTracked(child, .{ .command = .{ .id = "child", .title = "Child" } });
+    defer child_registration.dispose();
+
+    const active = try context_keys.createKey("submenuActive", .{ .boolean = false });
+
+    const Snapshot = struct {
+        fn run(alloc: Allocator, svc: *MenuService, keys: *contextkey.ContextKeyService) !struct { checked: ?bool, child_checked: ?bool } {
+            var menu_actions = try svc.getMenuActions(alloc, parent, keys.interface().getContext());
+            defer menu_actions.deinit();
+            const submenu: *SubmenuItemAction = @ptrCast(@alignCast(menu_actions.groups[0].actions[0].context));
+            return .{
+                .checked = submenu.checked,
+                .child_checked = submenu.actions[0].checked(),
+            };
+        }
+    };
+
+    active.set(.{ .boolean = false });
+    const inactive = try Snapshot.run(allocator, &service, &context_keys);
+    active.set(.{ .boolean = true });
+    const active_state = try Snapshot.run(allocator, &service, &context_keys);
+
+    try std.testing.expectEqual(@as(?bool, false), inactive.checked);
+    try std.testing.expect(inactive.child_checked == null);
+    try std.testing.expectEqual(@as(?bool, true), active_state.checked);
+    try std.testing.expect(active_state.child_checked == null);
+
+    const contexts = try service.getMenuContexts(allocator, parent);
+    defer {
+        for (contexts) |key| allocator.free(key);
+        allocator.free(contexts);
+    }
+    try std.testing.expectEqual(@as(usize, 1), contexts.len);
+    try std.testing.expectEqualStrings("submenuActive", contexts[0]);
+}

@@ -408,6 +408,12 @@ pub const MenuRegistry = struct {
         when: ?*const contextkey.Expr = null,
 
         pub fn dispose(self: Registration) void {
+            if (self.command_id) |command_id| {
+                if (MenuId.eql(self.menu, menu_ids.CommandPalette)) {
+                    self.registry.removeCommand(command_id);
+                    return;
+                }
+            }
             self.registry.removeRegistration(self);
         }
     };
@@ -452,6 +458,16 @@ pub const MenuRegistry = struct {
     pub fn addCommand(self: *MenuRegistry, command: ICommandAction) !void {
         try self.commands.put(command.id, command);
         try self.on_did_change.fire(.{ .menu = menu_ids.CommandPalette });
+    }
+
+    pub fn addCommandTracked(self: *MenuRegistry, command: ICommandAction) !Registration {
+        try self.addCommand(command);
+        return .{ .registry = self, .menu = menu_ids.CommandPalette, .command_id = command.id };
+    }
+
+    pub fn removeCommand(self: *MenuRegistry, id: []const u8) void {
+        _ = self.commands.remove(id);
+        self.on_did_change.fire(.{ .menu = menu_ids.CommandPalette }) catch {};
     }
 
     pub fn getCommand(self: *MenuRegistry, id: []const u8) ?ICommandAction {
