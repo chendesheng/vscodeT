@@ -27,6 +27,8 @@ pub const FileEditorInput = struct {
         base.resource = path_copy;
         base.name = std.fs.path.basename(path_copy);
         base.matches_fn = matches;
+        base.save_fn = saveHook;
+        base.revert_fn = revertHook;
         return .{
             .allocator = allocator,
             .base = base,
@@ -40,6 +42,17 @@ pub const FileEditorInput = struct {
         if (self.modified) |modified| self.allocator.free(modified);
         self.base.deinit();
         self.allocator.free(self.path);
+    }
+
+    fn saveHook(base: *EditorInput, _: editor_input.GroupIdentifier) anyerror!editor_input.SaveResult {
+        const self: *FileEditorInput = @ptrCast(@alignCast(base.impl.?));
+        try self.save();
+        return base;
+    }
+
+    fn revertHook(base: *EditorInput, _: editor_input.GroupIdentifier) anyerror!void {
+        const self: *FileEditorInput = @ptrCast(@alignCast(base.impl.?));
+        try self.revert();
     }
 
     fn matches(base: *EditorInput, other: *EditorInput) bool {
@@ -120,6 +133,7 @@ test "FileEditorInput loads, edits, saves and reverts" {
 
     var input = try FileEditorInput.init(allocator, &text_files, path);
     defer input.deinit();
+    _ = input.interface();
     try input.load();
     try std.testing.expectEqualStrings("hello", input.getText());
     try std.testing.expectEqualStrings("file.txt", input.getPreferredName());
@@ -132,14 +146,14 @@ test "FileEditorInput loads, edits, saves and reverts" {
     try input.setText("changed");
     try std.testing.expect(input.base.isDirty());
     try std.testing.expectEqualStrings("changed", input.getText());
-    try input.save();
+    _ = try input.base.save(1);
     try std.testing.expect(!input.base.isDirty());
     const saved = try text_files.read(path, allocator);
     defer allocator.free(saved);
     try std.testing.expectEqualStrings("changed", saved);
 
     try input.setText("revert me");
-    try input.revert();
+    try input.base.revert(1);
     try std.testing.expectEqualStrings("changed", input.getText());
     try std.testing.expect(!input.base.isDirty());
 
