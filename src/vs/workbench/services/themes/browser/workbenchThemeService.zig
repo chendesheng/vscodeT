@@ -186,3 +186,42 @@ test "migrateThemeSettingsId returns unknown ids unchanged" {
     try std.testing.expectEqualStrings("Some Custom Theme", migrateThemeSettingsId("Some Custom Theme"));
     try std.testing.expectEqualStrings("", migrateThemeSettingsId(""));
 }
+
+pub const ColorSchemeHost = struct {
+    dark: bool = false,
+    high_contrast: bool = false,
+};
+
+/// Terminal-adapted subset of `ThemeConfiguration` covering color-scheme
+/// detection. The upstream configuration service is replaced by explicit flags.
+pub const ThemeSchemeConfiguration = struct {
+    detect_color_scheme: bool,
+    detect_high_contrast: bool,
+    host: *const ColorSchemeHost,
+
+    pub fn isPreferredColorSchemeChange(self: *const ThemeSchemeConfiguration, previous: ColorSchemeHost) bool {
+        const dark_changed = previous.dark != self.host.dark;
+        if (self.detect_color_scheme and dark_changed) return true;
+        if (self.detect_high_contrast) {
+            return previous.high_contrast != self.host.high_contrast or (self.host.high_contrast and dark_changed);
+        }
+        return false;
+    }
+};
+
+test "restores only for preferred color scheme changes" {
+    var host = ColorSchemeHost{ .dark = true, .high_contrast = false };
+    var configuration = ThemeSchemeConfiguration{ .detect_color_scheme = false, .detect_high_contrast = true, .host = &host };
+    var results: [5]bool = undefined;
+    results[0] = configuration.isPreferredColorSchemeChange(.{ .dark = false, .high_contrast = false });
+    host.high_contrast = true;
+    results[1] = configuration.isPreferredColorSchemeChange(.{ .dark = true, .high_contrast = false });
+    host.dark = false;
+    results[2] = configuration.isPreferredColorSchemeChange(.{ .dark = true, .high_contrast = true });
+    host.high_contrast = false;
+    results[3] = configuration.isPreferredColorSchemeChange(.{ .dark = false, .high_contrast = true });
+    configuration.detect_color_scheme = true;
+    host.dark = true;
+    results[4] = configuration.isPreferredColorSchemeChange(.{ .dark = false, .high_contrast = false });
+    try std.testing.expectEqual([5]bool{ false, true, true, true, true }, results);
+}
