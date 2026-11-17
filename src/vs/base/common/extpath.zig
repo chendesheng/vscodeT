@@ -72,6 +72,44 @@ pub fn removeTrailingPathSeparator(path: []const u8, allocator: Allocator, is_wi
     return allocator.dupe(u8, path[0..end]);
 }
 
+fn normalizePosix(allocator: Allocator, path: []const u8) ![]u8 {
+    var parts = std.array_list.Managed([]const u8).init(allocator);
+    defer parts.deinit();
+    var iterator = std.mem.splitScalar(u8, path, '/');
+    while (iterator.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
+        if (std.mem.eql(u8, part, "..")) {
+            if (parts.items.len > 0) _ = parts.pop();
+            continue;
+        }
+        try parts.append(part);
+    }
+    var out = std.array_list.Managed(u8).init(allocator);
+    errdefer out.deinit();
+    if (path.len > 0 and path[0] == '/') try out.append('/');
+    for (parts.items, 0..) |part, index| {
+        if (index > 0) try out.append('/');
+        try out.appendSlice(part);
+    }
+    if (out.items.len == 0 and path.len > 0 and path[0] == '/') try out.append('/');
+    return out.toOwnedSlice();
+}
+
+pub fn sanitizeFilePath(candidate: []const u8, cwd: []const u8, allocator: Allocator) ![]u8 {
+    var absolute: []u8 = undefined;
+    if (candidate.len == 0 or std.mem.eql(u8, candidate, ".")) {
+        absolute = try allocator.dupe(u8, cwd);
+    } else if (candidate[0] == '/') {
+        absolute = try allocator.dupe(u8, candidate);
+    } else {
+        absolute = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cwd, candidate });
+    }
+    defer allocator.free(absolute);
+    const normalized = try normalizePosix(allocator, absolute);
+    defer allocator.free(normalized);
+    return removeTrailingPathSeparator(normalized, allocator, false);
+}
+
 pub fn isValidBasename(name: []const u8) bool {
     if (name.len == 0) return false;
     if (std.mem.indexOfScalar(u8, name, '/') != null) return false;
@@ -193,4 +231,23 @@ test "extpath trailing separators" {
     const drive = try removeTrailingPathSeparator("c:\\", allocator, true);
     defer allocator.free(drive);
     try std.testing.expectEqualStrings("c:", drive);
+}
+
+test "extpath sanitizes POSIX file paths" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { candidate: []const u8, expected: []const u8 }{
+        .{ .candidate = ".", .expected = "/the/cwd" },
+        .{ .candidate = "", .expected = "/the/cwd" },
+        .{ .candidate = "/", .expected = "/" },
+        .{ .candidate = "/folder/my.txt", .expected = "/folder/my.txt" },
+        .{ .candidate = "/folder/../my", .expected = "/my" },
+        .{ .candidate = "/folder/my///", .expected = "/folder/my" },
+        .{ .candidate = "my.txt", .expected = "/the/cwd/my.txt" },
+        .{ .candidate = "my.txt/", .expected = "/the/cwd/my.txt" },
+    };
+    for (cases) |case| {
+        const sanitized = try sanitizeFilePath(case.candidate, "/the/cwd", allocator);
+        defer allocator.free(sanitized);
+        try std.testing.expectEqualStrings(case.expected, sanitized);
+    }
 }
