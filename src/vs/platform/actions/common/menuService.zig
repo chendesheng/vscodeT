@@ -39,6 +39,15 @@ pub const MenuGroup = struct {
     actions: []const IAction,
 };
 
+pub const MenuActions = struct {
+    arena: std.heap.ArenaAllocator,
+    groups: []const MenuGroup,
+
+    pub fn deinit(self: *MenuActions) void {
+        self.arena.deinit();
+    }
+};
+
 pub const Menu = struct {
     allocator: Allocator,
     service: *MenuService,
@@ -475,6 +484,44 @@ pub const MenuService = struct {
 
     pub fn deinit(self: *MenuService) void {
         self.hide_state.deinit();
+    }
+
+    /// One-shot resolution without listeners (upstream `getMenuActions`).
+    pub fn getMenuActions(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext) !MenuActions {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        var menu_ids = std.StringHashMap(void).init(allocator);
+        defer freeMenuIds(allocator, &menu_ids);
+        var context_keys = std.StringHashMap(void).init(allocator);
+        defer freeMenuIds(allocator, &context_keys);
+        const groups = try self.buildGroups(arena.allocator(), id, context, &menu_ids, &context_keys);
+        return .{ .arena = arena, .groups = groups };
+    }
+
+    /// Context keys referenced by a menu, in first-seen order; caller frees.
+    pub fn getMenuContexts(self: *MenuService, allocator: Allocator, id: MenuId) ![]const []const u8 {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var menu_ids = std.StringHashMap(void).init(allocator);
+        defer freeMenuIds(allocator, &menu_ids);
+        var context_keys = std.StringHashMap(void).init(allocator);
+        defer freeMenuIds(allocator, &context_keys);
+        const empty_context = contextkey.IContext{
+            .context = @ptrFromInt(1),
+            .get_value = emptyGetValue,
+        };
+        _ = try self.buildGroups(arena.allocator(), id, empty_context, &menu_ids, &context_keys);
+        const result = try allocator.alloc([]const u8, context_keys.count());
+        var index: usize = 0;
+        var iterator = context_keys.iterator();
+        while (iterator.next()) |entry| : (index += 1) {
+            result[index] = try allocator.dupe(u8, entry.key_ptr.*);
+        }
+        return result;
+    }
+
+    fn emptyGetValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+        return .undefined_value;
     }
 
     /// Resolves a menu: visibility filtering, upstream sorting/grouping, group
@@ -1036,4 +1083,49 @@ test "createMenu collects menu items only once" {
         allocator.destroy(menu);
     }
     try std.testing.expectEqual(@as(usize, 1), registry.getMenuItemsCallCount(menu_id));
+}
+
+test "one-shot getMenuActions evaluates each row context independently" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    const menu_id = MenuId{ .id = "test.row.context" };
+
+    try registry.appendMenuItem(menu_id, .{
+        .command = .{ .id = "file", .title = "File" },
+        .when = try factory.equals("viewItem", .{ .string = "file" }),
+    });
+    try registry.appendMenuItem(menu_id, .{
+        .command = .{ .id = "folder", .title = "Folder" },
+        .when = try factory.equals("viewItem", .{ .string = "folder" }),
+    });
+
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+
+    var expected = std.array_list.Managed([]const u8).init(allocator);
+    defer expected.deinit();
+    for (0..100) |index| {
+        var row_context = contextkey.ContextKeyService.init(allocator);
+        defer row_context.deinit();
+        const key = try row_context.createKey("viewItem", .{ .string = if (index % 2 == 0) "file" else "folder" });
+        key.set(.{ .string = if (index % 2 == 0) "file" else "folder" });
+        try expected.append(if (index % 2 == 0) "file" else "folder");
+
+        var menu_actions = try service.getMenuActions(allocator, menu_id, row_context.interface().getContext());
+        defer menu_actions.deinit();
+        try std.testing.expectEqual(@as(usize, 1), menu_actions.groups.len);
+        try std.testing.expectEqual(@as(usize, 1), menu_actions.groups[0].actions.len);
+        try std.testing.expectEqualStrings(expected.items[index], menu_actions.groups[0].actions[0].id());
+    }
+
+    const contexts = try service.getMenuContexts(allocator, menu_id);
+    defer {
+        for (contexts) |context| allocator.free(context);
+        allocator.free(contexts);
+    }
+    try std.testing.expectEqual(@as(usize, 1), contexts.len);
+    try std.testing.expectEqualStrings("viewItem", contexts[0]);
 }
