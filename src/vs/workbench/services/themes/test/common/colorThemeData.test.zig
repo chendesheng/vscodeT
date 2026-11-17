@@ -172,3 +172,84 @@ test "includes the theme location when plist settings are not an array" {
         theme.errorMessage().?,
     );
 }
+
+const token_theme_json =
+    \\{
+    \\  "type": "dark",
+    \\  "editor.background": "#1E1E1E",
+    \\  "tokenColors": [
+    \\    { "scope": "comment", "settings": { "foreground": "#000000" } },
+    \\    { "scope": "string", "settings": { "foreground": "#444444" } },
+    \\    { "scope": "constant.numeric", "settings": { "foreground": "#555555" } },
+    \\    { "scope": "variable", "settings": { "fontStyle": "", "foreground": "#111111" } },
+    \\    { "scope": "keyword", "settings": { "foreground": "#666666" } },
+    \\    { "scope": "entity.name.type, support.type", "settings": { "fontStyle": "underline", "foreground": "#333333" } },
+    \\    { "scope": "entity.name.function", "settings": { "fontStyle": "", "foreground": "#333333" } }
+    \\  ]
+    \\}
+;
+
+const TokenFixture = struct {
+    text: []const u8,
+    fn read(context: *anyopaque, _: []const u8) anyerror![]const u8 {
+        const self: *TokenFixture = @ptrCast(@alignCast(context));
+        return self.text;
+    }
+};
+
+fn expectTokenColor(theme: *ColorThemeData, type_name: []const u8, expected_hex: ?[]const u8) !void {
+    const metadata = theme.getTokenStyleMetadata(type_name, &.{}, "typescript") orelse return error.TestUnexpectedResult;
+    if (expected_hex == null) {
+        try std.testing.expect(metadata.foreground == null);
+        return;
+    }
+    const index = metadata.foreground orelse return error.TestUnexpectedResult;
+    const map = try theme.getTokenColorMap();
+    const color = map[index];
+    const expected = try Color.fromHex(expected_hex.?);
+    try std.testing.expectEqual(expected.r, color.r);
+    try std.testing.expectEqual(expected.g, color.g);
+    try std.testing.expectEqual(expected.b, color.b);
+}
+
+test "ColorThemeData: token color defaults resolve" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+    const theme = try ColorThemeData.createUnloadedTheme(allocator, &fixture.registry, "test-dark", &.{});
+    defer theme.deinit();
+    theme.location = "color-theme.json";
+    var reader = TokenFixture{ .text = token_theme_json };
+    try theme.ensureLoaded(.{ .context = &reader, .read = TokenFixture.read });
+
+    try expectTokenColor(theme, "comment", "#000000");
+    try expectTokenColor(theme, "string", "#444444");
+    try expectTokenColor(theme, "number", "#555555");
+    try expectTokenColor(theme, "keyword", "#666666");
+    const type_style = theme.getTokenStyleMetadata("type", &.{}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, false), type_style.bold);
+    try std.testing.expectEqual(@as(?bool, true), type_style.underline);
+    const variable_style = theme.getTokenStyleMetadata("variable", &.{}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, false), variable_style.bold);
+    try std.testing.expectEqual(@as(?bool, false), variable_style.underline);
+}
+
+test "ColorThemeData: semantic token rules merge by score" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+    const theme = try ColorThemeData.createLoadedEmptyTheme(allocator, &fixture.registry, "test-dark");
+    defer theme.deinit();
+    try theme.setCustomSemanticTokenColors(&.{
+        .{ .selector = "type", .foreground = "#ff0000" },
+        .{ .selector = "class", .foreground = "#0000ff", .italic = true },
+        .{ .selector = "*.static", .bold = true },
+        .{ .selector = "*.declaration", .italic = true },
+    });
+
+    try expectTokenColor(theme, "type", "#ff0000");
+    try expectTokenColor(theme, "class", "#0000ff");
+    const class_static = theme.getTokenStyleMetadata("class", &.{"static"}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), class_static.italic);
+    try std.testing.expectEqual(@as(?bool, true), class_static.bold);
+}
