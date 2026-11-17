@@ -61,6 +61,20 @@ pub const DiskFileService = struct {
         return .{ .bytes = bytes };
     }
 
+    /// Writes a file, creating missing parent directories.
+    pub fn writeFileEnsuringParents(self: *DiskFileService, path: []const u8, data: VSBuffer) !void {
+        const parent = std.fs.path.dirname(path) orelse return self.writeFile(path, data);
+        try self.ensureDirectory(parent);
+        try self.writeFile(path, data);
+    }
+
+    fn ensureDirectory(self: *DiskFileService, path: []const u8) !void {
+        if (path.len == 0 or std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, ".")) return;
+        if (self.exists(path)) return;
+        if (std.fs.path.dirname(path)) |parent| try self.ensureDirectory(parent);
+        try self.createDirectory(path);
+    }
+
     pub fn writeFile(self: *DiskFileService, path: []const u8, data: VSBuffer) !void {
         const existed = self.exists(path);
         try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = data.bytes });
@@ -269,4 +283,22 @@ test "DiskFileService copies directory trees" {
     const text = try copied.toString(allocator);
     defer allocator.free(text);
     try std.testing.expectEqualStrings("tree", text);
+}
+
+test "DiskFileService creates parent directories when writing" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = buffer[0..root_len];
+    const path = try std.fs.path.join(allocator, &.{ root, "a", "b", "c.txt" });
+    defer allocator.free(path);
+    var service = DiskFileService.init(allocator, io);
+    defer service.deinit();
+    var data = try VSBuffer.fromString(allocator, "nested");
+    defer data.deinit(allocator);
+    try service.writeFileEnsuringParents(path, data);
+    try std.testing.expect(service.exists(path));
 }
