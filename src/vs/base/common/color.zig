@@ -67,6 +67,34 @@ pub const Color = struct {
         return std.fmt.allocPrint(allocator, "#{X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ self.r, self.g, self.b, alpha });
     }
 
+    /// Converts to HSL, like upstream `Color.hsla`.
+    pub fn hsla(self: Color) HSLA {
+        return HSLA.fromColor(self);
+    }
+
+    pub fn lighten(self: Color, factor: f32) Color {
+        const hsl = self.hsla();
+        return HSLA.init(hsl.h, hsl.s, hsl.l + hsl.l * factor, hsl.a).toRGBA();
+    }
+
+    pub fn darken(self: Color, factor: f32) Color {
+        const hsl = self.hsla();
+        return HSLA.init(hsl.h, hsl.s, hsl.l - hsl.l * factor, hsl.a).toRGBA();
+    }
+
+    /// Scales the existing alpha by `factor`.
+    pub fn transparent(self: Color, factor: f32) Color {
+        return .{ .r = self.r, .g = self.g, .b = self.b, .a = self.a * factor };
+    }
+
+    pub fn isDarkerThan(self: Color, another: Color) bool {
+        return self.getRelativeLuminance() < another.getRelativeLuminance();
+    }
+
+    pub fn isLighterThan(self: Color, another: Color) bool {
+        return self.getRelativeLuminance() > another.getRelativeLuminance();
+    }
+
     /// Returns the WCAG relative luminance of the opaque part of the color, in
     /// `[0, 1]`.
     pub fn getRelativeLuminance(self: Color) f64 {
@@ -113,6 +141,32 @@ pub const HSLA = struct {
     s: f32,
     l: f32,
     a: f32,
+
+    /// Converts an RGB color to HSL (upstream `HSLA.fromRGBA`).
+    pub fn fromColor(color: Color) HSLA {
+        const r: f32 = @as(f32, @floatFromInt(color.r)) / 255;
+        const g: f32 = @as(f32, @floatFromInt(color.g)) / 255;
+        const b: f32 = @as(f32, @floatFromInt(color.b)) / 255;
+        const max = @max(r, @max(g, b));
+        const min = @min(r, @min(g, b));
+        const l = (min + max) / 2;
+        const chroma = max - min;
+        var h: f32 = 0;
+        var s: f32 = 0;
+
+        if (chroma > 0) {
+            s = @min(if (l <= 0.5) chroma / (2 * l) else chroma / (2 - (2 * l)), 1);
+            if (max == r) {
+                h = (g - b) / chroma + (if (g < b) @as(f32, 6) else @as(f32, 0));
+            } else if (max == g) {
+                h = (b - r) / chroma + 2;
+            } else {
+                h = (r - g) / chroma + 4;
+            }
+            h = @round(h * 60);
+        }
+        return HSLA.init(h, s, l, color.a);
+    }
 
     pub fn init(h: f32, s: f32, l: f32, a: f32) HSLA {
         return .{
@@ -242,4 +296,21 @@ test "Color.toCssString and toHexString" {
     const hex = try color.toHexString(allocator);
     defer allocator.free(hex);
     try std.testing.expectEqualStrings("#0A0B0CFF", hex);
+}
+
+test "Color HSL helpers lighten, darken and transparent" {
+    const color = try Color.fromHex("#123456");
+    const hsl = color.hsla();
+    try std.testing.expectApproxEqAbs(@as(f32, 0.20), hsl.l, 0.01);
+
+    const lighter = color.lighten(1);
+    try std.testing.expect(lighter.getRelativeLuminance() > color.getRelativeLuminance());
+    const darker = color.darken(0.5);
+    try std.testing.expect(darker.getRelativeLuminance() < color.getRelativeLuminance());
+    try std.testing.expect(darker.isDarkerThan(color));
+    try std.testing.expect(lighter.isLighterThan(color));
+
+    const faded = color.transparent(0.5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), faded.a, 0.001);
+    try std.testing.expectEqual(color.r, faded.r);
 }
