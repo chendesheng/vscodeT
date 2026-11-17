@@ -451,3 +451,19 @@ test "recursive merge and overrides preserve existing keys" {
     defer overridden.deinit();
     try std.testing.expectEqual(@as(i64, 1), overridden.getValue("a.b").?.integer);
 }
+
+test "overrides with multiple identifiers apply to each identifier" {
+    const allocator = std.testing.allocator;
+    var model = try modelWithOverrides(allocator, "{\"a\":1,\"c\":1}", &.{ "a", "c" }, &.{.{ .identifiers = &.{ "x", "y" }, .contents = "{\"a\":2}", .keys = &.{"a"} }});
+    defer model.deinit();
+    for ([_][]const u8{ "x", "y" }) |identifier| {
+        var overridden = try model.override(allocator, identifier);
+        defer overridden.deinit();
+        try std.testing.expectEqual(@as(i64, 2), overridden.getValue("a").?.integer);
+        try std.testing.expectEqual(@as(i64, 1), overridden.getValue("c").?.integer);
+    }
+    const keys = try model.getKeysForOverrideIdentifier(allocator, "x");
+    defer allocator.free(keys);
+    try std.testing.expectEqual(@as(usize, 1), keys.len);
+    try std.testing.expectEqualStrings("a", keys[0]);
+}
