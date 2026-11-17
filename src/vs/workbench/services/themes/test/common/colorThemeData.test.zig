@@ -348,3 +348,44 @@ test "ColorThemeData: semantic token super types and languages" {
     try std.testing.expectEqual(@as(?bool, true), ts_static.bold);
     try std.testing.expectEqual(@as(?bool, true), ts_static.italic);
 }
+
+test "ColorThemeData: wildcard semantic rules merge by specificity" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+    const theme = try ColorThemeData.createLoadedEmptyTheme(allocator, &fixture.registry, "test-dark");
+    defer theme.deinit();
+    try theme.setCustomSemanticTokenColors(&.{
+        .{ .selector = "type", .foreground = "#ff0000" },
+        .{ .selector = "class", .foreground = "#0000ff", .italic = true },
+        .{ .selector = "*.static", .bold = true },
+        .{ .selector = "*.declaration", .italic = true },
+        .{ .selector = "*.async.static", .italic = true, .underline = true },
+        .{ .selector = "*.async", .foreground = "#000fff", .underline = true },
+    });
+
+    try expectTokenColor(theme, "type", "#ff0000");
+    const type_static = theme.getTokenStyleMetadata("type", &.{"static"}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), type_static.bold);
+    const type_static_decl = theme.getTokenStyleMetadata("type", &.{ "static", "declaration" }, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), type_static_decl.bold);
+    try std.testing.expectEqual(@as(?bool, true), type_static_decl.italic);
+    try expectTokenColor(theme, "class", "#0000ff");
+    const class_decl = theme.getTokenStyleMetadata("class", &.{"declaration"}, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), class_decl.italic);
+
+    const class_async = theme.getTokenStyleMetadata("class", &.{ "declaration", "async" }, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), class_async.italic);
+    try std.testing.expectEqual(@as(?bool, true), class_async.underline);
+    const async_index = class_async.foreground orelse return error.TestUnexpectedResult;
+    const color_map = try theme.getTokenColorMap();
+    const async_color = color_map[async_index];
+    try std.testing.expectEqual(@as(u8, 0x00), async_color.r);
+    try std.testing.expectEqual(@as(u8, 0x0f), async_color.g);
+    try std.testing.expectEqual(@as(u8, 0xff), async_color.b);
+
+    const class_async_static = theme.getTokenStyleMetadata("class", &.{ "declaration", "async", "static" }, "typescript").?;
+    try std.testing.expectEqual(@as(?bool, true), class_async_static.italic);
+    try std.testing.expectEqual(@as(?bool, true), class_async_static.underline);
+    try std.testing.expectEqual(@as(?bool, true), class_async_static.bold);
+}
