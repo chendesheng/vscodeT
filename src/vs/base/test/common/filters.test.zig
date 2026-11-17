@@ -427,3 +427,49 @@ test "List highlight filter #66923" {
     const allocator = std.testing.allocator;
     try assertMatches(allocator, "foo", "barbarbarbarbarbarbarbarbarbarbarbarbarbarbarbar_foo", "barbarbarbarbarbarbarbarbarbarbarbarbarbarbarbar_^f^o^o", .{});
 }
+
+fn assertGraceful(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    word: []const u8,
+    decorated_word: []const u8,
+    aggressive: bool,
+) !void {
+    const pattern_low = try lower(allocator, pattern);
+    defer allocator.free(pattern_low);
+    const word_low = try lower(allocator, word);
+    defer allocator.free(word_low);
+    const value = if (aggressive)
+        try filters.fuzzyScoreGracefulAggressive(allocator, pattern, pattern_low, 0, word, word_low, 0, .{})
+    else
+        try filters.fuzzyScoreGraceful(allocator, pattern, pattern_low, 0, word, word_low, 0, .{});
+    try std.testing.expect(value != null);
+    const score_value = value.?;
+    defer score_value.deinit(allocator);
+    const matches = try filters.createScorerMatches(allocator, score_value);
+    defer allocator.free(matches);
+
+    var actual = std.array_list.Managed(u8).init(allocator);
+    defer actual.deinit();
+    var position: usize = 0;
+    for (matches) |match| {
+        try actual.appendSlice(word[position..match.start]);
+        var index = match.start;
+        while (index < match.end) : (index += 1) {
+            try actual.append('^');
+            try actual.append(word[index]);
+        }
+        position = match.end;
+    }
+    try actual.appendSlice(word[position..]);
+    try std.testing.expectEqualStrings(decorated_word, actual.items);
+}
+
+test "fuzzyScoreGraceful permutations" {
+    const allocator = std.testing.allocator;
+    try assertGraceful(allocator, "rlut", "result", "^res^u^l^t", false);
+    try assertGraceful(allocator, "cno", "console", "^co^ns^ole", false);
+    try assertGraceful(allocator, "cno", "console", "^c^o^nsole", true);
+    try assertGraceful(allocator, "cno", "co_new", "^c^o_^new", false);
+    try assertGraceful(allocator, "cno", "co_new", "^c^o_^new", true);
+}

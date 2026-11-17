@@ -779,6 +779,88 @@ pub const FuzzyScorer = struct {
     }
 };
 
+/// Port of `fuzzyScoreGraceful`: returns the best of the original and a few
+/// neighboring-character permutations (with a 3-point permutation penalty).
+pub fn fuzzyScoreGraceful(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    pattern_low: []const u8,
+    pattern_pos: usize,
+    word: []const u8,
+    word_low: []const u8,
+    word_pos: usize,
+    options: FuzzyScoreOptions,
+) !?FuzzyScoreValue {
+    return fuzzyScoreWithPermutations(allocator, pattern, pattern_low, pattern_pos, word, word_low, word_pos, false, options);
+}
+
+/// Port of `fuzzyScoreGracefulAggressive`, which accepts an existing match and
+/// still tries permutations for a better alignment.
+pub fn fuzzyScoreGracefulAggressive(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    pattern_low: []const u8,
+    pattern_pos: usize,
+    word: []const u8,
+    word_low: []const u8,
+    word_pos: usize,
+    options: FuzzyScoreOptions,
+) !?FuzzyScoreValue {
+    return fuzzyScoreWithPermutations(allocator, pattern, pattern_low, pattern_pos, word, word_low, word_pos, true, options);
+}
+
+fn fuzzyScoreWithPermutations(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    pattern_low: []const u8,
+    pattern_pos: usize,
+    word: []const u8,
+    word_low: []const u8,
+    word_pos: usize,
+    aggressive: bool,
+    options: FuzzyScoreOptions,
+) !?FuzzyScoreValue {
+    var scorer = try FuzzyScorer.init(allocator);
+    defer scorer.deinit();
+    var top = try scorer.score(pattern, pattern_low, pattern_pos, word, word_low, word_pos, options);
+    if (top != null and !aggressive) return top;
+
+    if (pattern.len >= 3) {
+        const tries = @min(7, pattern.len - 1);
+        var moving_pos = pattern_pos + 1;
+        while (moving_pos < tries) : (moving_pos += 1) {
+            const new_pattern = try nextTypoPermutation(allocator, pattern, moving_pos);
+            if (new_pattern) |candidate_pattern| {
+                defer allocator.free(candidate_pattern);
+                const candidate_low = try allocator.dupe(u8, candidate_pattern);
+                defer allocator.free(candidate_low);
+                for (candidate_low) |*code| code.* = std.ascii.toLower(code.*);
+                if (try scorer.score(candidate_pattern, candidate_low, pattern_pos, word, word_low, word_pos, options)) |candidate_value| {
+                    var candidate = candidate_value;
+                    candidate.score -= 3;
+                    if (top == null or candidate.score > top.?.score) {
+                        if (top) |previous| previous.deinit(allocator);
+                        top = candidate;
+                    } else {
+                        candidate.deinit(allocator);
+                    }
+                }
+            }
+        }
+    }
+    return top;
+}
+
+fn nextTypoPermutation(allocator: std.mem.Allocator, pattern: []const u8, position: usize) !?[]u8 {
+    if (position + 1 >= pattern.len) return null;
+    if (pattern[position] == pattern[position + 1]) return null;
+    const result = try allocator.dupe(u8, pattern);
+    const swap = result[position];
+    result[position] = result[position + 1];
+    result[position + 1] = swap;
+    return result;
+}
+
 /// Port of `anyScore`: tries pattern starts up to 13 characters looking for a
 /// score that may begin weakly. Falls back to a zero score at `word_start`.
 pub fn anyScore(
