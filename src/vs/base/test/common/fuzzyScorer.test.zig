@@ -299,3 +299,18 @@ test "scoreItem - identity, prefix, camelcase and description matches" {
     defer quoted.deinit(allocator);
     try std.testing.expect(quoted.score > 0);
 }
+
+test "compareItemsByScore - identity" {
+    const allocator = std.testing.allocator;
+    var a = TestItem{ .label = "fileA.txt", .description = "/some", .path_value = "/some/fileA.txt" };
+    var b = TestItem{ .label = "fileB.txt", .description = "/some", .path_value = "/some/fileB.txt" };
+    const prepared = try fuzzy.prepareQuery(allocator, "/some/fileA.txt");
+    defer prepared.deinit(allocator);
+
+    const forward = try fuzzy.compareItemsByFuzzyScore(allocator, &a, &b, &prepared, true, TestItem.accessor());
+    try std.testing.expectEqual(@as(i32, -1), forward);
+    const backward = try fuzzy.compareItemsByFuzzyScore(allocator, &b, &a, &prepared, true, TestItem.accessor());
+    try std.testing.expectEqual(@as(i32, 1), backward);
+    const equal = try fuzzy.compareItemsByFuzzyScore(allocator, &a, &a, &prepared, true, TestItem.accessor());
+    try std.testing.expectEqual(@as(i32, 0), equal);
+}

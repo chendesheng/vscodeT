@@ -583,3 +583,117 @@ pub fn scoreItemFuzzy(
     };
     return scoreSingleItem(allocator, label, description, path, piece, prefer_label_matches, allow_non_contiguous_matches);
 }
+
+fn compareByMatchLength(matches_a: ?[]const Match, matches_b: ?[]const Match) i32 {
+    const len_a = if (matches_a) |matches| matches.len else 0;
+    const len_b = if (matches_b) |matches| matches.len else 0;
+    if (len_a == 0 and len_b == 0) return 0;
+    if (len_b == 0) return -1;
+    if (len_a == 0) return 1;
+    const match_length_a = matches_a.?[matches_a.?.len - 1].end - matches_a.?[0].start;
+    const match_length_b = matches_b.?[matches_b.?.len - 1].end - matches_b.?[0].start;
+    if (match_length_a == match_length_b) return 0;
+    return if (match_length_b < match_length_a) 1 else -1;
+}
+
+fn matchDistance(item: *const anyopaque, score: ItemScore, accessor: ItemAccessor) i64 {
+    var match_start: i64 = -1;
+    var match_end: i64 = -1;
+    const has_description = score.description_match != null and score.description_match.?.len > 0;
+    const has_label = score.label_match != null and score.label_match.?.len > 0;
+    if (has_description) {
+        match_start = @intCast(score.description_match.?[0].start);
+    } else if (has_label) {
+        match_start = @intCast(score.label_match.?[0].start);
+    }
+    if (has_label) {
+        match_end = @intCast(score.label_match.?[score.label_match.?.len - 1].end);
+        if (has_description) {
+            if (accessor.get_item_description(accessor.context, item)) |description| {
+                match_end += @intCast(description.len);
+            }
+        }
+    } else if (has_description) {
+        match_end = @intCast(score.description_match.?[score.description_match.?.len - 1].end);
+    }
+    return match_end - match_start;
+}
+
+fn compareStringsIgnoreCase(a: []const u8, b: []const u8) i32 {
+    const length = @min(a.len, b.len);
+    for (0..length) |index| {
+        const ca = std.ascii.toLower(a[index]);
+        const cb = std.ascii.toLower(b[index]);
+        if (ca != cb) return if (ca < cb) -1 else 1;
+    }
+    if (a.len == b.len) return 0;
+    return if (a.len < b.len) -1 else 1;
+}
+
+pub fn compareItemsByFuzzyScore(
+    allocator: Allocator,
+    item_a: *const anyopaque,
+    item_b: *const anyopaque,
+    query: *const PreparedQuery,
+    allow_non_contiguous_matches: bool,
+    accessor: ItemAccessor,
+) !i32 {
+    const score_a = try scoreItemFuzzy(allocator, item_a, query, allow_non_contiguous_matches, accessor);
+    defer score_a.deinit(allocator);
+    const score_b = try scoreItemFuzzy(allocator, item_b, query, allow_non_contiguous_matches, accessor);
+    defer score_b.deinit(allocator);
+
+    // 1) identity matches
+    if (score_a.score == PATH_IDENTITY_SCORE or score_b.score == PATH_IDENTITY_SCORE) {
+        if (score_a.score != score_b.score) return if (score_a.score == PATH_IDENTITY_SCORE) -1 else 1;
+    }
+
+    // 2) label matches
+    if (score_a.score > LABEL_SCORE_THRESHOLD or score_b.score > LABEL_SCORE_THRESHOLD) {
+        if (score_a.score != score_b.score) return if (score_a.score > score_b.score) -1 else 1;
+        if (score_a.score < LABEL_PREFIX_SCORE_THRESHOLD and score_b.score < LABEL_PREFIX_SCORE_THRESHOLD) {
+            const by_length = compareByMatchLength(score_a.label_match, score_b.label_match);
+            if (by_length != 0) return by_length;
+        }
+        const label_a = accessor.get_item_label(accessor.context, item_a) orelse "";
+        const label_b = accessor.get_item_label(accessor.context, item_b) orelse "";
+        if (label_a.len != label_b.len) return @intCast(@as(isize, @intCast(label_a.len)) - @as(isize, @intCast(label_b.len)));
+    }
+
+    // 3) label+description score
+    if (score_a.score != score_b.score) return if (score_a.score > score_b.score) -1 else 1;
+
+    // 4) label matches preferred
+    const a_has_label = score_a.label_match != null and score_a.label_match.?.len > 0;
+    const b_has_label = score_b.label_match != null and score_b.label_match.?.len > 0;
+    if (a_has_label and !b_has_label) return -1;
+    if (b_has_label and !a_has_label) return 1;
+
+    // 5) more compact matches
+    const distance_a = matchDistance(item_a, score_a, accessor);
+    const distance_b = matchDistance(item_b, score_b, accessor);
+    if (distance_a >= 0 and distance_b >= 0 and distance_a != distance_b) return if (distance_b > distance_a) -1 else 1;
+
+    // 6) fallback: label/description length, path length, label compare
+    const label_a = accessor.get_item_label(accessor.context, item_a) orelse "";
+    const label_b = accessor.get_item_label(accessor.context, item_b) orelse "";
+    const description_a = accessor.get_item_description(accessor.context, item_a);
+    const description_b = accessor.get_item_description(accessor.context, item_b);
+    const length_a = label_a.len + (if (description_a) |value| value.len else 0);
+    const length_b = label_b.len + (if (description_b) |value| value.len else 0);
+    if (length_a != length_b) return @intCast(@as(isize, @intCast(length_a)) - @as(isize, @intCast(length_b)));
+
+    const path_a = accessor.get_item_path(accessor.context, item_a);
+    const path_b = accessor.get_item_path(accessor.context, item_b);
+    if (path_a != null and path_b != null and path_a.?.len != path_b.?.len) {
+        return @intCast(@as(isize, @intCast(path_a.?.len)) - @as(isize, @intCast(path_b.?.len)));
+    }
+    if (!std.mem.eql(u8, label_a, label_b)) return compareStringsIgnoreCase(label_a, label_b);
+    if (description_a != null and description_b != null and !std.mem.eql(u8, description_a.?, description_b.?)) {
+        return compareStringsIgnoreCase(description_a.?, description_b.?);
+    }
+    if (path_a != null and path_b != null and !std.mem.eql(u8, path_a.?, path_b.?)) {
+        return compareStringsIgnoreCase(path_a.?, path_b.?);
+    }
+    return 0;
+}
