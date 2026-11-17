@@ -110,6 +110,12 @@ const Harness = struct {
         try self.executed.append(command_id);
     }
 
+    fn setCommand(self: *Harness, index: usize, command: ?[]const u8) !void {
+        const item = self.items.items[index];
+        if (item.command) |old| self.allocator.free(old);
+        item.command = if (command) |value| try self.allocator.dupe(u8, value) else null;
+    }
+
     fn resolveEvent(context: *anyopaque, _: Allocator, event: IKeyboardEvent) anyerror!?ResolvedKeybinding {
         const self: *Harness = @ptrCast(@alignCast(context));
         const allocator = self.arena.allocator();
@@ -232,4 +238,83 @@ test "chord mode quits for invalid chords" {
     try std.testing.expect(!harness.service.inChordMode());
     try std.testing.expectEqual(@as(usize, 2), harness.statuses.items.len);
     try std.testing.expect(std.mem.indexOf(u8, harness.statuses.items[1], "is not a command") != null);
+}
+
+test "a single-chord keybinding with an empty string command ID unbinds it" {
+    const allocator = std.testing.allocator;
+    const harness = try Harness.init(allocator, &.{key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK)});
+    defer harness.deinit();
+    try harness.setCommand(0, "");
+
+    try std.testing.expect(!harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK))));
+    try std.testing.expectEqual(@as(usize, 0), harness.executed.items.len);
+    try std.testing.expectEqual(@as(usize, 0), harness.statuses.items.len);
+}
+
+test "a single-chord keybinding with a null command ID unbinds it" {
+    const allocator = std.testing.allocator;
+    const harness = try Harness.init(allocator, &.{key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK)});
+    defer harness.deinit();
+    try harness.setCommand(0, null);
+
+    try std.testing.expect(!harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK))));
+    try std.testing.expectEqual(@as(usize, 0), harness.executed.items.len);
+    try std.testing.expectEqual(@as(usize, 0), harness.statuses.items.len);
+}
+
+fn twoChordEncoded() u32 {
+    return key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyI));
+}
+
+test "a multi-chord keybinding with an empty-string command ID keeps the keybinding until the second chord" {
+    const allocator = std.testing.allocator;
+    const encoded = twoChordEncoded();
+    const harness = try Harness.init(allocator, &.{ encoded, encoded });
+    defer harness.deinit();
+    try harness.setCommand(0, "myCommand");
+    try harness.setCommand(1, "");
+
+    try std.testing.expect(harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK))));
+    try std.testing.expectEqual(@as(usize, 0), harness.executed.items.len);
+    try std.testing.expectEqual(@as(usize, 1), harness.statuses.items.len);
+
+    try std.testing.expect(harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyI))));
+    try std.testing.expectEqual(@as(usize, 0), harness.executed.items.len);
+    try std.testing.expectEqual(@as(usize, 2), harness.statuses.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, harness.statuses.items[1], "is not a command") != null);
+    try std.testing.expectEqual(@as(usize, 1), harness.statuses_closed.items.len);
+}
+
+test "modifier-only keys are not dispatched" {
+    const allocator = std.testing.allocator;
+    const harness = try Harness.init(allocator, &.{
+        @backingInt(KeyCode.Ctrl), @backingInt(KeyCode.Meta),
+        @backingInt(KeyCode.Alt),  @backingInt(KeyCode.Shift),
+        key_codes.KeyMod.CtrlCmd,  key_codes.KeyMod.WinCtrl,
+        key_codes.KeyMod.Alt,      key_codes.KeyMod.Shift,
+    });
+    defer harness.deinit();
+
+    try std.testing.expect(!harness.service.dispatchEvent(eventFor(@backingInt(KeyCode.Ctrl))));
+    try std.testing.expect(!harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd)));
+    try std.testing.expectEqual(@as(usize, 0), harness.executed.items.len);
+    try std.testing.expectEqual(@as(usize, 0), harness.statuses.items.len);
+}
+
+test "keybindings are not dispatched while an IME composition is in progress" {
+    const allocator = std.testing.allocator;
+    const harness = try Harness.init(allocator, &.{@backingInt(KeyCode.Enter)});
+    defer harness.deinit();
+
+    const composing = IKeyboardEvent{ .ctrl = false, .shift = false, .alt = false, .meta = false, .key_code = .KEY_IN_COMPOSITION };
+    try std.testing.expect(!harness.service.dispatchEvent(composing));
+    try std.testing.expectEqual(@as(usize, 0), harness.executed.items.len);
+    const soft = try harness.service.softDispatch(allocator, composing);
+    try std.testing.expectEqual(@import("../../common/keybindingResolver.zig").ResultKind.NoMatchingKb, soft.kind);
+
+    const enter = eventFor(@backingInt(KeyCode.Enter));
+    try std.testing.expect(harness.service.dispatchEvent(enter));
+    try std.testing.expectEqual(@as(usize, 1), harness.executed.items.len);
+    const after = try harness.service.softDispatch(allocator, enter);
+    try std.testing.expectEqual(@import("../../common/keybindingResolver.zig").ResultKind.KbFound, after.kind);
 }
