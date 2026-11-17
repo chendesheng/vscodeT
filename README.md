@@ -769,7 +769,7 @@ Editor contributions:
   with TextMate scope matching and `ColorThemeData` token-style resolution
   (theme/custom token colors, semantic rules, language/super-type selectors and
   custom settings JSON). Minimal `DiskFileService`/`TextFileService` and
-  file/untitled editor inputs (with serializers and side-by-side/diff identity)
+  file/untitled editor inputs and side-by-side/diff identity/serializers
   provide the terminal file-editing foundation. The file-backed workbench
   configuration service applies
   language overrides, application/machine scope filtering, and untrusted
