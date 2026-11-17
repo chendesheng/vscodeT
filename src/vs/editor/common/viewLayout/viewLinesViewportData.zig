@@ -130,9 +130,37 @@ const TestModel = struct {
         return decorations;
     }
 
+    fn layoutScrollWidth(_: *anyopaque) f64 {
+        return 0;
+    }
+    fn layoutScrollHeight(_: *anyopaque) f64 {
+        return 0;
+    }
+    fn layoutViewport(_: *anyopaque) @import("../viewModel.zig").Viewport {
+        return .{ .top = 0, .left = 0, .width = 0, .height = 0 };
+    }
+    fn layoutVerticalOffset(_: *anyopaque, _: usize, _: bool) f64 {
+        return 0;
+    }
+    fn layoutLineHeight(_: *anyopaque, _: usize) f64 {
+        return 1;
+    }
+    fn testLayout() @import("../viewModel.zig").IViewLayout {
+        return .{
+            .context = @ptrFromInt(@alignOf(usize)),
+            .get_scroll_width = layoutScrollWidth,
+            .get_scroll_height = layoutScrollHeight,
+            .get_current_viewport = layoutViewport,
+            .get_vertical_offset_for_line_number = layoutVerticalOffset,
+            .get_vertical_offset_after_line_number = layoutVerticalOffset,
+            .get_line_height_for_line_number = layoutLineHeight,
+        };
+    }
+
     fn interface() IViewModel {
         return .{
             .context = @ptrFromInt(@alignOf(usize)),
+            .view_layout = testLayout(),
             .getLineMinColumn = lineMinColumn,
             .getLineMaxColumn = lineMaxColumn,
             .getViewportViewLineRenderingData = viewportViewLineRenderingData,

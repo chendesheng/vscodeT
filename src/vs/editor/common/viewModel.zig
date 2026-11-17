@@ -239,6 +239,12 @@ pub const ILineHeightChangeAccessor = struct {
 /// grows as more consumers are ported; the full interface is much larger.
 pub const IViewModel = struct {
     context: *anyopaque,
+    /// Upstream `IViewModel.viewLayout`.
+    view_layout: IViewLayout,
+    /// Optional view event handler registration hooks (upstream
+    /// `addViewEventHandler`/`removeViewEventHandler`).
+    add_view_event_handler: ?*const fn (context: *anyopaque, handler: *anyopaque) void = null,
+    remove_view_event_handler: ?*const fn (context: *anyopaque, handler: *anyopaque) void = null,
     getLineMinColumn: *const fn (context: *anyopaque, lineNumber: usize) usize,
     getLineMaxColumn: *const fn (context: *anyopaque, lineNumber: usize) usize,
     getViewportViewLineRenderingData: *const fn (context: *anyopaque, visibleRange: Range, lineNumber: usize) anyerror!ViewLineRenderingData,

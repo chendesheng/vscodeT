@@ -428,6 +428,9 @@ comptime {
     _ = @import("./vs/editor/common/languages/languageConfigurationRegistry.zig");
     _ = @import("./vs/editor/browser/view/renderingContext.zig");
     _ = @import("./vs/editor/browser/view/viewUserInputEvents.zig");
+    _ = @import("./vs/editor/common/viewModel/viewContext.zig");
+    _ = @import("./vs/editor/browser/view/viewPart.zig");
+    _ = @import("./vs/editor/common/config/editorConfiguration.zig");
     _ = @import("./vs/editor/test/common/modes/languageConfiguration.test.zig");
     _ = @import("./vs/platform/log/common/log.zig");
     _ = @import("./vs/platform/log/common/logService.zig");
