@@ -115,3 +115,71 @@ test "fuzzyScore" {
         try assertMatches(allocator, case.pattern, case.word, case.decorated, .{});
     }
 }
+
+test "fuzzyScore - extended matches" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { pattern: []const u8, word: []const u8, decorated: ?[]const u8 }{
+        .{ .pattern = "cmcm", .word = "camelCase", .decorated = null },
+        .{ .pattern = "LLL", .word = "SVisualLoggerLogsList", .decorated = "SVisual^Logger^Logs^List" },
+        .{ .pattern = "LLLL", .word = "SVilLoLosLi", .decorated = null },
+        .{ .pattern = "TEdit", .word = "Textedit", .decorated = "^Text^e^d^i^t" },
+        .{ .pattern = "TEditDit", .word = "TextEditorDecorationType", .decorated = "^Text^E^d^i^tor^Decorat^ion^Type" },
+        .{ .pattern = "TEdit", .word = "TextEditorDecorationType", .decorated = "^Text^E^d^i^torDecorationType" },
+        .{ .pattern = "Tedit", .word = "TextEdit", .decorated = "^Text^E^d^i^t" },
+        .{ .pattern = "bkn", .word = "the_black_knight", .decorated = "the_^black_^k^night" },
+        .{ .pattern = "bt", .word = "the_black_knight", .decorated = "the_^black_knigh^t" },
+        .{ .pattern = "ccm", .word = "camelCasecm", .decorated = "^camel^Casec^m" },
+        .{ .pattern = "fdm", .word = "findModel", .decorated = "^fin^d^Model" },
+        .{ .pattern = "fob", .word = "foobar", .decorated = "^f^oo^bar" },
+        .{ .pattern = "fobz", .word = "foobar", .decorated = null },
+        .{ .pattern = "form", .word = "editor.formatOnSave", .decorated = "editor.^f^o^r^matOnSave" },
+        .{ .pattern = "g p", .word = "Git: Pull", .decorated = "^Git:^ ^Pull" },
+        .{ .pattern = "gip", .word = "Git: Pull", .decorated = "^G^it: ^Pull" },
+        .{ .pattern = "gp", .word = "Git_Git_Pull", .decorated = "^Git_Git_^Pull" },
+        .{ .pattern = "is", .word = "ImportStatement", .decorated = "^Import^Statement" },
+        .{ .pattern = "is", .word = "isValid", .decorated = "^i^sValid" },
+        .{ .pattern = "lowrd", .word = "lowWord", .decorated = "^l^o^wWo^r^d" },
+        .{ .pattern = "myvable", .word = "myvariable", .decorated = "^m^y^v^aria^b^l^e" },
+        .{ .pattern = "sl", .word = "SVisualLoggerLogsList", .decorated = "^SVisual^LoggerLogsList" },
+        .{ .pattern = "sllll", .word = "SVisualLoggerLogsList", .decorated = "^SVisua^l^Logger^Logs^List" },
+        .{ .pattern = "fo", .word = "bar_Foo", .decorated = "bar_^F^oo" },
+        .{ .pattern = "fo", .word = "bar foo", .decorated = "bar ^f^oo" },
+        .{ .pattern = "fo", .word = "bar/foo", .decorated = "bar/^f^oo" },
+        .{ .pattern = "fo", .word = "bar\\foo", .decorated = "bar\\^f^oo" },
+    };
+    for (cases) |case| {
+        try assertMatches(allocator, case.pattern, case.word, case.decorated, .{});
+    }
+}
+
+fn topScoreIndex(allocator: std.mem.Allocator, pattern: []const u8, words: []const []const u8) !usize {
+    var scorer = try filters.FuzzyScorer.init(allocator);
+    defer scorer.deinit();
+    const pattern_low = try lower(allocator, pattern);
+    defer allocator.free(pattern_low);
+    var top_score: i32 = -1000;
+    var top_index: usize = 0;
+    for (words, 0..) |word, index| {
+        const word_low = try lower(allocator, word);
+        defer allocator.free(word_low);
+        const result = try scorer.score(pattern, pattern_low, 0, word, word_low, 0, .{});
+        if (result) |value| {
+            var mutable = value;
+            defer mutable.deinit(allocator);
+            if (value.score > top_score) {
+                top_score = value.score;
+                top_index = index;
+            }
+        }
+    }
+    return top_index;
+}
+
+test "topScore - fuzzyScore" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 2), try topScoreIndex(allocator, "cons", &.{ "ArrayBufferConstructor", "Console", "console" }));
+    try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "Foo", &.{ "foo", "Foo" }));
+    try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "onMess", &.{ "onmessage", "onMessage", "onThisMegaEscape" }));
+    try std.testing.expectEqual(@as(usize, 1), try topScoreIndex(allocator, "CC", &.{ "camelCase", "CamelCase" }));
+    try std.testing.expectEqual(@as(usize, 0), try topScoreIndex(allocator, "cC", &.{ "camelCase", "CamelCase" }));
+}

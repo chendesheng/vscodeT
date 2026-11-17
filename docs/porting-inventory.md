@@ -916,7 +916,7 @@ optional scorer cache; `base/common/comparers.zig` now also has
 `fuzzyScorer.test.ts` cases (including the resource ordering/scattering matrix)
 are ported and registered. The `filters.fuzzyScore` dynamic-programming scorer
 (`filters.ts`) is ported as an explicit `FuzzyScorer` (scratch tables, no
-globals), with its `fuzzyScore` regression cases, and `scoreFuzzy2` now uses it.
+globals), with its `fuzzyScore` regression and top-score cases, and `scoreFuzzy2` now uses it.
 The #134723 item case passes; only the exact upstream cache-hash identity cases
 remain (the terminal cache key is a readable composite), and `fileIndex.zig`
 still uses its simpler matcher.
