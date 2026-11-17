@@ -392,6 +392,7 @@ comptime {
     _ = @import("./vs/platform/contextkey/common/scanner.zig");
     _ = @import("./vs/platform/contextkey/common/contextkey.zig");
     _ = @import("./vs/platform/keybinding/common/resolvedKeybindingItem.zig");
+    _ = @import("./vs/platform/keybinding/common/keybindingResolver.zig");
     _ = @import("./vs/platform/contextkey/test/common/scanner.test.zig");
     _ = @import("./vs/platform/contextkey/test/common/parser.test.zig");
     _ = @import("./vs/editor/common/languages/languageConfigurationRegistry.zig");
