@@ -181,11 +181,36 @@ test "configuration changes emit the changed source and keys" {
     var fixture = try setup(allocator);
     defer teardown(fixture.registry, fixture.service);
 
-    var events = std.array_list.Managed(configuration.Change).init(allocator);
-    defer events.deinit();
+    // `Change.keys` is borrowed for the duration of the event, so a listener
+    // that keeps the change must copy both the key array and its strings.
+    const RecordedChange = struct {
+        source: configuration.ConfigurationTarget,
+        keys: std.array_list.Managed([]u8),
+
+        fn record(allocator_: std.mem.Allocator, change: configuration.Change) !@This() {
+            var recorded = @This(){
+                .source = change.source,
+                .keys = std.array_list.Managed([]u8).init(allocator_),
+            };
+            errdefer recorded.deinit(allocator_);
+            for (change.keys) |key| try recorded.keys.append(try allocator_.dupe(u8, key));
+            return recorded;
+        }
+
+        fn deinit(self: *@This(), allocator_: std.mem.Allocator) void {
+            for (self.keys.items) |key| allocator_.free(key);
+            self.keys.deinit();
+        }
+    };
+
+    var events = std.array_list.Managed(RecordedChange).init(allocator);
+    defer {
+        for (events.items) |*event| event.deinit(allocator);
+        events.deinit();
+    }
     const Listener = struct {
-        fn onChange(change: configuration.Change, list: *std.array_list.Managed(configuration.Change)) anyerror!void {
-            try list.append(change);
+        fn onChange(change: configuration.Change, list: *std.array_list.Managed(RecordedChange)) anyerror!void {
+            try list.append(try RecordedChange.record(list.allocator, change));
         }
     };
     _ = try fixture.service.onDidChange.listen(&events, Listener.onChange);
@@ -193,17 +218,17 @@ test "configuration changes emit the changed source and keys" {
     try fixture.service.updateValue("configurationService.testSetting", .{ .string = "value" }, .USER);
     try std.testing.expectEqual(@as(usize, 1), events.items.len);
     try std.testing.expectEqual(configuration.ConfigurationTarget.USER, events.items[0].source);
-    try std.testing.expectEqualStrings("configurationService.testSetting", events.items[0].keys[0]);
+    try std.testing.expectEqualStrings("configurationService.testSetting", events.items[0].keys.items[0]);
 
     try fixture.service.loadWorkspaceJson("{\"configurationService.testSetting\":\"workspace\"}");
     try std.testing.expectEqual(@as(usize, 2), events.items.len);
     try std.testing.expectEqual(configuration.ConfigurationTarget.WORKSPACE, events.items[1].source);
-    try std.testing.expectEqualStrings("configurationService.testSetting", events.items[1].keys[0]);
+    try std.testing.expectEqualStrings("configurationService.testSetting", events.items[1].keys.items[0]);
 
     try fixture.service.updateValue("configurationService.testSetting", null, .USER);
     try std.testing.expectEqual(@as(usize, 3), events.items.len);
     try std.testing.expectEqual(configuration.ConfigurationTarget.USER, events.items[2].source);
-    try std.testing.expectEqualStrings("configurationService.testSetting", events.items[2].keys[0]);
+    try std.testing.expectEqualStrings("configurationService.testSetting", events.items[2].keys.items[0]);
 }
 
 test "language override values resolve through the service" {
