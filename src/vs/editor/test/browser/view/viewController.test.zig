@@ -81,9 +81,49 @@ const BalancedBracketSupport = struct {
     }
 };
 
+pub const TokenSpan = struct {
+    start_index: usize,
+    token_type: encoded.StandardTokenType,
+};
+
+/// Emits the token spans the upstream string tests specify. `EncodedTokenizationResult`
+/// stores token start offsets, so each span contributes its start index.
+const SpanSupport = struct {
+    spans: []const TokenSpan,
+
+    fn getInitialState(_: *anyopaque, _: Allocator) anyerror!languages.IState {
+        return null_tokenize.NullState;
+    }
+
+    fn tokenizeEncoded(context: *anyopaque, allocator: Allocator, line: []const u8, _: bool, state: languages.IState) anyerror!languages.EncodedTokenizationResult {
+        const self: *SpanSupport = @ptrCast(@alignCast(context));
+        var tokens = std.array_list.Managed(line_tokens.TokenPacked).init(allocator);
+        errdefer tokens.deinit();
+        for (self.spans) |span| {
+            if (span.start_index >= line.len and tokens.items.len > 0) continue;
+            var metadata = encoded.TokenMetadata.default;
+            metadata.tokenType = span.token_type;
+            metadata.balancedBrackets = span.token_type != .String;
+            try tokens.append(.{ .endOffset = @intCast(span.start_index), .metadata = metadata });
+        }
+        return .{ .tokens = try tokens.toOwnedSlice(), .endState = state };
+    }
+
+    fn interface(self: *SpanSupport) languages.ITokenizationSupport {
+        return .{
+            .context = self,
+            .vtable = &.{
+                .getInitialState = getInitialState,
+                .tokenizeEncoded = tokenizeEncoded,
+            },
+        };
+    }
+};
+
 const Sink = struct {
     selection: ?Selection = null,
     word_select_position: ?Position = null,
+    model: ?*@import("../../../common/model/textModel.zig").TextModel = null,
 
     fn setSelection(context: *anyopaque, selection: Selection) void {
         const self: *Sink = @ptrCast(@alignCast(context));
@@ -92,6 +132,27 @@ const Sink = struct {
     fn wordSelect(context: *anyopaque, pos: Position) void {
         const self: *Sink = @ptrCast(@alignCast(context));
         self.word_select_position = pos;
+        const model = self.model orelse return;
+        self.selection = wordSelectionAt(model, pos) catch null;
+    }
+
+    fn wordSelectionAt(model: *@import("../../../common/model/textModel.zig").TextModel, pos: Position) !?Selection {
+        var content = try model.getLineContent(pos.lineNumber);
+        defer content.deinit();
+        const bytes = content.items;
+        if (bytes.len == 0) return null;
+        var index = (pos.column - 1);
+        if (index >= bytes.len) index = bytes.len - 1;
+        if (!isWordByte(bytes[index])) return null;
+        var start = index;
+        while (start > 0 and isWordByte(bytes[start - 1])) start -= 1;
+        var end = index + 1;
+        while (end < bytes.len and isWordByte(bytes[end])) end += 1;
+        return Selection.init(pos.lineNumber, start + 1, pos.lineNumber, end + 1);
+    }
+
+    fn isWordByte(byte: u8) bool {
+        return std.ascii.isAlphanumeric(byte) or byte == '_' or byte >= 0x80;
     }
     fn position(_: *anyopaque, _: Position) void {}
     fn columnSelect(_: *anyopaque, _: Position, _: usize, _: bool) void {}
@@ -123,6 +184,7 @@ const Harness = struct {
     allocator: Allocator,
     model: test_support.TestModel,
     tokenization_support: BalancedBracketSupport = .{},
+    span_support: ?SpanSupport = null,
     brackets: [3]language_configuration.CharacterPair = .{
         .{ "{", "}" },
         .{ "[", "]" },
@@ -137,9 +199,18 @@ const Harness = struct {
     controller: ViewController,
 
     fn init(self: *Harness, allocator: Allocator, text: []const u8) !void {
+        try self.initWithSpans(allocator, text, null);
+    }
+
+    fn initWithSpans(self: *Harness, allocator: Allocator, text: []const u8, spans: ?[]const TokenSpan) !void {
         self.allocator = allocator;
         self.tokenization_support = .{};
-        try TokenizationRegistry.instance.register("vcLang", self.tokenization_support.interface());
+        if (spans) |token_spans| {
+            self.span_support = .{ .spans = token_spans };
+            try TokenizationRegistry.instance.register("vcLang", self.span_support.?.interface());
+        } else {
+            try TokenizationRegistry.instance.register("vcLang", self.tokenization_support.interface());
+        }
         errdefer TokenizationRegistry.instance.unregister("vcLang");
         self.model = try test_support.TestModel.init(allocator, text, "vcLang");
         errdefer self.model.deinit();
@@ -161,7 +232,7 @@ const Harness = struct {
         };
         self.layout = .{};
         self.view_model = test_stubs.TestViewModel.init(self.layout.interface());
-        self.sink = .{};
+        self.sink = .{ .model = self.model.model };
         self.controller = ViewController.init(
             &self.configuration,
             self.view_model.interface(),
@@ -265,9 +336,11 @@ test "view controller: falls back to word select when no block is found" {
     defer harness.deinit();
 
     harness.doubleClickAt(Position.init(1, 10));
-    try testing.expect(harness.sink.selection == null);
     try testing.expect(harness.sink.word_select_position != null);
     try testing.expectEqual(@as(usize, 10), harness.sink.word_select_position.?.column);
+    const selected = try harness.selectedText();
+    defer allocator.free(selected);
+    try testing.expectEqualStrings("abc", selected);
 }
 
 test "view controller: disabling doubleClickSelectsBlock falls back to word select" {
@@ -305,6 +378,82 @@ test "view controller: clicking in the middle of a string falls back to word sel
     defer harness.deinit();
 
     harness.doubleClickAt(Position.init(1, 16));
-    try testing.expect(harness.sink.selection == null);
     try testing.expect(harness.sink.word_select_position != null);
+    const selected = try harness.selectedText();
+    defer allocator.free(selected);
+    try testing.expectEqualStrings("world", selected);
+}
+
+test "view controller: selects string content with escape characters" {
+    const allocator = testing.allocator;
+    const spans = [_]TokenSpan{
+        .{ .start_index = 0, .token_type = .Other },
+        .{ .start_index = 8, .token_type = .String },
+        .{ .start_index = 9, .token_type = .String },
+        .{ .start_index = 14, .token_type = .String },
+        .{ .start_index = 16, .token_type = .String },
+        .{ .start_index = 21, .token_type = .String },
+        .{ .start_index = 22, .token_type = .Other },
+    };
+    var harness: Harness = undefined;
+    try harness.initWithSpans(allocator, "var x = \"hello\\\"world\";", &spans);
+    defer harness.deinit();
+    harness.doubleClickAt(Position.init(1, 10));
+    const selected = try harness.selectedText();
+    defer allocator.free(selected);
+    try testing.expectEqualStrings("hello\\\"world", selected);
+}
+
+test "view controller: separate quote tokens fall back to word select" {
+    const allocator = testing.allocator;
+    const spans = [_]TokenSpan{
+        .{ .start_index = 0, .token_type = .Other },
+        .{ .start_index = 8, .token_type = .Other },
+        .{ .start_index = 9, .token_type = .String },
+        .{ .start_index = 20, .token_type = .Other },
+        .{ .start_index = 21, .token_type = .Other },
+    };
+    var harness: Harness = undefined;
+    try harness.initWithSpans(allocator, "var x = \"hello world\";", &spans);
+    defer harness.deinit();
+    harness.doubleClickAt(Position.init(1, 10));
+    const selected = try harness.selectedText();
+    defer allocator.free(selected);
+    try testing.expectEqualStrings("hello", selected);
+}
+
+test "view controller: RTL content in a string falls back to word select" {
+    const allocator = testing.allocator;
+    // UTF-8 byte offsets: prefix 0..8, quote 8, the Hebrew phrase 9 bytes? The
+    // phrase has 17 bytes; closing quote at 26, semicolon at 27.
+    const spans = [_]TokenSpan{
+        .{ .start_index = 0, .token_type = .Other },
+        .{ .start_index = 8, .token_type = .String },
+        .{ .start_index = 27, .token_type = .Other },
+    };
+    var harness: Harness = undefined;
+    try harness.initWithSpans(allocator, "var x = \"שלום עולם\";", &spans);
+    defer harness.deinit();
+    harness.doubleClickAt(Position.init(1, 10));
+    const selected = try harness.selectedText();
+    defer allocator.free(selected);
+    try testing.expectEqualStrings("שלום", selected);
+}
+
+test "view controller: mismatched quotes fall back to word select" {
+    const allocator = testing.allocator;
+    const spans = [_]TokenSpan{
+        .{ .start_index = 0, .token_type = .Other },
+        .{ .start_index = 8, .token_type = .String },
+        .{ .start_index = 11, .token_type = .Other },
+        .{ .start_index = 13, .token_type = .String },
+        .{ .start_index = 16, .token_type = .Other },
+    };
+    var harness: Harness = undefined;
+    try harness.initWithSpans(allocator, "var x = \"a {} b\";", &spans);
+    defer harness.deinit();
+    harness.doubleClickAt(Position.init(1, 10));
+    const selected = try harness.selectedText();
+    defer allocator.free(selected);
+    try testing.expectEqualStrings("a", selected);
 }

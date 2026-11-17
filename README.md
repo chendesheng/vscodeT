@@ -818,8 +818,9 @@ Editor contributions:
   before a closing bracket, innermost pair) and quoted-string content (matching
   double/single/backtick quotes, RTL and mismatched-quote bail-outs) with the
   upstream mouse dispatch decision tree routed through an explicit navigation
-  command sink. The bracket suite and the basic string cases are ported at the
-  upstream test path.
+  command sink. The complete upstream `viewController.test.ts` suite is ported
+  (bracket and string happy paths, exotic token spans, RTL/mismatch bail-outs
+  and word-select fallbacks) with a per-test token-span harness.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
