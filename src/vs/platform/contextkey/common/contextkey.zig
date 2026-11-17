@@ -16,6 +16,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
+const scanner_module = @import("scanner.zig");
+const Scanner = scanner_module.Scanner;
+const Token = scanner_module.Token;
+const TokenType = scanner_module.TokenType;
+const regexp = @import("../../../../support/regexp.zig");
 
 pub const ExprType = enum(u8) {
     False = 0,
@@ -25,6 +30,8 @@ pub const ExprType = enum(u8) {
     Equals = 4,
     NotEquals = 5,
     And = 6,
+    Regex = 7,
+    NotRegex = 8,
     Or = 9,
     In = 10,
     NotIn = 11,
@@ -55,7 +62,8 @@ pub const IContext = struct {
 
 pub const KeyValue = struct { key: []const u8, value: ContextKeyValue };
 pub const KeyPair = struct { key: []const u8, value_key: []const u8 };
-pub const NumericValue = struct { key: []const u8, value: f64 };
+pub const NumericValue = struct { key: []const u8, value: ContextKeyValue };
+pub const RegexValue = struct { key: []const u8, source: []const u8, flags: []const u8 };
 
 pub const Expr = union(ExprType) {
     False: void,
@@ -65,6 +73,8 @@ pub const Expr = union(ExprType) {
     Equals: KeyValue,
     NotEquals: KeyValue,
     And: []*const Expr,
+    Regex: RegexValue,
+    NotRegex: RegexValue,
     Or: []*const Expr,
     In: KeyPair,
     NotIn: KeyPair,
@@ -87,6 +97,8 @@ pub const Expr = union(ExprType) {
                 }
                 break :blk true;
             },
+            .Regex => |entry| regexMatches(context.getValue(entry.key), entry),
+            .NotRegex => |entry| !regexMatches(context.getValue(entry.key), entry),
             .Or => |items| blk: {
                 for (items) |item| {
                     if (item.evaluate(context)) break :blk true;
@@ -121,6 +133,8 @@ pub const Expr = union(ExprType) {
             .Equals => |entry| try appendKeyValue(result, entry, "=="),
             .NotEquals => |entry| try appendKeyValue(result, entry, "!="),
             .And => |items| try appendJoined(result, items, " && "),
+            .Regex => |entry| try appendRegex(result, entry, "=~"),
+            .NotRegex => |entry| try appendRegex(result, entry, "!~"),
             .Or => |items| try appendJoined(result, items, " || "),
             .In => |entry| {
                 try result.appendSlice(entry.key);
@@ -157,6 +171,8 @@ pub const Expr = union(ExprType) {
             .Equals => |entry| try result.append(entry.key),
             .NotEquals => |entry| try result.append(entry.key),
             .And => |items| for (items) |item| try item.appendKeys(result),
+            .Regex => |entry| try result.append(entry.key),
+            .NotRegex => |entry| try result.append(entry.key),
             .Or => |items| for (items) |item| try item.appendKeys(result),
             .In => |entry| {
                 try result.append(entry.key);
@@ -181,6 +197,8 @@ pub const Expr = union(ExprType) {
             .NotEquals => |entry| createExpr(allocator, .{ .Equals = entry }),
             .In => |entry| createExpr(allocator, .{ .NotIn = entry }),
             .NotIn => |entry| createExpr(allocator, .{ .In = entry }),
+            .Regex => |entry| createExpr(allocator, .{ .NotRegex = entry }),
+            .NotRegex => |entry| createExpr(allocator, .{ .Regex = entry }),
             .Greater => |entry| createExpr(allocator, .{ .SmallerEquals = entry }),
             .GreaterEquals => |entry| createExpr(allocator, .{ .Smaller = entry }),
             .Smaller => |entry| createExpr(allocator, .{ .GreaterEquals = entry }),
@@ -240,6 +258,8 @@ pub const Expr = union(ExprType) {
             .Smaller => |entry| numericEquals(entry, other.Smaller),
             .SmallerEquals => |entry| numericEquals(entry, other.SmallerEquals),
             .And => |items| expressionListEquals(items, other.And),
+            .Regex => |entry| regexEquals(entry, other.Regex),
+            .NotRegex => |entry| regexEquals(entry, other.NotRegex),
             .Or => |items| expressionListEquals(items, other.Or),
         };
     }
@@ -262,6 +282,8 @@ pub const Expr = union(ExprType) {
             .Smaller => |entry| cmpNumerics(entry, other.Smaller),
             .SmallerEquals => |entry| cmpNumerics(entry, other.SmallerEquals),
             .And => |items| cmpExpressionLists(items, other.And),
+            .Regex => |entry| cmpRegex(entry, other.Regex),
+            .NotRegex => |entry| cmpRegex(entry, other.NotRegex),
             .Or => |items| cmpExpressionLists(items, other.Or),
         };
     }
@@ -474,13 +496,16 @@ fn allElementsIncluded(p: []const *const Expr, q: []const *const Expr) bool {
 
 const Comparison = enum { gt, gte, lt, lte };
 
-fn compareNumber(value: ContextKeyValue, expected: f64, comparison: Comparison) bool {
+fn compareNumber(value: ContextKeyValue, expected: ContextKeyValue, comparison: Comparison) bool {
+    // Upstream `withFloatOrStr` keeps non-numeric comparison values as strings
+    // and those always evaluate to false.
+    if (std.meta.activeTag(expected) != .number) return false;
     const number = toNumber(value) orelse return false;
     return switch (comparison) {
-        .gt => number > expected,
-        .gte => number >= expected,
-        .lt => number < expected,
-        .lte => number <= expected,
+        .gt => number > expected.number,
+        .gte => number >= expected.number,
+        .lt => number < expected.number,
+        .lte => number <= expected.number,
     };
 }
 
@@ -601,13 +626,21 @@ fn cmpKeyPairs(a: KeyPair, b: KeyPair) i32 {
 fn cmpNumerics(a: NumericValue, b: NumericValue) i32 {
     const key_order = cmpStrings(a.key, b.key);
     if (key_order != 0) return key_order;
-    if (a.value < b.value) return -1;
-    if (a.value > b.value) return 1;
-    return 0;
+    return compareValues(a.value, b.value);
 }
 
 fn numericEquals(a: NumericValue, b: NumericValue) bool {
-    return std.mem.eql(u8, a.key, b.key) and a.value == b.value;
+    return std.mem.eql(u8, a.key, b.key) and strictEquals(a.value, b.value);
+}
+
+fn regexEquals(a: RegexValue, b: RegexValue) bool {
+    return std.mem.eql(u8, a.key, b.key) and std.mem.eql(u8, a.source, b.source);
+}
+
+fn cmpRegex(a: RegexValue, b: RegexValue) i32 {
+    const key_order = cmpStrings(a.key, b.key);
+    if (key_order != 0) return key_order;
+    return cmpStrings(a.source, b.source);
 }
 
 fn expressionListEquals(a: []const *const Expr, b: []const *const Expr) bool {
@@ -649,7 +682,7 @@ fn appendNumber(result: *ArrayList(u8), entry: NumericValue, operator: []const u
     try result.append(' ');
     try result.appendSlice(operator);
     try result.append(' ');
-    try result.print("{d}", .{entry.value});
+    try appendValue(result, entry.value);
 }
 
 fn appendValue(result: *ArrayList(u8), value: ContextKeyValue) Allocator.Error!void {
@@ -718,20 +751,24 @@ pub const ContextKeyExpr = struct {
         return createExpr(self.arenaAllocator(), .{ .NotIn = .{ .key = key, .value_key = value_key } });
     }
 
-    pub fn greater(self: *ContextKeyExpr, key: []const u8, value: f64) Allocator.Error!*const Expr {
+    pub fn greater(self: *ContextKeyExpr, key: []const u8, value: ContextKeyValue) Allocator.Error!*const Expr {
         return createExpr(self.arenaAllocator(), .{ .Greater = .{ .key = key, .value = value } });
     }
 
-    pub fn greaterEquals(self: *ContextKeyExpr, key: []const u8, value: f64) Allocator.Error!*const Expr {
+    pub fn greaterEquals(self: *ContextKeyExpr, key: []const u8, value: ContextKeyValue) Allocator.Error!*const Expr {
         return createExpr(self.arenaAllocator(), .{ .GreaterEquals = .{ .key = key, .value = value } });
     }
 
-    pub fn smaller(self: *ContextKeyExpr, key: []const u8, value: f64) Allocator.Error!*const Expr {
+    pub fn smaller(self: *ContextKeyExpr, key: []const u8, value: ContextKeyValue) Allocator.Error!*const Expr {
         return createExpr(self.arenaAllocator(), .{ .Smaller = .{ .key = key, .value = value } });
     }
 
-    pub fn smallerEquals(self: *ContextKeyExpr, key: []const u8, value: f64) Allocator.Error!*const Expr {
+    pub fn smallerEquals(self: *ContextKeyExpr, key: []const u8, value: ContextKeyValue) Allocator.Error!*const Expr {
         return createExpr(self.arenaAllocator(), .{ .SmallerEquals = .{ .key = key, .value = value } });
+    }
+
+    pub fn regex(self: *ContextKeyExpr, key: []const u8, source: []const u8, flags: []const u8) Allocator.Error!*const Expr {
+        return createExpr(self.arenaAllocator(), .{ .Regex = .{ .key = key, .source = source, .flags = flags } });
     }
 
     pub fn andExpr(self: *ContextKeyExpr, exprs: []const ?*const Expr) Allocator.Error!?*const Expr {
@@ -742,6 +779,492 @@ pub const ContextKeyExpr = struct {
         return normalizeOr(self.arenaAllocator(), exprs, true);
     }
 };
+
+fn regexOptions(flags: []const u8) regexp.Options {
+    var options = regexp.DefaultOption;
+    if (std.mem.indexOfScalar(u8, flags, 'i') != null) options.ignore_case = true;
+    return options;
+}
+
+fn compileRegex(source: []const u8, flags: []const u8) ?regexp.RegExp {
+    return regexp.RegExp.init(source, regexOptions(flags)) catch null;
+}
+
+fn regexMatches(value: ContextKeyValue, entry: RegexValue) bool {
+    var regex = compileRegex(entry.source, entry.flags) orelse return false;
+    defer regex.deinit();
+
+    var buffer: [64]u8 = undefined;
+    const text = valueAsString(value, &buffer) orelse return false;
+    return regex.isMatch(text);
+}
+
+fn valueAsString(value: ContextKeyValue, buffer: *[64]u8) ?[]const u8 {
+    return switch (value) {
+        .string => |text| text,
+        .number => |number| std.fmt.bufPrint(buffer, "{d}", .{number}) catch null,
+        .boolean => |boolean| if (boolean) "true" else "false",
+        .null_value => "null",
+        .undefined_value => "undefined",
+        .array, .object => null,
+    };
+}
+
+fn appendRegex(result: *ArrayList(u8), entry: RegexValue, operator: []const u8) !void {
+    try result.appendSlice(entry.key);
+    try result.append(' ');
+    try result.appendSlice(operator);
+    try result.appendSlice(" /");
+    try appendRegexSource(result, entry.source);
+    try result.append('/');
+    try result.appendSlice(entry.flags);
+}
+
+/// JS `RegExp.source` escapes unescaped slashes.
+fn appendRegexSource(result: *ArrayList(u8), source: []const u8) !void {
+    var index: usize = 0;
+    while (index < source.len) {
+        const character = source[index];
+        if (character == '\\' and index + 1 < source.len) {
+            try result.append(character);
+            try result.append(source[index + 1]);
+            index += 2;
+            continue;
+        }
+        if (character == '/') {
+            try result.appendSlice("\\/");
+        } else {
+            try result.append(character);
+        }
+        index += 1;
+    }
+}
+
+fn withFloatOrStr(value: []const u8) ContextKeyValue {
+    const parsed = std.fmt.parseFloat(f64, value) catch return .{ .string = value };
+    return .{ .number = parsed };
+}
+
+fn validateRegexSource(source: []const u8, flags: []const u8) bool {
+    var regex = compileRegex(source, flags) orelse return false;
+    regex.deinit();
+    return true;
+}
+
+//#region Parser
+
+pub const ParserConfig = struct {
+    /// With this enabled the parser recovers from regex parsing errors such as
+    /// unescaped slashes: `/src//` is accepted as `/src\//` would be.
+    regex_parsing_with_error_recovery: bool = true,
+};
+
+pub const ParsingError = struct {
+    message: []const u8,
+    offset: usize,
+    lexeme: []const u8,
+    additional_info: ?[]const u8 = null,
+};
+
+const error_empty_string = "Empty context key expression";
+const hint_empty_string = "Did you forget to write an expression? You can also put 'false' or 'true' to always evaluate to false or true, respectively.";
+const error_no_in_after_not = "'in' after 'not'.";
+const error_closing_parenthesis = "closing parenthesis ')'";
+const error_unexpected_token = "Unexpected token";
+const hint_unexpected_token = "Did you forget to put && or || before the token?";
+const error_unexpected_eof = "Unexpected end of expression";
+const hint_unexpected_eof = "Did you forget to put a context key?";
+
+const ParseFailure = error{ ParseError, OutOfMemory };
+
+/// Port of the upstream `Parser`. The returned expression nodes are allocated
+/// with the parser's allocator; callers usually pass a `ContextKeyExpr` arena
+/// allocator.
+pub const Parser = struct {
+    allocator: Allocator,
+    config: ParserConfig,
+    scanner: Scanner,
+    tokens: []const Token = &.{},
+    current: usize = 0,
+    parsing_errors: ArrayList(ParsingError),
+
+    pub fn init(allocator: Allocator, config: ParserConfig) Parser {
+        return .{
+            .allocator = allocator,
+            .config = config,
+            .scanner = Scanner.init(allocator),
+            .parsing_errors = ArrayList(ParsingError).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Parser) void {
+        self.scanner.deinit();
+        self.parsing_errors.deinit();
+    }
+
+    pub fn lexingErrors(self: *const Parser) []const scanner_module.LexingError {
+        return self.scanner.errors.items;
+    }
+
+    pub fn parsingErrors(self: *const Parser) []const ParsingError {
+        return self.parsing_errors.items;
+    }
+
+    pub fn parse(self: *Parser, input: []const u8) ParseFailure!?*const Expr {
+        if (input.len == 0) {
+            try self.parsing_errors.append(.{
+                .message = error_empty_string,
+                .offset = 0,
+                .lexeme = "",
+                .additional_info = hint_empty_string,
+            });
+            return null;
+        }
+
+        self.tokens = try self.scanner.reset(input).scan();
+        self.current = 0;
+        self.parsing_errors.clearRetainingCapacity();
+
+        const expr = self.parseExpr() catch |err| switch (err) {
+            error.ParseError => return null,
+            else => return err,
+        };
+        if (!self.isAtEnd()) {
+            const token = self.peek();
+            const additional_info: ?[]const u8 = if (token.type == .Str) hint_unexpected_token else null;
+            return switch (self.failUnexpectedToken(token, additional_info)) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.ParseError => null,
+            };
+        }
+        return expr;
+    }
+
+    fn parseExpr(self: *Parser) ParseFailure!*const Expr {
+        return self.parseOr();
+    }
+
+    fn parseOr(self: *Parser) ParseFailure!*const Expr {
+        var list = ArrayList(?*const Expr).init(self.allocator);
+        defer list.deinit();
+        try list.append(try self.parseAnd());
+        while (self.matchOne(.Or)) {
+            try list.append(try self.parseAnd());
+        }
+        if (list.items.len == 1) return list.items[0].?;
+        return (try normalizeOr(self.allocator, list.items, true)).?;
+    }
+
+    fn parseAnd(self: *Parser) ParseFailure!*const Expr {
+        var list = ArrayList(?*const Expr).init(self.allocator);
+        defer list.deinit();
+        try list.append(try self.parseTerm());
+        while (self.matchOne(.And)) {
+            try list.append(try self.parseTerm());
+        }
+        if (list.items.len == 1) return list.items[0].?;
+        return (try normalizeAnd(self.allocator, list.items, true)).?;
+    }
+
+    fn parseTerm(self: *Parser) ParseFailure!*const Expr {
+        if (self.matchOne(.Neg)) {
+            const token = self.peek();
+            switch (token.type) {
+                .True => {
+                    _ = self.advance();
+                    return try createExpr(self.allocator, .False);
+                },
+                .False => {
+                    _ = self.advance();
+                    return try createExpr(self.allocator, .True);
+                },
+                .LParen => {
+                    _ = self.advance();
+                    const expr = try self.parseExpr();
+                    _ = try self.consume(.RParen, error_closing_parenthesis);
+                    return try expr.negate(self.allocator);
+                },
+                .Str => {
+                    _ = self.advance();
+                    return try createExpr(self.allocator, .{ .Not = token.lexeme });
+                },
+                else => return self.expectedButGot("KEY | true | false | '(' expression ')'", token),
+            }
+        }
+        return self.parsePrimary();
+    }
+
+    fn parsePrimary(self: *Parser) ParseFailure!*const Expr {
+        const token = self.peek();
+        switch (token.type) {
+            .True => {
+                _ = self.advance();
+                return try createExpr(self.allocator, .True);
+            },
+            .False => {
+                _ = self.advance();
+                return try createExpr(self.allocator, .False);
+            },
+            .LParen => {
+                _ = self.advance();
+                const expr = try self.parseExpr();
+                _ = try self.consume(.RParen, error_closing_parenthesis);
+                return expr;
+            },
+            .Str => {
+                const key = token.lexeme;
+                _ = self.advance();
+
+                if (self.matchOne(.RegexOp)) {
+                    return self.parseRegex(key);
+                }
+
+                if (self.matchOne(.Not)) {
+                    _ = try self.consume(.In, error_no_in_after_not);
+                    const value = try self.parseValue();
+                    return try createExpr(self.allocator, .{ .NotIn = .{ .key = key, .value_key = value } });
+                }
+
+                switch (self.peek().type) {
+                    .Eq => {
+                        _ = self.advance();
+                        const value = try self.parseValue();
+                        if (self.previous().type == .QuotedStr) {
+                            return try createExpr(self.allocator, .{ .Equals = .{ .key = key, .value = .{ .string = value } } });
+                        }
+                        if (std.mem.eql(u8, value, "true")) {
+                            return try createExpr(self.allocator, .{ .Defined = key });
+                        }
+                        if (std.mem.eql(u8, value, "false")) {
+                            return try createExpr(self.allocator, .{ .Not = key });
+                        }
+                        return try createExpr(self.allocator, .{ .Equals = .{ .key = key, .value = .{ .string = value } } });
+                    },
+                    .NotEq => {
+                        _ = self.advance();
+                        const value = try self.parseValue();
+                        if (self.previous().type == .QuotedStr) {
+                            return try createExpr(self.allocator, .{ .NotEquals = .{ .key = key, .value = .{ .string = value } } });
+                        }
+                        if (std.mem.eql(u8, value, "true")) {
+                            return try createExpr(self.allocator, .{ .Not = key });
+                        }
+                        if (std.mem.eql(u8, value, "false")) {
+                            return try createExpr(self.allocator, .{ .Defined = key });
+                        }
+                        return try createExpr(self.allocator, .{ .NotEquals = .{ .key = key, .value = .{ .string = value } } });
+                    },
+                    .Lt => {
+                        _ = self.advance();
+                        return try createExpr(self.allocator, .{ .Smaller = .{ .key = key, .value = withFloatOrStr(try self.parseValue()) } });
+                    },
+                    .LtEq => {
+                        _ = self.advance();
+                        return try createExpr(self.allocator, .{ .SmallerEquals = .{ .key = key, .value = withFloatOrStr(try self.parseValue()) } });
+                    },
+                    .Gt => {
+                        _ = self.advance();
+                        return try createExpr(self.allocator, .{ .Greater = .{ .key = key, .value = withFloatOrStr(try self.parseValue()) } });
+                    },
+                    .GtEq => {
+                        _ = self.advance();
+                        return try createExpr(self.allocator, .{ .GreaterEquals = .{ .key = key, .value = withFloatOrStr(try self.parseValue()) } });
+                    },
+                    .In => {
+                        _ = self.advance();
+                        return try createExpr(self.allocator, .{ .In = .{ .key = key, .value_key = try self.parseValue() } });
+                    },
+                    else => return try createExpr(self.allocator, .{ .Defined = key }),
+                }
+            },
+            .EOF => {
+                try self.parsing_errors.append(.{
+                    .message = error_unexpected_eof,
+                    .offset = token.offset,
+                    .lexeme = "",
+                    .additional_info = hint_unexpected_eof,
+                });
+                return error.ParseError;
+            },
+            else => return self.expectedButGot(
+                "true | false | KEY \n\t| KEY '=~' REGEX \n\t| KEY ('==' | '!=' | '<' | '<=' | '>' | '>=' | 'in' | 'not' 'in') value",
+                token,
+            ),
+        }
+    }
+
+    fn parseRegex(self: *Parser, key: []const u8) ParseFailure!*const Expr {
+        const token = self.peek();
+
+        if (!self.config.regex_parsing_with_error_recovery) {
+            _ = self.advance();
+            if (token.type != .RegexStr) return self.expectedButGot("REGEX", token);
+            return self.regexFromLexeme(key, token.lexeme, token);
+        }
+
+        switch (token.type) {
+            .RegexStr, .Error => {
+                var reconstruction = ArrayList(u8).init(self.allocator);
+                defer reconstruction.deinit();
+                try reconstruction.appendSlice(token.lexeme);
+                _ = self.advance();
+
+                var following = self.peek();
+                var paren_balance: i32 = 0;
+                for (token.lexeme) |character| {
+                    if (character == '(') paren_balance += 1;
+                    if (character == ')') paren_balance -= 1;
+                }
+
+                while (!self.isAtEnd() and following.type != .And and following.type != .Or) {
+                    switch (following.type) {
+                        .LParen => paren_balance += 1,
+                        .RParen => paren_balance -= 1,
+                        .RegexStr, .QuotedStr => {
+                            for (following.lexeme, 0..) |character, index| {
+                                if (character == '(') paren_balance += 1;
+                                if (index < token.lexeme.len and token.lexeme[index] == ')') paren_balance -= 1;
+                            }
+                        },
+                        else => {},
+                    }
+                    if (paren_balance < 0) break;
+                    try reconstruction.appendSlice(scanner_module.getLexeme(following));
+                    _ = self.advance();
+                    following = self.peek();
+                }
+
+                return self.regexFromLexeme(key, reconstruction.items, token);
+            },
+            .QuotedStr => {
+                const serialized_value = token.lexeme;
+                _ = self.advance();
+
+                if (std.mem.trim(u8, serialized_value, " \t\r\n").len == 0) {
+                    return self.expectedButGot("REGEX", token);
+                }
+                const start = std.mem.indexOfScalar(u8, serialized_value, '/') orelse return self.expectedButGot("REGEX", token);
+                const end = std.mem.lastIndexOfScalar(u8, serialized_value, '/') orelse return self.expectedButGot("REGEX", token);
+                if (start == end) return self.expectedButGot("REGEX", token);
+
+                const pattern = serialized_value[start + 1 .. end];
+                var flags: []const u8 = "";
+                if (end + 1 < serialized_value.len and serialized_value[end + 1] == 'i') flags = "i";
+                return self.regexExpression(key, pattern, flags, token);
+            },
+            else => return self.expectedButGot("REGEX", self.peek()),
+        }
+    }
+
+    fn regexFromLexeme(self: *Parser, key: []const u8, lexeme: []const u8, token: Token) ParseFailure!*const Expr {
+        const closing_slash_index = std.mem.lastIndexOfScalar(u8, lexeme, '/') orelse return self.expectedButGot("REGEX", token);
+        const pattern = if (closing_slash_index > 0) lexeme[1..closing_slash_index] else "";
+        var flags_buffer: [16]u8 = undefined;
+        var flags_len: usize = 0;
+        if (closing_slash_index + 1 < lexeme.len) {
+            for (lexeme[closing_slash_index + 1 ..]) |flag| {
+                if (flag == 'g' or flag == 'y') continue;
+                if (flags_len < flags_buffer.len) {
+                    flags_buffer[flags_len] = flag;
+                    flags_len += 1;
+                }
+            }
+        }
+        const flags = flags_buffer[0..flags_len];
+        return self.regexExpression(key, pattern, flags, token);
+    }
+
+    /// Copies the pattern and flags: the parser's token/reconstruction buffers do
+    /// not outlive the call, while the expression does.
+    fn regexExpression(self: *Parser, key: []const u8, pattern: []const u8, flags: []const u8, token: Token) ParseFailure!*const Expr {
+        if (!validateRegexSource(pattern, flags)) return self.expectedButGot("REGEX", token);
+        const source = try self.allocator.dupe(u8, pattern);
+        const copied_flags = try self.allocator.dupe(u8, flags);
+        return try createExpr(self.allocator, .{ .Regex = .{ .key = key, .source = source, .flags = copied_flags } });
+    }
+
+    fn parseValue(self: *Parser) ParseFailure![]const u8 {
+        const token = self.peek();
+        switch (token.type) {
+            .Str, .QuotedStr => {
+                _ = self.advance();
+                return token.lexeme;
+            },
+            .True => {
+                _ = self.advance();
+                return "true";
+            },
+            .False => {
+                _ = self.advance();
+                return "false";
+            },
+            .In => {
+                _ = self.advance();
+                return "in";
+            },
+            else => return "",
+        }
+    }
+
+    fn previous(self: *const Parser) Token {
+        return self.tokens[self.current - 1];
+    }
+
+    fn matchOne(self: *Parser, token_type: TokenType) bool {
+        if (self.check(token_type)) {
+            _ = self.advance();
+            return true;
+        }
+        return false;
+    }
+
+    fn advance(self: *Parser) Token {
+        if (!self.isAtEnd()) self.current += 1;
+        return self.previous();
+    }
+
+    fn consume(self: *Parser, token_type: TokenType, message: []const u8) ParseFailure!Token {
+        if (self.check(token_type)) return self.advance();
+        return self.expectedButGot(message, self.peek());
+    }
+
+    fn failUnexpectedToken(self: *Parser, token: Token, additional_info: ?[]const u8) ParseFailure {
+        self.parsing_errors.append(.{
+            .message = error_unexpected_token,
+            .offset = token.offset,
+            .lexeme = scanner_module.getLexeme(token),
+            .additional_info = additional_info,
+        }) catch return error.OutOfMemory;
+        return error.ParseError;
+    }
+
+    /// Upstream formats "Expected: {expected}\nReceived: '{got}'." into the
+    /// error message. The terminal port keeps a generic message; the lexeme,
+    /// offset and hint fields (what the UI/tests consume) are exact.
+    fn expectedButGot(self: *Parser, expected: []const u8, got: Token) ParseFailure {
+        _ = expected;
+        self.parsing_errors.append(.{
+            .message = "Expected: context key expression",
+            .offset = got.offset,
+            .lexeme = scanner_module.getLexeme(got),
+        }) catch return error.OutOfMemory;
+        return error.ParseError;
+    }
+
+    fn check(self: *const Parser, token_type: TokenType) bool {
+        return self.peek().type == token_type;
+    }
+
+    fn peek(self: *const Parser) Token {
+        return self.tokens[self.current];
+    }
+
+    fn isAtEnd(self: *const Parser) bool {
+        return self.peek().type == .EOF;
+    }
+};
+
+//#endregion
 
 const TestContext = struct {
     values: std.StringHashMap(ContextKeyValue),
@@ -783,9 +1306,9 @@ test "equals and has evaluate against a context" {
     try std.testing.expect(!(try factory.notEquals("bar", .{ .string = "baz" })).evaluate(context.context()));
     try std.testing.expect((try factory.has("bar")).evaluate(context.context()));
     try std.testing.expect(!(try factory.not("bar")).evaluate(context.context()));
-    try std.testing.expect((try factory.greater("count", 1)).evaluate(context.context()) == false);
+    try std.testing.expect(!(try factory.greater("count", .{ .number = 1 })).evaluate(context.context()));
     try context.values.put("count", .{ .number = 2 });
-    try std.testing.expect((try factory.greater("count", 1)).evaluate(context.context()));
+    try std.testing.expect((try factory.greater("count", .{ .number = 1 })).evaluate(context.context()));
 }
 
 test "and/or normalize sort, flatten and dedupe" {
@@ -853,7 +1376,7 @@ test "comparisons evaluate and negate like upstream" {
     var context = TestContext.init(std.testing.allocator);
     defer context.deinit();
 
-    const greater = try factory.greater("a", 1.1);
+    const greater = try factory.greater("a", .{ .number = 1.1 });
     try std.testing.expect(!greater.evaluate(context.context()));
     try context.values.put("a", .{ .string = "2" });
     try std.testing.expect(greater.evaluate(context.context()));
@@ -863,7 +1386,7 @@ test "comparisons evaluate and negate like upstream" {
     const negated = try greater.negate(factory.arenaAllocator());
     try expectSerialized(negated, "a <= 1.1");
 
-    const smaller = try factory.smaller("a", 2);
+    const smaller = try factory.smaller("a", .{ .number = 2 });
     try context.values.put("a", .{ .string = "3" });
     try std.testing.expect(!smaller.evaluate(context.context()));
     try std.testing.expect(std.meta.activeTag((try smaller.negate(factory.arenaAllocator())).*) == .GreaterEquals);
