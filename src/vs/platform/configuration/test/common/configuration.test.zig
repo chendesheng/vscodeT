@@ -102,3 +102,14 @@ test "removeFromValueTree cases" {
         try expectValue(target, case.after, arena.allocator());
     }
 }
+
+test "affectsConfiguration handles language overrides" {
+    const keys = [_][]const u8{"other"};
+    const override_keys = [_][]const u8{"editor.tabSize"};
+    const overrides = [_]configuration.OverrideChange{.{ .identifier = "typescript", .keys = &override_keys }};
+    const change = configuration.Change{ .source = .WORKSPACE, .keys = &keys, .overrides = &overrides };
+    try std.testing.expect(!configuration.affectsConfigurationWithOverrides(change, "editor.tabSize", null));
+    try std.testing.expect(configuration.affectsConfigurationWithOverrides(change, "editor.tabSize", "typescript"));
+    try std.testing.expect(!configuration.affectsConfigurationWithOverrides(change, "editor.tabSize", "python"));
+    try std.testing.expect(configuration.affectsConfigurationWithOverrides(change, "editor", "typescript"));
+}

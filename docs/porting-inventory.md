@@ -940,7 +940,7 @@ schema/scope/policy-reference/excluded-property cases remain. `configurationVari
 ported too. `configurationService.zig` ports an in-memory user-target `ConfigurationService`
 (getValue/inspect/updateValue, default-value removal, non-user target rejection),
 with the update, workspace-document, change-event, language-override fallback (including missing identifiers), invalid/non-object workspace
-reset,
+reset, override-aware `affectsConfiguration`,
 workspace-reload inspect, `isConfigured` and override-aware inspect cases from
 `configurationService.test.ts`;
 enforced policy configuration and remote/folder scoping remain unported.

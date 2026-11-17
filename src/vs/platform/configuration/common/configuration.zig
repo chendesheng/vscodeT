@@ -99,6 +99,20 @@ pub fn affectsConfiguration(change: Change, section: []const u8) bool {
     return false;
 }
 
+/// Override-aware `affectsConfiguration`: language-override changes only affect
+/// a query that names the same override identifier.
+pub fn affectsConfigurationWithOverrides(change: Change, section: []const u8, override_identifier: ?[]const u8) bool {
+    if (affectsConfiguration(change, section)) return true;
+    const identifier = override_identifier orelse return false;
+    for (change.overrides) |override_change| {
+        if (!std.mem.eql(u8, override_change.identifier, identifier)) continue;
+        for (override_change.keys) |key| {
+            if (std.mem.eql(u8, key, section) or isPathPrefix(key, section) or isPathPrefix(section, key)) return true;
+        }
+    }
+    return false;
+}
+
 fn isPathPrefix(prefix: []const u8, value: []const u8) bool {
     return value.len > prefix.len and
         std.mem.startsWith(u8, value, prefix) and
