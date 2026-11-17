@@ -427,6 +427,7 @@ test "an owning policy applies to its owner and references" {
         .default = std.json.Value{ .bool = true },
         .policy = "SharedBool",
         .policy_restricted_value = std.json.Value{ .bool = true },
+        .policy_managed_settings = true,
     }});
     try registry.registerConfiguration("reference", &.{.{
         .key = "policy.ref",
@@ -451,6 +452,7 @@ test "an owning policy applies to its owner and references" {
     const definition = policy_service.definitions.get("SharedBool").?;
     try std.testing.expectEqual(@import("../../../../platform/policy/common/policy.zig").PolicyType.boolean, definition.value_type);
     try std.testing.expectEqual(@as(bool, true), definition.restricted_value.?.boolean);
+    try std.testing.expectEqual(@as(?bool, true), definition.managed_settings);
 }
 
 test "an orphan policy reference resolves and preserves a nullable default" {
