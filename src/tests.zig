@@ -402,6 +402,7 @@ comptime {
     _ = @import("./vs/platform/commands/common/commands.zig");
     _ = @import("./vs/platform/storage/common/storage.zig");
     _ = @import("./vs/platform/policy/common/policy.zig");
+    _ = @import("./vs/platform/files/common/fileService.zig");
     _ = @import("./vs/workbench/common/memento.zig");
     _ = @import("./vs/workbench/services/themes/common/colorThemeData.zig");
     _ = @import("./vs/workbench/services/themes/common/textMateScopeMatcher.zig");
