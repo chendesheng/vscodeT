@@ -134,3 +134,55 @@ test "theme service applies and restores the active theme" {
     try restored.restore();
     try std.testing.expectEqualStrings("vs-light", restored.getActiveThemeId());
 }
+
+pub const ThemeSettingDefaults = struct {
+    pub const COLOR_THEME_DARK = "Dark 2026";
+    pub const COLOR_THEME_LIGHT = "Light 2026";
+    pub const COLOR_THEME_HC_DARK = "Default High Contrast";
+    pub const COLOR_THEME_HC_LIGHT = "Default High Contrast Light";
+};
+
+pub const ThemeSettings = struct {
+    pub const COLOR_THEME = "workbench.colorTheme";
+    pub const DETECT_COLOR_SCHEME = "window.autoDetectColorScheme";
+    pub const DETECT_HC = "window.autoDetectHighContrast";
+};
+
+/// Migrates legacy theme setting ids to their current equivalents.
+pub fn migrateThemeSettingsId(settings_id: []const u8) []const u8 {
+    const mappings = [_][2][]const u8{
+        .{ "Default Dark Modern", "Dark Modern" },
+        .{ "Default Light Modern", "Light Modern" },
+        .{ "Default Dark+", "Dark+" },
+        .{ "Default Light+", "Light+" },
+        .{ "Experimental Dark", ThemeSettingDefaults.COLOR_THEME_DARK },
+        .{ "VS Code Dark", ThemeSettingDefaults.COLOR_THEME_DARK },
+        .{ "Experimental Light", ThemeSettingDefaults.COLOR_THEME_LIGHT },
+        .{ "VS Code Light", ThemeSettingDefaults.COLOR_THEME_LIGHT },
+    };
+    for (mappings) |mapping| {
+        if (std.mem.eql(u8, settings_id, mapping[0])) return mapping[1];
+    }
+    return settings_id;
+}
+
+test "migrateThemeSettingsId migrates Default-prefixed ids" {
+    try std.testing.expectEqualStrings("Dark Modern", migrateThemeSettingsId("Default Dark Modern"));
+    try std.testing.expectEqualStrings("Light Modern", migrateThemeSettingsId("Default Light Modern"));
+    try std.testing.expectEqualStrings("Dark+", migrateThemeSettingsId("Default Dark+"));
+    try std.testing.expectEqualStrings("Light+", migrateThemeSettingsId("Default Light+"));
+}
+
+test "migrateThemeSettingsId migrates Experimental ids" {
+    try std.testing.expectEqualStrings(ThemeSettingDefaults.COLOR_THEME_DARK, migrateThemeSettingsId("Experimental Dark"));
+    try std.testing.expectEqualStrings(ThemeSettingDefaults.COLOR_THEME_LIGHT, migrateThemeSettingsId("Experimental Light"));
+    try std.testing.expectEqualStrings(ThemeSettingDefaults.COLOR_THEME_DARK, migrateThemeSettingsId("VS Code Dark"));
+    try std.testing.expectEqualStrings(ThemeSettingDefaults.COLOR_THEME_LIGHT, migrateThemeSettingsId("VS Code Light"));
+}
+
+test "migrateThemeSettingsId returns unknown ids unchanged" {
+    try std.testing.expectEqualStrings("Dark Modern", migrateThemeSettingsId("Dark Modern"));
+    try std.testing.expectEqualStrings("Dark 2026", migrateThemeSettingsId("Dark 2026"));
+    try std.testing.expectEqualStrings("Some Custom Theme", migrateThemeSettingsId("Some Custom Theme"));
+    try std.testing.expectEqualStrings("", migrateThemeSettingsId(""));
+}
