@@ -424,6 +424,7 @@ test "discarding a registry snapshot frees its state" {
     const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
     defer registry.deinit();
     try registry.registerConfiguration("discard", &.{.{ .key = "discard.setting", .default = std.json.Value{ .bool = true } }});
+    try registry.registerDefaultsJson("{\"discard.setting\":false}");
     var snapshot = try registry.record(allocator);
     snapshot.deinit();
 }
