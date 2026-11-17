@@ -6,6 +6,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const text_file = @import("./textFileService.zig");
 const TextFileService = text_file.TextFileService;
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
 pub const TextFileEditorModel = struct {
     allocator: Allocator,
@@ -15,6 +16,8 @@ pub const TextFileEditorModel = struct {
     saved_content: ?[]u8 = null,
     version: u32 = 0,
     disposed: bool = false,
+    onDidChangeContent: Emitter(void),
+    onDidChangeDirty: Emitter(void),
 
     pub fn create(allocator: Allocator, text_files: *TextFileService, path: []const u8) !*TextFileEditorModel {
         const self = try allocator.create(TextFileEditorModel);
@@ -23,11 +26,15 @@ pub const TextFileEditorModel = struct {
             .allocator = allocator,
             .path = try allocator.dupe(u8, path),
             .text_files = text_files,
+            .onDidChangeContent = Emitter(void).init(allocator),
+            .onDidChangeDirty = Emitter(void).init(allocator),
         };
         return self;
     }
 
     pub fn destroy(self: *TextFileEditorModel) void {
+        self.onDidChangeContent.deinit();
+        self.onDidChangeDirty.deinit();
         if (self.content) |content| self.allocator.free(content);
         if (self.saved_content) |content| self.allocator.free(content);
         self.allocator.free(self.path);
@@ -42,6 +49,8 @@ pub const TextFileEditorModel = struct {
         self.content = text;
         self.saved_content = try self.allocator.dupe(u8, text);
         self.version +%= 1;
+        try self.onDidChangeContent.fire({});
+        try self.onDidChangeDirty.fire({});
     }
 
     pub fn getText(self: *const TextFileEditorModel) []const u8 {
@@ -62,12 +71,15 @@ pub const TextFileEditorModel = struct {
         if (self.content) |content| self.allocator.free(content);
         self.content = copy;
         self.version +%= 1;
+        try self.onDidChangeContent.fire({});
+        try self.onDidChangeDirty.fire({});
     }
 
     pub fn save(self: *TextFileEditorModel) !void {
         try self.text_files.write(self.path, self.getText());
         if (self.saved_content) |content| self.allocator.free(content);
         self.saved_content = try self.allocator.dupe(u8, self.getText());
+        try self.onDidChangeDirty.fire({});
     }
 
     pub fn revert(self: *TextFileEditorModel) !void {
@@ -76,6 +88,8 @@ pub const TextFileEditorModel = struct {
         if (self.content) |content| self.allocator.free(content);
         self.content = copy;
         self.version +%= 1;
+        try self.onDidChangeContent.fire({});
+        try self.onDidChangeDirty.fire({});
     }
 };
 
@@ -96,6 +110,13 @@ test "TextFileEditorModel tracks content, version and dirty state" {
     try text_files.write(path, "one");
     var model = try TextFileEditorModel.create(allocator, &text_files, path);
     defer model.destroy();
+    const Listener = struct {
+        fn onDirty(_: void, count: *usize) anyerror!void {
+            count.* += 1;
+        }
+    };
+    var dirty_events: usize = 0;
+    _ = try model.onDidChangeDirty.listen(&dirty_events, Listener.onDirty);
     try model.load();
     try std.testing.expectEqualStrings("one", model.getText());
     try std.testing.expect(!model.isDirty());
@@ -103,6 +124,7 @@ test "TextFileEditorModel tracks content, version and dirty state" {
 
     try model.updateContent("two");
     try std.testing.expect(model.isDirty());
+    try std.testing.expect(dirty_events > 0);
     try std.testing.expect(model.versionId() != version);
     try model.save();
     try std.testing.expect(!model.isDirty());
