@@ -86,6 +86,7 @@ test "UntitledTextEditorInput tracks content and dirty state" {
     try std.testing.expectEqualStrings("Untitled-1", input.base.getName());
     try std.testing.expectEqualStrings("Untitled-1", input.getPreferredName());
     try std.testing.expectEqualStrings("untitled:/Untitled-1", input.getPreferredResource());
+    try std.testing.expectEqualStrings("", input.getPreferredContents());
     try std.testing.expectEqualStrings("", input.getText());
     try std.testing.expect(!input.base.isDirty());
 
