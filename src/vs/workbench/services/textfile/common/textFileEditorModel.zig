@@ -129,6 +129,9 @@ test "TextFileEditorModel tracks content, version and dirty state" {
     try std.testing.expect(model.versionId() != version);
     try model.save();
     try std.testing.expect(!model.isDirty());
+    const dirty_after_save = dirty_events;
+    try model.save();
+    try std.testing.expectEqual(dirty_after_save, dirty_events);
     const saved = try text_files.read(path, allocator);
     defer allocator.free(saved);
     try std.testing.expectEqualStrings("two", saved);
