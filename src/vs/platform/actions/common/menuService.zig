@@ -20,6 +20,9 @@ const commands = @import("../../commands/common/commands.zig");
 const contextkey = @import("../../contextkey/common/contextkey.zig");
 const base_actions = @import("../../../base/common/actions.zig");
 const storage_mod = @import("../../storage/common/storage.zig");
+const keybinding_registry_mod = @import("../../keybinding/common/keybindingsRegistry.zig");
+const us_layout = @import("../../keybinding/common/usLayoutResolvedKeybinding.zig");
+const platform = @import("../../../base/common/platform.zig");
 const InMemoryStorageService = storage_mod.InMemoryStorageService;
 const StorageScope = storage_mod.StorageScope;
 const StorageTarget = storage_mod.StorageTarget;
@@ -83,6 +86,7 @@ pub const MenuItemAction = struct {
     hidden: bool,
     is_modified_from_default: bool,
     label: []const u8,
+    keybinding_label: ?[]const u8,
     tooltip: []const u8,
     group_title: ?[]const u8,
     alt: ?*const IAction = null,
@@ -115,6 +119,11 @@ pub const MenuItemAction = struct {
     fn getTooltip(context: *anyopaque) []const u8 {
         const self: *MenuItemAction = @ptrCast(@alignCast(context));
         return self.tooltip;
+    }
+
+    /// Default keybinding label, as a keybinding service would report it.
+    pub fn keybindingLabel(self: *const MenuItemAction) ?[]const u8 {
+        return self.keybinding_label;
     }
 
     fn getClass(_: *anyopaque) ?[]const u8 {
@@ -367,6 +376,36 @@ pub const MenuService = struct {
     registry: *MenuRegistry,
     command_registry: ?*commands.CommandRegistry,
     hide_state: MenuHideState,
+    keybindings: ?*keybinding_registry_mod.KeybindingsRegistry = null,
+    os: platform.OperatingSystem = platform.OS,
+
+    pub fn initWithKeybindings(
+        allocator: Allocator,
+        registry: *MenuRegistry,
+        command_registry: ?*commands.CommandRegistry,
+        keybindings: *keybinding_registry_mod.KeybindingsRegistry,
+    ) MenuService {
+        var service = init(allocator, registry, command_registry);
+        service.keybindings = keybindings;
+        return service;
+    }
+
+    fn keybindingLabel(self: *MenuService, allocator: Allocator, command_id: []const u8, context: contextkey.IContext) !?[]const u8 {
+        const registry = self.keybindings orelse return null;
+        const items = try registry.getDefaultKeybindingsForOS(allocator, self.os);
+        // Items are arena-allocated by the menu; only their decoded keybindings
+        // need the normal cleanup path, which the arena performs on deinit.
+        for (items) |item| {
+            if (item.command == null or !std.mem.eql(u8, item.command.?, command_id)) continue;
+            if (item.when) |expression| {
+                if (!expression.evaluate(context)) continue;
+            }
+            const keybinding = item.keybinding orelse continue;
+            const resolved = try us_layout.USLayoutResolvedKeybinding.resolveKeybinding(allocator, keybinding, self.os) orelse continue;
+            if (resolved.base.getLabel()) |label| return label;
+        }
+        return null;
+    }
 
     pub fn init(allocator: Allocator, registry: *MenuRegistry, command_registry: ?*commands.CommandRegistry) MenuService {
         return .{
@@ -451,6 +490,7 @@ pub const MenuService = struct {
                             .hidden = self.hide_state.isHidden(id, item.command.id),
                             .is_modified_from_default = self.hide_state.isModifiedFromDefault(id, item.command.id),
                             .label = item.command.title,
+                            .keybinding_label = self.keybindingLabel(allocator, item.command.id, context) catch null,
                             .tooltip = item.command.tooltip orelse "",
                             .group_title = group_title,
                             .command_registry = self.command_registry,
@@ -464,6 +504,7 @@ pub const MenuService = struct {
                                 .hidden = self.hide_state.isHidden(id, alt.id),
                                 .is_modified_from_default = self.hide_state.isModifiedFromDefault(id, alt.id),
                                 .label = alt.title,
+                                .keybinding_label = self.keybindingLabel(allocator, alt.id, context) catch null,
                                 .tooltip = alt.tooltip orelse "",
                                 .group_title = group_title,
                                 .command_registry = self.command_registry,
@@ -800,4 +841,43 @@ test "menu tracks nested submenu registrations" {
     try std.testing.expectEqual(@as(usize, 1), changes);
     const submenu_action: *SubmenuItemAction = @ptrCast(@alignCast(menu.getActions()[0].actions[0].context));
     try std.testing.expectEqual(@as(usize, 2), submenu_action.actions.len);
+}
+
+test "menu actions expose keybinding labels" {
+    const allocator = std.testing.allocator;
+    const key_codes = @import("../../../base/common/keyCodes.zig");
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var keybindings = keybinding_registry_mod.KeybindingsRegistry.init(allocator);
+    defer keybindings.deinit();
+    var registration = try keybindings.registerKeybindingRule(.{
+        .id = "test.labelled",
+        .weight = 200,
+        .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK) },
+    });
+    defer registration.dispose();
+
+    const menu_id = MenuId{ .id = "test.labels" };
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "test.labelled", .title = "Labelled" } });
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var service = MenuService.initWithKeybindings(allocator, &registry, null, &keybindings);
+    defer service.deinit();
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+
+    const action: *MenuItemAction = @ptrCast(@alignCast(menu.getActions()[0].actions[0].context));
+    try std.testing.expect(action.keybindingLabel() != null);
+    try std.testing.expect(action.keybindingLabel().?.len > 0);
 }
