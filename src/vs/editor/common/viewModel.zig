@@ -8,6 +8,7 @@ const LanguageIdCodec = @import("./languages.zig").LanguageIdCodec;
 const TextDirection = @import("./standalone/standaloneEnums.zig").TextDirection;
 const IViewLineTokens = @import("./tokens/lineTokens.zig").IViewLineTokens;
 const InlineDecoration = @import("./viewModel/inlineDecorations.zig").InlineDecoration;
+const ICoordinatesConverter = @import("./coordinatesConverter.zig").ICoordinatesConverter;
 
 pub const ViewModelDecoration = @import("./viewModel/viewModelDecoration.zig").ViewModelDecoration;
 
@@ -241,16 +242,23 @@ pub const IViewModel = struct {
     context: *anyopaque,
     /// Upstream `IViewModel.viewLayout`.
     view_layout: IViewLayout,
+    /// Upstream `IViewModel.coordinatesConverter`.
+    coordinates_converter: ICoordinatesConverter,
     /// Optional view event handler registration hooks (upstream
     /// `addViewEventHandler`/`removeViewEventHandler`).
     add_view_event_handler: ?*const fn (context: *anyopaque, handler: *anyopaque) void = null,
     remove_view_event_handler: ?*const fn (context: *anyopaque, handler: *anyopaque) void = null,
     getLineMinColumn: *const fn (context: *anyopaque, lineNumber: usize) usize,
     getLineMaxColumn: *const fn (context: *anyopaque, lineNumber: usize) usize,
+    /// Upstream `IViewModel.getLineCount`.
+    getLineCount: *const fn (context: *anyopaque) usize,
+    /// Upstream `IViewModel.getLineLength`.
+    getLineLength: *const fn (context: *anyopaque, lineNumber: usize) usize,
     getViewportViewLineRenderingData: *const fn (context: *anyopaque, visibleRange: Range, lineNumber: usize) anyerror!ViewLineRenderingData,
     getViewLineContinuesWithWrappedLine: *const fn (context: *anyopaque, lineNumber: usize) bool,
-    /// Returns an array owned by the caller.
-    getDecorationsInViewport: *const fn (context: *anyopaque, visibleRange: Range) anyerror![]ViewModelDecoration,
+    /// Upstream returns a GC-managed array; the terminal port makes the
+    /// allocator explicit, so the caller owns and frees the result.
+    getDecorationsInViewport: *const fn (context: *anyopaque, visibleRange: Range, allocator: std.mem.Allocator) anyerror![]ViewModelDecoration,
 
     pub fn lineMinColumn(self: IViewModel, line_number: usize) usize {
         return self.getLineMinColumn(self.context, line_number);
@@ -258,6 +266,14 @@ pub const IViewModel = struct {
 
     pub fn lineMaxColumn(self: IViewModel, line_number: usize) usize {
         return self.getLineMaxColumn(self.context, line_number);
+    }
+
+    pub fn lineCount(self: IViewModel) usize {
+        return self.getLineCount(self.context);
+    }
+
+    pub fn lineLength(self: IViewModel, line_number: usize) usize {
+        return self.getLineLength(self.context, line_number);
     }
 
     pub fn viewportViewLineRenderingData(self: IViewModel, visible_range: Range, line_number: usize) !ViewLineRenderingData {
@@ -268,8 +284,8 @@ pub const IViewModel = struct {
         return self.getViewLineContinuesWithWrappedLine(self.context, line_number);
     }
 
-    pub fn decorationsInViewport(self: IViewModel, visible_range: Range) ![]ViewModelDecoration {
-        return self.getDecorationsInViewport(self.context, visible_range);
+    pub fn decorationsInViewport(self: IViewModel, visible_range: Range, allocator: std.mem.Allocator) ![]ViewModelDecoration {
+        return self.getDecorationsInViewport(self.context, visible_range, allocator);
     }
 };
 

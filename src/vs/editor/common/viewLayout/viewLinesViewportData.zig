@@ -73,8 +73,8 @@ pub const ViewportData = struct {
     }
 
     /// The returned array is owned by the caller.
-    pub fn getDecorationsInViewport(self: *const ViewportData) ![]ViewModelDecoration {
-        return self._model.decorationsInViewport(self.visibleRange);
+    pub fn getDecorationsInViewport(self: *const ViewportData, allocator: Allocator) ![]ViewModelDecoration {
+        return self._model.decorationsInViewport(self.visibleRange, allocator);
     }
 };
 
@@ -83,6 +83,7 @@ pub const ViewportData = struct {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+const test_stubs = @import("../../test/common/viewModelTestStubs.zig");
 const Position = @import("../core/position.zig").Position;
 const TextDirection = @import("../standalone/standaloneEnums.zig").TextDirection;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
@@ -124,9 +125,9 @@ const TestModel = struct {
         return line_number == 1;
     }
 
-    fn decorationsInViewport(_: *anyopaque, visible_range: Range) anyerror![]ViewModelDecoration {
+    fn decorationsInViewport(_: *anyopaque, visible_range: Range, allocator: Allocator) anyerror![]ViewModelDecoration {
         _ = visible_range;
-        const decorations = try testing.allocator.alloc(ViewModelDecoration, decoration_count);
+        const decorations = try allocator.alloc(ViewModelDecoration, decoration_count);
         return decorations;
     }
 
@@ -161,6 +162,17 @@ const TestModel = struct {
         return .{
             .context = @ptrFromInt(@alignOf(usize)),
             .view_layout = testLayout(),
+            .coordinates_converter = test_stubs.TestCoordinatesConverter.interface(),
+            .getLineCount = struct {
+                fn f(_: *anyopaque) usize {
+                    return 2;
+                }
+            }.f,
+            .getLineLength = struct {
+                fn f(_: *anyopaque, line_number: usize) usize {
+                    return if (line_number == 1) 5 else 10;
+                }
+            }.f,
             .getLineMinColumn = lineMinColumn,
             .getLineMaxColumn = lineMaxColumn,
             .getViewportViewLineRenderingData = viewportViewLineRenderingData,
@@ -242,7 +254,7 @@ test "ViewportData delegates rendering queries to the view model" {
     try testing.expect(!viewport.getViewLineContinuesWithWrappedLine(2));
 
     TestModel.decoration_count = 3;
-    const decorations = try viewport.getDecorationsInViewport();
+    const decorations = try viewport.getDecorationsInViewport(testing.allocator);
     defer testing.allocator.free(decorations);
     try testing.expectEqual(@as(usize, 3), decorations.len);
 }

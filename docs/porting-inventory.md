@@ -1,7 +1,7 @@
 # TUI porting inventory
 
-Status: P1, P2, the Search view/result-list port and P5f (log service) are
-implemented; P3, P4 and the remaining P5 slices remain. The file table (§7) and
+Status: P1, P2, P3, the Search view/result-list port and P5f (log service) are
+implemented; P4 and the remaining P5 slices remain. The file table (§7) and
 the UI/view code map (§7.1) are current at the snapshot HEAD.
 
 - Local snapshot: `src/tui/` at HEAD `cd69afb` (28 files, 19,012 lines).
@@ -79,9 +79,8 @@ P1, P2 and P5f are implemented.
   and the log-output picker are not ported. The TUI owns the terminal and has a
   single log file instead of per-channel resources.
 
-§7 and the new §7.1 are current at the snapshot HEAD. P3, P4 and the remaining
-P5 slices below are still
-pending.
+§7 and the new §7.1 are current at the snapshot HEAD. P4 and the remaining P5
+slices below are still pending.
 
 ## 1. Purpose
 
@@ -225,6 +224,7 @@ that make the later phases tractable.
 | Text model and tokens | `vs/editor/common/model/...`, piece-tree buffer, `textModelTokens`, token stores, `textMateTokenizer` | Ported and wired into `TextModel` |
 | View model | `vs/editor/common/viewModel/viewModelLines.zig`, `viewModelDecorations.zig`, `modelLineProjection.zig`, `vs/editor/common/coordinatesConverter.zig` | Ported |
 | View layout and line rendering | `vs/editor/common/viewLayout/lineDecorations.zig`, `viewLineRenderer.zig`, `lineHeights.zig`, `linesLayout.zig`, `vs/editor/common/viewModel/inlineDecorations.zig` | Ported |
+| Editor options and layout | `vs/editor/common/config/editorOptions.zig` (option value types, `IComputedEditorOptions`, `EditorLayoutInfoComputer`, `EditorWrappingInfoComputer`), `vs/editor/browser/config/editorConfiguration.zig` (`ComputedEditorOptions`) | Ported: upstream defaults, layout/minimap/wrapping computation and the 21-case `editorLayoutProvider.test.ts`; `IEditorConfiguration.options` is typed |
 | Cursors and edit operations | `vs/editor/common/cursor/...`, `cursorCommon.zig`, `cursorMoveCommands.zig`, `cursorTypeOperations.zig`, `cursorCollection.zig` | Ported; exercised through `editor.zig` |
 | Editor contributions | Find, hover, suggest, bracket matching, word highlighter, smart select, in-place replace, comment, indentation, multicursor, line selection, line operations, snippet, insert-final-newline, word operations | Ported under `vs/editor/contrib/...` |
 | Workbench editor group | `vs/workbench/common/editor/editorGroupModel.zig`, `vs/workbench/services/editor/common/editorGroupsService.zig` | Ported |
@@ -787,7 +787,7 @@ model/view model and contributions.
 `editor/browser/view/viewUserInputEvents.zig` (view-to-model mouse target
 conversion incl. view zones) are ported, together with the extended
 `MouseTargetType`/view-zone detail; `viewPart.zig`, `viewLayer.zig`,
-`viewOverlays.zig` and the thin `View` orchestrator are next; `viewLayer.zig` is also ported (RenderedLinesCollection and the terminal-adapted VisibleLinesCollection window/render loop), with the full `viewLayer.test.ts` case matrix ported; `viewOverlays.zig` ports ViewOverlays/ViewOverlayLine (content/margin subclasses still need layoutInfo options). Visible-lines DOM plumbing stays terminal-side. `viewContext.zig` and `viewPart.zig` (handler registration + prepare/render callbacks) are now ported too, along with `IViewModel.view_layout`/event-handler hooks; computed editor options remain opaque.
+`viewOverlays.zig` and the thin `View` orchestrator are next; `viewLayer.zig` is also ported (RenderedLinesCollection and the terminal-adapted VisibleLinesCollection window/render loop), with the full `viewLayer.test.ts` case matrix ported; `viewOverlays.zig` ports ViewOverlays/ViewOverlayLine (content/margin subclasses still need layoutInfo options). Visible-lines DOM plumbing stays terminal-side. `viewContext.zig` and `viewPart.zig` (handler registration + prepare/render callbacks) are now ported too, along with `IViewModel.view_layout`/event-handler hooks. The computed-options blocker is removed: `common/config/editorOptions.zig` ports the option value types, `IComputedEditorOptions`, `EditorLayoutInfoComputer` and `EditorWrappingInfoComputer`, `browser/config/editorConfiguration.zig` ports `ComputedEditorOptions` with the upstream defaults and `compute` step, and the 21-case `editorLayoutProvider.test.ts` is ported at the upstream test path. Next are the `View` orchestrator, `viewController.zig` and `codeEditorWidget.zig`.
 
 **Suggested commits:**
 
@@ -1033,31 +1033,34 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 1,944 editor tests + 187 UI
+**Current implementation snapshot (clean build, 1,952 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
-dynamic overlays, rendered/visible lines, view overlays) with `viewLayer.test.ts`
-ported, while the `View` orchestrator, `viewController.ts` and `codeEditorWidget`
-remain blocked on `IEditorConfiguration`/`ComputedEditorOptions`. P5a/P5b/P5f/P5g
+dynamic overlays, rendered/visible lines, view overlays), the computed editor
+options (`ComputedEditorOptions`, option value types, layout/wrapping
+computation) with `editorLayoutProvider.test.ts`, and `viewLayer.test.ts`
+ported; the `View` orchestrator, `viewController.ts` and `codeEditorWidget`
+remain. P5a/P5b/P5f/P5g
 are complete; P5c has color-theme data/registry/loading, a terminal
 workbench theme service (+ its test suite) and the size registry; P5h has the
 configuration model parser/filters/merges/overrides, registry defaults/policies/
 deregistration, variables, DefaultConfiguration and an in-memory user-target
 ConfigurationService; P5d tests are ported with the service registration surface
-pending; P5e (URI/file/editor input) is not started.
+pending; P5e has the URI/file-service/editor-input foundation and needs the
+full provider file service and the working-copy wiring.
 
-**Status at the end of the current session:** 1,944 editor tests, 187 UI tests
+**Status at the end of the current session:** 1,952 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
-The remaining work is the editor-options/view stack and the URI/file/editor
-input infrastructure described below.
+The remaining work is the editor view/controller/widget stack and the URI/file
+service/editor-input wiring described below.
 
 **Remaining upstream files by slice**
 
 | Slice | Remaining upstream work |
 | --- | --- |
-| P4 | `editor/common/config/editorOptions.ts` (`ComputedEditorOptions`), `editor/browser/view.ts`, `editor/browser/view/viewController.ts`, `editor/browser/widget/codeEditor/codeEditorWidget.ts`, and the layout-dependent overlays |
+| P4 | `editor/browser/view.ts`, `editor/browser/view/viewController.ts`, `editor/browser/widget/codeEditor/codeEditorWidget.ts`, the remaining view parts and the layout-dependent overlays; the computed options (`ComputedEditorOptions`, `EditorLayoutInfoComputer`) are ported |
 | P5e | core `base/common/uri.ts`, `network`/`VSBuffer`/`extpath` helpers, `FileType`/`FileOperation`/`FileChangesEvent`, a disk-backed `DiskFileService` (read/write/stat/rename/copy/recursive delete/directory listing/change events), a minimal `TextFileService`, `FileEditorInput`/serializer and the side-by-side/diff input identity/unwrapping and side-by-side/diff serializers, save/revert forwarding and composite untyped matching are ported; the full provider/event file service remains; minimal text-file editor models and untitled/diff/side-by-side inputs (with serializers) are ported |
 | P5c | `tokenClassificationRegistry`, the TextMate scope matcher and `ColorThemeData` token-style resolution are ported; the workbench theme-service plumbing remains |
 | P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering are ported; the workbench experiment/remote suites remain |
@@ -1066,9 +1069,9 @@ input infrastructure described below.
 
 **Known blockers for the remaining work**
 
-- P4 `View`, `viewController` and `codeEditorWidget` need
-  `IEditorConfiguration`'s computed options (`editorOptions.ts`, still opaque in
-  `editorConfiguration.zig`).
+- P4 `View`, `viewController` and `codeEditorWidget` now have the computed
+  options they read; the remaining work is the orchestrator/controller/widget
+  extraction and the layout-dependent view parts.
 - P5e needs `base/common/uri.zig`, the file service and the concrete editor
   inputs (`TextResourceEditorInput`, `FileEditorInput`, untitled/diff/side-by-side)
   before its upstream tests can run.

@@ -58,6 +58,7 @@ pub const ViewPart = struct {
 test "view part registers renders and unregisters" {
     const theme_service = @import("../../../platform/theme/common/themeService.zig");
     const view_model = @import("../../common/viewModel.zig");
+    const test_stubs = @import("../../test/common/viewModelTestStubs.zig");
     const editor_configuration = @import("../../common/config/editorConfiguration.zig");
     const actions = @import("../../../platform/actions/common/actions.zig");
 
@@ -135,6 +136,17 @@ test "view part registers renders and unregisters" {
     const model = view_model.IViewModel{
         .context = &state,
         .view_layout = layout,
+        .coordinates_converter = test_stubs.TestCoordinatesConverter.interface(),
+        .getLineCount = struct {
+            fn f(_: *anyopaque) usize {
+                return 2;
+            }
+        }.f,
+        .getLineLength = struct {
+            fn f(_: *anyopaque, _: usize) usize {
+                return 0;
+            }
+        }.f,
         .add_view_event_handler = Model.add,
         .remove_view_event_handler = Model.remove,
         .getLineMinColumn = struct {
@@ -158,7 +170,7 @@ test "view part registers renders and unregisters" {
             }
         }.f,
         .getDecorationsInViewport = struct {
-            fn f(_: *anyopaque, _: @import("../../common/core/range.zig").Range) anyerror![]@import("../../common/viewModel/viewModelDecoration.zig").ViewModelDecoration {
+            fn f(_: *anyopaque, _: @import("../../common/core/range.zig").Range, _: std.mem.Allocator) anyerror![]@import("../../common/viewModel/viewModelDecoration.zig").ViewModelDecoration {
                 return @constCast(&[_]@import("../../common/viewModel/viewModelDecoration.zig").ViewModelDecoration{});
             }
         }.f,

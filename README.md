@@ -756,10 +756,18 @@ Editor contributions:
   icons, keybinding labels or persisted command history.
 
 - The remaining porting roadmap and its blockers live in
-  [`docs/porting-inventory.md`](docs/porting-inventory.md). The two largest open
-  prerequisites are `editor/common/config/editorOptions.ts` (needed by the
-  P4 view/controller stack) and the portable URI/file-service/editor-input
-  layer (P5e).
+  [`docs/porting-inventory.md`](docs/porting-inventory.md). The computed
+  editor-options substrate is now ported: `editor/common/config/editorOptions.zig`
+  carries the option value types, the `IComputedEditorOptions` interface and
+  `EditorLayoutInfoComputer` (minimap, glyph margin, line numbers, wrapping
+  columns and overview ruler); `editor/browser/config/editorConfiguration.zig`
+  carries `ComputedEditorOptions` with the upstream defaults and the
+  environment-dependent options; `editorLayoutProvider.test.ts` is ported.
+  `IEditorConfiguration.options` is now a typed `IComputedEditorOptions` rather
+  than an opaque pointer. The open P4 work is the `View` orchestrator,
+  `viewController.ts`, `codeEditorWidget.ts` and the remaining view parts. The
+  portable URI/file-service/editor-input layer (P5e) still needs the full
+  provider file service and the concrete working-copy wiring.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON

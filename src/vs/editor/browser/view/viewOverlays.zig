@@ -158,6 +158,7 @@ pub const ViewOverlays = struct {
 test "view overlays concatenate dynamic overlays per line" {
     const theme_service = @import("../../../platform/theme/common/themeService.zig");
     const view_model = @import("../../common/viewModel.zig");
+    const test_stubs = @import("../../test/common/viewModelTestStubs.zig");
     const editor_configuration = @import("../../common/config/editorConfiguration.zig");
     const actions = @import("../../../platform/actions/common/actions.zig");
 
@@ -210,6 +211,17 @@ test "view overlays concatenate dynamic overlays per line" {
     const model = view_model.IViewModel{
         .context = &layout_state,
         .view_layout = layout,
+        .coordinates_converter = test_stubs.TestCoordinatesConverter.interface(),
+        .getLineCount = struct {
+            fn f(_: *anyopaque) usize {
+                return 2;
+            }
+        }.f,
+        .getLineLength = struct {
+            fn f(_: *anyopaque, _: usize) usize {
+                return 0;
+            }
+        }.f,
         .getLineMinColumn = struct {
             fn f(_: *anyopaque, _: usize) usize {
                 return 1;
@@ -231,7 +243,7 @@ test "view overlays concatenate dynamic overlays per line" {
             }
         }.f,
         .getDecorationsInViewport = struct {
-            fn f(_: *anyopaque, _: @import("../../common/core/range.zig").Range) anyerror![]view_model.ViewModelDecoration {
+            fn f(_: *anyopaque, _: @import("../../common/core/range.zig").Range, _: Allocator) anyerror![]view_model.ViewModelDecoration {
                 return @constCast(&[_]view_model.ViewModelDecoration{});
             }
         }.f,

@@ -156,8 +156,8 @@ pub const RestrictedRenderingContext = struct {
         return self.viewLayout.getLineHeightForLineNumber(line_number);
     }
 
-    pub fn getDecorationsInViewport(self: *const RestrictedRenderingContext) ![]ViewModelDecoration {
-        return self.viewportData.getDecorationsInViewport();
+    pub fn getDecorationsInViewport(self: *const RestrictedRenderingContext, allocator: Allocator) ![]ViewModelDecoration {
+        return self.viewportData.getDecorationsInViewport(allocator);
     }
 };
 
