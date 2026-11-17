@@ -67,6 +67,23 @@ fn expectKeys(expected: []const []const u8, actual: []const []const u8) !void {
     }
 }
 
+fn modelWithOverride(
+    allocator: std.mem.Allocator,
+    value_text: []const u8,
+    keys: []const []const u8,
+    identifier: []const u8,
+    override_text: []const u8,
+    override_keys: []const []const u8,
+) !configuration_models.ConfigurationModel {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), value_text, .{});
+    const override_value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), override_text, .{});
+    const identifiers = [_][]const u8{identifier};
+    const overrides = [_]configuration_models.OverrideIdentifier{.{ .identifiers = &identifiers, .keys = override_keys, .contents = override_value }};
+    return configuration_models.ConfigurationModel.initWithOverrides(allocator, value, keys, &overrides);
+}
+
 fn modelFrom(allocator: std.mem.Allocator, text: []const u8, keys: []const []const u8) !configuration_models.ConfigurationModel {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -137,4 +154,58 @@ test "removeValue removes segmented keys" {
         try std.testing.expect(model.getValue("a.b") == null);
         try std.testing.expectEqual(@as(usize, 0), model.getKeys().len);
     }
+}
+
+test "get overriding configuration model" {
+    const allocator = std.testing.allocator;
+    {
+        var model = try modelWithOverride(allocator, "{\"a\":{\"b\":1},\"f\":1}", &.{}, "c", "{\"a\":{\"d\":1}}", &.{"a"});
+        defer model.deinit();
+        var overridden = try model.override(allocator, "c");
+        defer overridden.deinit();
+        try std.testing.expectEqual(@as(i64, 1), overridden.getValue("a.b").?.integer);
+        try std.testing.expectEqual(@as(i64, 1), overridden.getValue("a.d").?.integer);
+        try std.testing.expectEqual(@as(i64, 1), overridden.getValue("f").?.integer);
+
+        var missing = try model.override(allocator, "xyz");
+        defer missing.deinit();
+        try std.testing.expectEqual(@as(i64, 1), missing.getValue("a.b").?.integer);
+        try std.testing.expect(missing.getValue("a.d") == null);
+    }
+    {
+        var model = try modelWithOverride(allocator, "{\"a\":{\"b\":1},\"f\":1}", &.{}, "c", "{\"a\":{\"d\":1},\"g\":1}", &.{ "a", "g" });
+        defer model.deinit();
+        var overridden = try model.override(allocator, "c");
+        defer overridden.deinit();
+        try std.testing.expectEqual(@as(i64, 1), overridden.getValue("g").?.integer);
+    }
+    {
+        var model = try modelWithOverride(allocator, "{\"a\":{\"b\":1},\"f\":1}", &.{}, "c", "{\"a\":{\"d\":1},\"f\":{\"g\":1}}", &.{ "a", "f" });
+        defer model.deinit();
+        var overridden = try model.override(allocator, "c");
+        defer overridden.deinit();
+        try std.testing.expectEqual(@as(i64, 1), overridden.getValue("f.g").?.integer);
+    }
+    {
+        var model = try modelWithOverride(allocator, "{\"a\":{\"b\":1},\"f\":{\"g\":1}}", &.{}, "c", "{\"a\":{\"d\":1},\"f\":1}", &.{ "a", "f" });
+        defer model.deinit();
+        var overridden = try model.override(allocator, "c");
+        defer overridden.deinit();
+        try std.testing.expectEqual(@as(i64, 1), overridden.getValue("f").?.integer);
+    }
+}
+
+test "simple merge" {
+    const allocator = std.testing.allocator;
+    var base = try modelFrom(allocator, "{\"a\":1,\"b\":2}", &.{ "a", "b" });
+    defer base.deinit();
+    var add = try modelFrom(allocator, "{\"a\":3,\"c\":4}", &.{ "a", "c" });
+    defer add.deinit();
+    const models = [_]*const configuration_models.ConfigurationModel{ &base, &add };
+    var result = try configuration_models.ConfigurationModel.merge(allocator, &models);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 3), result.getValue("a").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), result.getValue("b").?.integer);
+    try std.testing.expectEqual(@as(i64, 4), result.getValue("c").?.integer);
+    try expectKeys(&.{ "a", "b", "c" }, result.getKeys());
 }

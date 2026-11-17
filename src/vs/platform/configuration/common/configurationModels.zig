@@ -116,6 +116,27 @@ pub const ConfigurationModel = struct {
         return model;
     }
 
+    /// Builds a model with explicit override entries.
+    pub fn initWithOverrides(allocator: Allocator, value: Value, keys: []const []const u8, overrides: []const OverrideIdentifier) !ConfigurationModel {
+        var model = try init(allocator, value, keys);
+        errdefer model.deinit();
+        const arena = model.arena.allocator();
+        var cloned = std.array_list.Managed(OverrideIdentifier).init(arena);
+        for (overrides) |override_value| {
+            var identifiers = std.array_list.Managed([]const u8).init(arena);
+            for (override_value.identifiers) |identifier| try identifiers.append(try arena.dupe(u8, identifier));
+            var override_keys = std.array_list.Managed([]const u8).init(arena);
+            for (override_value.keys) |key| try override_keys.append(try arena.dupe(u8, key));
+            try cloned.append(.{
+                .identifiers = try identifiers.toOwnedSlice(),
+                .keys = try override_keys.toOwnedSlice(),
+                .contents = try configuration.cloneValue(arena, override_value.contents),
+            });
+        }
+        model.overrides = try cloned.toOwnedSlice();
+        return model;
+    }
+
     /// Builds a model from an already parsed JSON object, for `.code-workspace`
     /// files whose `settings` member is itself the raw settings object.
     pub fn fromValue(allocator: Allocator, value: Value) !ConfigurationModel {
@@ -173,6 +194,29 @@ pub const ConfigurationModel = struct {
             if (std.mem.eql(u8, existing, key)) return true;
         }
         return false;
+    }
+
+    /// Returns the model with every override block matching `identifier`
+    /// merged into its contents.
+    pub fn override(self: *const ConfigurationModel, allocator: Allocator, identifier: []const u8) !ConfigurationModel {
+        var result = try self.clone(allocator);
+        errdefer result.deinit();
+        const arena = result.arena.allocator();
+        for (self.overrides) |override_value| {
+            var matches = false;
+            for (override_value.identifiers) |candidate| {
+                if (std.mem.eql(u8, candidate, identifier)) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (!matches or override_value.contents != .object) continue;
+            try configuration.mergeInto(arena, &result.contents, override_value.contents);
+            for (override_value.keys) |key| {
+                if (!result.hasKey(key)) try result.keys.append(try arena.dupe(u8, key));
+            }
+        }
+        return result;
     }
 
     /// Merges models left-to-right. Later models win on scalar/array values;
