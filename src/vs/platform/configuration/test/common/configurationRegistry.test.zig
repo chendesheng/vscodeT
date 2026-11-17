@@ -333,7 +333,7 @@ test "record and restore keep declared defaults, hidden settings and contributio
     defer source_registry.deinit();
     try source_registry.registerConfiguration("restore.node", &.{
         .{ .key = "restore.overridden", .value_type = "boolean", .default = std.json.Value{ .bool = false } },
-        .{ .key = "restore.hidden", .value_type = "string", .included = false, .agent_host_key = "restore.hidden" },
+        .{ .key = "restore.hidden", .value_type = "string", .included = false, .agent_host_key = "restore.hidden", .policy = "restorePolicy" },
     });
     try source_registry.registerDefaultConfigurations(&.{.{ .key = "restore.overridden", .value = std.json.Value{ .bool = true } }});
 
@@ -346,6 +346,7 @@ test "record and restore keep declared defaults, hidden settings and contributio
     try std.testing.expectEqual(@as(bool, true), restored.getConfigurationProperties().get("restore.overridden").?.default.bool);
     try std.testing.expect(restored.getExcludedConfigurationProperties().get("restore.hidden") != null);
     try std.testing.expect(restored.getAgentHostSyncConfigurations().get("restore.hidden") != null);
+    try std.testing.expect(restored.getPolicyConfigurations().get("restorePolicy") != null);
 
     const entries = try restored.getRegisteredDefaultConfigurations(allocator);
     defer allocator.free(entries);
