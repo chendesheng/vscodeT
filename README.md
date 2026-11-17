@@ -353,6 +353,12 @@ Bracket-pair colorization:
   `registerLanguageConfiguration` and promoted on first use into the ported
   `LanguageConfigurationRegistry`, which implements upstream priority merging,
   the default `plaintext` contribution and change invalidation.
+- `LanguageService` also carries the language registry: id/alias/mimetype
+  contributions (generated `text/x-<id>` mimetypes, first-mimetype-wins),
+  extension/filename/filename-pattern and first-line detection, sorted
+  language names, and `createById`/`createByMimeType`/`createByFilepathOrFirstLine`
+  selections that re-emit when languages are registered. Workbench extension
+  contribution registration is not ported yet.
 - The language-support helpers are ported: rich bracket grouping and
   forward/reversed bracket search (`RichEditBrackets`, `BracketsUtils`),
   `ScopedLineTokens`, electric-character matching, and `OnEnterSupport`
