@@ -16,6 +16,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
+const Emitter = @import("../../../base/common/event.zig").Emitter;
 const scanner_module = @import("scanner.zig");
 const Scanner = scanner_module.Scanner;
 const Token = scanner_module.Token;
@@ -1437,4 +1438,252 @@ test "expression equality and keys" {
     try std.testing.expectEqual(@as(usize, 2), keys.len);
     try std.testing.expectEqualStrings("a", keys[0]);
     try std.testing.expectEqualStrings("b", keys[1]);
+}
+
+/// A key that can be read and updated; mirrors upstream `IContextKey<T>`.
+pub const IContextKey = struct {
+    context: *anyopaque,
+    get_fn: *const fn (context: *anyopaque) ContextKeyValue,
+    set_fn: *const fn (context: *anyopaque, value: ContextKeyValue) void,
+    reset_fn: *const fn (context: *anyopaque) void,
+    dispose_fn: *const fn (context: *anyopaque) void,
+
+    pub fn get(self: IContextKey) ContextKeyValue {
+        return self.get_fn(self.context);
+    }
+    pub fn set(self: IContextKey, value: ContextKeyValue) void {
+        self.set_fn(self.context, value);
+    }
+    pub fn reset(self: IContextKey) void {
+        self.reset_fn(self.context);
+    }
+    pub fn dispose(self: IContextKey) void {
+        self.dispose_fn(self.context);
+    }
+};
+
+pub const ContextKeyChangeEvent = struct {
+    changed_keys: []const []const u8,
+
+    pub fn affectsSome(self: ContextKeyChangeEvent, keys: []const []const u8) bool {
+        for (self.changed_keys) |changed| {
+            for (keys) |key| {
+                if (std.mem.eql(u8, changed, key)) return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn allKeysContainedIn(self: ContextKeyChangeEvent, keys: []const []const u8) bool {
+        for (self.changed_keys) |changed| {
+            var found = false;
+            for (keys) |key| {
+                if (std.mem.eql(u8, changed, key)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+};
+
+pub const IContextKeyService = struct {
+    context: *anyopaque,
+    create_key_fn: *const fn (context: *anyopaque, key: []const u8, default_value: ?ContextKeyValue) anyerror!IContextKey,
+    context_matches_rules_fn: *const fn (context: *anyopaque, rules: ?*const Expr) bool,
+    get_context_key_value_fn: *const fn (context: *anyopaque, key: []const u8) ContextKeyValue,
+    get_context_fn: *const fn (context: *anyopaque) IContext,
+    listen_fn: *const fn (context: *anyopaque, listener: ContextListener) anyerror!usize,
+    unlisten_fn: *const fn (context: *anyopaque, id: usize) void,
+
+    pub fn createKey(self: IContextKeyService, key: []const u8, default_value: ?ContextKeyValue) !IContextKey {
+        return self.create_key_fn(self.context, key, default_value);
+    }
+    pub fn contextMatchesRules(self: IContextKeyService, rules: ?*const Expr) bool {
+        return self.context_matches_rules_fn(self.context, rules);
+    }
+    pub fn getContextKeyValue(self: IContextKeyService, key: []const u8) ContextKeyValue {
+        return self.get_context_key_value_fn(self.context, key);
+    }
+    pub fn getContext(self: IContextKeyService) IContext {
+        return self.get_context_fn(self.context);
+    }
+    pub fn listen(self: IContextKeyService, listener: ContextListener) !usize {
+        return self.listen_fn(self.context, listener);
+    }
+    pub fn unlisten(self: IContextKeyService, id: usize) void {
+        self.unlisten_fn(self.context, id);
+    }
+};
+
+pub const ContextListener = struct {
+    context: *anyopaque,
+    callback: *const fn (event: ContextKeyChangeEvent, context: *anyopaque) anyerror!void,
+};
+
+/// Terminal `ContextKeyService`: a flat key/value map with change events.
+/// Scoped services, DOM targets and overlay contexts are browser concepts and
+/// are not ported; `getContext` returns the same flat context.
+pub const ContextKeyService = struct {
+    allocator: Allocator,
+    values: std.StringHashMap(ContextKeyValue),
+    keys: std.array_list.Managed(*KeyHandle),
+    onDidChangeContext: Emitter(ContextKeyChangeEvent),
+
+    const KeyHandle = struct {
+        service: *ContextKeyService,
+        key: []const u8,
+        default_value: ContextKeyValue,
+    };
+
+    pub fn init(allocator: Allocator) ContextKeyService {
+        return .{
+            .allocator = allocator,
+            .values = std.StringHashMap(ContextKeyValue).init(allocator),
+            .keys = std.array_list.Managed(*KeyHandle).init(allocator),
+            .onDidChangeContext = Emitter(ContextKeyChangeEvent).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *ContextKeyService) void {
+        for (self.keys.items) |key| self.allocator.destroy(key);
+        self.keys.deinit();
+        self.values.deinit();
+        self.onDidChangeContext.deinit();
+    }
+
+    pub fn interface(self: *ContextKeyService) IContextKeyService {
+        return .{
+            .context = self,
+            .create_key_fn = createKeyFn,
+            .context_matches_rules_fn = contextMatchesRulesFn,
+            .get_context_key_value_fn = getValueFn,
+            .get_context_fn = getContextFn,
+            .listen_fn = listenFn,
+            .unlisten_fn = unlistenFn,
+        };
+    }
+
+    pub fn createKey(self: *ContextKeyService, key: []const u8, default_value: ?ContextKeyValue) !IContextKey {
+        if (!self.values.contains(key)) {
+            _ = try self.values.put(key, default_value orelse .{ .undefined_value = {} });
+        }
+        const handle = try self.allocator.create(KeyHandle);
+        errdefer self.allocator.destroy(handle);
+        handle.* = .{
+            .service = self,
+            .key = key,
+            .default_value = default_value orelse .{ .undefined_value = {} },
+        };
+        try self.keys.append(handle);
+        return .{
+            .context = handle,
+            .get_fn = keyGet,
+            .set_fn = keySet,
+            .reset_fn = keyReset,
+            .dispose_fn = keyDispose,
+        };
+    }
+
+    pub fn getValue(self: *ContextKeyService, key: []const u8) ContextKeyValue {
+        return self.values.get(key) orelse .{ .undefined_value = {} };
+    }
+
+    pub fn contextMatchesRules(self: *ContextKeyService, rules: ?*const Expr) bool {
+        const expression = rules orelse return true;
+        return expression.evaluate(self.asContext());
+    }
+
+    pub fn asContext(self: *ContextKeyService) IContext {
+        return .{ .context = self, .get_value = getValueFromContext };
+    }
+
+    fn setValue(self: *ContextKeyService, key: []const u8, value: ContextKeyValue) void {
+        _ = self.values.put(key, value) catch return;
+        const changed = [_][]const u8{key};
+        self.onDidChangeContext.fire(.{ .changed_keys = &changed }) catch {};
+    }
+
+    fn getValueFromContext(context: *anyopaque, key: []const u8) ContextKeyValue {
+        const self: *ContextKeyService = @ptrCast(@alignCast(context));
+        return self.getValue(key);
+    }
+
+    fn keyGet(context: *anyopaque) ContextKeyValue {
+        const handle: *KeyHandle = @ptrCast(@alignCast(context));
+        return handle.service.getValue(handle.key);
+    }
+    fn keySet(context: *anyopaque, value: ContextKeyValue) void {
+        const handle: *KeyHandle = @ptrCast(@alignCast(context));
+        handle.service.setValue(handle.key, value);
+    }
+    fn keyReset(context: *anyopaque) void {
+        const handle: *KeyHandle = @ptrCast(@alignCast(context));
+        handle.service.setValue(handle.key, handle.default_value);
+    }
+    fn keyDispose(_: *anyopaque) void {}
+
+    fn createKeyFn(context: *anyopaque, key: []const u8, default_value: ?ContextKeyValue) anyerror!IContextKey {
+        const self: *ContextKeyService = @ptrCast(@alignCast(context));
+        return self.createKey(key, default_value);
+    }
+    fn contextMatchesRulesFn(context: *anyopaque, rules: ?*const Expr) bool {
+        const self: *ContextKeyService = @ptrCast(@alignCast(context));
+        return self.contextMatchesRules(rules);
+    }
+    fn getValueFn(context: *anyopaque, key: []const u8) ContextKeyValue {
+        const self: *ContextKeyService = @ptrCast(@alignCast(context));
+        return self.getValue(key);
+    }
+    fn getContextFn(context: *anyopaque) IContext {
+        const self: *ContextKeyService = @ptrCast(@alignCast(context));
+        return self.asContext();
+    }
+    fn listenFn(context: *anyopaque, listener: ContextListener) anyerror!usize {
+        const self: *ContextKeyService = @ptrCast(@alignCast(context));
+        return self.onDidChangeContext.listen(listener, struct {
+            fn wrapped(event: ContextKeyChangeEvent, ctx: *anyopaque) anyerror!void {
+                const value: *ContextListener = @ptrCast(@alignCast(ctx));
+                try value.callback(event, value.context);
+            }
+        }.wrapped);
+    }
+    fn unlistenFn(context: *anyopaque, id: usize) void {
+        const self: *ContextKeyService = @ptrCast(@alignCast(context));
+        self.onDidChangeContext.unlisten(id);
+    }
+};
+
+test "context key service creates, sets and reports changes" {
+    const allocator = std.testing.allocator;
+    var service = ContextKeyService.init(allocator);
+    defer service.deinit();
+
+    var factory = ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+
+    const key = try service.createKey("view", .{ .string = "files" });
+    try std.testing.expect(service.contextMatchesRules(try factory.equals("view", .{ .string = "files" })));
+    try std.testing.expect(!service.contextMatchesRules(try factory.equals("view", .{ .string = "search" })));
+
+    const Listener = struct {
+        count: usize = 0,
+        fn onChange(event: ContextKeyChangeEvent, context: *@This()) anyerror!void {
+            const keys = [_][]const u8{"view"};
+            if (event.affectsSome(&keys)) context.count += 1;
+        }
+    };
+    var listener = Listener{};
+    const id = try service.onDidChangeContext.listen(&listener, Listener.onChange);
+    defer service.onDidChangeContext.unlisten(id);
+
+    key.set(.{ .string = "search" });
+    try std.testing.expectEqual(@as(usize, 1), listener.count);
+    try std.testing.expectEqualStrings("search", service.getValue("view").string);
+
+    key.reset();
+    try std.testing.expectEqual(@as(usize, 2), listener.count);
+    try std.testing.expectEqualStrings("files", service.getValue("view").string);
 }
