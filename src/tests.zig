@@ -416,6 +416,7 @@ comptime {
     _ = @import("./vs/platform/keybinding/common/keybindingResolver.zig");
     _ = @import("./vs/platform/keybinding/common/keybindingsRegistry.zig");
     _ = @import("./vs/platform/keybinding/common/keybinding.zig");
+    _ = @import("./vs/platform/keybinding/common/abstractKeybindingService.zig");
     _ = @import("./vs/platform/keybinding/test/common/keybindingResolver.test.zig");
     _ = @import("./vs/platform/contextkey/test/common/scanner.test.zig");
     _ = @import("./vs/platform/contextkey/test/common/parser.test.zig");

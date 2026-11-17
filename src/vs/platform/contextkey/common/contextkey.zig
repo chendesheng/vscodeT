@@ -1527,9 +1527,15 @@ pub const ContextListener = struct {
 /// Scoped services, DOM targets and overlay contexts are browser concepts and
 /// are not ported; `getContext` returns the same flat context.
 pub const ContextKeyService = struct {
+    const StoredListener = struct {
+        id: usize,
+        stored: *ContextListener,
+    };
+
     allocator: Allocator,
     values: std.StringHashMap(ContextKeyValue),
     keys: std.array_list.Managed(*KeyHandle),
+    listeners: std.array_list.Managed(StoredListener),
     onDidChangeContext: Emitter(ContextKeyChangeEvent),
 
     const KeyHandle = struct {
@@ -1543,6 +1549,7 @@ pub const ContextKeyService = struct {
             .allocator = allocator,
             .values = std.StringHashMap(ContextKeyValue).init(allocator),
             .keys = std.array_list.Managed(*KeyHandle).init(allocator),
+            .listeners = std.array_list.Managed(StoredListener).init(allocator),
             .onDidChangeContext = Emitter(ContextKeyChangeEvent).init(allocator),
         };
     }
@@ -1550,6 +1557,8 @@ pub const ContextKeyService = struct {
     pub fn deinit(self: *ContextKeyService) void {
         for (self.keys.items) |key| self.allocator.destroy(key);
         self.keys.deinit();
+        for (self.listeners.items) |entry| self.allocator.destroy(entry.stored);
+        self.listeners.deinit();
         self.values.deinit();
         self.onDidChangeContext.deinit();
     }
@@ -1643,16 +1652,27 @@ pub const ContextKeyService = struct {
     }
     fn listenFn(context: *anyopaque, listener: ContextListener) anyerror!usize {
         const self: *ContextKeyService = @ptrCast(@alignCast(context));
-        return self.onDidChangeContext.listen(listener, struct {
-            fn wrapped(event: ContextKeyChangeEvent, ctx: *anyopaque) anyerror!void {
-                const value: *ContextListener = @ptrCast(@alignCast(ctx));
+        const stored = try self.allocator.create(ContextListener);
+        errdefer self.allocator.destroy(stored);
+        stored.* = listener;
+        const id = try self.onDidChangeContext.listen(stored, struct {
+            fn wrapped(event: ContextKeyChangeEvent, value: *ContextListener) anyerror!void {
                 try value.callback(event, value.context);
             }
         }.wrapped);
+        try self.listeners.append(.{ .id = id, .stored = stored });
+        return id;
     }
     fn unlistenFn(context: *anyopaque, id: usize) void {
         const self: *ContextKeyService = @ptrCast(@alignCast(context));
         self.onDidChangeContext.unlisten(id);
+        for (self.listeners.items, 0..) |entry, index| {
+            if (entry.id == id) {
+                self.allocator.destroy(entry.stored);
+                _ = self.listeners.orderedRemove(index);
+                break;
+            }
+        }
     }
 };
 
