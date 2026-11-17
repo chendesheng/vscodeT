@@ -393,3 +393,17 @@ test "policy and policy reference registrations are tracked" {
     try std.testing.expect(registry.getPolicyReferenceConfigurations().get("referenceName") != null);
     try std.testing.expect(registry.getConfigurationProperties().get("both.setting") == null);
 }
+
+test "policy reference lists accumulate keys" {
+    const allocator = std.testing.allocator;
+    const registry = try configuration_registry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("refs", &.{
+        .{ .key = "ref.one", .default = std.json.Value{ .bool = true }, .policy_reference = "shared" },
+        .{ .key = "ref.two", .default = std.json.Value{ .bool = true }, .policy_reference = "shared" },
+    });
+    const list = registry.getPolicyReferenceConfigurations().get("shared").?;
+    try std.testing.expectEqual(@as(usize, 2), list.items.len);
+    try std.testing.expectEqualStrings("ref.one", list.items[0]);
+    try std.testing.expectEqualStrings("ref.two", list.items[1]);
+}
