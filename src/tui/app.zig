@@ -751,14 +751,13 @@ fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
         }
     }
 
-    if (std.meta.activeTag(event.key) == .char and (event.mods.ctrl or event.mods.alt)) {
-        if (event.mods.ctrl and !event.mods.alt and event.key.char == 'q') {
-            return editor.requestQuit();
-        }
-        _ = editor.dispatchShortcut(event) catch |err| {
-            editor.setMessage("shortcut failed: {s}", .{@errorName(err)});
-            return false;
-        };
+    if (std.meta.activeTag(event.key) == .char and event.mods.ctrl and !event.mods.alt and event.key.char == 'q') {
+        return editor.requestQuit();
+    }
+    if (editor.dispatchShortcut(event) catch |err| blk: {
+        editor.setMessage("shortcut failed: {s}", .{@errorName(err)});
+        break :blk false;
+    }) {
         return false;
     }
 
@@ -1562,4 +1561,28 @@ test "app: in-place replace shortcut cycles the value" {
     const value = try editor.model.getValue(.TextDefined, false);
     defer value.deinit();
     try std.testing.expectEqualStrings("false", value.items);
+}
+
+test "app: navigation keys resolve through the keybinding registry" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setSelections(&[_]Selection{Selection.init(1, 3, 1, 3)});
+
+    const left = input.KeyEvent{ .key = .left };
+    try std.testing.expect(try editor.dispatchShortcut(left));
+    try std.testing.expectEqualDeep(Selection.init(1, 2, 1, 2), editor.modelSelection());
+
+    const shift_left = input.KeyEvent{ .key = .left, .mods = .{ .shift = true } };
+    try std.testing.expect(try editor.dispatchShortcut(shift_left));
+    try std.testing.expectEqualDeep(Selection.init(1, 2, 1, 1), editor.modelSelection());
+
+    // Unregistered combinations keep falling back to the legacy dispatch.
+    const alt_shift_left = input.KeyEvent{ .key = .left, .mods = .{ .alt = true, .shift = true } };
+    try std.testing.expect(!(try editor.dispatchShortcut(alt_shift_left)));
 }

@@ -727,7 +727,8 @@ commands as actions.
   shortcuts are wired through it (`workbench.action.closeActiveEditor`,
   next/previous editor, focus group, `openEditorAtIndex1-9`), and the editor
   Ctrl/Alt character shortcuts (save/undo/redo/select/comment/bracket/replace/
-  reindent/occurrences/line-selection/indent) resolve through the same host;
+  reindent/occurrences/line-selection/indent) and the cursor
+  navigation/selection keys resolve through the same host;
   the 4 `keyCodes.test.ts` and 5
   `keybindingLabels.test.ts` cases are ported. `platform/contextkey/common/scanner.zig`
   ports the context-key scanner and its 34 upstream cases;

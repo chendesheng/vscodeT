@@ -722,7 +722,10 @@ Editor contributions:
   left/right, `openEditorAtIndex1-9`). The editor's Ctrl/Alt character
   shortcuts (save, undo/redo, select all, comment, bracket
   jump/select/remove, in-place replace, reindent, occurrences, line selection,
-  indent) also resolve through the registry; navigation keys and plain text
-  input still use the hand-written dispatch. Quick open has no `fuzzyScorer.ts`
+  indent) and the cursor navigation/selection keys (arrows, word moves,
+  home/end, page up/down) resolve through the registry. Unregistered
+  combinations (Alt+Arrow line moves, Ctrl+Alt cursors, Alt+Shift smart
+  selection) and the editing keys (enter/tab/backspace/delete/escape) still
+  use the hand-written dispatch until the core-command layer is ported. Quick open has no `fuzzyScorer.ts`
   path-aware scoring, symbol/go-to-line/link providers, quick-input buttons,
   icons, keybinding labels or persisted command history.

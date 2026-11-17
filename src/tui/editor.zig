@@ -350,16 +350,24 @@ pub const Editor = struct {
         self.keybindings = keybindings;
     }
 
-    /// Resolves a Ctrl/Alt character shortcut through the keybinding registry.
-    /// Returns whether the key was consumed (a matched command or a reserved
-    /// modifier combination); text input never reaches this path.
+    /// Resolves a shortcut through the keybinding registry. Ctrl/Alt character
+    /// combinations are always consumed (they can never type text); navigation
+    /// keys are consumed only when a keybinding matched (or started a chord),
+    /// so unregistered combinations keep falling back to the legacy switch.
     pub fn dispatchShortcut(self: *Editor, event: input.KeyEvent) !bool {
-        if (std.meta.activeTag(event.key) != .char) return false;
-        if (!event.mods.ctrl and !event.mods.alt) return false;
+        const is_char = std.meta.activeTag(event.key) == .char;
+        const is_navigation = switch (event.key) {
+            .left, .right, .up, .down, .home, .end, .page_up, .page_down => true,
+            else => false,
+        };
+        if (!is_navigation) {
+            if (!is_char or (!event.mods.ctrl and !event.mods.alt)) return false;
+        }
 
         try self.ensureShortcutKeybindings();
-        _ = try self.keybindings.?.dispatch(event, tui_keybindings.empty_context);
-        return true;
+        const command = try self.keybindings.?.dispatch(event, tui_keybindings.empty_context);
+        if (!is_navigation) return true;
+        return command != null or self.keybindings.?.inChordMode();
     }
 
     pub fn deinit(self: *Editor) void {
@@ -2719,6 +2727,30 @@ const shortcut_specs = [_]struct {
     .{ .id = "editor.action.selectAllOccurrences", .run = cmdSelectAllOccurrences },
     .{ .id = "editor.action.reindentselectedlines", .run = cmdReindentSelectedLines },
     .{ .id = "editor.action.reindentlines", .run = cmdReindentLines },
+    .{ .id = "cursorLeft", .run = cmd_cursorLeft },
+    .{ .id = "cursorLeftSelect", .run = cmd_cursorLeftSelect },
+    .{ .id = "cursorRight", .run = cmd_cursorRight },
+    .{ .id = "cursorRightSelect", .run = cmd_cursorRightSelect },
+    .{ .id = "cursorWordLeft", .run = cmd_cursorWordLeft },
+    .{ .id = "cursorWordLeftSelect", .run = cmd_cursorWordLeftSelect },
+    .{ .id = "cursorWordRight", .run = cmd_cursorWordRight },
+    .{ .id = "cursorWordRightSelect", .run = cmd_cursorWordRightSelect },
+    .{ .id = "cursorUp", .run = cmd_cursorUp },
+    .{ .id = "cursorUpSelect", .run = cmd_cursorUpSelect },
+    .{ .id = "cursorDown", .run = cmd_cursorDown },
+    .{ .id = "cursorDownSelect", .run = cmd_cursorDownSelect },
+    .{ .id = "cursorPageUp", .run = cmd_cursorPageUp },
+    .{ .id = "cursorPageUpSelect", .run = cmd_cursorPageUpSelect },
+    .{ .id = "cursorPageDown", .run = cmd_cursorPageDown },
+    .{ .id = "cursorPageDownSelect", .run = cmd_cursorPageDownSelect },
+    .{ .id = "cursorLineStart", .run = cmd_cursorLineStart },
+    .{ .id = "cursorLineStartSelect", .run = cmd_cursorLineStartSelect },
+    .{ .id = "cursorLineEnd", .run = cmd_cursorLineEnd },
+    .{ .id = "cursorLineEndSelect", .run = cmd_cursorLineEndSelect },
+    .{ .id = "cursorTop", .run = cmd_cursorTop },
+    .{ .id = "cursorTopSelect", .run = cmd_cursorTopSelect },
+    .{ .id = "cursorBottom", .run = cmd_cursorBottom },
+    .{ .id = "cursorBottomSelect", .run = cmd_cursorBottomSelect },
 };
 
 fn editorOf(context: *anyopaque) *Editor {
@@ -2777,6 +2809,79 @@ fn cmdReindentLines(context: *anyopaque) anyerror!void {
     return editorOf(context).reindentLines();
 }
 
+fn cmd_cursorLeft(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveLeft(false);
+}
+fn cmd_cursorLeftSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveLeft(true);
+}
+fn cmd_cursorRight(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveRight(false);
+}
+fn cmd_cursorRightSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveRight(true);
+}
+fn cmd_cursorWordLeft(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveWordLeft(false);
+}
+fn cmd_cursorWordLeftSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveWordLeft(true);
+}
+fn cmd_cursorWordRight(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveWordRight(false);
+}
+fn cmd_cursorWordRightSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveWordRight(true);
+}
+fn cmd_cursorUp(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveUp(false);
+}
+fn cmd_cursorUpSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveUp(true);
+}
+fn cmd_cursorDown(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveDown(false);
+}
+fn cmd_cursorDownSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveDown(true);
+}
+fn cmd_cursorPageUp(context: *anyopaque) anyerror!void {
+    return editorOf(context).movePageUp(false);
+}
+fn cmd_cursorPageUpSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).movePageUp(true);
+}
+fn cmd_cursorPageDown(context: *anyopaque) anyerror!void {
+    return editorOf(context).movePageDown(false);
+}
+fn cmd_cursorPageDownSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).movePageDown(true);
+}
+fn cmd_cursorLineStart(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveLineStart(false);
+}
+fn cmd_cursorLineStartSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveLineStart(true);
+}
+fn cmd_cursorLineEnd(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveLineEnd(false);
+}
+fn cmd_cursorLineEndSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveLineEnd(true);
+}
+fn cmd_cursorTop(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveDocStart(false);
+}
+fn cmd_cursorTopSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveDocStart(true);
+}
+fn cmd_cursorBottom(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveDocEnd(false);
+}
+fn cmd_cursorBottomSelect(context: *anyopaque) anyerror!void {
+    return editorOf(context).moveDocEnd(true);
+}
+
 const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.files.save", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyS) } },
     .{ .id = "undo", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyZ) } },
@@ -2797,4 +2902,28 @@ const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "editor.action.selectAllOccurrences", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyD) } },
     .{ .id = "editor.action.reindentselectedlines", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyR) } },
     .{ .id = "editor.action.reindentlines", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyR) } },
+    .{ .id = "cursorLeft", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.LeftArrow) } },
+    .{ .id = "cursorLeftSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.LeftArrow) } },
+    .{ .id = "cursorRight", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.RightArrow) } },
+    .{ .id = "cursorRightSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.RightArrow) } },
+    .{ .id = "cursorWordLeft", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.LeftArrow) } },
+    .{ .id = "cursorWordLeftSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.LeftArrow) } },
+    .{ .id = "cursorWordRight", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.RightArrow) } },
+    .{ .id = "cursorWordRightSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.RightArrow) } },
+    .{ .id = "cursorUp", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.UpArrow) } },
+    .{ .id = "cursorUpSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.UpArrow) } },
+    .{ .id = "cursorDown", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.DownArrow) } },
+    .{ .id = "cursorDownSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.DownArrow) } },
+    .{ .id = "cursorPageUp", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.PageUp) } },
+    .{ .id = "cursorPageUpSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.PageUp) } },
+    .{ .id = "cursorPageDown", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.PageDown) } },
+    .{ .id = "cursorPageDownSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.PageDown) } },
+    .{ .id = "cursorLineStart", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.Home) } },
+    .{ .id = "cursorLineStartSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Home) } },
+    .{ .id = "cursorLineEnd", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.End) } },
+    .{ .id = "cursorLineEndSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.End) } },
+    .{ .id = "cursorTop", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Home) } },
+    .{ .id = "cursorTopSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Home) } },
+    .{ .id = "cursorBottom", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.End) } },
+    .{ .id = "cursorBottomSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.End) } },
 };
