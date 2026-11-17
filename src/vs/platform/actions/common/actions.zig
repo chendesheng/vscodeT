@@ -339,6 +339,7 @@ pub const MenuRegistry = struct {
     groups: std.StringHashMap(std.StringHashMap([]const u8)),
     commands: std.StringHashMap(ICommandAction),
     implicit_items: std.array_list.Managed(MenuEntry),
+    get_menu_items_calls: std.StringHashMap(usize),
     on_did_change: Emitter(MenuChangeEvent),
 
     pub fn init(allocator: Allocator) MenuRegistry {
@@ -348,6 +349,7 @@ pub const MenuRegistry = struct {
             .groups = std.StringHashMap(std.StringHashMap([]const u8)).init(allocator),
             .commands = std.StringHashMap(ICommandAction).init(allocator),
             .implicit_items = std.array_list.Managed(MenuEntry).init(allocator),
+            .get_menu_items_calls = std.StringHashMap(usize).init(allocator),
             .on_did_change = Emitter(MenuChangeEvent).init(allocator),
         };
     }
@@ -361,6 +363,7 @@ pub const MenuRegistry = struct {
         self.groups.deinit();
         self.commands.deinit();
         self.implicit_items.deinit();
+        self.get_menu_items_calls.deinit();
         self.on_did_change.deinit();
     }
 
@@ -372,6 +375,10 @@ pub const MenuRegistry = struct {
         }
         try entry.value_ptr.put(group, title);
         try self.on_did_change.fire(.{ .menu = id });
+    }
+
+    pub fn getMenuItemsCallCount(self: *MenuRegistry, id: MenuId) usize {
+        return self.get_menu_items_calls.get(id.id) orelse 0;
     }
 
     pub fn getMenuGroupTitle(self: *MenuRegistry, id: MenuId, group: []const u8) ?[]const u8 {
@@ -415,6 +422,9 @@ pub const MenuRegistry = struct {
     /// `_appendImplicitItems`). That slice is owned by the registry scratch
     /// buffer and is invalidated by the next palette lookup.
     pub fn getMenuItems(self: *MenuRegistry, id: MenuId) []const MenuEntry {
+        const counter = self.get_menu_items_calls.getOrPut(id.id) catch return &.{};
+        if (!counter.found_existing) counter.value_ptr.* = 0;
+        counter.value_ptr.* += 1;
         const list = self.menus.getPtr(id.id);
         if (!MenuId.eql(id, menu_ids.CommandPalette)) {
             return if (list) |entries| entries.items else &.{};

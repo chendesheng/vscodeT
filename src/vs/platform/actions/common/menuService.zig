@@ -73,11 +73,9 @@ pub const Menu = struct {
     pub fn refresh(self: *Menu) !void {
         self.arena.deinit();
         self.arena = std.heap.ArenaAllocator.init(self.allocator);
-        self.groups = try self.service.buildGroups(self.arena.allocator(), self.id, self.context);
         freeMenuIds(self.allocator, &self.menu_ids);
-        try collectMenuIds(self.allocator, self.service.registry, &self.menu_ids, self.id);
         freeMenuIds(self.allocator, &self.context_keys);
-        try collectContextKeys(self.allocator, self.service.registry, &self.context_keys, self.id);
+        self.groups = try self.service.buildGroups(self.arena.allocator(), self.id, self.context, &self.menu_ids, &self.context_keys);
     }
 
     fn onRegistryChange(event: actions.MenuChangeEvent, menu: *Menu) anyerror!void {
@@ -377,37 +375,26 @@ pub const MenuHideState = struct {
     }
 };
 
-fn collectMenuIds(allocator: Allocator, registry: *MenuRegistry, set: *std.StringHashMap(void), id: MenuId) !void {
+fn addMenuId(allocator: Allocator, set: *std.StringHashMap(void), id: MenuId) !void {
     if (set.contains(id.id)) return;
-    const key = try allocator.dupe(u8, id.id);
-    errdefer allocator.free(key);
-    try set.put(key, {});
-    for (registry.getMenuItems(id)) |entry| {
-        switch (entry) {
-            .submenu => |submenu| try collectMenuIds(allocator, registry, set, submenu.submenu),
-            else => {},
-        }
-    }
+    try set.put(try allocator.dupe(u8, id.id), {});
 }
 
-fn collectContextKeys(allocator: Allocator, registry: *MenuRegistry, set: *std.StringHashMap(void), id: MenuId) !void {
-    for (registry.getMenuItems(id)) |*entry| {
-        const when = switch (entry.*) {
-            .command => |item| item.when,
-            .submenu => |item| item.when,
-        };
-        if (when) |expression| try addKeys(allocator, set, expression);
-        switch (entry.*) {
-            .command => |item| {
-                if (item.command.precondition) |expression| try addKeys(allocator, set, expression);
-                if (item.command.toggled) |expression| try addKeys(allocator, set, expression);
-                if (item.command.toggle_info) |info| try addKeys(allocator, set, info.condition);
-            },
-            .submenu => |item| {
-                if (item.toggled) |expression| try addKeys(allocator, set, expression);
-                try collectContextKeys(allocator, registry, set, item.submenu);
-            },
-        }
+fn collectEntryKeys(allocator: Allocator, set: *std.StringHashMap(void), entry: *const MenuEntry) !void {
+    const when = switch (entry.*) {
+        .command => |item| item.when,
+        .submenu => |item| item.when,
+    };
+    if (when) |expression| try addKeys(allocator, set, expression);
+    switch (entry.*) {
+        .command => |item| {
+            if (item.command.precondition) |expression| try addKeys(allocator, set, expression);
+            if (item.command.toggled) |expression| try addKeys(allocator, set, expression);
+            if (item.command.toggle_info) |info| try addKeys(allocator, set, info.condition);
+        },
+        .submenu => |item| {
+            if (item.toggled) |expression| try addKeys(allocator, set, expression);
+        },
     }
 }
 
@@ -497,13 +484,11 @@ pub const MenuService = struct {
         errdefer allocator.destroy(menu);
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
-        const groups = try self.buildGroups(arena.allocator(), id, context);
         var menu_ids = std.StringHashMap(void).init(allocator);
         errdefer freeMenuIds(allocator, &menu_ids);
-        try collectMenuIds(allocator, self.registry, &menu_ids, id);
         var context_keys = std.StringHashMap(void).init(allocator);
         errdefer freeMenuIds(allocator, &context_keys);
-        try collectContextKeys(allocator, self.registry, &context_keys, id);
+        const groups = try self.buildGroups(arena.allocator(), id, context, &menu_ids, &context_keys);
         menu.* = .{
             .allocator = allocator,
             .service = self,
@@ -522,10 +507,13 @@ pub const MenuService = struct {
         return menu;
     }
 
-    fn buildGroups(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext) ![]const MenuGroup {
+    fn buildGroups(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext, menu_ids: *std.StringHashMap(void), context_keys: *std.StringHashMap(void)) ![]const MenuGroup {
+        const meta_allocator = self.allocator;
+        try addMenuId(meta_allocator, menu_ids, id);
         var visible = ArrayList(*const MenuEntry).init(allocator);
         defer visible.deinit();
         for (self.registry.getMenuItems(id)) |*entry| {
+            try collectEntryKeys(meta_allocator, context_keys, entry);
             const when = switch (entry.*) {
                 .command => |item| item.when,
                 .submenu => |item| item.when,
@@ -585,7 +573,7 @@ pub const MenuService = struct {
                         try group_actions.append(action.interface());
                     },
                     .submenu => |submenu| {
-                        const submenu_groups = try self.buildGroups(allocator, submenu.submenu, context);
+                        const submenu_groups = try self.buildGroups(allocator, submenu.submenu, context, menu_ids, context_keys);
                         var flattened = ArrayList(IAction).init(allocator);
                         var first_group = true;
                         for (submenu_groups) |submenu_group| {
@@ -1023,4 +1011,29 @@ test "live menus unsubscribe from registry and context changes" {
     allocator.destroy(menu);
     try std.testing.expectEqual(@as(usize, 0), registry.on_did_change.listenerCount());
     try std.testing.expectEqual(@as(usize, 0), context_keys.onDidChangeContext.listenerCount());
+}
+
+test "createMenu collects menu items only once" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+
+    const menu_id = MenuId{ .id = "test.collect.once" };
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+    try std.testing.expectEqual(@as(usize, 1), registry.getMenuItemsCallCount(menu_id));
 }
