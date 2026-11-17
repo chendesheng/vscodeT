@@ -19,7 +19,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
-const tui_keybindings = @import("./keybindings.zig");
+const keybinding_service = @import("./keybindingService.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
 const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
 const search = @import("../vs/workbench/services/search/common/search.zig");
@@ -149,7 +149,8 @@ pub const SearchView = struct {
     panel_focused: bool = false,
     started_once: bool = false,
     replace_confirmation: ?controller_mod.ReplaceAllRequest = null,
-    keybindings: ?*tui_keybindings.TuiKeybindings = null,
+    keybindings: ?*keybinding_service.KeybindingService = null,
+    pending_action: ?Action = null,
 
     pub fn init(
         allocator: Allocator,
@@ -238,10 +239,7 @@ pub const SearchView = struct {
         self.depths.deinit();
         self.collapsed.deinit();
         self.collapse_seen.deinit();
-        if (self.keybindings) |keybindings| {
-            keybindings.deinit();
-            self.allocator.destroy(keybindings);
-        }
+        if (self.keybindings) |service| service.deinit();
         self.allocator.destroy(self);
     }
 
@@ -354,10 +352,16 @@ pub const SearchView = struct {
 
     fn ensureKeybindings(self: *SearchView) !void {
         if (self.keybindings != null) return;
-        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
-        errdefer self.allocator.destroy(keybindings);
-        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &search_keybinding_rules, null);
-        self.keybindings = keybindings;
+        const service = try keybinding_service.KeybindingService.init(self.allocator, &search_keybinding_rules, .{
+            .context = self,
+            .execute = executeSearchCommand,
+        });
+        self.keybindings = service;
+    }
+
+    fn executeSearchCommand(context: *anyopaque, command: []const u8) anyerror!void {
+        const self: *SearchView = @ptrCast(@alignCast(context));
+        self.pending_action = self.runSearchCommand(command);
     }
 
     fn runSearchCommand(self: *SearchView, command: []const u8) ?Action {
@@ -662,9 +666,11 @@ pub const SearchView = struct {
     pub fn handleKey(self: *SearchView, event: *const ui.KeyEvent) Action {
         if (event.mods.ctrl or event.mods.alt) {
             self.ensureKeybindings() catch {};
-            if (self.keybindings) |keybindings| {
-                if (keybindings.dispatch(event.*, tui_keybindings.empty_context) catch null) |command| {
-                    if (self.runSearchCommand(command)) |action| return action;
+            if (self.keybindings) |service| {
+                self.pending_action = null;
+                if (service.dispatch(event.*)) {
+                    if (self.pending_action) |action| return action;
+                    return .handled;
                 }
             }
         }

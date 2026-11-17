@@ -203,9 +203,13 @@ fn noopClose(_: *anyopaque) void {}
 
 fn toKeyboardEvent(event: input.KeyEvent) ?keybinding_mod.IKeyboardEvent {
     const key_code = tui_keybindings.keyCodeFor(event) orelse return null;
+    const uppercase = switch (event.key) {
+        .char => |codepoint| codepoint >= 'A' and codepoint <= 'Z',
+        else => false,
+    };
     return .{
         .ctrl = event.mods.ctrl,
-        .shift = event.mods.shift or std.meta.activeTag(event.key) == .backtab,
+        .shift = event.mods.shift or uppercase or std.meta.activeTag(event.key) == .backtab,
         .alt = event.mods.alt,
         .meta = false,
         .key_code = key_code,
