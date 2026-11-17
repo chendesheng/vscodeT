@@ -715,7 +715,7 @@ pub const ContextKeyExpr = struct {
         self.arena.deinit();
     }
 
-    fn arenaAllocator(self: *ContextKeyExpr) Allocator {
+    pub fn arenaAllocator(self: *ContextKeyExpr) Allocator {
         return self.arena.allocator();
     }
 
@@ -732,10 +732,17 @@ pub const ContextKeyExpr = struct {
     }
 
     pub fn equals(self: *ContextKeyExpr, key: []const u8, value: ContextKeyValue) Allocator.Error!*const Expr {
+        // Upstream normalizes boolean equality to `has`/`not`.
+        if (std.meta.activeTag(value) == .boolean) {
+            return if (value.boolean) self.has(key) else self.not(key);
+        }
         return createExpr(self.arenaAllocator(), .{ .Equals = .{ .key = key, .value = value } });
     }
 
     pub fn notEquals(self: *ContextKeyExpr, key: []const u8, value: ContextKeyValue) Allocator.Error!*const Expr {
+        if (std.meta.activeTag(value) == .boolean) {
+            return if (value.boolean) self.not(key) else self.has(key);
+        }
         return createExpr(self.arenaAllocator(), .{ .NotEquals = .{ .key = key, .value = value } });
     }
 

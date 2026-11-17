@@ -406,7 +406,7 @@ pub const KeybindingResolver = struct {
         };
 
         var inherited_defaults = ArrayList(*const ResolvedKeybindingItem).init(allocator);
-        errdefer inherited_defaults.deinit();
+        defer inherited_defaults.deinit();
         var inherited_overrides = ArrayList(*const ResolvedKeybindingItem).init(allocator);
         errdefer inherited_overrides.deinit();
         try inheritRules(&inherited_defaults, defaults, inherit_context);
