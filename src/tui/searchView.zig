@@ -19,6 +19,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
+const tui_keybindings = @import("./keybindings.zig");
+const key_codes = @import("../vs/base/common/keyCodes.zig");
+const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
 const search = @import("../vs/workbench/services/search/common/search.zig");
 const search_model = @import("../vs/workbench/contrib/search/browser/searchTreeModel/searchModel.zig");
 const SearchModel = search_model.SearchModel;
@@ -146,6 +149,7 @@ pub const SearchView = struct {
     panel_focused: bool = false,
     started_once: bool = false,
     replace_confirmation: ?controller_mod.ReplaceAllRequest = null,
+    keybindings: ?*tui_keybindings.TuiKeybindings = null,
 
     pub fn init(
         allocator: Allocator,
@@ -234,6 +238,10 @@ pub const SearchView = struct {
         self.depths.deinit();
         self.collapsed.deinit();
         self.collapse_seen.deinit();
+        if (self.keybindings) |keybindings| {
+            keybindings.deinit();
+            self.allocator.destroy(keybindings);
+        }
         self.allocator.destroy(self);
     }
 
@@ -342,6 +350,56 @@ pub const SearchView = struct {
     fn onWidgetReplaceAll(context: ?*anyopaque) void {
         const self: *SearchView = @ptrCast(@alignCast(context orelse return));
         self.replaceAll();
+    }
+
+    fn ensureKeybindings(self: *SearchView) !void {
+        if (self.keybindings != null) return;
+        const keybindings = try self.allocator.create(tui_keybindings.TuiKeybindings);
+        errdefer self.allocator.destroy(keybindings);
+        keybindings.* = try tui_keybindings.TuiKeybindings.init(self.allocator, &search_keybinding_rules, null);
+        self.keybindings = keybindings;
+    }
+
+    fn runSearchCommand(self: *SearchView, command: []const u8) ?Action {
+        if (std.mem.eql(u8, command, "search.action.toggleReplace")) {
+            self.widget.toggleReplace();
+            self.focus_field = if (self.widget.replace_visible) .replace else .search;
+            self.setControllerFocusFromField();
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "search.action.toggleCaseSensitive")) {
+            self.toggleOption(.match_case);
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "search.action.toggleWholeWord")) {
+            self.toggleOption(.whole_word);
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "search.action.toggleRegex")) {
+            self.toggleOption(.regex);
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "search.action.togglePreserveCase")) {
+            self.toggleOption(.preserve_case);
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "workbench.action.search.toggleQueryDetails")) {
+            self.controller.toggleQueryDetails(null);
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "search.action.replace")) {
+            self.replaceSelected();
+            return .handled;
+        }
+        if (std.mem.eql(u8, command, "search.action.replaceAll")) {
+            if (self.replace_confirmation != null) {
+                self.confirmReplaceAll();
+            } else if (self.controller.requestReplaceAll() catch null) |request| {
+                self.replace_confirmation = request;
+            }
+            return .handled;
+        }
+        return null;
     }
 
     fn toggleOption(self: *SearchView, option: Option) void {
@@ -602,6 +660,15 @@ pub const SearchView = struct {
     }
 
     pub fn handleKey(self: *SearchView, event: *const ui.KeyEvent) Action {
+        if (event.mods.ctrl or event.mods.alt) {
+            self.ensureKeybindings() catch {};
+            if (self.keybindings) |keybindings| {
+                if (keybindings.dispatch(event.*, tui_keybindings.empty_context) catch null) |command| {
+                    if (self.runSearchCommand(command)) |action| return action;
+                }
+            }
+        }
+
         if (event.key == .escape) {
             if (self.replace_confirmation) |*request| {
                 self.allocator.free(request.confirmation);
@@ -1327,3 +1394,60 @@ fn drawText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []co
     }
     return col - x;
 }
+
+const search_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
+    .{
+        .id = "search.action.toggleReplace",
+        .weight = 200,
+        .bindings = .{
+            .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyR),
+            .secondary = &.{key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyR)},
+        },
+    },
+    .{
+        .id = "search.action.toggleCaseSensitive",
+        .weight = 200,
+        .bindings = .{
+            .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyC),
+            .secondary = &.{key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyC)},
+        },
+    },
+    .{
+        .id = "search.action.toggleWholeWord",
+        .weight = 200,
+        .bindings = .{
+            .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyW),
+            .secondary = &.{key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyW)},
+        },
+    },
+    .{
+        .id = "search.action.toggleRegex",
+        .weight = 200,
+        .bindings = .{
+            .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyR),
+            .secondary = &.{key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyR)},
+        },
+    },
+    .{
+        .id = "search.action.togglePreserveCase",
+        .weight = 200,
+        .bindings = .{
+            .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyP),
+            .secondary = &.{key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyP)},
+        },
+    },
+    .{
+        .id = "workbench.action.search.toggleQueryDetails",
+        .weight = 200,
+        .bindings = .{
+            .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyD),
+            .secondary = &.{key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyD)},
+        },
+    },
+    .{ .id = "search.action.replace", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Enter) } },
+    .{
+        .id = "search.action.replaceAll",
+        .weight = 200,
+        .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Enter) },
+    },
+};

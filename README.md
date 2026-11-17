@@ -723,7 +723,8 @@ Editor contributions:
   through a registry/resolver host: Ctrl+P (quick open), Ctrl+Shift+P (command
   palette), Ctrl+Shift+F/H (find/replace in files), Ctrl+B (toggle sidebar) and
   Ctrl+Alt+S (focus status bar); quick access keeps owning the keyboard while
-  its picker is open. The editor's Ctrl/Alt character
+  its picker is open. The search view's Ctrl+R and Alt+C/W/R/P/D/Enter
+  shortcuts resolve through its own registry host as well. The editor's Ctrl/Alt character
   shortcuts (save, undo/redo, select all, comment, bracket
   jump/select/remove, in-place replace, reindent, occurrences, line selection,
   indent) and the cursor navigation/selection keys (arrows, word moves,
