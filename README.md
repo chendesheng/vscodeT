@@ -822,6 +822,14 @@ Editor contributions:
   (bracket and string happy paths, exotic token spans, RTL/mismatch bail-outs
   and word-select fallbacks) with a per-test token-span harness.
 
+- The terminal `View` orchestrator (`editor/browser/view.zig`) now owns the view
+  lines and the registered view parts/overlays: it fans configuration, cursor,
+  decoration, flushed, line, scroll, token, zone, theme and focus events across
+  them, drives the `prepareRender` → `viewLines.renderText` → part-render
+  pipeline, and tracks focus. DOM/edit-context/animation-frame plumbing is
+  absent (documented in the file header); the TUI compositor paints the parts'
+  structured data.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory
