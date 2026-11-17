@@ -229,7 +229,7 @@ pub const PolicyConfiguration = struct {
                 if (self.model.getValue(key) != null) try changes.append(.{ .key = key, .value = null });
                 continue;
             };
-            const value = try policyValueAsJson(scratch.allocator(), property, policy_value);
+            const value = policyValueAsJson(scratch.allocator(), property, policy_value) catch continue;
             const existing = self.model.getValue(key);
             const differs = if (existing) |current| !configuration.jsonValuesEqual(current.*, value) else true;
             if (differs) try changes.append(.{ .key = key, .value = value });
@@ -270,7 +270,7 @@ pub const PolicyConfiguration = struct {
         switch (value) {
             .string => |text| {
                 if (accepts_string) return .{ .string = try allocator.dupe(u8, text) };
-                return std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{}) catch .{ .string = try allocator.dupe(u8, text) };
+                return std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{ .duplicate_field_behavior = .@"error" }) catch return error.InvalidPolicyValue;
             },
             .number => |number| return .{ .float = number },
             .boolean => |boolean| return .{ .bool = boolean },

@@ -475,3 +475,26 @@ test "an orphan policy reference resolves and preserves a nullable default" {
     try policy_config.initialize();
     try std.testing.expectEqual(@as(bool, false), policy_config.configurationModel().getValue("policy.nullable").?.bool);
 }
+
+test "invalid and duplicate-key object policies are ignored" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("policy", &.{
+        .{ .key = "policy.invalid", .value_type = "object", .default = std.json.Value{ .object = std.json.ObjectMap{} }, .policy = "InvalidPolicy" },
+        .{ .key = "policy.duplicate", .value_type = "object", .default = std.json.Value{ .object = std.json.ObjectMap{} }, .policy = "DuplicatePolicy" },
+    });
+    var policy_service = @import("../../../../platform/policy/common/policy.zig").InMemoryPolicyService.init(allocator);
+    defer policy_service.deinit();
+    try policy_service.setPolicyValue("InvalidPolicy", .{ .string = "{invalid" });
+    try policy_service.setPolicyValue("DuplicatePolicy", .{ .string = "{\"a\":1,\"a\":2}" });
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    var policy_config = try configurations.PolicyConfiguration.init(allocator, &defaults, &policy_service);
+    defer policy_config.deinit();
+    try policy_config.initialize();
+
+    try std.testing.expect(policy_config.configurationModel().getValue("policy.invalid") == null);
+    try std.testing.expect(policy_config.configurationModel().getValue("policy.duplicate") == null);
+}
