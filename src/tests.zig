@@ -482,6 +482,7 @@ comptime {
     _ = @import("./vs/editor/browser/viewParts/viewCursors/viewCursors.zig");
     _ = @import("./vs/editor/test/browser/config/editorLayoutProvider.test.zig");
     _ = @import("./vs/editor/test/common/modes/languageConfiguration.test.zig");
+    _ = @import("./vs/editor/test/common/modes/supports/onEnter.test.zig");
     _ = @import("./vs/platform/log/common/log.zig");
     _ = @import("./vs/platform/log/common/logService.zig");
     _ = @import("./vs/platform/log/test/common/log.test.zig");

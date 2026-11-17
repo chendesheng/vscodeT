@@ -1,12 +1,23 @@
+// Port of `src/vs/editor/common/languages/supports/onEnter.ts`.
+//
+// Terminal adaptation: the browser code registers a themed `onUnexpectedError`
+// reporter for invalid bracket regexes; the terminal silently skips a bracket
+// pair whose regex cannot be compiled. First-line/rule regexes are the ported
+// Oniguruma-backed `RegExp`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.array_list.Managed;
-const RegExp = @import("../../../../../support/regexp.zig").RegExp;
-const escapeRegExp = @import("../../../../../support/regexp.zig").escapeRegExp;
-const EditorAutoIndentStrategy = @import("../../config/editorOptions.zig").EditorAutoIndentStrategy;
-const CharacterPair = @import("../languageConfiguration.zig").CharacterPair;
-const EnterAction = @import("../languageConfiguration.zig").EnterAction;
-const OnEnterRule = @import("../languageConfiguration.zig").OnEnterRule;
+
+const strings = @import("../../../../base/common/strings.zig");
+const regexp = @import("../../../../../support/regexp.zig");
+const language_configuration = @import("../languageConfiguration.zig");
+const editor_options = @import("../../config/editorOptions.zig");
+
+const RegExp = regexp.RegExp;
+const CharacterPair = language_configuration.CharacterPair;
+const EnterAction = language_configuration.EnterAction;
+const IndentAction = language_configuration.IndentAction;
+const OnEnterRule = language_configuration.OnEnterRule;
+const EditorAutoIndentStrategy = editor_options.EditorAutoIndentStrategy;
 
 pub const IOnEnterSupportOptions = struct {
     brackets: ?[]const CharacterPair = null,
@@ -16,85 +27,106 @@ pub const IOnEnterSupportOptions = struct {
 const ProcessedBracketPair = struct {
     open: []const u8,
     close: []const u8,
-    openRegExp: RegExp,
-    closeRegExp: RegExp,
+    open_regex: RegExp,
+    close_regex: RegExp,
 };
 
-const default_brackets = [_]CharacterPair{
-    .{ "(", ")" },
-    .{ "{", "}" },
-    .{ "[", "]" },
-};
-
+/// Port of `OnEnterSupport`.
 pub const OnEnterSupport = struct {
-    _brackets: ArrayList(ProcessedBracketPair),
-    _regExpRules: []const OnEnterRule,
+    allocator: Allocator,
+    brackets: []ProcessedBracketPair,
+    reg_exp_rules: []const OnEnterRule,
 
     pub fn init(allocator: Allocator, options: IOnEnterSupportOptions) !OnEnterSupport {
-        var self = OnEnterSupport{
-            ._brackets = ArrayList(ProcessedBracketPair).init(allocator),
-            ._regExpRules = options.onEnterRules orelse &[_]OnEnterRule{},
+        const default_brackets = [_]CharacterPair{
+            .{ "(", ")" },
+            .{ "{", "}" },
+            .{ "[", "]" },
         };
-        errdefer self.deinit();
+        const brackets = options.brackets orelse &default_brackets;
 
-        const brackets = options.brackets orelse default_brackets[0..];
+        var processed = std.array_list.Managed(ProcessedBracketPair).init(allocator);
+        errdefer {
+            for (processed.items) |*bracket| {
+                bracket.open_regex.deinit();
+                bracket.close_regex.deinit();
+            }
+            processed.deinit();
+        }
+
         for (brackets) |bracket| {
-            const open = createOpenBracketRegExp(allocator, bracket[0]) catch continue;
-            const close = createCloseBracketRegExp(allocator, bracket[1]) catch {
-                open.deinit();
-                continue;
-            };
-            try self._brackets.append(.{
+            // Upstream silently skips bracket pairs whose regexes cannot be
+            // created; an empty bracket is not a usable pair.
+            if (bracket[0].len == 0 or bracket[1].len == 0) continue;
+            const open_regex = try createOpenBracketRegExp(allocator, bracket[0]);
+            const close_regex = try createCloseBracketRegExp(allocator, bracket[1]);
+            try processed.append(.{
                 .open = bracket[0],
                 .close = bracket[1],
-                .openRegExp = open,
-                .closeRegExp = close,
+                .open_regex = open_regex,
+                .close_regex = close_regex,
             });
         }
 
-        return self;
+        return .{
+            .allocator = allocator,
+            .brackets = try processed.toOwnedSlice(),
+            .reg_exp_rules = options.onEnterRules orelse &.{},
+        };
     }
 
     pub fn deinit(self: *OnEnterSupport) void {
-        for (self._brackets.items) |*bracket| {
-            bracket.openRegExp.deinit();
-            bracket.closeRegExp.deinit();
+        for (self.brackets) |*bracket| {
+            bracket.open_regex.deinit();
+            bracket.close_regex.deinit();
         }
-        self._brackets.deinit();
+        self.allocator.free(self.brackets);
+        self.brackets = &.{};
     }
 
     pub fn onEnter(
         self: *const OnEnterSupport,
-        autoIndent: EditorAutoIndentStrategy,
-        previousLineText: []const u8,
-        beforeEnterText: []const u8,
-        afterEnterText: []const u8,
+        auto_indent: EditorAutoIndentStrategy,
+        previous_line_text: []const u8,
+        before_enter_text: []const u8,
+        after_enter_text: []const u8,
     ) ?EnterAction {
-        if (@backingInt(autoIndent) >= @backingInt(EditorAutoIndentStrategy.Advanced)) {
-            for (self._regExpRules) |rule| {
-                if (!rule.beforeText.isMatch(beforeEnterText)) continue;
-                if (rule.afterText) |afterText| {
-                    if (!afterText.isMatch(afterEnterText)) continue;
+        const auto_indent_value = @backingInt(auto_indent);
+        const advanced = @backingInt(EditorAutoIndentStrategy.Advanced);
+        const brackets_strategy = @backingInt(EditorAutoIndentStrategy.Brackets);
+
+        // (1): `regExpRules`
+        if (auto_indent_value >= advanced) {
+            for (self.reg_exp_rules) |rule| {
+                if (!rule.beforeText.isMatch(before_enter_text)) continue;
+                if (rule.afterText) |after_text| {
+                    if (!after_text.isMatch(after_enter_text)) continue;
                 }
-                if (rule.previousLineText) |previousLineTextRegExp| {
-                    if (!previousLineTextRegExp.isMatch(previousLineText)) continue;
+                if (rule.previousLineText) |previous_line_text_pattern| {
+                    if (!previous_line_text_pattern.isMatch(previous_line_text)) continue;
                 }
                 return rule.action;
             }
         }
 
-        if (@backingInt(autoIndent) >= @backingInt(EditorAutoIndentStrategy.Brackets)) {
-            if (beforeEnterText.len > 0 and afterEnterText.len > 0) {
-                for (self._brackets.items) |bracket| {
-                    if (bracket.openRegExp.isMatch(beforeEnterText) and bracket.closeRegExp.isMatch(afterEnterText)) {
+        // (2): Special indent-outdent
+        if (auto_indent_value >= brackets_strategy) {
+            if (before_enter_text.len > 0 and after_enter_text.len > 0) {
+                for (self.brackets) |bracket| {
+                    if (bracket.open_regex.isMatch(before_enter_text) and
+                        bracket.close_regex.isMatch(after_enter_text))
+                    {
                         return .{ .indentAction = .IndentOutdent, .appendText = null, .removeText = null };
                     }
                 }
             }
+        }
 
-            if (beforeEnterText.len > 0) {
-                for (self._brackets.items) |bracket| {
-                    if (bracket.openRegExp.isMatch(beforeEnterText)) {
+        // (4): Open bracket based logic
+        if (auto_indent_value >= brackets_strategy) {
+            if (before_enter_text.len > 0) {
+                for (self.brackets) |bracket| {
+                    if (bracket.open_regex.isMatch(before_enter_text)) {
                         return .{ .indentAction = .Indent, .appendText = null, .removeText = null };
                     }
                 }
@@ -105,36 +137,34 @@ pub const OnEnterSupport = struct {
     }
 };
 
-fn isWordChar(ch: u8) bool {
+fn isWordCharacter(ch: u8) bool {
     return std.ascii.isAlphanumeric(ch) or ch == '_';
 }
 
 fn createOpenBracketRegExp(allocator: Allocator, bracket: []const u8) !RegExp {
-    if (bracket.len == 0) return error.EmptyBracket;
-
-    var pattern = ArrayList(u8).init(allocator);
-    defer pattern.deinit();
-
-    if (isWordChar(bracket[0])) try pattern.appendSlice("\\b");
-    var escaped = try escapeRegExp(allocator, bracket);
+    var escaped = try strings.escapeRegExpCharacters(allocator, bracket);
     defer escaped.deinit();
+
+    var pattern = std.array_list.Managed(u8).init(allocator);
+    defer pattern.deinit();
+    if (escaped.items.len > 0 and isWordCharacter(escaped.items[0])) {
+        try pattern.appendSlice("\\b");
+    }
     try pattern.appendSlice(escaped.items);
     try pattern.appendSlice("\\s*$");
-
     return RegExp.init(pattern.items, .{});
 }
 
 fn createCloseBracketRegExp(allocator: Allocator, bracket: []const u8) !RegExp {
-    if (bracket.len == 0) return error.EmptyBracket;
-
-    var pattern = ArrayList(u8).init(allocator);
-    defer pattern.deinit();
-
-    try pattern.appendSlice("^\\s*");
-    var escaped = try escapeRegExp(allocator, bracket);
+    var escaped = try strings.escapeRegExpCharacters(allocator, bracket);
     defer escaped.deinit();
-    try pattern.appendSlice(escaped.items);
-    if (isWordChar(bracket[bracket.len - 1])) try pattern.appendSlice("\\b");
 
+    var pattern = std.array_list.Managed(u8).init(allocator);
+    defer pattern.deinit();
+    try pattern.appendSlice("^\\s*");
+    try pattern.appendSlice(escaped.items);
+    if (escaped.items.len > 0 and isWordCharacter(escaped.items[escaped.items.len - 1])) {
+        try pattern.appendSlice("\\b");
+    }
     return RegExp.init(pattern.items, .{});
 }

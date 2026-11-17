@@ -54,7 +54,9 @@ pub fn getEnterAction(
     const before_enter_text = processed_context_tokens.beforeRangeProcessedTokens.getLineContent();
     const after_enter_text = processed_context_tokens.afterRangeProcessedTokens.getLineContent();
 
-    const enter_result = ResolvedLanguageConfiguration.onEnter(auto_indent, previous_line_text, before_enter_text, after_enter_text) orelse return null;
+    const language_id = model.getLanguageIdAtPosition(range.startLineNumber, range.startColumn);
+    var rich_edit_support = language_configuration_service.getLanguageConfiguration(language_id);
+    const enter_result = rich_edit_support.onEnter(auto_indent, previous_line_text, before_enter_text, after_enter_text) orelse return null;
 
     const indent_action = enter_result.indentAction;
     const remove_text = enter_result.removeText orelse 0;

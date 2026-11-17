@@ -55,6 +55,7 @@ fn setupConfiguration(allocator: Allocator, rules: IndentationRule) !void {
         .wordDefinition = defaultWordRegExp(),
         .indentationRules = rules,
         .indentRulesSupport = IndentRulesSupport.init(rules),
+        .on_enter_support = null,
         .foldingRules = .{ .offSide = null, .markers = null },
         .bracketsNew = LanguageBracketsConfiguration{
             .id = 0,

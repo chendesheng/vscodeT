@@ -356,7 +356,7 @@ pub fn getGoodIndentForLine(
         if (should_apply_enter_rules) {
             const inherit_line_content = try virtual_model.getLineContent(allocator, inherit_line);
             defer allocator.free(inherit_line_content);
-            if (ResolvedLanguageConfiguration.onEnter(auto_indent, "", inherit_line_content, "")) |enter_result| {
+            if (rich_edit_support.onEnter(auto_indent, "", inherit_line_content, "")) |enter_result| {
                 var indentation = ArrayList(u8).init(allocator);
                 defer indentation.deinit();
                 try indentation.appendSlice(strings.getLeadingWhitespace(inherit_line_content));
@@ -804,6 +804,7 @@ fn setupBracketLanguage(allocator: Allocator) !void {
         .indentationRules = rules,
         .indentRulesSupport = IndentRulesSupport.init(rules),
         .foldingRules = .{ .offSide = null, .markers = null },
+        .on_enter_support = null,
         .bracketsNew = .{
             .id = 0,
             .allocator = allocator,

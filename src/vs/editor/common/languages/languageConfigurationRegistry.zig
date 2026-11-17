@@ -11,6 +11,7 @@ const ensureValidWordDefinition = @import("../core/wordHelper.zig").ensureValidW
 const defaultWordRegExp = @import("../core/wordHelper.zig").defaultWordRegExp;
 const EditorAutoIndentStrategy = @import("../config/editorOptions.zig").EditorAutoIndentStrategy;
 const EnterAction = @import("./languageConfiguration.zig").EnterAction;
+const OnEnterSupport = @import("./supports/onEnter.zig").OnEnterSupport;
 const AutoClosingPairs = @import("./languageConfiguration.zig").AutoClosingPairs;
 const IAutoClosingPair = @import("./languageConfiguration.zig").IAutoClosingPair;
 const Emitter = @import("../../../base/common/event.zig").Emitter;
@@ -55,16 +56,23 @@ pub const ResolvedLanguageConfiguration = struct {
     bracketsNew: LanguageBracketsConfiguration,
     languageId: []const u8,
     underlyingConfig: LanguageConfiguration,
+    on_enter_support: ?OnEnterSupport,
 
     pub fn init(allocator: Allocator, languageId: []const u8, underlyingConfig: LanguageConfiguration) !ResolvedLanguageConfiguration {
-        //this._onEnterSupport =
-        //    underlyingConfig.brackets or
-        //    underlyingConfig.indentationRules or
-        //    if (underlyingConfig.onEnterRules) OnEnterSupport.init(underlyingConfig) else null;
+        const on_enter_support: ?OnEnterSupport = if (underlyingConfig.brackets != null or
+            underlyingConfig.indentationRules != null or
+            underlyingConfig.onEnterRules != null)
+            (OnEnterSupport.init(allocator, .{
+                .brackets = underlyingConfig.brackets,
+                .onEnterRules = underlyingConfig.onEnterRules,
+            }) catch null)
+        else
+            null;
 
         return .{
             .languageId = languageId,
             .underlyingConfig = underlyingConfig,
+            .on_enter_support = on_enter_support,
             .comments = ResolvedLanguageConfiguration._handleComments(underlyingConfig),
             .characterPair = try CharacterPairSupport.init(underlyingConfig),
             .wordDefinition = underlyingConfig.wordPattern orelse defaultWordRegExp(),
@@ -94,17 +102,16 @@ pub const ResolvedLanguageConfiguration = struct {
     //     return self._electricCharacter;
     // }
 
-    pub fn onEnter(autoIndent: EditorAutoIndentStrategy, previousLineText: []const u8, beforeEnterText: []const u8, afterEnterText: []const u8) ?EnterAction {
-        _ = autoIndent;
-        _ = previousLineText;
-        _ = beforeEnterText;
-        _ = afterEnterText;
-        return null;
-        // TODO: Implement this
-        // if (!self._onEnterSupport) {
-        //     return null;
-        // }
-        // return self._onEnterSupport.onEnter(autoIndent, previousLineText, beforeEnterText, afterEnterText);
+    pub fn onEnter(self: *const ResolvedLanguageConfiguration, autoIndent: EditorAutoIndentStrategy, previousLineText: []const u8, beforeEnterText: []const u8, afterEnterText: []const u8) ?EnterAction {
+        const support = self.on_enter_support orelse return null;
+        return support.onEnter(autoIndent, previousLineText, beforeEnterText, afterEnterText);
+    }
+
+    /// Frees resources owned by the resolved configuration (the bracket/rule
+    /// regexes); the struct memory itself is registry-arena owned.
+    pub fn deinit(self: *ResolvedLanguageConfiguration) void {
+        if (self.on_enter_support) |*support| support.deinit();
+        self.on_enter_support = null;
     }
 
     pub fn getAutoClosingPairs(self: *ResolvedLanguageConfiguration) AutoClosingPairs {
@@ -210,7 +217,7 @@ const ComposedLanguageConfiguration = struct {
     languageId: []const u8,
     entries: std.array_list.Managed(LanguageConfigurationContribution),
     order: i64 = 0,
-    resolved: ?*const ResolvedLanguageConfiguration = null,
+    resolved: ?*ResolvedLanguageConfiguration = null,
 
     fn init(allocator: Allocator, language_id: []const u8) ComposedLanguageConfiguration {
         return .{
@@ -220,7 +227,13 @@ const ComposedLanguageConfiguration = struct {
     }
 
     fn deinit(self: *ComposedLanguageConfiguration) void {
+        self.clearResolved();
         self.entries.deinit();
+    }
+
+    fn clearResolved(self: *ComposedLanguageConfiguration) void {
+        if (self.resolved) |resolved| resolved.deinit();
+        self.resolved = null;
     }
 
     fn getResolvedConfiguration(self: *ComposedLanguageConfiguration, registry: *LanguageConfigurationRegistry) ?*const ResolvedLanguageConfiguration {
@@ -321,7 +334,7 @@ pub const LanguageConfigurationRegistry = struct {
             .priority = priority orelse 0,
             .order = self.order,
         });
-        composed.resolved = null;
+        composed.clearResolved();
         try self.on_did_change.fire(.{ .languageId = composed.languageId });
         return .{
             .registry = self,
@@ -335,7 +348,7 @@ pub const LanguageConfigurationRegistry = struct {
         for (composed.entries.items, 0..) |contribution, index| {
             if (contribution.order == order) {
                 _ = composed.entries.orderedRemove(index);
-                composed.resolved = null;
+                composed.clearResolved();
                 self.on_did_change.fire(.{ .languageId = composed.languageId }) catch {};
                 return;
             }
