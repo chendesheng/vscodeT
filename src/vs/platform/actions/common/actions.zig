@@ -400,6 +400,48 @@ pub const MenuRegistry = struct {
         try self.on_did_change.fire(.{ .menu = id });
     }
 
+    pub const Registration = struct {
+        registry: *MenuRegistry,
+        menu: MenuId,
+        command_id: ?[]const u8 = null,
+        submenu: ?MenuId = null,
+        when: ?*const contextkey.Expr = null,
+
+        pub fn dispose(self: Registration) void {
+            self.registry.removeRegistration(self);
+        }
+    };
+
+    pub fn appendMenuItemTracked(self: *MenuRegistry, id: MenuId, item: IMenuItem) !Registration {
+        try self.appendMenuItem(id, item);
+        return .{ .registry = self, .menu = id, .command_id = item.command.id, .when = item.when };
+    }
+
+    pub fn appendSubmenuItemTracked(self: *MenuRegistry, id: MenuId, item: ISubmenuItem) !Registration {
+        try self.appendSubmenuItem(id, item);
+        return .{ .registry = self, .menu = id, .submenu = item.submenu, .when = item.when };
+    }
+
+    fn removeRegistration(self: *MenuRegistry, registration: Registration) void {
+        const list = self.menus.getPtr(registration.menu.id) orelse return;
+        var index = list.items.len;
+        while (index > 0) {
+            index -= 1;
+            const matches = if (registration.command_id) |command_id| switch (list.items[index]) {
+                .command => |item| std.mem.eql(u8, item.command.id, command_id) and item.when == registration.when,
+                else => false,
+            } else if (registration.submenu) |submenu| switch (list.items[index]) {
+                .submenu => |item| MenuId.eql(item.submenu, submenu) and item.when == registration.when,
+                else => false,
+            } else false;
+            if (matches) {
+                _ = list.orderedRemove(index);
+                break;
+            }
+        }
+        self.on_did_change.fire(.{ .menu = registration.menu }) catch {};
+    }
+
     pub fn appendSubmenuItem(self: *MenuRegistry, id: MenuId, item: ISubmenuItem) !void {
         const list = try self.menuList(id);
         try list.append(.{ .submenu = item });

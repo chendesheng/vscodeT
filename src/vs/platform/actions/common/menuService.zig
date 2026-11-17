@@ -1129,3 +1129,68 @@ test "one-shot getMenuActions evaluates each row context independently" {
     try std.testing.expectEqual(@as(usize, 1), contexts.len);
     try std.testing.expectEqualStrings("viewItem", contexts[0]);
 }
+
+test "one-shot menus observe registrations synchronously" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    const menu_id = MenuId{ .id = "test.sync.registration" };
+
+    _ = try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "b", .title = "B" } });
+
+    const GetIds = struct {
+        fn run(alloc: Allocator, svc: *MenuService, id: MenuId) ![]const []const u8 {
+            var menu_actions = try svc.getMenuActions(alloc, id, emptyContext());
+            defer menu_actions.deinit();
+            var ids = std.array_list.Managed([]const u8).init(alloc);
+            for (menu_actions.groups) |group| for (group.actions) |action| try ids.append(try alloc.dupe(u8, action.id()));
+            return ids.toOwnedSlice();
+        }
+        fn emptyContext() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    const first = try GetIds.run(allocator, &service, menu_id);
+    defer {
+        for (first) |id| allocator.free(id);
+        allocator.free(first);
+    }
+    try std.testing.expectEqual(@as(usize, 1), first.len);
+
+    const registration = try registry.appendMenuItemTracked(menu_id, .{
+        .command = .{ .id = "a", .title = "A" },
+        .when = try factory.not("missing"),
+    });
+    const second = try GetIds.run(allocator, &service, menu_id);
+    defer {
+        for (second) |id| allocator.free(id);
+        allocator.free(second);
+    }
+    try std.testing.expectEqual(@as(usize, 2), second.len);
+    try std.testing.expectEqualStrings("a", second[0]);
+    try std.testing.expectEqualStrings("b", second[1]);
+
+    const contexts = try service.getMenuContexts(allocator, menu_id);
+    defer {
+        for (contexts) |key| allocator.free(key);
+        allocator.free(contexts);
+    }
+    try std.testing.expectEqual(@as(usize, 1), contexts.len);
+    try std.testing.expectEqualStrings("missing", contexts[0]);
+
+    registration.dispose();
+    const third = try GetIds.run(allocator, &service, menu_id);
+    defer {
+        for (third) |id| allocator.free(id);
+        allocator.free(third);
+    }
+    try std.testing.expectEqual(@as(usize, 1), third.len);
+}
