@@ -15,6 +15,16 @@ const Allocator = std.mem.Allocator;
 /// allocated in the owning configuration model's arena.
 pub const Value = std.json.Value;
 
+pub const ConfigurationScope = enum(u8) {
+    APPLICATION = 1,
+    MACHINE,
+    APPLICATION_MACHINE,
+    WINDOW,
+    RESOURCE,
+    LANGUAGE_OVERRIDABLE,
+    MACHINE_OVERRIDABLE,
+};
+
 pub const ConfigurationTarget = enum(u8) {
     APPLICATION = 1,
     USER,

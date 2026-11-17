@@ -298,3 +298,35 @@ test "override identifiers and multiple overrides" {
         try std.testing.expectEqualStrings("b", keys[1]);
     }
 }
+
+test "parse configuration model with scope and registration filters" {
+    const allocator = std.testing.allocator;
+    const schemas = [_]configuration_models.PropertySchemaEntry{
+        .{ .key = "windowSetting", .scope = .WINDOW },
+        .{ .key = "appSetting", .scope = .APPLICATION },
+        .{ .key = "restrictedSetting", .scope = .WINDOW, .restricted = true },
+    };
+
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"windowSetting\":\"1\"}", .{ .scopes = &.{.APPLICATION}, .schemas = &schemas });
+        defer model.deinit();
+        try std.testing.expect(model.getValue("windowSetting") == null);
+    }
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"windowSetting\":\"1\"}", .{ .include = &.{"windowSetting"}, .scopes = &.{.APPLICATION}, .schemas = &schemas });
+        defer model.deinit();
+        try std.testing.expectEqualStrings("1", model.getValue("windowSetting").?.string);
+    }
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"windowSetting\":\"1\",\"unregistered\":true}", .{ .skip_unregistered = true, .schemas = &schemas });
+        defer model.deinit();
+        try std.testing.expect(model.getValue("unregistered") == null);
+        try std.testing.expect(model.getValue("windowSetting") != null);
+    }
+    {
+        var model = try configuration_models.ConfigurationModel.fromJsonWithOptions(allocator, "{\"restrictedSetting\":true,\"windowSetting\":\"1\"}", .{ .skip_restricted = true, .schemas = &schemas });
+        defer model.deinit();
+        try std.testing.expect(model.getValue("restrictedSetting") == null);
+        try std.testing.expect(model.getValue("windowSetting") != null);
+    }
+}

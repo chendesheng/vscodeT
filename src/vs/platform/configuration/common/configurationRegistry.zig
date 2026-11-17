@@ -9,18 +9,11 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const configuration = @import("./configuration.zig");
 const configurationModels = @import("./configurationModels.zig");
 const ConfigurationModel = configurationModels.ConfigurationModel;
 
-pub const ConfigurationScope = enum(u8) {
-    APPLICATION = 1,
-    MACHINE,
-    APPLICATION_MACHINE,
-    WINDOW,
-    RESOURCE,
-    LANGUAGE_OVERRIDABLE,
-    MACHINE_OVERRIDABLE,
-};
+pub const ConfigurationScope = configuration.ConfigurationScope;
 
 pub const PropertySchema = struct {
     key: []const u8,

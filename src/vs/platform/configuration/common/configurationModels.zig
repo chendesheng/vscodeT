@@ -7,9 +7,10 @@
 // object merge. The parser accepts JSON with `//` and `/* */` comments and
 // trailing commas, like VS Code's settings files.
 //
-// Not ported: raw-model/source tracking, override-identifier models
-// (`[typescript]` blocks), scope/restricted filtering and `Configuration`'s
-// policy/application/remote/memory stores. The workbench
+// Override-identifier parsing (`[typescript]` blocks), top-level
+// scope/restricted/include/exclude filtering and override-preserving merges are
+// ported. Not ported: raw-model/source tracking, nested property-schema
+// filtering and `Configuration`'s policy/application/remote/memory stores. The workbench
 // `ConfigurationService` composes the scopes this port does support.
 
 const std = @import("std");
@@ -26,9 +27,19 @@ pub const OverrideIdentifier = struct {
     contents: Value,
 };
 
+pub const PropertySchemaEntry = struct {
+    key: []const u8,
+    scope: configuration.ConfigurationScope = .WINDOW,
+    restricted: bool = false,
+};
+
 pub const ParseOptions = struct {
     exclude: []const []const u8 = &.{},
     include: []const []const u8 = &.{},
+    scopes: []const configuration.ConfigurationScope = &.{},
+    skip_restricted: bool = false,
+    skip_unregistered: bool = false,
+    schemas: []const PropertySchemaEntry = &.{},
 };
 
 pub const ConfigurationModel = struct {
@@ -98,6 +109,7 @@ pub const ConfigurationModel = struct {
                 continue;
             }
             if (isExcluded(entry.key_ptr.*, options.exclude)) continue;
+            if (!shouldInclude(entry.key_ptr.*, options)) continue;
             try configuration.addToValueTree(arena, &normalized, entry.key_ptr.*, entry.value_ptr.*);
             try model.keys.append(try arena.dupe(u8, entry.key_ptr.*));
         }
@@ -380,6 +392,27 @@ fn parseOverrideIdentifiers(arena: Allocator, key: []const u8) ![]const []const 
         index = end + 1;
     }
     return identifiers.toOwnedSlice();
+}
+
+fn shouldInclude(key: []const u8, options: ParseOptions) bool {
+    for (options.include) |included| {
+        if (std.mem.eql(u8, key, included)) return true;
+    }
+    const schema = findSchema(key, options.schemas);
+    if (options.skip_restricted and schema != null and schema.?.restricted) return false;
+    if (options.skip_unregistered and schema == null) return false;
+    if (schema == null or options.scopes.len == 0) return true;
+    for (options.scopes) |scope| {
+        if (schema.?.scope == scope) return true;
+    }
+    return false;
+}
+
+fn findSchema(key: []const u8, schemas: []const PropertySchemaEntry) ?PropertySchemaEntry {
+    for (schemas) |schema| {
+        if (std.mem.eql(u8, schema.key, key)) return schema;
+    }
+    return null;
 }
 
 pub fn stripJsonc(allocator: Allocator, text: []const u8) ![]u8 {
