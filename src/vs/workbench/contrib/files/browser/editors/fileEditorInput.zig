@@ -322,3 +322,53 @@ test "Side-by-side serializer round-trips file inputs" {
     try std.testing.expectEqualStrings(primary_path, restored_primary.path);
     try std.testing.expectEqualStrings(secondary_path, restored_secondary.path);
 }
+
+test "Diff editor serializer round-trips file inputs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = buffer[0..root_len];
+    const original_path = try std.fs.path.join(allocator, &.{ root, "original.txt" });
+    defer allocator.free(original_path);
+    const modified_path = try std.fs.path.join(allocator, &.{ root, "modified.txt" });
+    defer allocator.free(modified_path);
+
+    var files = @import("../../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+    defer files.deinit();
+    var text_files = TextFileService.init(allocator, &files);
+    var original = try FileEditorInput.init(allocator, &text_files, original_path);
+    defer original.deinit();
+    _ = original.interface();
+    var modified = try FileEditorInput.init(allocator, &text_files, modified_path);
+    defer modified.deinit();
+    _ = modified.interface();
+
+    var file_serializer = FileEditorSerializer.init(allocator, &text_files);
+    var registry = factory_mod.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerEditorSerializer(TYPE_ID, file_serializer.interface());
+    const diff_mod = @import("../../../../common/editor/diffEditorInput.zig");
+    var serializer = diff_mod.DiffEditorSerializer.init(allocator, &registry);
+    const serializer_interface = serializer.interface();
+
+    const diff = try diff_mod.DiffEditorInput.init(allocator, null, null, &original.base, &modified.base);
+    defer diff.destroy();
+    const data = (try serializer_interface.serialize(serializer_interface.context, &diff.base, allocator)).?;
+    defer allocator.free(data);
+    const restored = (try serializer_interface.deserialize(serializer_interface.context, data)).?;
+    const restored_diff = diff_mod.is(restored) orelse return error.TestUnexpectedResult;
+    const restored_original: *FileEditorInput = @ptrCast(@alignCast(restored_diff.original.impl.?));
+    const restored_modified: *FileEditorInput = @ptrCast(@alignCast(restored_diff.modified.impl.?));
+    defer {
+        restored_original.deinit();
+        allocator.destroy(restored_original);
+        restored_modified.deinit();
+        allocator.destroy(restored_modified);
+        restored_diff.destroy();
+    }
+    try std.testing.expectEqualStrings(original_path, restored_original.path);
+    try std.testing.expectEqualStrings(modified_path, restored_modified.path);
+}

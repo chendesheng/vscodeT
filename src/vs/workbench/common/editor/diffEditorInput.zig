@@ -5,6 +5,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const editor_input = @import("editorInput.zig");
 const editor = @import("../editor.zig");
+const factory_mod = @import("editorFactory.zig");
 const EditorInput = editor_input.EditorInput;
 
 pub const ID = "workbench.editors.diffEditorInput";
@@ -72,4 +73,83 @@ pub const DiffEditorInput = struct {
 pub fn is(input: *EditorInput) ?*DiffEditorInput {
     if (!std.mem.eql(u8, input.type_id, ID) or input.impl == null) return null;
     return @ptrCast(@alignCast(input.impl.?));
+}
+
+pub const DiffEditorSerializer = struct {
+    allocator: Allocator,
+    registry: *factory_mod.EditorFactoryRegistry,
+
+    pub fn init(allocator: Allocator, registry: *factory_mod.EditorFactoryRegistry) DiffEditorSerializer {
+        return .{ .allocator = allocator, .registry = registry };
+    }
+
+    pub fn interface(self: *DiffEditorSerializer) factory_mod.IEditorSerializer {
+        return .{
+            .context = self,
+            .canSerialize = canSerialize,
+            .serialize = serialize,
+            .deserialize = deserialize,
+        };
+    }
+
+    fn canSerialize(context: *anyopaque, input: *EditorInput) bool {
+        const self: *DiffEditorSerializer = @ptrCast(@alignCast(context));
+        const diff = is(input) orelse return false;
+        const original_serializer = self.registry.getEditorSerializer(diff.original) orelse return false;
+        const modified_serializer = self.registry.getEditorSerializer(diff.modified) orelse return false;
+        return original_serializer.canSerialize(original_serializer.context, diff.original) and
+            modified_serializer.canSerialize(modified_serializer.context, diff.modified);
+    }
+
+    fn serialize(context: *anyopaque, input: *EditorInput, allocator: Allocator) anyerror!?[]const u8 {
+        const self: *DiffEditorSerializer = @ptrCast(@alignCast(context));
+        const diff = is(input) orelse return null;
+        const original_serializer = self.registry.getEditorSerializer(diff.original) orelse return null;
+        const modified_serializer = self.registry.getEditorSerializer(diff.modified) orelse return null;
+        const original_data = (try original_serializer.serialize(original_serializer.context, diff.original, allocator)) orelse return null;
+        defer allocator.free(original_data);
+        const modified_data = (try modified_serializer.serialize(modified_serializer.context, diff.modified, allocator)) orelse return null;
+        defer allocator.free(modified_data);
+
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        var root = std.json.ObjectMap{};
+        const arena = scratch.allocator();
+        try root.put(arena, "originalSerialized", .{ .string = original_data });
+        try root.put(arena, "modifiedSerialized", .{ .string = modified_data });
+        try root.put(arena, "originalTypeId", .{ .string = diff.original.type_id });
+        try root.put(arena, "modifiedTypeId", .{ .string = diff.modified.type_id });
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        try std.json.Stringify.value(std.json.Value{ .object = root }, .{}, &out.writer);
+        return try out.toOwnedSlice();
+    }
+
+    fn deserialize(context: *anyopaque, data: []const u8) anyerror!?*EditorInput {
+        const self: *DiffEditorSerializer = @ptrCast(@alignCast(context));
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{}) catch return null;
+        defer parsed.deinit();
+        const object = switch (parsed.value) {
+            .object => |object| object,
+            else => return null,
+        };
+        const original_type = stringField(object, "originalTypeId") orelse return null;
+        const modified_type = stringField(object, "modifiedTypeId") orelse return null;
+        const original_data = stringField(object, "originalSerialized") orelse return null;
+        const modified_data = stringField(object, "modifiedSerialized") orelse return null;
+        const original_serializer = self.registry.getEditorSerializerByType(original_type) orelse return null;
+        const modified_serializer = self.registry.getEditorSerializerByType(modified_type) orelse return null;
+        const original = (try original_serializer.deserialize(original_serializer.context, original_data)) orelse return null;
+        const modified = (try modified_serializer.deserialize(modified_serializer.context, modified_data)) orelse return null;
+        const diff = try DiffEditorInput.init(self.allocator, null, null, original, modified);
+        return &diff.base;
+    }
+};
+
+fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .string => |text| text,
+        else => null,
+    };
 }
