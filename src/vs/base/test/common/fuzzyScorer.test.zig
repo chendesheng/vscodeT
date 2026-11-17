@@ -141,3 +141,83 @@ test "score (non fuzzy)" {
     defer gap.deinit(allocator);
     try std.testing.expectEqual(@as(i64, 0), gap.score);
 }
+
+fn doScore2(allocator: std.mem.Allocator, target: []const u8, query_text: []const u8, offset: usize) !fuzzy.FuzzyScore2 {
+    const prepared = try fuzzy.prepareQuery(allocator, query_text);
+    defer prepared.deinit(allocator);
+    return fuzzy.scoreFuzzy2(allocator, target, &prepared, 0, offset);
+}
+
+test "fuzzyScore2 (matching)" {
+    const allocator = std.testing.allocator;
+    const target = "HelLo-World";
+    for ([_]usize{ 0, 3 }) |offset| {
+        const actual_target = if (offset == 0) target else try std.fmt.allocPrint(allocator, "123{s}", .{target});
+        defer if (offset != 0) allocator.free(actual_target);
+
+        const full = try doScore2(allocator, actual_target, "HelLo-World", offset);
+        defer full.deinit(allocator);
+        try std.testing.expect(full.score != null);
+        try std.testing.expectEqual(@as(usize, 1), full.matches.len);
+        try std.testing.expectEqual(@as(usize, offset), full.matches[0].start);
+        try std.testing.expectEqual(@as(usize, target.len + offset), full.matches[0].end);
+
+        const separated = try doScore2(allocator, actual_target, "HW", offset);
+        defer separated.deinit(allocator);
+        try std.testing.expect(separated.score != null);
+        try std.testing.expectEqual(@as(usize, 2), separated.matches.len);
+        try std.testing.expectEqual(@as(usize, offset), separated.matches[0].start);
+        try std.testing.expectEqual(@as(usize, 1 + offset), separated.matches[0].end);
+        try std.testing.expectEqual(@as(usize, 6 + offset), separated.matches[1].start);
+        try std.testing.expectEqual(@as(usize, 7 + offset), separated.matches[1].end);
+    }
+}
+
+test "fuzzyScore2 (multiple queries)" {
+    const allocator = std.testing.allocator;
+    const target = "HelLo-World";
+
+    const first = try doScore2(allocator, target, "HelLo", 0);
+    defer first.deinit(allocator);
+    const second = try doScore2(allocator, target, "World", 0);
+    defer second.deinit(allocator);
+    var single_matches = std.array_list.Managed(fuzzy.Match).init(allocator);
+    defer single_matches.deinit();
+    try single_matches.appendSlice(first.matches);
+    try single_matches.appendSlice(second.matches);
+
+    const Check = struct {
+        fn score(alloc: std.mem.Allocator, target_value: []const u8, query: []const u8, singles: []const fuzzy.Match, minimum: i64) !void {
+            const multi = try doScore2(alloc, target_value, query, 0);
+            defer multi.deinit(alloc);
+            try std.testing.expect(multi.score != null);
+            try std.testing.expect(multi.score.? >= minimum);
+            try std.testing.expectEqual(singles.len, multi.matches.len);
+            for (singles, multi.matches) |expected, actual| {
+                try std.testing.expectEqual(expected.start, actual.start);
+                try std.testing.expectEqual(expected.end, actual.end);
+            }
+        }
+        fn noScore(alloc: std.mem.Allocator, target_value: []const u8, query: []const u8) !void {
+            const multi = try doScore2(alloc, target_value, query, 0);
+            defer multi.deinit(alloc);
+            try std.testing.expect(multi.score == null);
+            try std.testing.expectEqual(@as(usize, 0), multi.matches.len);
+        }
+    };
+
+    const minimum = first.score.? + second.score.?;
+    try Check.score(allocator, target, "HelLo World", single_matches.items, minimum);
+    try Check.score(allocator, target, "World HelLo", single_matches.items, minimum);
+    try Check.score(allocator, target, "World HelLo World", single_matches.items, minimum);
+    try Check.noScore(allocator, target, "World HelLo Nothing");
+    try Check.noScore(allocator, target, "More Nothing");
+}
+
+test "fuzzyScore2 (#95716)" {
+    const allocator = std.testing.allocator;
+    const result = try doScore2(allocator, "# ❌ Wow", "❌", 0);
+    defer result.deinit(allocator);
+    try std.testing.expect(result.score != null);
+    try std.testing.expect(result.matches.len > 0);
+}

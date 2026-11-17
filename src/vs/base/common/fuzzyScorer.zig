@@ -1,8 +1,9 @@
 // Port of the query-normalizer region of `src/vs/base/common/fuzzyScorer.ts`.
 //
 // Terminal adaptations: path separators are POSIX-only (`/`, backslashes are
-// normalized to `/`), and lowercasing is ASCII (the terminal matcher scores
-// ASCII identifiers); the scoring functions are not ported yet.
+// normalized to `/`), lowercasing is ASCII (the terminal matcher scores ASCII
+// identifiers), and `scoreFuzzy2` derives its ranges from the ported matrix
+// scorer instead of `filters.fuzzyScore` (the filters DP scorer is not ported).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -307,4 +308,108 @@ pub fn scoreFuzzy(
         .score = scores[query_length * target_length - 1],
         .positions = try positions.toOwnedSlice(),
     };
+}
+
+//#region Alternate fuzzy scorer (scoreFuzzy2)
+
+pub const FuzzyScore2 = struct {
+    score: ?i64,
+    matches: []Match,
+
+    pub fn deinit(self: *const FuzzyScore2, allocator: Allocator) void {
+        allocator.free(self.matches);
+    }
+};
+
+pub const Match = struct {
+    start: usize,
+    end: usize,
+};
+
+fn matchesFromPositions(allocator: Allocator, positions: []const usize) ![]Match {
+    var matches = std.array_list.Managed(Match).init(allocator);
+    errdefer matches.deinit();
+    var index: usize = 0;
+    while (index < positions.len) : (index += 1) {
+        var end = index + 1;
+        while (end < positions.len and positions[end] == positions[end - 1] + 1) end += 1;
+        try matches.append(.{ .start = positions[index], .end = positions[end - 1] + 1 });
+        index = end - 1;
+    }
+    return matches.toOwnedSlice();
+}
+
+fn normalizeMatches(allocator: Allocator, matches: []Match) ![]Match {
+    var normalized = std.array_list.Managed(Match).init(allocator);
+    errdefer normalized.deinit();
+    var index: usize = 0;
+    while (index < matches.len) : (index += 1) {
+        const current = matches[index];
+        if (normalized.items.len == 0) {
+            try normalized.append(current);
+            continue;
+        }
+        const last = &normalized.items[normalized.items.len - 1];
+        if (current.start <= last.end) {
+            last.end = @max(last.end, current.end);
+        } else {
+            try normalized.append(current);
+        }
+    }
+    return normalized.toOwnedSlice();
+}
+
+fn doScoreFuzzy2Single(
+    allocator: Allocator,
+    target: []const u8,
+    piece: PreparedQueryPiece,
+    pattern_start: usize,
+    word_start: usize,
+) !FuzzyScore2 {
+    _ = pattern_start;
+    const score_value = try scoreFuzzy(allocator, target[word_start..], piece.normalized, piece.normalizedLowercase, true);
+    defer score_value.deinit(allocator);
+    if (score_value.score == 0) return .{ .score = null, .matches = try allocator.alloc(Match, 0) };
+    for (score_value.positions) |*position| position.* += word_start;
+    return .{ .score = score_value.score, .matches = try matchesFromPositions(allocator, score_value.positions) };
+}
+
+pub fn scoreFuzzy2(
+    allocator: Allocator,
+    target: []const u8,
+    query: *const PreparedQuery,
+    pattern_start: usize,
+    word_start: usize,
+) !FuzzyScore2 {
+    if (query.values) |values| {
+        if (values.len > 1) {
+            var total_score: i64 = 0;
+            var all_matches = std.array_list.Managed(Match).init(allocator);
+            defer all_matches.deinit();
+            for (values) |piece| {
+                const single = try doScoreFuzzy2Single(allocator, target, piece, pattern_start, word_start);
+                defer single.deinit(allocator);
+                if (single.score == null) {
+                    return .{ .score = null, .matches = try allocator.alloc(Match, 0) };
+                }
+                total_score += single.score.?;
+                try all_matches.appendSlice(single.matches);
+            }
+            std.mem.sort(Match, all_matches.items, {}, struct {
+                fn lessThan(_: void, a: Match, b: Match) bool {
+                    return a.start < b.start;
+                }
+            }.lessThan);
+            return .{ .score = total_score, .matches = try normalizeMatches(allocator, all_matches.items) };
+        }
+    }
+    const piece = PreparedQueryPiece{
+        .original = query.original,
+        .originalLowercase = query.originalLowercase,
+        .pathNormalized = query.pathNormalized,
+        .normalized = query.normalized,
+        .normalizedLowercase = query.normalizedLowercase,
+        .expectContiguousMatch = query.expectContiguousMatch,
+    };
+    return doScoreFuzzy2Single(allocator, target, piece, pattern_start, word_start);
 }
