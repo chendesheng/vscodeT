@@ -12,6 +12,7 @@
 // - Actions own their backing structs in the returned `Menu` arena.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Emitter = @import("../../../base/common/event.zig").Emitter;
 const ArrayList = std.array_list.Managed;
 const actions = @import("actions.zig");
 const action_module = @import("../../action/common/action.zig");
@@ -37,11 +38,37 @@ pub const MenuGroup = struct {
 
 pub const Menu = struct {
     allocator: Allocator,
+    service: *MenuService,
+    id: MenuId,
+    context: contextkey.IContext,
     arena: std.heap.ArenaAllocator,
     groups: []const MenuGroup,
+    onDidChange: Emitter(void),
+    registry_listener: usize,
 
     pub fn deinit(self: *Menu) void {
+        self.service.registry.on_did_change.unlisten(self.registry_listener);
+        self.onDidChange.deinit();
         self.arena.deinit();
+    }
+
+    pub fn getActions(self: *const Menu) []const MenuGroup {
+        return self.groups;
+    }
+
+    /// Rebuilds the menu from the registry. Upstream also recomputes when
+    /// context keys change; the terminal host has no observable
+    /// `IContextKeyService` yet, so only registry changes are tracked.
+    pub fn refresh(self: *Menu) !void {
+        self.arena.deinit();
+        self.arena = std.heap.ArenaAllocator.init(self.allocator);
+        self.groups = try self.service.buildGroups(self.arena.allocator(), self.id, self.context);
+    }
+
+    fn onRegistryChange(event: actions.MenuChangeEvent, menu: *Menu) anyerror!void {
+        if (!MenuId.eql(event.menu, menu.id)) return;
+        menu.refresh() catch {};
+        try menu.onDidChange.fire({});
     }
 };
 
@@ -341,11 +368,23 @@ pub const MenuService = struct {
 
     /// Resolves a menu: visibility filtering, upstream sorting/grouping, group
     /// titles, enablement/toggled state and flattened submenus.
-    pub fn createMenu(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext) !Menu {
+    pub fn createMenu(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext) !*Menu {
+        const menu = try allocator.create(Menu);
+        errdefer allocator.destroy(menu);
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const groups = try self.buildGroups(arena.allocator(), id, context);
-        return .{ .allocator = allocator, .arena = arena, .groups = groups };
+        menu.* = .{
+            .allocator = allocator,
+            .service = self,
+            .id = id,
+            .context = context,
+            .arena = arena,
+            .groups = groups,
+            .onDidChange = Emitter(void).init(allocator),
+            .registry_listener = try self.registry.on_did_change.listen(menu, Menu.onRegistryChange),
+        };
+        return menu;
     }
 
     fn buildGroups(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext) ![]const MenuGroup {
@@ -542,22 +581,29 @@ test "menu grouping, visibility, enablement and toggled state" {
     var context = Context{};
 
     var menu = try service.createMenu(allocator, MenuIdTest, context.context());
-    defer menu.deinit();
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
 
-    try std.testing.expectEqual(@as(usize, 2), menu.groups.len);
-    try std.testing.expectEqualStrings("navigation", menu.groups[0].id);
-    try std.testing.expectEqualStrings("Navigation", menu.groups[0].title.?);
-    try std.testing.expectEqual(@as(usize, 2), menu.groups[0].actions.len);
-    try std.testing.expectEqualStrings("a", menu.groups[0].actions[0].id());
-    try std.testing.expect(!menu.groups[0].actions[0].enabled());
-    try std.testing.expectEqualStrings("b", menu.groups[0].actions[1].id());
+    const groups = menu.getActions();
+    try std.testing.expectEqual(@as(usize, 2), groups.len);
+    try std.testing.expectEqualStrings("navigation", groups[0].id);
+    try std.testing.expectEqualStrings("Navigation", groups[0].title.?);
+    try std.testing.expectEqual(@as(usize, 2), groups[0].actions.len);
+    try std.testing.expectEqualStrings("a", groups[0].actions[0].id());
+    try std.testing.expect(!groups[0].actions[0].enabled());
+    try std.testing.expectEqualStrings("b", groups[0].actions[1].id());
 
     context.enabled = true;
     context.checked = true;
     var enabled_menu = try service.createMenu(allocator, MenuIdTest, context.context());
-    defer enabled_menu.deinit();
-    try std.testing.expect(enabled_menu.groups[0].actions[0].enabled());
-    try std.testing.expect(enabled_menu.groups[1].actions[0].checked().?);
+    defer {
+        enabled_menu.deinit();
+        allocator.destroy(enabled_menu);
+    }
+    try std.testing.expect(enabled_menu.getActions()[0].actions[0].enabled());
+    try std.testing.expect(enabled_menu.getActions()[1].actions[0].checked().?);
 }
 
 test "menu submenus flatten and drop empty branches" {
@@ -585,11 +631,14 @@ test "menu submenus flatten and drop empty branches" {
     };
 
     var menu = try service.createMenu(allocator, parent, Context.context());
-    defer menu.deinit();
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
 
-    try std.testing.expectEqual(@as(usize, 1), menu.groups.len);
-    try std.testing.expectEqual(@as(usize, 1), menu.groups[0].actions.len);
-    try std.testing.expectEqualStrings("submenuitem.test.child", menu.groups[0].actions[0].id());
+    try std.testing.expectEqual(@as(usize, 1), menu.getActions().len);
+    try std.testing.expectEqual(@as(usize, 1), menu.getActions()[0].actions.len);
+    try std.testing.expectEqualStrings("submenuitem.test.child", menu.getActions()[0].actions[0].id());
 }
 
 test "menu hide state inverts hidden-by-default items" {
@@ -643,4 +692,42 @@ test "menu hide state persists through storage" {
     var third = MenuService.initWithStorage(allocator, &registry, null, &storage);
     defer third.deinit();
     try std.testing.expect(!third.hide_state.isHidden(menu, "command"));
+}
+
+test "menu refreshes and emits changes on registry updates" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+
+    const menu_id = MenuId{ .id = "test.live" };
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var menu = try service.createMenu(allocator, menu_id, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+
+    var changes: usize = 0;
+    const Listener = struct {
+        fn onChange(_: void, counter: *usize) anyerror!void {
+            counter.* += 1;
+        }
+    };
+    _ = try menu.onDidChange.listen(&changes, Listener.onChange);
+
+    try registry.appendMenuItem(menu_id, .{ .command = .{ .id = "late", .title = "Late" } });
+    try std.testing.expectEqual(@as(usize, 1), changes);
+    try std.testing.expectEqual(@as(usize, 1), menu.getActions().len);
+    try std.testing.expectEqualStrings("late", menu.getActions()[0].actions[0].id());
 }
