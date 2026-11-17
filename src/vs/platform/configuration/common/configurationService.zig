@@ -32,6 +32,7 @@ pub const ConfigurationService = struct {
     user: ConfigurationModel,
     workspace: ConfigurationModel,
     onDidChange: @import("../../../base/common/event.zig").Emitter(configuration.Change),
+    scratch: std.heap.ArenaAllocator,
 
     pub fn init(allocator: Allocator, registry: *configurationRegistry.ConfigurationRegistry) !*ConfigurationService {
         const self = try allocator.create(ConfigurationService);
@@ -42,6 +43,7 @@ pub const ConfigurationService = struct {
             .user = try ConfigurationModel.initEmpty(allocator),
             .workspace = try ConfigurationModel.initEmpty(allocator),
             .onDidChange = @import("../../../base/common/event.zig").Emitter(configuration.Change).init(allocator),
+            .scratch = std.heap.ArenaAllocator.init(allocator),
         };
         return self;
     }
@@ -51,11 +53,27 @@ pub const ConfigurationService = struct {
         self.user.deinit();
         self.workspace.deinit();
         self.onDidChange.deinit();
+        self.scratch.deinit();
         self.allocator.destroy(self);
     }
 
     pub fn initialize(self: *ConfigurationService) !void {
         try self.defaults.initialize();
+    }
+
+    /// Resolves a value for a language-override identifier. The returned
+    /// pointer is owned by a scratch arena and stays valid until the next
+    /// `getValueWithOverrides` call.
+    pub fn getValueWithOverrides(self: *ConfigurationService, key: []const u8, override_identifier: ?[]const u8) !?*const std.json.Value {
+        const identifier = override_identifier orelse return self.getValue(key);
+        _ = self.scratch.reset(.retain_capacity);
+        const scratch = self.scratch.allocator();
+        var workspace = try self.workspace.override(scratch, identifier);
+        if (workspace.getValue(key)) |value| return value;
+        var user = try self.user.override(scratch, identifier);
+        if (user.getValue(key)) |value| return value;
+        var defaults = try self.defaults.configurationModel().override(scratch, identifier);
+        return defaults.getValue(key);
     }
 
     pub fn getValue(self: *ConfigurationService, key: []const u8) ?*const std.json.Value {

@@ -200,3 +200,19 @@ test "configuration changes emit the changed source and keys" {
     try std.testing.expectEqual(configuration.ConfigurationTarget.WORKSPACE, events.items[1].source);
     try std.testing.expectEqualStrings("configurationService.testSetting", events.items[1].keys[0]);
 }
+
+test "language override values resolve through the service" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "editor.tabSize", .default = std.json.Value{ .integer = 4 } }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+
+    try std.testing.expectEqual(@as(i64, 4), (try service.getValueWithOverrides("editor.tabSize", "typescript")).?.integer);
+
+    try service.loadWorkspaceJson("{\"[typescript]\":{\"editor.tabSize\":2}}");
+    try std.testing.expectEqual(@as(i64, 2), (try service.getValueWithOverrides("editor.tabSize", "typescript")).?.integer);
+    try std.testing.expectEqual(@as(i64, 4), service.getValue("editor.tabSize").?.integer);
+}
