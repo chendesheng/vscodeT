@@ -467,3 +467,16 @@ test "overrides with multiple identifiers apply to each identifier" {
     try std.testing.expectEqual(@as(usize, 1), keys.len);
     try std.testing.expectEqualStrings("a", keys[0]);
 }
+
+test "removeValue leaves unknown nested keys untouched" {
+    const allocator = std.testing.allocator;
+    var model = try modelFrom(allocator, "{\"a\":{\"b\":2}}", &.{"a.b"});
+    defer model.deinit();
+    model.removeValue("a.b.c");
+    try std.testing.expectEqual(@as(i64, 2), model.getValue("a.b").?.integer);
+    try std.testing.expectEqual(@as(usize, 1), model.getKeys().len);
+    model.removeValue("a");
+    try std.testing.expect(model.getValue("a") == null);
+    // Upstream keeps descendant keys in the keys list when a parent is removed.
+    try std.testing.expectEqual(@as(usize, 1), model.getKeys().len);
+}
