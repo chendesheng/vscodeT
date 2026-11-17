@@ -49,9 +49,13 @@ pub const Menu = struct {
     menu_ids: std.StringHashMap(void),
     onDidChange: Emitter(void),
     registry_listener: usize,
+    context_listener: ?usize = null,
 
     pub fn deinit(self: *Menu) void {
         self.service.registry.on_did_change.unlisten(self.registry_listener);
+        if (self.context_listener) |id| {
+            if (self.service.context_service) |service| service.onDidChangeContext.unlisten(id);
+        }
         self.onDidChange.deinit();
         freeMenuIds(self.allocator, &self.menu_ids);
         self.arena.deinit();
@@ -74,6 +78,15 @@ pub const Menu = struct {
 
     fn onRegistryChange(event: actions.MenuChangeEvent, menu: *Menu) anyerror!void {
         if (!menu.menu_ids.contains(event.menu.id)) return;
+        menu.refresh() catch {};
+        try menu.onDidChange.fire({});
+    }
+
+    /// Context keys drive visibility/precondition/toggled state. The flat
+    /// terminal service reports changed keys but the menu does not yet collect
+    /// the keys it depends on, so every context change refreshes the menu
+    /// (coarse, unlike upstream's `affectsSome` filter).
+    fn onContextChange(_: contextkey.ContextKeyChangeEvent, menu: *Menu) anyerror!void {
         menu.refresh() catch {};
         try menu.onDidChange.fire({});
     }
@@ -377,7 +390,12 @@ pub const MenuService = struct {
     command_registry: ?*commands.CommandRegistry,
     hide_state: MenuHideState,
     keybindings: ?*keybinding_registry_mod.KeybindingsRegistry = null,
+    context_service: ?*contextkey.ContextKeyService = null,
     os: platform.OperatingSystem = platform.OS,
+
+    pub fn useContextService(self: *MenuService, service: *contextkey.ContextKeyService) void {
+        self.context_service = service;
+    }
 
     pub fn initWithKeybindings(
         allocator: Allocator,
@@ -451,6 +469,9 @@ pub const MenuService = struct {
             .onDidChange = Emitter(void).init(allocator),
             .registry_listener = try self.registry.on_did_change.listen(menu, Menu.onRegistryChange),
         };
+        if (self.context_service) |context_service| {
+            menu.context_listener = try context_service.onDidChangeContext.listen(menu, Menu.onContextChange);
+        }
         return menu;
     }
 
@@ -880,4 +901,44 @@ test "menu actions expose keybinding labels" {
     const action: *MenuItemAction = @ptrCast(@alignCast(menu.getActions()[0].actions[0].context));
     try std.testing.expect(action.keybindingLabel() != null);
     try std.testing.expect(action.keybindingLabel().?.len > 0);
+}
+
+test "menus refresh when context keys change" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var context_keys = contextkey.ContextKeyService.init(allocator);
+    defer context_keys.deinit();
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+
+    const menu_id = MenuId{ .id = "test.context.refresh" };
+    try registry.appendMenuItem(menu_id, .{
+        .command = .{ .id = "conditional", .title = "Conditional" },
+        .when = try factory.has("show"),
+    });
+
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+    service.useContextService(&context_keys);
+
+    var menu = try service.createMenu(allocator, menu_id, context_keys.interface().getContext());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+    try std.testing.expectEqual(@as(usize, 0), menu.getActions().len);
+
+    var changes: usize = 0;
+    const Listener = struct {
+        fn onChange(_: void, counter: *usize) anyerror!void {
+            counter.* += 1;
+        }
+    };
+    _ = try menu.onDidChange.listen(&changes, Listener.onChange);
+
+    const key = try context_keys.createKey("show", .{ .boolean = true });
+    key.set(.{ .boolean = true });
+    try std.testing.expectEqual(@as(usize, 1), changes);
+    try std.testing.expectEqual(@as(usize, 1), menu.getActions().len);
 }
