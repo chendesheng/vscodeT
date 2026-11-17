@@ -589,3 +589,21 @@ test "URI JSON round-trip" {
     defer revived.deinit();
     try std.testing.expect(URI.equals(&uri, &revived));
 }
+
+test "URI authority round-trips through withChanges and encoding" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.parse(allocator, "file://server/share/a b.txt", true);
+    defer uri.deinit();
+    try std.testing.expectEqualStrings("server", uri.authority);
+    try std.testing.expectEqualStrings("/share/a b.txt", uri.path);
+    const encoded = try uri.toStringEncoded(allocator);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualStrings("file://server/share/a%20b.txt", encoded);
+
+    var local = try uri.withChanges(allocator, .{ .authority = @as(?[]const u8, null) });
+    defer local.deinit();
+    try std.testing.expectEqualStrings("", local.authority);
+    const local_text = try local.toString(allocator);
+    defer allocator.free(local_text);
+    try std.testing.expectEqualStrings("file:///share/a b.txt", local_text);
+}
