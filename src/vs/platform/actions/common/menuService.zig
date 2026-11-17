@@ -43,12 +43,14 @@ pub const Menu = struct {
     context: contextkey.IContext,
     arena: std.heap.ArenaAllocator,
     groups: []const MenuGroup,
+    menu_ids: std.StringHashMap(void),
     onDidChange: Emitter(void),
     registry_listener: usize,
 
     pub fn deinit(self: *Menu) void {
         self.service.registry.on_did_change.unlisten(self.registry_listener);
         self.onDidChange.deinit();
+        freeMenuIds(self.allocator, &self.menu_ids);
         self.arena.deinit();
     }
 
@@ -63,10 +65,12 @@ pub const Menu = struct {
         self.arena.deinit();
         self.arena = std.heap.ArenaAllocator.init(self.allocator);
         self.groups = try self.service.buildGroups(self.arena.allocator(), self.id, self.context);
+        freeMenuIds(self.allocator, &self.menu_ids);
+        try collectMenuIds(self.allocator, self.service.registry, &self.menu_ids, self.id);
     }
 
     fn onRegistryChange(event: actions.MenuChangeEvent, menu: *Menu) anyerror!void {
-        if (!MenuId.eql(event.menu, menu.id)) return;
+        if (!menu.menu_ids.contains(event.menu.id)) return;
         menu.refresh() catch {};
         try menu.onDidChange.fire({});
     }
@@ -338,6 +342,26 @@ pub const MenuHideState = struct {
     }
 };
 
+fn collectMenuIds(allocator: Allocator, registry: *MenuRegistry, set: *std.StringHashMap(void), id: MenuId) !void {
+    if (set.contains(id.id)) return;
+    const key = try allocator.dupe(u8, id.id);
+    errdefer allocator.free(key);
+    try set.put(key, {});
+    for (registry.getMenuItems(id)) |entry| {
+        switch (entry) {
+            .submenu => |submenu| try collectMenuIds(allocator, registry, set, submenu.submenu),
+            else => {},
+        }
+    }
+}
+
+fn freeMenuIds(allocator: Allocator, set: *std.StringHashMap(void)) void {
+    var iterator = set.iterator();
+    while (iterator.next()) |entry| allocator.free(entry.key_ptr.*);
+    set.deinit();
+    set.* = std.StringHashMap(void).init(allocator);
+}
+
 pub const MenuService = struct {
     allocator: Allocator,
     registry: *MenuRegistry,
@@ -374,6 +398,9 @@ pub const MenuService = struct {
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const groups = try self.buildGroups(arena.allocator(), id, context);
+        var menu_ids = std.StringHashMap(void).init(allocator);
+        errdefer freeMenuIds(allocator, &menu_ids);
+        try collectMenuIds(allocator, self.registry, &menu_ids, id);
         menu.* = .{
             .allocator = allocator,
             .service = self,
@@ -381,6 +408,7 @@ pub const MenuService = struct {
             .context = context,
             .arena = arena,
             .groups = groups,
+            .menu_ids = menu_ids,
             .onDidChange = Emitter(void).init(allocator),
             .registry_listener = try self.registry.on_did_change.listen(menu, Menu.onRegistryChange),
         };
@@ -730,4 +758,46 @@ test "menu refreshes and emits changes on registry updates" {
     try std.testing.expectEqual(@as(usize, 1), changes);
     try std.testing.expectEqual(@as(usize, 1), menu.getActions().len);
     try std.testing.expectEqualStrings("late", menu.getActions()[0].actions[0].id());
+}
+
+test "menu tracks nested submenu registrations" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+
+    const parent = MenuId{ .id = "test.parent.live" };
+    const child = MenuId{ .id = "test.child.live" };
+    try registry.appendSubmenuItem(parent, .{ .title = "Child", .submenu = child });
+    try registry.appendMenuItem(child, .{ .command = .{ .id = "one", .title = "One" } });
+
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+
+    const Context = struct {
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    var menu = try service.createMenu(allocator, parent, Context.context());
+    defer {
+        menu.deinit();
+        allocator.destroy(menu);
+    }
+
+    var changes: usize = 0;
+    const Listener = struct {
+        fn onChange(_: void, counter: *usize) anyerror!void {
+            counter.* += 1;
+        }
+    };
+    _ = try menu.onDidChange.listen(&changes, Listener.onChange);
+
+    try registry.appendMenuItem(child, .{ .command = .{ .id = "two", .title = "Two" } });
+    try std.testing.expectEqual(@as(usize, 1), changes);
+    const submenu_action: *SubmenuItemAction = @ptrCast(@alignCast(menu.getActions()[0].actions[0].context));
+    try std.testing.expectEqual(@as(usize, 2), submenu_action.actions.len);
 }
