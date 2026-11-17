@@ -146,3 +146,29 @@ test "does not persist generated colors or affect another theme instance" {
     try expectHex(restored.getColor(editor_background, true), 0x20, 0x20, 0x20);
     try std.testing.expectEqualStrings(original_storage, storage.get(ColorThemeData.STORAGE_KEY, .profile, null).?);
 }
+
+test "includes the theme location when plist settings are not an array" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+
+    const theme = try ColorThemeData.createUnloadedTheme(allocator, &fixture.registry, "vs-dark", &.{});
+    defer theme.deinit();
+    theme.location = "/themes/invalid.tmTheme";
+
+    const Loader = struct {
+        fn read(_: *anyopaque, _: []const u8) anyerror![]const u8 {
+            return "<plist><dict><key>settings</key><string>invalid</string></dict></plist>";
+        }
+    };
+    var loader_state: u8 = 0;
+    const reader = @import("../../common/colorThemeData.zig").ResourceReader{
+        .context = &loader_state,
+        .read = Loader.read,
+    };
+    try std.testing.expectError(error.InvalidTheme, theme.ensureLoaded(reader));
+    try std.testing.expectEqualStrings(
+        "Problem parsing tmTheme file: /themes/invalid.tmTheme. 'settings' is not array.",
+        theme.errorMessage().?,
+    );
+}

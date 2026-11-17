@@ -20,6 +20,13 @@ const ColorValue = color_utils.ColorValue;
 const IColorTheme = theme_service.IColorTheme;
 const ColorScheme = theme_mod.ColorScheme;
 const InMemoryStorageService = storage_mod.InMemoryStorageService;
+const plist_parser = @import("./plistParser.zig");
+
+pub const ResourceReader = struct {
+    context: *anyopaque,
+    /// Returns the file contents (borrowed for the duration of the call).
+    read: *const fn (context: *anyopaque, path: []const u8) anyerror![]const u8,
+};
 
 pub const TokenStyleSettings = struct {
     foreground: ?[]const u8 = null,
@@ -46,6 +53,10 @@ pub const ColorThemeData = struct {
     custom_colors: std.StringHashMap([]const u8),
     transient_colors: ?std.StringHashMap(Color),
     token_colors: []TokenColor,
+    theme_token_colors: []TokenColor = &.{},
+    location: ?[]const u8 = null,
+    is_loaded: bool = false,
+    load_error_message: ?[]u8 = null,
 
     pub fn createUnloadedTheme(allocator: Allocator, registry: *ColorRegistry, id: []const u8, color_map: []const [2][]const u8) !*ColorThemeData {
         const self = try allocator.create(ColorThemeData);
@@ -74,7 +85,7 @@ pub const ColorThemeData = struct {
         for (color_map) |entry| {
             try self.color_map.put(try arena_allocator.dupe(u8, entry[0]), try arena_allocator.dupe(u8, entry[1]));
         }
-        self.token_colors = try buildTokenColors(arena_allocator, self.color_map, null);
+        self.token_colors = try buildTokenColors(arena_allocator, self.color_map, null, &.{});
         return self;
     }
 
@@ -165,7 +176,7 @@ pub const ColorThemeData = struct {
         while (custom.next()) |entry| {
             try theme.custom_colors.put(try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*));
         }
-        theme.token_colors = try buildTokenColors(allocator, theme.color_map, null);
+        theme.token_colors = try buildTokenColors(allocator, theme.color_map, null, &.{});
         return theme;
     }
 
@@ -174,7 +185,7 @@ pub const ColorThemeData = struct {
     }
 
     fn refreshTokenColors(self: *ColorThemeData) !void {
-        self.token_colors = try buildTokenColors(self.arena.allocator(), self.color_map, self.transient_colors);
+        self.token_colors = try buildTokenColors(self.arena.allocator(), self.color_map, self.transient_colors, self.theme_token_colors);
     }
 
     pub fn interface(self: *ColorThemeData) IColorTheme {
@@ -204,6 +215,81 @@ pub const ColorThemeData = struct {
 
     fn interfaceGetTokenStyleMetadata(_: *anyopaque, _: []const u8, _: []const []const u8, _: []const u8) ?theme_service.ITokenStyle {
         return null;
+    }
+
+    pub fn errorMessage(self: *const ColorThemeData) ?[]const u8 {
+        return self.load_error_message;
+    }
+
+    /// Loads a JSON color theme or a tmTheme plist through the resource reader.
+    /// Zig errors carry no message, so parse failures also set
+    /// `load_error_message` (the upstream thrown message).
+    pub fn ensureLoaded(self: *ColorThemeData, reader: ResourceReader) !void {
+        const location = self.location orelse return error.MissingThemeLocation;
+        const content = try reader.read(reader.context, location);
+        const allocator = self.arena.allocator();
+        if (std.mem.endsWith(u8, location, ".tmTheme")) {
+            const value = plist_parser.parse(allocator, content) catch return error.InvalidTheme;
+            const root_object = switch (value) {
+                .object => |object| object,
+                else => return error.InvalidTheme,
+            };
+            const settings = root_object.get("settings") orelse {
+                self.load_error_message = try std.fmt.allocPrint(allocator, "Problem parsing tmTheme file: {s}. Missing 'settings'.", .{location});
+                return error.InvalidTheme;
+            };
+            if (settings != .array) {
+                self.load_error_message = try std.fmt.allocPrint(allocator, "Problem parsing tmTheme file: {s}. 'settings' is not array.", .{location});
+                return error.InvalidTheme;
+            }
+            var rules = std.array_list.Managed(TokenColor).init(allocator);
+            for (settings.array.items) |entry| {
+                const entry_object = switch (entry) {
+                    .object => |object| object,
+                    else => continue,
+                };
+                const settings_value = entry_object.get("settings") orelse continue;
+                const settings_object = switch (settings_value) {
+                    .object => |object| object,
+                    else => continue,
+                };
+                var rule = TokenColor{ .settings = .{} };
+                if (settings_object.get("foreground")) |foreground| {
+                    if (foreground == .string) rule.settings.foreground = foreground.string;
+                }
+                if (settings_object.get("background")) |background| {
+                    if (background == .string) rule.settings.background = background.string;
+                }
+                if (settings_object.get("fontStyle")) |font_style| {
+                    if (font_style == .string) rule.settings.font_style = font_style.string;
+                }
+                try rules.append(rule);
+            }
+            self.theme_token_colors = try rules.toOwnedSlice();
+            self.is_loaded = true;
+            try self.refreshTokenColors();
+            return;
+        }
+
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return error.InvalidTheme;
+        const object = switch (parsed.value) {
+            .object => |object| object,
+            else => return error.InvalidTheme,
+        };
+        if (object.get("colors")) |colors| {
+            if (colors == .object) {
+                var iterator = colors.object.iterator();
+                while (iterator.next()) |entry| {
+                    const hex = switch (entry.value_ptr.*) {
+                        .string => |value| value,
+                        else => continue,
+                    };
+                    try self.color_map.put(try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, hex));
+                }
+            }
+        }
+        self.is_loaded = true;
+        try self.refreshTokenColors();
     }
 
     pub fn toStorage(self: *ColorThemeData, storage: *InMemoryStorageService) !void {
@@ -268,8 +354,8 @@ pub const ColorThemeData = struct {
     }
 };
 
-fn buildTokenColors(allocator: Allocator, color_map: std.StringHashMap([]const u8), transient: ?std.StringHashMap(Color)) ![]TokenColor {
-    const result = try allocator.alloc(TokenColor, 1);
+fn buildTokenColors(allocator: Allocator, color_map: std.StringHashMap([]const u8), transient: ?std.StringHashMap(Color), rules: []const TokenColor) ![]TokenColor {
+    const result = try allocator.alloc(TokenColor, 1 + rules.len);
     var background: ?[]const u8 = null;
     if (transient) |colors| {
         if (colors.get("editor.background")) |color| {
@@ -280,6 +366,7 @@ fn buildTokenColors(allocator: Allocator, color_map: std.StringHashMap([]const u
         background = color_map.get("editor.background");
     }
     result[0] = .{ .settings = .{ .background = background } };
+    @memcpy(result[1..], rules);
     return result;
 }
 
