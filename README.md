@@ -813,6 +813,14 @@ Editor contributions:
   `languageService.ts` registration surface that would replace
   `src/tui/language.zig` still needs to be ported.
 
+- The view controller's double-click block selection is ported in
+  `editor/browser/view/viewController.zig`: bracket content (after an opening or
+  before a closing bracket, innermost pair) and quoted-string content (matching
+  double/single/backtick quotes, RTL and mismatched-quote bail-outs) with the
+  upstream mouse dispatch decision tree routed through an explicit navigation
+  command sink. The bracket suite and the basic string cases are ported at the
+  upstream test path.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory
