@@ -336,12 +336,14 @@ pub const MenuChangeEvent = struct {
 pub const MenuRegistry = struct {
     allocator: Allocator,
     menus: std.StringHashMap(std.array_list.Managed(MenuEntry)),
+    groups: std.StringHashMap(std.StringHashMap([]const u8)),
     on_did_change: Emitter(MenuChangeEvent),
 
     pub fn init(allocator: Allocator) MenuRegistry {
         return .{
             .allocator = allocator,
             .menus = std.StringHashMap(std.array_list.Managed(MenuEntry)).init(allocator),
+            .groups = std.StringHashMap(std.StringHashMap([]const u8)).init(allocator),
             .on_did_change = Emitter(MenuChangeEvent).init(allocator),
         };
     }
@@ -350,7 +352,25 @@ pub const MenuRegistry = struct {
         var iterator = self.menus.valueIterator();
         while (iterator.next()) |list| list.deinit();
         self.menus.deinit();
+        var group_iterator = self.groups.valueIterator();
+        while (group_iterator.next()) |map| map.deinit();
+        self.groups.deinit();
         self.on_did_change.deinit();
+    }
+
+    /// Describes the title of a menu group; contributors only add items to it.
+    pub fn appendMenuGroup(self: *MenuRegistry, id: MenuId, group: []const u8, title: []const u8) !void {
+        const entry = try self.groups.getOrPut(id.id);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = std.StringHashMap([]const u8).init(self.allocator);
+        }
+        try entry.value_ptr.put(group, title);
+        try self.on_did_change.fire(.{ .menu = id });
+    }
+
+    pub fn getMenuGroupTitle(self: *MenuRegistry, id: MenuId, group: []const u8) ?[]const u8 {
+        const groups = self.groups.getPtr(id.id) orelse return null;
+        return groups.get(group);
     }
 
     fn menuList(self: *MenuRegistry, id: MenuId) !*std.array_list.Managed(MenuEntry) {

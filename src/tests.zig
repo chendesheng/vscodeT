@@ -383,6 +383,7 @@ comptime {
     _ = @import("./vs/base/common/actions.zig");
     _ = @import("./vs/platform/action/common/action.zig");
     _ = @import("./vs/platform/actions/common/actions.zig");
+    _ = @import("./vs/platform/actions/common/menuService.zig");
     _ = @import("./vs/base/common/keyCodes.zig");
     _ = @import("./vs/base/common/keybindings.zig");
     _ = @import("./vs/base/common/platform.zig");
