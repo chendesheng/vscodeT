@@ -47,6 +47,7 @@ pub const Menu = struct {
     arena: std.heap.ArenaAllocator,
     groups: []const MenuGroup,
     menu_ids: std.StringHashMap(void),
+    context_keys: std.StringHashMap(void),
     onDidChange: Emitter(void),
     registry_listener: usize,
     context_listener: ?usize = null,
@@ -58,6 +59,7 @@ pub const Menu = struct {
         }
         self.onDidChange.deinit();
         freeMenuIds(self.allocator, &self.menu_ids);
+        freeMenuIds(self.allocator, &self.context_keys);
         self.arena.deinit();
     }
 
@@ -74,6 +76,8 @@ pub const Menu = struct {
         self.groups = try self.service.buildGroups(self.arena.allocator(), self.id, self.context);
         freeMenuIds(self.allocator, &self.menu_ids);
         try collectMenuIds(self.allocator, self.service.registry, &self.menu_ids, self.id);
+        freeMenuIds(self.allocator, &self.context_keys);
+        try collectContextKeys(self.allocator, self.service.registry, &self.context_keys, self.id);
     }
 
     fn onRegistryChange(event: actions.MenuChangeEvent, menu: *Menu) anyerror!void {
@@ -82,11 +86,20 @@ pub const Menu = struct {
         try menu.onDidChange.fire({});
     }
 
-    /// Context keys drive visibility/precondition/toggled state. The flat
-    /// terminal service reports changed keys but the menu does not yet collect
-    /// the keys it depends on, so every context change refreshes the menu
-    /// (coarse, unlike upstream's `affectsSome` filter).
-    fn onContextChange(_: contextkey.ContextKeyChangeEvent, menu: *Menu) anyerror!void {
+    /// Context keys drive visibility/precondition/toggled state. Refresh only
+    /// when a changed key is one the menu actually depends on (upstream
+    /// `affectsSome`).
+    fn onContextChange(event: contextkey.ContextKeyChangeEvent, menu: *Menu) anyerror!void {
+        var affected = false;
+        var iterator = menu.context_keys.iterator();
+        while (iterator.next()) |entry| {
+            const single = [_][]const u8{entry.key_ptr.*};
+            if (event.affectsSome(&single)) {
+                affected = true;
+                break;
+            }
+        }
+        if (!affected) return;
         menu.refresh() catch {};
         try menu.onDidChange.fire({});
     }
@@ -377,6 +390,36 @@ fn collectMenuIds(allocator: Allocator, registry: *MenuRegistry, set: *std.Strin
     }
 }
 
+fn collectContextKeys(allocator: Allocator, registry: *MenuRegistry, set: *std.StringHashMap(void), id: MenuId) !void {
+    for (registry.getMenuItems(id)) |*entry| {
+        const when = switch (entry.*) {
+            .command => |item| item.when,
+            .submenu => |item| item.when,
+        };
+        if (when) |expression| try addKeys(allocator, set, expression);
+        switch (entry.*) {
+            .command => |item| {
+                if (item.command.precondition) |expression| try addKeys(allocator, set, expression);
+                if (item.command.toggled) |expression| try addKeys(allocator, set, expression);
+                if (item.command.toggle_info) |info| try addKeys(allocator, set, info.condition);
+            },
+            .submenu => |item| {
+                if (item.toggled) |expression| try addKeys(allocator, set, expression);
+                try collectContextKeys(allocator, registry, set, item.submenu);
+            },
+        }
+    }
+}
+
+fn addKeys(allocator: Allocator, set: *std.StringHashMap(void), expression: *const contextkey.Expr) !void {
+    const keys = try expression.keys(allocator);
+    defer allocator.free(keys);
+    for (keys) |key| {
+        if (set.contains(key)) continue;
+        try set.put(try allocator.dupe(u8, key), {});
+    }
+}
+
 fn freeMenuIds(allocator: Allocator, set: *std.StringHashMap(void)) void {
     var iterator = set.iterator();
     while (iterator.next()) |entry| allocator.free(entry.key_ptr.*);
@@ -458,6 +501,9 @@ pub const MenuService = struct {
         var menu_ids = std.StringHashMap(void).init(allocator);
         errdefer freeMenuIds(allocator, &menu_ids);
         try collectMenuIds(allocator, self.registry, &menu_ids, id);
+        var context_keys = std.StringHashMap(void).init(allocator);
+        errdefer freeMenuIds(allocator, &context_keys);
+        try collectContextKeys(allocator, self.registry, &context_keys, id);
         menu.* = .{
             .allocator = allocator,
             .service = self,
@@ -466,6 +512,7 @@ pub const MenuService = struct {
             .arena = arena,
             .groups = groups,
             .menu_ids = menu_ids,
+            .context_keys = context_keys,
             .onDidChange = Emitter(void).init(allocator),
             .registry_listener = try self.registry.on_did_change.listen(menu, Menu.onRegistryChange),
         };
@@ -936,6 +983,10 @@ test "menus refresh when context keys change" {
         }
     };
     _ = try menu.onDidChange.listen(&changes, Listener.onChange);
+
+    const unrelated = try context_keys.createKey("other", .{ .boolean = true });
+    unrelated.set(.{ .boolean = true });
+    try std.testing.expectEqual(@as(usize, 0), changes);
 
     const key = try context_keys.createKey("show", .{ .boolean = true });
     key.set(.{ .boolean = true });
