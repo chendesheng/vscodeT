@@ -224,12 +224,23 @@ pub const PolicyConfiguration = struct {
             const differs = if (existing) |current| !configuration.jsonValuesEqual(current.*, value) else true;
             if (differs) try changes.append(.{ .key = key, .value = value });
         }
-        if (changes.items.len == 0) return;
+        var has_stale = false;
+        for (self.model.getKeys()) |key| {
+            if (self.propertyFor(key) == null) {
+                has_stale = true;
+                break;
+            }
+        }
+        if (changes.items.len == 0 and !has_stale) return;
 
         var next = try ConfigurationModel.initEmpty(self.allocator);
         errdefer next.deinit();
         const arena = next.arena.allocator();
         for (self.model.getKeys()) |key| {
+            if (self.propertyFor(key) == null) {
+                next.removeValue(key);
+                continue;
+            }
             if (self.model.getValue(key)) |value| try next.setValue(key, try configuration.cloneValue(arena, value.*));
         }
         for (changes.items) |change| {

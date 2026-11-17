@@ -383,3 +383,36 @@ test "policy configuration follows owner/reference registration changes" {
     }});
     try std.testing.expectEqual(@as(i64, 123), policy_config.configurationModel().getValue("policy.owner").?.integer);
 }
+
+test "deregistering a policy owner falls back to the reference" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("owner", &.{.{
+        .key = "policy.owner",
+        .value_type = "string",
+        .default = std.json.Value{ .string = "default" },
+        .policy = "FallbackPolicy",
+    }});
+    try registry.registerConfiguration("reference", &.{.{
+        .key = "policy.ref",
+        .value_type = "string",
+        .default = std.json.Value{ .string = "default" },
+        .policy_reference = "FallbackPolicy",
+    }});
+    var policy_service = @import("../../../../platform/policy/common/policy.zig").InMemoryPolicyService.init(allocator);
+    defer policy_service.deinit();
+    try policy_service.setPolicyValue("FallbackPolicy", .{ .string = "on" });
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try defaults.initialize();
+    var policy_config = try configurations.PolicyConfiguration.init(allocator, &defaults, &policy_service);
+    defer policy_config.deinit();
+    try policy_config.initialize();
+    try std.testing.expectEqualStrings("on", policy_config.configurationModel().getValue("policy.owner").?.string);
+    try std.testing.expectEqualStrings("on", policy_config.configurationModel().getValue("policy.ref").?.string);
+
+    registry.deregisterConfigurations("owner");
+    try std.testing.expect(policy_config.configurationModel().getValue("policy.owner") == null);
+    try std.testing.expectEqualStrings("on", policy_config.configurationModel().getValue("policy.ref").?.string);
+}
