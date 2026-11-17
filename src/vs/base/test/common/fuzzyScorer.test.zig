@@ -550,3 +550,81 @@ test "scoreItem - slash and backslash queries match path separators" {
         try std.testing.expect(result.score > 0);
     }
 }
+
+fn fixture(path: []const u8) TestItem {
+    const base = std.fs.path.basename(path);
+    const dir = std.fs.path.dirname(path) orelse "";
+    return .{ .label = base, .description = dir, .path_value = path };
+}
+
+test "compareFilesByScore - additional scattering regressions" {
+    const allocator = std.testing.allocator;
+    {
+        var a = fixture("django/contrib/sites/locale/ga/LC_MESSAGES/django.mo");
+        var b = fixture("django/core/signals.py");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "djancosig", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = fixture("pkg/search/gradient/testdata/constraint_attrMatchString.yml");
+        var b = fixture("cmd/gradient/main.go");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "gradientmain", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = fixture("alpha-beta-cappa.txt");
+        var b = fixture("abc.txt");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "abc", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = fixture("xerxes-yak-zubba/index.js");
+        var b = fixture("xyz/index.js");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "xyz", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = fixture("AssymblyInfo.cs");
+        var b = fixture("IAsynchronousTask.java");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "async", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = fixture("static/app/source/angluar/-admin/-organization/-settings/layout/layout.js");
+        var b = fixture("static/app/source/angular/-admin/-project/-settings/_settings/settings.js");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "partisettings", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = fixture("Trilby.TrilbyTV.Web.Portal/Views/Systems/Index.cshtml");
+        var b = fixture("Trilby.TrilbyTV.Web.Portal/Areas/Admins/Views/Tips/Index.cshtml");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "tipsindex.cshtml", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = fixture("editor/core/components/tests/list-view-spec.js");
+        var b = fixture("editor/core/components/list-view.js");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "listview", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = fixture("lists.php");
+        var b = fixture("lib/Lists.php");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "Lists.php", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = fixture("app/emails/foo.bar.js");
+        var b = fixture("app/emails/other-footer.other-bar.js");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "foo bar", &[_]*TestItem{ &a, &b });
+        try expectOrder(allocator, &items, "foobar", &[_]*TestItem{ &a, &b });
+    }
+    {
+        var a = fixture("app/components/payment/payment.model.js");
+        var b = fixture("app/components/online-payments-history/online-payments-history.model.js");
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "payment model", &[_]*TestItem{ &a, &b });
+        try expectOrder(allocator, &items, "paymentmodel", &[_]*TestItem{ &a, &b });
+    }
+}
