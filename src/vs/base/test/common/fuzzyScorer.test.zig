@@ -444,3 +444,42 @@ test "compareFilesByScore - camel case and compact matches" {
         try expectOrder(allocator, &items, "xp", &[_]*TestItem{ &b, &a });
     }
 }
+
+test "compareFilesByScore - compact matches on path" {
+    const allocator = std.testing.allocator;
+    {
+        var a = TestItem{ .label = "file.js", .description = "config/test/examasdaple", .path_value = "config/test/examasdaple/file.js" };
+        var b = TestItem{ .label = "file.ts", .description = "config/test/exampleasdaasd", .path_value = "config/test/exampleasdaasd/file.ts" };
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "xp", &[_]*TestItem{ &b, &a });
+    }
+    {
+        var a = TestItem{ .label = "thisfile.ts", .description = "config/example", .path_value = "config/example/thisfile.ts" };
+        var b = TestItem{ .label = "file.js", .description = "config/24234243244/example", .path_value = "config/24234243244/example/file.js" };
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "exfile", &[_]*TestItem{ &b, &a });
+    }
+}
+
+test "compareFilesByScore - avoid match scattering (path segments)" {
+    const allocator = std.testing.allocator;
+    {
+        var a = TestItem{ .label = "index.js", .description = "node_modules1/bundle/lib/model/modules/ot1", .path_value = "node_modules1/bundle/lib/model/modules/ot1/index.js" };
+        var b = TestItem{ .label = "index.js", .description = "node_modules1/bundle/lib/model/modules/un1", .path_value = "node_modules1/bundle/lib/model/modules/un1/index.js" };
+        var c = TestItem{ .label = "index.js", .description = "node_modules1/bundle/lib/model/modules/modu1", .path_value = "node_modules1/bundle/lib/model/modules/modu1/index.js" };
+        var d = TestItem{ .label = "index.js", .description = "node_modules1/bundle/lib/model/modules/oddl1", .path_value = "node_modules1/bundle/lib/model/modules/oddl1/index.js" };
+        const items = [_]*TestItem{ &a, &b, &c, &d };
+        var copy = items;
+        try sortItems(allocator, &copy, "modu1/index.js");
+        try std.testing.expectEqual(&c, copy[0]);
+        copy = items;
+        try sortItems(allocator, &copy, "un1/index.js");
+        try std.testing.expectEqual(&b, copy[0]);
+    }
+    {
+        var a = TestItem{ .label = "constants.js", .description = "ui/src/utils", .path_value = "ui/src/utils/constants.js" };
+        var b = TestItem{ .label = "index.js", .description = "ui/src/ui/Icons", .path_value = "ui/src/ui/Icons/index.js" };
+        const items = [_]*TestItem{ &a, &b };
+        try expectOrder(allocator, &items, "ui/icons", &[_]*TestItem{ &b, &a });
+    }
+}
