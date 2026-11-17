@@ -278,3 +278,43 @@ test "prefix filters handle case sensitivity" {
     try std.testing.expect(filters.matchesPrefix("x", "alpha") == null);
     try std.testing.expect(filters.matchesPrefix("T", "4") == null);
 }
+
+fn expectCamel(allocator: std.mem.Allocator, word: []const u8, target: []const u8, expected: []const [2]usize) !void {
+    const matches = (try filters.matchesCamelCase(allocator, word, target)) orelse return error.TestUnexpectedResult;
+    defer allocator.free(matches);
+    try std.testing.expectEqual(expected.len, matches.len);
+    for (expected, matches) |range, match| {
+        try std.testing.expectEqual(range[0], match.start);
+        try std.testing.expectEqual(range[1], match.end);
+    }
+}
+
+test "matchesCamelCase" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect((try filters.matchesCamelCase(allocator, "", "")) == null);
+    const empty = (try filters.matchesCamelCase(allocator, "", "anything")) orelse return error.TestUnexpectedResult;
+    defer allocator.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+
+    try expectCamel(allocator, "alpha", "alpha", &.{.{ 0, 5 }});
+    try expectCamel(allocator, "AlPhA", "alpha", &.{.{ 0, 5 }});
+    try expectCamel(allocator, "alpha", "alphasomething", &.{.{ 0, 5 }});
+    try std.testing.expect((try filters.matchesCamelCase(allocator, "alpha", "alp")) == null);
+
+    try expectCamel(allocator, "c", "CamelCaseRocks", &.{.{ 0, 1 }});
+    try expectCamel(allocator, "cc", "CamelCaseRocks", &.{ .{ 0, 1 }, .{ 5, 6 } });
+    try expectCamel(allocator, "ccr", "CamelCaseRocks", &.{ .{ 0, 1 }, .{ 5, 6 }, .{ 9, 10 } });
+    try expectCamel(allocator, "cacr", "CamelCaseRocks", &.{ .{ 0, 2 }, .{ 5, 6 }, .{ 9, 10 } });
+    try expectCamel(allocator, "cacar", "CamelCaseRocks", &.{ .{ 0, 2 }, .{ 5, 7 }, .{ 9, 10 } });
+    try expectCamel(allocator, "ccarocks", "CamelCaseRocks", &.{ .{ 0, 1 }, .{ 5, 7 }, .{ 9, 14 } });
+    try expectCamel(allocator, "cr", "CamelCaseRocks", &.{ .{ 0, 1 }, .{ 9, 10 } });
+
+    try expectCamel(allocator, "fba", "FooBarAbe", &.{ .{ 0, 1 }, .{ 3, 5 } });
+    try expectCamel(allocator, "fbar", "FooBarAbe", &.{ .{ 0, 1 }, .{ 3, 6 } });
+    try expectCamel(allocator, "fbara", "FooBarAbe", &.{ .{ 0, 1 }, .{ 3, 7 } });
+    try expectCamel(allocator, "fbaa", "FooBarAbe", &.{ .{ 0, 1 }, .{ 3, 5 }, .{ 6, 7 } });
+    try expectCamel(allocator, "fbaab", "FooBarAbe", &.{ .{ 0, 1 }, .{ 3, 5 }, .{ 6, 8 } });
+
+    try expectCamel(allocator, "c2d", "canvasCreation2D", &.{ .{ 0, 1 }, .{ 14, 16 } });
+    try expectCamel(allocator, "cce", "_canvasCreationEvent", &.{ .{ 1, 2 }, .{ 7, 8 }, .{ 15, 16 } });
+}

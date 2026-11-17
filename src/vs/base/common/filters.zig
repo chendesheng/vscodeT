@@ -98,6 +98,149 @@ fn isBoundary(previous: u8, current: u8) bool {
     return std.ascii.isLower(previous) and std.ascii.isUpper(current);
 }
 
+//#region Camel case
+
+fn isLowerCode(code: u8) bool {
+    return code >= 'a' and code <= 'z';
+}
+
+fn isUpperCode2(code: u8) bool {
+    return code >= 'A' and code <= 'Z';
+}
+
+fn isNumberCode(code: u8) bool {
+    return code >= '0' and code <= '9';
+}
+
+fn isAlphanumericCode(code: u8) bool {
+    return isLowerCode(code) or isUpperCode2(code) or isNumberCode(code);
+}
+
+fn isWhitespaceCode(code: u8) bool {
+    return code == ' ' or code == '\t' or code == '\n' or code == '\r';
+}
+
+fn nextAnchorCamel(camel_case_word: []const u8, start: usize) usize {
+    var index = start;
+    while (index < camel_case_word.len) : (index += 1) {
+        const code = camel_case_word[index];
+        if (isUpperCode2(code) or isNumberCode(code) or (index > 0 and !isAlphanumericCode(camel_case_word[index - 1]))) return index;
+    }
+    return camel_case_word.len;
+}
+
+fn matchesCamelCaseRec(
+    allocator: std.mem.Allocator,
+    word: []const u8,
+    camel_case_word: []const u8,
+    word_index: usize,
+    target_index: usize,
+) !?[]Match {
+    if (word_index == word.len) return try allocator.alloc(Match, 0);
+    if (target_index == camel_case_word.len) return null;
+    if (word[word_index] != std.ascii.toLower(camel_case_word[target_index])) return null;
+
+    var result = try matchesCamelCaseRec(allocator, word, camel_case_word, word_index + 1, target_index + 1);
+    var next_upper_index = target_index + 1;
+    while (result == null and nextAnchorCamel(camel_case_word, next_upper_index) < camel_case_word.len) {
+        next_upper_index = nextAnchorCamel(camel_case_word, next_upper_index);
+        result = try matchesCamelCaseRec(allocator, word, camel_case_word, word_index + 1, next_upper_index);
+        next_upper_index += 1;
+    }
+    if (result == null) return null;
+
+    const tail = result.?;
+    if (tail.len > 0 and tail[0].start == target_index + 1) {
+        tail[0].start = target_index;
+        return tail;
+    }
+    defer allocator.free(tail);
+    const joined = try allocator.alloc(Match, tail.len + 1);
+    joined[0] = .{ .start = target_index, .end = target_index + 1 };
+    @memcpy(joined[1..], tail);
+    return joined;
+}
+
+const CamelCaseAnalysis = struct {
+    upper_percent: f64,
+    lower_percent: f64,
+    alpha_percent: f64,
+    numeric_percent: f64,
+};
+
+fn analyzeCamelCaseWord(word: []const u8) CamelCaseAnalysis {
+    var upper: usize = 0;
+    var lower: usize = 0;
+    var alpha: usize = 0;
+    var numeric: usize = 0;
+    for (word) |code| {
+        if (isUpperCode2(code)) upper += 1;
+        if (isLowerCode(code)) lower += 1;
+        if (isAlphanumericCode(code)) alpha += 1;
+        if (isNumberCode(code)) numeric += 1;
+    }
+    const length: f64 = @floatFromInt(word.len);
+    return .{
+        .upper_percent = @as(f64, @floatFromInt(upper)) / length,
+        .lower_percent = @as(f64, @floatFromInt(lower)) / length,
+        .alpha_percent = @as(f64, @floatFromInt(alpha)) / length,
+        .numeric_percent = @as(f64, @floatFromInt(numeric)) / length,
+    };
+}
+
+fn isUpperCaseWord(analysis: CamelCaseAnalysis) bool {
+    return analysis.lower_percent == 0 and analysis.upper_percent > 0.6;
+}
+
+fn isCamelCaseWord(analysis: CamelCaseAnalysis) bool {
+    return analysis.lower_percent > 0.2 and analysis.upper_percent < 0.8 and analysis.alpha_percent > 0.6 and analysis.numeric_percent < 0.2;
+}
+
+fn isCamelCasePattern(word: []const u8) bool {
+    var upper: usize = 0;
+    var lower: usize = 0;
+    var whitespace: usize = 0;
+    for (word) |code| {
+        if (isUpperCode2(code)) upper += 1;
+        if (isLowerCode(code)) lower += 1;
+        if (isWhitespaceCode(code)) whitespace += 1;
+    }
+    if ((upper == 0 or lower == 0) and whitespace == 0) return word.len <= 30;
+    return upper <= 5;
+}
+
+/// Port of upstream `matchesCamelCase` (ASCII case heuristics; the caller owns
+/// the returned ranges).
+pub fn matchesCamelCase(allocator: std.mem.Allocator, word: []const u8, camel_case_word_input: []const u8) !?[]Match {
+    if (camel_case_word_input.len == 0) return null;
+    var camel_case_word = std.mem.trim(u8, camel_case_word_input, " \t\r\n");
+    if (camel_case_word.len == 0) return null;
+    if (!isCamelCasePattern(word)) return null;
+    if (camel_case_word.len > 60) camel_case_word = camel_case_word[0..60];
+
+    const analysis = analyzeCamelCaseWord(camel_case_word);
+    if (!isCamelCaseWord(analysis)) {
+        if (!isUpperCaseWord(analysis)) return null;
+        const lowered_word = try allocator.dupe(u8, camel_case_word);
+        for (lowered_word) |*code| code.* = std.ascii.toLower(code.*);
+        defer allocator.free(lowered_word);
+        return matchesCamelCaseLowered(allocator, word, lowered_word);
+    }
+    return matchesCamelCaseLowered(allocator, word, camel_case_word);
+}
+
+fn matchesCamelCaseLowered(allocator: std.mem.Allocator, word: []const u8, camel_case_word: []const u8) !?[]Match {
+    var lowered_word = try allocator.alloc(u8, word.len);
+    defer allocator.free(lowered_word);
+    for (word, 0..) |code, index| lowered_word[index] = std.ascii.toLower(code);
+
+    var index: usize = 0;
+    while (index < camel_case_word.len) : (index = nextAnchorCamel(camel_case_word, index + 1)) {
+        if (try matchesCamelCaseRec(allocator, lowered_word, camel_case_word, 0, index)) |result| return result;
+    }
+    return null;
+}
+
 /// Port of `matchesStrictPrefix`: case-sensitive prefix.
 pub fn matchesStrictPrefix(word: []const u8, target: []const u8) ?Match {
     if (word.len == 0) return if (target.len == 0) null else .{ .start = 0, .end = 0 };
