@@ -939,7 +939,7 @@ policy deduplication, policy references, and hidden/excluded and agent-host sett
 schema/scope/policy-reference/excluded-property cases remain. `configurationVariables.zig` (variable parsing/scanning) and its test suite are
 ported too. `configurationService.zig` ports an in-memory user-target `ConfigurationService`
 (getValue/inspect/updateValue, default-value removal, non-user target rejection),
-with the update, workspace-document, change-event, language-override and override-aware inspect cases from
+with the update, workspace-document, change-event, language-override fallback and override-aware inspect cases from
 `configurationService.test.ts`;
 enforced policy configuration and remote/folder scoping remain unported.
 `workbench/services/configuration/browser/configurationService.zig` already

@@ -236,3 +236,22 @@ test "override-aware inspect reports language values per scope" {
     try std.testing.expectEqual(@as(i64, 2), inspected.value.?.integer);
     try std.testing.expectEqual(@as(i64, 4), inspected.default_value.?.integer);
 }
+
+test "language override lookup falls back to user and default values" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "editor.tabSize", .default = std.json.Value{ .integer = 4 } }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try service.updateValue("editor.tabSize", .{ .integer = 8 }, .USER);
+
+    try std.testing.expectEqual(@as(i64, 8), (try service.getValueWithOverrides("editor.tabSize", "typescript")).?.integer);
+    try std.testing.expectEqual(@as(i64, 8), (try service.getValueWithOverrides("editor.tabSize", null)).?.integer);
+    try std.testing.expectEqual(@as(i64, 8), service.getValue("editor.tabSize").?.integer);
+
+    try service.loadWorkspaceJson("{\"[typescript]\":{\"editor.tabSize\":2}}");
+    try std.testing.expectEqual(@as(i64, 2), (try service.getValueWithOverrides("editor.tabSize", "typescript")).?.integer);
+    try std.testing.expectEqual(@as(i64, 8), (try service.getValueWithOverrides("editor.tabSize", "python")).?.integer);
+}
