@@ -98,6 +98,22 @@ fn isBoundary(previous: u8, current: u8) bool {
     return std.ascii.isLower(previous) and std.ascii.isUpper(current);
 }
 
+/// Port of `matchesStrictPrefix`: case-sensitive prefix.
+pub fn matchesStrictPrefix(word: []const u8, target: []const u8) ?Match {
+    if (word.len == 0) return if (target.len == 0) null else .{ .start = 0, .end = 0 };
+    if (target.len < word.len) return null;
+    if (!std.mem.eql(u8, target[0..word.len], word)) return null;
+    return .{ .start = 0, .end = word.len };
+}
+
+/// Port of `matchesPrefix`: case-insensitive prefix.
+pub fn matchesPrefix(word: []const u8, target: []const u8) ?Match {
+    if (word.len == 0) return .{ .start = 0, .end = 0 };
+    if (target.len < word.len) return null;
+    if (!std.ascii.eqlIgnoreCase(target[0..word.len], word)) return null;
+    return .{ .start = 0, .end = word.len };
+}
+
 /// Port of `matchesContiguousSubString`: case-insensitive substring match.
 pub fn matchesContiguousSubString(word: []const u8, target: []const u8) ?Match {
     if (word.len > target.len) return null;

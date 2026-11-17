@@ -261,3 +261,20 @@ test "matchesSubString coalesces consecutive positions" {
     }
     try std.testing.expect((try filters.matchesSubString(allocator, "aaaaaaaaaaaaaaaaaaaax", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) == null);
 }
+
+test "prefix filters handle case sensitivity" {
+    try std.testing.expect(filters.matchesStrictPrefix("", "") == null);
+    try std.testing.expect(filters.matchesStrictPrefix("", "anything") != null);
+    const matched = filters.matchesStrictPrefix("alpha", "alphasomething").?;
+    try std.testing.expectEqual(@as(usize, 0), matched.start);
+    try std.testing.expectEqual(@as(usize, 5), matched.end);
+    try std.testing.expect(filters.matchesStrictPrefix("alpha", "alp") == null);
+    try std.testing.expect(filters.matchesStrictPrefix("A", "alpha") == null);
+    try std.testing.expect(filters.matchesStrictPrefix("AlPh", "alPHA") == null);
+
+    try std.testing.expect(filters.matchesPrefix("alpha", "alpha") != null);
+    try std.testing.expect(filters.matchesPrefix("A", "alpha") != null);
+    try std.testing.expect(filters.matchesPrefix("AlPh", "alPHA") != null);
+    try std.testing.expect(filters.matchesPrefix("x", "alpha") == null);
+    try std.testing.expect(filters.matchesPrefix("T", "4") == null);
+}

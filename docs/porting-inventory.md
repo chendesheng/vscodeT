@@ -1055,8 +1055,8 @@ pending; P5e (URI/file/editor input) is not started.
 - Remaining `editorGroupModel`/`explorerView` cases construct diff and
   side-by-side editor inputs.
 - P5c token-style resolving needs `tokenClassificationRegistry.ts`.
-- `matchesContiguousSubString` and `matchesSubString` are ported with their
-  upstream cases; the Unicode/alternate-character WordFilter cases in
+- `matchesContiguousSubString`, `matchesSubString`, `matchesPrefix` and
+  `matchesStrictPrefix` are ported with their upstream cases; the Unicode/alternate-character WordFilter cases in
   `filters.test.ts` remain unported; separator equivalence, `C++`, punctuation
   boundaries and the basic word cases are covered by the recursive port.
 - The remaining workbench configuration-service cases cover experiment
