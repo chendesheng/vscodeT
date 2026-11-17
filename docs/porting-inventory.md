@@ -918,7 +918,7 @@ are ported and registered. The `filters.fuzzyScore` dynamic-programming scorer
 (`filters.ts`) is ported as an explicit `FuzzyScorer` (scratch tables, no
 globals), with its `fuzzyScore` regression and top-score cases, and `scoreFuzzy2` now uses it.
 The #134723 item case passes; only the exact upstream cache-hash identity cases
-remain (the terminal cache key is a readable composite). `fileIndex.zig` now
+and the multi-byte/ICU collation cases remain (the terminal cache key is a readable composite). `fileIndex.zig` now
 scores via `scoreItemFuzzy` (label/description/path, all query words required)
 instead of its ad-hoc matcher.
 
