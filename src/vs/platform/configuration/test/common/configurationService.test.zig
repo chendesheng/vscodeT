@@ -273,3 +273,19 @@ test "inspect reflects workspace reloads" {
     try std.testing.expect(service.inspect("inspect.setting").workspace_value == null);
     try std.testing.expectEqual(@as(i64, 4), service.inspect("inspect.setting").value.?.integer);
 }
+
+test "isConfigured reflects user and workspace values" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerConfiguration("_test", &.{.{ .key = "configured.setting", .default = std.json.Value{ .integer = 4 } }});
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+
+    try std.testing.expect(!configurationService.isConfigured(service.inspect("configured.setting")));
+    try service.updateValue("configured.setting", .{ .integer = 8 }, .USER);
+    try std.testing.expect(configurationService.isConfigured(service.inspect("configured.setting")));
+    try service.loadWorkspaceJson("{\"configured.setting\":2}");
+    try std.testing.expect(configurationService.isConfigured(service.inspect("configured.setting")));
+}
