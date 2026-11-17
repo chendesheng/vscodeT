@@ -1835,3 +1835,67 @@ test "one-shot menu contexts observe changes to registered expressions" {
     try std.testing.expectEqualStrings("newToggled", second[1]);
     try std.testing.expectEqualStrings("newVisible", second[2]);
 }
+
+test "one-shot menus observe implicit palette exclusions from alternate changes" {
+    const allocator = std.testing.allocator;
+    var registry = MenuRegistry.init(allocator);
+    defer registry.deinit();
+    var service = MenuService.init(allocator, &registry, null);
+    defer service.deinit();
+
+    const first = try registry.addCommandTracked(.{ .id = "testo/prefix/first", .title = "First" });
+    defer first.dispose();
+    const second = try registry.addCommandTracked(.{ .id = "testo/prefix/second", .title = "Second" });
+    defer second.dispose();
+
+    const explicit = try registry.appendMenuItemTracked(actions.menu_ids.CommandPalette, .{
+        .command = .{ .id = "testo/prefix/explicit", .title = "Explicit" },
+        .alt = .{ .id = "testo/prefix/first", .title = "First" },
+    });
+    defer explicit.dispose();
+
+    const Snapshot = struct {
+        fn run(alloc: Allocator, svc: *MenuService) ![]const []const u8 {
+            var menu_actions = try svc.getMenuActions(alloc, actions.menu_ids.CommandPalette, context());
+            defer menu_actions.deinit();
+            var labels = std.array_list.Managed([]const u8).init(alloc);
+            for (menu_actions.groups) |group| {
+                for (group.actions) |action| {
+                    if (std.mem.startsWith(u8, action.id(), "testo/prefix/")) {
+                        try labels.append(try alloc.dupe(u8, action.label()));
+                    }
+                }
+            }
+            return labels.toOwnedSlice();
+        }
+        fn context() contextkey.IContext {
+            return .{ .context = @ptrFromInt(1), .get_value = getValue };
+        }
+        fn getValue(_: *anyopaque, _: []const u8) contextkey.ContextKeyValue {
+            return .undefined_value;
+        }
+    };
+
+    const first_snapshot = try Snapshot.run(allocator, &service);
+    defer {
+        for (first_snapshot) |label| allocator.free(label);
+        allocator.free(first_snapshot);
+    }
+    try std.testing.expectEqual(@as(usize, 2), first_snapshot.len);
+    try std.testing.expectEqualStrings("Explicit", first_snapshot[0]);
+    try std.testing.expectEqualStrings("Second", first_snapshot[1]);
+
+    registry.getMenuItemPtr(actions.menu_ids.CommandPalette, "testo/prefix/explicit").?.alt = .{
+        .id = "testo/prefix/second",
+        .title = "Second",
+    };
+
+    const second_snapshot = try Snapshot.run(allocator, &service);
+    defer {
+        for (second_snapshot) |label| allocator.free(label);
+        allocator.free(second_snapshot);
+    }
+    try std.testing.expectEqual(@as(usize, 2), second_snapshot.len);
+    try std.testing.expectEqualStrings("Explicit", second_snapshot[0]);
+    try std.testing.expectEqualStrings("First", second_snapshot[1]);
+}
