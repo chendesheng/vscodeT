@@ -783,7 +783,8 @@ Editor contributions:
   `editor/browser/viewParts/marginDecorations/marginDecorations.zig`,
   `editor/browser/viewParts/viewCursors/viewCursor.zig`,
   `editor/browser/viewParts/viewCursors/viewCursors.zig` and
-  `editor/browser/viewParts/viewLines/viewLine.zig` are ported.
+  `editor/browser/viewParts/viewLines/viewLine.zig` and
+  `editor/browser/viewParts/viewLines/viewLines.zig` are ported.
   The line-numbers part produces terminal line-number data
   (absolute/relative/interval/custom numbering, final-newline and decoration
   class handling), the highlight part per-view-line content/margin/exact flags,
@@ -795,7 +796,9 @@ Editor contributions:
   plural/visibility/blinking decisions and per-cursor viewport data (the
   terminal host owns the hardware cursor cell and blink timer), and the view-line
   wrapper renders tab-expanded line text through the shared renderer for
-  `VisibleLinesCollection`; all have focused tests. The open P4 work is the `View` orchestrator,
+  `VisibleLinesCollection`, and the `viewLines` host drains that collection into
+  a `StringBuilder` and exposes `IViewLines` cell-column ranges (DOM measurement
+  is replaced by `CursorColumns`); all have focused tests. The open P4 work is the `View` orchestrator,
   `viewController.ts`, `codeEditorWidget.ts` and the remaining view parts. The
   portable URI/file-service/editor-input layer (P5e) still needs the full
   provider file service and the concrete working-copy wiring.

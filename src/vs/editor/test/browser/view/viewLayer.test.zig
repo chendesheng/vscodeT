@@ -169,7 +169,7 @@ test "RenderedLinesCollection onTokensChanged" {
         var collection = Collection.init(allocator, .{ .context = @ptrFromInt(@alignOf(usize)), .create = createLine });
         defer collection.deinit();
         try reset(&collection, 6, &InitialIds);
-        const pinged = collection.onTokensChanged(&.{.{ .from_line_number = case.from, .to_line_number = case.to }});
+        const pinged = collection.onTokensChanged(&.{.{ .fromLineNumber = case.from, .toLineNumber = case.to }});
         try std.testing.expectEqual(case.pinged, pinged);
         try assertState(&collection, 6, &InitialIds, case.flags);
     }

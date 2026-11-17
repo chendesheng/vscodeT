@@ -19,11 +19,6 @@ pub const LineFactory = struct {
     create: *const fn (context: *anyopaque) anyerror!void,
 };
 
-pub const TokenRange = struct {
-    from_line_number: usize,
-    to_line_number: usize,
-};
-
 pub fn RenderedLinesCollection(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -163,15 +158,15 @@ pub fn RenderedLinesCollection(comptime T: type) type {
             return deleted;
         }
 
-        pub fn onTokensChanged(self: *const Self, ranges: []const TokenRange) bool {
+        pub fn onTokensChanged(self: *const Self, ranges: []const viewEvents.ViewTokensChangedRange) bool {
             if (self.getCount() == 0) return false;
             const start = self.getStartLineNumber();
             const end = self.getEndLineNumber();
             var notified_someone = false;
             for (ranges) |range| {
-                if (range.to_line_number < start or range.from_line_number > end) continue;
-                const from = @max(start, range.from_line_number);
-                const to = @min(end, range.to_line_number);
+                if (range.toLineNumber < start or range.fromLineNumber > end) continue;
+                const from = @max(start, range.fromLineNumber);
+                const to = @min(end, range.toLineNumber);
                 var line_number = from;
                 while (line_number <= to) : (line_number += 1) {
                     const line_index = line_number - self.rend_line_number_start;
@@ -255,7 +250,7 @@ test "rendered lines collection tracks start, changes and insertions" {
     try std.testing.expectEqual(@as(usize, 1), lines.lines.items[1].changed);
     try std.testing.expectEqual(@as(usize, 1), lines.lines.items[2].changed);
 
-    try std.testing.expect(lines.onTokensChanged(&.{.{ .from_line_number = 9, .to_line_number = 11 }}));
+    try std.testing.expect(lines.onTokensChanged(&.{.{ .fromLineNumber = 9, .toLineNumber = 11 }}));
     try std.testing.expectEqual(@as(usize, 1), lines.lines.items[0].tokens);
 
     const deleted = (try lines.onLinesDeleted(10, 11)) orelse return error.TestUnexpectedResult;

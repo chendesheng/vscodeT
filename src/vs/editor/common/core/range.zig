@@ -105,7 +105,7 @@ pub const Range = struct {
     // A intersection of the two ranges.
     pub fn intersectRanges(a: *const Range, b: *const Range) ?Range {
         var resultStartLineNumber = a.startLineNumber;
-        var resultStartColumn = a.startLineNumber;
+        var resultStartColumn = a.startColumn;
         var resultEndLineNumber = a.endLineNumber;
         var resultEndColumn = a.endColumn;
         const otherStartLineNumber = b.startLineNumber;
@@ -478,4 +478,18 @@ test "fromPositions" {
     try std.testing.expectEqual(@as(usize, 5), single.startLineNumber);
     try std.testing.expectEqual(@as(usize, 5), single.endLineNumber);
     try std.testing.expectEqual(@as(usize, 6), single.endColumn);
+}
+
+test "intersectRanges keeps the narrower columns" {
+    const a = Range.init(1, 5, 3, 2);
+    const b = Range.init(1, 2, 3, 9);
+    const result = Range.intersectRanges(&a, &b) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), result.startLineNumber);
+    try std.testing.expectEqual(@as(usize, 5), result.startColumn);
+    try std.testing.expectEqual(@as(usize, 3), result.endLineNumber);
+    try std.testing.expectEqual(@as(usize, 2), result.endColumn);
+
+    const same_line = Range.intersectRanges(&Range.init(1, 2, 1, 10), &Range.init(1, 5, 1, 8)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 5), same_line.startColumn);
+    try std.testing.expectEqual(@as(usize, 8), same_line.endColumn);
 }
