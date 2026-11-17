@@ -795,7 +795,11 @@ Editor contributions:
   (theme/custom token colors, semantic rules, language/super-type selectors and
   custom settings JSON). Minimal `DiskFileService`/`TextFileService` and
   file/untitled editor inputs and side-by-side/diff identity/serializers
-  provide the terminal file-editing foundation. The file-backed workbench
+  provide the terminal file-editing foundation. The terminal theme service
+  (`workbench/services/themes/browser/workbenchThemeService.zig`) registers
+  themes explicitly and persists the active id; `themeConfiguration.zig` ports
+  the color-theme selection/preferred-scheme logic and `migrateThemeSettingsId`
+  handles legacy ids. The file-backed workbench
   configuration service applies
   language overrides, application/machine scope filtering, and untrusted
   workspace filtering for restricted/unregistered settings.

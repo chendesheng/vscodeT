@@ -200,6 +200,15 @@ pub const ConfigurationService = struct {
         self.fireChangeEvent();
     }
 
+    pub fn interface(self: *ConfigurationService) configuration.IConfigurationService {
+        return .{ .context = self, .get_value = getValueForInterface };
+    }
+
+    fn getValueForInterface(context: *anyopaque, key: []const u8) ?*const Value {
+        const self: *ConfigurationService = @ptrCast(@alignCast(context));
+        return self.getValue(key, .{});
+    }
+
     /// Returns the effective value for `section`, or a folder-specific value
     /// when `overrides.resource` names a workspace folder. The pointer is owned
     /// by the service and stays valid until the next reload.

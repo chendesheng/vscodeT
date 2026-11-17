@@ -154,8 +154,20 @@ pub const ThemeSettingDefaults = struct {
 
 pub const ThemeSettings = struct {
     pub const COLOR_THEME = "workbench.colorTheme";
+    pub const FILE_ICON_THEME = "workbench.iconTheme";
+    pub const PRODUCT_ICON_THEME = "workbench.productIconTheme";
+    pub const COLOR_CUSTOMIZATIONS = "workbench.colorCustomizations";
+    pub const TOKEN_COLOR_CUSTOMIZATIONS = "editor.tokenColorCustomizations";
+    pub const SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS = "editor.semanticTokenColorCustomizations";
+
+    pub const PREFERRED_DARK_THEME = "workbench.preferredDarkColorTheme";
+    pub const PREFERRED_LIGHT_THEME = "workbench.preferredLightColorTheme";
+    pub const PREFERRED_HC_DARK_THEME = "workbench.preferredHighContrastColorTheme"; // id kept for compatibility
+    pub const PREFERRED_HC_LIGHT_THEME = "workbench.preferredHighContrastLightColorTheme";
     pub const DETECT_COLOR_SCHEME = "window.autoDetectColorScheme";
     pub const DETECT_HC = "window.autoDetectHighContrast";
+
+    pub const SYSTEM_COLOR_THEME = "window.systemColorTheme";
 };
 
 /// Migrates legacy theme setting ids to their current equivalents.

@@ -96,6 +96,15 @@ pub const ConfigurationService = struct {
         return self.getValue(key);
     }
 
+    pub fn interface(self: *ConfigurationService) configuration.IConfigurationService {
+        return .{ .context = self, .get_value = getValueForInterface };
+    }
+
+    fn getValueForInterface(context: *anyopaque, key: []const u8) ?*const std.json.Value {
+        const self: *ConfigurationService = @ptrCast(@alignCast(context));
+        return self.getValue(key);
+    }
+
     pub fn getValue(self: *ConfigurationService, key: []const u8) ?*const std.json.Value {
         if (self.workspaceValue(key)) |value| return value;
         if (self.user.getValue(key)) |value| return value;

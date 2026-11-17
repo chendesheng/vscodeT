@@ -87,6 +87,33 @@ pub const ConfigurationValue = struct {
     override_identifiers: []const []const u8 = &.{},
 };
 
+/// The portable subset of upstream `IConfigurationService`: reading the
+/// effective value of a settings key. Concrete services expose `interface()`.
+pub const IConfigurationService = struct {
+    context: *anyopaque,
+    get_value: *const fn (context: *anyopaque, key: []const u8) ?*const Value,
+
+    pub fn getValue(self: IConfigurationService, key: []const u8) ?*const Value {
+        return self.get_value(self.context, key);
+    }
+
+    pub fn getBool(self: IConfigurationService, key: []const u8, default: bool) bool {
+        const value = self.getValue(key) orelse return default;
+        return switch (value.*) {
+            .bool => |b| b,
+            else => default,
+        };
+    }
+
+    pub fn getString(self: IConfigurationService, key: []const u8) ?[]const u8 {
+        const value = self.getValue(key) orelse return null;
+        return switch (value.*) {
+            .string => |str| str,
+            else => null,
+        };
+    }
+};
+
 /// Matches upstream `IConfigurationChangeEvent.affectsConfiguration`: a key
 /// change affects both the key itself and its descendants, and a changed child
 /// affects its ancestors.

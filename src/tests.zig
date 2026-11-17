@@ -411,6 +411,10 @@ comptime {
     _ = @import("./vs/workbench/services/untitled/common/untitledTextEditorInput.zig");
     _ = @import("./vs/workbench/services/themes/common/textMateScopeMatcher.zig");
     _ = @import("./vs/workbench/services/themes/browser/workbenchThemeService.zig");
+    _ = @import("./vs/workbench/services/themes/common/hostColorSchemeService.zig");
+    _ = @import("./vs/workbench/services/themes/common/themeConfiguration.zig");
+    _ = @import("./vs/workbench/services/themes/test/common/workbenchThemeService.test.zig");
+    _ = @import("./vs/platform/window/common/window.zig");
     _ = @import("./vs/workbench/services/themes/common/plistParser.zig");
     _ = @import("./vs/workbench/services/themes/test/common/colorThemeData.test.zig");
     _ = @import("./vs/workbench/test/common/memento.test.zig");
