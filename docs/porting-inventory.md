@@ -233,6 +233,7 @@ that make the later phases tractable.
 | Configuration and files | `vs/workbench/services/configuration/...`, `vs/platform/configuration/...`, `vs/platform/files/...` | Ported; settings and watcher are wired |
 | Quick input | `vs/platform/quickinput/browser/quickAccess.zig`, `quickInput.zig`, `commandsQuickAccess.zig`, `vs/workbench/contrib/quickaccess/...`, `anythingQuickAccess.zig` | Ported; TUI widget is the terminal view |
 | Services | `history`, `undoRedo`, `notifications`, `workspaceContext`, `commands` | Ported |
+| Keys and chords | `vs/base/common/keyCodes.zig`, `keybindings.zig`, `platform.zig` | Ported with the 4 `keyCodes.test.ts` cases; P3 foundation (no registry/resolver yet) |
 | Theme | `vs/platform/theme/common/themeService.zig`, `theme.zig` | Minimal; no workbench color registry or theme service |
 | Editor widget contracts | `vs/editor/browser/editorBrowser.zig` (149 lines), `editorExtensions.zig` (117 lines) | Partial contracts; no widget/controller implementation |
 
@@ -704,6 +705,12 @@ commands as actions.
 
 **Scope:**
 
+- Foundation is ported: `base/common/keyCodes.zig` (`KeyCode`, `ScanCode`,
+  `KeyMod`, `KeyChord`, `KeyCodeUtils`, `ScanCodeUtils`, immutable/event-key
+  maps), `base/common/keybindings.zig` (`KeyCodeChord`, `ScanCodeChord`,
+  `Keybinding`, `decodeKeybinding`, `ResolvedKeybinding`) and the
+  `OperatingSystem` subset of `base/common/platform.zig`; the 4 upstream
+  `keyCodes.test.ts` cases are ported.
 - `platform/actions/common/actions.zig` — `Action2`, `MenuId`,
   `MenuRegistry`, menu contributions; port `menuService` as needed for the
   command picker.
@@ -931,6 +938,7 @@ of scope:
 | `workbench/test/browser/parts/statusbar/statusbarItem.test.ts` | 237 | 10 | P2 |
 | `workbench/test/browser/layout.test.ts` | 121 | 2 | P2 |
 | `workbench/test/browser/parts/editor/multiEditorTabsControl.test.ts` | 4,786 | 102 | P2 |
+| `base/test/common/keyCodes.test.ts` | 138 | 4 | P3 |
 | `platform/keybinding/test/common/keybindingResolver.test.ts` | 638 | 36 | P3 |
 | `platform/keybinding/test/common/abstractKeybindingService.test.ts` | 773 | 21 | P3 |
 | `platform/actions/test/common/menuService.test.ts` | 644 | 23 | P3 |

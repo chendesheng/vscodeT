@@ -380,6 +380,10 @@ comptime {
     _ = @import("./vs/platform/commands/common/commands.zig");
     _ = @import("./vs/platform/commands/test/common/commands.test.zig");
     _ = @import("./vs/base/common/errorMessage.zig");
+    _ = @import("./vs/base/common/keyCodes.zig");
+    _ = @import("./vs/base/common/keybindings.zig");
+    _ = @import("./vs/base/common/platform.zig");
+    _ = @import("./vs/base/test/common/keyCodes.test.zig");
     _ = @import("./vs/platform/log/common/log.zig");
     _ = @import("./vs/platform/log/common/logService.zig");
     _ = @import("./vs/platform/log/test/common/log.test.zig");
