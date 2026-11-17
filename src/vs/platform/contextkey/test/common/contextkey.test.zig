@@ -304,3 +304,103 @@ test "implies" {
         try std.testing.expectEqual(case.expected, contextkey.implies(p, q));
     }
 }
+
+fn checkEvaluate(allocator: std.mem.Allocator, expr_text: []const u8, value: contextkey.ContextKeyValue, expected: bool) !void {
+    var context = TestContext.init(allocator);
+    try context.put("a", value);
+    const expression = try parse(allocator, expr_text);
+    try std.testing.expectEqual(expected, expression.evaluate(context.context()));
+}
+
+test "Greater, GreaterEquals, Smaller, SmallerEquals evaluate" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try checkEvaluate(a, "a > 1", .undefined_value, false);
+    try checkEvaluate(a, "a > 1", .{ .number = 0 }, false);
+    try checkEvaluate(a, "a > 1", .{ .number = 1 }, false);
+    try checkEvaluate(a, "a > 1", .{ .number = 2 }, true);
+    try checkEvaluate(a, "a > 1", .{ .string = "0" }, false);
+    try checkEvaluate(a, "a > 1", .{ .string = "1" }, false);
+    try checkEvaluate(a, "a > 1", .{ .string = "2" }, true);
+    try checkEvaluate(a, "a > 1", .{ .string = "a" }, false);
+
+    try checkEvaluate(a, "a > 10", .{ .number = 2 }, false);
+    try checkEvaluate(a, "a > 10", .{ .number = 11 }, true);
+    try checkEvaluate(a, "a > 10", .{ .string = "11" }, true);
+    try checkEvaluate(a, "a > 10", .{ .string = "2" }, false);
+
+    try checkEvaluate(a, "a > 1.1", .{ .number = 1 }, false);
+    try checkEvaluate(a, "a > 1.1", .{ .number = 2 }, true);
+    try checkEvaluate(a, "a > 1.1", .{ .string = "1.1" }, false);
+    try checkEvaluate(a, "a > 1.1", .{ .string = "2" }, true);
+
+    try checkEvaluate(a, "a > b", .{ .string = "b" }, false);
+    try checkEvaluate(a, "a > b", .{ .string = "c" }, false);
+    try checkEvaluate(a, "a > b", .{ .number = 1000 }, false);
+
+    try checkEvaluate(a, "a >= 2", .{ .string = "1" }, false);
+    try checkEvaluate(a, "a >= 2", .{ .string = "2" }, true);
+    try checkEvaluate(a, "a >= 2", .{ .string = "3" }, true);
+    try checkEvaluate(a, "a < 2", .{ .string = "1" }, true);
+    try checkEvaluate(a, "a < 2", .{ .string = "2" }, false);
+    try checkEvaluate(a, "a < 2", .{ .string = "3" }, false);
+    try checkEvaluate(a, "a <= 2", .{ .string = "1" }, true);
+    try checkEvaluate(a, "a <= 2", .{ .string = "2" }, true);
+    try checkEvaluate(a, "a <= 2", .{ .string = "3" }, false);
+}
+
+test "Greater, GreaterEquals, Smaller, SmallerEquals negate" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const cases = [_]struct { input: []const u8, expected: []const u8 }{
+        .{ .input = "a > 1", .expected = "a <= 1" },
+        .{ .input = "a > 1.1", .expected = "a <= 1.1" },
+        .{ .input = "a > b", .expected = "a <= b" },
+        .{ .input = "a >= 1", .expected = "a < 1" },
+        .{ .input = "a >= 1.1", .expected = "a < 1.1" },
+        .{ .input = "a >= b", .expected = "a < b" },
+        .{ .input = "a < 1", .expected = "a >= 1" },
+        .{ .input = "a < b", .expected = "a >= b" },
+        .{ .input = "a <= 1", .expected = "a > 1" },
+        .{ .input = "a <= b", .expected = "a > b" },
+    };
+    for (cases) |case| {
+        const expression = try parse(arena.allocator(), case.input);
+        const negated = try expression.negate(arena.allocator());
+        try std.testing.expectEqualStrings(case.expected, try negated.serialize(arena.allocator()));
+    }
+}
+
+test "issue #111899: context keys can use < or >" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const actual = try parse(arena.allocator(), "editorTextFocus && vim.active && vim.use<C-r>");
+    var factory = ContextKeyExpr.init(arena.allocator());
+    const expected = (try factory.andExpr(&.{
+        try factory.has("editorTextFocus"),
+        try factory.has("vim.active"),
+        try factory.has("vim.use<C-r>"),
+    })).?;
+    try std.testing.expect(actual.equalsExpr(expected));
+}
+
+test "issue #106524: distributing AND should normalize" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var factory = ContextKeyExpr.init(arena.allocator());
+    const actual = (try factory.andExpr(&.{
+        try factory.orExpr(&.{ try factory.has("a"), try factory.has("b") }),
+        try factory.has("c"),
+    })).?;
+    const expected = (try factory.orExpr(&.{
+        try factory.andExpr(&.{ try factory.has("a"), try factory.has("c") }),
+        try factory.andExpr(&.{ try factory.has("b"), try factory.has("c") }),
+    })).?;
+    try std.testing.expect(actual.equalsExpr(expected));
+}
