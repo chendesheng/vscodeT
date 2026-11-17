@@ -416,3 +416,26 @@ test "ColorThemeData: loads theme semanticTokenColors" {
     const class_style = theme.getTokenStyleMetadata("class", &.{}, "typescript").?;
     try std.testing.expectEqual(@as(?bool, true), class_style.italic);
 }
+
+test "ColorThemeData: language-specific default styling rules probe scopes" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator);
+    defer fixture.deinit();
+    var registry = try token_classification.createDefaultRegistry(allocator);
+    defer registry.deinit();
+    const ts_selector = try registry.parseTokenSelector("type", "typescript1");
+    const js_selector = try registry.parseTokenSelector("type:javascript1", null);
+    try registry.registerTokenStyleDefault(ts_selector, .{ .scopes_to_probe = &.{"entity.name.type.ts1"} });
+    try registry.registerTokenStyleDefault(js_selector, .{ .scopes_to_probe = &.{"entity.name.type.js1"} });
+
+    const theme = try ColorThemeData.createLoadedEmptyTheme(allocator, &fixture.registry, "test-dark");
+    defer theme.deinit();
+    theme.setTokenRegistry(&registry);
+    try theme.setCustomTokenColors(&.{
+        .{ .scope = &.{"entity.name.type"}, .settings = .{ .foreground = "#aa0000" } },
+        .{ .scope = &.{"entity.name.type.ts1"}, .settings = .{ .foreground = "#bb0000" } },
+    });
+
+    try expectTokenColor(theme, "type:javascript1", "#aa0000");
+    try expectTokenColor(theme, "type:typescript1", "#bb0000");
+}

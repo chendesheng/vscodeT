@@ -289,6 +289,21 @@ pub const ColorThemeData = struct {
                 try colors.append(color);
             }
         }
+        for (self.custom_token_colors) |rule| {
+            const foreground = rule.settings.foreground orelse continue;
+            const color = Color.fromHex(foreground) catch continue;
+            var present = false;
+            for (seen.items) |entry| {
+                if (entry.r == color.r and entry.g == color.g and entry.b == color.b) {
+                    present = true;
+                    break;
+                }
+            }
+            if (!present) {
+                try seen.append(color);
+                try colors.append(color);
+            }
+        }
         for (self.token_colors) |rule| {
             const foreground = rule.settings.foreground orelse continue;
             const color = Color.fromHex(foreground) catch continue;
