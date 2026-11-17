@@ -302,3 +302,40 @@ test "FileType flags" {
     try std.testing.expect(!FileType.isDirectory(FileType.File));
     try std.testing.expect(!FileType.isFile(FileType.Unknown));
 }
+
+/// Mirror of the metadata fields of upstream `IFileStat` used by the terminal
+/// file service.
+pub const FileStat = struct {
+    resource: []const u8,
+    name: []const u8,
+    type: u8 = FileType.Unknown,
+    size: u64 = 0,
+    mtime: u64 = 0,
+    ctime: u64 = 0,
+    etag: []const u8 = "",
+    readonly: bool = false,
+    locked: bool = false,
+    executable: bool = false,
+    children: ?[]const FileStat = null,
+
+    pub fn isFile(self: *const FileStat) bool {
+        return FileType.isFile(self.type);
+    }
+
+    pub fn isDirectory(self: *const FileStat) bool {
+        return FileType.isDirectory(self.type);
+    }
+
+    pub fn isSymbolicLink(self: *const FileStat) bool {
+        return FileType.isSymbolicLink(self.type);
+    }
+};
+
+test "FileStat type helpers" {
+    const stat = FileStat{ .resource = "/a", .name = "a", .type = FileType.Directory };
+    try std.testing.expect(stat.isDirectory());
+    try std.testing.expect(!stat.isFile());
+    const file = FileStat{ .resource = "/a/b", .name = "b", .type = FileType.File | FileType.SymbolicLink };
+    try std.testing.expect(file.isFile());
+    try std.testing.expect(file.isSymbolicLink());
+}
