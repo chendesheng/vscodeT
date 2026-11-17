@@ -27,3 +27,19 @@ test "compareFileNames numeric and equality rules" {
     }.lessThan);
     try std.testing.expectEqualSlices([]const u8, &.{ "A2.txt", "a10.txt", "a20.txt", "A100.txt" }, &names);
 }
+
+test "compareFileExtensions orders by extension then name" {
+    try std.testing.expectEqual(@as(i32, 0), comparers.compareFileExtensions("file.txt", "file.txt"));
+    try std.testing.expect(comparers.compareFileExtensions("a.ext1", "b.Ext1") < 0);
+    try std.testing.expect(comparers.compareFileExtensions("a.txt", "a.zig") < 0);
+    try std.testing.expect(comparers.compareFileExtensions("a2.txt", "a10.txt") < 0);
+    try std.testing.expect(comparers.compareFileExtensions("file1.txt", "file01.txt") > 0);
+}
+
+test "comparePaths orders components with numeric runs" {
+    try std.testing.expectEqual(@as(i32, 0), comparers.comparePaths("a/b", "a/b"));
+    try std.testing.expect(comparers.comparePaths("a/b", "a/c") < 0);
+    try std.testing.expect(comparers.comparePaths("a2/b", "a10/b") < 0);
+    try std.testing.expect(comparers.comparePaths("a/b/c", "a/b") > 0);
+    try std.testing.expect(comparers.comparePaths("a", "b/c") < 0);
+}

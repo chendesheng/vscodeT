@@ -1062,8 +1062,8 @@ pending; P5e (URI/file/editor input) is not started.
   extension host).
 - The `base/test/browser/comparers.test.ts` suite depends on `Intl.Collator`
   locale rules (punctuation order, case grouping); the terminal
-  `compareFileNames` is a documented natural/unicode approximation; the numeric/
-  equality assertions are ported in `base/test/browser/comparers.test.zig`, while
+  `compareFileNames` is a documented natural/unicode approximation; the numeric/equality/extension/path assertions are ported in
+  `base/test/browser/comparers.test.zig`, while
   the locale-specific punctuation/case-group cases remain unported.
 
 **Open questions**
