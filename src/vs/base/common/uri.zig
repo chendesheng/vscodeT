@@ -454,3 +454,40 @@ test "uriToFsPath decodes percent escapes" {
     defer allocator.free(fs_path);
     try std.testing.expectEqualStrings("/tmp/a b/c.txt", fs_path);
 }
+
+test "URI file adds a leading slash and keeps relative paths" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.file(allocator, "relative/file.txt");
+    defer uri.deinit();
+    try std.testing.expectEqualStrings("/relative/file.txt", uri.path);
+    const text = try uri.toString(allocator);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("file:///relative/file.txt", text);
+}
+
+test "URI parse handles scheme, query and fragment without a path" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.parse(allocator, "scheme:?query#frag", true);
+    defer uri.deinit();
+    try std.testing.expectEqualStrings("scheme", uri.scheme);
+    try std.testing.expectEqualStrings("", uri.path);
+    try std.testing.expectEqualStrings("query", uri.query);
+    try std.testing.expectEqualStrings("frag", uri.fragment);
+    const text = try uri.toString(allocator);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("scheme:?query#frag", text);
+}
+
+test "URI with empty changes keeps every component" {
+    const allocator = std.testing.allocator;
+    var uri = try URI.parse(allocator, "scheme://authority/path?q#f", true);
+    defer uri.deinit();
+    var copy = try uri.with(allocator, .{});
+    defer copy.deinit();
+    try std.testing.expect(URI.equals(&uri, &copy));
+}
+
+test "URI parse rejects a double-slash path without authority" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.InvalidPath, URI.parse(allocator, "file:////path", true));
+}
