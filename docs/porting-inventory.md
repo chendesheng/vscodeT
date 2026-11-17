@@ -1033,7 +1033,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 1,905 editor tests + 187 UI
+**Current implementation snapshot (clean build, 1,913 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1047,7 +1047,7 @@ deregistration, variables, DefaultConfiguration and an in-memory user-target
 ConfigurationService; P5d tests are ported with the service registration surface
 pending; P5e (URI/file/editor input) is not started.
 
-**Status at the end of the current session:** 1,905 editor tests, 187 UI tests
+**Status at the end of the current session:** 1,913 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor-options/view stack and the URI/file/editor
