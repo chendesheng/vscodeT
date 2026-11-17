@@ -348,7 +348,9 @@ Bracket-pair colorization:
   `bracket-highlighting-N` / `unexpected-closing-bracket` decorations, honoring
   `bracketPairColorizationOptions`.
 - Language configurations are registered on `LanguageService` with
-  `registerLanguageConfiguration`.
+  `registerLanguageConfiguration` and promoted on first use into the ported
+  `LanguageConfigurationRegistry`, which implements upstream priority merging,
+  the default `plaintext` contribution and change invalidation.
 - The language-support helpers are ported: rich bracket grouping and
   forward/reversed bracket search (`RichEditBrackets`, `BracketsUtils`),
   `ScopedLineTokens`, electric-character matching, and `OnEnterSupport`

@@ -58,6 +58,7 @@ fn setupConfiguration(allocator: Allocator, rules: IndentationRule) !void {
         .foldingRules = .{ .offSide = null, .markers = null },
         .bracketsNew = LanguageBracketsConfiguration{
             .id = 0,
+            .allocator = allocator,
             ._openingBrackets = std.StringHashMap(OpeningBracketKind).init(allocator),
             ._closingBrackets = std.StringHashMap(ClosingBracketKind).init(allocator),
             .languageId = "indentTestLanguage",

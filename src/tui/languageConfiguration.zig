@@ -1,9 +1,12 @@
-// Minimal `ILanguageConfigurationService` implementation for the TUI.
+// Terminal `ILanguageConfigurationService` host over the ported
+// `LanguageConfigurationRegistry`.
 //
-// The shared interface uses function pointers without a context, so the active
-// service is selected explicitly through `activate()`. The TUI is
-// single-threaded and activates the service immediately before executing
-// commands that need it.
+// The TUI keeps the global `active_service` selection because the shared
+// interface uses function pointers without a context; it is single-threaded
+// and activates the service immediately before executing commands that need
+// it. Language configurations registered in the editor `LanguageService` are
+// promoted into the registry on first use, where priority merging and
+// invalidation are the upstream-shaped `LanguageConfigurationRegistry` rules.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -24,10 +27,9 @@ var active_service: ?*Service = null;
 
 pub const Service = struct {
     language_service: *LanguageService,
+    registry: registry.LanguageConfigurationRegistry,
     arena: std.heap.ArenaAllocator,
     blank: ResolvedLanguageConfiguration,
-    cached_language_id: ?[]const u8 = null,
-    cached_config: ?ResolvedLanguageConfiguration = null,
 
     pub fn init(allocator: Allocator, language_service: *LanguageService) !Service {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -35,6 +37,7 @@ pub const Service = struct {
         const blank = try buildResolved(arena.allocator(), "plaintext", language_configuration.empty());
         return .{
             .language_service = language_service,
+            .registry = try registry.LanguageConfigurationRegistry.init(allocator),
             .arena = arena,
             .blank = blank,
         };
@@ -42,6 +45,7 @@ pub const Service = struct {
 
     pub fn deinit(self: *Service) void {
         if (active_service == self) active_service = null;
+        self.registry.deinit();
         self.arena.deinit();
     }
 
@@ -59,20 +63,30 @@ pub const Service = struct {
     }
 
     fn get(self: *Service, language_id: []const u8) ResolvedLanguageConfiguration {
-        if (self.cached_language_id) |cached_id| {
-            if (std.mem.eql(u8, cached_id, language_id)) return self.cached_config.?;
+        if (self.registry.getLanguageConfiguration(language_id)) |resolved| {
+            return resolved.*;
         }
 
-        const config = self.language_service.getLanguageConfiguration(language_id) orelse language_configuration.empty();
-        const resolved = buildResolved(self.arena.allocator(), language_id, config) catch return self.blank;
-        self.cached_language_id = self.arena.allocator().dupe(u8, language_id) catch return resolved;
-        self.cached_config = resolved;
-        return resolved;
+        // Promote the editor language service's configuration into the
+        // registry so priority merging and invalidation use the upstream path.
+        if (self.language_service.getLanguageConfiguration(language_id)) |config| {
+            var registration = self.registry.register(language_id, config, 0) catch return self.blank;
+            registration.disposed = true;
+            if (self.registry.getLanguageConfiguration(language_id)) |resolved| {
+                return resolved.*;
+            }
+        }
+        return self.blank;
     }
 };
 
 fn onDidChange(_: LanguageConfigurationServiceChangeEvent) void {}
-fn register(_: []const u8, _: language_configuration.LanguageConfiguration, _: ?usize) void {}
+
+fn register(language_id: []const u8, config: language_configuration.LanguageConfiguration, priority: ?usize) void {
+    const service = active_service orelse @panic("TUI language configuration service is not active");
+    var registration = service.registry.register(language_id, config, if (priority) |value| @intCast(value) else 0) catch return;
+    registration.disposed = true;
+}
 
 fn getLanguageConfiguration(language_id: []const u8) ResolvedLanguageConfiguration {
     const service = active_service orelse @panic("TUI language configuration service is not active");
@@ -94,6 +108,7 @@ fn buildResolved(
         .foldingRules = config.folding orelse .{ .offSide = null, .markers = null },
         .bracketsNew = LanguageBracketsConfiguration{
             .id = 0,
+            .allocator = allocator,
             ._openingBrackets = std.StringHashMap(OpeningBracketKind).init(allocator),
             ._closingBrackets = std.StringHashMap(ClosingBracketKind).init(allocator),
             .languageId = language_id,

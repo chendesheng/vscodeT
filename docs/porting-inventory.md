@@ -235,6 +235,7 @@ that make the later phases tractable.
 | Services | `history`, `undoRedo`, `notifications`, `workspaceContext`, `commands` | Ported |
 | Keys and chords | `vs/base/common/keyCodes.zig`, `keybindings.zig`, `platform.zig`, `keybindingLabels.zig`, `vs/platform/keybinding/common/{baseResolvedKeybinding,usLayoutResolvedKeybinding}.zig` | Ported with the `keyCodes.test.ts` (4) and `keybindingLabels.test.ts` (5) cases; P3 foundation (no registry/resolver yet) |
 | Context keys | `vs/platform/contextkey/common/scanner.zig` | Scanner ported with the 34 `scanner.test.ts` cases; expression model/parser/service still to port |
+| Language configuration | `vs/editor/common/languages/languageConfigurationRegistry.zig` (`LanguageConfigurationRegistry`, `LanguageConfigurationRegistration`) | Ported priority registration/merging, default plaintext contribution and invalidation; the TUI service promotes `LanguageService` configurations into it; 11 `languageConfiguration.test.ts` cases ported |
 | Theme | `vs/platform/theme/common/themeService.zig`, `theme.zig` | Minimal; no workbench color registry or theme service |
 | Editor widget contracts | `vs/editor/browser/editorBrowser.zig` (149 lines), `editorExtensions.zig` (117 lines) | Partial contracts; no widget/controller implementation |
 
@@ -827,6 +828,14 @@ independently shippable slices.
 | P5f Log service (implemented) | `logger.zig` | `platform/log/common/log.ts`, `platform/log/common/logService.ts` | `platform/log/test/common/log.test.ts` (10) | S |
 | P5g Search actions/config | `searchView.zig`, `searchWidget.zig`, `fileIndex.zig` | `workbench/contrib/search/browser/searchActions*.ts`, `workbench/contrib/search/browser/searchView.ts`, `workbench/contrib/search/browser/searchWidget.ts`, search service | `workbench/contrib/search/test/browser/searchActions.test.ts` (6), `workbench/contrib/search/test/browser/searchWidget.test.ts` (1), `workbench/contrib/search/test/browser/searchView.test.ts` (2) | M |
 | P5h Settings watch | `settingsWatcher.zig` | `workbench/services/configuration/browser/configurationService.zig`, file service | `workbench/services/configuration/test/browser/configurationService.test.ts` | S |
+
+**P5d status:** `languageConfigurationRegistry.zig` now carries the upstream
+registry (priority ordering, `combineLanguageConfigurations`, plaintext default,
+change events) and the 11 `languageConfiguration.test.ts` cases pass; the TUI
+`languageConfiguration.zig` service consumes it. Still missing: the workbench
+`languageService.ts` registration surface that would replace `src/tui/language.zig`
+(extension→language contributions) and the editor's `OnEnterSupport`/rich-bracket
+getters that the registry file keeps as TODOs.
 
 **P5f status:** `log.zig`, `logService.zig` and `errorMessage.zig` exist under
 the mirrored paths, the 10 upstream `log.test.ts` cases are ported and

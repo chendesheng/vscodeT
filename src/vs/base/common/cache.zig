@@ -16,7 +16,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
             _ctx: TCtx,
             _owns_keys: bool,
 
-            fn init(allocator: Allocator, ctx: TCtx, f: *const fn (arg: TArg, ctx: TCtx) TComputed, computeKey: ?*const fn (allocator: Allocator, arg: TArg) []const u8) Self {
+            pub fn init(allocator: Allocator, ctx: TCtx, f: *const fn (arg: TArg, ctx: TCtx) TComputed, computeKey: ?*const fn (allocator: Allocator, arg: TArg) []const u8) Self {
                 if (computeKey == null) {
                     return Self{
                         ._map = StringHashMap(TComputed).init(allocator),
@@ -42,7 +42,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
                 };
             }
 
-            fn deinit(self: *Self) void {
+            pub fn deinit(self: *Self) void {
                 self._map.deinit();
                 var keysIterator = self._map2.keyIterator();
                 while (keysIterator.next()) |k| {
@@ -82,7 +82,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
         _ctx: TCtx,
         _owns_keys: bool,
 
-        fn init(allocator: Allocator, ctx: TCtx, f: *const fn (arg: TArg, ctx: TCtx) TComputed, computeKey: ?*const fn (allocator: Allocator, arg: TArg) []const u8) Self {
+        pub fn init(allocator: Allocator, ctx: TCtx, f: *const fn (arg: TArg, ctx: TCtx) TComputed, computeKey: ?*const fn (allocator: Allocator, arg: TArg) []const u8) Self {
             if (TArg == []const u8 and computeKey == null) {
                 return Self{
                     ._map = AutoHashMap(TArg, TComputed).init(allocator),
@@ -108,7 +108,7 @@ pub fn CachedFunction(comptime TArg: type, comptime TComputed: type, comptime TC
             };
         }
 
-        fn deinit(self: *Self) void {
+        pub fn deinit(self: *Self) void {
             self._map.deinit();
             var keysIterator = self._map2.keyIterator();
             while (keysIterator.next()) |k| {

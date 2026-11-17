@@ -13,6 +13,7 @@ const EditorAutoIndentStrategy = @import("../config/editorOptions.zig").EditorAu
 const EnterAction = @import("./languageConfiguration.zig").EnterAction;
 const AutoClosingPairs = @import("./languageConfiguration.zig").AutoClosingPairs;
 const IAutoClosingPair = @import("./languageConfiguration.zig").IAutoClosingPair;
+const Emitter = @import("../../../base/common/event.zig").Emitter;
 
 // Interface used to support insertion of mode specific comments.
 pub const ICommentsConfiguration = struct {
@@ -149,3 +150,221 @@ fn getIndentationAtColumn(allocator: Allocator, lineText: []const u8, column: us
     }
     return allocator.dupe(u8, lineText[start..end]);
 }
+
+var plaintext_brackets = [_]@import("./languageConfiguration.zig").CharacterPair{
+    .{ "(", ")" },
+    .{ "[", "]" },
+    .{ "{", "}" },
+};
+var plaintext_surrounding_pairs = [_]IAutoClosingPair{
+    .{ .open = "{", .close = "}" },
+    .{ .open = "[", .close = "]" },
+    .{ .open = "(", .close = ")" },
+    .{ .open = "<", .close = ">" },
+    .{ .open = "\"", .close = "\"" },
+    .{ .open = "'", .close = "'" },
+    .{ .open = "`", .close = "`" },
+};
+var plaintext_colorized_brackets = [_]@import("./languageConfiguration.zig").CharacterPair{};
+
+//#region LanguageConfigurationRegistry
+
+pub const LanguageConfigurationChangeEvent = struct {
+    languageId: []const u8,
+};
+
+/// A registered configuration contribution. The configuration's slices are
+/// borrowed from the caller, matching upstream's object references.
+const LanguageConfigurationContribution = struct {
+    configuration: LanguageConfiguration,
+    priority: i64,
+    order: i64,
+};
+
+fn contributionLessThan(_: void, a: LanguageConfigurationContribution, b: LanguageConfigurationContribution) bool {
+    if (a.priority == b.priority) return a.order < b.order;
+    return a.priority < b.priority;
+}
+
+/// Upstream `combineLanguageConfigurations`: later (higher-priority) entries
+/// override earlier ones field by field.
+fn combineLanguageConfigurations(configs: []const LanguageConfiguration) LanguageConfiguration {
+    var result = @import("./languageConfiguration.zig").empty();
+    for (configs) |config| {
+        if (config.comments) |value| result.comments = value;
+        if (config.brackets) |value| result.brackets = value;
+        if (config.wordPattern) |value| result.wordPattern = value;
+        if (config.indentationRules) |value| result.indentationRules = value;
+        if (config.onEnterRules) |value| result.onEnterRules = value;
+        if (config.autoClosingPairs) |value| result.autoClosingPairs = value;
+        if (config.surroundingPairs) |value| result.surroundingPairs = value;
+        if (config.autoCloseBefore) |value| result.autoCloseBefore = value;
+        if (config.folding) |value| result.folding = value;
+        if (config.colorizedBracketPairs) |value| result.colorizedBracketPairs = value;
+    }
+    return result;
+}
+
+/// Upstream `ComposedLanguageConfiguration`.
+const ComposedLanguageConfiguration = struct {
+    languageId: []const u8,
+    entries: std.array_list.Managed(LanguageConfigurationContribution),
+    order: i64 = 0,
+    resolved: ?*const ResolvedLanguageConfiguration = null,
+
+    fn init(allocator: Allocator, language_id: []const u8) ComposedLanguageConfiguration {
+        return .{
+            .languageId = language_id,
+            .entries = std.array_list.Managed(LanguageConfigurationContribution).init(allocator),
+        };
+    }
+
+    fn deinit(self: *ComposedLanguageConfiguration) void {
+        self.entries.deinit();
+    }
+
+    fn getResolvedConfiguration(self: *ComposedLanguageConfiguration, registry: *LanguageConfigurationRegistry) ?*const ResolvedLanguageConfiguration {
+        if (self.resolved) |resolved| return resolved;
+        if (self.entries.items.len == 0) return null;
+
+        std.mem.sort(LanguageConfigurationContribution, self.entries.items, {}, contributionLessThan);
+
+        var configs = std.array_list.Managed(LanguageConfiguration).init(registry.allocator);
+        defer configs.deinit();
+        for (self.entries.items) |contribution| {
+            configs.append(contribution.configuration) catch return null;
+        }
+        const combined = combineLanguageConfigurations(configs.items);
+
+        const arena = registry.arena.allocator();
+        const resolved = arena.create(ResolvedLanguageConfiguration) catch return null;
+        resolved.* = ResolvedLanguageConfiguration.init(arena, self.languageId, combined) catch return null;
+        self.resolved = resolved;
+        return resolved;
+    }
+};
+
+/// Disposable returned by `LanguageConfigurationRegistry.register`.
+pub const LanguageConfigurationRegistration = struct {
+    registry: *LanguageConfigurationRegistry,
+    languageId: []const u8,
+    order: i64,
+    disposed: bool = false,
+
+    pub fn dispose(self: *LanguageConfigurationRegistration) void {
+        if (self.disposed) return;
+        self.disposed = true;
+        self.registry.unregister(self.languageId, self.order);
+    }
+};
+
+/// Upstream `LanguageConfigurationRegistry`. Resolved configurations are
+/// arena-owned for the registry lifetime (upstream relies on GC); invalidating
+/// them only drops the cache so the next lookup rebuilds.
+pub const LanguageConfigurationRegistry = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    entries: std.StringHashMap(*ComposedLanguageConfiguration),
+    on_did_change: Emitter(LanguageConfigurationChangeEvent),
+    order: i64 = 0,
+
+    pub fn init(allocator: Allocator) !LanguageConfigurationRegistry {
+        var self = LanguageConfigurationRegistry{
+            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .entries = std.StringHashMap(*ComposedLanguageConfiguration).init(allocator),
+            .on_did_change = Emitter(LanguageConfigurationChangeEvent).init(allocator),
+        };
+        errdefer self.deinit();
+
+        const plaintext = LanguageConfiguration{
+            .comments = null,
+            .brackets = &plaintext_brackets,
+            .wordPattern = null,
+            .indentationRules = null,
+            .onEnterRules = null,
+            .autoClosingPairs = null,
+            .surroundingPairs = &plaintext_surrounding_pairs,
+            .colorizedBracketPairs = &plaintext_colorized_brackets,
+            .autoCloseBefore = null,
+            .folding = .{ .offSide = true, .markers = null },
+        };
+        var registration = try self.register("plaintext", plaintext, 0);
+        registration.disposed = true;
+        return self;
+    }
+
+    pub fn deinit(self: *LanguageConfigurationRegistry) void {
+        var iterator = self.entries.valueIterator();
+        while (iterator.next()) |entry| {
+            entry.*.deinit();
+            self.allocator.destroy(entry.*);
+        }
+        var key_iterator = self.entries.keyIterator();
+        while (key_iterator.next()) |key| self.allocator.free(key.*);
+        self.entries.deinit();
+        self.on_did_change.deinit();
+        self.arena.deinit();
+    }
+
+    /// @param priority Use a higher number for higher priority.
+    pub fn register(
+        self: *LanguageConfigurationRegistry,
+        language_id: []const u8,
+        configuration: LanguageConfiguration,
+        priority: ?i64,
+    ) !LanguageConfigurationRegistration {
+        const composed = try self.getOrCreate(language_id);
+        self.order += 1;
+        try composed.entries.append(.{
+            .configuration = configuration,
+            .priority = priority orelse 0,
+            .order = self.order,
+        });
+        composed.resolved = null;
+        try self.on_did_change.fire(.{ .languageId = composed.languageId });
+        return .{
+            .registry = self,
+            .languageId = composed.languageId,
+            .order = self.order,
+        };
+    }
+
+    fn unregister(self: *LanguageConfigurationRegistry, language_id: []const u8, order: i64) void {
+        const composed = self.entries.get(language_id) orelse return;
+        for (composed.entries.items, 0..) |contribution, index| {
+            if (contribution.order == order) {
+                _ = composed.entries.orderedRemove(index);
+                composed.resolved = null;
+                self.on_did_change.fire(.{ .languageId = composed.languageId }) catch {};
+                return;
+            }
+        }
+    }
+
+    fn getOrCreate(self: *LanguageConfigurationRegistry, language_id: []const u8) !*ComposedLanguageConfiguration {
+        if (self.entries.get(language_id)) |composed| return composed;
+
+        const composed = try self.allocator.create(ComposedLanguageConfiguration);
+        errdefer self.allocator.destroy(composed);
+        const key = try self.allocator.dupe(u8, language_id);
+        errdefer self.allocator.free(key);
+        composed.* = ComposedLanguageConfiguration.init(self.allocator, key);
+        errdefer composed.deinit();
+        try self.entries.put(key, composed);
+        return composed;
+    }
+
+    pub fn getLanguageConfiguration(self: *LanguageConfigurationRegistry, language_id: []const u8) ?*const ResolvedLanguageConfiguration {
+        const composed = self.entries.get(language_id) orelse return null;
+        return composed.getResolvedConfiguration(self);
+    }
+
+    /// Test helper: the number of entries for a language.
+    pub fn entryCount(self: *LanguageConfigurationRegistry, language_id: []const u8) usize {
+        const composed = self.entries.get(language_id) orelse return 0;
+        return composed.entries.items.len;
+    }
+};
+
+//#endregion

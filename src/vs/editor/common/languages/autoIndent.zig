@@ -806,6 +806,7 @@ fn setupBracketLanguage(allocator: Allocator) !void {
         .foldingRules = .{ .offSide = null, .markers = null },
         .bracketsNew = .{
             .id = 0,
+            .allocator = allocator,
             ._openingBrackets = std.StringHashMap(OpeningBracketKind).init(allocator),
             ._closingBrackets = std.StringHashMap(ClosingBracketKind).init(allocator),
             .languageId = "test",
