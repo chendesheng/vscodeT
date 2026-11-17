@@ -110,10 +110,26 @@ const Harness = struct {
         try self.executed.append(command_id);
     }
 
+    fn setWhen(self: *Harness, index: usize, when: ?*const contextkey.Expr) void {
+        self.items.items[index].when = when;
+    }
+
+    fn setContext(self: *Harness, key: []const u8, value: contextkey.ContextKeyValue) !void {
+        const handle = try self.context_service.createKey(key, .{ .undefined_value = {} });
+        handle.set(value);
+    }
+
     fn setCommand(self: *Harness, index: usize, command: ?[]const u8) !void {
         const item = self.items.items[index];
         if (item.command) |old| self.allocator.free(old);
-        item.command = if (command) |value| try self.allocator.dupe(u8, value) else null;
+        if (command) |value| {
+            const bubble = value.len > 0 and value[0] == '^';
+            item.command = try self.allocator.dupe(u8, if (bubble) value[1..] else value);
+            item.bubble = bubble;
+        } else {
+            item.command = null;
+            item.bubble = false;
+        }
     }
 
     fn resolveEvent(context: *anyopaque, _: Allocator, event: IKeyboardEvent) anyerror!?ResolvedKeybinding {
@@ -317,4 +333,88 @@ test "keybindings are not dispatched while an IME composition is in progress" {
     try std.testing.expectEqual(@as(usize, 1), harness.executed.items.len);
     const after = try harness.service.softDispatch(allocator, enter);
     try std.testing.expectEqual(@import("../../common/keybindingResolver.zig").ResultKind.KbFound, after.kind);
+}
+
+test "a multi-chord keybinding with a null command ID keeps the keybinding until the second chord" {
+    const allocator = std.testing.allocator;
+    const encoded = twoChordEncoded();
+    const harness = try Harness.init(allocator, &.{ encoded, encoded });
+    defer harness.deinit();
+    try harness.setCommand(0, "myCommand");
+    try harness.setCommand(1, null);
+
+    try std.testing.expect(harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK))));
+    try std.testing.expectEqual(@as(usize, 0), harness.executed.items.len);
+    try std.testing.expect(harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyI))));
+    try std.testing.expectEqual(@as(usize, 0), harness.executed.items.len);
+    try std.testing.expectEqual(@as(usize, 2), harness.statuses.items.len);
+    try std.testing.expectEqual(@as(usize, 1), harness.statuses_closed.items.len);
+}
+
+test "can trigger command that is sharing keybinding with chord" {
+    const allocator = std.testing.allocator;
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+
+    const chord = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyX));
+    const harness = try Harness.init(allocator, &.{ chord, key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK) });
+    defer harness.deinit();
+    try harness.setCommand(0, "chordCommand");
+    try harness.setCommand(1, "simpleCommand");
+    harness.setWhen(1, try factory.has("key1"));
+
+    try harness.setContext("key1", .{ .boolean = true });
+    try std.testing.expect(harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK))));
+    try std.testing.expectEqual(@as(usize, 1), harness.executed.items.len);
+    try std.testing.expectEqualStrings("simpleCommand", harness.executed.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), harness.statuses.items.len);
+    harness.executed.clearRetainingCapacity();
+
+    try harness.setContext("key1", .{ .undefined_value = {} });
+    try std.testing.expect(harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK))));
+    try std.testing.expectEqual(@as(usize, 0), harness.executed.items.len);
+    try std.testing.expectEqual(@as(usize, 1), harness.statuses.items.len);
+
+    try std.testing.expect(harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyX))));
+    try std.testing.expectEqual(@as(usize, 1), harness.executed.items.len);
+    try std.testing.expectEqualStrings("chordCommand", harness.executed.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), harness.statuses_closed.items.len);
+}
+
+test "cannot trigger chord if command is overwriting" {
+    const allocator = std.testing.allocator;
+    var factory = contextkey.ContextKeyExpr.init(allocator);
+    defer factory.deinit();
+
+    const chord = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyX));
+    const harness = try Harness.init(allocator, &.{ chord, key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK) });
+    defer harness.deinit();
+    try harness.setCommand(0, "chordCommand");
+    try harness.setCommand(1, "simpleCommand");
+    harness.setWhen(0, try factory.has("key1"));
+
+    try harness.setContext("key1", .{ .undefined_value = {} });
+    try std.testing.expect(harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK))));
+    try std.testing.expectEqualStrings("simpleCommand", harness.executed.items[0]);
+
+    try harness.setContext("key1", .{ .boolean = true });
+    try std.testing.expect(harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK))));
+    try std.testing.expectEqual(@as(usize, 2), harness.executed.items.len);
+    try std.testing.expectEqualStrings("simpleCommand", harness.executed.items[1]);
+    try std.testing.expectEqual(@as(usize, 0), harness.statuses.items.len);
+
+    try std.testing.expect(!harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyX))));
+    try std.testing.expectEqual(@as(usize, 2), harness.executed.items.len);
+}
+
+test "can have spying command" {
+    const allocator = std.testing.allocator;
+    const harness = try Harness.init(allocator, &.{key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK)});
+    defer harness.deinit();
+    try harness.setCommand(0, "^simpleCommand");
+
+    try std.testing.expect(!harness.service.dispatchEvent(eventFor(key_codes.KeyMod.CtrlCmd | @backingInt(KeyCode.KeyK))));
+    try std.testing.expectEqual(@as(usize, 1), harness.executed.items.len);
+    try std.testing.expectEqualStrings("simpleCommand", harness.executed.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), harness.statuses.items.len);
 }
