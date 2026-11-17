@@ -259,6 +259,10 @@ test "FileEditorSerializer round-trips the resource" {
     defer registry.deinit();
     try registry.registerEditorSerializer(TYPE_ID, interface);
     const registered = registry.getEditorSerializer(&input.base).?;
+    try std.testing.expect(registered.canSerialize(registered.context, &input.base));
+    var other = EditorInput.init(allocator, "other");
+    defer other.deinit();
+    try std.testing.expect(!registered.canSerialize(registered.context, &other));
     const data = (try registered.serialize(registered.context, &input.base, allocator)).?;
     defer allocator.free(data);
     const restored = (try registered.deserialize(registered.context, data)).?;
