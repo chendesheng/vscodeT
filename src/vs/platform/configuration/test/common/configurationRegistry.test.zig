@@ -337,6 +337,7 @@ test "record and restore keep declared defaults, hidden settings and contributio
         .{ .key = "restore.ref", .value_type = "boolean", .default = std.json.Value{ .bool = true }, .policy_reference = "restoreRef" },
     });
     try source_registry.registerDefaultConfigurations(&.{.{ .key = "restore.overridden", .value = std.json.Value{ .bool = true } }});
+    try source_registry.registerDefaultsJson("{\"[typescript]\":{\"editor.tabSize\":2}}");
 
     var snapshot = try source_registry.record(allocator);
 
@@ -348,6 +349,11 @@ test "record and restore keep declared defaults, hidden settings and contributio
     try std.testing.expect(restored.getExcludedConfigurationProperties().get("restore.hidden") != null);
     try std.testing.expect(restored.getAgentHostSyncConfigurations().get("restore.hidden") != null);
     try std.testing.expect(restored.getPolicyConfigurations().get("restorePolicy") != null);
+    var base = try restored.buildDefaultModel(allocator);
+    defer base.deinit();
+    var overridden = try base.override(allocator, "typescript");
+    defer overridden.deinit();
+    try std.testing.expectEqual(@as(i64, 2), overridden.getValue("editor.tabSize").?.integer);
     const references = restored.getPolicyReferenceConfigurations().get("restoreRef").?;
     try std.testing.expectEqual(@as(usize, 1), references.items.len);
     try std.testing.expectEqualStrings("restore.ref", references.items[0]);

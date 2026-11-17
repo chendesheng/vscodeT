@@ -305,6 +305,11 @@ pub const ConfigurationRegistry = struct {
             }
             try clone.contributions.append(.{ .source = try cloneSource(arena, contribution.source), .entries = try entries.toOwnedSlice() });
         }
+        for (self.defaults.items) |model| {
+            const cloned_model = try self.allocator.create(ConfigurationModel);
+            cloned_model.* = try ConfigurationModel.merge(self.allocator, &.{model});
+            try clone.defaults.append(cloned_model);
+        }
         return .{ .registry = clone };
     }
 
@@ -323,6 +328,7 @@ pub const ConfigurationRegistry = struct {
         self.agent_host_configurations = clone.agent_host_configurations;
         self.nodes = clone.nodes;
         self.contributions = clone.contributions;
+        self.defaults = clone.defaults;
         // The moved lists were allocated by the snapshot's arena allocator.
         // Rebind them to the (moved) arena so their allocator context is valid.
         var references = self.policy_reference_configurations.valueIterator();
@@ -341,6 +347,11 @@ pub const ConfigurationRegistry = struct {
     }
 
     fn clearState(self: *ConfigurationRegistry) void {
+        for (self.defaults.items) |model| {
+            model.deinit();
+            self.allocator.destroy(model);
+        }
+        self.defaults.deinit();
         self.properties.deinit();
         self.excluded_properties.deinit();
         self.base_defaults.deinit();
@@ -364,6 +375,7 @@ pub const ConfigurationRegistry = struct {
         self.agent_host_configurations = std.StringHashMap(AgentHostConfig).init(self.allocator);
         self.nodes = std.StringHashMap(std.array_list.Managed([]const u8)).init(self.allocator);
         self.contributions = std.array_list.Managed(Contribution).init(self.allocator);
+        self.defaults = std.array_list.Managed(*ConfigurationModel).init(self.allocator);
         self.arena = std.heap.ArenaAllocator.init(self.allocator);
     }
 
