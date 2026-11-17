@@ -13,6 +13,7 @@ const LanguageRegistryEntry = struct {
     aliases: ?[]const []const u8 = null,
     extensions: ?[]const []const u8 = null,
     filenames: ?[]const []const u8 = null,
+    filename_patterns: ?[]const []const u8 = null,
     mimetypes: ?[]const []const u8 = null,
     first_line: ?[]const u8 = null,
     icon: ?LanguageIcon = null,
@@ -116,6 +117,7 @@ pub const LanguageService = struct {
             .aliases = aliases,
             .extensions = def.extensions,
             .filenames = def.filenames,
+            .filename_patterns = def.filenamePatterns,
             .mimetypes = mime_types,
             .first_line = def.firstLine,
             .icon = def.icon,
@@ -267,6 +269,14 @@ pub const LanguageService = struct {
                 if (registry_entry.extensions) |extensions| {
                     for (extensions) |extension| {
                         if (std.mem.endsWith(u8, name, extension)) return registry_entry.id;
+                    }
+                }
+                if (registry_entry.filename_patterns) |patterns| {
+                    for (patterns) |pattern| {
+                        var arena = std.heap.ArenaAllocator.init(self.allocator);
+                        defer arena.deinit();
+                        var expression = @import("../../../base/common/glob.zig").Expression.init(arena.allocator(), &.{pattern}, .{}) catch continue;
+                        if (expression.matches(name)) return registry_entry.id;
                     }
                 }
             }

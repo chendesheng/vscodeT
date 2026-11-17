@@ -137,3 +137,15 @@ test "extensions and filenames accumulate with the primary registration first" {
     try std.testing.expectEqualStrings("guess", service.guessLanguageIdByFilepathOrFirstLine("path/file.guess", null).?);
     try std.testing.expectEqualStrings("guess", service.guessLanguageIdByFilepathOrFirstLine("path/Guessfile", null).?);
 }
+
+test "filename patterns are matched when guessing" {
+    const allocator = std.testing.allocator;
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var service = LanguageService.init(allocator, &codec);
+    defer service.deinit();
+
+    try service.registerLanguage(.{ .id = "patternLang", .filenamePatterns = &.{"*.testpat"} });
+    try std.testing.expectEqualStrings("patternLang", service.guessLanguageIdByFilepathOrFirstLine("dir/file.testpat", null).?);
+    try std.testing.expect(service.guessLanguageIdByFilepathOrFirstLine("dir/file.other", null) == null);
+}
