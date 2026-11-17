@@ -53,6 +53,10 @@ pub const FileEditorInput = struct {
         return &self.base;
     }
 
+    pub fn getPreferredName(self: *const FileEditorInput) []const u8 {
+        return std.fs.path.basename(self.path);
+    }
+
     pub fn getPreferredResource(self: *const FileEditorInput) []const u8 {
         return self.path;
     }
@@ -118,6 +122,7 @@ test "FileEditorInput loads, edits, saves and reverts" {
     defer input.deinit();
     try input.load();
     try std.testing.expectEqualStrings("hello", input.getText());
+    try std.testing.expectEqualStrings("file.txt", input.getPreferredName());
     try std.testing.expectEqualStrings(path, input.getPreferredResource());
     try std.testing.expectEqualStrings("hello", input.getPreferredContents());
     try std.testing.expect(input.getPreferredLanguage() == null);
