@@ -422,3 +422,8 @@ test "configurable full match boost" {
     defer b_flat.deinit(allocator);
     try std.testing.expectEqual(a_flat.score, b_flat.score);
 }
+
+test "List highlight filter #66923" {
+    const allocator = std.testing.allocator;
+    try assertMatches(allocator, "foo", "barbarbarbarbarbarbarbarbarbarbarbarbarbarbarbar_foo", "barbarbarbarbarbarbarbarbarbarbarbarbarbarbarbar_^f^o^o", .{});
+}
