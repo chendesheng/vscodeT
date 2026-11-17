@@ -111,6 +111,8 @@ comptime {
     _ = @import("./vs/workbench/services/workspaces/common/workspaceContextService.zig");
     _ = @import("./vs/platform/configuration/common/configuration.zig");
     _ = @import("./vs/platform/configuration/common/configurationVariables.zig");
+    _ = @import("./vs/platform/configuration/common/configurations.zig");
+    _ = @import("./vs/platform/configuration/test/common/configurations.test.zig");
     _ = @import("./vs/platform/configuration/test/common/configurationVariables.test.zig");
     _ = @import("./vs/platform/configuration/test/common/configurationRegistry.test.zig");
     _ = @import("./vs/platform/configuration/test/common/configuration.test.zig");
