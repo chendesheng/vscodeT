@@ -627,3 +627,18 @@ test "IntelliSense completion highlighting #115250" {
     try assertAnyScore(allocator, ".lo", "log", "^l^og");
     try assertAnyScore(allocator, ".", "log", "log");
 }
+
+test "truncated filter text #74133" {
+    const allocator = std.testing.allocator;
+    try assertMatches(allocator, "foo", "ffffffffffffffffffffffffffffbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbar_foo", "ffffffffffffffffffffffffffffbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbar_^f^o^o", .{});
+    try assertMatches(allocator, "Aoo", "Affffffffffffffffffffffffffffbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbar_foo", "^Affffffffffffffffffffffffffffbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbar_f^o^o", .{});
+    try assertMatches(allocator, "foo", "Gffffffffffffffffffffffffffffbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbarbar_foo", null, .{});
+}
+
+test "Go to Symbol #84787" {
+    const allocator = std.testing.allocator;
+    var scorer = try filters.FuzzyScorer.init(allocator);
+    defer scorer.deinit();
+    const value = try scorer.score(":get", ":get", 1, "get", "get", 0, .{ .first_match_can_be_weak = true, .boost_full_match = true });
+    if (value) |score| score.deinit(allocator) else return error.TestUnexpectedResult;
+}
