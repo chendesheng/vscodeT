@@ -337,6 +337,10 @@ test "ConfigurationService: untrusted workspaces ignore unregistered workspace v
     try std.testing.expectEqualStrings("userValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);
     try std.testing.expect(changes > 0);
 
+    try service.updateWorkspaceTrust(true);
+    try std.testing.expectEqualStrings("workspaceValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);
+    try std.testing.expectEqual(@as(usize, 2), changes);
+
     try service.registry.registerConfiguration("test", &.{.{ .key = "unregistered.setting", .value_type = "string", .default = std.json.Value{ .string = "default" } }});
     try std.testing.expectEqualStrings("workspaceValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);
 }
