@@ -586,8 +586,8 @@ Editor contributions:
   command/keybinding service), the copy button (no clipboard plumbing),
   accessible hover views (no screen-reader/accessible-view service),
   horizontal scrolling, status-bar actions (the bar renders
-  labels but no participant adds one), and a keyboard "show hover" command (no
-  keybinding registry). Hover over the empty area *after* a line needs
+  labels but no participant adds one), and a keyboard "show hover" command
+  (no hover action is wired to the keybinding host yet). Hover over the empty area *after* a line needs
   sub-cell horizontal distances, so only a zero-cell distance (the first cell
   past the text) anchors a hover. Mouse leave is inferred from motion over the
   gutter, the status row or another widget; a pointer that leaves the terminal
@@ -713,7 +713,10 @@ Editor contributions:
   (it takes explicit providers and otherwise uses bracket + word); the
   in-place-replace decoration is an underline instead of the browser's 2 px
   outline; and the
-  browser-facing editor controllers, keybinding registry, menus, and context
-  keys are not part of this port. Quick open has no `fuzzyScorer.ts`
+  browser-facing editor controllers and menus are not part of this port. The
+  keybinding registry/resolver and the context-key scanner/parser/expression
+  model are ported, with `src/tui/keybindings.zig` as the terminal host
+  (dispatch strings, chords, command execution); the TUI still routes input
+  through its hand-written key map until that host is wired in. Quick open has no `fuzzyScorer.ts`
   path-aware scoring, symbol/go-to-line/link providers, quick-input buttons,
   icons, keybinding labels or persisted command history.

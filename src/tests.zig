@@ -404,6 +404,7 @@ comptime {
     _ = @import("./vs/platform/log/test/common/log.test.zig");
     _ = @import("./vs/platform/log/common/bufferLog.zig");
     _ = @import("./tui/logger.zig");
+    _ = @import("./tui/keybindings.zig");
     _ = @import("./vs/platform/quickinput/common/quickInput.zig");
     _ = @import("./vs/platform/quickinput/browser/quickInput.zig");
     _ = @import("./vs/platform/quickinput/test/browser/quickinput.test.zig");
