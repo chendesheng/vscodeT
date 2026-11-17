@@ -331,3 +331,14 @@ test "invalid workspace settings reset to an empty workspace model" {
     try service.loadWorkspaceJson("{invalid");
     try std.testing.expectEqual(@as(i64, 4), service.getValue("workspace.setting").?.integer);
 }
+
+test "only user settings can be updated by the platform service" {
+    const allocator = std.testing.allocator;
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    const service = try configurationService.ConfigurationService.init(allocator, registry);
+    defer service.deinit();
+    try service.initialize();
+    try std.testing.expectError(error.UnsupportedConfigurationTarget, service.updateValue("any.setting", .{ .bool = true }, .WORKSPACE));
+    try std.testing.expectError(error.UnsupportedConfigurationTarget, service.updateValue("any.setting", .{ .bool = true }, .DEFAULT));
+}
