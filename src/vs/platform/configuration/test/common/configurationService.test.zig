@@ -199,6 +199,11 @@ test "configuration changes emit the changed source and keys" {
     try std.testing.expectEqual(@as(usize, 2), events.items.len);
     try std.testing.expectEqual(configuration.ConfigurationTarget.WORKSPACE, events.items[1].source);
     try std.testing.expectEqualStrings("configurationService.testSetting", events.items[1].keys[0]);
+
+    try fixture.service.updateValue("configurationService.testSetting", null, .USER);
+    try std.testing.expectEqual(@as(usize, 3), events.items.len);
+    try std.testing.expectEqual(configuration.ConfigurationTarget.USER, events.items[2].source);
+    try std.testing.expectEqualStrings("configurationService.testSetting", events.items[2].keys[0]);
 }
 
 test "language override values resolve through the service" {
