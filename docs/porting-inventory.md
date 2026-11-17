@@ -65,6 +65,8 @@ P1, P2 and P5f are implemented.
   `logService.zig` ports `LogService`.
 - `src/vs/base/common/errorMessage.zig` ports `toErrorMessage`, which
   `createUnexpectedErrorHandler` needs.
+- `src/vs/platform/log/common/bufferLog.zig` ports `BufferLogger` (buffer
+  until a logger is attached, level forwarding, flush and disposal).
 - `src/vs/platform/log/test/common/log.test.zig` ports the 10 upstream tests
   (adapter forwarding/no-swallow behavior, duplicate suppression window,
   native-error and stackless formatting, per-handler suppression, level
@@ -837,11 +839,12 @@ change events) and the 11 `languageConfiguration.test.ts` cases pass; the TUI
 (extension→language contributions) and the editor's `OnEnterSupport`/rich-bracket
 getters that the registry file keeps as TODOs.
 
-**P5f status:** `log.zig`, `logService.zig` and `errorMessage.zig` exist under
-the mirrored paths, the 10 upstream `log.test.ts` cases are ported and
-registered, and `app.zig`/`logger.zig` consume `ILogService`. The console
-loggers and the URI-keyed logger registry remain unported for the reasons in
-§8.6; README documents the single-file logging scope.
+**P5f status:** `log.zig`, `logService.zig`, `bufferLog.zig` and
+`errorMessage.zig` exist under the mirrored paths, the 10 upstream
+`log.test.ts` cases are ported and registered, and `app.zig`/`logger.zig`
+consume `ILogService`. The console loggers and the URI-keyed logger registry
+remain unported for the reasons in §8.6; README documents the single-file
+logging scope.
 
 **Exit criteria per slice:** the upstream module exists under the mirrored
 path, its upstream tests are ported and registered, the TUI consumes it, and

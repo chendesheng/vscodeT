@@ -36,8 +36,9 @@ Notes for the Zig 0.17 port:
 
 The TUI logs through the ported service in
 `src/vs/platform/log/common/log.zig` and `logService.zig` (the upstream
-`AbstractLogger`/`AbstractMessageLogger`, `AdapterLogger`, `MultiplexLogger`,
-`NullLogger`, `createUnexpectedErrorHandler` and `format`). `src/tui/logger.zig`
+`AbstractLogger`/`AbstractMessageLogger`, `AdapterLogger`, `BufferLogger`,
+`MultiplexLogger`, `NullLogger`, `createUnexpectedErrorHandler` and
+`format`). `src/tui/logger.zig`
 is the terminal host: it keeps one synchronous `main.log` and writes the same
 line format as upstream's `FileLogger`:
 
