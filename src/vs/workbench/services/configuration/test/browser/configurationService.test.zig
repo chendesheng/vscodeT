@@ -262,9 +262,9 @@ test "ConfigurationService: application and machine settings ignore workspace va
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(&tmp, io, "user-settings.json", "{\"application.setting\": 2}");
+    try writeFile(&tmp, io, "user-settings.json", "{\"application.setting\": 2, \"machine.setting\": 2}");
     try tmp.dir.createDirPath(io, ".vscode");
-    try writeFile(&tmp, io, ".vscode/settings.json", "{\"application.setting\": 8}");
+    try writeFile(&tmp, io, ".vscode/settings.json", "{\"application.setting\": 8, \"machine.setting\": 8}");
 
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root = try absoluteRoot(&tmp, io, &buffer);
@@ -277,12 +277,20 @@ test "ConfigurationService: application and machine settings ignore workspace va
     defer context.deinit();
     const service = try ConfigurationService.init(allocator, io, context, .{ .user_settings_path = user_path });
     defer service.deinit();
-    try service.registry.registerConfiguration("test", &.{.{
-        .key = "application.setting",
-        .value_type = "number",
-        .default = std.json.Value{ .integer = 4 },
-        .scope = .APPLICATION,
-    }});
+    try service.registry.registerConfiguration("test", &.{
+        .{
+            .key = "application.setting",
+            .value_type = "number",
+            .default = std.json.Value{ .integer = 4 },
+            .scope = .APPLICATION,
+        },
+        .{
+            .key = "machine.setting",
+            .value_type = "number",
+            .default = std.json.Value{ .integer = 4 },
+            .scope = .MACHINE_OVERRIDABLE,
+        },
+    });
 
     try std.testing.expectEqual(@import("../../../../../platform/configuration/common/configuration.zig").ConfigurationScope.APPLICATION, service.registry.getConfigurationProperties().get("application.setting").?.scope);
     try std.testing.expectEqual(@as(i64, 2), service.user.getValue("application.setting").?.integer);
@@ -291,4 +299,6 @@ test "ConfigurationService: application and machine settings ignore workspace va
     try std.testing.expectEqual(@as(i64, 2), service.getValue("application.setting", .{ .resource = resource }).?.integer);
     try std.testing.expectEqual(@as(i64, 2), service.inspect("application.setting", .{ .resource = resource }).value.?.integer);
     try std.testing.expect(service.inspect("application.setting", .{ .resource = resource }).workspace == null);
+    try std.testing.expectEqual(@as(i64, 2), service.getValue("machine.setting", .{ .resource = resource }).?.integer);
+    try std.testing.expect(service.inspect("machine.setting", .{ .resource = resource }).workspace == null);
 }
