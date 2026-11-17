@@ -65,7 +65,8 @@ console API for raw mode, sizing and input polling.
   box-drawing fallback), block/inline/flex formatting contexts, CSS white-space
   and UAX #14 text wrapping, and a double-buffered cell renderer that emits only
   an ANSI frame diff. Flex supports direction, wrap, grow/shrink/basis,
-  justify/align, gap, order, auto margins and content-derived auto sizes. Text
+  content-box `min_width`/`max_width`, justify/align, gap, order, auto margins
+  and content-derived auto sizes. Text
   fragments and inline-element fragments paint per line. On startup the TUI
   probes the draft cell-border protocol; when the terminal supports it, every
   editor pane is outlined on its own cell edges (active pane on top by

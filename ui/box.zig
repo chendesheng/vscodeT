@@ -435,6 +435,8 @@ fn flushRun(
     style.left = .auto;
     style.width = .auto;
     style.height = .auto;
+    style.min_width = .auto;
+    style.max_width = .auto;
     style.background = null;
     style.overflow = .visible;
     style.z_index = 0;

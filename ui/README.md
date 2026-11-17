@@ -30,8 +30,9 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   `flex_basis`, `order`, `gap`, auto margins and content-derived auto sizes.
   Bare text in a flex container becomes an anonymous flex item. `order` sorts
   the derived box children, so layout, paint order and hit testing agree.
-  There is no min/max sizing, grid or table layout; inline line boxes follow
-  CSS text flow and wrap at UAX #14 opportunities. See the limitations below.
+  `min_width`/`max_width` clamp content-box widths; there is no
+  `min-height`/`max-height`, grid or table layout. Inline line boxes follow CSS
+  text flow and wrap at UAX #14 opportunities. See the limitations below.
 - A reusable `ScrollView` for content that can overflow: a clipped viewport,
   whole-cell translated content, a proportional scrollbar and wheel handling.
   There is no CSS `overflow: scroll`; list-style windowing and editor scrolling
@@ -60,6 +61,8 @@ zig build example-flex-toolbar # grow spacer, justify-content, auto margins, ord
 zig build example-flex-cards   # wrapping cards with gap and align-content
 zig build example-flex-columns # nested column/row flex, growing panels, footer
 zig build example-flex-reverse # row-reverse, column-reverse, wrap-reverse
+zig build example-width-bounds # block min/max width, wrapping and auto margins
+zig build example-flex-bounds  # flex grow/shrink/basis and column-stretch bounds
 zig build example-overflow # visible vs hidden/clip for text and absolute children
 zig build example-wrap    # normal/nowrap/pre text flow, alignment and overflow
 zig build example-borders  # margin, padding and border boxes, nested absolute child
@@ -276,13 +279,30 @@ margins center an item; horizontal auto margins also center a definite-width
 block in block flow. `Margin.all`, `Gap.all`, `ui.Margin` and `ui.Gap` are
 exported for the common cases.
 
-Flex limitations: there is no `min-width`/`min-height`/`max-width`/`max-height`
-or automatic min-content floor, so shrunk items can overlap unless `overflow`
-clips them; percentages are supported for sizes and `flex_basis`, not gaps;
-baseline alignment uses the first text row and falls back to flex-start under
-`wrap-reverse`; `position: fixed` resolves like `absolute`; and there is no
-grid, table layout or z-index compositing. Text inside flex items wraps at the
-item's resolved content width.
+Width bounds are content-box constraints, like `width`:
+
+```zig
+const card = try doc.createElement(.div);
+card.setStyle(.{
+    .width = .{ .cells = 20 },
+    .min_width = .{ .cells = 12 },
+    .max_width = .{ .percent = 80 },
+});
+```
+
+`auto` leaves a side unconstrained, percentages resolve against the containing
+block's content width, and `min_width` wins when both bounds conflict. The
+bounds apply to block, inline-level and flex boxes, including flex base/target
+main sizes and stretched column cross sizes. They do not add an automatic
+min-content floor.
+
+Flex limitations: there is no `min-height`/`max-height` or automatic
+min-content floor, so shrunk items can overlap unless `overflow` clips them;
+percentages are supported for sizes, `min_width`/`max_width` and `flex_basis`,
+not gaps; baseline alignment uses the first text row and falls back to
+flex-start under `wrap-reverse`; `position: fixed` resolves like `absolute`;
+and there is no grid, table layout or z-index compositing. Text inside flex
+items wraps at the item's resolved content width.
 
 Scrolling is opt-in: `ui.ScrollView` handles arbitrary content with a clipped
 viewport, translated content and a proportional scrollbar. There is no

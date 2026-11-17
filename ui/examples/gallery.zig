@@ -17,6 +17,8 @@ const flex_toolbar = @import("flex_toolbar.zig");
 const flex_cards = @import("flex_cards.zig");
 const flex_columns = @import("flex_columns.zig");
 const flex_reverse = @import("flex_reverse.zig");
+const width_bounds = @import("width_bounds.zig");
+const flex_bounds = @import("flex_bounds.zig");
 const overflow = @import("overflow.zig");
 const wrap = @import("wrap.zig");
 const borders = @import("borders.zig");
@@ -47,6 +49,8 @@ const entries = [_]Entry{
     .{ .title = "flex cards", .open = flex_cards.flexCardsExample },
     .{ .title = "flex columns", .open = flex_columns.flexColumnsExample },
     .{ .title = "flex reverse", .open = flex_reverse.flexReverseExample },
+    .{ .title = "width bounds", .open = width_bounds.widthBoundsExample },
+    .{ .title = "flex bounds", .open = flex_bounds.flexBoundsExample },
     .{ .title = "overflow", .open = overflow.overflowExample },
     .{ .title = "wrap", .open = wrap.wrapExample },
     .{ .title = "borders", .open = borders.bordersExample },

@@ -4,21 +4,22 @@
 //! copies the border box back to the DOM nodes only for the measurement
 //! boundary.
 //!
-//! Supported box model: content box (`width`/`height`), padding, border and
-//! margin, with absolute `left`/`top` anchoring the margin box, block flow,
-//! inline text flow, and flex formatting contexts. The flex pass follows
-//! css-flexbox-1 §9 and TermDOM's `layoutsolver` shape (direction, wrap,
-//! grow/shrink/basis, justify/align, gap, order and auto margins); it is a
-//! reimplementation in Zig over this library's box tree.
+//! Supported box model: content box (`width`/`height`, bounded by
+//! `min_width`/`max_width`), padding, border and margin, with absolute
+//! `left`/`top` anchoring the margin box, block flow, inline text flow, and
+//! flex formatting contexts. The flex pass follows css-flexbox-1 §9 and
+//! TermDOM's `layoutsolver` shape (direction, wrap, grow/shrink/basis,
+//! justify/align, gap, order and auto margins); it is a reimplementation in Zig
+//! over this library's box tree.
 //!
 //! Inline text flow lives in `text_layout.zig`: UAX #14 line breaking, the
 //! `white-space` family, `word-break`/`overflow-wrap`, line alignment and
 //! fragments. This file only collects leaves and places atomic inline boxes.
 //!
-//! There is no min/max sizing, grid, table boxes or incremental box reuse yet.
-//! Flex items shrink to a zero content size rather than to an automatic
-//! min-content floor. `position: fixed` still resolves like `absolute`, as it
-//! did before flex was added.
+//! There is no `min-height`/`max-height`, grid, table boxes or incremental box
+//! reuse yet. Flex items shrink to a zero content size rather than to an
+//! automatic min-content floor. `position: fixed` still resolves like
+//! `absolute`, as it did before flex was added.
 
 const std = @import("std");
 const box = @import("box.zig");
@@ -169,6 +170,20 @@ fn resolveDimension(dimension: Dimension, base: ?f64) ?f64 {
 
 pub fn resolve(dimension: Dimension, base: f64) ?f64 {
     return resolveDimension(dimension, base);
+}
+
+/// Clamps a content-box width by the style's min/max bounds. The minimum wins
+/// when both resolve. `base == null` means percentages are unresolved, which is
+/// the case during intrinsic measurement.
+fn constrainContentWidth(style: Style, value: f64, base: ?f64) f64 {
+    var width = @max(0, value);
+    if (resolveDimension(style.max_width, base)) |maximum| {
+        width = @min(width, @max(0, maximum));
+    }
+    if (resolveDimension(style.min_width, base)) |minimum| {
+        width = @max(width, @max(0, minimum));
+    }
+    return width;
 }
 
 fn resolveMargins(margin: style_mod.Margin) ResolvedMargins {
@@ -573,7 +588,7 @@ fn unionRect(a: style_mod.Rect, b: style_mod.Rect) style_mod.Rect {
 /// margins). Percentages are treated as auto during intrinsic measurement.
 /// Out-of-flow children do not contribute.
 fn contentMaxWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
-    switch (current.kind) {
+    const content = switch (current.kind) {
         .initial_containing_block => return 0,
         .text => return text_layout.maxContentWidth(
             ctx.doc,
@@ -581,17 +596,17 @@ fn contentMaxWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
             current.text_style,
             ctx.doc.tab_size,
         ),
-        .anonymous_inline => {
+        .anonymous_inline => blk: {
             var total: f64 = 0;
             for (current.children.items) |child| {
                 if (!contributesToFlow(child)) continue;
                 total += outerMaxWidth(ctx, child);
             }
-            return total;
+            break :blk total;
         },
-        .element, .anonymous_flex_item => {
+        .element, .anonymous_flex_item => blk: {
             if (current.style.width == .cells) {
-                return current.style.width.cells;
+                break :blk current.style.width.cells;
             }
             const style = current.style;
             if (isFlexContainer(style)) {
@@ -604,23 +619,27 @@ fn contentMaxWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
                         total += flexItemOuterWidth(ctx, child);
                         count += 1;
                     }
-                    return total;
+                    break :blk total;
                 }
                 var widest: f64 = 0;
                 for (current.children.items) |child| {
                     if (!contributesToFlow(child)) continue;
                     widest = @max(widest, outerMaxWidth(ctx, child));
                 }
-                return widest;
+                break :blk widest;
             }
             var widest: f64 = 0;
             for (current.children.items) |child| {
                 if (!contributesToFlow(child)) continue;
                 widest = @max(widest, outerMaxWidth(ctx, child));
             }
-            return widest;
+            break :blk widest;
         },
-    }
+    };
+    return switch (current.kind) {
+        .element, .anonymous_flex_item => constrainContentWidth(current.style, content, null),
+        else => content,
+    };
 }
 
 fn contributesToFlow(current: *const LayoutBox) bool {
@@ -657,10 +676,29 @@ fn flexItemOuterWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 
     const border = style_mod.borderWidths(current.style);
     const margin = resolveMargins(current.style.margin);
     const content = switch (current.style.flex_basis) {
-        .cells => |value| @max(0, value),
+        .cells => |value| constrainContentWidth(current.style, value, null),
         else => contentMaxWidth(ctx, current),
     };
     return content + padding.horizontal() + border.horizontal() + margin.horizontal();
+}
+
+/// Content width that a block-level box would use for auto-margin centering.
+/// Returns null when the box has no definite or max-clamped width (plain
+/// `width:auto` fills the containing block, so auto margins resolve to zero).
+fn blockMarginedContentWidth(
+    style: Style,
+    owner_width: f64,
+    margin: ResolvedMargins,
+    extra_width: f64,
+) ?f64 {
+    if (resolveDimension(style.width, owner_width)) |width| {
+        return constrainContentWidth(style, width, owner_width);
+    }
+    if (resolveDimension(style.max_width, owner_width) != null) {
+        const inner = @max(0, owner_width - margin.horizontal() - extra_width);
+        return constrainContentWidth(style, inner, owner_width);
+    }
+    return null;
 }
 
 fn layoutBlockChildren(
@@ -706,7 +744,12 @@ fn layoutBlockChildren(
 
                 var auto_offset: f64 = 0;
                 if (margin.left_auto or margin.right_auto) {
-                    if (resolveDimension(child.style.width, content.w)) |width| {
+                    if (blockMarginedContentWidth(
+                        child.style,
+                        content.w,
+                        margin,
+                        padding.horizontal() + border.horizontal(),
+                    )) |width| {
                         const outer = width + padding.horizontal() +
                             border.horizontal() + margin.horizontal();
                         const free = content.w - outer;
@@ -791,6 +834,7 @@ fn layoutElement(
         },
         .indefinite => content_width = @max(0, contentMaxWidth(ctx, current)),
     }
+    content_width = constrainContentWidth(style, content_width, constraints.owner_width);
 
     var content_height: f64 = 0;
     var height_auto = false;
@@ -852,6 +896,10 @@ const FlexItem = struct {
     /// Flex base and resolved target, both border-box main sizes.
     base_main: f64,
     target_main: f64,
+    /// Border-box main-axis bounds. They default to unconstrained so the
+    /// column main axis (height) keeps its existing behaviour.
+    main_min: f64 = 0,
+    main_max: f64 = std.math.inf(f64),
     frozen: bool = false,
     clamp_dir: i8 = 0,
 
@@ -875,6 +923,12 @@ const FlexItem = struct {
     fn baseFactor(self: *const FlexItem, growing: bool) f64 {
         if (growing) return @max(0, self.box.style.flex_grow);
         return @max(0, self.box.style.flex_shrink) * self.base_main;
+    }
+
+    fn clampMainSize(self: *const FlexItem, row: bool, value: f64) f64 {
+        const floor = @max(self.extraMain(row), self.main_min);
+        const ceiling = @max(floor, self.main_max);
+        return @max(floor, @min(value, ceiling));
     }
 };
 
@@ -988,8 +1042,7 @@ fn resolveFlexibleLengths(
             if (item.frozen) continue;
             const factor = item.baseFactor(growing);
             const unclamped = item.base_main + remaining * factor / total_factor;
-            const floor = item.extraMain(row);
-            const bounded = @max(floor, unclamped);
+            const bounded = item.clampMainSize(row, unclamped);
             item.target_main = bounded;
             item.clamp_dir = if (bounded > unclamped)
                 1
@@ -1061,6 +1114,14 @@ fn layoutFlex(
             .target_main = 0,
         };
 
+        if (row) {
+            const minimum = resolveDimension(child.style.min_width, content.w) orelse 0;
+            const maximum = resolveDimension(child.style.max_width, content.w) orelse
+                std.math.inf(f64);
+            item.main_min = extra_width + @max(0, minimum);
+            item.main_max = extra_width + @max(0, maximum);
+        }
+
         const extra_main = if (row) extra_width else extra_height;
         const basis_dimension = resolveDimension(child.style.flex_basis, main_owner);
         const main_dimension = resolveDimension(
@@ -1069,12 +1130,12 @@ fn layoutFlex(
         );
 
         if (basis_dimension) |basis| {
-            item.base_main = @max(extra_main, basis + extra_main);
+            item.base_main = item.clampMainSize(row, basis + extra_main);
         } else if (main_dimension) |size| {
-            item.base_main = @max(extra_main, size + extra_main);
+            item.base_main = item.clampMainSize(row, size + extra_main);
         } else if (row) {
-            item.base_main = @max(
-                extra_main,
+            item.base_main = item.clampMainSize(
+                row,
                 contentMaxWidth(ctx, child) + extra_width,
             );
         } else {
@@ -1098,7 +1159,7 @@ fn layoutFlex(
                 },
                 .{ .width = cross_content },
             );
-            item.base_main = @max(extra_height, size.height);
+            item.base_main = item.clampMainSize(row, size.height);
         }
 
         try items.append(allocator, item);
@@ -1238,10 +1299,19 @@ fn layoutFlex(
             const cross_defined = itemCrossDefined(item.box.style, row, cross_owner);
             const stretch = item.item_align == .stretch and !cross_defined and
                 !item.margin.crossLeadAuto(row) and !item.margin.crossTrailAuto(row);
-            const content_cross = if (stretch)
+            var content_cross = if (stretch)
                 @max(0, line_cross_total - item.margin.cross(row) - item.extraCross(row))
             else
                 item.content_cross;
+            // Width is the cross axis in a column container, so its bounds
+            // clamp both stretched and measured cross sizes.
+            if (!row) {
+                content_cross = constrainContentWidth(
+                    item.box.style,
+                    content_cross,
+                    content.w,
+                );
+            }
             item.final_cross = content_cross + item.extraCross(row);
         }
     }
@@ -1658,6 +1728,141 @@ test "layout: percent width uses the parent content box" {
     try std.testing.expectEqual(@as(f64, 5), child.asElement().rect.w);
 }
 
+test "layout: min-width and max-width clamp block content boxes" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 24, .rows = 12 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 20 },
+        .height = .{ .cells = 10 },
+    });
+    doc.setRoot(root);
+
+    const maxed = try testBox(&doc, root, .{
+        .width = .{ .cells = 8 },
+        .height = .{ .cells = 1 },
+        .max_width = .{ .cells = 3 },
+    });
+    const minned = try testBox(&doc, root, .{
+        .width = .{ .cells = 2 },
+        .height = .{ .cells = 1 },
+        .min_width = .{ .cells = 5 },
+    });
+    const conflict = try testBox(&doc, root, .{
+        .width = .{ .cells = 4 },
+        .height = .{ .cells = 1 },
+        .min_width = .{ .cells = 5 },
+        .max_width = .{ .cells = 3 },
+    });
+    const padded = try testBox(&doc, root, .{
+        .width = .{ .cells = 8 },
+        .height = .{ .cells = 1 },
+        .max_width = .{ .cells = 3 },
+        .padding = .all(1),
+        .border = .all(1),
+    });
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    try std.testing.expectEqual(@as(f64, 3), maxed.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 5), minned.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 5), conflict.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 7), padded.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 3), tree.find(padded).?.content_rect.w);
+}
+
+test "layout: max-width shrinks an auto block and auto margins center it" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 10 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 20 },
+        .height = .{ .cells = 10 },
+    });
+    doc.setRoot(root);
+
+    const centered = try testBox(&doc, root, .{
+        .height = .{ .cells = 1 },
+        .max_width = .{ .cells = 6 },
+        .margin = .{ .left = .auto, .right = .auto },
+    });
+    try layoutDocument(&doc);
+
+    try std.testing.expectEqual(@as(f64, 6), centered.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 7), centered.asElement().rect.x);
+}
+
+test "layout: min-width and max-width resolve percentages" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 24, .rows = 8 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 20 },
+        .height = .{ .cells = 8 },
+    });
+    doc.setRoot(root);
+
+    const maxed = try testBox(&doc, root, .{
+        .width = .{ .cells = 10 },
+        .height = .{ .cells = 1 },
+        .max_width = .{ .percent = 25 },
+    });
+    const minned = try testBox(&doc, root, .{
+        .width = .{ .cells = 4 },
+        .height = .{ .cells = 1 },
+        .min_width = .{ .percent = 50 },
+    });
+    try layoutDocument(&doc);
+
+    try std.testing.expectEqual(@as(f64, 5), maxed.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 10), minned.asElement().rect.w);
+}
+
+test "layout: max-width wraps text and grows auto height" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 8 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 20 },
+        .height = .{ .cells = 8 },
+    });
+    doc.setRoot(root);
+
+    const paragraph = try testBox(&doc, root, .{
+        .max_width = .{ .cells = 5 },
+    });
+    const text = try doc.createText("one two three");
+    _ = try paragraph.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    const text_box = tree.find(text).?;
+    try std.testing.expectEqual(@as(usize, 3), text_box.text_fragments.len);
+    try std.testing.expectEqual(@as(f64, 0), text_box.text_fragments[0].y);
+    try std.testing.expectEqual(@as(f64, 1), text_box.text_fragments[1].y);
+    try std.testing.expectEqual(@as(f64, 2), text_box.text_fragments[2].y);
+    try std.testing.expectEqual(@as(f64, 5), paragraph.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 3), paragraph.asElement().rect.h);
+}
+
 test "layout: inline text starts at the content box" {
     const allocator = std.testing.allocator;
     var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 6 });
@@ -1821,6 +2026,39 @@ test "layout: flex-grow distributes free space" {
     try std.testing.expectEqual(@as(f64, 6), b.asElement().rect.w);
 }
 
+test "layout: max-width caps flex-grow" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 10 },
+        .height = .{ .cells = 1 },
+        .display = .flex,
+    });
+    doc.setRoot(root);
+
+    const a = try testBox(&doc, root, .{
+        .width = .{ .cells = 2 },
+        .height = .{ .cells = 1 },
+        .flex_grow = 1,
+        .max_width = .{ .cells = 4 },
+    });
+    const b = try testBox(&doc, root, .{
+        .width = .{ .cells = 2 },
+        .height = .{ .cells = 1 },
+        .flex_grow = 1,
+    });
+    try layoutDocument(&doc);
+
+    try std.testing.expectEqual(@as(f64, 0), a.asElement().rect.x);
+    try std.testing.expectEqual(@as(f64, 4), a.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 4), b.asElement().rect.x);
+    try std.testing.expectEqual(@as(f64, 6), b.asElement().rect.w);
+}
+
 test "layout: flex-shrink is weighted by the base size" {
     const allocator = std.testing.allocator;
     var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 2 });
@@ -1852,6 +2090,38 @@ test "layout: flex-shrink is weighted by the base size" {
     try std.testing.expectEqual(@as(f64, 3.5), b.asElement().rect.w);
 }
 
+test "layout: min-width prevents flex-shrink" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 8 },
+        .height = .{ .cells = 1 },
+        .display = .flex,
+    });
+    doc.setRoot(root);
+
+    const a = try testBox(&doc, root, .{
+        .width = .{ .cells = 10 },
+        .height = .{ .cells = 1 },
+        .flex_shrink = 1,
+        .min_width = .{ .cells = 7 },
+    });
+    const b = try testBox(&doc, root, .{
+        .width = .{ .cells = 4 },
+        .height = .{ .cells = 1 },
+        .flex_shrink = 1,
+    });
+    try layoutDocument(&doc);
+
+    try std.testing.expectEqual(@as(f64, 7), a.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 1), b.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 7), b.asElement().rect.x);
+}
+
 test "layout: flex column stacks and stretches" {
     const allocator = std.testing.allocator;
     var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 10 });
@@ -1874,6 +2144,37 @@ test "layout: flex column stacks and stretches" {
     try std.testing.expectEqual(@as(f64, 0), a.asElement().rect.y);
     try std.testing.expectEqual(@as(f64, 10), a.asElement().rect.w);
     try std.testing.expectEqual(@as(f64, 2), b.asElement().rect.y);
+}
+
+test "layout: max-width clamps a stretched flex column item" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 10 },
+        .height = .{ .cells = 5 },
+        .display = .flex,
+        .flex_direction = .column,
+        .align_items = .stretch,
+    });
+    doc.setRoot(root);
+
+    const a = try testBox(&doc, root, .{
+        .height = .{ .cells = 1 },
+        .max_width = .{ .cells = 6 },
+    });
+    const b = try testBox(&doc, root, .{
+        .width = .{ .cells = 4 },
+        .height = .{ .cells = 1 },
+    });
+    try layoutDocument(&doc);
+
+    try std.testing.expectEqual(@as(f64, 6), a.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 4), b.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 1), b.asElement().rect.y);
 }
 
 test "layout: row-reverse mirrors margin boxes" {
@@ -2180,6 +2481,30 @@ test "layout: inline-flex shrink-wraps on an inline line" {
     try std.testing.expectEqual(@as(f64, 3), b.asElement().rect.x);
 }
 
+test "layout: max-width shrink-wraps an inline-block" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 3 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 20 },
+        .height = .{ .cells = 3 },
+    });
+    doc.setRoot(root);
+
+    const inline_box = try testBox(&doc, root, .{
+        .display = .inline_block,
+        .max_width = .{ .cells = 4 },
+    });
+    const text = try testText(&doc, inline_box, "abcdefghij", .{});
+    try layoutDocument(&doc);
+
+    try std.testing.expectEqual(@as(f64, 4), inline_box.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 10), text.asText().rect.w);
+}
+
 test "layout: baseline aligns first text lines" {
     const allocator = std.testing.allocator;
     var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 4 });
@@ -2331,6 +2656,35 @@ test "layout: flex-basis overrides the main size" {
 
     try std.testing.expectEqual(@as(f64, 2), a.asElement().rect.w);
     try std.testing.expectEqual(@as(f64, 2), b.asElement().rect.x);
+}
+
+test "layout: max-width clamps the flex base size" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 1 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 10 },
+        .height = .{ .cells = 1 },
+        .display = .flex,
+    });
+    doc.setRoot(root);
+
+    const a = try testBox(&doc, root, .{
+        .height = .{ .cells = 1 },
+        .flex_basis = .{ .cells = 8 },
+        .max_width = .{ .cells = 3 },
+    });
+    const b = try testBox(&doc, root, .{
+        .width = .{ .cells = 2 },
+        .height = .{ .cells = 1 },
+    });
+    try layoutDocument(&doc);
+
+    try std.testing.expectEqual(@as(f64, 3), a.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 3), b.asElement().rect.x);
 }
 
 test "layout: cross auto margins center an item" {

@@ -202,6 +202,11 @@ pub const Style = struct {
 
     width: Dimension = .auto,
     height: Dimension = .auto,
+    /// Content-box width bounds. `auto` places no bound on that side. When both
+    /// resolve, the minimum wins. Percentages resolve against the containing
+    /// block's content width; intrinsic measurement ignores percentage bounds.
+    min_width: Dimension = .auto,
+    max_width: Dimension = .auto,
 
     /// Space outside the border box. Negative margins are allowed; `auto`
     /// margins absorb free space in a flex line or center a block.

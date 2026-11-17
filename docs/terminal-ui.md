@@ -340,9 +340,12 @@ container's derived children, so layout, paint order and hit testing agree.
 
 The solver uses a per-solve scratch arena on the box tree for flex items, lines,
 processed text and fragments; `layoutTree` is therefore fallible. Fragments stay
-valid through paint and hit testing until the next solve. There is no min/max
-sizing or automatic min-content floor, so a shrunken item can overflow its
-neighbour unless `overflow` clips it.
+valid through paint and hit testing until the next solve. `min_width` and
+`max_width` clamp content-box widths in block, inline-level and flex layout,
+including flex base/target sizes and stretched column cross sizes; percentages
+resolve against the containing block content width and `min_width` wins when
+both apply. There is no `min-height`/`max-height` or automatic min-content
+floor, so a shrunken item can overflow its neighbour unless `overflow` clips it.
 
 ### 5.2.1 Text flow
 
@@ -624,7 +627,7 @@ Public surface for the POC:
 - `Node`: tree navigation/mutation, direct styles, `addEventListener` /
   `removeEventListener`, `focus`, `blur`, `isFocusable`.
 - `Style`: `position` (static/relative/absolute/fixed), `top/right/bottom/left`,
-  `width/height` (`auto | cells | percent`), `display`
+  `width/height` and `min_width/max_width` (`auto | cells | percent`), `display`
   (block/inline/inline-block/flex/inline-flex/contents/none), `overflow`
   (visible/hidden/clip), `text_align`, `white_space`
   (normal/nowrap/pre/pre_wrap/pre_line/break_spaces), `word_break`,
@@ -634,8 +637,8 @@ Public surface for the POC:
   `border`, `border_style` and `border_color`. Flex adds `flex_direction`,
   `flex_wrap`, `justify_content`, `align_items`, `align_self`, `align_content`,
   `flex_grow`, `flex_shrink`, `flex_basis`, `order` and `gap` (`Gap.all`).
-  `width`/`height` are content-box sizes; padding, border and margin expand
-  outward.
+  `width`/`height`/`min_width`/`max_width` are content-box sizes; padding,
+  border and margin expand outward.
 - `ScrollView`: a manual scroll view built from those primitives. `init`
   creates a clipped viewport, a translated content box and a proportional
   scrollbar; the caller appends cells to `contentNode()` and passes explicit
@@ -1046,8 +1049,8 @@ Library constraints:
 
 1. Full `viewLineRenderer` port + `CharacterMapping` and the upstream
    `viewLineRenderer.test.ts` cases (canonical part comparison).
-2. Flex follow-ups: min/max sizing and the automatic min-content floor for
-   shrinking items.
+2. Flex follow-ups: `min-height`/`max-height` and the automatic min-content
+   floor for shrinking items.
 3. `ViewLayout`/`Scrollable` + `IViewModel`/`IViewLayout` interfaces + a
    temporary `TuiViewModel` adapter + view-event bridge.
 4. `viewLayer`, `viewPart`, `renderingContext`, `viewOverlays`,
@@ -1127,8 +1130,9 @@ the P1-P5 sequencing and upstream test map, is tracked in the
   borders are repeated single-line box-drawing glyphs; with support they are
   solid centred strokes (rounded joints, double/dashed/dotted styles and the
   outside fill are not painted yet).
-- Flex is in, but without `min-width`/`min-height`/`max-width`/`max-height`, an
-  automatic min-content floor, percentage gaps or `justify-content: stretch`.
+- Flex is in, with content-box `min-width`/`max-width`, but without
+  `min-height`/`max-height`, an automatic min-content floor, percentage gaps or
+  `justify-content: stretch`.
   Baseline alignment is approximated by the first text row and falls back to
   flex-start under `wrap-reverse`. `position: fixed` still resolves like
   `absolute`.
