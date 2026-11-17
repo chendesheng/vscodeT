@@ -1984,3 +1984,22 @@ test "EditorGroupModel: direct indexOf and contains" {
     try std.testing.expect(!group.contains(.{ .input = input1 }, .{}));
     try std.testing.expectEqual(@as(?usize, 0), group.indexOf(.{ .input = input2 }));
 }
+
+test "EditorGroupModel: contains untyped inputs by resource" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const input1 = try newInput(allocator, .file, "input1", "/input1");
+    const input2 = try newInput(allocator, .file, "input2", "/input2");
+    _ = try group.openEditor(input1, .{ .pinned = true, .active = true });
+
+    try std.testing.expect(group.contains(.{ .untyped = .{ .resource = "/input1" } }, .{}));
+    try std.testing.expect(!group.contains(.{ .untyped = .{ .resource = "/input2" } }, .{}));
+
+    _ = try group.openEditor(input2, .{ .pinned = true, .active = true });
+    try std.testing.expect(group.contains(.{ .untyped = .{ .resource = "/input1" } }, .{}));
+    try std.testing.expect(group.contains(.{ .untyped = .{ .resource = "/input2" } }, .{}));
+}
