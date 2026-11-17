@@ -26,6 +26,7 @@ pub const FileEditorInput = struct {
         var base = EditorInput.init(allocator, TYPE_ID);
         base.resource = path_copy;
         base.name = std.fs.path.basename(path_copy);
+        base.description = std.fs.path.dirname(path_copy);
         base.capabilities = editor_input.EditorInputCapabilities.None;
         base.matches_fn = matches;
         base.save_fn = saveHook;
@@ -142,6 +143,7 @@ test "FileEditorInput loads, edits, saves and reverts" {
     try std.testing.expectEqualStrings("hello", input.getPreferredContents());
     try std.testing.expect(input.getPreferredLanguage() == null);
     try std.testing.expectEqualStrings("file.txt", input.base.getName());
+    try std.testing.expectEqualStrings(root, input.base.getDescription(.LONG).?);
     try std.testing.expectEqual(editor_input.EditorInputCapabilities.None, input.base.capabilities);
     try std.testing.expect(!input.base.isDirty());
 
