@@ -326,8 +326,16 @@ test "ConfigurationService: untrusted workspaces ignore unregistered workspace v
     const resource = try std.fmt.allocPrint(allocator, "{s}/main.zig", .{root});
     defer allocator.free(resource);
     try std.testing.expectEqualStrings("workspaceValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);
-    service.trusted = false;
+    const Listener = struct {
+        fn onChange(_: @import("../../../../../platform/configuration/common/configuration.zig").Change, count: *usize) anyerror!void {
+            count.* += 1;
+        }
+    };
+    var changes: usize = 0;
+    try service.onDidChangeConfiguration(&changes, Listener.onChange);
+    try service.updateWorkspaceTrust(false);
     try std.testing.expectEqualStrings("userValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);
+    try std.testing.expect(changes > 0);
 
     try service.registry.registerConfiguration("test", &.{.{ .key = "unregistered.setting", .value_type = "string", .default = std.json.Value{ .string = "default" } }});
     try std.testing.expectEqualStrings("workspaceValue", service.getValue("unregistered.setting", .{ .resource = resource }).?.string);

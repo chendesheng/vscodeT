@@ -126,6 +126,13 @@ pub const ConfigurationService = struct {
         try self.load();
     }
 
+    /// Updates workspace trust and reloads the effective configuration.
+    pub fn updateWorkspaceTrust(self: *ConfigurationService, trusted: bool) !void {
+        if (self.trusted == trusted) return;
+        self.trusted = trusted;
+        try self.reload();
+    }
+
     pub fn onDidChangeConfiguration(
         self: *ConfigurationService,
         ctx: anytype,
