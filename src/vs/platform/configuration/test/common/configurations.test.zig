@@ -188,3 +188,35 @@ test "hidden experimental defaults update and unregister" {
     try defaults.onDidUpdateConfiguration(&.{"hidden.experimental"});
     try std.testing.expect(defaults.configurationModel().getValue("hidden.experimental") == null);
 }
+
+test "deregistering a merged language object setting" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const registry = try configurationRegistry.ConfigurationRegistry.init(allocator);
+    defer registry.deinit();
+    var defaults = try configurations.DefaultConfiguration.init(allocator, registry);
+    defer defaults.deinit();
+    try registry.registerConfiguration("b", &.{.{ .key = "b", .value_type = "object", .default = std.json.Value{ .object = .{} } }});
+
+    const source1 = configurationRegistry.ConfigurationDefaultSource{ .extension = .{ .id = "source1", .display_name = "source1" } };
+    const source2 = configurationRegistry.ConfigurationDefaultSource{ .extension = .{ .id = "source2", .display_name = "source2" } };
+    const node1 = [_]configurationRegistry.DefaultOverride{.{ .key = "[a]", .value = try jsonValue(arena.allocator(), "{\"b\":{\"aa\":\"1\",\"bb\":\"2\"}}") }};
+    const node2 = [_]configurationRegistry.DefaultOverride{.{ .key = "[a]", .value = try jsonValue(arena.allocator(), "{\"b\":{\"bb\":\"20\",\"cc\":\"30\"}}") }};
+    try registry.registerDefaultConfigurationsWithSource(&node1, source1);
+    try registry.registerDefaultConfigurationsWithSource(&node2, source2);
+    try defaults.initialize();
+    try registry.deregisterDefaultConfigurations(&node1, source1);
+    try defaults.onDidUpdateConfiguration(&.{"[a]"});
+
+    const model = defaults.configurationModel();
+    const override_value = model.getValue("[a]").?;
+    try std.testing.expectEqualStrings("20", override_value.object.get("b").?.object.get("bb").?.string);
+    try std.testing.expectEqualStrings("30", override_value.object.get("b").?.object.get("cc").?.string);
+    try std.testing.expect(override_value.object.get("b").?.object.get("aa") == null);
+    try std.testing.expectEqual(@as(usize, 1), model.overrides.len);
+    try std.testing.expectEqual(@as(usize, 2), model.getKeys().len);
+    var overridden = try model.override(allocator, "a");
+    defer overridden.deinit();
+    try std.testing.expectEqualStrings("20", overridden.getValue("b.bb").?.string);
+}

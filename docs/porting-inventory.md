@@ -939,7 +939,7 @@ policy deduplication, policy references, and hidden/excluded and agent-host sett
 schema/scope/policy-reference/excluded-property cases remain. `configurationVariables.zig` (variable parsing/scanning) and its test suite are
 ported too. `configurations.zig` ports the explicit `DefaultConfiguration` model lifecycle
 (initialize/reload/property updates, override-identifier values), with the
-registration, override and deregistration cases from `configurations.test.ts`. The merge/remove helper cases in `configuration.test.ts` are also ported
+registration, override and deregistration cases (including merged language object defaults) from `configurations.test.ts`. The merge/remove helper cases in `configuration.test.ts` are also ported
 (except the `__proto__` pollution case, which is N/A for Zig maps). The
 registry/scope-dependent cases (`configurationRegistry`,
 `configuration.test`, `configurations`, `policyConfiguration`,
