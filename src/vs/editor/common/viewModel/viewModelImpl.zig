@@ -4,9 +4,9 @@
 // selections, and exposes the `IViewModel` surface the ported view parts read.
 // The browser cursor controller, view-model event dispatcher, glyph lanes,
 // minimap and view-zone machinery are not ported; selections/focus/viewport are
-// updated explicitly by the host. Inline/decoration viewport data is empty
-// until the terminal `ViewModelDecorations` adapter is wired (the terminal
-// view's first pass does not consume inline decoration ranges).
+// updated explicitly by the host. `ViewModelDecorations` is wired for the
+// inline-decoration viewport data; decoration-change events are host-driven
+// (the event dispatcher is not ported).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -16,6 +16,7 @@ const editor_options = @import("../config/editorOptions.zig");
 const text_model = @import("../model/textModel.zig");
 const view_model_lines = @import("./viewModelLines.zig");
 const coordinates_converter = @import("../coordinatesConverter.zig");
+const view_model_decorations = @import("./viewModelDecorations.zig");
 const CoordinatesConverter = view_model_lines.CoordinatesConverter;
 const Selection = @import("../core/selection.zig").Selection;
 const Range = @import("../core/range.zig").Range;
@@ -29,6 +30,7 @@ const ICoordinatesConverter = coordinates_converter.ICoordinatesConverter;
 const ViewLineData = view_model.ViewLineData;
 const ViewLineRenderingData = view_model.ViewLineRenderingData;
 const ViewModelDecoration = @import("./viewModelDecoration.zig").ViewModelDecoration;
+const ModelDecoration = @import("../model.zig").ModelDecoration;
 
 pub const ViewModel = struct {
     allocator: Allocator,
@@ -36,12 +38,68 @@ pub const ViewModel = struct {
     configuration: *const editor_configuration.IEditorConfiguration,
     lines: view_model_lines.ProjectedViewModelLines,
     converter: CoordinatesConverter,
+    decorations: *view_model_decorations.ViewModelDecorations,
+    lines_adapter: LinesAdapter,
     selections: std.array_list.Managed(Selection),
     focus: bool = false,
     viewport: Viewport = Viewport.init(0, 0, 0, 0),
     viewport_start_line: usize = 1,
     viewport_end_line: usize = 0,
     layout: Layout,
+
+    const LinesAdapter = struct {
+        view_model: *ViewModel,
+        scratch: []ModelDecoration = &.{},
+
+        fn deinit(self: *LinesAdapter) void {
+            if (self.scratch.len > 0) self.view_model.model.getAllocator().free(self.scratch);
+            self.scratch = &.{};
+        }
+
+        fn getDecorationsInRange(
+            context: *anyopaque,
+            view_range: Range,
+            owner_id: i32,
+            filter_validation_decorations: bool,
+            _: bool,
+            only_minimap_decorations: bool,
+            only_margin_decorations: bool,
+        ) []const ModelDecoration {
+            const self: *LinesAdapter = @ptrCast(@alignCast(context));
+            if (self.scratch.len > 0) self.view_model.model.getAllocator().free(self.scratch);
+            self.scratch = &.{};
+            const converter = self.view_model.converter.interface();
+            const model_range = converter.convertViewRangeToModelRange(converter.context, view_range);
+            const model = self.view_model.model;
+            self.scratch = model.getDecorationsInRange(
+                model_range,
+                @intCast(@max(owner_id, 0)),
+                filter_validation_decorations,
+                only_minimap_decorations,
+                only_margin_decorations,
+            ) catch return &.{};
+            return self.scratch;
+        }
+
+        fn getViewLineMinColumn(context: *anyopaque, line_number: usize) usize {
+            const self: *LinesAdapter = @ptrCast(@alignCast(context));
+            return self.view_model.lines.getLineMinColumn(line_number);
+        }
+
+        fn getViewLineMaxColumn(context: *anyopaque, line_number: usize) usize {
+            const self: *LinesAdapter = @ptrCast(@alignCast(context));
+            return self.view_model.lines.getLineMaxColumn(line_number);
+        }
+
+        fn interface(self: *LinesAdapter) view_model_decorations.IViewModelLines {
+            return .{
+                .context = self,
+                .getDecorationsInRange = getDecorationsInRange,
+                .getViewLineMinColumn = getViewLineMinColumn,
+                .getViewLineMaxColumn = getViewLineMaxColumn,
+            };
+        }
+    };
 
     const Layout = struct {
         view_model: *ViewModel,
@@ -108,16 +166,33 @@ pub const ViewModel = struct {
                 .normal,
             ),
             .converter = undefined,
+            .decorations = undefined,
+            .lines_adapter = undefined,
             .selections = std.array_list.Managed(Selection).init(allocator),
             .layout = undefined,
         };
+        errdefer {
+            self.lines.deinit();
+            self.selections.deinit();
+        }
         self.converter = CoordinatesConverter.init(&self.lines);
+        self.lines_adapter = .{ .view_model = self };
+        self.decorations = try view_model_decorations.ViewModelDecorations.create(
+            allocator,
+            editor_id,
+            model,
+            self.configuration.is_simple_widget,
+            false,
+            self.lines_adapter.interface(),
+            self.converter.interface(),
+        );
         self.layout = .{ .view_model = self };
-        _ = editor_id;
         return self;
     }
 
     pub fn deinit(self: *ViewModel) void {
+        self.decorations.destroy();
+        self.lines_adapter.deinit();
         self.lines.deinit();
         self.selections.deinit();
         self.allocator.destroy(self);
@@ -196,9 +271,22 @@ pub const ViewModel = struct {
         return self.lines.getLineMaxColumn(line_number) - 1;
     }
 
-    fn getViewportViewLineRenderingDataFn(context: *anyopaque, _: Range, line_number: usize) anyerror!ViewLineRenderingData {
+    fn getViewportViewLineRenderingDataFn(context: *anyopaque, visible_range: Range, line_number: usize) anyerror!ViewLineRenderingData {
         const self: *ViewModel = @ptrCast(@alignCast(context));
         const data = try self.lines.getViewLineData(line_number);
+
+        var inline_decorations: []const @import("./inlineDecorations.zig").InlineDecoration = &.{};
+        var has_variable_fonts = false;
+        if (self.decorations.getDecorationsViewportData(visible_range) catch null) |collection| {
+            const line_index = line_number -| visible_range.startLineNumber;
+            if (line_index < collection.inlineDecorations.len) {
+                inline_decorations = collection.inlineDecorations[line_index];
+            }
+            if (line_index < collection.hasVariableFonts.len) {
+                has_variable_fonts = collection.hasVariableFonts[line_index];
+            }
+        }
+
         return ViewLineRenderingData.init(
             data.minColumn,
             data.maxColumn,
@@ -207,11 +295,11 @@ pub const ViewModel = struct {
             false,
             false,
             data.tokens,
-            &.{},
+            inline_decorations,
             self.model.getOptions().tabSize,
             data.startVisibleColumn,
             TextDirection.LTR,
-            false,
+            has_variable_fonts,
         );
     }
 
@@ -332,6 +420,7 @@ test "view model: maps model decorations into the viewport" {
 
     var options = std.mem.zeroes(@import("../model.zig").ModelDecorationOptions);
     options.className = "test-decoration";
+    options.inlineClassName = "test-inline";
     const decoration = @import("../model.zig").ModelDeltaDecoration{
         .range = Range.init(1, 1, 1, 4),
         .options = &options,
@@ -348,6 +437,11 @@ test "view model: maps model decorations into the viewport" {
     try testing.expectEqual(@as(usize, 1), decorations.len);
     try testing.expectEqual(@as(usize, 1), decorations[0].range.startLineNumber);
     try testing.expectEqual(@as(usize, 4), decorations[0].range.endColumn);
+
+    const rendering = try instance.interface().viewportViewLineRenderingData(Range.init(1, 1, 2, 1), 1);
+    try testing.expectEqual(@as(usize, 1), rendering.inlineDecorations.len);
+    try testing.expectEqualStrings("test-inline", rendering.inlineDecorations[0].inlineClassName);
+    try testing.expect(!rendering.hasVariableFonts);
 }
 
 test "view model integrates with the terminal view" {

@@ -865,10 +865,12 @@ Editor contributions:
   `common/viewModel/viewModelImpl.zig`: it owns the projected lines and
   coordinates converter, exposes `IViewModel` (line metrics, viewport
   rendering data and model-decoration viewport mapping into view ranges), and
-  tracks selections, focus, viewport and a cell-height layout, and is wired to
-  the terminal `View` (focus/view integration is tested). Rendering real model
+  tracks selections, focus, viewport and a cell-height layout, wires
+  `ViewModelDecorations` for inline-decoration viewport data, and is wired to
+  the terminal `View` (focus/view and collection render integration are
+  tested). Rendering real model
   tokens through `VisibleLinesCollection` and the terminal `codeEditorWidget`
-  render pipeline is tested. Inline decoration ranges, the browser cursor controller,
+  render pipeline is tested, including inline decorations. Inline decoration ranges, the browser cursor controller,
   view-model event dispatcher and glyph lanes remain.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
