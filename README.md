@@ -257,12 +257,15 @@ console API for raw mode, sizing and input polling.
   the current line and a hardware cursor. The workbench status bar is a
   full-width bottom row built from the ported
   `StatusbarModel`/`StatusbarPart`/`StatusbarService`
-  (`src/vs/workbench/browser/parts/statusbar/`): entries use upstream
-  alignment/priority/compact rules, the bar builds a one-row flex `ui` surface
+  (`src/vs/workbench/browser/parts/statusbar/`) and the ported editor-status
+  controller (`src/vs/workbench/browser/parts/editor/editorStatus.zig`):
+  entries use upstream alignment/priority/compact rules, the bar builds a one-row flex `ui` surface
   (left items grow and right items are row-reverse), and the right side
   shows selection, indentation, encoding, EOL and language. Clicking an entry
   focuses it and runs its command: selection opens Go to Line/Column, and the
-  other values open the indentation, encoding, EOL and language pickers.
+  other values open the indentation, encoding, EOL and language pickers
+  through the ported quick-input service
+  (`src/vs/platform/quickinput/browser/quickInputService.zig`).
   Arrow keys, Home/End, Enter/Space and Escape navigate while focused,
   `Ctrl-Alt-S` toggles editor/status focus, and the `Focus Status Bar` command
   is in the palette.

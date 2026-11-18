@@ -47,6 +47,8 @@ const eolToString = @import("../vs/editor/common/core/misc/eolCounter.zig").eolT
 const language = @import("./language.zig");
 const language_configuration = @import("../vs/editor/common/languages/languageConfiguration.zig");
 const encoding_mod = @import("../vs/workbench/services/textfile/common/encoding.zig");
+const EOL = @import("../vs/editor/common/core/misc/eolCounter.zig").EOL;
+const editor_status = @import("../vs/workbench/browser/parts/editor/editorStatus.zig");
 const editor_common = @import("../vs/editor/common/editorCommon.zig");
 const ICommand = editor_common.ICommand;
 const command_runner = @import("../vs/editor/common/commands/commandRunner.zig");
@@ -231,7 +233,7 @@ pub const Editor = struct {
         language_service.* = LanguageService.init(allocator, codec);
         errdefer language_service.deinit();
         for (language.bundled_languages) |bundled| {
-            try language_service.registerLanguage(.{ .id = bundled.id, .extensions = bundled.extensions });
+            try language_service.registerLanguage(.{ .id = bundled.id, .aliases = bundled.names, .extensions = bundled.extensions });
         }
 
         // Path matching goes through the ported language associations, which the
@@ -783,6 +785,158 @@ pub const Editor = struct {
 
     pub fn setEncoding(self: *Editor, encoding: encoding_mod.Encoding) void {
         self.encoding = encoding;
+    }
+
+    pub fn statusTarget(self: *Editor) editor_status.IEditorStatusTarget {
+        return .{
+            .context = self,
+            .selection = statusSelection,
+            .indentation = statusIndentation,
+            .eol = statusEOL,
+            .encoding = statusEncoding,
+            .language_id = statusLanguageId,
+            .language_name = statusLanguageName,
+            .languages = statusLanguages,
+            .goto_line = statusGotoLine,
+            .change_indentation = statusChangeIndentation,
+            .detect_indentation = statusDetectIndentation,
+            .indentation_to_spaces = statusIndentationToSpaces,
+            .indentation_to_tabs = statusIndentationToTabs,
+            .set_eol = statusSetEOL,
+            .set_encoding = statusSetEncoding,
+            .set_language = statusSetLanguage,
+        };
+    }
+
+    fn statusSelection(context: *anyopaque) editor_status.SelectionStatus {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        const selections = self.getSelections() catch return .{};
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return .{};
+
+        var characters: usize = 0;
+        for (selections) |selection| {
+            characters += self.model.getCharacterCountInRange(
+                Range.init(
+                    selection.startLineNumber,
+                    selection.startColumn,
+                    selection.endLineNumber,
+                    selection.endColumn,
+                ),
+                null,
+            );
+        }
+
+        if (selections.len != 1) {
+            return .{ .selections = selections.len, .characters = characters };
+        }
+
+        const selection = selections[0];
+        const position = Position.init(selection.positionLineNumber, selection.positionColumn);
+        const line = self.model.getLineContent(position.lineNumber) catch null;
+        defer if (line) |value| value.deinit();
+        const column = if (line) |value|
+            CursorColumns.toStatusbarColumn(value.items, position.column, self.tabSize())
+        else
+            position.column;
+        return .{
+            .line = position.lineNumber,
+            .column = column,
+            .selections = 1,
+            .characters = characters,
+        };
+    }
+
+    fn statusIndentation(context: *anyopaque) editor_status.IndentationStatus {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        const options = self.model.getOptions();
+        return .{
+            .tab_size = options.tabSize,
+            .indent_size = options.indentSize,
+            .insert_spaces = options.insertSpaces,
+        };
+    }
+
+    fn statusEOL(context: *anyopaque) EOL {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        return self.model.getEOL();
+    }
+
+    fn statusEncoding(context: *anyopaque) encoding_mod.Encoding {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        return self.encoding;
+    }
+
+    fn statusLanguageId(context: *anyopaque) []const u8 {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        return self.languageId();
+    }
+
+    fn statusLanguageName(context: *anyopaque) []const u8 {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        return self.language_service.getLanguageName(self.languageId()) orelse self.languageId();
+    }
+
+    fn statusLanguages(
+        context: *anyopaque,
+        allocator: Allocator,
+    ) ![]const editor_status.LanguageNameIdPair {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        return self.language_service.getSortedRegisteredLanguageNames(allocator);
+    }
+
+    fn statusGotoLine(context: *anyopaque, line: usize, column: usize) !void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        const line_number = @min(@max(line, 1), self.model.getLineCount());
+        const column_number = @min(
+            @max(column, 1),
+            self.model.getLineMaxColumn(line_number),
+        );
+        try self.setCursorPosition(Position.init(line_number, column_number));
+        self.ensureCursorVisible();
+    }
+
+    fn statusChangeIndentation(
+        context: *anyopaque,
+        tab_size: usize,
+        insert_spaces: bool,
+        display_only: bool,
+    ) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        self.changeIndentation(tab_size, insert_spaces, display_only);
+    }
+
+    fn statusDetectIndentation(context: *anyopaque) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        self.detectIndentation();
+    }
+
+    fn statusIndentationToSpaces(context: *anyopaque) !void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        try self.indentationToSpaces();
+    }
+
+    fn statusIndentationToTabs(context: *anyopaque) !void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        try self.indentationToTabs();
+    }
+
+    fn statusSetEOL(context: *anyopaque, eol: EOL) !void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        if (self.model.getEOL() == eol) return;
+        self.model.pushStackElement();
+        try self.model.pushEOL(eol);
+        self.model.pushStackElement();
+    }
+
+    fn statusSetEncoding(context: *anyopaque, encoding: encoding_mod.Encoding) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        self.setEncoding(encoding);
+    }
+
+    fn statusSetLanguage(context: *anyopaque, language_id: []const u8) !void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        try self.setLanguage(language_id);
     }
 
     pub fn message(self: *Editor) []const u8 {

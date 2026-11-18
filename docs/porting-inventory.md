@@ -44,8 +44,9 @@ with the documented omissions listed at the end of this document.
 - Added `activitybarPart.zig`, `activityService.zig`,
   `paneCompositePart.zig`, `sidebarPart.zig`, `layout.zig`,
   `statusbarModel.zig`, `statusbarItem.zig`, `statusbarPart.zig`,
-  `statusbarActions.zig` and the statusbar service contract under the upstream
-  paths. The workbench status bar is now a full-width flex `ui` surface with
+  `statusbarActions.zig`, `editorStatus.zig` and the statusbar service contract
+  under the upstream paths, plus the one-shot quick-input service in
+  `platform/quickinput/browser/quickInputService.zig`. The workbench status bar is now a full-width flex `ui` surface with
   entry focus, hover/tooltips and command activation; it owns hit testing and
   entry actions, and `src/tui/workbench.zig` paints it on the bottom row and
   disables the per-pane fallback status row. Selection, indentation, encoding,
@@ -244,7 +245,7 @@ that make the later phases tractable.
 | Editor contributions | Find, hover, suggest, bracket matching, folding, word highlighter, smart select, in-place replace, comment, indentation, multicursor, line selection, line operations, snippet, insert-final-newline, word operations | Ported under `vs/editor/contrib/...` |
 | Workbench editor group | `vs/workbench/common/editor/editorGroupModel.zig`, `vs/workbench/services/editor/common/editorGroupsService.zig` | Ported |
 | Editor part shell | `vs/base/browser/ui/grid/grid.zig`, `vs/workbench/browser/parts/editor/editorPart.zig`, `editorGroupView.zig`, `editorPanes.zig`, `editorDropTarget.zig` | Ported and wired into `workbench.zig` |
-| Status bar | `vs/workbench/browser/parts/statusbar/` (`statusbarModel.zig`, `statusbarItem.zig`, `statusbarPart.zig`, `statusbarActions.zig`), `vs/workbench/services/statusbar/browser/statusbar.zig` | Ported; terminal part renders one flex row, workbench paints it full-width |
+| Status bar | `vs/workbench/browser/parts/statusbar/` (`statusbarModel.zig`, `statusbarItem.zig`, `statusbarPart.zig`, `statusbarActions.zig`), `vs/workbench/browser/parts/editor/editorStatus.zig`, `vs/platform/quickinput/browser/quickInputService.zig`, `vs/workbench/services/statusbar/browser/statusbar.zig` | Ported; terminal part renders one flex row, workbench paints it full-width, editor-status values open the ported quick pickers |
 | Lists and trees | `vs/base/browser/ui/list/...`, `vs/base/browser/ui/tree/...` | Ported; Explorer renders through `CompressibleObjectTree` |
 | Search | `vs/workbench/services/search/common/searchService.zig`, `search.zig`, `replace.zig`, `ignoreFile.zig`, `vs/workbench/contrib/search/browser/searchTreeModel/...` | Ported; wired to the TUI view |
 | Configuration and files | `vs/workbench/services/configuration/...`, `vs/platform/configuration/...`, `vs/platform/files/...` | Ported; settings and watcher are wired |
