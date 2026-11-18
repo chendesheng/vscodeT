@@ -861,6 +861,13 @@ Editor contributions:
   folders, polls it with the settings watcher and forwards its changes into
   this handler (the terminal loop also polls on its frame timeout).
 
+- A terminal `ViewModel` subset is ported in
+  `common/viewModel/viewModelImpl.zig`: it owns the projected lines and
+  coordinates converter, exposes `IViewModel` (line metrics, viewport
+  rendering data, decorations placeholder), and tracks selections, focus,
+  viewport and a cell-height layout. The browser cursor controller, view-model
+  event dispatcher, glyph lanes and decoration viewport integration remain.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory
