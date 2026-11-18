@@ -6,3 +6,6 @@ zig-pkg/
 .zig-global-cache/
 
 .zhome/
+.cache-ext/
+host/node_modules/
+host/dist/

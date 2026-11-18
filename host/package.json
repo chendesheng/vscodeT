@@ -1,0 +1,20 @@
+{
+  "name": "vscode-textbuffer-extension-host",
+  "private": true,
+  "description": "Node launcher and build for the pinned VS Code extension host",
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test-host.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
+  "dependencies": {
+    "@vscode/proxy-agent": "^0.46.0",
+    "http-proxy-agent": "^9.1.0",
+    "https-proxy-agent": "^9.1.0",
+    "minimist": "^1.2.8",
+    "vscode-regexpp": "^3.1.0"
+  }
+}
