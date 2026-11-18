@@ -15,6 +15,7 @@ const editor_configuration = @import("../config/editorConfiguration.zig");
 const editor_options = @import("../config/editorOptions.zig");
 const text_model = @import("../model/textModel.zig");
 const view_model_lines = @import("./viewModelLines.zig");
+const glyph_lanes = @import("./glyphLanesModel.zig");
 const coordinates_converter = @import("../coordinatesConverter.zig");
 const view_model_decorations = @import("./viewModelDecorations.zig");
 const CoordinatesConverter = view_model_lines.CoordinatesConverter;
@@ -49,6 +50,7 @@ pub const ViewModel = struct {
     viewport: Viewport = Viewport.init(0, 0, 0, 0),
     viewport_start_line: usize = 1,
     viewport_end_line: usize = 0,
+    glyph_lanes: glyph_lanes.GlyphMarginLanesModel,
     layout: Layout,
 
     const LinesAdapter = struct {
@@ -171,6 +173,7 @@ pub const ViewModel = struct {
             ),
             .converter = undefined,
             .decorations = undefined,
+            .glyph_lanes = try glyph_lanes.GlyphMarginLanesModel.init(allocator, model.getLineCount()),
             .lines_adapter = undefined,
             .event_handlers = std.array_list.Managed(*ViewEventHandler).init(allocator),
             .selections = std.array_list.Managed(Selection).init(allocator),
@@ -178,6 +181,7 @@ pub const ViewModel = struct {
         };
         errdefer {
             self.lines.deinit();
+            self.glyph_lanes.deinit();
             self.event_handlers.deinit();
             self.selections.deinit();
         }
@@ -195,6 +199,7 @@ pub const ViewModel = struct {
         self.layout = .{ .view_model = self };
         errdefer self.decorations.destroy();
         try model.onDidChangeContentWithContext(self, onModelContentChanged);
+        self.updateGlyphMarginLanes();
         return self;
     }
 
@@ -202,6 +207,7 @@ pub const ViewModel = struct {
         self.decorations.destroy();
         self.lines_adapter.deinit();
         self.lines.deinit();
+        self.glyph_lanes.deinit();
         self.event_handlers.deinit();
         self.selections.deinit();
         self.allocator.destroy(self);
@@ -228,6 +234,7 @@ pub const ViewModel = struct {
         try self.lines.applyRawChanges(&event.rawContentChangedEvent);
         self.decorations.onLineMappingChanged();
         self.decorations.onModelDecorationsChanged();
+        self.updateGlyphMarginLanes();
 
         // The terminal view dispatches a conservative full flush/token change;
         // parts re-render the small viewport window.
@@ -247,6 +254,38 @@ pub const ViewModel = struct {
             _ = handler.onDecorationsChanged(&decorations);
             _ = handler.onTokensChanged(&tokens);
         }
+    }
+
+    /// Recomputes the glyph-margin lanes from model decorations that carry
+    /// `glyphMargin` options. The terminal model uses the full document rather
+    /// than a viewport window because the lane model is tiny.
+    pub fn updateGlyphMarginLanes(self: *ViewModel) void {
+        self.glyph_lanes.reset(self.model.getLineCount()) catch return;
+        const line_count = self.model.getLineCount();
+        if (line_count == 0) return;
+        const all = self.model.getDecorationsInRange(
+            Range.init(1, 1, line_count, self.model.getLineMaxColumn(line_count)),
+            0,
+            false,
+            false,
+            false,
+        ) catch return;
+        defer self.model.getAllocator().free(all);
+
+        const converter = self.converter.interface();
+        for (all) |decoration| {
+            const glyph_options = decoration.options.glyphMargin orelse continue;
+            const view_range = converter.convertModelRangeToViewRange(converter.context, decoration.range, .None);
+            self.glyph_lanes.push(glyph_options.position, view_range, glyph_options.persistLane orelse false);
+        }
+    }
+
+    pub fn getGlyphLanesAtLine(self: *ViewModel, allocator: Allocator, line_number: usize) ![]@import("../model.zig").GlyphMarginLane {
+        return self.glyph_lanes.getLanesAtLine(allocator, line_number);
+    }
+
+    pub fn requiredGlyphLanes(self: *const ViewModel) usize {
+        return self.glyph_lanes.requiredLanes();
     }
 
     pub fn addViewEventHandler(self: *ViewModel, handler: *ViewEventHandler) void {
@@ -636,4 +675,41 @@ test "view model dispatches view events to registered handlers" {
     instance.removeViewEventHandler(&handler);
     try fixture.model.applyEdit(Range.init(1, 1, 1, 1), "Y");
     try testing.expectEqual(@as(usize, 1), state.flushes);
+}
+
+test "view model computes glyph margin lanes from decorations" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    const instance = try fixture.init(allocator, "one\ntwo", 80);
+    defer {
+        instance.deinit();
+        fixture.deinit();
+    }
+
+    const GlyphMarginLane = @import("../model.zig").GlyphMarginLane;
+    var center_options = std.mem.zeroes(@import("../model.zig").ModelDecorationOptions);
+    center_options.glyphMarginClassName = "center";
+    center_options.glyphMargin = .{ .position = .Center, .persistLane = false };
+    var right_options = std.mem.zeroes(@import("../model.zig").ModelDecorationOptions);
+    right_options.glyphMarginClassName = "right";
+    right_options.glyphMargin = .{ .position = .Right, .persistLane = false };
+
+    const new_decorations = [_]@import("../model.zig").ModelDeltaDecoration{
+        .{ .range = Range.init(1, 1, 1, 2), .options = &center_options },
+        .{ .range = Range.init(1, 1, 1, 2), .options = &right_options },
+    };
+    const ids = try fixture.model.model.deltaDecorations(&.{}, &new_decorations, 0);
+    defer {
+        const removed = fixture.model.model.deltaDecorations(ids, &.{}, 0) catch &[_]u64{};
+        if (removed.len > 0) allocator.free(removed);
+        allocator.free(ids);
+    }
+
+    instance.updateGlyphMarginLanes();
+    try testing.expectEqual(@as(usize, 2), instance.requiredGlyphLanes());
+    const lanes = try instance.getGlyphLanesAtLine(allocator, 1);
+    defer allocator.free(lanes);
+    try testing.expectEqual(@as(usize, 2), lanes.len);
+    try testing.expectEqual(GlyphMarginLane.Center, lanes[0]);
+    try testing.expectEqual(GlyphMarginLane.Right, lanes[1]);
 }

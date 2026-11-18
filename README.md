@@ -868,7 +868,8 @@ Editor contributions:
   coordinates converter, exposes `IViewModel` (line metrics, viewport
   rendering data and model-decoration viewport mapping into view ranges), and
   tracks selections, focus, viewport and a cell-height layout, applies model
-  content changes to the projected lines/decorations, dispatches view events
+  content changes to the projected lines/decorations, computes glyph-margin
+  lanes from decorations, dispatches view events
   (flush/line-mapping/lines/decorations/tokens/focus) to registered
   `ViewEventHandler`s, wires `ViewModelDecorations` for inline-decoration
   viewport data, and is wired to
