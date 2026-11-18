@@ -932,6 +932,11 @@ Editor contributions:
   states, save/restore cursor state, secondary-cursor removal and
   post-edit validity; the TUI editor retains typing/command orchestration.
 
+- `WorkingCopyBackupService` is ported in memory
+  (`workingCopyBackupService.zig`): backup/replace/discard, resource deletion,
+  lookup and change events, with a backup/replace/discard/delete test. Disk
+  backup persistence is a documented terminal omission.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory
