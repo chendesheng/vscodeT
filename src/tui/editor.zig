@@ -58,6 +58,8 @@ const BlockCommentCommand = @import("../vs/editor/contrib/comment/browser/blockC
 const InsertFinalNewLineCommand = @import("../vs/editor/contrib/insertFinalNewLine/browser/insertFinalNewLineCommand.zig").InsertFinalNewLineCommand;
 const bracket_matching = @import("../vs/editor/contrib/bracketMatching/browser/bracketMatching.zig");
 const BracketMatchingController = bracket_matching.BracketMatchingController;
+const folding = @import("../vs/editor/contrib/folding/browser/folding.zig");
+const FoldingRules = @import("../vs/editor/common/languages/languageConfiguration.zig").FoldingRules;
 const language_configuration_service = @import("./languageConfiguration.zig");
 const languagesAssociations = @import("../vs/editor/common/services/languagesAssociations.zig");
 const input = @import("ui").input;
@@ -148,6 +150,12 @@ pub const Editor = struct {
     model_adapter: TextModelCursorSimpleModel,
     word_separators: WordCharacterClassifier,
     bracket_matching: BracketMatchingController,
+    /// Folding ranges, collapse state and the hidden model-line projection.
+    folding: *folding.Controller,
+    /// Content or language changes make the provider ranges stale. Recompute
+    /// them on the next view rebuild rather than inside the model change event,
+    /// where moving selections would be re-entrant.
+    folding_dirty: bool,
     smart_select: smart_select.SmartSelectController,
     in_place_replace_deadline: ?i64,
     language_config_service: *language_configuration_service.Service,
@@ -239,6 +247,10 @@ pub const Editor = struct {
             language_config.brackets = brackets;
             has_language_config = true;
         }
+        if (language.foldingRulesFor(language_id)) |rules| {
+            language_config.folding = rules;
+            has_language_config = true;
+        }
         if (has_language_config) {
             try language_service.registerLanguageConfiguration(language_id, language_config);
         }
@@ -305,6 +317,8 @@ pub const Editor = struct {
             .model_adapter = TextModelCursorSimpleModel.init(allocator, model),
             .word_separators = word_separators,
             .bracket_matching = BracketMatchingController.init(allocator, model),
+            .folding = undefined,
+            .folding_dirty = false,
             .smart_select = smart_select.SmartSelectController.init(allocator, &.{}, .{}),
             .in_place_replace_deadline = null,
             .language_config_service = language_config_service,
@@ -356,6 +370,12 @@ pub const Editor = struct {
 
         editor.cursors = try CursorCollection.init(allocator, context);
         errdefer if (editor.cursors) |*cursors| cursors.deinit();
+
+        const folding_controller = try folding.Controller.init(allocator, model, &editor.view_lines);
+        errdefer folding_controller.deinit();
+        editor.folding = folding_controller;
+        try editor.refreshFoldingRules();
+        try editor.refreshFolding();
 
         try model.onDidChangeContentWithContext(editor, contentChangedCallback);
 
@@ -422,6 +442,7 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        self.folding.deinit();
         if (self.cursors) |*cursors| cursors.deinit();
         if (self.cursor_context) |context| self.allocator.destroy(context);
         self.model_adapter.deinit();
@@ -463,6 +484,7 @@ pub const Editor = struct {
             }
         }
         self.refreshDirtyState();
+        self.folding_dirty = true;
         for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
     }
 
@@ -568,6 +590,109 @@ pub const Editor = struct {
         return self.model.getAlternativeVersionId() != self.saved_version;
     }
 
+    /// Reads the language's folding rules into the folding controller. This
+    /// deliberately reads the language service directly: promoting the config
+    /// into the shared registry here would cache it before a later language
+    /// contribution (for example a test's indentation rules) is registered.
+    pub fn refreshFoldingRules(self: *Editor) !void {
+        var rules = FoldingRules{ .offSide = null, .markers = null };
+        if (self.language_service.getLanguageConfiguration(self.languageId())) |config| {
+            if (config.folding) |folding_rules| rules = folding_rules;
+        }
+        self.folding.setFoldingRules(rules);
+    }
+
+    /// Recomputes the provider ranges and applies the resulting hidden areas.
+    fn refreshFolding(self: *Editor) !void {
+        // A line-count change may leave the wrapping model one change behind;
+        // rebuild it before a hidden range can point past its projections.
+        self.ensureTokensVisible();
+        const selections = try self.getSelections();
+        defer self.allocator.free(selections);
+        try self.folding.refresh(selections);
+        self.folding_dirty = false;
+        try self.applyFoldingVisibility();
+    }
+
+    /// Applies the fold controller's hidden ranges to the view model and keeps
+    /// selections out of them, mirroring `onHiddenRangesChanges`.
+    fn applyFoldingVisibility(self: *Editor) !void {
+        const selections = try self.getSelections();
+        defer self.allocator.free(selections);
+        const adjusted = self.folding.adjustSelections(selections);
+        const changed = try self.view_lines.setHiddenAreas(self.folding.hiddenRanges());
+        if (changed or adjusted) {
+            try self.cursorsRef().setSelections(self.allocator, selections);
+        }
+        if (changed) self.ensureCursorVisible();
+    }
+
+    pub fn refreshFoldingIfDirty(self: *Editor) void {
+        if (!self.folding_dirty) return;
+        self.refreshFolding() catch |err| {
+            self.folding_dirty = false;
+            self.setMessage("folding failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    pub fn foldStateAtModelLine(self: *Editor, line: usize) folding.FoldState {
+        return self.folding.foldStateAtLine(line);
+    }
+
+    /// Gutter fold control for a view line. Only the first output line of a
+    /// wrapped model line owns the control.
+    pub fn toggleFoldAtViewLine(self: *Editor, view_line: usize) !bool {
+        self.refreshFoldingIfDirty();
+        if (view_line < 1 or view_line > self.viewLineCount()) return false;
+        if (self.outputLineIndex(view_line) != 0) return false;
+        const line = self.modelLineNumber(view_line);
+        if (!self.folding.toggleAtLine(line)) return false;
+        try self.applyFoldingVisibility();
+        return true;
+    }
+
+    pub fn foldAtCursor(self: *Editor) !void {
+        self.refreshFoldingIfDirty();
+        try self.folding.foldLine(self.modelCursorPosition().lineNumber);
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn unfoldAtCursor(self: *Editor) !void {
+        self.refreshFoldingIfDirty();
+        self.folding.unfoldLine(self.modelCursorPosition().lineNumber);
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn toggleFoldAtCursor(self: *Editor) !void {
+        self.refreshFoldingIfDirty();
+        try self.folding.toggleLine(self.modelCursorPosition().lineNumber, 1);
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn foldRecursivelyAtCursor(self: *Editor) !void {
+        self.refreshFoldingIfDirty();
+        try self.folding.foldRecursively(self.modelCursorPosition().lineNumber);
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn unfoldRecursivelyAtCursor(self: *Editor) !void {
+        self.refreshFoldingIfDirty();
+        try self.folding.unfoldRecursively(self.modelCursorPosition().lineNumber);
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn foldAll(self: *Editor) !void {
+        self.refreshFoldingIfDirty();
+        self.folding.foldAll();
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn unfoldAll(self: *Editor) !void {
+        self.refreshFoldingIfDirty();
+        self.folding.unfoldAll();
+        try self.applyFoldingVisibility();
+    }
+
     pub fn languageId(self: *Editor) []const u8 {
         return self.model.getLanguageId();
     }
@@ -607,6 +732,10 @@ pub const Editor = struct {
             config.brackets = brackets;
             has_config = true;
         }
+        if (language.foldingRulesFor(language_id)) |rules| {
+            config.folding = rules;
+            has_config = true;
+        }
         if (has_config) try self.language_service.registerLanguageConfiguration(language_id, config);
         if (self.language_service.getLanguageConfiguration(language_id)) |resolved_config| {
             self.character_pair = try CharacterPairSupport.init(resolved_config);
@@ -618,6 +747,8 @@ pub const Editor = struct {
         } else {
             self.character_pair = null;
         }
+        try self.refreshFoldingRules();
+        self.folding_dirty = true;
     }
 
     pub fn message(self: *Editor) []const u8 {
@@ -2737,6 +2868,75 @@ test "Editor: conversion between tab and space indentation" {
     try std.testing.expectEqualStrings("\ta", tabs.items);
 }
 
+test "Editor: folding survives an edit on the folded start line" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(
+        allocator,
+        io,
+        "class A {\n  void f() {\n    x();\n  }\n}",
+        "test.zig",
+        40,
+        10,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try std.testing.expect(try editor.toggleFoldAtViewLine(1));
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+
+    try editor.setCursorPosition(Position.init(1, 10));
+    try editor.insertText("!");
+    editor.refreshFoldingIfDirty();
+
+    try std.testing.expectEqual(folding.FoldState.collapsed, editor.foldStateAtModelLine(1));
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+    const line = try editor.model.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("class A {!", line.items);
+}
+
+test "Editor: folding hides a region and unfolds it again" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(
+        allocator,
+        io,
+        "class A {\n  void f() {\n    x();\n  }\n}",
+        "test.zig",
+        40,
+        10,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
+    try std.testing.expectEqual(folding.FoldState.expanded, editor.foldStateAtModelLine(1));
+
+    // A caret inside the region is moved to the line before the hidden range.
+    try editor.setCursorPosition(Position.init(3, 1));
+    try std.testing.expect(try editor.toggleFoldAtViewLine(1));
+    try std.testing.expectEqual(folding.FoldState.collapsed, editor.foldStateAtModelLine(1));
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+    try std.testing.expectEqual(@as(usize, 5), editor.modelLineNumber(2));
+    try std.testing.expectEqual(Position.init(1, 1), editor.modelCursorPosition());
+
+    try editor.moveDown(false);
+    try std.testing.expectEqual(@as(usize, 5), editor.modelCursorPosition().lineNumber);
+    try editor.moveUp(false);
+    try std.testing.expectEqual(@as(usize, 1), editor.modelCursorPosition().lineNumber);
+
+    try editor.unfoldAll();
+    try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
+    try std.testing.expectEqual(folding.FoldState.expanded, editor.foldStateAtModelLine(1));
+}
+
 test "Editor: reindent lines uses language indentation rules" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -2914,6 +3114,13 @@ const shortcut_specs = [_]struct {
     .{ .id = "editor.action.selectAllOccurrences", .run = cmdSelectAllOccurrences },
     .{ .id = "editor.action.reindentselectedlines", .run = cmdReindentSelectedLines },
     .{ .id = "editor.action.reindentlines", .run = cmdReindentLines },
+    .{ .id = "editor.fold", .run = cmdFold },
+    .{ .id = "editor.unfold", .run = cmdUnfold },
+    .{ .id = "editor.toggleFold", .run = cmdToggleFold },
+    .{ .id = "editor.foldAll", .run = cmdFoldAll },
+    .{ .id = "editor.unfoldAll", .run = cmdUnfoldAll },
+    .{ .id = "editor.foldRecursively", .run = cmdFoldRecursively },
+    .{ .id = "editor.unfoldRecursively", .run = cmdUnfoldRecursively },
     .{ .id = "cursorLeft", .run = cmd_cursorLeft },
     .{ .id = "cursorLeftSelect", .run = cmd_cursorLeftSelect },
     .{ .id = "cursorRight", .run = cmd_cursorRight },
@@ -3010,6 +3217,27 @@ fn cmdReindentSelectedLines(context: *anyopaque) anyerror!void {
 }
 fn cmdReindentLines(context: *anyopaque) anyerror!void {
     return editorOf(context).reindentLines();
+}
+fn cmdFold(context: *anyopaque) anyerror!void {
+    return editorOf(context).foldAtCursor();
+}
+fn cmdUnfold(context: *anyopaque) anyerror!void {
+    return editorOf(context).unfoldAtCursor();
+}
+fn cmdToggleFold(context: *anyopaque) anyerror!void {
+    return editorOf(context).toggleFoldAtCursor();
+}
+fn cmdFoldAll(context: *anyopaque) anyerror!void {
+    return editorOf(context).foldAll();
+}
+fn cmdUnfoldAll(context: *anyopaque) anyerror!void {
+    return editorOf(context).unfoldAll();
+}
+fn cmdFoldRecursively(context: *anyopaque) anyerror!void {
+    return editorOf(context).foldRecursivelyAtCursor();
+}
+fn cmdUnfoldRecursively(context: *anyopaque) anyerror!void {
+    return editorOf(context).unfoldRecursivelyAtCursor();
 }
 
 fn cmd_cursorLeft(context: *anyopaque) anyerror!void {
@@ -3160,6 +3388,13 @@ const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "editor.action.selectAllOccurrences", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyD) } },
     .{ .id = "editor.action.reindentselectedlines", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyR) } },
     .{ .id = "editor.action.reindentlines", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyR) } },
+    .{ .id = "editor.fold", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.BracketLeft) } },
+    .{ .id = "editor.unfold", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.BracketRight) } },
+    .{ .id = "editor.toggleFold", .weight = 100, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyL)) } },
+    .{ .id = "editor.foldAll", .weight = 100, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Digit0)) } },
+    .{ .id = "editor.unfoldAll", .weight = 100, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyJ)) } },
+    .{ .id = "editor.foldRecursively", .weight = 100, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.BracketLeft)) } },
+    .{ .id = "editor.unfoldRecursively", .weight = 100, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.BracketRight)) } },
     .{ .id = "cursorLeft", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.LeftArrow) } },
     .{ .id = "cursorLeftSelect", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.LeftArrow) } },
     .{ .id = "cursorRight", .weight = 100, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.RightArrow) } },

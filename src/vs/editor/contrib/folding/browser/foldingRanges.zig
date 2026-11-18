@@ -95,6 +95,8 @@ pub const FoldingRegions = struct {
         errdefer user.deinit(allocator);
         var recovered = try BitField.init(allocator, starts.len);
         errdefer recovered.deinit(allocator);
+        const stored_types = if (types) |values| try allocator.dupe(?[]const u8, values) else null;
+        errdefer if (stored_types) |values| allocator.free(values);
         return .{
             .allocator = allocator,
             .start_indexes = starts,
@@ -102,7 +104,7 @@ pub const FoldingRegions = struct {
             .collapse_states = collapse,
             .user_defined_states = user,
             .recovered_states = recovered,
-            .types = types,
+            .types = stored_types,
         };
     }
 
@@ -112,6 +114,7 @@ pub const FoldingRegions = struct {
         self.collapse_states.deinit(self.allocator);
         self.user_defined_states.deinit(self.allocator);
         self.recovered_states.deinit(self.allocator);
+        if (self.types) |types| self.allocator.free(types);
     }
 
     pub fn length(self: *const FoldingRegions) usize {

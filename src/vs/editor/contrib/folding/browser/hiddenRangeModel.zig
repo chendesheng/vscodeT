@@ -87,14 +87,15 @@ pub const HiddenRangeModel = struct {
     pub fn adjustSelections(self: *HiddenRangeModel, selections: []Selection) bool {
         var changed = false;
         for (selections) |*selection| {
+            var hidden_line: ?usize = null;
             if (self.findRange(selection.startLineNumber)) |range| {
-                const line = range.startLineNumber - 1;
-                selection.* = selection.setStartPosition(line, 1);
-                changed = true;
+                hidden_line = range.startLineNumber - 1;
             }
             if (self.findRange(selection.endLineNumber)) |range| {
-                const line = range.startLineNumber - 1;
-                selection.* = selection.setEndPosition(line, 1);
+                hidden_line = range.startLineNumber - 1;
+            }
+            if (hidden_line) |line| {
+                selection.* = Selection.init(line, 1, line, 1);
                 changed = true;
             }
         }

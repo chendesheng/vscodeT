@@ -755,9 +755,24 @@ Library constraints:
   area. This is the hover anchor route; the browser's pixel `ResizableContentWidget`
   geometry becomes cell sizing and clamping. Mouse hit testing reports
   `CONTENT_TEXT`, `CONTENT_EMPTY` (with `isAfterLines` and a cell distance),
-  `GUTTER_LINE_NUMBERS`, `STATUS`, `CONTENT_WIDGET` and `OVERLAY_WIDGET` through
-  `View.mouseTargetAt`, which the hover controller consumes instead of the
-  browser's `onMouseMove` target.
+  `GUTTER_LINE_NUMBERS`, `GUTTER_LINE_DECORATIONS`, `STATUS`,
+  `CONTENT_WIDGET` and `OVERLAY_WIDGET` through `View.mouseTargetAt`, which the
+  hover controller consumes instead of the browser's `onMouseMove` target.
+- Folding is applied at the view-model boundary:
+  `src/vs/editor/contrib/folding/browser/folding.zig` computes indentation
+  ranges, keeps collapse state and produces hidden model-line ranges;
+  `ProjectedViewModelLines.setHiddenAreas` marks those projections invisible
+  and updates the prefix sums, and the converter maps positions on hidden
+  lines to the preceding visible line. `src/tui/view.zig` paints the last
+  gutter cell as `▾`/`▸` and makes it a `GUTTER_LINE_DECORATIONS` hit target;
+  clicking it toggles the region. The first visible line of a collapsed region
+  gets the upstream `…` suffix. The editor binds `Ctrl-Shift-[`/`]`,
+  `Ctrl-K Ctrl-L`, `Ctrl-K Ctrl-0` and `Ctrl-K Ctrl-J` and registers the
+  corresponding `editor.fold*`/`editor.unfold*` commands in the workbench.
+  Syntax providers, folding decorations/CSS, sticky scroll and folding view
+  state are not ported. Fold state survives edits on the folded line; line
+  insertions or deletions above a collapsed region re-expand it because there
+  are no tracked folding decorations to shift the range.
 - Indentation guides are painted by `View.rebuild` from the ported
   `src/vs/editor/common/model/guidesTextModelPart.zig` indentation subset. The
   model computes a guide count per visible model line, including the upstream

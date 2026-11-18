@@ -5,6 +5,7 @@ const language_configuration = @import("../vs/editor/common/languages/languageCo
 const CommentRule = language_configuration.CommentRule;
 const LineCommentConfig = language_configuration.LineCommentConfig;
 const CharacterPair = language_configuration.CharacterPair;
+const FoldingRules = language_configuration.FoldingRules;
 
 var standard_brackets = [_]CharacterPair{
     .{ "{", "}" },
@@ -91,6 +92,17 @@ pub fn commentRuleFor(language_id: []const u8) ?CommentRule {
 pub fn bracketsFor(language_id: []const u8) ?[]CharacterPair {
     if (std.mem.eql(u8, language_id, "plaintext") or std.mem.eql(u8, language_id, "json")) return null;
     return &standard_brackets;
+}
+
+/// Folding rules from the upstream language configurations. Region markers
+/// are regular expressions that upstream compiles per language; the TUI uses
+/// indentation folding, so only the off-side flag is carried here. Python and
+/// YAML use the off-side rule; the other bundled languages keep empty lines
+/// with the preceding block.
+pub fn foldingRulesFor(language_id: []const u8) ?FoldingRules {
+    const off_side = std.mem.eql(u8, language_id, "python") or
+        std.mem.eql(u8, language_id, "yaml");
+    return .{ .offSide = off_side, .markers = null };
 }
 
 test "comment rules for supported languages" {

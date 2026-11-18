@@ -48,6 +48,9 @@ pub const ProjectedViewModelLines = struct {
     tab_size: usize,
     wrapping_indent: WrappingIndent,
     word_break: WordBreak,
+    /// Model line ranges hidden by folding. The projections carry the actual
+    /// visibility flag; this list is the normalized source used to rebuild it.
+    hidden_ranges: ArrayList(Range),
 
     // Scratch storage used by the cursor interface and the renderer. Data
     // returned by `getLineContent`/`getViewLineData` is borrowed until the next
@@ -90,6 +93,7 @@ pub const ProjectedViewModelLines = struct {
             .tab_size = @max(tab_size, 1),
             .wrapping_indent = wrapping_indent,
             .word_break = word_break,
+            .hidden_ranges = ArrayList(Range).init(allocator),
             .cursor_line_content = ArrayList(u8).init(allocator),
             .view_line_content = ArrayList(u8).init(allocator),
             .view_line_tokens = null,
@@ -106,6 +110,7 @@ pub const ProjectedViewModelLines = struct {
         for (self.projections.items) |*projection| projection.deinit();
         self.projections.deinit();
         self.prefix.deinit();
+        self.hidden_ranges.deinit();
         self.classifier.deinit();
         self.cursor_line_content.deinit();
         self.view_line_content.deinit();
@@ -125,7 +130,58 @@ pub const ProjectedViewModelLines = struct {
             self.wrapping_indent,
             self.word_break,
         );
-        return ModelLineProjection.init(self.allocator, data);
+        var projection = ModelLineProjection.init(self.allocator, data);
+        projection.visible = !self.isModelLineHidden(line_number);
+        return projection;
+    }
+
+    /// First model line hidden by the current hidden ranges, in O(ranges).
+    pub fn isModelLineHidden(self: *const ProjectedViewModelLines, line_number: usize) bool {
+        for (self.hidden_ranges.items) |range| {
+            if (line_number < range.startLineNumber) return false;
+            if (line_number <= range.endLineNumber) return true;
+        }
+        return false;
+    }
+
+    pub fn getHiddenAreas(self: *const ProjectedViewModelLines) []const Range {
+        return self.hidden_ranges.items;
+    }
+
+    /// Replaces the hidden model-line ranges. Returns whether the line mapping
+    /// changed. Port of `ViewModelLinesFromProjectedModel.setHiddenAreas`: the
+    /// ranges are validated and normalized, then every affected projection is
+    /// toggled and the prefix sum updated. If every line would be hidden the
+    /// ranges are dropped again, as upstream does.
+    pub fn setHiddenAreas(self: *ProjectedViewModelLines, ranges: []const Range) !bool {
+        var validated = ArrayList(Range).init(self.allocator);
+        defer validated.deinit();
+        for (ranges) |range| {
+            if (range.startLineNumber == 0 or range.endLineNumber == 0) continue;
+            try validated.append(self.model.validateRange(range));
+        }
+        const normalized = try normalizeLineRanges(self.allocator, validated.items);
+        defer self.allocator.free(normalized);
+
+        if (rangesEqual(self.hidden_ranges.items, normalized)) return false;
+
+        self.hidden_ranges.clearRetainingCapacity();
+        try self.hidden_ranges.appendSlice(normalized);
+
+        var has_visible = false;
+        for (self.projections.items, 0..) |*projection, index| {
+            const hidden = self.isModelLineHidden(index + 1);
+            if (projection.isVisible() == hidden) {
+                projection.setVisible(!hidden);
+                self.prefix.setValue(index, projection.getViewLineCount());
+            }
+            if (!hidden) has_visible = true;
+        }
+        if (!has_visible) {
+            // Cannot have everything hidden; reveal everything.
+            _ = try self.setHiddenAreas(&.{});
+        }
+        return true;
     }
 
     pub fn rebuildAll(self: *ProjectedViewModelLines) !void {
@@ -451,8 +507,21 @@ pub const CoordinatesConverter = struct {
     fn convertModelPositionToViewPosition(context: *anyopaque, model_position: Position, affinity: PositionAffinity, _: bool, _: bool) Position {
         const self = fromContext(context);
         const valid = self.lines.model.validatePosition(model_position);
-        const line_index = valid.lineNumber - 1;
+        var line_index = valid.lineNumber - 1;
+        var line_index_changed = false;
+        while (line_index > 0 and !self.lines.projections.items[line_index].isVisible()) {
+            line_index -= 1;
+            line_index_changed = true;
+        }
+        if (!self.lines.projections.items[line_index].isVisible()) {
+            // All preceding lines, including this one, are hidden.
+            return Position.init(1, 1);
+        }
         const delta = 1 + self.lines.prefix.getPrefixSum(line_index);
+        if (line_index_changed) {
+            const max_column = self.lines.model.getLineMaxColumn(line_index + 1);
+            return self.lines.projections.items[line_index].getViewPositionOfModelPosition(delta, max_column, affinity);
+        }
         return self.lines.projections.items[line_index].getViewPositionOfModelPosition(delta, valid.column, affinity);
     }
 
@@ -468,7 +537,8 @@ pub const CoordinatesConverter = struct {
 
     fn modelPositionIsVisible(context: *anyopaque, model_position: Position) bool {
         const self = fromContext(context);
-        return model_position.lineNumber >= 1 and model_position.lineNumber <= self.lines.projections.items.len;
+        if (model_position.lineNumber < 1 or model_position.lineNumber > self.lines.projections.items.len) return false;
+        return self.lines.projections.items[model_position.lineNumber - 1].isVisible();
     }
 
     fn getModelLineViewLineCount(context: *anyopaque, model_line_number: usize) usize {
@@ -476,7 +546,19 @@ pub const CoordinatesConverter = struct {
     }
 
     fn getViewLineNumberOfModelPosition(context: *anyopaque, model_line_number: usize, model_column: usize) usize {
-        return fromContext(context).lines.getViewLineNumberOfModelPosition(model_line_number, model_column);
+        const self = fromContext(context);
+        const lines = self.lines;
+        if (model_line_number < 1 or model_line_number > lines.projections.items.len) return 1;
+        var line_index = model_line_number - 1;
+        if (lines.projections.items[line_index].isVisible()) {
+            const delta = 1 + lines.prefix.getPrefixSum(line_index);
+            return lines.projections.items[line_index].getViewLineNumberOfModelPosition(delta, model_column);
+        }
+        while (line_index > 0 and !lines.projections.items[line_index].isVisible()) line_index -= 1;
+        if (!lines.projections.items[line_index].isVisible()) return 1;
+        const delta = 1 + lines.prefix.getPrefixSum(line_index);
+        const max_column = lines.model.getLineMaxColumn(line_index + 1);
+        return lines.projections.items[line_index].getViewLineNumberOfModelPosition(delta, max_column);
     }
 
     pub fn interface(self: *CoordinatesConverter) ICoordinatesConverter {
@@ -494,6 +576,45 @@ pub const CoordinatesConverter = struct {
         };
     }
 };
+
+fn rangeLess(_: void, a: Range, b: Range) bool {
+    if (a.startLineNumber != b.startLineNumber) return a.startLineNumber < b.startLineNumber;
+    if (a.startColumn != b.startColumn) return a.startColumn < b.startColumn;
+    if (a.endLineNumber != b.endLineNumber) return a.endLineNumber < b.endLineNumber;
+    return a.endColumn < b.endColumn;
+}
+
+fn normalizeLineRanges(allocator: Allocator, ranges: []const Range) ![]Range {
+    if (ranges.len == 0) return allocator.alloc(Range, 0);
+
+    const sorted = try allocator.dupe(Range, ranges);
+    defer allocator.free(sorted);
+    std.mem.sort(Range, sorted, {}, rangeLess);
+
+    var result = ArrayList(Range).init(allocator);
+    errdefer result.deinit();
+    var current_start = sorted[0].startLineNumber;
+    var current_end = sorted[0].endLineNumber;
+    for (sorted[1..]) |range| {
+        if (range.startLineNumber > current_end + 1) {
+            try result.append(Range.init(current_start, 1, current_end, 1));
+            current_start = range.startLineNumber;
+            current_end = range.endLineNumber;
+        } else if (range.endLineNumber > current_end) {
+            current_end = range.endLineNumber;
+        }
+    }
+    try result.append(Range.init(current_start, 1, current_end, 1));
+    return try result.toOwnedSlice();
+}
+
+fn rangesEqual(a: []const Range, b: []const Range) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (!Range.equalsRange(left, right)) return false;
+    }
+    return true;
+}
 
 test "ProjectedViewModelLines: maps wrapped view lines" {
     const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
@@ -531,6 +652,37 @@ test "ProjectedViewModelLines: maps wrapped view lines" {
     try std.testing.expectEqual(@as(usize, 1), view_position.column);
     const model_position = iface.convertViewPositionToModelPosition(iface.context, Position.init(2, 1));
     try std.testing.expectEqual(Position.init(1, 5), model_position);
+}
+
+test "ProjectedViewModelLines: hidden areas remove view lines" {
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+
+    var ctx = try TestModel.init(std.testing.allocator, "a\nb\nc\nd", "nullLanguage");
+    defer ctx.deinit();
+
+    var lines = try ProjectedViewModelLines.init(std.testing.allocator, ctx.model, 80, 4, .None, .normal);
+    defer lines.deinit();
+    try std.testing.expectEqual(@as(usize, 4), lines.getViewLineCount());
+
+    const hidden = [_]Range{Range.init(2, 1, 3, 1)};
+    try std.testing.expect(try lines.setHiddenAreas(&hidden));
+    try std.testing.expectEqual(@as(usize, 2), lines.getViewLineCount());
+    try std.testing.expectEqual(@as(usize, 1), lines.getModelLineNumber(1));
+    try std.testing.expectEqual(@as(usize, 4), lines.getModelLineNumber(2));
+    try std.testing.expect(lines.isModelLineHidden(2));
+    try std.testing.expect(!lines.isModelLineHidden(1));
+
+    var converter = CoordinatesConverter.init(&lines);
+    const iface = converter.interface();
+    const mapped = iface.convertModelPositionToViewPosition(iface.context, Position.init(2, 1), .None, false, false);
+    try std.testing.expectEqual(Position.init(1, 2), mapped);
+    try std.testing.expect(!iface.modelPositionIsVisible(iface.context, Position.init(2, 1)));
+    try std.testing.expect(iface.modelPositionIsVisible(iface.context, Position.init(4, 1)));
+
+    // Setting the same ranges again does not change the mapping.
+    try std.testing.expect(!try lines.setHiddenAreas(&hidden));
+    try std.testing.expect(try lines.setHiddenAreas(&.{}));
+    try std.testing.expectEqual(@as(usize, 4), lines.getViewLineCount());
 }
 
 test "ProjectedViewModelLines: incremental changes" {

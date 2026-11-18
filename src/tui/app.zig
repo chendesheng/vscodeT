@@ -904,6 +904,34 @@ test "app: move lines and line comment shortcuts" {
     try std.testing.expectEqual(@as(usize, 2), editor.modelSelection().endLineNumber);
 }
 
+test "app: folding shortcuts fold and unfold the current region" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(
+        allocator,
+        io,
+        "class A {\n  void f() {\n    x();\n  }\n}",
+        "test.zig",
+        40,
+        10,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var pasting = false;
+    const ctrl_k = input.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
+    const ctrl_l = input.KeyEvent{ .key = .{ .char = 'l' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(!dispatch(editor, ctrl_k, &pasting));
+    try std.testing.expect(!dispatch(editor, ctrl_l, &pasting));
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+
+    try std.testing.expect(!dispatch(editor, ctrl_k, &pasting));
+    try std.testing.expect(!dispatch(editor, ctrl_l, &pasting));
+    try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
+}
+
 test "app: jump to bracket shortcut" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

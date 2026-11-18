@@ -568,6 +568,13 @@ pub const Workbench = struct {
             .{ .id = "editor.action.inPlaceReplace.down", .label = "Replace with Next Value", .category = "Editor", .context = self, .requires_editor = true, .run = commandInPlaceReplaceNext },
             .{ .id = "editor.action.reindentlines", .label = "Reindent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandReindentLines },
             .{ .id = "editor.action.reindentselectedlines", .label = "Reindent Selected Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandReindentSelectedLines },
+            .{ .id = "editor.fold", .label = "Fold", .category = "Editor", .context = self, .requires_editor = true, .run = commandFold },
+            .{ .id = "editor.unfold", .label = "Unfold", .category = "Editor", .context = self, .requires_editor = true, .run = commandUnfold },
+            .{ .id = "editor.toggleFold", .label = "Toggle Fold", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleFold },
+            .{ .id = "editor.foldRecursively", .label = "Fold Recursively", .category = "Editor", .context = self, .requires_editor = true, .run = commandFoldRecursively },
+            .{ .id = "editor.unfoldRecursively", .label = "Unfold Recursively", .category = "Editor", .context = self, .requires_editor = true, .run = commandUnfoldRecursively },
+            .{ .id = "editor.foldAll", .label = "Fold All", .category = "Editor", .context = self, .requires_editor = true, .run = commandFoldAll },
+            .{ .id = "editor.unfoldAll", .label = "Unfold All", .category = "Editor", .context = self, .requires_editor = true, .run = commandUnfoldAll },
             .{ .id = "editor.action.wordHighlight.next", .label = "Go to Next Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightNext },
             .{ .id = "editor.action.wordHighlight.prev", .label = "Go to Previous Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightPrevious },
         };
@@ -2554,6 +2561,41 @@ fn commandReindentLines(context: *anyopaque) anyerror!void {
 fn commandReindentSelectedLines(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
     try tab.editor.reindentSelectedLines();
+}
+
+fn commandFold(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.foldAtCursor();
+}
+
+fn commandUnfold(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.unfoldAtCursor();
+}
+
+fn commandToggleFold(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.toggleFoldAtCursor();
+}
+
+fn commandFoldRecursively(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.foldRecursivelyAtCursor();
+}
+
+fn commandUnfoldRecursively(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.unfoldRecursivelyAtCursor();
+}
+
+fn commandFoldAll(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.foldAll();
+}
+
+fn commandUnfoldAll(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.unfoldAll();
 }
 
 fn commandWordHighlightNext(context: *anyopaque) anyerror!void {

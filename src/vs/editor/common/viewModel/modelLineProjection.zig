@@ -21,9 +21,21 @@ const IViewLineTokens = @import("../tokens/lineTokens.zig").IViewLineTokens;
 pub const ModelLineProjection = struct {
     allocator: Allocator,
     data: ?ModelLineProjectionData,
+    /// Hidden model lines have no view lines. Folding ranges hide lines by
+    /// changing this flag, mirroring `createModelLineProjection`/`setVisible`
+    /// in the upstream projection.
+    visible: bool = true,
 
     pub fn init(allocator: Allocator, data: ?ModelLineProjectionData) ModelLineProjection {
         return .{ .allocator = allocator, .data = data };
+    }
+
+    pub fn isVisible(self: *const ModelLineProjection) bool {
+        return self.visible;
+    }
+
+    pub fn setVisible(self: *ModelLineProjection, visible: bool) void {
+        self.visible = visible;
     }
 
     pub fn deinit(self: *ModelLineProjection) void {
@@ -40,6 +52,7 @@ pub const ModelLineProjection = struct {
     }
 
     pub fn getViewLineCount(self: *const ModelLineProjection) usize {
+        if (!self.visible) return 0;
         if (self.data) |data| return data.getOutputLineCount();
         return 1;
     }

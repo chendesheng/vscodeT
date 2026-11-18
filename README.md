@@ -389,11 +389,12 @@ View model:
   assignment, the coordinates-converter interface with its identity
   implementation, model-decoration visibility filtering, and the inline /
   injected-text decoration computers.
-- The TUI uses a reduced port of `viewModelLines`: wrapped model-line projections,
-  view-line prefix sums, view/model conversion, and incremental line mapping.
-  Folding, view zones, decorations, and the browser-facing `viewModelImpl`
-  rendering stack are not ported. Indentation guides are ported separately at
-  the model/view boundary (see below).
+- The TUI uses a reduced port of `viewModelLines`: wrapped model-line
+  projections, view-line prefix sums, view/model conversion, incremental line
+  mapping, and hidden model-line ranges. Folding uses the hidden ranges to
+  project a smaller view (see below); view zones, decorations, and the
+  browser-facing `viewModelImpl` rendering stack are not ported. Indentation
+  guides are ported separately at the model/view boundary (see below).
 
 TextMate tokenization:
 
@@ -549,6 +550,11 @@ TUI editor:
 - Indentation: `Tab`/`Shift-Tab` indent or outdent the selected lines;
   `Ctrl-]` indents lines; `Alt-R` reindents the selected line block and
   `Alt-Shift-R` reindents the whole buffer.
+- Folding: the last gutter cell shows `▾` for an expanded region and `▸` when
+  collapsed; clicking it toggles the region on that line. `Ctrl-Shift-[` /
+  `Ctrl-Shift-]` fold/unfold at the caret, `Ctrl-K Ctrl-L` toggles,
+  `Ctrl-K Ctrl-0` folds all and `Ctrl-K Ctrl-J` unfolds all. Collapsed regions
+  hide their model lines and end the first visible line with `…`.
 - Multi-cursor: `Ctrl-Alt-Up`/`Ctrl-Alt-Down` add a cursor above/below,
   `Ctrl-D` adds the next occurrence of the selection, and `Alt-D` selects all
   occurrences. `Escape` removes secondary cursors before clearing a selection.
@@ -663,13 +669,23 @@ Editor contributions:
   replaced by a direct call to the already-ported `BasicInplaceReplace`; the
   lookup is synchronous, so the upstream async `EditorState` validation is not
   needed. The TUI owns the timed decoration.
-- Folding is ported at the model/provider layer:
+- Folding is ported through
   `foldingRanges` (range storage, parent lookup, collapse state, merge/sanitize),
   `indentRangeProvider` (indentation-based folding and marker handling),
-  `foldingModel` (region state and collapse transitions), and
-  `hiddenRangeModel` (hidden-line ranges and selection adjustment). The
-  browser folding controller, decorations/chevrons, syntax folding providers,
-  sticky scroll, and TUI folding UI are not ported.
+  `foldingModel` (region state and collapse transitions),
+  `hiddenRangeModel` (hidden-line ranges and selection adjustment), and the
+  terminal-facing `folding` controller (range computation, collapse actions,
+  gutter state). `ProjectedViewModelLines.setHiddenAreas` removes collapsed
+  lines from the view projection, so view/model conversion, cursor movement,
+  selection adjustment, wrapping and the scrollbar all see the folded view.
+  The TUI gutter paints `▾`/`▸` in its last cell and handles the click; the
+  editor binds the upstream fold/unfold/toggle/fold-all/unfold-all commands and
+  registers them in the workbench command palette. Syntax folding providers,
+  folding-decoration CSS classes, sticky scroll, fold-imports-by-default,
+  folding mementos/view state, manual folding-range actions and the
+  goto-parent/previous/next-fold actions are not ported. Fold state survives
+  edits on the folded line, but inserting or deleting lines above a collapsed
+  region re-expands it because the TUI has no tracked folding decorations.
 - Cursor/editing contributions are ported at the portable command/model layer:
   `anchorSelect` (position anchor state and action metadata), `caretOperations`
   (`MoveCaretCommand` and action metadata), `cursorUndo` (cursor undo/redo

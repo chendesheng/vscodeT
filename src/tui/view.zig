@@ -501,6 +501,15 @@ pub const View = struct {
                     return false;
                 }
                 self.scrollbar_drag = null;
+                if (event.button == .left and
+                    !event.default_prevented and
+                    try self.toggleFoldControl(event.x, event.y))
+                {
+                    self.mouse_press = null;
+                    self.drag_anchor = null;
+                    self.drag_moved = false;
+                    return true;
+                }
                 if (event.button == .left) {
                     self.mouse_press = .{ .x = event.x, .y = event.y };
                     self.drag_anchor = null;
@@ -699,7 +708,10 @@ pub const View = struct {
         if (x < gutter) {
             return .{
                 .element = target,
-                .type = .gutter_line_numbers,
+                .type = if (x + 1 == gutter and gutter >= 2)
+                    .gutter_line_decorations
+                else
+                    .gutter_line_numbers,
                 .position = try self.editor.positionAtViewPoint(@min(view_line, self.editor.viewLineCount()), 0),
                 .mouse_column = x + 1,
             };
@@ -740,6 +752,25 @@ pub const View = struct {
                 .horizontal_distance_to_text = offset - entry.text_width,
             } },
         };
+    }
+
+    /// The last gutter cell is the fold-control column. It only toggles when
+    /// the view line is the first output line of a model line with a region.
+    fn foldControlAt(self: *const View, x: usize, y: usize) ?usize {
+        const gutter = self.editor.gutterWidth();
+        if (gutter < 2 or x + 1 != gutter) return null;
+        if (y >= self.editor.textHeight()) return null;
+        const view_line = self.editor.topViewLine() + y;
+        if (view_line > self.editor.viewLineCount()) return null;
+        if (self.editor.outputLineIndex(view_line) != 0) return null;
+        return view_line;
+    }
+
+    fn toggleFoldControl(self: *View, x: usize, y: usize) !bool {
+        const view_line = self.foldControlAt(x, y) orelse return false;
+        const changed = try self.editor.toggleFoldAtViewLine(view_line);
+        if (changed) try self.rebuild();
+        return changed;
     }
 
     fn positionAtCell(self: *const View, view_line: usize, x: usize) !Position {
@@ -845,6 +876,7 @@ pub const View = struct {
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
         editor.ensureTokensVisible();
+        editor.refreshFoldingIfDirty();
         // The cursor is revealed by cursor moves and edits, not on every
         // rebuild: a wheel scroll is allowed to leave it off-screen.
         _ = editor.scrollViewLines(0);
@@ -1071,6 +1103,25 @@ pub const View = struct {
             }
             _ = try root.appendChild(gutter_line);
 
+            if (output_index == 0 and gutter >= 2) {
+                const state = editor.foldStateAtModelLine(model_line);
+                if (state != .none) {
+                    const fold_cell = try doc.createElement(.div);
+                    fold_cell.setStyle(.{
+                        .position = .absolute,
+                        .left = .{ .cells = @floatFromInt(gutter - 1) },
+                        .top = .{ .cells = row_cells },
+                        .width = .{ .cells = 1 },
+                        .height = .{ .cells = 1 },
+                        .white_space = .pre,
+                    });
+                    const glyph = try doc.createText(if (state == .collapsed) "▸" else "▾");
+                    glyph.setStyle(.{ .color = color(gutter_color) });
+                    _ = try fold_cell.appendChild(glyph);
+                    _ = try root.appendChild(fold_cell);
+                }
+            }
+
             const is_cursor_line = view_line == cursor.lineNumber;
             const line = try doc.createElement(.div);
             line.setStyle(.{
@@ -1136,6 +1187,27 @@ pub const View = struct {
             );
 
             try appendRuns(doc, line, rendered, flags);
+
+            // A collapsed region ends its first line with the upstream
+            // `inline-folded` ellipsis. It is painted after the text and is not
+            // part of the selectable line width.
+            if (output_index == 0 and line_width < text_width and
+                editor.foldStateAtModelLine(model_line) == .collapsed)
+            {
+                const ellipsis = try doc.createElement(.div);
+                ellipsis.setStyle(.{
+                    .position = .absolute,
+                    .left = .{ .cells = @floatFromInt(line_width) },
+                    .top = .{ .cells = 0 },
+                    .width = .{ .cells = 1 },
+                    .height = .{ .cells = 1 },
+                    .white_space = .pre,
+                });
+                const glyph = try doc.createText("…");
+                glyph.setStyle(.{ .color = color(continuation_color) });
+                _ = try ellipsis.appendChild(glyph);
+                _ = try line.appendChild(ellipsis);
+            }
 
             // Guides paint after the text runs, but only in cells that are
             // leading whitespace or on blank lines, so a text glyph is never
@@ -2422,6 +2494,52 @@ test "View: hover highlight paints the anchor range" {
     // Gutter is 2; columns 2..4 of the text are highlighted.
     const background = grid.bg[grid.index(3, 0)];
     try std.testing.expect(background != 0);
+}
+
+test "View: gutter fold control collapses and expands a region" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "class A {\n  void f() {\n    x();\n  }\n}",
+        "test.zig",
+        40,
+        8,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, '▾'), grid.cluster[grid.index(gutter - 1, 0)]);
+    const target = try view.mouseTargetAt(gutter - 1, 0);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.gutter_line_decorations, target.type);
+
+    var down = testMouse(.down, gutter - 1, 0);
+    try std.testing.expect(try view.dispatchMouse(&down));
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+    try std.testing.expectEqual(@as(usize, 5), editor.modelLineNumber(2));
+
+    try view.render(&out.writer);
+    try std.testing.expectEqual(@as(u32, '▸'), grid.cluster[grid.index(gutter - 1, 0)]);
+    const row1 = try rowText(view, allocator, 1);
+    defer allocator.free(row1);
+    try std.testing.expect(std.mem.indexOf(u8, row1, "5") != null);
+
+    var up = testMouse(.up, gutter - 1, 0);
+    _ = try view.dispatchMouse(&up);
+    var down_again = testMouse(.down, gutter - 1, 0);
+    try std.testing.expect(try view.dispatchMouse(&down_again));
+    try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
 }
 
 test "View: mouse target distinguishes text, empty area, gutter and status" {

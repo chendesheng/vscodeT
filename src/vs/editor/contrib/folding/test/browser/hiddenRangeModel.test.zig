@@ -13,7 +13,7 @@ test "hiddenRangeModel: computes collapsed ranges" {
     const ranges = try indent.computeRanges(allocator, ctx.model, false, null, &reporter);
     var folding_model = FoldingModel.init(allocator, ctx.model);
     defer folding_model.deinit();
-    folding_model.update(ranges);
+    try folding_model.update(ranges);
     var hidden = HiddenRangeModel.init(allocator, &folding_model);
     defer hidden.deinit();
     hidden.listen();
