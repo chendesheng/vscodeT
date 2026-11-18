@@ -357,7 +357,7 @@ pub const Extensions = struct {
 
     pub fn handleKey(self: *Extensions, event: *const ui.KeyEvent) bool {
         if (!self.vim_active) return false;
-        const editor = if (self.workbench.activeTab()) |tab| tab.editor else return false;
+        if (self.workbench.activeTab() == null) return false;
         switch (event.key) {
             .paste_start => {
                 self.pasting = true;
@@ -455,7 +455,6 @@ pub const Extensions = struct {
             },
             else => {},
         }
-        _ = editor;
         return false;
     }
 
