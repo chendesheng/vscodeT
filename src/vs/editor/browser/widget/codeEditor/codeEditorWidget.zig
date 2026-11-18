@@ -79,6 +79,22 @@ pub const CodeEditorWidget = struct {
         return self.view_model.getSelections();
     }
 
+    pub fn getPrimarySelection(self: *CodeEditorWidget) ?Selection {
+        const selections = self.getSelections();
+        if (selections.len == 0) return null;
+        return selections[0];
+    }
+
+    pub fn getPosition(self: *CodeEditorWidget) ?Position {
+        const selection = self.getPrimarySelection() orelse return null;
+        return selection.getPosition();
+    }
+
+    pub fn setPosition(self: *CodeEditorWidget, position: Position) !void {
+        const selection = Selection.fromPositions(position, position);
+        try self.setSelections(&.{selection});
+    }
+
     pub fn setFocus(self: *CodeEditorWidget, focused: bool) bool {
         self.view_model.setFocus(focused);
         return self.view.setFocused(focused);
@@ -152,6 +168,8 @@ test "code editor widget renders the view model's lines" {
     const selections = [_]Selection{Selection.init(1, 1, 1, 1)};
     try widget.setSelections(&selections);
     try testing.expectEqual(@as(usize, 1), widget.getSelections().len);
+    try widget.setPosition(Position.init(2, 3));
+    try testing.expectEqual(Position.init(2, 3), widget.getPosition().?);
 
     const offsets = [_]f64{ 0, 19 };
     const model_interface = widget.getViewModel().interface();

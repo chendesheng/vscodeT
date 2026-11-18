@@ -1152,18 +1152,15 @@ cannot host are listed under documented omissions.
 
 | Slice | Remaining upstream work |
 | --- | --- |
-| P4 | `editor/browser/view.ts`, `editor/browser/view/viewController.ts`, `editor/browser/widget/codeEditor/codeEditorWidget.ts`, the remaining view parts and the layout-dependent overlays; the computed options (`ComputedEditorOptions`, `EditorLayoutInfoComputer`) are ported |
-| P5e | core `base/common/uri.ts`, `network`/`VSBuffer`/`extpath` helpers, `FileType`/`FileOperation`/`FileChangesEvent`, a disk-backed `DiskFileService` (read/write/stat/rename/copy/recursive delete/directory listing/change events), a minimal `TextFileService`, `FileEditorInput`/serializer and the side-by-side/diff input identity/unwrapping and side-by-side/diff serializers, save/revert forwarding and composite untyped matching are ported; the full provider/event file service remains; minimal text-file editor models and untitled/diff/side-by-side inputs (with serializers) are ported |
+| P4 | `editor/browser/view.ts`, `viewController.ts` and the terminal `codeEditorWidget` subset are ported, along with the view stack, computed options, whitespace/control characters and inline decorations; the cursor controller orchestration and the full outgoing-event dispatcher remain (the TUI editor owns the terminal cursor orchestration) |
+| P5e | URI/VSBuffer/file types, the disk-backed service, the provider registry + in-memory/disk providers with change events, text-file service/encoding/save participants/revert, working-copy registry/editor service, editor inputs/serializers and composite matching are ported; working-copy backups/history and the remaining backup-tracking suites remain |
 | P5c | `tokenClassificationRegistry`, the TextMate scope matcher, `ColorThemeData` token-style resolution, the terminal `workbenchThemeService` (registration/persistence/migrations) and the `ThemeConfiguration` color-theme/preference subset and its static settings schemas are ported; icon themes and extension-enumerated theme values are documented terminal omissions, and theme settings re-application is host wiring |
 | P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering and `ExperimentalSettingsService` (assignments/coalescing/keyed requests) are ported; remote-agent configuration suites are a documented terminal omission |
-| P2 | `multiEditorTabsControl.test.ts`, browser tooltip cases in `statusbarItem.test.ts`, and the `explorerView.test.ts` tree cases that construct diff/side-by-side inputs; `editorGroupModel.test.ts` now has the direct-vs-side-by-side open/index preferences |
+| P2 | `multiEditorTabsControl.test.ts` and browser tooltip cases are DOM-specific (documented terminal omissions); `editorGroupModel.test.ts` has the direct-vs-side-by-side open/index preferences and the remaining explorer tree cases are covered by the TUI tree tests |
 | filters | `Intl.Collator` locale ordering (ICU-dependent) |
 
 **Known blockers for the remaining work**
 
-- P4 `View`, `viewController` and `codeEditorWidget` now have the computed
-  options they read; the remaining work is the orchestrator/controller/widget
-  extraction and the layout-dependent view parts.
 - P5e needs `base/common/uri.zig`, the file service and the concrete editor
   inputs (`TextResourceEditorInput`, `FileEditorInput`, untitled/diff/side-by-side)
   before its upstream tests can run.

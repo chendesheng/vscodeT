@@ -802,9 +802,11 @@ Editor contributions:
   `VisibleLinesCollection`, and the `viewLines` host drains that collection into
   a `StringBuilder` and exposes `IViewLines` cell-column ranges (DOM measurement
   is replaced by `CursorColumns`); all have focused tests. The open P4 work is the `View` orchestrator,
-  `viewController.ts`, `codeEditorWidget.ts` and the remaining view parts. The
-  portable URI/file-service/editor-input layer (P5e) still needs the full
-  provider file service and the concrete working-copy wiring.
+  `viewController.ts` and the terminal `codeEditorWidget` are ported; the
+  TUI cursor orchestration replaces the browser cursor/controller, and the
+  remaining DOM view parts are documented omissions. The P5e file-service layer
+  now has provider/disk providers, encoding, save participants, revert and the
+  working-copy services wired to editors; backups/history remain.
 
 - Language associations: `editor/common/services/languagesAssociations.zig` ports
   the platform/configured association registry and matching (exact filename,
@@ -879,8 +881,9 @@ Editor contributions:
   the terminal `View` (focus/view and collection render integration are
   tested). Rendering real model
   tokens through `VisibleLinesCollection` and the terminal `codeEditorWidget`
-  render pipeline is tested, including inline decorations. Inline decoration ranges, the browser cursor controller,
-  view-model event dispatcher and glyph lanes remain.
+  render pipeline is tested, including inline decorations, glyph lanes,
+  whitespace/control-character rendering and cursor-state events. The cursor
+  controller orchestration and full outgoing-event dispatcher remain.
 
 - `EditorGroupModel.openEditor` now forwards the requested `supportSideBySide`
   mode into editor matching, so opening a plain input with
