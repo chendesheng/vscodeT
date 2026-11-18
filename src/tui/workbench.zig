@@ -1473,11 +1473,12 @@ pub const Workbench = struct {
         if (self.part.active_sash) |split| {
             switch (event.kind) {
                 .move => {
-                    if (event.button == .left) {
-                        self.part.resizeSash(split, event.x, event.y);
-                    } else {
-                        self.part.active_sash = null;
-                    }
+                    // Upstream's sash owns pointer capture, so motion while
+                    // the boundary is grabbed resizes it. Some terminals and
+                    // multiplexers report that motion without the held button
+                    // bits; relying on them here would drop the drag. A lost
+                    // release is healed by the next down or up event.
+                    self.part.resizeSash(split, event.x, event.y);
                     return true;
                 },
                 .up, .click => {
@@ -4145,4 +4146,137 @@ test "Workbench: working copy service tracks dirty editors" {
 
     _ = try workbench.closeActive();
     try std.testing.expect(!service.hasResource(path));
+}
+
+test "Workbench: decoded divider drag resizes the split" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "sash_decoded_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "sash_decoded_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const first = workbench.part.root.kind.split.first;
+    try std.testing.expect(!workbench.part.cell_borders);
+    const boundary = ui.cell.snap(first.rect.right());
+    try std.testing.expectEqual(@as(usize, 24), boundary);
+
+    // Press on the gutter divider, drag it six cells right and release.
+    var buf: [160]u8 = undefined;
+    const seq = try std.fmt.bufPrint(
+        &buf,
+        "\x1b[<0;{d};3M\x1b[<32;{d};3M\x1b[<0;{d};3m",
+        .{ boundary + 1, boundary + 7, boundary + 7 },
+    );
+    var items = try ui.input.decode(allocator, seq);
+    defer items.deinit(allocator);
+    for (items.items) |*item| {
+        switch (item.*) {
+            .key => return error.TestUnexpectedResult,
+            .mouse => |*mouse| {
+                if (workbench.handleTabDragMouse(mouse)) continue;
+                if (workbench.handleQuickAccessMouse(mouse)) continue;
+                if (workbench.handleStatusbarMouse(mouse)) continue;
+                if (workbench.handleSashMouse(mouse)) continue;
+            },
+        }
+    }
+
+    try std.testing.expectEqual(@as(f64, 30.0 / 49.0), workbench.part.root.kind.split.ratio);
+    try std.testing.expectEqual(@as(usize, 30), ui.cell.snap(first.rect.w));
+    try std.testing.expect(workbench.part.active_sash == null);
+}
+
+test "Workbench: sash follows drag motion without button bits" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "sash_buttonless_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "sash_buttonless_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const first = workbench.part.root.kind.split.first;
+    const boundary = ui.cell.snap(first.rect.right());
+
+    var down = ui.MouseEvent{ .kind = .down, .x = boundary, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&down));
+    try std.testing.expect(workbench.part.active_sash != null);
+
+    // Mode 1003 terminals may report drag motion with button `none`; the
+    // grabbed sash still follows the pointer instead of ending the drag.
+    var move = ui.MouseEvent{ .kind = .move, .x = boundary + 6, .y = 2, .button = .none };
+    try std.testing.expect(workbench.handleSashMouse(&move));
+    try std.testing.expect(workbench.part.active_sash != null);
+    try std.testing.expectEqual(@as(f64, 30.0 / 49.0), workbench.part.root.kind.split.ratio);
+
+    var up = ui.MouseEvent{ .kind = .up, .x = boundary + 6, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&up));
+    try std.testing.expect(workbench.part.active_sash == null);
+}
+
+test "Workbench: decoded divider drag resizes a vertical split" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "sash_vertical_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "sash_vertical_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 14);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.vertical);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const first = workbench.part.root.kind.split.first;
+    try std.testing.expectEqual(@as(usize, 6), ui.cell.snap(first.rect.bottom()));
+
+    var buf: [160]u8 = undefined;
+    const seq = try std.fmt.bufPrint(&buf, "\x1b[<0;3;7M\x1b[<32;3;10M\x1b[<0;3;10m", .{});
+    var items = try ui.input.decode(allocator, seq);
+    defer items.deinit(allocator);
+    for (items.items) |*item| {
+        switch (item.*) {
+            .key => return error.TestUnexpectedResult,
+            .mouse => |*mouse| {
+                if (workbench.handleTabDragMouse(mouse)) continue;
+                if (workbench.handleQuickAccessMouse(mouse)) continue;
+                if (workbench.handleStatusbarMouse(mouse)) continue;
+                if (workbench.handleSashMouse(mouse)) continue;
+            },
+        }
+    }
+
+    try std.testing.expectEqual(@as(f64, 9.0 / 12.0), workbench.part.root.kind.split.ratio);
+    try std.testing.expectEqual(@as(usize, 9), ui.cell.snap(first.rect.h));
 }
