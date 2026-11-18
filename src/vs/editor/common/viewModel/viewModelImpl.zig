@@ -221,8 +221,22 @@ pub const ViewModel = struct {
         return data.continuesWithWrappedLine;
     }
 
-    fn getDecorationsInViewportFn(_: *anyopaque, _: Range, allocator: Allocator) anyerror![]ViewModelDecoration {
-        return allocator.alloc(ViewModelDecoration, 0);
+    fn getDecorationsInViewportFn(context: *anyopaque, view_range: Range, allocator: Allocator) anyerror![]ViewModelDecoration {
+        const self: *ViewModel = @ptrCast(@alignCast(context));
+        const converter = self.converter.interface();
+        const model_range = converter.convertViewRangeToModelRange(converter.context, view_range);
+        const model_decorations = try self.model.getDecorationsInRange(model_range, 0, false, false, false);
+        defer self.model.getAllocator().free(model_decorations);
+
+        const result = try allocator.alloc(ViewModelDecoration, model_decorations.len);
+        errdefer allocator.free(result);
+        for (model_decorations, 0..) |decoration, index| {
+            result[index] = .{
+                .range = converter.convertModelRangeToViewRange(converter.context, decoration.range, .None),
+                .options = decoration.options,
+            };
+        }
+        return result;
     }
 };
 
@@ -305,4 +319,33 @@ test "view model: selections, focus and viewport" {
     instance.setViewport(2, 3, 2, Viewport.init(0, 0, 80, 40));
     try testing.expectEqual(@as(usize, 2), instance.viewportStartLine());
     try testing.expectEqual(@as(f64, 19), instance.lineHeight());
+}
+
+test "view model: maps model decorations into the viewport" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    const instance = try fixture.init(allocator, "line one\nline two", 80);
+    defer {
+        instance.deinit();
+        fixture.deinit();
+    }
+
+    var options = std.mem.zeroes(@import("../model.zig").ModelDecorationOptions);
+    options.className = "test-decoration";
+    const decoration = @import("../model.zig").ModelDeltaDecoration{
+        .range = Range.init(1, 1, 1, 4),
+        .options = &options,
+    };
+    const ids = try fixture.model.model.deltaDecorations(&.{}, &.{decoration}, 0);
+    defer {
+        const removed = fixture.model.model.deltaDecorations(ids, &.{}, 0) catch &[_]u64{};
+        if (removed.len > 0) allocator.free(removed);
+        allocator.free(ids);
+    }
+
+    const decorations = try instance.interface().decorationsInViewport(Range.init(1, 1, 2, 1), allocator);
+    defer allocator.free(decorations);
+    try testing.expectEqual(@as(usize, 1), decorations.len);
+    try testing.expectEqual(@as(usize, 1), decorations[0].range.startLineNumber);
+    try testing.expectEqual(@as(usize, 4), decorations[0].range.endColumn);
 }

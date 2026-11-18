@@ -864,9 +864,10 @@ Editor contributions:
 - A terminal `ViewModel` subset is ported in
   `common/viewModel/viewModelImpl.zig`: it owns the projected lines and
   coordinates converter, exposes `IViewModel` (line metrics, viewport
-  rendering data, decorations placeholder), and tracks selections, focus,
-  viewport and a cell-height layout. The browser cursor controller, view-model
-  event dispatcher, glyph lanes and decoration viewport integration remain.
+  rendering data and model-decoration viewport mapping into view ranges), and
+  tracks selections, focus, viewport and a cell-height layout. Inline
+  decoration ranges, the browser cursor controller, view-model event
+  dispatcher and glyph lanes remain.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
