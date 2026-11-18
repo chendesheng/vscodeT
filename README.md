@@ -921,7 +921,16 @@ Editor contributions:
 
 - `CursorCollection` gained the remaining selection-tracking operations
   (`startTrackingSelections`/`stopTrackingSelections`/`readSelectionFromMarkers`)
-  and top/bottom view-position queries, with a tracking/extents test.
+  and top/bottom view-position queries, with a tracking/extents test. A
+  terminal `CursorsController` subset (`common/cursor/cursor.zig`) adds
+  selection/position access, set selections/states, state save/restore,
+  secondary-cursor removal and post-edit validity; typing/command
+  orchestration stays in the TUI editor.
+
+- A terminal `CursorsController` subset is ported
+  (`common/cursor/cursor.zig`): selection/position access, set selections and
+  states, save/restore cursor state, secondary-cursor removal and
+  post-edit validity; the TUI editor retains typing/command orchestration.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON

@@ -1084,7 +1084,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,120 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,121 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1117,7 +1117,7 @@ starts a `UniversalWatcher` for absolute workspace folders and forwards its
 changes into that handler. The broader working-copy model (conflict UI, save
 participants, untitled/diff working copies) remains.
 
-**Status at the end of the current session:** 2,120 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,121 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor cursor/controller/widget stack and the URI/file
@@ -1152,7 +1152,7 @@ cannot host are listed under documented omissions.
 
 | Slice | Remaining upstream work |
 | --- | --- |
-| P4 | `editor/browser/view.ts`, `viewController.ts` and the terminal `codeEditorWidget` subset are ported, along with the view stack, computed options, whitespace/control characters and inline decorations; the cursor controller orchestration and the full outgoing-event dispatcher remain (the TUI editor owns the terminal cursor orchestration) |
+| P4 | `editor/browser/view.ts`, `viewController.ts` and the terminal `codeEditorWidget` subset are ported, along with the view stack, computed options, whitespace/control characters and inline decorations; a terminal `CursorsController` selection/state subset is ported and typing/command orchestration stays in the TUI editor; the full outgoing-event dispatcher remains |
 | P5e | URI/VSBuffer/file types, the disk-backed service, the provider registry + in-memory/disk providers with change events, text-file service/encoding/save participants/revert, working-copy registry/editor service, editor inputs/serializers and composite matching are ported; working-copy backups/history and the remaining backup-tracking suites remain |
 | P5c | `tokenClassificationRegistry`, the TextMate scope matcher, `ColorThemeData` token-style resolution, the terminal `workbenchThemeService` (registration/persistence/migrations) and the `ThemeConfiguration` color-theme/preference subset and its static settings schemas are ported; icon themes and extension-enumerated theme values are documented terminal omissions, and theme settings re-application is host wiring |
 | P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering and `ExperimentalSettingsService` (assignments/coalescing/keyed requests) are ported; remote-agent configuration suites are a documented terminal omission |

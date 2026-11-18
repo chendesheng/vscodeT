@@ -176,6 +176,7 @@ comptime {
     _ = @import("./vs/editor/common/cursor/cursorWordOperations.zig");
     _ = @import("./vs/editor/common/cursor/oneCursor.zig");
     _ = @import("./vs/editor/common/cursor/cursorCollection.zig");
+    _ = @import("./vs/editor/common/cursor/cursor.zig");
     _ = @import("./vs/editor/common/cursor/cursorDeleteOperations.zig");
     _ = @import("./vs/editor/common/cursor/cursorMoveCommands.zig");
     _ = @import("./vs/editor/common/cursor/cursorTypeOperations.zig");
