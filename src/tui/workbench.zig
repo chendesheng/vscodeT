@@ -2238,26 +2238,28 @@ pub const Workbench = struct {
             }
             if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                 const tab = self.orderedTabAt(pane, index);
-                if (tab) |value| {
-                    if (event.button == .left) {
-                        const hit = for (pane.hits.items) |candidate| {
-                            if (candidate.index == index) break candidate;
-                        } else null;
-                        if (hit) |entry| {
-                            self.last_tab_click = .{
-                                .pane = pane,
-                                .tab = value,
-                                .at_ms = now,
-                                .x = event.x,
-                                .y = event.y,
-                                .start = entry.start,
-                                .end = entry.end,
-                            };
-                        }
-                    }
+                var recorded_hit: ?tab_bar.Hit = null;
+                if (tab != null and event.button == .left) {
+                    recorded_hit = for (pane.hits.items) |candidate| {
+                        if (candidate.index == index) break candidate;
+                    } else null;
                 }
                 self.activateIndex(index) catch {};
                 if (tab) |value| {
+                    // Timestamp after activation: creating controllers or
+                    // revealing a large file can take long enough that the
+                    // second press would otherwise fall outside the window.
+                    if (recorded_hit) |entry| {
+                        self.last_tab_click = .{
+                            .pane = pane,
+                            .tab = value,
+                            .at_ms = @import("../vs/base/common/timeCompat.zig").milliTimestamp(),
+                            .x = event.x,
+                            .y = event.y,
+                            .start = entry.start,
+                            .end = entry.end,
+                        };
+                    }
                     self.pending_tab_drag = .{
                         .pane = pane,
                         .tab = value,
