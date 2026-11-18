@@ -195,6 +195,7 @@ comptime {
     _ = @import("./vs/editor/common/viewModel/minimapTokensColorTracker.zig");
     _ = @import("./vs/editor/common/viewModel/viewModelDecorations.zig");
     _ = @import("./vs/editor/common/viewModel/viewModelImpl.zig");
+    _ = @import("./vs/editor/common/viewModelEventDispatcher.zig");
     _ = @import("./vs/editor/test/common/viewModel/viewModelTests.zig");
     _ = @import("./tui/app.zig");
     _ = @import("./tui/editor.zig");

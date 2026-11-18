@@ -882,8 +882,9 @@ Editor contributions:
   tested). Rendering real model
   tokens through `VisibleLinesCollection` and the terminal `codeEditorWidget`
   render pipeline is tested, including inline decorations, glyph lanes,
-  whitespace/control-character rendering and cursor-state events. The cursor
-  controller orchestration and full outgoing-event dispatcher remain.
+  whitespace/control-character rendering and cursor-state events. Cursor
+  selection/state and the event dispatcher are ported; typing/command
+  orchestration remains in the TUI editor.
 
 - `EditorGroupModel.openEditor` now forwards the requested `supportSideBySide`
   mode into editor matching, so opening a plain input with
@@ -926,6 +927,10 @@ Editor contributions:
   selection/position access, set selections/states, state save/restore,
   secondary-cursor removal and post-edit validity; typing/command
   orchestration stays in the TUI editor.
+
+- `ViewModelEventDispatcher` is ported (handler registry, direct delivery and a
+  re-entrant event queue) and the terminal `ViewModel` now dispatches through
+  it for content/cursor/focus events.
 
 - A terminal `CursorsController` subset is ported
   (`common/cursor/cursor.zig`): selection/position access, set selections and

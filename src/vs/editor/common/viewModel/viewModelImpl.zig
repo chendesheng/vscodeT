@@ -35,6 +35,7 @@ const ModelDecoration = @import("../model.zig").ModelDecoration;
 const InternalModelContentChangeEvent = @import("../textModelEvents.zig").InternalModelContentChangeEvent;
 const view_events = @import("../viewEvents.zig");
 const ViewEventHandler = @import("../viewEventHandler.zig").ViewEventHandler;
+const ViewModelEventDispatcher = @import("../viewModelEventDispatcher.zig").ViewModelEventDispatcher;
 
 pub const ViewModel = struct {
     allocator: Allocator,
@@ -44,7 +45,7 @@ pub const ViewModel = struct {
     converter: CoordinatesConverter,
     decorations: *view_model_decorations.ViewModelDecorations,
     lines_adapter: LinesAdapter,
-    event_handlers: std.array_list.Managed(*ViewEventHandler),
+    event_dispatcher: ViewModelEventDispatcher,
     selections: std.array_list.Managed(Selection),
     focus: bool = false,
     viewport: Viewport = Viewport.init(0, 0, 0, 0),
@@ -175,14 +176,14 @@ pub const ViewModel = struct {
             .decorations = undefined,
             .glyph_lanes = try glyph_lanes.GlyphMarginLanesModel.init(allocator, model.getLineCount()),
             .lines_adapter = undefined,
-            .event_handlers = std.array_list.Managed(*ViewEventHandler).init(allocator),
+            .event_dispatcher = ViewModelEventDispatcher.init(allocator),
             .selections = std.array_list.Managed(Selection).init(allocator),
             .layout = undefined,
         };
         errdefer {
             self.lines.deinit();
             self.glyph_lanes.deinit();
-            self.event_handlers.deinit();
+            self.event_dispatcher.deinit();
             self.selections.deinit();
         }
         self.converter = CoordinatesConverter.init(&self.lines);
@@ -208,7 +209,7 @@ pub const ViewModel = struct {
         self.lines_adapter.deinit();
         self.lines.deinit();
         self.glyph_lanes.deinit();
-        self.event_handlers.deinit();
+        self.event_dispatcher.deinit();
         self.selections.deinit();
         self.allocator.destroy(self);
     }
@@ -239,22 +240,18 @@ pub const ViewModel = struct {
 
         // The terminal view dispatches a conservative full flush/token change;
         // parts re-render the small viewport window.
-        const flush = view_events.ViewFlushedEvent{};
-        const mapping = view_events.ViewLineMappingChangedEvent{};
-        const lines_changed = view_events.ViewLinesChangedEvent{ .fromLineNumber = 1, .count = self.lines.getViewLineCount() };
-        const decorations = view_events.ViewDecorationsChangedEvent.init(null);
+        self.event_dispatcher.emit(.{ .ViewFlushed = .{} });
+        self.event_dispatcher.emit(.{ .ViewLineMappingChanged = .{} });
+        self.event_dispatcher.emit(.{ .ViewLinesChanged = .{
+            .fromLineNumber = 1,
+            .count = self.lines.getViewLineCount(),
+        } });
+        self.event_dispatcher.emit(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
         const token_ranges = [_]view_events.ViewTokensChangedRange{.{
             .fromLineNumber = 1,
             .toLineNumber = self.lines.getViewLineCount(),
         }};
-        const tokens = view_events.ViewTokensChangedEvent{ .ranges = &token_ranges };
-        for (self.event_handlers.items) |handler| {
-            _ = handler.onFlushed(&flush);
-            _ = handler.onLineMappingChanged(&mapping);
-            _ = handler.onLinesChanged(&lines_changed);
-            _ = handler.onDecorationsChanged(&decorations);
-            _ = handler.onTokensChanged(&tokens);
-        }
+        self.event_dispatcher.emit(.{ .ViewTokensChanged = .{ .ranges = &token_ranges } });
     }
 
     /// Recomputes the glyph-margin lanes from model decorations that carry
@@ -290,17 +287,11 @@ pub const ViewModel = struct {
     }
 
     pub fn addViewEventHandler(self: *ViewModel, handler: *ViewEventHandler) void {
-        self.event_handlers.append(handler) catch {};
+        self.event_dispatcher.addEventHandler(handler);
     }
 
     pub fn removeViewEventHandler(self: *ViewModel, handler: *ViewEventHandler) void {
-        var index: usize = 0;
-        while (index < self.event_handlers.items.len) : (index += 1) {
-            if (self.event_handlers.items[index] == handler) {
-                _ = self.event_handlers.orderedRemove(index);
-                return;
-            }
-        }
+        self.event_dispatcher.removeEventHandler(handler);
     }
 
     fn addViewEventHandlerFn(context: *anyopaque, handler: *anyopaque) void {
@@ -332,12 +323,11 @@ pub const ViewModel = struct {
             try model_selections.append(Selection.init(start.lineNumber, start.column, end.lineNumber, end.column));
         }
 
-        const event = view_events.ViewCursorStateChangedEvent{
+        self.event_dispatcher.emit(.{ .ViewCursorStateChanged = .{
             .selections = self.selections.items,
             .modelSelections = model_selections.items,
             .reason = .Explicit,
-        };
-        for (self.event_handlers.items) |handler| _ = handler.onCursorStateChanged(&event);
+        } });
     }
 
     pub fn getSelections(self: *const ViewModel) []const Selection {
@@ -346,8 +336,7 @@ pub const ViewModel = struct {
 
     pub fn setFocus(self: *ViewModel, focused: bool) void {
         self.focus = focused;
-        const event = view_events.ViewFocusChangedEvent{ .isFocused = focused };
-        for (self.event_handlers.items) |handler| _ = handler.onFocusChanged(&event);
+        self.event_dispatcher.emit(.{ .ViewFocusChanged = .{ .isFocused = focused } });
     }
 
     pub fn hasFocus(self: *const ViewModel) bool {
