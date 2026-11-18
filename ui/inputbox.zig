@@ -295,31 +295,20 @@ pub const InputBox = struct {
             (!self.focused or !self.enabled or self.placeholder_when_focused))
         {
             const shows_caret = self.focused and self.enabled;
-            if (self.placeholder.len > 0) {
-                var first_len: usize = 0;
-                if (shows_caret) {
-                    const decoded = dom.decodeAt(self.placeholder, 0);
-                    first_len = if (decoded.len == 0) 1 else decoded.len;
-                    if (first_len > self.placeholder.len) first_len = self.placeholder.len;
-                }
-                if (first_len > 0) {
-                    // The caret is the cell under the block cursor. Empty
-                    // inputs otherwise render only the focused placeholder,
-                    // which leaves no visible caret on terminal hosts.
-                    try appendText(doc, root, self.placeholder[0..first_len], .{
-                        .color = self.placeholder_color,
-                        .dim = true,
-                        .reverse = true,
-                    });
-                }
-                try appendText(doc, root, self.placeholder[first_len..], .{
-                    .color = self.placeholder_color,
-                    .dim = true,
-                });
-            } else if (shows_caret) {
+            if (shows_caret) {
+                // Empty inputs otherwise render only the focused placeholder,
+                // which leaves no visible caret on terminal hosts. Keep the
+                // block caret in its own cell so the placeholder text remains
+                // a contiguous run for the cell grid and ANSI diff.
                 try appendText(doc, root, " ", .{
                     .color = self.color,
                     .reverse = true,
+                });
+            }
+            if (self.placeholder.len > 0) {
+                try appendText(doc, root, self.placeholder, .{
+                    .color = self.placeholder_color,
+                    .dim = true,
                 });
             }
             self.view_start = 0;
@@ -1147,7 +1136,7 @@ test "InputBox: placeholder can show while focused" {
 
     const row = try renderRow(&surface, &input, allocator, 16);
     defer allocator.free(row);
-    try std.testing.expect(std.mem.startsWith(u8, row, "Search files"));
+    try std.testing.expect(std.mem.startsWith(u8, row, " Search files"));
     const grid = surface.grid();
     try std.testing.expect(grid.attrs[grid.index(0, 0)] & cell.Attr.inverse != 0);
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(1, 0)] & cell.Attr.inverse);
