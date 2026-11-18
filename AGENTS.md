@@ -179,6 +179,19 @@ state that in the comment and keep the behavioral contract intact.
   tokenization or decoration work.
 - Run `zig fmt` on changed Zig files.
 
+### Disk space
+
+- Build caches are disposable and can grow to many gigabytes. Check `df -h`
+  before and after large builds, and clean the build cache before free space is
+  exhausted instead of waiting for `NoSpaceLeft` or a corrupted build.
+- The normal cache to remove is the workspace build cache, for example
+  `.zig-cache/` (including its `global/` subdirectory); `zig-out/` and
+  temporary Zig caches outside the repository are also disposable. Rebuild
+  after clearing.
+- Delete only build caches. Never delete source files, `zig-pkg/`, docs, or
+  anything under `../vscode`, and verify the resolved path before removing a
+  directory.
+
 ## Interfaces
 
 Zig has no `implements` keyword. Concrete types adapt to `I*` interfaces with a
@@ -272,4 +285,6 @@ Also verify:
 - [ ] Allocations have cleanup paths.
 - [ ] TUI wiring and shortcuts are documented if applicable.
 - [ ] README notes the ported scope and any remaining limitations.
+- [ ] Build caches were checked and cleaned as needed; the filesystem still has
+      free space.
 - [ ] The working tree contains only intentional changes.
