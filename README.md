@@ -904,6 +904,13 @@ Editor contributions:
   the view selections through `IViewModel.getSelections`). Control characters
   render as Unicode control pictures when `renderControlCharacters` is on.
 
+- `WorkingCopyService` is ported
+  (`workbench/services/workingCopy/common/workingCopyService.zig`): working-copy
+  registration/unregistration by resource/type, dirty/modified tracking,
+  `isDirty`, and register/unregister/dirty/content/save events, with the
+  terminal `IWorkingCopy` listener contract and upstream registry-basics /
+  duplicate-identifier tests.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory
