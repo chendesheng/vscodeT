@@ -362,6 +362,14 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
 
+    // The extension-host interop test needs Node, the esbuild bundle in
+    // host/dist and the extracted VSCodeVim fixture. Keep it out of the
+    // hermetic `test` step; docs/extensions.md §15 defines this target.
+    const run_e2e_tests = b.addRunArtifact(tests);
+    run_e2e_tests.setEnvironmentVariable("ZIG_E2E_EXTENSION_HOST", "1");
+    const e2e_test_step = b.step("test-e2e", "Run the extension-host interop tests");
+    e2e_test_step.dependOn(&run_e2e_tests.step);
+
     const markdown_tests = b.addTest(.{
         .name = "markdown_tests",
         .root_module = tests.root_module,

@@ -53,6 +53,26 @@ Console loggers, the URI-keyed `ILoggerService` registry and the log-output
 picker are not ported: the TUI owns the terminal (alternate screen, raw mode)
 and has a single log file instead of per-channel resources.
 
+## Extension host (experimental)
+
+The workbench half of VS Code's extension system is being ported under
+`src/vs/workbench/services/extensions/` and `src/vs/workbench/api/`. The Node
+extension host itself is reused, not vendored: the launcher in
+`host/extensionHost.ts` bundles the module graph reachable from
+`../vscode/src/vs/workbench/api/common/extensionHostMain.ts` with esbuild, so
+a full `../vscode/out` build is not required.
+
+```sh
+cd host && npm install && npm run build   # host/dist/extensionHost.mjs
+zig build test-e2e                        # boots the host and activates VSCodeVim
+```
+
+`test-e2e` is skipped unless `../vscode`, `host/dist/extensionHost.mjs` and
+the extracted fixture at `.cache-ext/vim/extension` are present. The TUI does
+not start the host yet: the current adapter only provides the transport, RPC
+codec, generated actor table and the boot sequence. See
+`docs/extensions.md` for the port status and the remaining work.
+
 ## Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`

@@ -1,7 +1,12 @@
 # Extension system: reuse VS Code's host, port the editor side
 
-Status: proposed design; no extension-system module exists in the tree yet.
-The prerequisite workbench services are now ported (§3.3).
+Status: foundation landed, TUI wiring pending. `host/` boots the real Node
+host over a Unix socket, `rpcProtocol.zig` implements the wire codec, the
+generated `extHost.protocol.zig` table has all 171 identifiers, and
+`zig build test-e2e` activates VSCodeVim 1.32.4 through the real host. The
+`MainThread*` actors are still stubs: document/editor sync, `type` /
+`default:type` and the contribution scanner are the next slice. The
+prerequisite workbench services are ported (§3.3).
 
 Upstream reference: `../vscode` at **1.147.0**, commit
 `e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
