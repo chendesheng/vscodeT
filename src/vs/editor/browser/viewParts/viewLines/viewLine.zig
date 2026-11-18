@@ -98,6 +98,7 @@ pub const ViewLine = struct {
             .tokens = line_data.tokens,
             .tab_size = line_data.tabSize,
             .start_visible_column = line_data.startVisibleColumn,
+            .render_whitespace = self.options.render_whitespace,
         }) catch return false;
         defer rendered.deinit(self.allocator);
 

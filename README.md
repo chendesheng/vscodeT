@@ -897,6 +897,11 @@ Editor contributions:
   propagation that keeps the model dirty). Heuristic charset guessing
   (ANSI/ShiftJIS via jschardet/ICU) is a documented terminal omission.
 
+- Visible whitespace rendering is ported through the shared line renderer:
+  `renderWhitespace` modes `all`, `boundary` and `trailing` draw middle dots for
+  spaces and a right arrow for tabs; `selection` mode and control-character
+  rendering still need selection/context plumbing.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory
