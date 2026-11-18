@@ -94,16 +94,37 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
 /// User settings live outside the workspace. `VSCODE_TEXTBUFFER_USER_SETTINGS`
 /// overrides the XDG/HOME default so tests and alternate profiles can point at
 /// a specific file; a missing file simply produces no user scope.
-/// Explicit `--extension-path`, the env override, then the extracted test
-/// fixture. A user install is expected to pass the flag or the env var until
-/// the manifest scanner lands.
-fn defaultExtensionPath(allocator: std.mem.Allocator) ?[]u8 {
-    if (std.c.getenv("VSCODE_TEXTBUFFER_EXTENSION_PATH")) |value| {
-        return allocator.dupe(u8, std.mem.span(value)) catch null;
+/// Explicit `--extension-path`, the env override, the extracted test fixture,
+/// then the usual VS Code extension directories. Only VSCodeVim is discovered
+/// until the manifest scanner lands.
+fn defaultExtensionPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map) ?[]u8 {
+    if (environ.get("VSCODE_TEXTBUFFER_EXTENSION_PATH")) |value| {
+        return allocator.dupe(u8, value) catch null;
     }
     const fixture = ".cache-ext/vim/extension";
-    std.Io.Dir.cwd().access(time_compat.io, fixture, .{}) catch return null;
-    return allocator.dupe(u8, fixture) catch null;
+    if (std.Io.Dir.cwd().access(time_compat.io, fixture, .{})) |_| {
+        return allocator.dupe(u8, fixture) catch null;
+    } else |_| {}
+    const home = environ.get("HOME") orelse return null;
+    const roots = [_][]const u8{ ".vscode/extensions", ".vscode-server/extensions", ".vscode-oss/extensions" };
+    for (roots) |relative| {
+        const root = std.fs.path.join(allocator, &.{ home, relative }) catch continue;
+        defer allocator.free(root);
+        var dir = std.Io.Dir.openDirAbsolute(time_compat.io, root, .{ .iterate = true }) catch continue;
+        defer dir.close(time_compat.io);
+        var iterator = dir.iterate();
+        while (iterator.next(time_compat.io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            if (!std.mem.startsWith(u8, entry.name, "vscodevim.vim-")) continue;
+            const extension = std.fs.path.join(allocator, &.{ root, entry.name, "extension" }) catch continue;
+            std.Io.Dir.accessAbsolute(time_compat.io, extension, .{}) catch {
+                allocator.free(extension);
+                continue;
+            };
+            return extension;
+        }
+    }
+    return null;
 }
 
 fn defaultExtensionDataPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map) ![]u8 {
@@ -337,7 +358,7 @@ pub fn main(init: std.process.Init) !void {
 
     var extension_host: ?*extensions.Extensions = null;
     defer if (extension_host) |ext| ext.deinit();
-    const extension_path = if (args.extension_path) |path| path else defaultExtensionPath(allocator);
+    const extension_path = if (args.extension_path) |path| path else defaultExtensionPath(allocator, init.environ_map);
     if (extension_path) |path| {
         defer if (args.extension_path == null) allocator.free(path);
         const extension_data = try defaultExtensionDataPath(allocator, init.environ_map);

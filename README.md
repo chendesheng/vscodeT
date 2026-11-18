@@ -64,17 +64,20 @@ a full `../vscode/out` build is not required.
 
 ```sh
 cd host && npm install && npm run build   # host/dist/extensionHost.mjs
-zig build run -- --extension-path <extension-dir> [<file>...]
+zig build run -- [--extension-path <extension-dir>] [<file>...]
 zig build test-e2e                        # boots the host and edits through VSCodeVim
 ```
 
 `--extension-path` points at an unpacked extension directory (for VSCodeVim,
-the directory containing its `package.json` and `out/extension.js`). The TUI
+the directory containing its `package.json` and `out/extension.js`). Without
+the flag, `VSCODE_TEXTBUFFER_EXTENSION_PATH`, the test fixture, then
+`~/.vscode*/extensions/vscodevim.vim-*/extension` are tried. The TUI
 starts the pinned host, mirrors the active tab as a document/editor, routes
 printable keys through the `type` command, and applies the extension's edits
-and selections back to the editor. VSCodeVim 1.32.4 insert/normal editing,
-`Esc`, motions and operators such as `x`/`dd` work in this loop; the status
-bar shows its mode entry.
+and selections back to the editor. VSCodeVim 1.32.4 insert/normal/visual
+editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
+`o`/`O`, and `:e`/`:w`/`:q` work in this loop; the status bar shows its mode
+entry.
 
 `test-e2e` is skipped unless `host/dist/extensionHost.mjs` and the extracted
 fixture at `.cache-ext/vim/extension` are present. Still missing: the
