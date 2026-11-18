@@ -241,6 +241,7 @@ let buffer = Buffer.alloc(0);
 let nextRequestId = 1;
 const pending = new Map();
 let initialized = false;
+const doc = { text: 'hello', line: 1, column: 1, version: 1, editorId: '1', uri: extensionUri('/tmp/vim-test.txt') };
 
 function frame(payload) {
 	writeStream.write(Buffer.concat([u32(payload.length), payload]));
@@ -318,12 +319,47 @@ function onPayload(payload) {
 	console.log('[harness] <- unhandled payload type', type, payload.subarray(0, 40));
 }
 
+function sendNotification(rpcId, method, args) {
+	const req = nextRequestId++;
+	frame(serializeRequest(req, rpcId, method, args, false));
+	return new Promise(resolve => pending.set(req, { resolve, reject: resolve, method, rpcId }));
+}
+
+let decorationKey = 0;
+
 const replyTable = {
+	'MainThreadTextEditors.$registerTextEditorDecorationType': () => `decoration-${++decorationKey}`,
 	'MainThreadWindow.$getInitialState': () => ({ isFocused: true, isActive: true }),
 	'MainThreadChatSkills.$getTools': () => [],
 	'MainThreadFileSystem.$ensureActivation': () => true,
 	'MainThreadLogger.$registerLogger': () => undefined,
-	'MainThreadCommands.$getCommands': () => []
+	'MainThreadCommands.$getCommands': () => [],
+	'MainThreadTextEditors.$trySetSelections': args => {
+		const selection = args[1] && args[1][0];
+		if (selection) {
+			doc.line = selection.selectionEndLineNumber;
+			doc.column = selection.selectionEndColumn;
+		}
+		return true;
+	},
+	'MainThreadTextEditors.$tryApplyEdits': () => true,
+	'MainThreadTextEditors.$trySetOptions': () => undefined,
+	'MainThreadCommands.$executeCommand': args => {
+		const command = args[0];
+		if (command === 'default:type') {
+			const text = args[1][0].text;
+			const index = doc.column - 1;
+			doc.text = doc.text.slice(0, index) + text + doc.text.slice(index);
+			doc.column += text.length;
+			doc.version++;
+			sendNotification(97, '$acceptModelChanged', [doc.uri, {
+				changes: [{ range: { startLineNumber: doc.line, startColumn: doc.column - text.length, endLineNumber: doc.line, endColumn: doc.column - text.length }, rangeOffset: 0, rangeLength: 0, text }],
+				eol: '\n', versionId: doc.version, isUndoing: false, isRedoing: false, isFlush: false, isEolChange: false, detailedReason: null
+			}, false]).catch(() => {});
+			console.log('[harness] default:type', JSON.stringify(text), '=>', doc.text);
+		}
+		return undefined;
+	}
 };
 
 function replyFor(rpcId, method, args) {
@@ -358,12 +394,26 @@ async function boot() {
 		myToRemove: [],
 		myToAdd: []
 	}]);
-	setTimeout(() => {
-		console.log('[harness] done (timeout)');
-		frame(Buffer.from([3]));
-		setTimeout(() => {
-			child.kill('SIGKILL');
-			process.exit(0);
-		}, 1000);
-	}, 8000);
+	setTimeout(async () => {
+		console.log('[harness] pushing document');
+		await sendNotification(96, '$acceptDocumentsAndEditorsDelta', [{
+			addedDocuments: [{ uri: doc.uri, versionId: 1, lines: [doc.text], EOL: '\n', languageId: 'plaintext', isDirty: false, encoding: 'utf8' }],
+			addedEditors: [{ id: doc.editorId, documentUri: doc.uri, options: { tabSize: 4, indentSize: 4, originalIndentSize: 'tabSize', insertSpaces: true, cursorStyle: 1, lineNumbers: 1 }, selections: [{ selectionStartLineNumber: 1, selectionStartColumn: 1, positionLineNumber: 1, positionColumn: 1 }], visibleRanges: [{ startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 6 }], editorPosition: 1 }],
+			newActiveEditor: doc.editorId
+		}]);
+		await sendNotification(100, '$acceptEditorPropertiesChanged', [doc.editorId, { options: null, selections: { selections: [{ selectionStartLineNumber: 1, selectionStartColumn: 1, positionLineNumber: 1, positionColumn: 1 }], source: 'keyboard' }, visibleRanges: null }]);
+		setTimeout(async () => {
+			console.log('[harness] sending type i');
+			await sendRequest(91, '$executeContributedCommand', ['type', { text: 'i' }]);
+			setTimeout(async () => {
+				console.log('[harness] sending type X');
+				await sendRequest(91, '$executeContributedCommand', ['type', { text: 'X' }]);
+				setTimeout(() => {
+					console.log('[harness] document:', JSON.stringify(doc.text));
+					frame(Buffer.from([3]));
+					setTimeout(() => { child.kill('SIGKILL'); process.exit(doc.text === 'Xhello' ? 0 : 1); }, 1000);
+				}, 1500);
+			}, 800);
+		}, 1500);
+	}, 2000);
 }
