@@ -399,9 +399,10 @@ pub fn main(init: std.process.Init) !void {
             awaiting_input_continuation = false;
         }
 
-        var consumed: usize = 0;
-        var events = try input.decodeWithRemainder(allocator, input_buffer.items, &consumed);
+        const decoded = try input.decodeWithRemainder(allocator, input_buffer.items);
+        var events = decoded.items;
         defer events.deinit(allocator);
+        const consumed = decoded.consumed;
 
         for (events.items) |*item| {
             switch (item.*) {
@@ -698,9 +699,10 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
         if (!ready) continue;
 
         const bytes = try tui.readFd(io, 0, &input_buffer);
-        var consumed: usize = 0;
-        var events = try ui.input.decodeWithRemainder(allocator, bytes, &consumed);
+        const decoded = try ui.input.decodeWithRemainder(allocator, bytes);
+        var events = decoded.items;
         defer events.deinit(allocator);
+        const consumed = decoded.consumed;
 
         var redraw = false;
         for (events.items) |*item| {
