@@ -908,8 +908,8 @@ Editor contributions:
   (`workbench/services/workingCopy/common/workingCopyService.zig`): working-copy
   registration/unregistration by resource/type, dirty/modified tracking,
   `isDirty`, and register/unregister/dirty/content/save events, with the
-  terminal `IWorkingCopy` listener contract and upstream registry-basics /
-  duplicate-identifier tests.
+  terminal `IWorkingCopy` listener contract and the full upstream
+  registry-basics / duplicate-identifier / same-resource-different-type tests.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON

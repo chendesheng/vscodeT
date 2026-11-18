@@ -242,3 +242,27 @@ test "working copy service: duplicate identifiers" {
     defer allocator.free(all_copies);
     try testing.expectEqual(@as(usize, 2), all_copies.len);
 }
+
+test "working copy service: multiple copies on same resource require different type IDs" {
+    const allocator = testing.allocator;
+    var service = WorkingCopyService.init(allocator);
+    defer service.deinit();
+
+    const first = try TestWorkingCopy.create(allocator, "/same.txt", "type1", false);
+    defer first.destroy();
+    const second = try TestWorkingCopy.create(allocator, "/same.txt", "type2", true);
+    defer second.destroy();
+
+    try service.registerWorkingCopy(first.interface());
+    try service.registerWorkingCopy(second.interface());
+
+    const all = service.getAll("/same.txt", allocator).?;
+    defer allocator.free(all);
+    try testing.expectEqual(@as(usize, 2), all.len);
+    try testing.expect(service.isDirty("/same.txt", null));
+    try testing.expect(!service.isDirty("/same.txt", "type1"));
+    try testing.expect(service.isDirty("/same.txt", "type2"));
+    const copies = try service.workingCopies(allocator);
+    defer allocator.free(copies);
+    try testing.expectEqual(@as(usize, 2), copies.len);
+}
