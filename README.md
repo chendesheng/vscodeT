@@ -854,6 +854,12 @@ Editor contributions:
   experiment keys are requested once, and the upstream test cases are ported
   with the terminal `poll` adaptation.
 
+- External file changes now reload clean open editors: `Workbench.handleFileChanges`
+  forwards updated resources to `Editor.reloadFromDisk` (whole-document edit,
+  saved-version reset, cursor reset) while dirty editors keep their in-memory
+  content. Wiring the TUI `UniversalWatcher` into this handler remains host
+  plumbing.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory

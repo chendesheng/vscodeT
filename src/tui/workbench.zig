@@ -824,6 +824,21 @@ pub const Workbench = struct {
 
     /// Drives the settings watcher. Returns true when a settings reload was
     /// performed (or an event was emitted) and the host should repaint.
+    /// Handles external file changes: clean open editors are reloaded, dirty
+    /// ones keep the user's in-memory content (upstream marks the conflict).
+    pub fn handleFileChanges(self: *Workbench, changes: []const @import("../vs/platform/files/common/files.zig").FileChange) void {
+        for (changes) |change| {
+            if (change.type != .UPDATED) continue;
+            for (self.part.group_views.items) |pane| {
+                for (pane.tabs.items) |tab| {
+                    if (!std.mem.eql(u8, tab.editor.path, change.resource)) continue;
+                    if (tab.editor.isDirty()) continue;
+                    tab.editor.reloadFromDisk() catch {};
+                }
+            }
+        }
+    }
+
     pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
         const watcher = self.settings_watcher orelse return false;
         const changed = watcher.poll(now_ms) catch false;
@@ -3904,4 +3919,33 @@ test "Workbench: files.associations change the opened editor language" {
     try workbench.openPath(path);
 
     try std.testing.expectEqualStrings("zig", workbench.activeTab().?.editor.languageId());
+}
+
+test "Workbench: external file changes reload clean editors only" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "external.txt", "before");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
+    defer workbench.deinit();
+
+    const tab = workbench.activeTab().?;
+
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "after" });
+    workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
+    var reloaded = try tab.editor.model.getValue(.TextDefined, true);
+    defer reloaded.deinit();
+    try std.testing.expectEqualStrings("after", reloaded.items);
+
+    // Dirty editors keep the in-memory content.
+    try tab.editor.insertText("local ");
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "external" });
+    workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
+    var preserved = try tab.editor.model.getValue(.TextDefined, true);
+    defer preserved.deinit();
+    try std.testing.expectEqualStrings("local after", preserved.items);
 }

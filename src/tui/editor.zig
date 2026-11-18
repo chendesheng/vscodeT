@@ -1881,6 +1881,29 @@ pub const Editor = struct {
         try self.executeCommands(&[_]?ICommand{command.interface()});
     }
 
+    /// Reloads the editor content from disk (used for external file changes).
+    /// The cursor moves to the start; the reload itself is not undoable in the
+    /// terminal editor because no working-copy model tracks the old state.
+    pub fn reloadFromDisk(self: *Editor) !void {
+        const bytes = try Io.Dir.cwd().readFileAlloc(self.io, self.path, self.allocator, .unlimited);
+        defer self.allocator.free(bytes);
+
+        var current = try self.model.getValue(.TextDefined, true);
+        defer current.deinit();
+        if (std.mem.eql(u8, current.items, bytes)) return;
+
+        const last_line = self.model.getLineCount();
+        const last_column = self.model.getLineMaxColumn(last_line);
+        var operations = [_]IdentifiedSingleEditOperation{.init(
+            Range.init(1, 1, last_line, last_column),
+            if (bytes.len == 0) null else String.initBorrowed(bytes),
+        )};
+        _ = try self.model.applyEdits(&operations, false);
+        self.saved_version = self.model.getAlternativeVersionId();
+        self.refreshDirtyState();
+        try self.setCursorPosition(Position.init(1, 1));
+    }
+
     pub fn save(self: *Editor) !void {
         const value = try self.model.getValue(.TextDefined, true);
         defer value.deinit();
