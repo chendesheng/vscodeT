@@ -937,6 +937,10 @@ Editor contributions:
   states, save/restore cursor state, secondary-cursor removal and
   post-edit validity; the TUI editor retains typing/command orchestration.
 
+- `WorkingCopyHistoryService` is ported in memory: newest-first per-resource
+  entries, per-resource cap, list/remove/clear and change events, with tests.
+  Disk/history persistence remains a documented omission.
+
 - `WorkingCopyBackupService` is ported in memory
   (`workingCopyBackupService.zig`): backup/replace/discard, resource deletion,
   lookup and change events, with a backup/replace/discard/delete test. Disk

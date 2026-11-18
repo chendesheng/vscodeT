@@ -420,6 +420,9 @@ comptime {
     _ = @import("./vs/workbench/services/workingCopy/common/workingCopy.zig");
     _ = @import("./vs/workbench/services/workingCopy/common/workingCopyService.zig");
     _ = @import("./vs/workbench/services/workingCopy/test/common/workingCopyService.test.zig");
+    _ = @import("./vs/workbench/services/workingCopy/common/workingCopyHistory.zig");
+    _ = @import("./vs/workbench/services/workingCopy/common/workingCopyHistoryService.zig");
+    _ = @import("./vs/workbench/services/workingCopy/test/common/workingCopyHistoryService.test.zig");
     _ = @import("./vs/workbench/services/workingCopy/common/workingCopyEditorService.zig");
     _ = @import("./vs/workbench/services/workingCopy/test/browser/workingCopyEditorService.test.zig");
     _ = @import("./vs/workbench/services/workingCopy/common/workingCopyBackup.zig");
