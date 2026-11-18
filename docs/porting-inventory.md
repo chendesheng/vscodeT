@@ -1075,7 +1075,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,086 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,089 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1087,8 +1087,8 @@ remain. P5a/P5b/P5f/P5g
 are complete; P5c has color-theme data/registry/loading, a terminal
 workbench theme service (+ its test suite) and the size registry; P5h has the
 configuration model parser/filters/merges/overrides, registry defaults/policies/
-deregistration, variables, DefaultConfiguration and an in-memory user-target
-ConfigurationService; P5d is ported (associations, workbench registration
+deregistration, variables, DefaultConfiguration, an in-memory user-target
+ConfigurationService and `ExperimentalSettingsService`; P5d is ported (associations, workbench registration
 surface, TUI path matching and settings-driven `files.associations` applied to
 opened editors and on settings reload); P5e has the URI/file-service/editor-input foundation, the provider contracts,
 the in-memory provider, the provider-registry `FileService` (with the upstream
@@ -1096,7 +1096,7 @@ in-memory service suite) and the disk provider (provider contract over
 `std.Io`, with direct and service-backed tests); external disk watcher
 integration and the working-copy wiring remain.
 
-**Status at the end of the current session:** 2,086 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,089 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor view/controller/widget stack and the URI/file
@@ -1109,7 +1109,7 @@ service/editor-input wiring described below.
 | P4 | `editor/browser/view.ts`, `editor/browser/view/viewController.ts`, `editor/browser/widget/codeEditor/codeEditorWidget.ts`, the remaining view parts and the layout-dependent overlays; the computed options (`ComputedEditorOptions`, `EditorLayoutInfoComputer`) are ported |
 | P5e | core `base/common/uri.ts`, `network`/`VSBuffer`/`extpath` helpers, `FileType`/`FileOperation`/`FileChangesEvent`, a disk-backed `DiskFileService` (read/write/stat/rename/copy/recursive delete/directory listing/change events), a minimal `TextFileService`, `FileEditorInput`/serializer and the side-by-side/diff input identity/unwrapping and side-by-side/diff serializers, save/revert forwarding and composite untyped matching are ported; the full provider/event file service remains; minimal text-file editor models and untitled/diff/side-by-side inputs (with serializers) are ported |
 | P5c | `tokenClassificationRegistry`, the TextMate scope matcher, `ColorThemeData` token-style resolution, the terminal `workbenchThemeService` (registration/persistence/migrations) and the `ThemeConfiguration` color-theme/preference subset and its static settings schemas are ported; the dynamic theme-enum schema updates, icon themes and config-watcher plumbing remain |
-| P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering are ported; the workbench experiment/remote suites remain |
+| P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering and `ExperimentalSettingsService` (assignments/coalescing/keyed requests) are ported; the workbench remote configuration suites remain |
 | P2 | `multiEditorTabsControl.test.ts`, browser tooltip cases in `statusbarItem.test.ts`, and the `explorerView.test.ts` tree cases that construct diff/side-by-side inputs |
 | filters | multi-byte highlight selection (#113404) and `Intl.Collator` locale ordering |
 

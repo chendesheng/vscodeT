@@ -846,6 +846,12 @@ Editor contributions:
   rename/copy/open-read-write-close and operation change events) and is tested
   directly and through `ProviderFileService`.
 
+- `ExperimentalSettingsService` (`workbench/services/configuration/common/experimentalSettings.zig`)
+  is ported: assignment membership updates synchronously while change
+  notifications are coalesced through a polled zero-delay scheduler, keyed
+  experiment keys are requested once, and the upstream test cases are ported
+  with the terminal `poll` adaptation.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory
