@@ -404,7 +404,7 @@ pub const EditorGroupModel = struct {
         const make_active = options.active or current_active == null or
             (!make_pinned and self.preview == current_active);
 
-        const existing = self.findEditor(candidate, .{});
+        const existing = self.findEditor(candidate, .{ .support_side_by_side = options.support_side_by_side });
 
         if (existing == null) {
             const new_editor = candidate;

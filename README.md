@@ -873,6 +873,12 @@ Editor contributions:
   render pipeline is tested, including inline decorations. Inline decoration ranges, the browser cursor controller,
   view-model event dispatcher and glyph lanes remain.
 
+- `EditorGroupModel.openEditor` now forwards the requested `supportSideBySide`
+  mode into editor matching, so opening a plain input with
+  `supportSideBySide: BOTH` reuses an existing side-by-side composite. The
+  upstream preference tests (`openEditor` and `indexOf` direct-vs-composite)
+  are ported.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory

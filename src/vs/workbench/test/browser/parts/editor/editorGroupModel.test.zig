@@ -2139,3 +2139,59 @@ test "DiffEditorInput labels and forced descriptions" {
     try std.testing.expectEqualStrings("preferred", same_name.base.getName());
     try std.testing.expect(same_name.base.capabilities & workbench_editor.EditorInputCapabilities.ForceDescription != 0);
 }
+
+test "EditorGroupModel: openEditor prefers existing side by side editor if same" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const input1 = try newInput(allocator, .serializable, "1", "/one");
+    const input2 = try newInput(allocator, .serializable, "2", "/two");
+    const side_mod = @import("../../../../common/editor/sideBySideEditorInput.zig");
+    const side_same = try side_mod.SideBySideEditorInput.init(allocator, null, null, input1, input1);
+    defer side_same.destroy();
+    const side_different = try side_mod.SideBySideEditorInput.init(allocator, null, null, input1, input2);
+    defer side_different.destroy();
+
+    var result = try group.openEditor(&side_same.base, .{ .pinned = true, .active = true });
+    try std.testing.expect(result.editor == &side_same.base);
+    try std.testing.expect(result.is_new);
+
+    result = try group.openEditor(input1, .{ .pinned = true, .active = true, .support_side_by_side = .BOTH });
+    try std.testing.expect(result.editor == &side_same.base);
+    try std.testing.expect(!result.is_new);
+
+    _ = try group.closeEditor(&side_same.base, .UNKNOWN, true);
+    result = try group.openEditor(&side_different.base, .{ .pinned = true, .active = true });
+    try std.testing.expect(result.editor == &side_different.base);
+    try std.testing.expect(result.is_new);
+
+    result = try group.openEditor(input1, .{ .pinned = true, .active = true });
+    try std.testing.expect(result.editor == input1);
+    try std.testing.expect(result.is_new);
+}
+
+test "EditorGroupModel: indexOf prefers a direct match over side by side" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const group = try makeGroup(allocator, .{});
+    defer group.deinit();
+
+    const input1 = try newInput(allocator, .serializable, "1", "/one");
+    const side = try @import("../../../../common/editor/sideBySideEditorInput.zig").SideBySideEditorInput.init(allocator, null, null, input1, input1);
+    defer side.destroy();
+    _ = try group.openEditor(&side.base, .{ .pinned = true, .active = true });
+
+    try std.testing.expectEqual(@as(?usize, 0), group.indexOf(.{ .input = &side.base }));
+    try std.testing.expectEqual(@as(?usize, null), group.indexOf(.{ .input = input1 }));
+    try std.testing.expectEqual(@as(?usize, 0), group.indexOfWith(.{ .input = input1 }, .{ .support_side_by_side = .BOTH }));
+    try std.testing.expectEqual(@as(?usize, 0), group.indexOfWith(.{ .input = input1 }, .{ .support_side_by_side = .ANY }));
+
+    _ = try group.openEditor(input1, .{ .pinned = true, .active = true });
+    try std.testing.expectEqual(@as(?usize, 1), group.indexOf(.{ .input = input1 }));
+    try std.testing.expectEqual(@as(?usize, 1), group.indexOfWith(.{ .input = input1 }, .{ .support_side_by_side = .BOTH }));
+    try std.testing.expectEqual(@as(?usize, 1), group.indexOfWith(.{ .input = input1 }, .{ .support_side_by_side = .ANY }));
+}

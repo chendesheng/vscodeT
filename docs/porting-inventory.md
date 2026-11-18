@@ -1083,7 +1083,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,098 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,100 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1109,7 +1109,7 @@ folders and forwards its changes into that handler. The broader working-copy
 model (encoding, conflicts, save participants, untitled/diff working copies)
 remains.
 
-**Status at the end of the current session:** 2,098 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,100 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor cursor/controller/widget stack and the URI/file
@@ -1138,7 +1138,7 @@ cannot host are listed under documented omissions.
 | P5e | core `base/common/uri.ts`, `network`/`VSBuffer`/`extpath` helpers, `FileType`/`FileOperation`/`FileChangesEvent`, a disk-backed `DiskFileService` (read/write/stat/rename/copy/recursive delete/directory listing/change events), a minimal `TextFileService`, `FileEditorInput`/serializer and the side-by-side/diff input identity/unwrapping and side-by-side/diff serializers, save/revert forwarding and composite untyped matching are ported; the full provider/event file service remains; minimal text-file editor models and untitled/diff/side-by-side inputs (with serializers) are ported |
 | P5c | `tokenClassificationRegistry`, the TextMate scope matcher, `ColorThemeData` token-style resolution, the terminal `workbenchThemeService` (registration/persistence/migrations) and the `ThemeConfiguration` color-theme/preference subset and its static settings schemas are ported; icon themes and extension-enumerated theme values are documented terminal omissions, and theme settings re-application is host wiring |
 | P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering and `ExperimentalSettingsService` (assignments/coalescing/keyed requests) are ported; remote-agent configuration suites are a documented terminal omission |
-| P2 | `multiEditorTabsControl.test.ts`, browser tooltip cases in `statusbarItem.test.ts`, and the `explorerView.test.ts` tree cases that construct diff/side-by-side inputs |
+| P2 | `multiEditorTabsControl.test.ts`, browser tooltip cases in `statusbarItem.test.ts`, and the `explorerView.test.ts` tree cases that construct diff/side-by-side inputs; `editorGroupModel.test.ts` now has the direct-vs-side-by-side open/index preferences |
 | filters | multi-byte highlight selection (#113404) and `Intl.Collator` locale ordering |
 
 **Known blockers for the remaining work**
