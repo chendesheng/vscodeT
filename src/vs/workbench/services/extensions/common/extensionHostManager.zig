@@ -90,6 +90,8 @@ pub const HostManager = struct {
     queue: std.array_list.Managed([]u8),
     queue_mutex: std.Io.Mutex = .init,
     reader: ?std.Thread = null,
+    stderr_reader: ?std.Thread = null,
+    stderr_log: ?std.Io.File = null,
     eof: bool = false,
     started: bool = false,
     stopped: bool = false,
@@ -129,8 +131,12 @@ pub const HostManager = struct {
             .argv = &.{ options.node_path, options.host_script, "--socket", self.socket_path },
             .stdin = .ignore,
             .stdout = .ignore,
-            .stderr = .inherit,
+            .stderr = .pipe,
         }) catch return ExtensionHostError.HostExited;
+
+        const stderr_path = try std.fs.path.join(allocator, &.{ options.data_path, "extension-host.log" });
+        defer allocator.free(stderr_path);
+        self.stderr_log = std.Io.Dir.cwd().createFile(self.io, stderr_path, .{ .read = true }) catch null;
 
         // Bound the accept so a host that dies before connecting does not
         // hang the editor forever.
@@ -148,6 +154,7 @@ pub const HostManager = struct {
         self.sender.* = .{ .stream = self.stream, .io = self.io };
         self.rpc = rpcProtocol.RpcProtocol.init(allocator, self.sender.transport());
         self.reader = try std.Thread.spawn(.{}, readerLoop, .{self});
+        self.stderr_reader = try std.Thread.spawn(.{}, stderrLoop, .{self});
         return self;
     }
 
@@ -160,6 +167,7 @@ pub const HostManager = struct {
         self.allocator.destroy(self.sender);
         for (self.queue.items) |frame| self.allocator.free(frame);
         self.queue.deinit();
+        if (self.stderr_log) |file| file.close(self.io);
         self.io_state.deinit();
         self.allocator.destroy(self);
     }
@@ -177,6 +185,10 @@ pub const HostManager = struct {
             self.stream.close(self.io);
             thread.join();
             self.reader = null;
+        }
+        if (self.stderr_reader) |thread| {
+            thread.join();
+            self.stderr_reader = null;
         }
         if (self.child.id != null) {
             self.child.kill(self.io);
@@ -209,6 +221,17 @@ pub const HostManager = struct {
             }
         }
         self.setEof();
+    }
+
+    fn stderrLoop(self: *HostManager) void {
+        const log_file = self.stderr_log orelse return;
+        const stderr = self.child.stderr orelse return;
+        var buffer: [4096]u8 = undefined;
+        while (true) {
+            const count = stderr.readStreaming(self.io, &.{&buffer}) catch break;
+            if (count == 0) break;
+            log_file.writeStreamingAll(self.io, buffer[0..count]) catch break;
+        }
     }
 
     fn setEof(self: *HostManager) void {

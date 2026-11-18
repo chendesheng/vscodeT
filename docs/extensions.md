@@ -1597,10 +1597,9 @@ extension from the editor's files or from the host process.
   so a process crash still loses them (§16).
 - **Quit.** Send `Terminate`, drain, close fd 4, wait for exit with a timeout,
   then kill. Deactivate extensions host-side before the transport closes.
-- **Logs.** Host stderr and `MainThreadConsole` messages go through the
-  ported `platform/log` service (`ILogService`, with `src/tui/logger.zig` as
-  the terminal file logger), not the ANSI frame stream. Do not keep a second
-  logger in the extension adapter.
+- **Logs.** Host stderr is captured to `<data dir>/extension-host.log` and
+  `MainThreadConsole` messages are currently dropped. Neither may reach the
+  ANSI frame stream; do not keep a second logger in the extension adapter.
 
 The manager state to mirror is small and should not be rebuilt ad hoc:
 

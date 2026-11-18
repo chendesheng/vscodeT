@@ -79,8 +79,10 @@ editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
 `o`/`O`, `:e`/`:w`/`:q`, `:bd`, and `:bnext` across open tabs work in this loop;
 the status bar shows its mode entry.
 
-`test-e2e` is skipped unless `host/dist/extensionHost.mjs` and the extracted
-fixture at `.cache-ext/vim/extension` are present. Still missing: the
+Host stderr is written to `<data dir>/extension-host.log` (normally
+`~/.local/state/vscode-textbuffer/extensions/extension-host.log`) so it cannot
+corrupt the TUI frame. `test-e2e` is skipped unless `host/dist/extensionHost.mjs`
+and the extracted fixture at `.cache-ext/vim/extension` are present. Still missing: the
 contribution scanner, configuration writes, full `tabGroups`, the built-in
 command set VSCodeVim delegates to, and the extension keybinding registry. See
 `docs/extensions.md` for the port status and the remaining work.
