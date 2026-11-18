@@ -713,10 +713,12 @@ Editor contributions:
   `src/tui/session.zig` stores the group list and active group as JSON.
   `--session <file>` restores them on startup and writes them back on exit; a
   missing file falls back to the given paths. Split positions are restored as
-  equal horizontal splits. Dirty working copies are not persisted because the
-  working-copy backup service is not ported. Side-by-side/diff inputs, settings
-  editors are still not ported; tab drag-and-drop moves tabs between groups
-  but does not reorder them within one strip. Quick open searches
+  equal horizontal splits. Dirty working copies are not persisted by the
+  session format (the in-memory backup/history services are ported but not
+  wired into session restore). Side-by-side/diff inputs exist at the workbench
+  layer while the TUI tab strip remains single-editor; the Settings editor is
+  still a placeholder; tab drag-and-drop moves tabs between groups but does not
+  reorder them within one strip. Quick open searches
   workspace files and the TUI command table; extension-contributed commands and
   files outside the workspace are not reachable through it yet.
 - Known limitations: `MoveLinesCommand` does not yet implement VS Code's

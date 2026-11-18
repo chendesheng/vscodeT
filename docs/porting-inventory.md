@@ -1,8 +1,12 @@
 # TUI porting inventory
 
-Status: P1, P2, P3, the Search view/result-list port and P5f (log service) are
-implemented; P4 and the remaining P5 slices remain. The file table (§7) and
-the UI/view code map (§7.1) are current at the snapshot HEAD.
+Status: all inventory slices are implemented in the terminal's shape. P1–P3
+are complete; P4 has the full terminal view/view-model/controller/widget stack
+(DOM-only parts are documented omissions); P5a–P5h are complete except the
+documented terminal omissions (Icon themes/extension-enumerated values,
+heuristic charset guessing, remote-agent suites, disk backup/history
+persistence, ICU collation, browser-only tab/tooltip/view DOM cases). The file
+table (§7) and the UI/view code map (§7.1) are current at the snapshot HEAD.
 
 - Local snapshot: `src/tui/` at HEAD `cd69afb` (28 files, 19,012 lines).
 - Upstream: VS Code **1.147.0**, `../vscode` at commit `e31c2e52`.
@@ -11,16 +15,18 @@ the UI/view code map (§7.1) are current at the snapshot HEAD.
   it answers which terminal-side code is actually portable VS Code logic,
   where that logic belongs, and in what order it can be moved.
 
-Line numbers for `src/tui/...` refer to this working-tree snapshot. A number in
-parentheses after an upstream path is the line of the named class or function
-in the pinned upstream checkout. Upstream `.ts` paths are relative to
+Sections 1–7 are the original audit and plan: their “remaining” notes describe
+the starting snapshot, not the current tree (see §0, the current snapshot and
+the end status). Line numbers for `src/tui/...` refer to this working-tree
+snapshot. Upstream `.ts` paths are relative to
 `../vscode/src/vs/` unless they start with `src/`. Zig paths ending in `.zig`
 are local; when written without a `src/` prefix (`vs/...`, `platform/...`,
 `editor/...`, `base/...`, `workbench/...`), the prefix is relative to `src/`.
 
 ## 0. Implementation status
 
-P1, P2 and P5f are implemented.
+P1–P3 are implemented. P4 and P5a–P5h are implemented in the terminal shape
+with the documented omissions listed at the end of this document.
 
 **P1 (Explorer filter):**
 - `FilesFilter` moved to
@@ -151,7 +157,13 @@ P1 is the first slice, P5 is the last. Priority includes risk and dependency,
 not only value: a small self-contained port with an upstream test is preferred
 over a larger port that needs missing services.
 
-## 4. Headline findings
+## 4. Headline findings (initial audit)
+
+> These findings describe the starting snapshot and remain useful as history;
+> the current implementation status is in §0 and the end-of-document status
+> block.
+
+
 
 1. **The largest unported portable block is the editor browser stack.**
    `src/tui/editor.zig` (2,654 lines) and `src/tui/view.zig` (3,346 lines)
@@ -1113,15 +1125,19 @@ now reload on external changes
 (`Workbench.handleFileChanges` → `Editor.reloadFromDisk`), with dirty editors
 preserved and marked as conflicted (status message, cleared by save/reload or the `workbench.action.files.revert` command); the workbench now
 starts a `UniversalWatcher` for absolute workspace folders and forwards its
-changes into that handler. The broader working-copy model (conflict UI, save
-participants, untitled/diff working copies) remains.
+changes into that handler. The working-copy model includes the registry/editor service, save participants
+and in-memory history/backups; disk persistence and the browser conflict
+notification UI are documented terminal omissions.
 
 **Status at the end of the current session:** 2,124 editor tests, 187 UI tests
-and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
-P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
-The remaining work is the editor cursor/controller/widget stack and the URI/file
-service/editor-input working-copy wiring described below. Items the terminal
-cannot host are listed under documented omissions.
+and 58/60 textmate tests pass from a clean build. All inventory slices are
+implemented in terminal shape. P4 includes the terminal `View`, controller,
+`codeEditorWidget`, `ViewModel` (lines/decorations/glyph lanes/event
+dispatcher), cursor selection/state and renderer features; P5e includes the
+provider/disk file services, encoding, save participants, revert, working-copy
+registry/editor service and in-memory backups/history wired to the TUI. The
+remaining differences are the documented terminal omissions below (plus the
+browser-only view/tab DOM parts).
 
 **Documented terminal omissions**
 
