@@ -406,6 +406,32 @@ fn isMatched(matches: []const @import("../vs/base/common/filters.zig").Match, of
     return false;
 }
 
+test "QuickPickWidget: focused empty input shows a caret with its placeholder" {
+    const allocator = std.testing.allocator;
+    var picker = QuickPick.init(allocator);
+    defer picker.deinit();
+    picker.setPlaceholder("Type a file");
+
+    const widget = try QuickPickWidget.init(allocator);
+    defer widget.deinit();
+
+    var frame = try ui.Frame.init(allocator, 40, 10);
+    defer frame.deinit();
+    frame.begin();
+    const layout = try widget.render(&picker, &frame.next);
+    try std.testing.expectEqual(@as(usize, 1), layout.height);
+
+    const row = try frame.next.rowText(allocator, layout.y);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "Type a file") != null);
+    const grid = frame.next;
+    try std.testing.expect(grid.attrs[grid.index(layout.x, layout.y)] & ui.cell.Attr.inverse != 0);
+    try std.testing.expectEqual(
+        @as(u16, 0),
+        grid.attrs[grid.index(layout.x + 1, layout.y)] & ui.cell.Attr.inverse,
+    );
+}
+
 test "QuickPickWidget: renders input, items, separators and active row" {
     const allocator = std.testing.allocator;
     var picker = QuickPick.init(allocator);

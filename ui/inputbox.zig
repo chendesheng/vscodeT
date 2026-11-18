@@ -60,8 +60,10 @@ pub const InputBox = struct {
     enabled: bool = true,
     placeholder: []const u8 = "",
     /// Show the placeholder even while the box is focused and empty. The
-    /// quick pick uses this; the find bar keeps the browser-like behavior
-    /// where a focused empty box shows only its caret.
+    /// block caret is painted over the first placeholder cell so focus stays
+    /// visible. The quick pick and workbench search fields use this; the find
+    /// bar keeps the browser-like behavior where a focused empty box shows
+    /// only its caret.
     placeholder_when_focused: bool = false,
     color: ?Color = null,
     placeholder_color: ?Color = null,
@@ -292,10 +294,32 @@ pub const InputBox = struct {
         if (self.value.items.len == 0 and
             (!self.focused or !self.enabled or self.placeholder_when_focused))
         {
+            const shows_caret = self.focused and self.enabled;
             if (self.placeholder.len > 0) {
-                try appendText(doc, root, self.placeholder, .{
+                var first_len: usize = 0;
+                if (shows_caret) {
+                    const decoded = dom.decodeAt(self.placeholder, 0);
+                    first_len = if (decoded.len == 0) 1 else decoded.len;
+                    if (first_len > self.placeholder.len) first_len = self.placeholder.len;
+                }
+                if (first_len > 0) {
+                    // The caret is the cell under the block cursor. Empty
+                    // inputs otherwise render only the focused placeholder,
+                    // which leaves no visible caret on terminal hosts.
+                    try appendText(doc, root, self.placeholder[0..first_len], .{
+                        .color = self.placeholder_color,
+                        .dim = true,
+                        .reverse = true,
+                    });
+                }
+                try appendText(doc, root, self.placeholder[first_len..], .{
                     .color = self.placeholder_color,
                     .dim = true,
+                });
+            } else if (shows_caret) {
+                try appendText(doc, root, " ", .{
+                    .color = self.color,
+                    .reverse = true,
                 });
             }
             self.view_start = 0;
@@ -1124,6 +1148,9 @@ test "InputBox: placeholder can show while focused" {
     const row = try renderRow(&surface, &input, allocator, 16);
     defer allocator.free(row);
     try std.testing.expect(std.mem.startsWith(u8, row, "Search files"));
+    const grid = surface.grid();
+    try std.testing.expect(grid.attrs[grid.index(0, 0)] & cell.Attr.inverse != 0);
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(1, 0)] & cell.Attr.inverse);
 }
 
 test "InputBox: placeholder shows while empty and unfocused" {
