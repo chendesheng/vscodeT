@@ -10,6 +10,8 @@ const std = @import("std");
 const ui = @import("ui");
 const part_mod = @import("../../../../browser/parts/statusbar/statusbarPart.zig");
 const StatusbarPart = part_mod.StatusbarPart;
+const item_mod = @import("../../../../browser/parts/statusbar/statusbarItem.zig");
+const StatusbarItem = item_mod.StatusbarItem;
 const statusbar = @import("../../../../services/statusbar/browser/statusbar.zig");
 
 fn rowText(grid: *ui.CellGrid, row: usize) ![]u8 {
@@ -141,4 +143,42 @@ test "StatusbarPart: multiple right entries stay on the row" {
     try std.testing.expect(std.mem.indexOf(u8, row, "R1") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, "R2") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, "R3") != null);
+}
+
+test "StatusbarPart: hover background covers only the hovered item" {
+    var part = try StatusbarPart.init(std.testing.allocator);
+    defer part.deinit();
+    _ = try part.addEntry(.{ .name = "a", .text = "A" }, "a", .right, .{ .number = 3 });
+    const middle = try part.addEntry(.{ .name = "b", .text = "B" }, "b", .right, .{ .number = 2 });
+    _ = try part.addEntry(.{ .name = "c", .text = "C" }, "c", .right, .{ .number = 1 });
+
+    var grid = try ui.CellGrid.init(std.testing.allocator, 20, 1);
+    defer grid.deinit();
+    part.setHovered(middle.handle);
+    try part.render(&grid, .{ .x = 0, .y = 0, .w = 20, .h = 1 }, .{});
+
+    const row = try rowText(&grid, 0);
+    defer std.testing.allocator.free(row);
+    const middle_column = std.mem.indexOfScalar(u8, row, 'B').?;
+    const hover_bg = ui.cell.packColor(StatusbarItem.init(.{
+        .name = "b",
+        .text = "B",
+    }).labelBackground(true));
+
+    var hover_start: ?usize = null;
+    var hover_cells: usize = 0;
+    for (0..grid.cols) |column| {
+        if (grid.bg[grid.index(column, 0)] != hover_bg) continue;
+        if (hover_start == null) hover_start = column;
+        hover_cells += 1;
+    }
+
+    // "B" is a middle entry, so it has one cell of padding on each side.
+    try std.testing.expectEqual(@as(usize, 3), hover_cells);
+    const start = hover_start.?;
+    try std.testing.expect(start <= middle_column);
+    try std.testing.expect(middle_column < start + hover_cells);
+    for (start..start + hover_cells) |column| {
+        try std.testing.expectEqual(hover_bg, grid.bg[grid.index(column, 0)]);
+    }
 }

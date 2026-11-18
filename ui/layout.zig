@@ -397,6 +397,11 @@ fn placeInlineFragments(ctx: *LayoutContext, run: *LayoutBox, wrapped: text_layo
             if (segment.kind == .edge) continue;
             const left = segment.x;
             const right = segment.x + segment.width;
+            // A bare text box is its own formatting context. Walking its
+            // ancestors would union every containing block into the text
+            // fragment and corrupt their rects (their padding/content rects
+            // stay correct, so backgrounds and hit testing diverge).
+            if (run.kind == .text) continue;
             var ancestor = segment.box.parent;
             while (ancestor) |current| : (ancestor = current.parent) {
                 if (current == run) break;
@@ -2479,6 +2484,46 @@ test "layout: inline-flex shrink-wraps on an inline line" {
     try std.testing.expectEqual(@as(f64, 1), inline_box.asElement().rect.h);
     try std.testing.expectEqual(@as(f64, 0), a.asElement().rect.x);
     try std.testing.expectEqual(@as(f64, 3), b.asElement().rect.x);
+}
+
+test "layout: block text does not expand flex item ancestor rects" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 1 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 20 },
+        .height = .{ .cells = 1 },
+        .display = .flex,
+    });
+    doc.setRoot(root);
+
+    const spacer = try testBox(&doc, root, .{
+        .width = .{ .cells = 5 },
+        .height = .{ .cells = 1 },
+        .flex_shrink = 0,
+    });
+    const item = try testBox(&doc, root, .{
+        .display = .inline_block,
+        .height = .{ .cells = 1 },
+    });
+    const label = try testBox(&doc, item, .{
+        .display = .flex,
+        .height = .{ .percent = 100 },
+        .padding = .{ .left = 1, .right = 1 },
+    });
+    const text = try testText(&doc, label, "B", .{});
+
+    try layoutDocument(&doc);
+
+    try std.testing.expectEqual(@as(f64, 0), spacer.asElement().rect.x);
+    try std.testing.expectEqual(@as(f64, 5), item.asElement().rect.x);
+    try std.testing.expectEqual(@as(f64, 3), item.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 5), label.asElement().rect.x);
+    try std.testing.expectEqual(@as(f64, 3), label.asElement().rect.w);
+    try std.testing.expectEqual(@as(f64, 6), text.asText().rect.x);
 }
 
 test "layout: max-width shrink-wraps an inline-block" {
