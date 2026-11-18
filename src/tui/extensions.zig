@@ -285,8 +285,14 @@ pub const Extensions = struct {
 
     fn syncTabs(self: *Extensions) !void {
         const active_tab = self.workbench.activeTab() orelse return;
-        var signature: u64 = @intCast(self.workbench.tabCount());
-        signature ^= std.hash.Wyhash.hash(0, active_tab.editor.path);
+        var signature: u64 = 0;
+        for (self.workbench.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                signature = signature *% 1099511628211;
+                signature ^= std.hash.Wyhash.hash(0, tab.editor.path);
+                if (tab.editor.dirty_state) signature ^= 0x9e3779b97f4a7c15;
+            }
+        }
         if (signature == self.tab_signature) return;
         self.tab_signature = signature;
 
@@ -424,7 +430,15 @@ pub const Extensions = struct {
                 self.executeCommand("extension.vim_escape", &.{});
                 return true;
             },
+            .insert => {
+                self.executeCommand("extension.vim_insert", &.{});
+                return true;
+            },
             .backspace => {
+                if (event.mods.shift and !event.mods.ctrl) {
+                    self.executeCommand("extension.vim_shift+backspace", &.{});
+                    return true;
+                }
                 self.executeCommand("extension.vim_backspace", &.{});
                 return true;
             },
@@ -472,7 +486,6 @@ pub const Extensions = struct {
                 self.executeCommand(if (event.mods.ctrl) "extension.vim_ctrl+pagedown" else "extension.vim_ctrl+f", &.{});
                 return true;
             },
-            else => {},
         }
         return false;
     }
