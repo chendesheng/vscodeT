@@ -143,7 +143,19 @@ const pane_border_width: u8 = 32;
 const DropZone = editor_drop_target.Zone;
 const DropTarget = editor_drop_target.Target(*GroupPane);
 const PendingTabDrag = struct { pane: *GroupPane, tab: *Tab, x: usize, y: usize };
-const TabClick = struct { pane: *GroupPane, tab: *Tab, at_ms: i64, x: usize, y: usize };
+const TabClick = struct {
+    pane: *GroupPane,
+    tab: *Tab,
+    at_ms: i64,
+    x: usize,
+    y: usize,
+    /// Geometry of the clicked tab in the frame the click was recorded in.
+    /// The strip can scroll when the click activates a partially visible tab,
+    /// so the second click is matched against the old rectangle instead of
+    /// trusting the new frame's hit.
+    start: usize,
+    end: usize,
+};
 
 const LayoutNode = grid_mod.Node(*GroupPane);
 
@@ -1719,8 +1731,21 @@ pub const Workbench = struct {
         if (self.drag_tab == null) return false;
         switch (event.kind) {
             .move => self.updateDragTarget(event),
-            .up => self.finishTabDrag(),
-            .click, .down => self.clearTabDrag(),
+            .up => {
+                self.finishTabDrag();
+                return true;
+            },
+            .click => {
+                self.clearTabDrag();
+                return true;
+            },
+            .down => {
+                // A second press during a pending drag is often the second
+                // half of a double click (hand jitter starts the drag). Let
+                // the tab strip handle it so the preview can be pinned.
+                self.clearTabDrag();
+                return false;
+            },
             .wheel => return false,
         }
         return true;
@@ -2170,6 +2195,33 @@ pub const Workbench = struct {
 
         if (event.kind == .down and pane.tabs.items.len > 0) {
             self.service.activateGroup(pane.group);
+
+            // A double click is matched against the rectangle the first click
+            // recorded. Activating a partially visible tab can scroll the
+            // strip, so the second cell may now belong to a different tab.
+            const now = @import("../vs/base/common/timeCompat.zig").milliTimestamp();
+            if (event.button == .left) {
+                if (self.last_tab_click) |previous| {
+                    if (previous.pane == pane and event.y == previous.y and
+                        event.x >= previous.start and event.x < previous.end and
+                        now - previous.at_ms <= 800 and
+                        pane.indexOfTab(previous.tab) != null)
+                    {
+                        self.last_tab_click = null;
+                        // Upstream: double click pins a preview tab; a pinned
+                        // tab toggles the group size (default: expand).
+                        if (pane.group.model.isPinned(.{ .editor = &previous.tab.input.base })) {
+                            self.toggleExpandGroup(pane);
+                        } else {
+                            _ = pane.group.model.pin(&previous.tab.input.base) catch {};
+                        }
+                        self.focusEditor();
+                        self.breadcrumbs_dirty = true;
+                        return true;
+                    }
+                }
+            }
+
             if (event.button == .middle) {
                 if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                     if (self.orderedTabAt(pane, index)) |tab| {
@@ -2187,37 +2239,22 @@ pub const Workbench = struct {
             if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                 const tab = self.orderedTabAt(pane, index);
                 if (tab) |value| {
-                    const now = @import("../vs/base/common/timeCompat.zig").milliTimestamp();
-                    var double_click = false;
-                    if (self.last_tab_click) |previous| {
-                        const close_enough = event.x -| previous.x <= 2 and previous.x -| event.x <= 2 and
-                            event.y == previous.y;
-                        if (previous.pane == pane and previous.tab == value and close_enough and
-                            now - previous.at_ms <= 500)
-                        {
-                            double_click = true;
+                    if (event.button == .left) {
+                        const hit = for (pane.hits.items) |candidate| {
+                            if (candidate.index == index) break candidate;
+                        } else null;
+                        if (hit) |entry| {
+                            self.last_tab_click = .{
+                                .pane = pane,
+                                .tab = value,
+                                .at_ms = now,
+                                .x = event.x,
+                                .y = event.y,
+                                .start = entry.start,
+                                .end = entry.end,
+                            };
                         }
                     }
-                    if (double_click) {
-                        self.last_tab_click = null;
-                        // Upstream: double click pins a preview tab; a pinned
-                        // tab toggles the group size (default: expand).
-                        if (pane.group.model.isPinned(.{ .editor = &value.input.base })) {
-                            self.toggleExpandGroup(pane);
-                        } else {
-                            _ = pane.group.model.pin(&value.input.base) catch {};
-                        }
-                        self.focusEditor();
-                        self.breadcrumbs_dirty = true;
-                        return true;
-                    }
-                    self.last_tab_click = .{
-                        .pane = pane,
-                        .tab = value,
-                        .at_ms = now,
-                        .x = event.x,
-                        .y = event.y,
-                    };
                 }
                 self.activateIndex(index) catch {};
                 if (tab) |value| {
@@ -3461,6 +3498,11 @@ fn clickStatusEntry(workbench: *Workbench, id: []const u8) !bool {
         }
     }
     return false;
+}
+
+fn grid_attr_italic(grid: *const ui.CellGrid, col: usize, row: usize) bool {
+    if (row >= grid.rows or col >= grid.cols) return false;
+    return grid.attrs[row * grid.cols + col] & ui.cell.Attr.italic != 0;
 }
 
 fn seedFile(allocator: Allocator, io: Io, tmp: *std.testing.TmpDir, name: []const u8, contents: []const u8) ![]u8 {
@@ -5231,10 +5273,23 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     var first = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&first));
     try std.testing.expect(!pane.group.model.isPinned(.{ .editor = &workbench.activeTab().?.input.base }));
+    // A real terminal also delivers the release between the two presses.
+    var up = ui.MouseEvent{ .kind = .up, .x = x, .y = y, .button = .left };
+    try std.testing.expect(workbench.handleTabMouse(&up));
+    // Simulate a slow second click caused by the first activation's work.
+    workbench.last_tab_click.?.at_ms -= 700;
     var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&second));
     try std.testing.expect(pane.group.model.isPinned(.{ .editor = &workbench.activeTab().?.input.base }));
     try std.testing.expect(workbench.expanded_pane == null);
+
+    // The UI repaints the now-pinned label without italics.
+    try workbench.render(&out.writer);
+    const hit_after = pane.hits.items[0];
+    var col = hit_after.start;
+    while (col < hit_after.end) : (col += 1) {
+        try std.testing.expect(grid_attr_italic(&workbench.frame.prev, col, y) == false);
+    }
 
     // A second double click on the now-pinned tab expands the group.
     var third = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
@@ -5250,4 +5305,41 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     var sixth = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&sixth));
     try std.testing.expect(workbench.expanded_pane == null);
+}
+
+test "Workbench: double click still pins after a jittery drag starts" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "jitter.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 40, 10);
+    defer workbench.deinit();
+    try workbench.openPreviewPath(path);
+    try workbench.activeTab().?.ensureControllers();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.activePane().?;
+    const hit = pane.hits.items[0];
+    const x = hit.start + 1;
+    const y = ui.cell.snap(pane.rect.y);
+    var first = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
+    try std.testing.expect(workbench.handleTabMouse(&first));
+
+    // Hand jitter turns the pending click into a drag before the second press.
+    var jitter = ui.MouseEvent{ .kind = .move, .x = x + 3, .y = y, .button = .left };
+    try std.testing.expect(!workbench.handleTabDragMouse(&jitter));
+    try std.testing.expect(workbench.handleTabMouse(&jitter));
+    try std.testing.expect(workbench.drag_tab != null);
+
+    var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
+    try std.testing.expect(!workbench.handleTabDragMouse(&second));
+    try std.testing.expect(workbench.handleTabMouse(&second));
+    try std.testing.expect(pane.group.model.isPinned(.{ .editor = &workbench.activeTab().?.input.base }));
 }
