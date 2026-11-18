@@ -323,6 +323,9 @@ pub fn main(init: std.process.Init) !void {
     try out.flush();
 
     var needs_render = false;
+    // A read can end in the middle of an escape sequence. Keep those bytes
+    // and wait for the rest instead of decoding the tail as typed text.
+    var awaiting_input_continuation = false;
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.pollFileWatcher(now_ms)) needs_render = true;
@@ -363,7 +366,8 @@ pub fn main(init: std.process.Init) !void {
         if (polled.extra) {
             if (workbench.pollFileWatcher(time_compat.milliTimestamp())) needs_render = true;
         }
-        const ready = input_buffer.items.len != 0 or polled.input;
+        const ready = polled.input or
+            (input_buffer.items.len != 0 and !awaiting_input_continuation);
         var resized = false;
         if (try tui.resizedSize()) |new_size| {
             size = new_size;
@@ -390,11 +394,13 @@ pub fn main(init: std.process.Init) !void {
 
         // Leftover bytes from the capability probe are processed before a new
         // read; both the border reply and DA1 are ignored by the decoder.
-        if (input_buffer.items.len == 0) {
+        if (input_buffer.items.len == 0 or polled.input) {
             _ = try tui.readFd(io, 0, &input_buffer);
+            awaiting_input_continuation = false;
         }
 
-        var events = try input.decode(allocator, input_buffer.items);
+        var consumed: usize = 0;
+        var events = try input.decodeWithRemainder(allocator, input_buffer.items, &consumed);
         defer events.deinit(allocator);
 
         for (events.items) |*item| {
@@ -467,7 +473,15 @@ pub fn main(init: std.process.Init) !void {
                 },
             }
         }
-        input_buffer.clearRetainingCapacity();
+        if (consumed < input_buffer.items.len) {
+            const remainder = input_buffer.items.len - consumed;
+            std.mem.copyForwards(u8, input_buffer.items[0..remainder], input_buffer.items[consumed..]);
+            input_buffer.shrinkRetainingCapacity(remainder);
+            awaiting_input_continuation = true;
+        } else {
+            input_buffer.clearRetainingCapacity();
+            awaiting_input_continuation = false;
+        }
 
         if (workbench.activeTab()) |current| {
             current.onEditorChanged(time_compat.milliTimestamp());
@@ -683,10 +697,9 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
 
         if (!ready) continue;
 
-        input_buffer.clearRetainingCapacity();
         const bytes = try tui.readFd(io, 0, &input_buffer);
-
-        var events = try ui.input.decode(allocator, bytes);
+        var consumed: usize = 0;
+        var events = try ui.input.decodeWithRemainder(allocator, bytes, &consumed);
         defer events.deinit(allocator);
 
         var redraw = false;
@@ -700,6 +713,13 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
                 },
             }
             if (preview.shouldQuit()) return;
+        }
+        if (consumed < input_buffer.items.len) {
+            const remainder = input_buffer.items.len - consumed;
+            std.mem.copyForwards(u8, input_buffer.items[0..remainder], input_buffer.items[consumed..]);
+            input_buffer.shrinkRetainingCapacity(remainder);
+        } else {
+            input_buffer.clearRetainingCapacity();
         }
         if (redraw) {
             try preview.render(out);

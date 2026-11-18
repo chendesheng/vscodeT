@@ -344,7 +344,7 @@ pub fn readFd(io: Io, fd: anytype, buffer: *ArrayList(u8)) ![]const u8 {
         if (n > 0) try buffer.appendSlice(tmp[0..n]);
         return buffer.items;
     }
-    var tmp: [32]u8 = undefined;
+    var tmp: [4096]u8 = undefined;
     while (true) {
         const n = try posix.read(fd, &tmp);
         if (n > 0) {

@@ -28,20 +28,33 @@ pub const Item = union(enum) {
     mouse: MouseEvent,
 };
 
+pub const DecodeResult = struct {
+    items: std.ArrayList(Item),
+    /// Bytes consumed. A trailing incomplete escape sequence is left after
+    /// this offset so a caller reading a terminal can wait for the rest and
+    /// decode the sequence instead of typing its tail as text.
+    consumed: usize,
+};
+
 pub fn decode(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Item) {
-    var tokens = try tokenize(allocator, input);
-    defer tokens.deinit(allocator);
+    const result = try decodeWithRemainder(allocator, input);
+    return result.items;
+}
+
+pub fn decodeWithRemainder(allocator: std.mem.Allocator, input: []const u8) !DecodeResult {
+    var tokenized = try tokenize(allocator, input);
+    defer tokenized.tokens.deinit(allocator);
 
     var result: std.ArrayList(Item) = .empty;
     errdefer result.deinit(allocator);
 
-    for (tokens.items) |token| {
+    for (tokenized.tokens.items) |token| {
         switch (token) {
             .string => |text| try decodeString(allocator, &result, text),
             .csi => |csi| try decodeCsi(allocator, &result, csi),
         }
     }
-    return result;
+    return .{ .items = result, .consumed = tokenized.consumed };
 }
 
 /// Decodes the keyboard events in `input`, dropping mouse reports. Keyboard-only
@@ -135,6 +148,11 @@ fn isFinalCharForEscSequence(chr: u8) bool {
     return 0x30 <= chr and chr <= 0x7e;
 }
 
+const Tokenized = struct {
+    tokens: std.ArrayList(Token),
+    consumed: usize,
+};
+
 const State = enum {
     normal,
     esc,
@@ -149,13 +167,14 @@ const State = enum {
     osc,
 };
 
-fn tokenize(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Token) {
+fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
     var state: State = .normal;
     var result: std.ArrayList(Token) = .empty;
     errdefer result.deinit(allocator);
 
     var last_pos: usize = 0;
     var pos: usize = 0;
+    var sequence_start: ?usize = null;
     var current: Token = .{ .csi = .{ .parameters = "", .intermediate = "", .final = 0 } };
 
     while (pos < input.len) {
@@ -166,6 +185,7 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Toke
                     if (last_pos < pos) {
                         try result.append(allocator, .{ .string = input[last_pos..pos] });
                     }
+                    sequence_start = pos;
                     state = .esc;
                     last_pos = pos + 1;
                 }
@@ -216,6 +236,7 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Toke
                     try result.append(allocator, current);
                     if (std.mem.eql(u8, current.csi.parameters, "200") and chr == '~') {
                         state = .bracketed_paste;
+                        sequence_start = null;
                     } else {
                         state = .normal;
                     }
@@ -278,18 +299,23 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(Toke
         pos += 1;
     }
 
+    var consumed = input.len;
     switch (state) {
         // A lone ESC has no following byte to close a sequence; report the key.
         .esc => try result.append(allocator, .{ .string = input[pos - 1 .. pos] }),
-        // Unterminated replies are dropped whole rather than typed as text.
-        .dcs, .osc => {},
+        // A trailing partial sequence must be decoded again when the rest of
+        // its bytes arrive. Typing its tail as text would turn a split SGR
+        // mouse report such as `ESC [ <35;...M` into `<35;...M` in the editor.
+        .esc_parameter, .esc_parameter_intermediate, .esc_intermediate, .dcs, .osc => {
+            consumed = sequence_start orelse input.len;
+        },
         else => {
             if (last_pos < pos) {
                 try result.append(allocator, .{ .string = input[last_pos..pos] });
             }
         },
     }
-    return result;
+    return .{ .tokens = result, .consumed = consumed };
 }
 
 fn parseFirst(params: []const u8) ?usize {
@@ -636,6 +662,29 @@ test "input: SGR mouse motion and modifiers" {
     try std.testing.expect(mods.shift);
     try std.testing.expect(mods.alt);
     try std.testing.expect(mods.ctrl);
+}
+
+test "input: split SGR mouse reports leave an incomplete remainder" {
+    const allocator = std.testing.allocator;
+
+    var first = try decodeWithRemainder(allocator, "\x1b[<35;18;15");
+    defer first.items.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), first.items.items.len);
+    try std.testing.expectEqual(@as(usize, 0), first.consumed);
+
+    var text_first = try decodeWithRemainder(allocator, "a\x1b[<35;18");
+    defer text_first.items.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), text_first.items.items.len);
+    try std.testing.expectEqualStrings("a", text_first.items.items[0].key.key.text);
+    try std.testing.expectEqual(@as(usize, 1), text_first.consumed);
+
+    var complete = try decodeWithRemainder(allocator, "\x1b[<35;18;15M\x1b[<35;16;11M");
+    defer complete.items.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), complete.items.items.len);
+    try std.testing.expectEqual(@as(usize, 24), complete.consumed);
+    try std.testing.expectEqual(MouseKind.move, complete.items.items[0].mouse.kind);
+    try std.testing.expectEqual(@as(usize, 17), complete.items.items[0].mouse.x);
+    try std.testing.expectEqual(@as(usize, 14), complete.items.items[0].mouse.y);
 }
 
 test "input: SGR wheel reports in lines" {
