@@ -910,6 +910,9 @@ Editor contributions:
   `isDirty`, and register/unregister/dirty/content/save events, with the
   terminal `IWorkingCopy` listener contract and the full upstream
   registry-basics / duplicate-identifier / same-resource-different-type tests.
+  The TUI registers every opened/restored editor with the service (via a
+  terminal `IWorkingCopy` adapter) and unregisters on close, so dirty counts,
+  per-resource queries and dirty/content/save events track the open editors.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON

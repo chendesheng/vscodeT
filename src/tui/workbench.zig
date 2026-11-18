@@ -75,6 +75,9 @@ const UniversalWatcher = universal_watcher_mod.UniversalWatcher;
 const watch_common = @import("../vs/platform/files/common/watcher.zig");
 const WatchRequest = watch_common.WatchRequest;
 const languages_associations = @import("../vs/editor/common/services/languagesAssociations.zig");
+const working_copy_mod = @import("./workingCopy.zig");
+const working_copy_service_mod = @import("../vs/workbench/services/workingCopy/common/workingCopyService.zig");
+const WorkingCopyService = working_copy_service_mod.WorkingCopyService;
 const keybinding_service = @import("./keybindingService.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
 const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
@@ -169,6 +172,7 @@ pub const Workbench = struct {
     user_settings_path: ?[]u8,
     history: HistoryService,
     commands: CommandRegistry,
+    working_copy_service: WorkingCopyService,
     tab_service: ?*keybinding_service.KeybindingService,
     tab_command_result: ?TabKeyResult = null,
     global_service: ?*keybinding_service.KeybindingService,
@@ -303,6 +307,7 @@ pub const Workbench = struct {
             const tab = try Tab.initFromInput(allocator, file_input);
             try tab.view.setStatusBarVisible(false);
             try pane.addTab(tab);
+            self.registerWorkingCopy(tab);
             try self.history.add(file_input.editor.path);
         }
 
@@ -373,6 +378,7 @@ pub const Workbench = struct {
                 const tab = try Tab.initFromInput(allocator, file_input);
                 try tab.view.setStatusBarVisible(false);
                 try pane.addTab(tab);
+                self.registerWorkingCopy(tab);
                 try self.history.add(file_input.editor.path);
             }
         }
@@ -483,6 +489,8 @@ pub const Workbench = struct {
         errdefer self.history.deinit();
 
         self.commands = CommandRegistry.init(self.allocator);
+        self.working_copy_service = WorkingCopyService.init(self.allocator);
+        errdefer self.working_copy_service.deinit();
         errdefer self.commands.deinit();
         self.commands.setEditorAvailability(self, hasActiveEditor);
 
@@ -628,6 +636,7 @@ pub const Workbench = struct {
         }
         if (self.statusbar_service) |service| service.deinit();
         self.quick_access.deinit();
+        self.working_copy_service.deinit();
         self.commands.deinit();
         self.history.deinit();
         // Dispose the service (and unregister editor listeners) before tab
@@ -861,6 +870,18 @@ pub const Workbench = struct {
                 }
             }
         }
+    }
+
+    pub fn workingCopyService(self: *Workbench) *WorkingCopyService {
+        return &self.working_copy_service;
+    }
+
+    fn registerWorkingCopy(self: *Workbench, tab: *Tab) void {
+        self.working_copy_service.registerWorkingCopy(working_copy_mod.interface(tab.editor)) catch {};
+    }
+
+    fn unregisterWorkingCopy(self: *Workbench, tab: *Tab) void {
+        _ = self.working_copy_service.unregisterWorkingCopy(working_copy_mod.interface(tab.editor));
     }
 
     pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
@@ -1151,6 +1172,7 @@ pub const Workbench = struct {
         const tab = try Tab.initFromInput(self.allocator, input);
         try tab.view.setStatusBarVisible(false);
         try pane.addTab(tab);
+        self.registerWorkingCopy(tab);
         try tab.ensureControllers();
         try self.history.add(path);
     }
@@ -1244,6 +1266,7 @@ pub const Workbench = struct {
         _ = try pane.group.model.closeEditor(&tab.input.base, .UNKNOWN, true);
         _ = pane.removeTab(tab);
         pane.syncActivePane();
+        self.unregisterWorkingCopy(tab);
         tab.deinit();
 
         if (self.tabCount() == 0) return false;
@@ -4052,4 +4075,32 @@ test "Workbench: revert command discards edits and clears conflicts" {
     try std.testing.expectEqualStrings("on disk", text.items);
     try std.testing.expect(!tab.editor.isDirty());
     try std.testing.expect(!tab.editor.hasConflict());
+}
+
+test "Workbench: working copy service tracks dirty editors" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "working-copy.txt", "content");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
+    defer workbench.deinit();
+    const service = workbench.workingCopyService();
+    try std.testing.expectEqual(@as(usize, 0), service.dirtyCount());
+    try std.testing.expect(service.hasResource(path));
+
+    const tab = workbench.activeTab().?;
+    try tab.editor.insertText("X");
+    try std.testing.expectEqual(@as(usize, 1), service.dirtyCount());
+    try std.testing.expect(service.isDirty(path, null));
+
+    try tab.editor.save();
+    try std.testing.expectEqual(@as(usize, 0), service.dirtyCount());
+    try std.testing.expect(!service.isDirty(path, null));
+
+    _ = try workbench.closeActive();
+    try std.testing.expect(!service.hasResource(path));
 }

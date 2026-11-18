@@ -124,6 +124,11 @@ pub const AppliedTextEdit = struct {
     end: Position,
 };
 
+pub const ChangeListener = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque) void,
+};
+
 pub const Editor = struct {
     allocator: Allocator,
     io: Io,
@@ -156,6 +161,9 @@ pub const Editor = struct {
     dirty_state: bool,
     /// True when the file changed on disk while this editor had unsaved edits.
     conflict: bool = false,
+    working_copy_dirty_listeners: std.array_list.Managed(ChangeListener),
+    working_copy_content_listeners: std.array_list.Managed(ChangeListener),
+    working_copy_save_listeners: std.array_list.Managed(ChangeListener),
     on_did_change_dirty: Emitter(void),
     screen_width: usize,
     screen_height: usize,
@@ -306,6 +314,9 @@ pub const Editor = struct {
             .saved_version = model.getAlternativeVersionId(),
             .dirty_state = false,
             .conflict = false,
+            .working_copy_dirty_listeners = std.array_list.Managed(ChangeListener).init(allocator),
+            .working_copy_content_listeners = std.array_list.Managed(ChangeListener).init(allocator),
+            .working_copy_save_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .on_did_change_dirty = Emitter(void).init(allocator),
             .screen_width = @max(width, 1),
             .screen_height = @max(height, 1),
@@ -425,6 +436,9 @@ pub const Editor = struct {
         self.allocator.destroy(self.model);
         self.undo_redo.deinit();
         self.allocator.destroy(self.undo_redo);
+        self.working_copy_dirty_listeners.deinit();
+        self.working_copy_content_listeners.deinit();
+        self.working_copy_save_listeners.deinit();
         self.associations_arena.deinit();
         self.language_service.deinit();
         self.allocator.destroy(self.language_service);
@@ -449,6 +463,7 @@ pub const Editor = struct {
             }
         }
         self.refreshDirtyState();
+        for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
     }
 
     /// Recomputes the dirty bit and emits the change event when it flips.
@@ -458,6 +473,7 @@ pub const Editor = struct {
         if (dirty == self.dirty_state) return;
         self.dirty_state = dirty;
         self.on_did_change_dirty.fire({}) catch {};
+        for (self.working_copy_dirty_listeners.items) |listener| listener.callback(listener.context);
     }
 
     fn cursorsRef(self: *Editor) *CursorCollection {
@@ -1909,6 +1925,41 @@ pub const Editor = struct {
     }
 
     /// Marks an external-change conflict (the file changed while dirty).
+    pub fn addWorkingCopyDirtyListener(self: *Editor, listener: ChangeListener) void {
+        self.working_copy_dirty_listeners.append(listener) catch {};
+    }
+
+    pub fn removeWorkingCopyDirtyListener(self: *Editor, listener: ChangeListener) void {
+        removeChangeListener(&self.working_copy_dirty_listeners, listener);
+    }
+
+    pub fn addWorkingCopyContentListener(self: *Editor, listener: ChangeListener) void {
+        self.working_copy_content_listeners.append(listener) catch {};
+    }
+
+    pub fn removeWorkingCopyContentListener(self: *Editor, listener: ChangeListener) void {
+        removeChangeListener(&self.working_copy_content_listeners, listener);
+    }
+
+    pub fn addWorkingCopySaveListener(self: *Editor, listener: ChangeListener) void {
+        self.working_copy_save_listeners.append(listener) catch {};
+    }
+
+    pub fn removeWorkingCopySaveListener(self: *Editor, listener: ChangeListener) void {
+        removeChangeListener(&self.working_copy_save_listeners, listener);
+    }
+
+    fn removeChangeListener(list: *std.array_list.Managed(ChangeListener), listener: ChangeListener) void {
+        var index: usize = 0;
+        while (index < list.items.len) : (index += 1) {
+            const current = list.items[index];
+            if (current.context == listener.context and current.callback == listener.callback) {
+                _ = list.orderedRemove(index);
+                return;
+            }
+        }
+    }
+
     pub fn markConflict(self: *Editor) void {
         self.conflict = true;
         self.setMessage("Conflict: file changed on disk", .{});
@@ -1950,6 +2001,7 @@ pub const Editor = struct {
         self.saved_version = self.model.getAlternativeVersionId();
         self.clearConflict();
         self.refreshDirtyState();
+        for (self.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
         self.setMessage("Saved {s}", .{self.path});
     }
 
