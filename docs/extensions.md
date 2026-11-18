@@ -94,6 +94,12 @@ contribution points, TUI wiring) to Zig.**
    changes. stdin/stdout remain available to the host, extension code and
    child processes without corrupting the RPC stream.
 
+   Implementation note: the Zig manager creates a Unix socket and passes
+   `--socket <path>` to the launcher, which supports the same framed stream.
+   Zig 0.17's `std.process.spawn` has no arbitrary-fd mapping, so this keeps
+   stdout isolation without a manual fork/exec. fd 3/4 remains the launcher
+   default for other callers and for the Node harness.
+
 4. **Zig owns the workbench side.** `rpcProtocol.zig`, the `MainThread*`
    actors, the manifest scanner, the contribution registry, and the TUI
    wiring live here, mirroring the upstream file layout. `src/tui/` holds only
@@ -594,6 +600,11 @@ These are easy to lose when rewriting the protocol in Zig:
   (array element or object property) becomes `{"$$ref$$": -1}`; references
   are resolved against that message's buffer table only. A plain JSON reply
   containing `$$ref$$` is data, not a reference.
+- **Extension commands are not `ExtHostCommands.$executeCommand`.** In
+  1.147.0 `ExtHostCommands` has `$executeContributedCommand(id, ...args)` and
+  `$getContributedCommandMetadata`; `$executeCommand` belongs to
+  `MainThreadCommands` and is how the host invokes a *workbench* command.
+  Calling `$executeCommand` on `ExtHostCommands` fails with "Unknown method".
 - **Replies to unknown requests are dropped.** `_receiveReply` and
   `_receiveReplyErr` check the pending map and return silently when the id is
   gone (canceled, disposed, or already answered). Do not treat this as a
