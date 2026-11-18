@@ -377,7 +377,14 @@ pub const Extensions = struct {
                 return true;
             },
             .char => |char| {
-                if (event.mods.ctrl or event.mods.alt) return false;
+                if (event.mods.ctrl and !event.mods.alt) {
+                    if (char == 's' or char == 'q') return false;
+                    var command_buffer: [32]u8 = undefined;
+                    const command = std.fmt.bufPrint(&command_buffer, "extension.vim_ctrl+{c}", .{std.ascii.toLower(@intCast(char))}) catch return false;
+                    self.executeCommand(command, &.{});
+                    return true;
+                }
+                if (event.mods.alt) return false;
                 var buffer: [4]u8 = undefined;
                 const length = std.unicode.utf8Encode(char, &buffer) catch return false;
                 self.typeText(buffer[0..length]);
@@ -421,6 +428,22 @@ pub const Extensions = struct {
             },
             .down => {
                 self.executeCommand("extension.vim_down", &.{});
+                return true;
+            },
+            .home => {
+                self.executeCommand(if (event.mods.ctrl) "extension.vim_ctrl+home" else "extension.vim_home", &.{});
+                return true;
+            },
+            .end => {
+                self.executeCommand(if (event.mods.ctrl) "extension.vim_ctrl+end" else "extension.vim_end", &.{});
+                return true;
+            },
+            .page_up => {
+                self.executeCommand(if (event.mods.ctrl) "extension.vim_ctrl+pageup" else "extension.vim_ctrl+b", &.{});
+                return true;
+            },
+            .page_down => {
+                self.executeCommand(if (event.mods.ctrl) "extension.vim_ctrl+pagedown" else "extension.vim_ctrl+f", &.{});
                 return true;
             },
             else => {},
