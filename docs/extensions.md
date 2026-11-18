@@ -1478,6 +1478,51 @@ If a new widget is needed, it is a view over an upstream-shaped model under
 `src/vs/`, with only terminal rendering in `src/tui/`. That rule applies to
 the extension manager UI itself as much as to contributed features.
 
+### 11.7 VSCodeVim compatibility
+
+VSCodeVim 1.32.4 is a useful stress target because it uses both the extension
+API and editor behavior heavily: engines `^1.74.0`, activation on
+`onStartupFinished` and `onCommand:type`, 75 contributed keybindings, 113
+contributed settings, a Vimscript language (`.vim`/`.vimrc`) and grammar, a
+`type` command override, and roughly 80 `executeCommand` call sites in
+`src/`.
+
+The §7-§10 baseline can activate it and support a basic
+edit/selection/decoration loop. It is **not** enough for a usable Vim. The
+following slice is required before claiming VSCodeVim support:
+
+| Blocker | Baseline state | Required addition |
+|---|---|---|
+| Text input and `type` override | Not covered. The doc has key dispatch but no text-input command path. | Dispatch typed characters through the command service, fire `onCommand:type` before dispatch, allow an extension to replace `type`, and implement `default:type` / `default:replacePreviousChar` for the real insertion. VSCodeVim's `type` override otherwise never sees keystrokes. |
+| `window.tabGroups` | §7 lists `MainThreadEditorTabs` with only move/close/close-group. | The full tab model: `ExtHostEditorTabs` DTOs/events and `MainThreadEditorTabs` pushing `all`, `activeTabGroup`, tab ids/labels/inputs/dirty/active/preview state. VSCodeVim uses it for `:bd`, `:q`, `:w`, `gt` and buffer numbers. |
+| Configuration writes | §11.4/§16 deliberately reject `$updateConfigurationOption` / `$removeConfigurationOption`. | `Configuration.update` for `Global` (and `Workspace` where the TUI persists settings), including language overrides and persistence. VSCodeVim uses it for `:set`, `editor.*` options, status-bar color customizations and `vim.vimrc.path`. |
+| Built-in command surface | `MainThreadCommands.$executeCommand` dispatches, but the TUI does not register most of the commands VSCodeVim calls. | Register the commands it delegates to: `cursorMove`, `editorScroll`, `setContext`, `vscode.open`, `workbench.action.files.newUntitledFile`, `workbench.action.splitEditorRight`/`Down`, `moveActiveEditor`, `maximizeEditor`, `joinAllGroups`, `closeOtherEditors`, `editor.action.insertSnippet`, `editor.action.formatDocument`/`Selection`, `editor.action.clipboardPasteAction`, `editor.action.insertLineBefore`/`After`, `editor.action.showHover`, `editor.action.revealDefinition`, `editor.action.openLink`, `editor.action.wordHighlight.trigger`, and snippet-placeholder navigation. |
+| Extension keybindings | §11.3 plans the registry and TUI host. | Feed all 75 contributed rules into `KeybindingsRegistry.setExtensionKeybindings`, resolve against the terminal context, and ensure the TUI does not swallow keys before the extension rule. |
+| Debug breakpoints | Debug is deferred (§16); no `MainThreadDebugService`. | A breakpoint-only subset: `vscode.debug.breakpoints`, add/remove source and function breakpoints and the breakpoint change event. Without it the `:breakpoints` ex-commands fail; core editing still works. |
+| Editor events | §9.1 defines the push shapes. | Implement `onDidChangeTextEditorSelection`, `onDidChangeActiveTextEditor`, `onDidChangeVisibleTextEditors` and `onDidChangeTextEditorVisibleRanges` from the workbench. VSCodeVim updates its mode state from these. |
+| Storage | In-memory mementos and working-copy history (§16). | Session support is enough to activate; persistence is needed for VSCodeVim history/registers across restarts. `globalStorageUri` plus local `workspace.fs` already covers its file-backed register storage. |
+
+`workspace.applyEdit` appears only in VSCodeVim's tests, not its runtime, so
+`MainThreadBulkEdits` is not required for normal VSCodeVim use. LSP is also
+not involved: VSCodeVim is not a language client.
+
+Minimum compatibility slice, in order:
+
+1. `type` / `default:type` / `default:replacePreviousChar` and the
+   `onCommand:type` activation path.
+2. Full `window.tabGroups` state.
+3. Configuration writes for `Global` (and `Workspace` when supported).
+4. The built-in command set above.
+5. Extension keybinding routing.
+6. Selection/visible/active editor event pushes.
+7. Breakpoint subset for `:breakpoints`.
+
+Until those exist, expect VSCodeVim to activate and handle simple insert/normal
+editing, but fail on buffer/tab commands, `:set`/status-color updates,
+snippets, formatting, split commands, breakpoints, and motions that delegate
+to `cursorMove`/`editorScroll`. Treat VSCodeVim as an end-to-end compatibility
+target, not as part of the first usable extension system.
+
 ## 12. Security and trust
 
 Extensions are arbitrary code in the host process. The TUI must decide, per
@@ -1705,6 +1750,10 @@ case list, taken from the upstream tests and the protocol rules above:
   crash/restart handle invalidation, clean shutdown, and one test per
   baseline actor method family (`mainThreadCommands`, `mainThreadConfiguration`,
   `mainThreadDocuments`, `mainThreadEditors`, `mainThreadQuickOpen`).
+- **VSCodeVim smoke (e2e)**: once the §11.7 slice exists, install VSCodeVim
+  1.32.4 as a development extension and assert `onCommand:type`, insert/normal
+  typing, `h`/`l`, `:q`, `:bd`, `:set`, a split command and `:breakpoints`.
+  This is an end-to-end compatibility test, not part of the hermetic suite.
 
 Golden vectors are generated by a Node script from the pinned host's own
 `rpcProtocol.ts` and a captured `MessagePassingProtocol`; the script writes
@@ -1779,6 +1828,10 @@ Constraints:
 - Semantic tokens, inlay hints, code lens, document links/colors, folding,
   selection ranges, call/type hierarchy, inline completions, paste/drop
   edits: the host exposes them, calls reject.
+- VSCodeVim 1.32.4 is not supported by the baseline: it needs text-input
+  `type`/`default:type` dispatch, full `window.tabGroups`, configuration
+  writes, extra built-in commands, extension keybinding routing and a
+  breakpoint subset (§11.7).
 - File system providers other than local `file:`; `workspace.fs` is local
   read/write only. `ProviderFileService.registerProvider` exists, but provider
   activation, change/watch forwarding and non-file schemes are not wired.
