@@ -34,8 +34,16 @@ pub const DiskFileSystemProvider = struct {
     fds: std.AutoHashMap(u32, Fd),
     next_fd: u32 = 0,
     listeners: std.array_list.Managed(IFileChangeListener),
+    /// Watch requests registered through `watch`, filtered by
+    /// `deliverChanges` when the host forwards watcher events.
+    watches: std.array_list.Managed(WatchEntry),
     /// Names returned by the most recent `readdir`; valid until the next call.
     names_arena: std.heap.ArenaAllocator,
+
+    const WatchEntry = struct {
+        resource: []u8,
+        recursive: bool,
+    };
 
     const Fd = struct {
         file: Io.File,
@@ -51,6 +59,7 @@ pub const DiskFileSystemProvider = struct {
             .files = DiskFileService.init(allocator, io),
             .fds = std.AutoHashMap(u32, Fd).init(allocator),
             .listeners = std.array_list.Managed(IFileChangeListener).init(allocator),
+            .watches = std.array_list.Managed(WatchEntry).init(allocator),
             .names_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
@@ -63,6 +72,8 @@ pub const DiskFileSystemProvider = struct {
         }
         self.fds.deinit();
         self.listeners.deinit();
+        for (self.watches.items) |entry| self.allocator.free(entry.resource);
+        self.watches.deinit();
         self.names_arena.deinit();
         self.files.deinit();
     }
@@ -225,7 +236,49 @@ pub const DiskFileSystemProvider = struct {
         return length;
     }
 
-    pub fn watch(_: *DiskFileSystemProvider, _: []const u8, _: IWatchOptions) FileSystemProviderError!void {}
+    pub fn watch(self: *DiskFileSystemProvider, resource: []const u8, options: IWatchOptions) FileSystemProviderError!void {
+        for (self.watches.items) |entry| {
+            if (std.mem.eql(u8, entry.resource, resource) and entry.recursive == options.recursive) return;
+        }
+        self.watches.append(.{
+            .resource = self.allocator.dupe(u8, resource) catch return error.OutOfMemory,
+            .recursive = options.recursive,
+        }) catch return error.OutOfMemory;
+    }
+
+    pub fn unwatch(self: *DiskFileSystemProvider, resource: []const u8) void {
+        var index: usize = 0;
+        while (index < self.watches.items.len) : (index += 1) {
+            if (std.mem.eql(u8, self.watches.items[index].resource, resource)) {
+                self.allocator.free(self.watches.items[index].resource);
+                _ = self.watches.orderedRemove(index);
+                return;
+            }
+        }
+    }
+
+    /// Delivers externally observed changes (for example from
+    /// `UniversalWatcher.on_change`) to this provider's listeners, filtered by
+    /// the registered watch requests.
+    pub fn deliverChanges(self: *DiskFileSystemProvider, changes: []const files.FileChange) void {
+        if (self.watches.items.len == 0) return;
+        var converted = std.array_list.Managed(IFileChange).init(self.allocator);
+        defer converted.deinit();
+        for (changes) |change| {
+            const watched = blk: {
+                for (self.watches.items) |entry| {
+                    if (std.mem.eql(u8, entry.resource, change.resource) or
+                        (entry.recursive and files.isParent(change.resource, entry.resource, false)))
+                    {
+                        break :blk true;
+                    }
+                }
+                break :blk false;
+            };
+            if (watched) converted.append(.{ .type = change.type, .resource = change.resource }) catch continue;
+        }
+        if (converted.items.len > 0) self.fire(converted.items);
+    }
 
     pub fn addChangeListener(self: *DiskFileSystemProvider, listener: IFileChangeListener) void {
         self.listeners.append(listener) catch {};
@@ -435,4 +488,50 @@ test "disk provider: backs the provider file service" {
     var buffer = try service.readFile(allocator, file_resource, 0);
     defer buffer.deinit(allocator);
     try testing.expectEqualStrings("disk", buffer.bytes);
+}
+
+test "disk provider: filters delivered watcher changes by watch requests" {
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var provider = DiskFileSystemProvider.init(allocator, io);
+    defer provider.deinit();
+
+    const Sink = struct {
+        count: usize = 0,
+        resource: [256]u8 = undefined,
+        resource_len: usize = 0,
+
+        fn callback(context: *anyopaque, changes: []const IFileChange) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+            self.resource_len = @min(changes[0].resource.len, self.resource.len);
+            @memcpy(self.resource[0..self.resource_len], changes[0].resource[0..self.resource_len]);
+        }
+    };
+    var sink = Sink{};
+    provider.addChangeListener(.{ .context = &sink, .callback = Sink.callback });
+
+    try provider.watch(root, .{ .recursive = true });
+    const inside = try std.fs.path.join(allocator, &.{ root, "inside.txt" });
+    defer allocator.free(inside);
+    const outside = try std.fmt.allocPrint(allocator, "{s}-sibling/outside.txt", .{root});
+    defer allocator.free(outside);
+
+    provider.deliverChanges(&.{.{ .type = .UPDATED, .resource = inside }});
+    try testing.expectEqual(@as(usize, 1), sink.count);
+    try testing.expectEqualStrings(inside, sink.resource[0..sink.resource_len]);
+
+    provider.deliverChanges(&.{.{ .type = .UPDATED, .resource = outside }});
+    try testing.expectEqual(@as(usize, 1), sink.count);
+
+    provider.unwatch(root);
+    provider.deliverChanges(&.{.{ .type = .ADDED, .resource = inside }});
+    try testing.expectEqual(@as(usize, 1), sink.count);
 }

@@ -843,8 +843,10 @@ Editor contributions:
   stream case adapted to the synchronous terminal read) is ported. The disk
   provider (`platform/files/node/diskFileSystemProvider.zig`) implements the
   provider contract over `std.Io` (stat/readdir/read/write/append/delete/
-  rename/copy/open-read-write-close and operation change events) and is tested
-  directly and through `ProviderFileService`.
+  rename/copy/open-read-write-close and operation change events), records
+  `watch` requests and filters host-forwarded watcher changes through
+  `deliverChanges`, and is tested directly, through `ProviderFileService` and
+  for watcher filtering.
 
 - `ExperimentalSettingsService` (`workbench/services/configuration/common/experimentalSettings.zig`)
   is ported: assignment membership updates synchronously while change
