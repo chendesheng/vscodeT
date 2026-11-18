@@ -64,13 +64,22 @@ a full `../vscode/out` build is not required.
 
 ```sh
 cd host && npm install && npm run build   # host/dist/extensionHost.mjs
-zig build test-e2e                        # boots the host and activates VSCodeVim
+zig build run -- --extension-path <extension-dir> [<file>...]
+zig build test-e2e                        # boots the host and edits through VSCodeVim
 ```
 
-`test-e2e` is skipped unless `../vscode`, `host/dist/extensionHost.mjs` and
-the extracted fixture at `.cache-ext/vim/extension` are present. The TUI does
-not start the host yet: the current adapter only provides the transport, RPC
-codec, generated actor table and the boot sequence. See
+`--extension-path` points at an unpacked extension directory (for VSCodeVim,
+the directory containing its `package.json` and `out/extension.js`). The TUI
+starts the pinned host, mirrors the active tab as a document/editor, routes
+printable keys through the `type` command, and applies the extension's edits
+and selections back to the editor. VSCodeVim 1.32.4 insert/normal editing,
+`Esc`, motions and operators such as `x`/`dd` work in this loop; the status
+bar shows its mode entry.
+
+`test-e2e` is skipped unless `host/dist/extensionHost.mjs` and the extracted
+fixture at `.cache-ext/vim/extension` are present. Still missing: the
+contribution scanner, configuration writes, full `tabGroups`, the built-in
+command set VSCodeVim delegates to, and the extension keybinding registry. See
 `docs/extensions.md` for the port status and the remaining work.
 
 ## Continuous integration

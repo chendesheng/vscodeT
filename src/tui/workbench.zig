@@ -1263,6 +1263,13 @@ pub const Workbench = struct {
         return self.part.activeView();
     }
 
+    /// First workspace folder, used for the extension host's workspace data.
+    pub fn workspaceFolderPath(self: *Workbench) ?[]const u8 {
+        const folders = self.workspace.getWorkspace().folders.items;
+        if (folders.len == 0) return null;
+        return folders[0].resource;
+    }
+
     pub fn activeTab(self: *Workbench) ?*Tab {
         const pane = self.activePane() orelse return null;
         return pane.activeTab();

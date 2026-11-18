@@ -240,7 +240,7 @@ pub const RpcProtocol = struct {
     }
 
     fn writeHeader(out: *std.array_list.Managed(u8), message_type: MessageType, request_id: u32) !void {
-        try out.append(@intFromEnum(message_type));
+        try out.append(@backingInt(message_type));
         try writeU32(out, request_id);
     }
 
@@ -354,7 +354,7 @@ pub const RpcProtocol = struct {
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const args = decodeRequestArgs(payload, &offset, arena.allocator(), payload[0] == @intFromEnum(MessageType.request_mixed_args) or payload[0] == @intFromEnum(MessageType.request_mixed_args_with_cancellation)) catch return;
+        const args = decodeRequestArgs(payload, &offset, arena.allocator(), payload[0] == @backingInt(MessageType.request_mixed_args) or payload[0] == @backingInt(MessageType.request_mixed_args_with_cancellation)) catch return;
 
         var token_source: ?*cancellation.CancellationTokenSource = null;
         if (with_cancellation) {

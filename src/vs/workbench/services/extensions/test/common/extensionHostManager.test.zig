@@ -12,8 +12,6 @@ const rpc = @import("../../common/rpcProtocol.zig");
 const proxyIdentifier = @import("../../common/proxyIdentifier.zig");
 const protocol = @import("../../../../api/common/extHost.protocol.zig");
 
-
-
 const Activation = struct {
     activated: bool = false,
     identifier: ?[]u8 = null,
@@ -44,7 +42,6 @@ const ActorSlot = struct {
     allocator: std.mem.Allocator,
     doc: *Doc,
     host: ?*manager.HostManager = null,
-
 
     fn insertAtCursor(self: *ActorSlot, arena: std.mem.Allocator, text: []const u8) !void {
         if (self.doc.lines.items.len == 0) try self.doc.lines.append(try self.allocator.dupe(u8, ""));

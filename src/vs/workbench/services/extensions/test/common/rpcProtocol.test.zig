@@ -99,7 +99,7 @@ test "receiver invokes the actor, then acknowledges, then replies" {
     defer empty.array.deinit();
     var request = std.array_list.Managed(u8).init(std.testing.allocator);
     defer request.deinit();
-    try request.append(@intFromEnum(rpc.MessageType.request_json_args));
+    try request.append(@backingInt(rpc.MessageType.request_json_args));
     try appendU32(&request, 7);
     try request.append(10);
     try request.append(15);
@@ -110,9 +110,9 @@ test "receiver invokes the actor, then acknowledges, then replies" {
 
     protocol.receive(request.items);
     try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(rpc.MessageType.acknowledged)), capture.frames.items[0][4]);
+    try std.testing.expectEqual(@as(u8, @backingInt(rpc.MessageType.acknowledged)), capture.frames.items[0][4]);
     try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, capture.frames.items[0][5..9], .big));
-    try std.testing.expectEqual(@as(u8, @intFromEnum(rpc.MessageType.reply_ok_json)), capture.frames.items[1][4]);
+    try std.testing.expectEqual(@as(u8, @backingInt(rpc.MessageType.reply_ok_json)), capture.frames.items[1][4]);
     try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, capture.frames.items[1][5..9], .big));
     const length = std.mem.readInt(u32, capture.frames.items[1][9..13], .big);
     try std.testing.expectEqualStrings("\"result\"", capture.frames.items[1][13 .. 13 + length]);
@@ -128,7 +128,7 @@ test "unknown actor produces an error reply" {
 
     var request = std.array_list.Managed(u8).init(std.testing.allocator);
     defer request.deinit();
-    try request.append(@intFromEnum(rpc.MessageType.request_json_args));
+    try request.append(@backingInt(rpc.MessageType.request_json_args));
     try appendU32(&request, 3);
     try request.append(99);
     try request.append(9);
@@ -139,7 +139,7 @@ test "unknown actor produces an error reply" {
 
     protocol.receive(request.items);
     try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(rpc.MessageType.reply_err_error)), capture.frames.items[1][4]);
+    try std.testing.expectEqual(@as(u8, @backingInt(rpc.MessageType.reply_err_error)), capture.frames.items[1][4]);
 }
 
 test "dispose rejects pending replies as canceled" {
@@ -173,4 +173,3 @@ fn appendU32(out: *std.array_list.Managed(u8), value: u32) !void {
     std.mem.writeInt(u32, &bytes, value, .big);
     try out.appendSlice(&bytes);
 }
-

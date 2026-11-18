@@ -23,7 +23,7 @@ pub fn createProxyIdentifier(nid: u8) ?ProxyIdentifier {
 }
 
 pub fn identifierFromEnum(nid: anytype) ProxyIdentifier {
-    const value: u8 = @intFromEnum(nid);
+    const value: u8 = @backingInt(nid);
     return .{ .nid = value, .sid = protocol.identifier(value).?.sid };
 }
 

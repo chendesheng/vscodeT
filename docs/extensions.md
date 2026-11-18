@@ -1,12 +1,15 @@
 # Extension system: reuse VS Code's host, port the editor side
 
-Status: foundation landed, TUI wiring pending. `host/` boots the real Node
-host over a Unix socket, `rpcProtocol.zig` implements the wire codec, the
-generated `extHost.protocol.zig` table has all 171 identifiers, and
-`zig build test-e2e` activates VSCodeVim 1.32.4 through the real host. The
-`MainThread*` actors are still stubs: document/editor sync, `type` /
-`default:type` and the contribution scanner are the next slice. The
-prerequisite workbench services are ported (§3.3).
+Status: the S0/S2 foundation and a first S7 slice are working. `host/` boots
+the real Node host over a Unix socket, `rpcProtocol.zig` implements the wire
+codec, the generated `extHost.protocol.zig` table has all 171 identifiers,
+and `src/tui/extensions.zig` mirrors the active tab, routes text through
+`type`/`default:type`, applies edits and selections, and publishes status bar
+entries. `zig build test-e2e` activates VSCodeVim 1.32.4 and asserts insert
+mode, a normal-mode `x`, and the resulting TUI editor text. The remaining
+`MainThread*` actors, the contribution scanner, configuration writes,
+`tabGroups`, extension keybindings and the built-in command set are still
+stubs. The prerequisite workbench services are ported (§3.3).
 
 Upstream reference: `../vscode` at **1.147.0**, commit
 `e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
@@ -1509,7 +1512,7 @@ following slice is required before claiming VSCodeVim support:
 
 | Blocker | Baseline state | Required addition |
 |---|---|---|
-| Text input and `type` override | Not covered. The doc has key dispatch but no text-input command path. | Dispatch typed characters through the command service, fire `onCommand:type` before dispatch, allow an extension to replace `type`, and implement `default:type` / `default:replacePreviousChar` for the real insertion. VSCodeVim's `type` override otherwise never sees keystrokes. |
+| Text input and `type` override | Ported in `src/tui/extensions.zig`: printable keys, coalesced text runs and Enter go through `$executeContributedCommand("type", …)`; `default:type` inserts into the TUI editor. `default:replacePreviousChar` is still a no-op. | Keep the IME replacement path and fire `onCommand:type` before dispatch when the contribution registry lands. |
 | `window.tabGroups` | §7 lists `MainThreadEditorTabs` with only move/close/close-group. | The full tab model: `ExtHostEditorTabs` DTOs/events and `MainThreadEditorTabs` pushing `all`, `activeTabGroup`, tab ids/labels/inputs/dirty/active/preview state. VSCodeVim uses it for `:bd`, `:q`, `:w`, `gt` and buffer numbers. |
 | Configuration writes | §11.4/§16 deliberately reject `$updateConfigurationOption` / `$removeConfigurationOption`. | `Configuration.update` for `Global` (and `Workspace` where the TUI persists settings), including language overrides and persistence. VSCodeVim uses it for `:set`, `editor.*` options, status-bar color customizations and `vim.vimrc.path`. |
 | Built-in command surface | `MainThreadCommands.$executeCommand` dispatches, but the TUI does not register most of the commands VSCodeVim calls. | Register the commands it delegates to: `cursorMove`, `editorScroll`, `setContext`, `vscode.open`, `workbench.action.files.newUntitledFile`, `workbench.action.splitEditorRight`/`Down`, `moveActiveEditor`, `maximizeEditor`, `joinAllGroups`, `closeOtherEditors`, `editor.action.insertSnippet`, `editor.action.formatDocument`/`Selection`, `editor.action.clipboardPasteAction`, `editor.action.insertLineBefore`/`After`, `editor.action.showHover`, `editor.action.revealDefinition`, `editor.action.openLink`, `editor.action.wordHighlight.trigger`, and snippet-placeholder navigation. |

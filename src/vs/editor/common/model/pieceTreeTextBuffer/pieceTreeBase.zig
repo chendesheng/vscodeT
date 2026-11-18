@@ -1057,12 +1057,12 @@ pub const PieceTreeBase = struct {
                 var lastMatchIndex: usize = 0;
                 while (true) {
                     if (std.mem.indexOf(u8, text[lastMatchIndex..], searchString)) |index| {
-                        lastMatchIndex = index + searchStringLen;
+                        lastMatchIndex = lastMatchIndex + index + searchStringLen;
                     } else {
                         break;
                     }
 
-                    if (searchData.wordSeparators == null or isValidMatch(searchData.wordSeparators.?, text, textLength, lastMatchIndex, searchStringLen)) {
+                    if (searchData.wordSeparators == null or isValidMatch(searchData.wordSeparators.?, text, textLength, lastMatchIndex - searchStringLen, searchStringLen)) {
                         try result.append(FindMatch.init(Range.init(lineNumber, lastMatchIndex - searchStringLen + 1 + deltaOffset, lineNumber, lastMatchIndex + 1 + deltaOffset), null));
                         if (result.items.len >= limitResultCount) {
                             return;

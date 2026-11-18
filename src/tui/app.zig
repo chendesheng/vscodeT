@@ -9,6 +9,7 @@ const Editor = @import("./editor.zig").Editor;
 const View = @import("./view.zig").View;
 const Preview = @import("./preview.zig").Preview;
 const Workbench = @import("./workbench.zig").Workbench;
+const extensions = @import("./extensions.zig");
 const session = @import("./session.zig");
 const SyntaxTheme = @import("./syntaxTheme.zig").SyntaxTheme;
 const FileEditorSerializer = @import("./editorInput.zig").FileEditorSerializer;
@@ -53,6 +54,7 @@ fn infoLog(log_service: ?log_module.ILogger, comptime fmt: []const u8, args: any
 const Args = struct {
     preview: bool = false,
     session: ?[]const u8 = null,
+    extension_path: ?[]const u8 = null,
 };
 
 /// Parses `--preview`, `--session <file>` and the remaining paths.
@@ -65,6 +67,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
 
     var parsed: Args = .{};
     errdefer if (parsed.session) |session_path| allocator.free(session_path);
+    errdefer if (parsed.extension_path) |path| allocator.free(path);
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--preview")) {
             parsed.preview = true;
@@ -72,6 +75,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
             const value = it.next() orelse return error.MissingSessionPath;
             if (parsed.session) |old| allocator.free(old);
             parsed.session = try allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, arg, "--extension-path")) {
+            const value = it.next() orelse return error.MissingExtensionPath;
+            if (parsed.extension_path) |old| allocator.free(old);
+            parsed.extension_path = try allocator.dupe(u8, value);
         } else {
             const copy = try allocator.dupe(u8, arg);
             errdefer allocator.free(copy);
@@ -87,6 +94,25 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
 /// User settings live outside the workspace. `VSCODE_TEXTBUFFER_USER_SETTINGS`
 /// overrides the XDG/HOME default so tests and alternate profiles can point at
 /// a specific file; a missing file simply produces no user scope.
+/// Explicit `--extension-path`, the env override, then the extracted test
+/// fixture. A user install is expected to pass the flag or the env var until
+/// the manifest scanner lands.
+fn defaultExtensionPath(allocator: std.mem.Allocator) ?[]u8 {
+    if (std.c.getenv("VSCODE_TEXTBUFFER_EXTENSION_PATH")) |value| {
+        return allocator.dupe(u8, std.mem.span(value)) catch null;
+    }
+    const fixture = ".cache-ext/vim/extension";
+    std.Io.Dir.cwd().access(time_compat.io, fixture, .{}) catch return null;
+    return allocator.dupe(u8, fixture) catch null;
+}
+
+fn defaultExtensionDataPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map) ![]u8 {
+    if (environ.get("VSCODE_TEXTBUFFER_EXTENSION_DATA")) |path| return allocator.dupe(u8, path);
+    if (environ.get("XDG_STATE_HOME")) |state| return std.fs.path.join(allocator, &.{ state, "vscode-textbuffer", "extensions" });
+    if (environ.get("HOME")) |home| return std.fs.path.join(allocator, &.{ home, ".local", "state", "vscode-textbuffer", "extensions" });
+    return allocator.dupe(u8, ".cache-ext/data");
+}
+
 fn defaultUserSettingsPath(
     allocator: std.mem.Allocator,
     environ: *const std.process.Environ.Map,
@@ -138,12 +164,13 @@ pub fn main(init: std.process.Init) !void {
 
     const args = parseArgs(allocator, init.minimal.args, &paths) catch {
         std.debug.print(
-            "usage: zig <folder> [<file>...]\n       zig <file>...\n       zig --session <file> [<folder>] [<file>...]\n       zig --preview <file>\n",
+            "usage: zig <folder> [<file>...]\n       zig <file>...\n       zig --session <file> [<folder>] [<file>...]\n       zig --preview <file>\n       zig --extension-path <dir> [<file>...]\n",
             .{},
         );
         return;
     };
     defer if (args.session) |session_path| allocator.free(session_path);
+    defer if (args.extension_path) |path| allocator.free(path);
     infoLog(log_service, "starting: preview={} session={s} paths={d}", .{
         args.preview,
         args.session orelse "-",
@@ -308,6 +335,20 @@ pub fn main(init: std.process.Init) !void {
         workbench.focusSidebar();
     }
 
+    var extension_host: ?*extensions.Extensions = null;
+    defer if (extension_host) |ext| ext.deinit();
+    const extension_path = if (args.extension_path) |path| path else defaultExtensionPath(allocator);
+    if (extension_path) |path| {
+        defer if (args.extension_path == null) allocator.free(path);
+        const extension_data = try defaultExtensionDataPath(allocator, init.environ_map);
+        defer allocator.free(extension_data);
+        std.Io.Dir.cwd().createDirPath(io, extension_data) catch {};
+        extension_host = extensions.Extensions.init(allocator, io, workbench, path, extension_data) catch |err| blk: {
+            report(log_service, "extension host disabled: {s}", .{@errorName(err)});
+            break :blk null;
+        };
+    }
+
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
     if (border_probe.leftover) |leftover| try input_buffer.appendSlice(leftover);
@@ -332,6 +373,9 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.pollBreadcrumbs()) needs_render = true;
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
         if (workbench.pollSearch(now_ms)) needs_render = true;
+        if (extension_host) |ext| {
+            if (ext.pump()) needs_render = true;
+        }
         var timeout: i32 = 250;
         if (workbench.activeTab()) |active| {
             try active.ensureControllers();
@@ -426,6 +470,14 @@ pub fn main(init: std.process.Init) !void {
                         .unhandled => {},
                     }
                     if (try workbench.handleBreadcrumbsKey(event)) continue;
+
+                    if (extension_host) |ext| {
+                        if (ext.handleKey(event)) {
+                            _ = ext.pump();
+                            needs_render = true;
+                            continue;
+                        }
+                    }
 
                     const current = workbench.activeTab() orelse continue;
                     try current.ensureControllers();
