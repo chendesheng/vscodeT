@@ -31,6 +31,7 @@ const ViewLineData = view_model.ViewLineData;
 const ViewLineRenderingData = view_model.ViewLineRenderingData;
 const ViewModelDecoration = @import("./viewModelDecoration.zig").ViewModelDecoration;
 const ModelDecoration = @import("../model.zig").ModelDecoration;
+const InternalModelContentChangeEvent = @import("../textModelEvents.zig").InternalModelContentChangeEvent;
 
 pub const ViewModel = struct {
     allocator: Allocator,
@@ -187,6 +188,8 @@ pub const ViewModel = struct {
             self.converter.interface(),
         );
         self.layout = .{ .view_model = self };
+        errdefer self.decorations.destroy();
+        try model.onDidChangeContentWithContext(self, onModelContentChanged);
         return self;
     }
 
@@ -211,6 +214,12 @@ pub const ViewModel = struct {
             .getViewLineContinuesWithWrappedLine = getViewLineContinuesWithWrappedLineFn,
             .getDecorationsInViewport = getDecorationsInViewportFn,
         };
+    }
+
+    fn onModelContentChanged(event: InternalModelContentChangeEvent, self: *ViewModel) anyerror!void {
+        try self.lines.applyRawChanges(&event.rawContentChangedEvent);
+        self.decorations.onLineMappingChanged();
+        self.decorations.onModelDecorationsChanged();
     }
 
     pub fn lineHeight(self: *const ViewModel) f64 {
@@ -505,4 +514,23 @@ test "view model integrates with the terminal view" {
     _ = view.setFocused(true);
     try testing.expect(view.hasFocus());
     try testing.expectEqual(@as(usize, 2), instance.lines.getViewLineCount());
+}
+
+test "view model applies model content changes" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    const instance = try fixture.init(allocator, "hello", 80);
+    defer {
+        instance.deinit();
+        fixture.deinit();
+    }
+
+    try fixture.model.applyEdit(Range.init(1, 1, 1, 1), "X");
+    const first = try instance.lines.getViewLineData(1);
+    try testing.expectEqualStrings("Xhello", first.content);
+
+    try fixture.model.applyEdit(Range.init(1, 1, 1, 1), "a\nb");
+    try testing.expectEqual(@as(usize, 2), instance.lines.getViewLineCount());
+    const second = try instance.lines.getViewLineData(2);
+    try testing.expectEqualStrings("bXhello", second.content);
 }

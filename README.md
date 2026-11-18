@@ -867,7 +867,8 @@ Editor contributions:
   `common/viewModel/viewModelImpl.zig`: it owns the projected lines and
   coordinates converter, exposes `IViewModel` (line metrics, viewport
   rendering data and model-decoration viewport mapping into view ranges), and
-  tracks selections, focus, viewport and a cell-height layout, wires
+  tracks selections, focus, viewport and a cell-height layout, applies model
+  content changes to the projected lines/decorations, wires
   `ViewModelDecorations` for inline-decoration viewport data, and is wired to
   the terminal `View` (focus/view and collection render integration are
   tested). Rendering real model
