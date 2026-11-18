@@ -118,6 +118,7 @@ pub const ViewLine = struct {
             .start_visible_column = line_data.startVisibleColumn,
             .render_whitespace = self.options.render_whitespace,
             .selection_ranges = selection_ranges[0..selection_range_count],
+            .render_control_characters = self.options.render_control_characters,
         }) catch return false;
         defer rendered.deinit(self.allocator);
 

@@ -900,8 +900,8 @@ Editor contributions:
 - Visible whitespace rendering is ported through the shared line renderer:
   `renderWhitespace` modes `all`, `boundary`, `trailing` and `selection` draw
   middle dots for spaces and a right arrow for tabs (selection mode receives
-  the view selections through `IViewModel.getSelections`). Control-character
-  rendering remains.
+  the view selections through `IViewModel.getSelections`). Control characters
+  render as Unicode control pictures when `renderControlCharacters` is on.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON

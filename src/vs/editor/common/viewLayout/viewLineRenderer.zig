@@ -48,6 +48,7 @@ pub const Input = struct {
     render_whitespace: RenderWhitespace = .none,
     /// Absolute byte ranges (within `content`) of the current selections.
     selection_ranges: []const OffsetRange = &.{},
+    render_control_characters: bool = false,
 };
 
 const WhitespaceContext = struct {
@@ -56,6 +57,7 @@ const WhitespaceContext = struct {
     last_non_whitespace: usize,
     line_length: usize,
     selection_ranges: []const OffsetRange,
+    render_control_characters: bool,
     offset: *usize,
 };
 
@@ -82,6 +84,7 @@ pub fn expandTabs(
         .last_non_whitespace = 0,
         .line_length = content.len,
         .selection_ranges = &.{},
+        .render_control_characters = false,
         .offset = &offset,
     };
     try appendExpanded(&out, allocator, content, tab_size, &column, &whitespace);
@@ -114,6 +117,16 @@ fn appendExpanded(
             column.* = next;
         } else if (cp == ' ' and render_whitespace) {
             try out.appendSlice(allocator, "\xC2\xB7");
+            column.* += 1;
+        } else if (whitespace.render_control_characters and cp < 0x20 and cp != '\t' and cp != '\r' and cp != '\n') {
+            var control: [4]u8 = undefined;
+            const encoded = std.unicode.utf8Encode(0x2400 + cp, &control) catch {
+                try out.appendSlice(allocator, text[offset .. offset + safe_len]);
+                whitespace.offset.* += safe_len;
+                offset += safe_len;
+                continue;
+            };
+            try out.appendSlice(allocator, control[0..encoded]);
             column.* += 1;
         } else {
             try out.appendSlice(allocator, text[offset .. offset + safe_len]);
@@ -172,6 +185,7 @@ pub fn renderLine(allocator: Allocator, input: Input) !RenderedLine {
         .last_non_whitespace = lastNonWhitespace(input.content),
         .line_length = input.content.len,
         .selection_ranges = input.selection_ranges,
+        .render_control_characters = input.render_control_characters,
         .offset = &whitespace_offset,
     };
     const token_count = input.tokens.getCount();
@@ -315,4 +329,25 @@ test "renderLine: selection-only whitespace" {
     });
     defer rendered.deinit(allocator);
     try std.testing.expectEqualStrings("\u{00B7} a  ", rendered.bytes);
+}
+
+test "renderLine: control characters become Unicode control pictures" {
+    const allocator = std.testing.allocator;
+    const languages = @import("../languages.zig");
+    const line_tokens = @import("../tokens/lineTokens.zig");
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var owned = std.array_list.Managed(u8).init(allocator);
+    errdefer owned.deinit();
+    try owned.appendSlice("a\x01b");
+    var tokens = try line_tokens.LineTokens.createEmpty(allocator, owned, &codec);
+    defer tokens.deinit();
+
+    const rendered = try renderLine(allocator, .{
+        .content = "a\x01b",
+        .tokens = line_tokens.IViewLineTokens.init(&tokens),
+        .render_control_characters = true,
+    });
+    defer rendered.deinit(allocator);
+    try std.testing.expectEqualStrings("a\u{2401}b", rendered.bytes);
 }
