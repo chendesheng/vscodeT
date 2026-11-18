@@ -314,3 +314,317 @@ test "DiskFileService creates parent directories when writing" {
     try service.writeFileEnsuringParents(path, data);
     try std.testing.expect(service.exists(path));
 }
+
+// ---------------------------------------------------------------------------
+// Provider-backed FileService
+// (port of the provider-registry subset of upstream `fileService.ts`)
+// ---------------------------------------------------------------------------
+
+pub const FileOperationEvent = struct {
+    operation: files.FileOperation,
+    resource: []const u8,
+    target: ?files.FileStat = null,
+};
+
+/// A `FileService` that dispatches operations to registered
+/// `IFileSystemProvider`s. Resources are `scheme:/path` strings (the terminal
+/// substitution for `URI`); providers see the `/path` part. Operations are
+/// synchronous and the service enforces the provider's `Readonly` capability.
+pub const ProviderFileService = struct {
+    allocator: Allocator,
+    providers: std.StringHashMap(files.IFileSystemProvider),
+    registrations: std.array_list.Managed(*ProviderRegistration),
+    on_did_files_change: @import("../../../base/common/event.zig").Emitter(files.FileChangesEvent),
+    on_did_run_operation: @import("../../../base/common/event.zig").Emitter(FileOperationEvent),
+
+    const ProviderRegistration = struct {
+        service: *ProviderFileService,
+        scheme: []u8,
+        provider: files.IFileSystemProvider,
+    };
+
+    pub fn init(allocator: Allocator) ProviderFileService {
+        return .{
+            .allocator = allocator,
+            .providers = std.StringHashMap(files.IFileSystemProvider).init(allocator),
+            .registrations = std.array_list.Managed(*ProviderRegistration).init(allocator),
+            .on_did_files_change = @import("../../../base/common/event.zig").Emitter(files.FileChangesEvent).init(allocator),
+            .on_did_run_operation = @import("../../../base/common/event.zig").Emitter(FileOperationEvent).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *ProviderFileService) void {
+        for (self.registrations.items) |registration| {
+            registration.provider.removeChangeListener(.{
+                .context = registration,
+                .callback = providerChanged,
+            });
+            registration.provider = undefined;
+            self.allocator.free(registration.scheme);
+            self.allocator.destroy(registration);
+        }
+        self.registrations.deinit();
+        self.providers.deinit();
+        self.on_did_files_change.deinit();
+        self.on_did_run_operation.deinit();
+    }
+
+    pub fn registerProvider(self: *ProviderFileService, scheme: []const u8, provider: files.IFileSystemProvider) !void {
+        const registration = try self.allocator.create(ProviderRegistration);
+        errdefer self.allocator.destroy(registration);
+        registration.* = .{
+            .service = self,
+            .scheme = try self.allocator.dupe(u8, scheme),
+            .provider = provider,
+        };
+        errdefer self.allocator.free(registration.scheme);
+        try self.providers.put(registration.scheme, provider);
+        try self.registrations.append(registration);
+        provider.addChangeListener(.{ .context = registration, .callback = providerChanged });
+    }
+
+    pub fn listenFilesChange(self: *ProviderFileService, context: anytype, callback: fn (files.FileChangesEvent, @TypeOf(context)) anyerror!void) !usize {
+        return self.on_did_files_change.listen(context, callback);
+    }
+
+    pub fn listenOperation(self: *ProviderFileService, context: anytype, callback: fn (FileOperationEvent, @TypeOf(context)) anyerror!void) !usize {
+        return self.on_did_run_operation.listen(context, callback);
+    }
+
+    const ParsedResource = struct { scheme: []const u8, path: []const u8 };
+
+    fn parseResource(resource: []const u8) ?ParsedResource {
+        const separator = std.mem.indexOf(u8, resource, ":/") orelse return null;
+        if (separator == 0) return null;
+        return .{ .scheme = resource[0..separator], .path = resource[separator + 1 ..] };
+    }
+
+    fn providerFor(self: *ProviderFileService, resource: []const u8) ?struct { parsed: ParsedResource, provider: files.IFileSystemProvider } {
+        const parsed = parseResource(resource) orelse return null;
+        const provider = self.providers.get(parsed.scheme) orelse return null;
+        return .{ .parsed = parsed, .provider = provider };
+    }
+
+    fn ensureWritable(provider: files.IFileSystemProvider) files.FileSystemProviderError!void {
+        if (provider.getCapabilities() & files.FileSystemProviderCapabilities.Readonly != 0) return error.FileReadonly;
+    }
+
+    pub fn exists(self: *ProviderFileService, resource: []const u8) bool {
+        const found = self.providerFor(resource) orelse return false;
+        _ = found.provider.getStat(found.parsed.path) catch return false;
+        return true;
+    }
+
+    pub fn stat(self: *ProviderFileService, resource: []const u8) !files.FileStat {
+        const found = self.providerFor(resource) orelse return error.ProviderUnavailable;
+        const stat_info = try found.provider.getStat(found.parsed.path);
+        return .{
+            .resource = resource,
+            .name = std.fs.path.basename(found.parsed.path),
+            .type = stat_info.type,
+            .size = stat_info.size,
+            .mtime = @intCast(@max(stat_info.mtime, 0)),
+            .ctime = @intCast(@max(stat_info.ctime, 0)),
+        };
+    }
+
+    /// Resolves a resource. Directory stats include their direct children;
+    /// `resolve_to` narrows the children to the named descendant directories
+    /// (which are resolved with their own children, matching upstream
+    /// `resolveTo`).
+    pub fn resolve(self: *ProviderFileService, allocator: Allocator, resource: []const u8, resolve_to: ?[]const []const u8) !files.FileStat {
+        const found = self.providerFor(resource) orelse return error.ProviderUnavailable;
+        return resolveResource(self, allocator, resource, found.provider, found.parsed.path, resolve_to);
+    }
+
+    fn resolveResource(
+        self: *ProviderFileService,
+        allocator: Allocator,
+        resource: []const u8,
+        provider: files.IFileSystemProvider,
+        path: []const u8,
+        resolve_to: ?[]const []const u8,
+    ) !files.FileStat {
+        const stat_info = try provider.getStat(path);
+        var result = files.FileStat{
+            .resource = try allocator.dupe(u8, resource),
+            .name = try allocator.dupe(u8, std.fs.path.basename(path)),
+            .type = stat_info.type,
+            .size = stat_info.size,
+            .mtime = @intCast(@max(stat_info.mtime, 0)),
+            .ctime = @intCast(@max(stat_info.ctime, 0)),
+        };
+        if (!files.FileType.isDirectory(stat_info.type)) return result;
+
+        if (resolve_to) |targets| {
+            var children = std.array_list.Managed(files.FileStat).init(allocator);
+            for (targets) |target| {
+                const name = std.fs.path.basename(target);
+                const child_resource = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ resource, name });
+                const child_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ path, name });
+                const child = try resolveResource(self, allocator, child_resource, provider, child_path, null);
+                try children.append(child);
+            }
+            result.children = try children.toOwnedSlice();
+            return result;
+        }
+
+        const entries = try provider.getDirectoryEntries(path);
+        defer self.allocator.free(entries);
+        var children = std.array_list.Managed(files.FileStat).init(allocator);
+        for (entries) |entry| {
+            const child_resource = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ resource, entry.name });
+            const child_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ path, entry.name });
+            const child = try resolveResource(self, allocator, child_resource, provider, child_path, null);
+            try children.append(child);
+        }
+        result.children = try children.toOwnedSlice();
+        return result;
+    }
+
+    pub fn freeResolved(self: *ProviderFileService, allocator: Allocator, resolved: *files.FileStat) void {
+        allocator.free(resolved.resource);
+        allocator.free(resolved.name);
+        if (resolved.children) |children| {
+            const mutable = @constCast(children);
+            for (mutable) |*child| self.freeResolved(allocator, child);
+            allocator.free(children);
+        }
+        resolved.children = null;
+    }
+
+    pub fn readFile(self: *ProviderFileService, allocator: Allocator, resource: []const u8, position: usize) !VSBuffer {
+        const found = self.providerFor(resource) orelse return error.ProviderUnavailable;
+        const data = try found.provider.readFile(found.parsed.path);
+        defer self.allocator.free(data);
+        const value = if (position < data.len) data[position..] else data[data.len..];
+        return .{ .bytes = try allocator.dupe(u8, value) };
+    }
+
+    pub fn writeFile(self: *ProviderFileService, resource: []const u8, content: []const u8, options: files.IFileWriteOptions) !void {
+        const found = self.providerFor(resource) orelse return error.ProviderUnavailable;
+        try ensureWritable(found.provider);
+        try found.provider.writeFile(found.parsed.path, content, options);
+        try self.fireOperation(.WRITE, resource);
+    }
+
+    pub fn createFolder(self: *ProviderFileService, resource: []const u8) !files.FileStat {
+        const found = self.providerFor(resource) orelse return error.ProviderUnavailable;
+        try ensureWritable(found.provider);
+
+        var prefix = std.array_list.Managed(u8).init(self.allocator);
+        defer prefix.deinit();
+        var iterator = std.mem.splitScalar(u8, found.parsed.path, '/');
+        while (iterator.next()) |component| {
+            if (component.len == 0) continue;
+            if (prefix.items.len > 0) try prefix.append('/');
+            try prefix.appendSlice(component);
+            _ = found.provider.getStat(prefix.items) catch {
+                try found.provider.makeDirectory(prefix.items);
+            };
+        }
+
+        const stat_info = try self.stat(resource);
+        try self.on_did_run_operation.fire(.{ .operation = .CREATE, .resource = resource, .target = stat_info });
+        return stat_info;
+    }
+
+    pub fn del(self: *ProviderFileService, resource: []const u8) !void {
+        const found = self.providerFor(resource) orelse return error.ProviderUnavailable;
+        try ensureWritable(found.provider);
+        try self.deleteRecursive(found.provider, found.parsed.path);
+        try self.fireOperation(.DELETE, resource);
+    }
+
+    fn deleteRecursive(self: *ProviderFileService, provider: files.IFileSystemProvider, path: []const u8) !void {
+        const stat_info = provider.getStat(path) catch return;
+        if (files.FileType.isDirectory(stat_info.type)) {
+            const entries = try provider.getDirectoryEntries(path);
+            defer self.allocator.free(entries);
+            for (entries) |entry| {
+                const child = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ path, entry.name });
+                defer self.allocator.free(child);
+                try self.deleteRecursive(provider, child);
+            }
+        }
+        try provider.deleteResource(path, .{ .recursive = true });
+    }
+
+    pub fn move(self: *ProviderFileService, from: []const u8, to: []const u8, overwrite: bool) !void {
+        const source = self.providerFor(from) orelse return error.ProviderUnavailable;
+        const target = self.providerFor(to) orelse return error.ProviderUnavailable;
+        try ensureWritable(source.provider);
+        try source.provider.renameResource(source.parsed.path, target.parsed.path, .{ .overwrite = overwrite });
+        try self.fireOperation(.MOVE, to);
+    }
+
+    pub fn copy(self: *ProviderFileService, from: []const u8, to: []const u8, overwrite: bool) !void {
+        const source = self.providerFor(from) orelse return error.ProviderUnavailable;
+        const target = self.providerFor(to) orelse return error.ProviderUnavailable;
+        try ensureWritable(target.provider);
+        try self.copyResource(source.provider, source.parsed.path, target.provider, target.parsed.path, overwrite);
+        try self.fireOperation(.COPY, to);
+    }
+
+    fn copyResource(
+        self: *ProviderFileService,
+        source: files.IFileSystemProvider,
+        from: []const u8,
+        target: files.IFileSystemProvider,
+        to: []const u8,
+        overwrite: bool,
+    ) !void {
+        const stat_info = source.getStat(from) catch return error.FileNotFound;
+        if (files.FileType.isDirectory(stat_info.type)) {
+            target.makeDirectory(to) catch |err| switch (err) {
+                error.FileExists => {},
+                else => return err,
+            };
+            const entries = try source.getDirectoryEntries(from);
+            defer self.allocator.free(entries);
+            for (entries) |entry| {
+                const child_from = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ from, entry.name });
+                defer self.allocator.free(child_from);
+                const child_to = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ to, entry.name });
+                defer self.allocator.free(child_to);
+                try self.copyResource(source, child_from, target, child_to, overwrite);
+            }
+            return;
+        }
+        const data = try source.readFile(from);
+        defer self.allocator.free(data);
+        try target.writeFile(to, data, .{ .create = true, .overwrite = overwrite });
+    }
+
+    fn fireOperation(self: *ProviderFileService, operation: files.FileOperation, resource: []const u8) !void {
+        const target = self.stat(resource) catch null;
+        var target_copy: ?files.FileStat = null;
+        if (target) |value| {
+            target_copy = value;
+            target_copy.?.resource = resource;
+            target_copy.?.name = std.fs.path.basename(resource);
+        }
+        try self.on_did_run_operation.fire(.{ .operation = operation, .resource = resource, .target = target_copy });
+    }
+
+    fn providerChanged(context: *anyopaque, changes: []const files.IFileChange) void {
+        const registration: *ProviderRegistration = @ptrCast(@alignCast(context));
+        const service = registration.service;
+        const changes_alloc = service.allocator;
+        var converted = std.array_list.Managed(files.FileChange).init(changes_alloc);
+        defer {
+            for (converted.items) |change| changes_alloc.free(@constCast(change.resource));
+            converted.deinit();
+        }
+        for (changes) |change| {
+            const resource = std.fmt.allocPrint(changes_alloc, "{s}:{s}", .{ registration.scheme, change.resource }) catch continue;
+            converted.append(.{ .type = change.type, .resource = resource }) catch {
+                changes_alloc.free(resource);
+                continue;
+            };
+        }
+        var event = files.FileChangesEvent.init(changes_alloc, converted.items, false) catch return;
+        defer event.deinit();
+        service.on_did_files_change.fire(event) catch {};
+    }
+};

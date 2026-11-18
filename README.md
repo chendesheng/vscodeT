@@ -834,8 +834,13 @@ Editor contributions:
 - The file-system provider contract and the in-memory provider are ported
   (`platform/files/common/files.zig` provider types, `inMemoryFilesystemProvider.zig`
   with tree/stat/readdir/read/write/append/open/read/write/close/rename/delete,
-  capability flags, synchronous change listeners and provider error codes);
-  the provider-registry `FileService` that consumes them is next.
+  capability flags, synchronous change listeners and provider error codes).
+  `ProviderFileService` in `fileService.zig` registers providers by scheme and
+  ports `exists`/`resolve` (with `resolveTo`)/`readFile` (positions)/
+  `writeFile` (append)/`createFolder` (recursive)/`move`/`copy`/`del`/
+  `onDidRunOperation`/`onDidFilesChange`, including read-only enforcement; the
+  complete upstream `inmemoryFileService.test.ts` suite (20 cases, with the
+  stream case adapted to the synchronous terminal read) is ported.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON

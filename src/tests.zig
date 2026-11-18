@@ -518,6 +518,7 @@ comptime {
 }
 comptime {
     _ = @import("./vs/platform/files/test/common/files.test.zig");
+    _ = @import("./vs/platform/files/test/browser/inmemoryFileService.test.zig");
     _ = @import("./vs/platform/files/test/common/watcher.test.zig");
     _ = @import("./vs/platform/files/test/node/parcelWatcher.test.zig");
 }
