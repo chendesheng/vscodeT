@@ -579,7 +579,12 @@ The tab strip is the cell adaptation of `editorTabsControl.ts`/
 background and bold text, and every tab reserves action space. The active or
 hovered tab paints `×`; a modified tab paints `●` in the same cell (hovering it
 paints `×`). Clicking that cell or middle-clicking the tab closes it, with the
-same second-activation rule for dirty tabs as `Ctrl-W`. There is no 1px
+same second-activation rule for dirty tabs as `Ctrl-W`. Double-clicking a
+preview tab pins it; double-clicking a pinned tab toggles the group's expanded
+state (default `doubleClickTabToToggleEditorGroupSizes: 'expand'`). An expanded
+group is laid out over the whole editor area and its siblings are not painted;
+toggling it off restores the split from the existing grid rects. Sash resizing
+and tab dragging are disabled while a group is expanded. There is no 1px
 active-tab top border, horizontal scrollbar, editor actions toolbar, Add Tab
 control, tab context menu or tab drag reordering; overflow clips leading tabs
 behind an ellipsis and reveals the active tab. Preview editors come from

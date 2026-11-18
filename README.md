@@ -107,8 +107,11 @@ console API for raw mode, sizing and input polling.
   position and decorations. Tabs show a two-cell language badge (the file icon
   theme is not ported), preview italics, a close cell and a dirty dot; the close
   cell and middle click close the tab, and a dirty tab still asks for a second
-  activation. Explorer single clicks open a preview editor, while Enter, quick
-  open, CLI paths and session restore open pinned; editing a preview pins it.
+  activation. Double-clicking a preview tab pins it; double-clicking a pinned
+  tab toggles the group's expanded (whole-editor-area) state, matching
+  upstream's default `doubleClickTabToToggleEditorGroupSizes: 'expand'`.
+  Explorer single clicks open a preview editor, while Enter, quick open, CLI
+  paths and session restore open pinned; editing a preview pins it.
   `Ctrl-W` closes the active tab, `Ctrl-PgUp`/`Ctrl-PgDn` switch tabs, `Alt-1..9`
   activates a tab by position, `Ctrl-S` saves and `Ctrl-Q` quits (a second
   `Ctrl-Q` is required while any tab is dirty). Empty groups collapse out of
