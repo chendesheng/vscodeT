@@ -97,17 +97,40 @@ console API for raw mode, sizing and input polling.
   box-drawing dividers. It does not import editor code.
 - Multi-file editing uses the ported workbench editor-group model
   (`src/vs/workbench/common/editor/editorGroupModel.zig`), the editor part,
-  group view and pane layers (`src/vs/workbench/browser/parts/editor/`), and a
-  terminal tab strip (`src/tui/tabBar.zig`, `src/tui/workbench.zig`). Each tab keeps its own
-  `Editor`, `View` and lazy editor contributions; only the active view is
-  composited under the tab row, so switching tabs preserves scroll position and
-  decorations. `Ctrl-W` closes the active tab (a dirty tab asks
-  for a second `Ctrl-W`), `Ctrl-PgUp`/`Ctrl-PgDn` switch tabs, `Alt-1..9`
+  group view and pane layers (`src/vs/workbench/browser/parts/editor/`), a
+  terminal tab strip (`src/tui/tabBar.zig`) and a terminal breadcrumb bar
+  (`src/vs/base/browser/ui/breadcrumbs/breadcrumbsWidget.zig`,
+  `src/vs/workbench/browser/parts/editor/breadcrumbs{,Model,Control,Picker}.zig` with
+  the outline service under `src/vs/workbench/services/outline/`). Each tab keeps
+  its own `Editor`, `View` and lazy editor contributions; only the active view is
+  composited under the two chrome rows, so switching tabs preserves scroll
+  position and decorations. Tabs show a two-cell language badge (the file icon
+  theme is not ported), preview italics, a close cell and a dirty dot; the close
+  cell and middle click close the tab, and a dirty tab still asks for a second
+  activation. Explorer single clicks open a preview editor, while Enter, quick
+  open, CLI paths and session restore open pinned; editing a preview pins it.
+  `Ctrl-W` closes the active tab, `Ctrl-PgUp`/`Ctrl-PgDn` switch tabs, `Alt-1..9`
   activates a tab by position, `Ctrl-S` saves and `Ctrl-Q` quits (a second
   `Ctrl-Q` is required while any tab is dirty). Empty groups collapse out of
   the split tree when their last tab closes, the divider between panes is a
   draggable sash, and dragging a tab into another pane (or onto its edge)
   retiles the editor part. `--preview` remains a single-file mode.
+- The breadcrumb row shows the workspace-relative file path (absolute segments
+  outside the workspace) with `>` separators and a 2-cell language badge; `>` and
+  the segments follow the upstream focus/selection rules. Clicking a folder or
+  file opens the terminal quick pick with the directory's children, and clicking
+  a symbol reveals it. Symbol segments are supplied by the ported
+  `IOutlineService`/`IOutline` plumbing; **no built-in document-symbol provider is
+  shipped yet**, so JavaScript and other files show only the file path until a
+  provider is registered (for example by the future extension host). A fake
+  provider is used in the tests. `Ctrl+Shift+.` focuses/selects the last segment
+  and `Ctrl+Shift+;` focuses it; Left/Right navigate, Enter/Down opens the picker,
+  Space reveals and Escape returns to the editor. Terminal substitutions: the
+  browser chevron/codicon is `>`, the file icon theme is the language badge, the
+  tree picker is the existing quick pick, and overflow clips leading segments
+  behind an ellipsis instead of a horizontal scrollbar. The editor-type dropdown,
+  breadcrumb drag-and-drop, tab context menus/actions toolbar and the symbol-kind
+  filters are not ported.
 - A terminal Explorer sidebar (`src/tui/explorerTreeSidebar.zig`) sits left of the editor
   area over the ported `ExplorerModel`
   (`src/vs/workbench/contrib/files/common/explorerModel.zig`). It lists the

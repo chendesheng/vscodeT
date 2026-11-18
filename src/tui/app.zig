@@ -329,6 +329,7 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.pollFileWatcher(now_ms)) needs_render = true;
+        if (workbench.pollBreadcrumbs()) needs_render = true;
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
         if (workbench.pollSearch(now_ms)) needs_render = true;
         var timeout: i32 = 250;
@@ -424,6 +425,7 @@ pub fn main(init: std.process.Init) !void {
                         .handled => continue,
                         .unhandled => {},
                     }
+                    if (try workbench.handleBreadcrumbsKey(event)) continue;
 
                     const current = workbench.activeTab() orelse continue;
                     try current.ensureControllers();

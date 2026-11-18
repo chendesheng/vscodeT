@@ -1,37 +1,73 @@
 //! Terminal tab strip over the ported `EditorGroupModel`.
 //!
-//! This is the TUI adaptation of the workbench title/tabs control: it paints
-//! the labels into the top cell row and reports the hit rectangle of every
-//! visible tab. The model owns order, MRU, preview/pinned/sticky state and
-//! activation; this file only decides how the labels are laid out in cells.
+//! This is the TUI adaptation of the workbench title/tabs control
+//! (`src/vs/workbench/browser/parts/editor/editorTabsControl.ts` and
+//! `multiEditorTabsControl.ts`): it paints the labels into the top cell row
+//! and reports the hit rectangle of every visible tab and of its close action.
+//! The model owns order, MRU, preview/pinned/sticky state and activation; this
+//! file only decides how the labels are laid out in cells.
+//!
+//! Terminal adaptations, documented in `README.md` and `docs/terminal-ui.md`:
+//! - The file icon theme is not ported, so the tab icon is a two-cell language
+//!   badge (`JS`); see `fileIcon.zig`.
+//! - The browser's 1px active-tab top border has no partial-cell equivalent;
+//!   the active tab uses its background and bold text instead.
+//! - Tab action space is always reserved (`tabActionReserveSpace`), but only
+//!   the active/hovered tab and the dirty dot paint a glyph. Clicking the dot
+//!   or the close glyph closes the tab.
+//! - Overflow clips leading tabs behind an ellipsis and reveals the active tab
+//!   with its close cell, instead of a horizontal scrollbar.
 
 const std = @import("std");
 const ui = @import("ui");
 const editor_group_view = @import("../vs/workbench/browser/parts/editor/editorGroupView.zig");
+const file_icon = @import("./fileIcon.zig");
 
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
 
 pub const TabInfo = struct {
     label: []const u8,
+    language: []const u8 = "",
     dirty: bool = false,
+    /// Upstream `!isPinned`: preview tabs are italic.
+    pinned: bool = true,
+    sticky: bool = false,
+    closeable: bool = true,
+};
+
+pub const DrawOptions = struct {
+    group_active: bool = true,
+    hovered: ?usize = null,
 };
 
 /// The terminal tab strip's hit rectangle; the group view keeps this cache.
 pub const Hit = editor_group_view.TabHit;
 
+const strip_background = PaintStyle{
+    .fg = ui.cell.packColor(.{ .r = 190, .g = 190, .b = 190 }),
+    .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
+};
 const active_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 245, .g = 245, .b = 245 }),
-    .bg = ui.cell.packColor(.{ .r = 50, .g = 50, .b = 50 }),
-    .attrs = ui.cell.Attr.inverse,
+    .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 30 }),
+    .attrs = ui.cell.Attr.bold,
+};
+const inactive_group_active_style = PaintStyle{
+    .fg = ui.cell.packColor(.{ .r = 205, .g = 205, .b = 205 }),
+    .bg = ui.cell.packColor(.{ .r = 45, .g = 45, .b = 45 }),
 };
 const inactive_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 150, .g = 150, .b = 150 }),
-    .bg = 0,
+    .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
 const separator_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
-    .bg = 0,
+    .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
+};
+const dirty_style = PaintStyle{
+    .fg = ui.cell.packColor(.{ .r = 230, .g = 170, .b = 70 }),
+    .attrs = ui.cell.Attr.bold,
 };
 
 fn textWidth(text: []const u8) usize {
@@ -45,8 +81,22 @@ fn textWidth(text: []const u8) usize {
     return width;
 }
 
-fn tabWidth(label: []const u8, cols: usize) usize {
-    const width = textWidth(label) + 2;
+fn badgeWidth(tab: TabInfo) usize {
+    if (file_icon.width(iconFor(tab)) == 0) return 0;
+    return file_icon.width(iconFor(tab)) + 1;
+}
+
+fn iconFor(tab: TabInfo) []const u8 {
+    if (tab.language.len == 0) return "";
+    return file_icon.badge(tab.language);
+}
+
+fn closeWidth(tab: TabInfo) usize {
+    return if (tab.closeable) 2 else 0;
+}
+
+fn tabWidth(tab: TabInfo, cols: usize) usize {
+    const width = textWidth(tab.label) + 2 + badgeWidth(tab) + closeWidth(tab);
     return @min(@max(width, 4), @max(cols -| 1, 1));
 }
 
@@ -63,7 +113,7 @@ fn truncateLabel(label: []const u8, max_cells: usize) []const u8 {
     return label[0..offset];
 }
 
-fn drawLabel(grid: *CellGrid, label: []const u8, start: usize, row: usize, max_cells: usize, paint: PaintStyle) void {
+fn drawLabel(grid: *CellGrid, label: []const u8, start: usize, row: usize, max_cells: usize, paint: PaintStyle) usize {
     const visible = truncateLabel(label, max_cells);
     var col = start;
     var offset: usize = 0;
@@ -74,6 +124,7 @@ fn drawLabel(grid: *CellGrid, label: []const u8, start: usize, row: usize, max_c
         col += width;
         offset += decoded.len;
     }
+    return col - start;
 }
 
 /// Paints the tab strip in `row` and fills `hits` with the visible tab
@@ -87,36 +138,37 @@ pub fn draw(
     row: usize,
     width: usize,
     hits: *std.array_list.Managed(Hit),
+    options: DrawOptions,
 ) !void {
     hits.clearRetainingCapacity();
-    if (row >= grid.rows or tabs.len == 0) return;
+    if (row >= grid.rows) return;
     if (x >= grid.cols) return;
 
     const cols = @min(width, grid.cols - x);
     if (cols == 0) return;
+    grid.fillRect(@floatFromInt(x), @floatFromInt(row), @floatFromInt(cols), 1, strip_background);
+    if (tabs.len == 0) return;
+
     const widths = try grid.allocator.alloc(usize, tabs.len);
     defer grid.allocator.free(widths);
     for (tabs, 0..) |tab, index| {
-        widths[index] = tabWidth(tab.label, cols);
+        widths[index] = tabWidth(tab, cols);
     }
 
     // Find the first tab to paint. Start at zero unless the active tab would
     // be clipped, in which case walk backwards until it fits.
     var first: usize = 0;
     if (active < tabs.len) {
-        var used: usize = 0;
-        var index = active + 1;
-        while (index > 0) {
-            index -= 1;
-            const separator: usize = if (used > 0) 1 else 0;
-            const extra = widths[index] + separator;
-            if (used + extra > cols) break;
-            used += extra;
-            first = index;
-        }
+        first = revealFirst(tabs.len, widths, active, cols);
+    }
+    if (first > 0) {
+        // Reserve the leading ellipsis and re-walk with the reduced width.
+        const reduced = cols -| 2;
+        if (active < tabs.len) first = revealFirst(tabs.len, widths, active, reduced);
+        grid.putCodepoint(x, row, 0x2026, 1, separator_style);
     }
 
-    var col: usize = 0;
+    var col: usize = if (first > 0) 2 else 0;
     var index = first;
     while (index < tabs.len and col < cols) : (index += 1) {
         if (index > first) {
@@ -126,27 +178,88 @@ pub fn draw(
             if (col >= cols) break;
         }
 
+        const tab = tabs[index];
         const tab_width = @min(widths[index], cols - col);
         if (tab_width < 2) break;
 
-        const paint = if (index == active) active_style else inactive_style;
+        const is_active = index == active;
+        const paint = if (is_active)
+            (if (options.group_active) active_style else inactive_group_active_style)
+        else
+            inactive_style;
         const screen_col = x + col;
         grid.fillRect(@floatFromInt(screen_col), @floatFromInt(row), @floatFromInt(tab_width), 1, paint);
 
-        const label = truncateLabel(tabs[index].label, tab_width - 2);
-        drawLabel(grid, label, screen_col + 1, row, tab_width - 2, paint);
-        if (tabs[index].dirty and textWidth(label) + 2 < tab_width) {
-            const dirty_paint = PaintStyle{
-                .fg = paint.fg,
+        var cursor = screen_col + 1;
+
+        // Language badge, then a gap.
+        const icon = iconFor(tab);
+        if (icon.len > 0 and cursor + 2 <= screen_col + tab_width -| closeWidth(tab)) {
+            const badge_paint = PaintStyle{
+                .fg = if (is_active) ui.cell.packColor(.{ .r = 210, .g = 190, .b = 120 }) else ui.cell.packColor(.{ .r = 160, .g = 160, .b = 160 }),
                 .bg = paint.bg,
-                .attrs = paint.attrs | ui.cell.Attr.bold,
             };
-            drawLabel(grid, "*", screen_col + 1 + textWidth(label), row, 1, dirty_paint);
+            _ = file_icon.draw(grid, cursor, row, icon, 2, badge_paint);
+            cursor += 2;
+            grid.putCodepoint(cursor, row, ' ', 1, paint);
+            cursor += 1;
+        }
+
+        const reserved_close = closeWidth(tab);
+        const label_end = screen_col + tab_width -| reserved_close -| 1;
+        const label_cells = label_end -| cursor;
+        var label_paint = paint;
+        if (!tab.pinned) label_paint.attrs |= ui.cell.Attr.italic;
+        const drawn = drawLabel(grid, tab.label, cursor, row, label_cells, label_paint);
+        if (drawn < textWidth(tab.label) and cursor + drawn < label_end) {
+            grid.putCodepoint(cursor + drawn, row, 0x2026, 1, label_paint);
+        }
+
+        if (reserved_close == 2 and tab_width >= 4) {
+            const close_cell = screen_col + tab_width - 2;
+            const hovered = options.hovered == index;
+            const show_close = tab.closeable and (is_active or hovered or tab.dirty);
+            if (show_close) {
+                const glyph: u21 = if (tab.dirty and !hovered) 0x25CF else 0x00D7;
+                const close_paint = if (tab.dirty and !hovered)
+                    PaintStyle{ .fg = dirty_style.fg, .bg = paint.bg, .attrs = dirty_style.attrs }
+                else
+                    PaintStyle{ .fg = paint.fg, .bg = paint.bg };
+                grid.putCodepoint(close_cell, row, glyph, 1, close_paint);
+                try hits.append(.{
+                    .start = screen_col,
+                    .end = screen_col + tab_width,
+                    .index = index,
+                    .close_start = close_cell,
+                    .close_end = close_cell + 1,
+                });
+                col += tab_width;
+                continue;
+            }
         }
 
         try hits.append(.{ .start = screen_col, .end = screen_col + tab_width, .index = index });
         col += tab_width;
     }
+}
+
+fn revealFirst(count: usize, widths: []const usize, active: usize, cols: usize) usize {
+    // Keep the active tab visible even when it is wider than the available
+    // cells; otherwise the leading tabs would win and the active one would be
+    // clipped away.
+    var first: usize = active;
+    var used: usize = 0;
+    var index = active + 1;
+    while (index > 0) {
+        index -= 1;
+        const separator: usize = if (used > 0) 1 else 0;
+        const extra = widths[index] + separator;
+        if (used + extra > cols) break;
+        used += extra;
+        first = index;
+    }
+    _ = count;
+    return first;
 }
 
 /// Returns the tab index at `col` in the strip painted by `draw`.
@@ -157,20 +270,30 @@ pub fn hitAt(hits: []const Hit, col: usize) ?usize {
     return null;
 }
 
+/// Returns the tab index whose close cell contains `col`.
+pub fn closeHitAt(hits: []const Hit, col: usize) ?usize {
+    for (hits) |hit| {
+        const start = hit.close_start orelse continue;
+        const end = hit.close_end orelse continue;
+        if (col >= start and col < end) return hit.index;
+    }
+    return null;
+}
+
 test "tabBar draws labels, active state and hits" {
     const allocator = std.testing.allocator;
-    var grid = try CellGrid.init(allocator, 24, 1);
+    var grid = try CellGrid.init(allocator, 32, 1);
     defer grid.deinit();
 
     var hits = std.array_list.Managed(Hit).init(allocator);
     defer hits.deinit();
 
     const tabs = [_]TabInfo{
-        .{ .label = "a.txt" },
-        .{ .label = "b.txt", .dirty = true },
-        .{ .label = "c.txt" },
+        .{ .label = "a.txt", .language = "plaintext" },
+        .{ .label = "b.txt", .language = "typescript", .dirty = true },
+        .{ .label = "c.txt", .language = "plaintext" },
     };
-    try draw(&grid, &tabs, 1, 0, 0, grid.cols, &hits);
+    try draw(&grid, &tabs, 1, 0, 0, grid.cols, &hits, .{});
 
     try std.testing.expectEqual(@as(usize, 3), hits.items.len);
     try std.testing.expectEqual(@as(usize, 1), hitAt(hits.items, hits.items[1].start).?);
@@ -180,6 +303,29 @@ test "tabBar draws labels, active state and hits" {
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "a.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "b.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "TS") != null);
+    // The dirty tab paints its dot in the close cell.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\u{25CF}") != null);
+}
+
+test "tabBar close hits and hovered close" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 32, 1);
+    defer grid.deinit();
+
+    var hits = std.array_list.Managed(Hit).init(allocator);
+    defer hits.deinit();
+
+    const tabs = [_]TabInfo{
+        .{ .label = "a.txt", .language = "plaintext" },
+        .{ .label = "b.txt", .language = "plaintext" },
+    };
+    try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{ .hovered = 1 });
+    try std.testing.expectEqual(@as(usize, 2), hits.items.len);
+    // Inactive tab has no close glyph unless hovered/active.
+    try std.testing.expect(hits.items[0].close_start != null);
+    try std.testing.expect(hits.items[1].close_start != null);
+    try std.testing.expectEqual(@as(?usize, 1), closeHitAt(hits.items, hits.items[1].close_start.?));
 }
 
 test "tabBar scrolls to keep the active tab visible" {
@@ -191,13 +337,33 @@ test "tabBar scrolls to keep the active tab visible" {
     defer hits.deinit();
 
     const tabs = [_]TabInfo{
-        .{ .label = "first.txt" },
-        .{ .label = "second.txt" },
-        .{ .label = "third.txt" },
+        .{ .label = "first.txt", .language = "plaintext" },
+        .{ .label = "second.txt", .language = "plaintext" },
+        .{ .label = "third.txt", .language = "plaintext" },
     };
-    try draw(&grid, &tabs, 2, 0, 0, grid.cols, &hits);
+    try draw(&grid, &tabs, 2, 0, 0, grid.cols, &hits, .{});
 
     try std.testing.expect(hits.items.len >= 1);
     try std.testing.expectEqual(@as(usize, 2), hits.items[hits.items.len - 1].index);
     try std.testing.expectEqual(@as(?usize, 2), hitAt(hits.items, hits.items[hits.items.len - 1].start));
+}
+
+test "tabBar italicizes preview tabs" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 24, 1);
+    defer grid.deinit();
+
+    var hits = std.array_list.Managed(Hit).init(allocator);
+    defer hits.deinit();
+
+    const tabs = [_]TabInfo{
+        .{ .label = "p.ts", .language = "typescript", .pinned = false },
+    };
+    try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{});
+    var col = hits.items[0].start;
+    var found_italic = false;
+    while (col < hits.items[0].end) : (col += 1) {
+        if (grid.attrs[col] & ui.cell.Attr.italic != 0) found_italic = true;
+    }
+    try std.testing.expect(found_italic);
 }

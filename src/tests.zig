@@ -48,6 +48,16 @@ comptime {
     _ = @import("./tui/preview.zig");
     _ = @import("./tui/editorInput.zig");
     _ = @import("./tui/tabBar.zig");
+    _ = @import("./vs/base/test/browser/ui/breadcrumbs/breadcrumbsWidget.test.zig");
+    _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbModel.test.zig");
+    _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbsControl.test.zig");
+    _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbsPicker.test.zig");
+    _ = @import("./tui/fileIcon.zig");
+    _ = @import("./vs/base/browser/ui/breadcrumbs/breadcrumbsWidget.zig");
+    _ = @import("./vs/workbench/browser/parts/editor/breadcrumbs.zig");
+    _ = @import("./vs/workbench/browser/parts/editor/breadcrumbsModel.zig");
+    _ = @import("./vs/workbench/browser/parts/editor/breadcrumbsControl.zig");
+    _ = @import("./vs/workbench/services/outline/browser/outlineService.zig");
     _ = @import("./tui/explorerTreeSidebar.zig");
     _ = @import("./tui/activityBar.zig");
     _ = @import("./tui/tab.zig");

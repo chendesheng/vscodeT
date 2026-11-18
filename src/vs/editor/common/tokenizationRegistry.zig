@@ -30,7 +30,11 @@ pub const TokenizationRegistry = struct {
     pub fn deinit(self: *TokenizationRegistry) void {
         var supportIter = self._tokenizationSupports.valueIterator();
         while (supportIter.next()) |support| support.dispose();
+        var supportKeys = self._tokenizationSupports.keyIterator();
+        while (supportKeys.next()) |key| self.allocator.free(key.*);
         self._tokenizationSupports.deinit();
+        var factoryKeys = self._factories.keyIterator();
+        while (factoryKeys.next()) |key| self.allocator.free(key.*);
         self._factories.deinit();
         self._onDidChange.deinit();
     }
@@ -48,7 +52,17 @@ pub const TokenizationRegistry = struct {
     }
 
     pub fn register(self: *TokenizationRegistry, languageId: []const u8, support: ITokenizationSupport) !void {
-        try self._tokenizationSupports.put(languageId, support);
+        // The language id slice may be owned by an editor's language service,
+        // which can be disposed while this global registry entry survives.
+        // Keep an owned copy so a later lookup cannot hash freed memory.
+        if (self._tokenizationSupports.fetchRemove(languageId)) |entry| {
+            var previous = entry.value;
+            previous.dispose();
+            self.allocator.free(entry.key);
+        }
+        const key = try self.allocator.dupe(u8, languageId);
+        errdefer self.allocator.free(key);
+        try self._tokenizationSupports.put(key, support);
         self.handleChange(&[_][]const u8{languageId});
     }
 
@@ -56,6 +70,7 @@ pub const TokenizationRegistry = struct {
         if (self._tokenizationSupports.fetchRemove(languageId)) |entry| {
             var support = entry.value;
             support.dispose();
+            self.allocator.free(entry.key);
         }
         self.handleChange(&[_][]const u8{languageId});
     }
@@ -65,7 +80,10 @@ pub const TokenizationRegistry = struct {
     }
 
     pub fn registerFactory(self: *TokenizationRegistry, languageId: []const u8, factory: *LazyTokenizationSupport) !void {
-        try self._factories.put(languageId, factory);
+        if (self._factories.fetchRemove(languageId)) |entry| self.allocator.free(entry.key);
+        const key = try self.allocator.dupe(u8, languageId);
+        errdefer self.allocator.free(key);
+        try self._factories.put(key, factory);
     }
 
     pub fn getOrCreate(self: *TokenizationRegistry, languageId: []const u8) !?ITokenizationSupport {
@@ -115,3 +133,37 @@ pub const TokenizationRegistry = struct {
         return null;
     }
 };
+
+test "tokenization registry owns language id keys" {
+    const languages = @import("./languages.zig");
+    const Support = struct {
+        fn getInitialState(_: *anyopaque, _: Allocator) anyerror!languages.IState {
+            return error.NotImplemented;
+        }
+        fn tokenizeEncoded(_: *anyopaque, _: Allocator, _: []const u8, _: bool, _: languages.IState) anyerror!languages.EncodedTokenizationResult {
+            return error.NotImplemented;
+        }
+        fn dispose(_: *anyopaque) void {}
+    };
+    const support_vtable = languages.ITokenizationSupport.VTable{
+        .getInitialState = Support.getInitialState,
+        .tokenizeEncoded = Support.tokenizeEncoded,
+        .dispose = Support.dispose,
+    };
+    var support_context: u8 = 0;
+    const support = languages.ITokenizationSupport{
+        .context = @ptrCast(&support_context),
+        .vtable = &support_vtable,
+    };
+
+    var registry = TokenizationRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    var key = [_]u8{ 't', 'e', 's', 't' };
+    try registry.register(&key, support);
+    @memset(&key, 'x');
+    try std.testing.expect(registry.get("test") != null);
+
+    registry.unregister("test");
+    try std.testing.expect(registry.get("test") == null);
+}

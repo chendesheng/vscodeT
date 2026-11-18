@@ -37,10 +37,15 @@ pub const TabHit = struct {
     start: usize,
     end: usize,
     index: usize,
+    /// The close/dirty cell, when the tab paints one.
+    close_start: ?usize = null,
+    close_end: ?usize = null,
 };
 
 /// One cell row is the terminal title control.
 pub const title_height: usize = 1;
+/// One cell row is the terminal breadcrumb bar (upstream `BreadcrumbsControl.HEIGHT`).
+pub const breadcrumbs_height: usize = 1;
 
 pub fn EditorGroupView(comptime View: type) type {
     comptime {
@@ -55,6 +60,8 @@ pub fn EditorGroupView(comptime View: type) type {
         tabs: std.array_list.Managed(View),
         hits: std.array_list.Managed(TabHit),
         rect: ui.Rect = .{},
+        /// The workbench reserves a breadcrumb row when `breadcrumbs.enabled`.
+        breadcrumbs_visible: bool = false,
         panes: editorPanes.EditorPanes(View) = .{},
 
         pub fn init(allocator: Allocator, group: *editor_groups.EditorGroup) Self {
@@ -173,12 +180,21 @@ pub fn EditorGroupView(comptime View: type) type {
         }
 
         /// Upstream `layout(pagePosition)`: assign the group rectangle and lay
-        /// out the title control and the visible editor pane. Panes activated
-        /// later re-use this position.
+        /// out the title control, the breadcrumb bar and the visible editor
+        /// pane. Panes activated later re-use this position.
         pub fn layout(self: *Self) void {
             const width = @max(ui.cell.snap(self.rect.w), 1);
-            const height = @max(ui.cell.snap(self.rect.h) -| title_height, 1);
+            const height = @max(ui.cell.snap(self.rect.h) -| self.chromeHeight(), 1);
             self.panes.layout(.{ .width = width, .height = height });
+        }
+
+        /// Rows owned by the title control above the editor content.
+        pub fn chromeHeight(self: *const Self) usize {
+            return title_height + if (self.breadcrumbs_visible) breadcrumbs_height else 0;
+        }
+
+        pub fn setBreadcrumbsVisible(self: *Self, visible: bool) void {
+            self.breadcrumbs_visible = visible;
         }
     };
 }

@@ -17,6 +17,13 @@ pub const FileChangeType = enum(u2) {
     DELETED = 2,
 };
 
+/// Mirrors upstream `FileKind`.
+pub const FileKind = enum(u2) {
+    FILE = 0,
+    FOLDER = 1,
+    ROOT_FOLDER = 2,
+};
+
 /// Bit mask used by watch requests to filter emitted changes.
 pub const FileChangeFilter = struct {
     pub const UPDATED: u8 = 1 << 1;

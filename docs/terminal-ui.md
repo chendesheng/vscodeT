@@ -565,6 +565,47 @@ tab into the new group. While dragging, the target pane gets a bright outline
 The full N-ary `Grid` branch model is not ported; the terminal keeps a binary
 oriented split tree, which represents the same guillotine tilings.
 
+### Editor tab strip and breadcrumb row
+
+Each editor pane spends one cell row on the tab strip and, when
+`breadcrumbs.enabled` is on (the upstream default), a second row on the
+breadcrumb bar. The editor content starts below both rows; the pane's outline
+still surrounds the whole chrome+content rectangle, and the cursor/mouse
+coordinate translation subtracts the same chrome height.
+
+The tab strip is the cell adaptation of `editorTabsControl.ts`/
+`multiEditorTabsControl.ts`: the file icon theme is a two-cell language badge
+(`JS`, `TS`, `ZG`, …), preview tabs are italic, the active tab uses the active
+background and bold text, and every tab reserves action space. The active or
+hovered tab paints `×`; a modified tab paints `●` in the same cell (hovering it
+paints `×`). Clicking that cell or middle-clicking the tab closes it, with the
+same second-activation rule for dirty tabs as `Ctrl-W`. There is no 1px
+active-tab top border, horizontal scrollbar, editor actions toolbar, Add Tab
+control, tab context menu or tab drag reordering; overflow clips leading tabs
+behind an ellipsis and reveals the active tab. Preview editors come from
+Explorer single clicks; Enter/quick open/CLI/session opens stay pinned, and an
+edit pins a preview.
+
+The breadcrumb row is the cell adaptation of `breadcrumbsWidget.ts` and
+`breadcrumbsControl.ts`. Items are painted left to right with a dim `>` between
+them; focused/selected items are underlined and white, hovered items brighten,
+and long paths drop leading items behind `…`. A directory/file click opens the
+terminal quick pick for the item's sibling directory (the browser tree picker is
+replaced by the existing quick pick); a symbol click/space calls
+`IOutline.reveal`. Focus navigation is `Left`/`Right`, `Enter`/`Down` picks,
+`Space` reveals and `Escape` returns to the editor. `Ctrl+Shift+.` and
+`Ctrl+Shift+;` focus the bar; some terminals do not deliver those combinations.
+
+Symbol segments require an `IOutlineCreator` registered with the ported
+`OutlineService`. The tree's only creator source is the future extension host /
+language-service layer, so the stock TUI shows the file path alone; the
+breadcrumb model/widget tests register fake creators to cover the symbol path.
+The browser editor-type dropdown, hover tooltips, drag data, symbol-kind filters
+and the tree picker are not ported. Creating a short-lived control to paint an
+inactive group's breadcrumbs is a terminal adaptation of the browser's one
+widget per group; it keeps the visible content correct without a per-group DOM
+lifetime.
+
 Limitations of the current wire encoder: it emits solid strokes only, with
 square joints, `placement=1` and `layer=0`. `Set` carries joint flags and the
 wire encoder carries the line-style and priority fields, but the painter never

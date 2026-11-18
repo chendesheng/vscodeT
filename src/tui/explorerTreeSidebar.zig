@@ -267,6 +267,16 @@ pub const Sidebar = struct {
     }
 
     pub fn handleClick(self: *Sidebar, x: usize, y: usize) !?[]const u8 {
+        return self.handleClickInternal(x, y);
+    }
+
+    /// A single click in the Explorer opens a preview editor; Enter stays
+    /// pinned. Tree toggling and selection behavior are unchanged.
+    pub fn handleClickPreview(self: *Sidebar, x: usize, y: usize) !?[]const u8 {
+        return self.handleClickInternal(x, y);
+    }
+
+    fn handleClickInternal(self: *Sidebar, x: usize, y: usize) !?[]const u8 {
         const rect = self.last_rect;
         const left = ui.cell.snap(rect.x);
         const top = ui.cell.snap(rect.y);

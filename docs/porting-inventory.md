@@ -345,7 +345,7 @@ has no upstream counterpart.
 | `workbench.zig:1137-1640` | `workbench/browser/actions/layoutActions.ts`, `workbench/browser/parts/editor/editorActions.ts`, keybinding service | Tab/group/sidebar/status key and mouse routing | P3 |
 | `workbench.zig:1683-1769` | `workbench/browser/parts/statusbar/statusbarPart.ts` (122) | Entry text refresh; the bar itself is a ported part | keep adapter |
 | `workbench.zig:1821-1990` | none | Pane compositing and cell paint | terminal-only |
-| `tabBar.zig:82-159` | `workbench/browser/parts/editor/editorTabsControl.ts` (100), `workbench/browser/parts/editor/singleEditorTabsControl.ts` (28), `workbench/browser/parts/editor/editorTitleControl.ts` (36) | Strip layout, label truncation, active/dirty marker, reveal, hit testing | extract small / keep paint |
+| `tabBar.zig:82-260` | `workbench/browser/parts/editor/editorTabsControl.ts` (100), `workbench/browser/parts/editor/multiEditorTabsControl.ts`, `workbench/browser/parts/editor/singleEditorTabsControl.ts` (28), `workbench/browser/parts/editor/editorTitleControl.ts` (36) | Strip layout, language badge, preview italics, active/dirty marker, close cell, reveal/hover, hit testing | keep paint |
 | `activityBar.zig:32-106` | `workbench/browser/parts/activitybar/activitybarPart.ts` (46), `workbench/browser/parts/compositeBar.ts`, activity service | Rail hit testing and glyphs; model ported | keep adapter |
 | `explorerTreeSidebar.zig:368-540` | `workbench/contrib/files/browser/views/explorerViewer.ts` (`FilesRenderer` 822, `ExplorerCompressionDelegate` 2073, `CompressedNavigationController` 715, `FileSorter` 1415) | Compressed label join, sort order, incompressible-chain rules | move small |
 | `searchView.zig:427-1017` | `workbench/contrib/search/browser/searchView.ts` (128), `workbench/contrib/search/browser/searchResultsView.ts` (`SearchDelegate` 79, renderers 103-505), `workbench/contrib/search/browser/searchActions*.ts` | Flattened row model, collapse/selection/scroll, key/mouse, row paint | mixed: use the ported tree; P3 for keys |
@@ -490,9 +490,18 @@ Upstream targets:
   `paneCompositePart.ts` — side bar/pane container;
 - `workbench/browser/parts/statusbar/` — status model, item, part and actions;
   ported, with `workbench.zig` painting the full-width row and routing focus;
-- `workbench/browser/parts/editor/editorTabsControl.ts` and
-  `editorTitleControl.ts` — title/tabs control. The tab *model* is already
-  `EditorGroupModel`; `tabBar.zig` is only strip layout/hit/paint.
+- `workbench/browser/parts/editor/editorTabsControl.ts`,
+  `multiEditorTabsControl.ts` and `editorTitleControl.ts` — title/tabs control.
+  The tab *model* is already `EditorGroupModel`; `tabBar.zig` owns the strip
+  layout/paint plus the language badge, preview italics, close/dirty cell,
+  hover and close hit testing.
+- `workbench/browser/parts/editor/breadcrumbs{,Model,Control,Picker}.ts`,
+  `base/browser/ui/breadcrumbs/breadcrumbsWidget.ts` and
+  `workbench/services/outline/browser/outline{,Service}.ts` — breadcrumb model,
+  widget, control, quick-pick picker and outline-provider registry are ported
+  under their upstream paths. The terminal renders `>` separators, a language
+  badge and clipped/revealed items; no built-in document-symbol provider is
+  shipped, so the symbol path is covered by fake providers in tests.
 
 The P2 extraction already removed grid, drop-target, group-view, pane
 bookkeeping and the status bar from `workbench.zig`. What remains is the
