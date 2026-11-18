@@ -913,6 +913,8 @@ Editor contributions:
   The TUI registers every opened/restored editor with the service (via a
   terminal `IWorkingCopy` adapter) and unregisters on close, so dirty counts,
   per-resource queries and dirty/content/save events track the open editors.
+  `WorkingCopyEditorService` registers editor handlers and finds the open editor
+  for a working copy (callers pass the open editor list).
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
