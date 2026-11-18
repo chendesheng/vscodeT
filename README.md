@@ -857,8 +857,9 @@ Editor contributions:
 - External file changes now reload clean open editors: `Workbench.handleFileChanges`
   forwards updated resources to `Editor.reloadFromDisk` (whole-document edit,
   saved-version reset, cursor reset) while dirty editors keep their in-memory
-  content. Wiring the TUI `UniversalWatcher` into this handler remains host
-  plumbing.
+  content. The workbench starts a `UniversalWatcher` for absolute workspace
+  folders, polls it with the settings watcher and forwards its changes into
+  this handler (the terminal loop also polls on its frame timeout).
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON

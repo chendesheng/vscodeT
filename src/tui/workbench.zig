@@ -70,6 +70,10 @@ const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
 const ConfigurationService = configuration_mod.ConfigurationService;
 const settings_watcher_mod = @import("./settingsWatcher.zig");
+const universal_watcher_mod = @import("../vs/platform/files/node/watcher/watcher.zig");
+const UniversalWatcher = universal_watcher_mod.UniversalWatcher;
+const watch_common = @import("../vs/platform/files/common/watcher.zig");
+const WatchRequest = watch_common.WatchRequest;
 const languages_associations = @import("../vs/editor/common/services/languagesAssociations.zig");
 const keybinding_service = @import("./keybindingService.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
@@ -159,6 +163,9 @@ pub const Workbench = struct {
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
     settings_watcher: ?*SettingsWatcher = null,
+    /// Workspace file watcher. Kept separate from the settings watcher so a
+    /// workspace change never triggers a settings reload.
+    files_watcher: ?*UniversalWatcher = null,
     user_settings_path: ?[]u8,
     history: HistoryService,
     commands: CommandRegistry,
@@ -204,6 +211,7 @@ pub const Workbench = struct {
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
+        self.files_watcher = null;
         self.user_settings_path = null;
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
@@ -263,6 +271,7 @@ pub const Workbench = struct {
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
+        self.files_watcher = null;
         self.user_settings_path = null;
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
@@ -337,6 +346,7 @@ pub const Workbench = struct {
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
+        self.files_watcher = null;
         self.user_settings_path = null;
 
         self.service = try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, data, registry, .{});
@@ -625,6 +635,10 @@ pub const Workbench = struct {
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.destroySearch();
         if (self.settings_watcher) |watcher| watcher.deinit();
+        if (self.files_watcher) |watcher| {
+            watcher.stop();
+            watcher.deinit();
+        }
         if (self.configuration) |configuration| configuration.deinit();
         if (self.user_settings_path) |path| self.allocator.free(path);
         self.workspace.deinit();
@@ -733,6 +747,11 @@ pub const Workbench = struct {
             watcher.deinit();
             self.settings_watcher = null;
         }
+        if (self.files_watcher) |watcher| {
+            watcher.stop();
+            watcher.deinit();
+            self.files_watcher = null;
+        }
         if (self.configuration) |configuration| {
             configuration.deinit();
             self.configuration = null;
@@ -741,6 +760,7 @@ pub const Workbench = struct {
         self.workspace = replacement;
         try self.ensureConfiguration();
         try self.quick_access.setWorkspace(self.workspace);
+        self.startFilesWatcher() catch {};
     }
 
     /// Sets the user settings file before the Explorer/configuration service is
@@ -840,12 +860,41 @@ pub const Workbench = struct {
     }
 
     pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
-        const watcher = self.settings_watcher orelse return false;
-        const changed = watcher.poll(now_ms) catch false;
-        if (changed) {
-            if (self.search_view) |view| view.onConfigurationChanged();
+        var changed = false;
+        if (self.settings_watcher) |watcher| {
+            changed = watcher.poll(now_ms) catch false;
+            if (changed) {
+                if (self.search_view) |view| view.onConfigurationChanged();
+            }
+        }
+        if (self.files_watcher) |watcher| {
+            _ = watcher.poll(now_ms) catch false;
         }
         return changed;
+    }
+
+    /// Starts the workspace watcher for absolute workspace folders; relative
+    /// folders (used by tests and some CLI invocations) are resolved by the app
+    /// before being passed here.
+    fn startFilesWatcher(self: *Workbench) !void {
+        if (self.workspace.getWorkspace().folders.items.len == 0) return;
+        var requests = std.array_list.Managed(WatchRequest).init(self.allocator);
+        defer requests.deinit();
+        for (self.workspace.getWorkspace().folders.items) |folder| {
+            if (!std.fs.path.isAbsolute(folder.resource)) continue;
+            try requests.append(.{ .path = folder.resource, .recursive = true });
+        }
+        if (requests.items.len == 0) return;
+
+        const watcher = try UniversalWatcher.init(self.allocator, self.io);
+        errdefer watcher.deinit();
+        _ = try watcher.on_change.listen(self, onWorkspaceFileChanges);
+        try watcher.watch(requests.items);
+        self.files_watcher = watcher;
+    }
+
+    fn onWorkspaceFileChanges(changes: []const @import("../vs/platform/files/common/files.zig").FileChange, self: *Workbench) !void {
+        self.handleFileChanges(changes);
     }
 
     pub fn fileWatcherFd(self: *const Workbench) ?std.posix.fd_t {
@@ -3948,4 +3997,20 @@ test "Workbench: external file changes reload clean editors only" {
     var preserved = try tab.editor.model.getValue(.TextDefined, true);
     defer preserved.deinit();
     try std.testing.expectEqualStrings("local after", preserved.items);
+}
+
+test "Workbench: starts a workspace file watcher for absolute folders" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 40, 9);
+    defer workbench.deinit();
+    try workbench.setWorkspaceFolders(&.{root});
+    try std.testing.expect(workbench.files_watcher != null);
 }

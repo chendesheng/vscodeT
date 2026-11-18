@@ -1075,7 +1075,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,091 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,092 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1096,10 +1096,12 @@ in-memory service suite) and the disk provider (provider contract over
 `std.Io`, watch-request filtering and host-forwarded change delivery, with
 direct/service/watcher tests); clean editors now reload on external changes
 (`Workbench.handleFileChanges` → `Editor.reloadFromDisk`), with dirty editors
-preserved. Forwarding the TUI `UniversalWatcher` into this handler and the
-broader working-copy model remain.
+preserved; the workbench now starts a `UniversalWatcher` for absolute workspace
+folders and forwards its changes into that handler. The broader working-copy
+model (encoding, conflicts, save participants, untitled/diff working copies)
+remains.
 
-**Status at the end of the current session:** 2,091 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,092 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor view/controller/widget stack and the URI/file
