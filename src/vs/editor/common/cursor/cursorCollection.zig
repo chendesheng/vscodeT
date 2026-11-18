@@ -117,6 +117,51 @@ pub const CursorCollection = struct {
         self.lastAddedCursorIndex = self.cursors.items.len - 1;
     }
 
+    pub fn startTrackingSelections(self: *CursorCollection) void {
+        for (self.cursors.items) |*cursor| cursor.startTrackingSelection(self.context) catch {};
+    }
+
+    pub fn stopTrackingSelections(self: *CursorCollection) void {
+        for (self.cursors.items) |*cursor| cursor.stopTrackingSelection(self.context);
+    }
+
+    pub fn readSelectionFromMarkers(self: *CursorCollection, allocator: Allocator) ![]Selection {
+        const result = try allocator.alloc(Selection, self.cursors.items.len);
+        errdefer allocator.free(result);
+        for (self.cursors.items, 0..) |*cursor, index| {
+            result[index] = try cursor.readSelectionFromMarkers(self.context);
+        }
+        return result;
+    }
+
+    pub fn getTopMostViewPosition(self: *CursorCollection, allocator: Allocator) !Position {
+        const positions = try self.getViewPositions(allocator);
+        defer allocator.free(positions);
+        var top = positions[0];
+        for (positions[1..]) |position| {
+            if (position.lineNumber < top.lineNumber or
+                (position.lineNumber == top.lineNumber and position.column < top.column))
+            {
+                top = position;
+            }
+        }
+        return top;
+    }
+
+    pub fn getBottomMostViewPosition(self: *CursorCollection, allocator: Allocator) !Position {
+        const positions = try self.getViewPositions(allocator);
+        defer allocator.free(positions);
+        var bottom = positions[0];
+        for (positions[1..]) |position| {
+            if (position.lineNumber > bottom.lineNumber or
+                (position.lineNumber == bottom.lineNumber and position.column > bottom.column))
+            {
+                bottom = position;
+            }
+        }
+        return bottom;
+    }
+
     pub fn getLastAddedCursorIndex(self: *const CursorCollection) usize {
         if (self.cursors.items.len == 1 or self.lastAddedCursorIndex == 0) return 0;
         return self.lastAddedCursorIndex;
@@ -194,3 +239,52 @@ pub const CursorCollection = struct {
         }
     }
 };
+
+test "cursor collection: view extents and selection tracking" {
+    const allocator = std.testing.allocator;
+    const test_support = @import("../../test/common/port/testSupport.zig");
+    const lines_mod = @import("../viewModel/viewModelLines.zig");
+    const cursor_context = @import("./cursorContext.zig");
+    const cursor_common = @import("../cursorCommon.zig");
+    const CoreRange = @import("../core/range.zig").Range;
+
+    var model = try test_support.TestModel.init(allocator, "hello\nworld", "plaintext");
+    defer model.deinit();
+    var lines = try lines_mod.ProjectedViewModelLines.init(allocator, model.model, 80, 4, .Same, .normal);
+    defer lines.deinit();
+    var converter = lines_mod.CoordinatesConverter.init(&lines);
+    var config = cursor_common.CursorConfiguration{
+        .tabSize = 4,
+        .indentSize = 4,
+        .insertSpaces = true,
+        .pageSize = 10,
+    };
+    var context = cursor_context.CursorContext.init(
+        model.model,
+        lines.interface(),
+        converter.interface(),
+        &config,
+    );
+    var collection = try CursorCollection.init(allocator, &context);
+    defer collection.deinit();
+
+    const selections = [_]Selection{
+        Selection.init(1, 1, 1, 1),
+        Selection.init(2, 3, 2, 3),
+    };
+    try collection.setSelections(allocator, &selections);
+
+    const top = try collection.getTopMostViewPosition(allocator);
+    try std.testing.expectEqual(@as(usize, 1), top.lineNumber);
+    try std.testing.expectEqual(@as(usize, 1), top.column);
+    const bottom = try collection.getBottomMostViewPosition(allocator);
+    try std.testing.expectEqual(@as(usize, 2), bottom.lineNumber);
+    try std.testing.expectEqual(@as(usize, 3), bottom.column);
+
+    collection.startTrackingSelections();
+    try model.applyEdit(CoreRange.init(1, 1, 1, 1), "X");
+    const tracked = try collection.readSelectionFromMarkers(allocator);
+    defer allocator.free(tracked);
+    try std.testing.expectEqual(@as(usize, 2), tracked.len);
+    collection.stopTrackingSelections();
+}

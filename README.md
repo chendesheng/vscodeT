@@ -916,6 +916,10 @@ Editor contributions:
   `WorkingCopyEditorService` registers editor handlers and finds the open editor
   for a working copy (callers pass the open editor list).
 
+- `CursorCollection` gained the remaining selection-tracking operations
+  (`startTrackingSelections`/`stopTrackingSelections`/`readSelectionFromMarkers`)
+  and top/bottom view-position queries, with a tracking/extents test.
+
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
   round-trip, fs-path decoding) plus portable `extpath` and `network` (scheme/FileAccess) helpers; the in-memory
