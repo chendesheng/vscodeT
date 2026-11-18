@@ -852,7 +852,10 @@ pub const Workbench = struct {
             for (self.part.group_views.items) |pane| {
                 for (pane.tabs.items) |tab| {
                     if (!std.mem.eql(u8, tab.editor.path, change.resource)) continue;
-                    if (tab.editor.isDirty()) continue;
+                    if (tab.editor.isDirty()) {
+                        tab.editor.markConflict();
+                        continue;
+                    }
                     tab.editor.reloadFromDisk() catch {};
                 }
             }
@@ -3997,6 +4000,9 @@ test "Workbench: external file changes reload clean editors only" {
     var preserved = try tab.editor.model.getValue(.TextDefined, true);
     defer preserved.deinit();
     try std.testing.expectEqualStrings("local after", preserved.items);
+    try std.testing.expect(tab.editor.hasConflict());
+    try tab.editor.save();
+    try std.testing.expect(!tab.editor.hasConflict());
 }
 
 test "Workbench: starts a workspace file watcher for absolute folders" {

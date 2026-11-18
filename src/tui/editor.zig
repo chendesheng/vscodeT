@@ -154,6 +154,8 @@ pub const Editor = struct {
     /// `on_did_change_dirty` only when this flips, so tab labels can follow
     /// the editor without polling.
     dirty_state: bool,
+    /// True when the file changed on disk while this editor had unsaved edits.
+    conflict: bool = false,
     on_did_change_dirty: Emitter(void),
     screen_width: usize,
     screen_height: usize,
@@ -303,6 +305,7 @@ pub const Editor = struct {
             .after_edit = .{ .model = model },
             .saved_version = model.getAlternativeVersionId(),
             .dirty_state = false,
+            .conflict = false,
             .on_did_change_dirty = Emitter(void).init(allocator),
             .screen_width = @max(width, 1),
             .screen_height = @max(height, 1),
@@ -1900,8 +1903,22 @@ pub const Editor = struct {
         )};
         _ = try self.model.applyEdits(&operations, false);
         self.saved_version = self.model.getAlternativeVersionId();
+        self.conflict = false;
         self.refreshDirtyState();
         try self.setCursorPosition(Position.init(1, 1));
+    }
+
+    /// Marks an external-change conflict (the file changed while dirty).
+    pub fn markConflict(self: *Editor) void {
+        self.conflict = true;
+    }
+
+    pub fn hasConflict(self: *const Editor) bool {
+        return self.conflict;
+    }
+
+    pub fn clearConflict(self: *Editor) void {
+        self.conflict = false;
     }
 
     pub fn save(self: *Editor) !void {
@@ -1929,6 +1946,7 @@ pub const Editor = struct {
         }
 
         self.saved_version = self.model.getAlternativeVersionId();
+        self.conflict = false;
         self.refreshDirtyState();
         self.setMessage("Saved {s}", .{self.path});
     }
