@@ -41,7 +41,41 @@ pub const bundled_languages = [_]BundledLanguage{
     .{ .id = "yaml", .extensions = &.{ ".yaml", ".yml" } },
     .{ .id = "toml", .extensions = &.{".toml"} },
     .{ .id = "shellscript", .extensions = &.{ ".sh", ".bash" } },
+    .{ .id = "plaintext", .extensions = &.{".txt"} },
 };
+
+/// Display name for a language id. Upstream language contributions carry
+/// aliases; the bundled terminal set registers only ids and extensions, so the
+/// status bar and language picker use this small table for the same labels.
+pub fn displayName(language_id: []const u8) []const u8 {
+    const names = .{
+        .{ "zig", "Zig" },
+        .{ "json", "JSON" },
+        .{ "jsonc", "JSON with Comments" },
+        .{ "javascript", "JavaScript" },
+        .{ "javascriptreact", "JavaScript React" },
+        .{ "typescript", "TypeScript" },
+        .{ "typescriptreact", "TypeScript React" },
+        .{ "python", "Python" },
+        .{ "rust", "Rust" },
+        .{ "go", "Go" },
+        .{ "c", "C" },
+        .{ "cpp", "C++" },
+        .{ "java", "Java" },
+        .{ "html", "HTML" },
+        .{ "css", "CSS" },
+        .{ "scss", "SCSS" },
+        .{ "markdown", "Markdown" },
+        .{ "yaml", "YAML" },
+        .{ "toml", "TOML" },
+        .{ "shellscript", "Shell Script" },
+        .{ "plaintext", "Plain Text" },
+    };
+    inline for (names) |entry| {
+        if (std.mem.eql(u8, language_id, entry[0])) return entry[1];
+    }
+    return language_id;
+}
 
 /// Comment rules for the languages recognized by the TUI. VS Code ships these
 /// in per-language `language-configuration.json` files; this is the portable

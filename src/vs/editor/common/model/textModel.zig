@@ -1043,20 +1043,19 @@ pub const TextModel = struct {
         self._commandManager.popStackElement();
     }
 
-    pub fn pushEOL(self: *TextModel, eol: EOL) void {
+    pub fn pushEOL(self: *TextModel, eol: EOL) !void {
         const currentEOL = self.getEOL();
         if (currentEOL == eol) {
             return;
         }
         self._onDidChangeDecorations.beginDeferredEmit();
         self._eventEmitter.beginDeferredEmit();
+        defer self._eventEmitter.endDeferredEmit(null);
+        defer self._onDidChangeDecorations.endDeferredEmit();
         if (self._initialUndoRedoSnapshot == null) {
-            self._initialUndoRedoSnapshot = self._undoRedoService.createSnapshot(self.uri());
+            self._initialUndoRedoSnapshot = try self._undoRedoService.createSnapshot(self.uri());
         }
-        self._commandManager.pushEOL(eol);
-
-        self._eventEmitter.endDeferredEmit();
-        self._onDidChangeDecorations.endDeferredEmit();
+        try self._commandManager.pushEOL(eol);
     }
 
     fn _validateEditOperation(self: *TextModel, rawOperation: *IdentifiedSingleEditOperation) ValidAnnotatedEditOperation {
@@ -1302,6 +1301,7 @@ pub const TextModel = struct {
         try self._onAfterEOLChange();
 
         var rawChanges = ArrayList(ModelRawChange).init(self.getAllocator());
+        defer rawChanges.deinit();
         try rawChanges.append(.{ .eolChanged = ModelRawEOLChanged.init() });
 
         var contentChanged = try self._createContentChanged2(

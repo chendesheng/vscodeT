@@ -65,6 +65,9 @@ const commands_mod = @import("./commands.zig");
 const CommandRegistry = commands_mod.CommandRegistry;
 const quick_access_mod = @import("./quickAccess.zig");
 const QuickAccessService = quick_access_mod.QuickAccessService;
+const quick_input_mod = @import("../vs/platform/quickinput/common/quickInput.zig");
+const QuickPickItem = quick_input_mod.QuickPickItem;
+const QuickPick = @import("../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
@@ -82,6 +85,12 @@ const keybinding_service = @import("./keybindingService.zig");
 const key_codes = @import("../vs/base/common/keyCodes.zig");
 const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
 const SettingsWatcher = settings_watcher_mod.SettingsWatcher;
+
+const goto_line_command = "workbench.action.gotoLine";
+const change_indentation_command = "workbench.action.editor.changeIndentation";
+const change_encoding_command = "workbench.action.editor.changeEncoding";
+const change_eol_command = "workbench.action.editor.changeEOL";
+const change_language_mode_command = "workbench.action.editor.changeLanguageMode";
 const search_view_mod = @import("./searchView.zig");
 const SearchView = search_view_mod.SearchView;
 const search_service_mod = @import("../vs/workbench/services/search/common/searchService.zig");
@@ -99,6 +108,9 @@ const EditorInput = editor_input.EditorInput;
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 const Range = @import("../vs/editor/common/core/range.zig").Range;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
+const EOL = @import("../vs/editor/common/core/misc/eolCounter.zig").EOL;
+const encoding_mod = @import("../vs/workbench/services/textfile/common/encoding.zig");
+const language = @import("./language.zig");
 const SearchOption = @import("./searchWidget.zig").Option;
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
@@ -151,14 +163,12 @@ pub const Workbench = struct {
     sidebar_part: SidebarPart,
     statusbar: StatusbarService,
     activity_service: ActivityService,
-    status_editor_accessor: ?EntryAccessor = null,
     status_selection_accessor: ?EntryAccessor = null,
     status_indentation_accessor: ?EntryAccessor = null,
     status_encoding_accessor: ?EntryAccessor = null,
     status_eol_accessor: ?EntryAccessor = null,
     status_mode_accessor: ?EntryAccessor = null,
     status_hint_accessor: ?EntryAccessor = null,
-    status_editor_buf: [768]u8 = undefined,
     status_selection_buf: [128]u8 = undefined,
     status_indentation_buf: [64]u8 = undefined,
     search_badge_buf: [32]u8 = undefined,
@@ -178,6 +188,9 @@ pub const Workbench = struct {
     global_service: ?*keybinding_service.KeybindingService,
     statusbar_service: ?*keybinding_service.KeybindingService,
     quick_access: *QuickAccessService,
+    picker_arena: std.heap.ArenaAllocator,
+    pending_indent_insert_spaces: bool = true,
+    pending_indent_display_only: bool = false,
     focus: Focus = .editor,
     is_pasting: bool = false,
     quit_armed: bool = false,
@@ -195,6 +208,8 @@ pub const Workbench = struct {
         self.* = undefined;
         self.allocator = allocator;
         self.io = io;
+        self.picker_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer self.picker_arena.deinit();
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
@@ -255,6 +270,8 @@ pub const Workbench = struct {
         self.* = undefined;
         self.allocator = allocator;
         self.io = io;
+        self.picker_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer self.picker_arena.deinit();
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
@@ -331,6 +348,8 @@ pub const Workbench = struct {
         self.* = undefined;
         self.allocator = allocator;
         self.io = io;
+        self.picker_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer self.picker_arena.deinit();
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
@@ -440,35 +459,35 @@ pub const Workbench = struct {
     }
 
     fn initStatusEntries(self: *Workbench) !void {
-        self.status_editor_accessor = try self.statusbar.addEntry(.{
-            .name = "Editor status",
-            .text = "",
-        }, "workbench.editor", .left, .{ .number = 1 });
-
         self.status_selection_accessor = try self.statusbar.addEntry(.{
             .name = "Editor Selection",
             .text = "",
             .tooltip = "Go to Line/Column",
+            .command = .{ .id = goto_line_command },
         }, "status.editor.selection", .right, .{ .number = 100.5 });
         self.status_indentation_accessor = try self.statusbar.addEntry(.{
             .name = "Editor Indentation",
             .text = "",
             .tooltip = "Select Indentation",
+            .command = .{ .id = change_indentation_command },
         }, "status.editor.indentation", .right, .{ .number = 100.4 });
         self.status_encoding_accessor = try self.statusbar.addEntry(.{
             .name = "Editor Encoding",
             .text = "",
             .tooltip = "Select Encoding",
+            .command = .{ .id = change_encoding_command },
         }, "status.editor.encoding", .right, .{ .number = 100.3 });
         self.status_eol_accessor = try self.statusbar.addEntry(.{
             .name = "Editor End of Line",
             .text = "",
             .tooltip = "Select End of Line Sequence",
+            .command = .{ .id = change_eol_command },
         }, "status.editor.eol", .right, .{ .number = 100.2 });
         self.status_mode_accessor = try self.statusbar.addEntry(.{
             .name = "Editor Language",
             .text = "",
             .tooltip = "Select Language Mode",
+            .command = .{ .id = change_language_mode_command },
         }, "status.editor.mode", .right, .{ .number = 100.1 });
         self.status_hint_accessor = try self.statusbar.addEntry(.{
             .name = "Quit hint",
@@ -520,6 +539,11 @@ pub const Workbench = struct {
         const commands = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.quickOpen", .label = "Go to File...", .category = "File", .context = self, .run = commandQuickOpen },
             .{ .id = "workbench.action.showCommands", .label = "Show All Commands", .context = self, .run = commandShowCommands },
+            .{ .id = "workbench.action.gotoLine", .label = "Go to Line/Column...", .category = "Go", .context = self, .run = commandGotoLine },
+            .{ .id = "workbench.action.editor.changeIndentation", .label = "Change Indentation", .category = "Editor", .context = self, .run = commandChangeIndentation },
+            .{ .id = "workbench.action.editor.changeEncoding", .label = "Change File Encoding", .category = "Editor", .context = self, .run = commandChangeEncoding },
+            .{ .id = "workbench.action.editor.changeEOL", .label = "Change End of Line Sequence", .category = "Editor", .context = self, .run = commandChangeEOL },
+            .{ .id = "workbench.action.editor.changeLanguageMode", .label = "Change Language Mode", .category = "Editor", .context = self, .run = commandChangeLanguageMode },
             .{ .id = "workbench.action.files.save", .label = "Save", .category = "File", .context = self, .run = commandSave },
             .{ .id = "workbench.action.files.revert", .label = "Revert File", .category = "File", .context = self, .run = commandRevert },
             .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
@@ -636,6 +660,7 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
+        self.picker_arena.deinit();
         self.deinitShellModels();
         if (self.tab_service) |service| service.deinit();
         if (self.global_service) |service| {
@@ -1964,10 +1989,9 @@ pub const Workbench = struct {
     }
 
     /// Rebuilds every status-bar entry from the active editor. Values use the
-    /// upstream editor-status labels; picker commands remain unset until the
-    /// corresponding quick pickers are ported.
+    /// upstream editor-status labels; the standard entries keep their
+    /// quick-picker commands so a click opens the same action as upstream.
     pub fn refreshStatus(self: *Workbench) void {
-        var editor_text: []const u8 = "";
         var selection_text: []const u8 = "";
         var indentation_text: []const u8 = "";
         var eol_text: []const u8 = "";
@@ -1976,18 +2000,6 @@ pub const Workbench = struct {
 
         if (self.activeTab()) |tab| {
             const editor = tab.editor;
-            const message = editor.message();
-            editor_text = std.fmt.bufPrint(
-                &self.status_editor_buf,
-                "{s}{s}{s}{s}",
-                .{
-                    editor.path,
-                    if (editor.isDirty()) "*" else "",
-                    if (message.len > 0) "  " else "",
-                    message,
-                },
-            ) catch self.status_editor_buf[0..0];
-
             selection_text = self.formatSelection(editor) catch "";
             const options = editor.model.getOptions();
             indentation_text = if (options.insertSpaces) blk: {
@@ -2001,19 +2013,17 @@ pub const Workbench = struct {
                 ) catch "";
             } else std.fmt.bufPrint(&self.status_indentation_buf, "Tab Size: {d}", .{options.tabSize}) catch "";
             eol_text = if (editor.model.getEOL() == .CRLF) "CRLF" else "LF";
-            mode_text = editor.languageId();
-            encoding_text = "UTF-8";
+            mode_text = language.displayName(editor.languageId());
+            encoding_text = encodingLabel(editor.getEncoding());
         }
 
-        if (self.status_editor_accessor) |accessor| {
-            accessor.update(.{ .name = "Editor status", .text = editor_text, .aria_label = editor_text });
-        }
         if (self.status_selection_accessor) |accessor| {
             accessor.update(.{
                 .name = "Editor Selection",
                 .text = selection_text,
                 .aria_label = selection_text,
                 .tooltip = "Go to Line/Column",
+                .command = .{ .id = goto_line_command },
             });
         }
         if (self.status_indentation_accessor) |accessor| {
@@ -2022,6 +2032,7 @@ pub const Workbench = struct {
                 .text = indentation_text,
                 .aria_label = indentation_text,
                 .tooltip = "Select Indentation",
+                .command = .{ .id = change_indentation_command },
             });
         }
         if (self.status_encoding_accessor) |accessor| {
@@ -2030,6 +2041,7 @@ pub const Workbench = struct {
                 .text = encoding_text,
                 .aria_label = encoding_text,
                 .tooltip = "Select Encoding",
+                .command = .{ .id = change_encoding_command },
             });
         }
         if (self.status_eol_accessor) |accessor| {
@@ -2038,6 +2050,7 @@ pub const Workbench = struct {
                 .text = eol_text,
                 .aria_label = eol_text,
                 .tooltip = "Select End of Line Sequence",
+                .command = .{ .id = change_eol_command },
             });
         }
         if (self.status_mode_accessor) |accessor| {
@@ -2046,11 +2059,121 @@ pub const Workbench = struct {
                 .text = mode_text,
                 .aria_label = mode_text,
                 .tooltip = "Select Language Mode",
+                .command = .{ .id = change_language_mode_command },
             });
         }
         if (self.status_hint_accessor) |accessor| {
             accessor.update(.{ .name = "Quit hint", .text = "Ctrl-Q quit" });
         }
+    }
+
+    pub fn showGotoLinePicker(self: *Workbench) !void {
+        try self.quick_access.showPick(
+            &.{},
+            .{ .placeholder = "Go to Line/Column", .allow_free_input = true },
+            onGotoLineAccepted,
+            self,
+        );
+    }
+
+    pub fn showIndentationPicker(self: *Workbench) !void {
+        const items = [_]QuickPickItem{
+            .{ .item = .{ .id = "spaces", .label = "Indent Using Spaces" } },
+            .{ .item = .{ .id = "tabs", .label = "Indent Using Tabs" } },
+            .{ .item = .{ .id = "tab_size", .label = "Change Tab Display Size" } },
+            .{ .item = .{ .id = "detect", .label = "Detect Indentation" } },
+            .{ .item = .{ .id = "to_spaces", .label = "Convert Indentation to Spaces" } },
+            .{ .item = .{ .id = "to_tabs", .label = "Convert Indentation to Tabs" } },
+        };
+        try self.quick_access.showPick(
+            &items,
+            .{ .placeholder = "Select Action" },
+            onIndentationAction,
+            self,
+        );
+    }
+
+    fn showTabSizePicker(self: *Workbench) !void {
+        const items = [_]QuickPickItem{
+            .{ .item = .{ .id = "1", .label = "1" } },
+            .{ .item = .{ .id = "2", .label = "2" } },
+            .{ .item = .{ .id = "3", .label = "3" } },
+            .{ .item = .{ .id = "4", .label = "4" } },
+            .{ .item = .{ .id = "5", .label = "5" } },
+            .{ .item = .{ .id = "6", .label = "6" } },
+            .{ .item = .{ .id = "7", .label = "7" } },
+            .{ .item = .{ .id = "8", .label = "8" } },
+        };
+        try self.quick_access.showPick(
+            &items,
+            .{ .placeholder = "Select Tab Size" },
+            onTabSizeAccepted,
+            self,
+        );
+    }
+
+    pub fn showEOLPicker(self: *Workbench) !void {
+        const current = if (self.activeTab()) |tab| tab.editor.model.getEOL() else .LF;
+        const items = [_]QuickPickItem{
+            .{ .item = .{ .id = "lf", .label = "LF" } },
+            .{ .item = .{ .id = "crlf", .label = "CRLF" } },
+        };
+        try self.quick_access.showPick(
+            &items,
+            .{
+                .placeholder = "Select End of Line Sequence",
+                .active_id = if (current == .CRLF) "crlf" else "lf",
+            },
+            onEOLAccepted,
+            self,
+        );
+    }
+
+    pub fn showLanguagePicker(self: *Workbench) !void {
+        const tab = self.activeTab() orelse return;
+        _ = self.picker_arena.reset(.retain_capacity);
+        const arena = self.picker_arena.allocator();
+        const languages = try tab.editor.language_service.getSortedRegisteredLanguageNames(arena);
+        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        for (languages) |entry| {
+            try items.append(.{ .item = .{
+                .id = entry.languageId,
+                .label = language.displayName(entry.languageId),
+                .description = try std.fmt.allocPrint(arena, "({s})", .{entry.languageId}),
+            } });
+        }
+        try self.quick_access.showPick(
+            items.items,
+            .{
+                .placeholder = "Select Language Mode",
+                .active_id = tab.editor.languageId(),
+                .no_results_label = "No matching languages",
+            },
+            onLanguageAccepted,
+            self,
+        );
+    }
+
+    pub fn showEncodingPicker(self: *Workbench) !void {
+        const current = if (self.activeTab()) |tab| tab.editor.getEncoding() else .utf8;
+        const items = [_]QuickPickItem{
+            // Only encodings that round-trip through BOM detection are
+            // offered; the terminal encoding port has no heuristic charset
+            // detection for the BOM-less UTF-16 variants.
+            .{ .item = .{ .id = "utf8", .label = "UTF-8" } },
+            .{ .item = .{ .id = "utf8_with_bom", .label = "UTF-8 with BOM" } },
+            .{ .item = .{ .id = "utf16le_with_bom", .label = "UTF-16 LE with BOM" } },
+            .{ .item = .{ .id = "utf16be_with_bom", .label = "UTF-16 BE with BOM" } },
+        };
+        try self.quick_access.showPick(
+            &items,
+            .{
+                .placeholder = "Select Encoding",
+                .active_id = @tagName(current),
+            },
+            onEncodingAccepted,
+            self,
+        );
     }
 
     fn formatSelection(self: *Workbench, editor: *Editor) ![]const u8 {
@@ -2384,6 +2507,146 @@ fn commandQuickOpen(context: *anyopaque) anyerror!void {
 fn commandShowCommands(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     return self.quick_access.showCommandPicker();
+}
+
+fn commandGotoLine(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showGotoLinePicker();
+}
+
+fn commandChangeIndentation(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showIndentationPicker();
+}
+
+fn commandChangeEncoding(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showEncodingPicker();
+}
+
+fn commandChangeEOL(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showEOLPicker();
+}
+
+fn commandChangeLanguageMode(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showLanguagePicker();
+}
+
+fn onGotoLineAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return;
+    const editor = tab.editor;
+    const value = std.mem.trim(u8, picker.value.items, " \t");
+    if (value.len == 0) return;
+
+    var line_text = value;
+    var column_text: ?[]const u8 = null;
+    if (std.mem.indexOfAny(u8, value, ":,")) |separator| {
+        line_text = value[0..separator];
+        column_text = value[separator + 1 ..];
+    }
+    const requested_line = std.fmt.parseInt(
+        usize,
+        std.mem.trim(u8, line_text, " \t"),
+        10,
+    ) catch return;
+    var line = @max(requested_line, 1);
+    line = @min(line, editor.model.getLineCount());
+    var column: usize = 1;
+    if (column_text) |text| {
+        const trimmed = std.mem.trim(u8, text, " \t");
+        if (trimmed.len > 0) {
+            const requested_column = std.fmt.parseInt(usize, trimmed, 10) catch return;
+            column = @max(requested_column, 1);
+        }
+    }
+    column = @min(column, editor.model.getLineMaxColumn(line));
+    try editor.setCursorPosition(Position.init(line, column));
+    editor.ensureCursorVisible();
+    self.refreshStatus();
+    self.focusEditor();
+}
+
+fn onIndentationAction(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.selectedItem() orelse return;
+    const tab = self.activeTab() orelse return;
+    const editor = tab.editor;
+    const options = editor.model.getOptions();
+
+    if (std.mem.eql(u8, item.id, "spaces")) {
+        self.pending_indent_insert_spaces = true;
+        self.pending_indent_display_only = false;
+        try self.showTabSizePicker();
+        return;
+    }
+    if (std.mem.eql(u8, item.id, "tabs")) {
+        editor.changeIndentation(options.tabSize, false, false);
+    } else if (std.mem.eql(u8, item.id, "tab_size")) {
+        self.pending_indent_insert_spaces = options.insertSpaces;
+        self.pending_indent_display_only = true;
+        try self.showTabSizePicker();
+        return;
+    } else if (std.mem.eql(u8, item.id, "detect")) {
+        editor.detectIndentation();
+    } else if (std.mem.eql(u8, item.id, "to_spaces")) {
+        try editor.indentationToSpaces();
+    } else if (std.mem.eql(u8, item.id, "to_tabs")) {
+        try editor.indentationToTabs();
+    } else {
+        return;
+    }
+    self.refreshStatus();
+    self.focusEditor();
+}
+
+fn onTabSizeAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.selectedItem() orelse return;
+    const tab = self.activeTab() orelse return;
+    const size = std.fmt.parseInt(usize, item.id, 10) catch return;
+    tab.editor.changeIndentation(
+        size,
+        self.pending_indent_insert_spaces,
+        self.pending_indent_display_only,
+    );
+    self.refreshStatus();
+    self.focusEditor();
+}
+
+fn onEOLAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.selectedItem() orelse return;
+    const tab = self.activeTab() orelse return;
+    const eol: EOL = if (std.mem.eql(u8, item.id, "crlf")) .CRLF else .LF;
+    if (tab.editor.model.getEOL() != eol) {
+        tab.editor.model.pushStackElement();
+        try tab.editor.model.pushEOL(eol);
+        tab.editor.model.pushStackElement();
+    }
+    self.refreshStatus();
+    self.focusEditor();
+}
+
+fn onLanguageAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.selectedItem() orelse return;
+    const tab = self.activeTab() orelse return;
+    try tab.editor.setLanguage(item.id);
+    self.refreshStatus();
+    self.focusEditor();
+}
+
+fn onEncodingAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.selectedItem() orelse return;
+    const tab = self.activeTab() orelse return;
+    const encoding = std.meta.stringToEnum(encoding_mod.Encoding, item.id) orelse return;
+    tab.editor.setEncoding(encoding);
+    self.refreshStatus();
+    self.focusEditor();
 }
 
 fn commandSave(context: *anyopaque) anyerror!void {
@@ -2872,6 +3135,32 @@ fn isCtrlChar(event: *const ui.KeyEvent, wanted: u21) bool {
         .char => |ch| ch == wanted,
         else => false,
     };
+}
+
+fn clickStatusEntry(workbench: *Workbench, id: []const u8) !bool {
+    const part = workbench.statusbar.main_part;
+    const handle = part.model.findHandle(id) orelse return false;
+    const y = ui.cell.snap(workbench.statusBarRect().y);
+    const width = ui.cell.snap(workbench.statusBarRect().w);
+    var x: usize = 0;
+    while (x < width) : (x += 1) {
+        const hit = part.hitAt(x, y) catch null;
+        if (hit) |value| {
+            switch (value) {
+                .entry => |candidate| if (candidate == handle) {
+                    var event = ui.MouseEvent{
+                        .kind = .down,
+                        .x = x,
+                        .y = y,
+                        .button = .left,
+                    };
+                    return workbench.handleStatusbarMouse(&event);
+                },
+                .part => {},
+            }
+        }
+    }
+    return false;
 }
 
 fn seedFile(allocator: Allocator, io: Io, tmp: *std.testing.TmpDir, name: []const u8, contents: []const u8) ![]u8 {
@@ -3858,12 +4147,12 @@ test "Workbench: status bar spans the window and shows editor state" {
 
     const status = try workbench.frame.prev.rowText(allocator, 9);
     defer allocator.free(status);
-    try std.testing.expect(std.mem.indexOf(u8, status, "status.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "status.txt") == null);
     try std.testing.expect(std.mem.indexOf(u8, status, "Ln 1, Col 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "Spaces: 4") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "LF") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "UTF-8") != null);
-    try std.testing.expect(std.mem.indexOf(u8, status, "plaintext") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "Plain Text") != null);
 
     workbench.focusStatusBar();
     try std.testing.expectEqual(Focus.statusbar, workbench.focus);
@@ -3954,6 +4243,132 @@ test "Workbench: clicking a status entry focuses it and runs its command" {
     try std.testing.expectEqual(@as(usize, 1), state.hits);
     try std.testing.expectEqual(Focus.statusbar, workbench.focus);
     try std.testing.expectEqual(accessor.handle, workbench.statusbar.main_part.focusedHandle().?);
+}
+
+fn encodingLabel(encoding: encoding_mod.Encoding) []const u8 {
+    return switch (encoding) {
+        .utf8 => "UTF-8",
+        .utf8_with_bom => "UTF-8 with BOM",
+        .utf16le => "UTF-16 LE",
+        .utf16be => "UTF-16 BE",
+        .utf16le_with_bom => "UTF-16 LE with BOM",
+        .utf16be_with_bom => "UTF-16 BE with BOM",
+    };
+}
+
+test "Workbench: status values open the matching pickers" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "pick.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 120, 10);
+    defer workbench.deinit();
+    workbench.refreshStatus();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.indentation"));
+    try std.testing.expect(workbench.quick_access.isPickOpen());
+    try std.testing.expectEqualStrings("Indent Using Spaces", workbench.quick_access.pick.activeItem().?.label);
+    var escape = ui.KeyEvent{ .key = .escape };
+    _ = try workbench.handleQuickAccessKey(&escape);
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.encoding"));
+    try std.testing.expect(workbench.quick_access.isPickOpen());
+    try std.testing.expectEqualStrings("UTF-8", workbench.quick_access.pick.activeItem().?.label);
+    _ = try workbench.handleQuickAccessKey(&escape);
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.eol"));
+    try std.testing.expect(workbench.quick_access.isPickOpen());
+    try std.testing.expectEqualStrings("LF", workbench.quick_access.pick.activeItem().?.label);
+    _ = try workbench.handleQuickAccessKey(&escape);
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.mode"));
+    try std.testing.expect(workbench.quick_access.isPickOpen());
+    _ = try workbench.handleQuickAccessKey(&escape);
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.selection"));
+    try std.testing.expect(workbench.quick_access.isPickOpen());
+    try std.testing.expectEqual(@as(usize, 0), workbench.quick_access.pick.items.items.len);
+    _ = try workbench.handleQuickAccessKey(&escape);
+    try std.testing.expect(!workbench.quick_access.isOpen());
+}
+
+test "Workbench: EOL and language pickers update the editor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "pick-actions.txt", "alpha\nbeta\ngamma");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 120, 10);
+    defer workbench.deinit();
+    workbench.refreshStatus();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.encoding"));
+    var down = ui.KeyEvent{ .key = .down };
+    _ = try workbench.handleQuickAccessKey(&down);
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expectEqual(
+        encoding_mod.Encoding.utf8_with_bom,
+        workbench.activeTab().?.editor.getEncoding(),
+    );
+    try std.testing.expectEqualStrings(
+        "UTF-8 with BOM",
+        workbench.statusbar.main_part.model.findEntry("status.editor.encoding").?.item.text(),
+    );
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.eol"));
+    _ = try workbench.handleQuickAccessKey(&down);
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expect(!workbench.quick_access.isOpen());
+    try std.testing.expectEqual(EOL.CRLF, workbench.activeTab().?.editor.model.getEOL());
+    try std.testing.expectEqualStrings(
+        "CRLF",
+        workbench.statusbar.main_part.model.findEntry("status.editor.eol").?.item.text(),
+    );
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.mode"));
+    for ("zig") |ch| {
+        var typed = ui.KeyEvent{ .key = .{ .char = ch } };
+        _ = try workbench.handleQuickAccessKey(&typed);
+    }
+    try std.testing.expectEqualStrings("zig", workbench.quick_access.pick.activeItem().?.id);
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expectEqualStrings("zig", workbench.activeTab().?.editor.languageId());
+    try std.testing.expectEqualStrings(
+        "Zig",
+        workbench.statusbar.main_part.model.findEntry("status.editor.mode").?.item.text(),
+    );
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.selection"));
+    for ("2:3") |ch| {
+        var typed = ui.KeyEvent{ .key = .{ .char = ch } };
+        _ = try workbench.handleQuickAccessKey(&typed);
+    }
+    _ = try workbench.handleQuickAccessKey(&enter);
+    const selections = try workbench.activeTab().?.editor.getSelections();
+    defer allocator.free(selections);
+    try std.testing.expectEqual(@as(usize, 2), selections[0].startLineNumber);
+    try std.testing.expectEqual(@as(usize, 3), selections[0].startColumn);
+
+    try std.testing.expect(try clickStatusEntry(workbench, "status.editor.indentation"));
+    _ = try workbench.handleQuickAccessKey(&down);
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expect(!workbench.activeTab().?.editor.model.getOptions().insertSpaces);
+    try std.testing.expectEqualStrings(
+        "Tab Size: 4",
+        workbench.statusbar.main_part.model.findEntry("status.editor.indentation").?.item.text(),
+    );
 }
 
 const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{

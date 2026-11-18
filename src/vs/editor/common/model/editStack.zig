@@ -833,10 +833,10 @@ pub const EditStack = struct {
         return newEditStackElement;
     }
 
-    pub fn pushEOL(self: *EditStack, eol: EOL) void {
-        const editStackElement = self._getOrCreateEditStackElement(null, null);
-        self.textModel().setEOL(eol);
-        editStackElement.append(self.textModel(), &[_]TextChange{}, eol, self.textModel().getVersionId(), null);
+    pub fn pushEOL(self: *EditStack, eol: EOL) !void {
+        const editStackElement = try self._getOrCreateEditStackElement(null, null);
+        try self.textModel().setEOL(eol);
+        try editStackElement.append(self.textModel(), &[_]TextChange{}, eol, self.textModel().getVersionId(), null);
     }
 
     pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []ValidAnnotatedEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {

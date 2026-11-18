@@ -48,7 +48,9 @@ with the documented omissions listed at the end of this document.
   paths. The workbench status bar is now a full-width flex `ui` surface with
   entry focus, hover/tooltips and command activation; it owns hit testing and
   entry actions, and `src/tui/workbench.zig` paints it on the bottom row and
-  disables the per-pane fallback status row.
+  disables the per-pane fallback status row. Selection, indentation, encoding,
+  EOL and language entries open their quick pickers; the TUI-only file-path
+  entry was removed because upstream's status bar does not show one.
 - `src/tui/activityBar.zig` is now the terminal view over the activity model.
 - `src/tui/workbench.zig` uses the activity model, sidebar model, layout model
   and status-bar model/part for its shell state.

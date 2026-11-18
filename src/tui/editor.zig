@@ -46,6 +46,7 @@ const strings = @import("../vs/base/common/strings.zig");
 const eolToString = @import("../vs/editor/common/core/misc/eolCounter.zig").eolToString;
 const language = @import("./language.zig");
 const language_configuration = @import("../vs/editor/common/languages/languageConfiguration.zig");
+const encoding_mod = @import("../vs/workbench/services/textfile/common/encoding.zig");
 const editor_common = @import("../vs/editor/common/editorCommon.zig");
 const ICommand = editor_common.ICommand;
 const command_runner = @import("../vs/editor/common/commands/commandRunner.zig");
@@ -136,6 +137,7 @@ pub const Editor = struct {
     io: Io,
     path: []u8,
     model: *TextModel,
+    encoding: encoding_mod.Encoding = .utf8,
     undo_redo: *UndoRedoService,
     codec: *LanguageIdCodec,
     language_service: *LanguageService,
@@ -265,7 +267,8 @@ pub const Editor = struct {
         undo_redo.* = UndoRedoService.init(allocator);
         errdefer undo_redo.deinit();
 
-        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, text);
+        var encoding: encoding_mod.Encoding = .utf8;
+        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, text, &encoding);
         errdefer {
             model.deinit();
             allocator.destroy(model);
@@ -305,6 +308,7 @@ pub const Editor = struct {
             .io = io,
             .path = path_copy,
             .model = model,
+            .encoding = encoding,
             .undo_redo = undo_redo,
             .codec = codec,
             .language_service = language_service,
@@ -733,6 +737,12 @@ pub const Editor = struct {
         }
 
         const language_id = self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null) orelse "plaintext";
+        try self.setLanguage(language_id);
+    }
+
+    /// Switches the active language and refreshes the language-dependent
+    /// services. Mirrors the model-language branch of the browser status item.
+    pub fn setLanguage(self: *Editor, language_id: []const u8) !void {
         if (std.mem.eql(u8, language_id, self.model.getLanguageId())) return;
 
         self.model.setLanguage(language_id);
@@ -765,6 +775,14 @@ pub const Editor = struct {
         }
         try self.refreshFoldingRules();
         self.folding_dirty = true;
+    }
+
+    pub fn getEncoding(self: *const Editor) encoding_mod.Encoding {
+        return self.encoding;
+    }
+
+    pub fn setEncoding(self: *Editor, encoding: encoding_mod.Encoding) void {
+        self.encoding = encoding;
     }
 
     pub fn message(self: *Editor) []const u8 {
@@ -2053,16 +2071,20 @@ pub const Editor = struct {
     pub fn reloadFromDisk(self: *Editor) !void {
         const bytes = try Io.Dir.cwd().readFileAlloc(self.io, self.path, self.allocator, .unlimited);
         defer self.allocator.free(bytes);
+        const encoding = if (encoding_mod.detectBOM(bytes)) |bom| bom.encoding else .utf8;
+        const decoded = try encoding_mod.decode(self.allocator, bytes, encoding);
+        defer self.allocator.free(decoded);
+        self.encoding = encoding;
 
         var current = try self.model.getValue(.TextDefined, true);
         defer current.deinit();
-        if (std.mem.eql(u8, current.items, bytes)) return;
+        if (std.mem.eql(u8, current.items, decoded)) return;
 
         const last_line = self.model.getLineCount();
         const last_column = self.model.getLineMaxColumn(last_line);
         var operations = [_]IdentifiedSingleEditOperation{.init(
             Range.init(1, 1, last_line, last_column),
-            if (bytes.len == 0) null else String.initBorrowed(bytes),
+            if (decoded.len == 0) null else String.initBorrowed(decoded),
         )};
         _ = try self.model.applyEdits(&operations, false);
         self.saved_version = self.model.getAlternativeVersionId();
@@ -2138,7 +2160,9 @@ pub const Editor = struct {
 
         var atomic = try cwd.createFileAtomic(self.io, self.path, .{ .replace = exists });
         defer atomic.deinit(self.io);
-        try atomic.file.writeStreamingAll(self.io, value.items);
+        const encoded = try encoding_mod.encode(self.allocator, value.items, self.encoding);
+        defer self.allocator.free(encoded);
+        try atomic.file.writeStreamingAll(self.io, encoded);
         if (exists) {
             try atomic.replace(self.io);
         } else {
@@ -2204,6 +2228,7 @@ fn createModel(
     undo_redo: *UndoRedoService,
     language_service: *LanguageService,
     text: ?[]const u8,
+    encoding_out: *encoding_mod.Encoding,
 ) !*TextModel {
     const options = TextModelCreationOptions{
         .tabSize = 4,
@@ -2217,25 +2242,20 @@ fn createModel(
         .bracketPairColorizationOptions = .{ .enabled = false, .independentColorPoolPerBracketType = false },
     };
 
-    if (text) |content| {
-        var fixed = Io.Reader.fixed(content);
-        return try TextModel.init(allocator, &fixed, language_id, options, null, undo_redo, language_service);
-    }
+    const raw: []u8 = if (text) |content|
+        try allocator.dupe(u8, content)
+    else
+        Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| switch (err) {
+            error.FileNotFound => try allocator.alloc(u8, 0),
+            else => return err,
+        };
+    defer allocator.free(raw);
 
-    const cwd = Io.Dir.cwd();
-    const maybe_file = cwd.openFile(io, path, .{}) catch |err| switch (err) {
-        error.FileNotFound => null,
-        else => return err,
-    };
-
-    if (maybe_file) |file| {
-        defer file.close(io);
-        var buffer: [65535]u8 = undefined;
-        var reader = file.readerStreaming(io, &buffer);
-        return try TextModel.init(allocator, &reader.interface, language_id, options, null, undo_redo, language_service);
-    }
-
-    var fixed = Io.Reader.fixed("");
+    const encoding = if (encoding_mod.detectBOM(raw)) |bom| bom.encoding else .utf8;
+    encoding_out.* = encoding;
+    const decoded = try encoding_mod.decode(allocator, raw, encoding);
+    defer allocator.free(decoded);
+    var fixed = Io.Reader.fixed(decoded);
     return try TextModel.init(allocator, &fixed, language_id, options, null, undo_redo, language_service);
 }
 
@@ -2434,6 +2454,39 @@ test "Editor: save preserves the BOM" {
     var buffer: [64]u8 = undefined;
     const content = try tmp.dir.readFile(io, "bom.txt", &buffer);
     try std.testing.expectEqualStrings("\xEF\xBB\xBFXhi", content);
+}
+
+test "Editor: selecting an encoding controls load and save" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/encoding.txt", .{tmp.sub_path});
+    defer allocator.free(path);
+
+    var editor = try Editor.createFromText(allocator, io, "hi", path, 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expectEqual(encoding_mod.Encoding.utf8, editor.getEncoding());
+    editor.setEncoding(.utf8_with_bom);
+    try editor.save();
+
+    var buffer: [64]u8 = undefined;
+    const content = try tmp.dir.readFile(io, "encoding.txt", &buffer);
+    try std.testing.expectEqualStrings("\xEF\xBB\xBFhi", content);
+
+    var reloaded = try Editor.create(allocator, io, path, 40, 8);
+    defer {
+        reloaded.deinit();
+        allocator.destroy(reloaded);
+    }
+    try std.testing.expectEqual(encoding_mod.Encoding.utf8_with_bom, reloaded.getEncoding());
+    const text = try reloaded.model.getValue(.TextDefined, false);
+    defer text.deinit();
+    try std.testing.expectEqualStrings("hi", text.items);
 }
 
 test "Editor: missing file opens empty and save creates it" {

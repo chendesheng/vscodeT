@@ -2,10 +2,11 @@
 // `src/vs/workbench/browser/quickaccess.ts` and the quick-input host.
 //
 // It owns the provider registry, the file index, the two providers, the
-// controller and the terminal widget, and routes keys/mouse/render/poll from
-// the workbench. `Ctrl-P` opens Go to File; typing `>` switches to the command
-// palette; `Alt-P` opens the command palette directly. A plain terminal sends
-// the same byte for Ctrl-P and Ctrl-Shift-P, so the latter cannot be used.
+// controller, a one-shot picker for workbench selectors, and the terminal
+// widget, and routes keys/mouse/render/poll from the workbench. `Ctrl-P` opens
+// Go to File; typing `>` switches to the command palette; `Alt-P` opens the
+// command palette directly. A plain terminal sends the same byte for Ctrl-P
+// and Ctrl-Shift-P, so the latter cannot be used.
 //
 // The file index advances from `poll()`, not from a search worker. An outside
 // click hides the picker and is consumed instead of being replayed to the
@@ -34,9 +35,13 @@ const platform_commands_quick_access = @import("../vs/platform/quickinput/browse
 const CommandExecutor = platform_commands_quick_access.CommandExecutor;
 const quick_access = @import("../vs/platform/quickinput/common/quickAccess.zig");
 const Registry = quick_access.Registry;
+const quick_input = @import("../vs/platform/quickinput/common/quickInput.zig");
+const QuickPickItem = quick_input.QuickPickItem;
 const controller_mod = @import("../vs/platform/quickinput/browser/quickAccess.zig");
 const QuickAccessController = controller_mod.QuickAccessController;
+const picker_quick_access = @import("../vs/platform/quickinput/browser/pickerQuickAccess.zig");
 const QuickPick = @import("../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
+const filters = @import("../vs/base/common/filters.zig");
 const widget_mod = @import("./quickInput.zig");
 const QuickPickWidget = widget_mod.QuickPickWidget;
 
@@ -45,6 +50,19 @@ pub const Host = struct {
     open_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
     report_error: *const fn (context: *anyopaque, message: []const u8) void,
     cancel_popups: *const fn (context: *anyopaque) void,
+};
+
+/// A one-shot picker for a workbench command. The handler runs after the
+/// picker is hidden, matching the browser quick-input contract.
+pub const PickHandler = *const fn (context: *anyopaque, picker: *QuickPick) anyerror!void;
+
+pub const PickOptions = struct {
+    placeholder: []const u8 = "",
+    active_id: ?[]const u8 = null,
+    /// Keep the picker open with an empty list and accept the typed value.
+    /// This is the quick-input prompt used by Go to Line/Column.
+    allow_free_input: bool = false,
+    no_results_label: ?[]const u8 = null,
 };
 
 pub const QuickAccessService = struct {
@@ -60,6 +78,13 @@ pub const QuickAccessService = struct {
     widget: *QuickPickWidget,
     files_provider: *AnythingQuickAccessProvider,
     commands_provider: *CommandsQuickAccessProvider,
+    pick: QuickPick,
+    pick_master: std.array_list.Managed(QuickPickItem),
+    pick_filtered: std.array_list.Managed(QuickPickItem),
+    pick_handler: ?PickHandler = null,
+    pick_handler_context: ?*anyopaque = null,
+    pick_allow_free_input: bool = false,
+    pick_no_results: ?QuickPickItem = null,
 
     pub fn init(
         allocator: Allocator,
@@ -127,10 +152,21 @@ pub const QuickAccessService = struct {
         self.controller.error_context = self;
         self.controller.on_error = reportError;
 
+        self.pick = QuickPick.init(allocator);
+        self.pick_master = std.array_list.Managed(QuickPickItem).init(allocator);
+        self.pick_filtered = std.array_list.Managed(QuickPickItem).init(allocator);
+        self.pick.on_change_context = self;
+        self.pick.on_change = onPickChanged;
+        self.pick.on_accept_context = self;
+        self.pick.on_accept = onPickAccepted;
+
         return self;
     }
 
     pub fn deinit(self: *QuickAccessService) void {
+        self.pick_filtered.deinit();
+        self.pick_master.deinit();
+        self.pick.deinit();
         self.controller.deinit();
         self.registry.deinit();
         self.widget.deinit();
@@ -148,19 +184,77 @@ pub const QuickAccessService = struct {
     }
 
     pub fn isOpen(self: *const QuickAccessService) bool {
-        return self.controller.isVisible();
+        return self.pick.visible or self.controller.isVisible();
+    }
+
+    pub fn isPickOpen(self: *const QuickAccessService) bool {
+        return self.pick.visible;
     }
 
     pub fn showFilePicker(self: *QuickAccessService) !void {
+        if (self.pick.visible) self.pick.hide();
         try self.controller.show("", .{});
     }
 
     pub fn showCommandPicker(self: *QuickAccessService) !void {
+        if (self.pick.visible) self.pick.hide();
         try self.controller.show(CommandsQuickAccessProvider.PREFIX, .{});
     }
 
+    /// Shows a one-shot picker. Items are copied into the service; labels and
+    /// descriptions must stay alive until the picker is accepted or hidden
+    /// (the workbench keeps dynamic language labels in its picker arena).
+    pub fn showPick(
+        self: *QuickAccessService,
+        items: []const QuickPickItem,
+        options: PickOptions,
+        handler: PickHandler,
+        context: *anyopaque,
+    ) !void {
+        if (self.controller.isVisible()) self.controller.hide();
+        self.pick.reset();
+        self.pick_master.clearRetainingCapacity();
+        try self.pick_master.appendSlice(items);
+        self.pick_filtered.clearRetainingCapacity();
+        self.pick_handler = handler;
+        self.pick_handler_context = context;
+        self.pick_allow_free_input = options.allow_free_input;
+        self.pick_no_results = if (options.no_results_label) |label|
+            .{ .item = .{ .label = label } }
+        else
+            null;
+        self.pick.setPlaceholder(options.placeholder);
+
+        try self.refreshPick();
+        if (options.active_id) |id| self.selectPickItem(id);
+        self.pick.show();
+        self.widget.setHover(null);
+        self.host.cancel_popups(self.host.context);
+    }
+
+    fn refreshPick(self: *QuickAccessService) !void {
+        try picker_quick_access.refresh(
+            .{ .context = self, .get_picks = pickGetPicks },
+            .{ .prefix = "", .no_results_pick = self.pick_no_results },
+            &self.pick,
+        );
+    }
+
+    fn selectPickItem(self: *QuickAccessService, id: []const u8) void {
+        for (self.pick.items.items, 0..) |item, index| {
+            if (std.mem.eql(u8, item.id(), id)) {
+                self.pick.setActiveIndex(index);
+                return;
+            }
+        }
+    }
+
     pub fn handleKey(self: *QuickAccessService, event: *ui.KeyEvent) !bool {
-        if (!self.isOpen()) {
+        if (self.pick.visible) {
+            _ = self.widget.handleKey(&self.pick, event);
+            return true;
+        }
+        if (!self.controller.isVisible()) {
             if (isCtrlShiftChar(event, 'p')) {
                 try self.showCommandPicker();
                 return true;
@@ -192,18 +286,27 @@ pub const QuickAccessService = struct {
     }
 
     pub fn handleMouse(self: *QuickAccessService, event: *ui.MouseEvent) bool {
-        if (!self.isOpen()) return false;
+        if (self.pick.visible) {
+            return self.handlePickMouse(event, &self.pick);
+        }
+        if (!self.controller.isVisible()) return false;
+        return self.handlePickMouse(event, self.controller.pickerRef());
+    }
 
+    fn handlePickMouse(
+        self: *QuickAccessService,
+        event: *ui.MouseEvent,
+        picker: *QuickPick,
+    ) bool {
         const layout = self.widget.layout;
         const inside = event.x >= layout.x and
             event.x < layout.x + layout.width and
             event.y >= layout.y and
             event.y < layout.y + layout.height;
         if (!inside) {
-            if (event.kind == .down or event.kind == .click) self.controller.hide();
+            if (event.kind == .down or event.kind == .click) picker.hide();
             return true;
         }
-        const picker = self.controller.pickerRef();
         _ = self.widget.handleMouse(picker, event);
         return true;
     }
@@ -212,7 +315,7 @@ pub const QuickAccessService = struct {
     /// true when the visible list changed.
     pub fn poll(self: *QuickAccessService, now_ms: i64) !bool {
         _ = now_ms;
-        if (!self.isOpen() or !self.isFilePickerActive()) return false;
+        if (!self.controller.isVisible() or !self.isFilePickerActive()) return false;
 
         const picker = self.controller.pickerRef();
         const filter = std.mem.trim(u8, picker.value.items, " \t");
@@ -231,13 +334,56 @@ pub const QuickAccessService = struct {
     }
 
     pub fn render(self: *QuickAccessService, grid: *ui.CellGrid) !void {
-        if (!self.isOpen()) return;
+        if (self.pick.visible) {
+            _ = try self.widget.render(&self.pick, grid);
+            return;
+        }
+        if (!self.controller.isVisible()) return;
         const picker = self.controller.pickerRef();
         _ = try self.widget.render(picker, grid);
     }
 
     fn isFilePickerActive(self: *const QuickAccessService) bool {
         return self.controller.isVisible() and self.controller.active_prefix.len == 0;
+    }
+
+    fn onPickChanged(context: *anyopaque) void {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        if (self.pick_allow_free_input) return;
+        self.refreshPick() catch |err| reportError(self, @errorName(err));
+    }
+
+    fn onPickAccepted(context: *anyopaque) void {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        const handler = self.pick_handler orelse return;
+        const handler_context = self.pick_handler_context orelse return;
+        if (self.pick.visible) self.pick.hide();
+        handler(handler_context, &self.pick) catch |err| {
+            reportError(self, @errorName(err));
+        };
+    }
+
+    fn pickGetPicks(
+        context: *anyopaque,
+        filter: []const u8,
+        _: Allocator,
+    ) anyerror!?[]QuickPickItem {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        self.pick_filtered.clearRetainingCapacity();
+        if (self.pick_allow_free_input) return self.pick_filtered.items;
+        for (self.pick_master.items) |item| {
+            switch (item) {
+                .separator => if (filter.len == 0) try self.pick_filtered.append(item),
+                .item => |value| {
+                    if (filter.len == 0 or
+                        filters.matchesBaseContiguousSubString(filter, value.label) != null)
+                    {
+                        try self.pick_filtered.append(item);
+                    }
+                },
+            }
+        }
+        return self.pick_filtered.items;
     }
 
     // File source callbacks -------------------------------------------------
@@ -368,4 +514,62 @@ test "QuickAccessService: file and command pickers share one controller" {
     try std.testing.expect(try service.handleKey(&alt_p));
     try std.testing.expect(service.isOpen());
     try std.testing.expect(!service.isFilePickerActive());
+}
+
+test "QuickAccessService: one-shot picker filters and accepts" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const context = try WorkspaceContextService.initEmpty(allocator, "test");
+    defer context.deinit();
+    var history = HistoryService.init(allocator);
+    defer history.deinit();
+    var commands = CommandRegistry.init(allocator);
+    defer commands.deinit();
+
+    const State = struct {
+        accepted: usize = 0,
+        accepted_id: [16]u8 = std.mem.zeroes([16]u8),
+        accepted_len: usize = 0,
+        fn openFile(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn report(_: *anyopaque, _: []const u8) void {}
+        fn cancel(_: *anyopaque) void {}
+        fn accept(ctx: *anyopaque, picker: *QuickPick) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.accepted += 1;
+            if (picker.selectedItem()) |item| {
+                const length = @min(item.id.len, self.accepted_id.len);
+                @memcpy(self.accepted_id[0..length], item.id[0..length]);
+                self.accepted_len = length;
+            }
+        }
+    };
+    var state = State{};
+    const service = try QuickAccessService.init(allocator, io, context, &history, &commands, .{
+        .context = &state,
+        .open_file = State.openFile,
+        .report_error = State.report,
+        .cancel_popups = State.cancel,
+    });
+    defer service.deinit();
+
+    const items = [_]QuickPickItem{
+        .{ .item = .{ .id = "spaces", .label = "Indent Using Spaces" } },
+        .{ .item = .{ .id = "tabs", .label = "Indent Using Tabs" } },
+    };
+    try service.showPick(&items, .{ .placeholder = "Select Action" }, State.accept, &state);
+    try std.testing.expect(service.isPickOpen());
+    try std.testing.expectEqualStrings("Indent Using Spaces", service.pick.activeItem().?.label);
+
+    for ("tabs") |ch| {
+        var query = ui.KeyEvent{ .key = .{ .char = ch } };
+        _ = try service.handleKey(&query);
+    }
+    try std.testing.expectEqual(@as(usize, 1), service.pick.items.items.len);
+    try std.testing.expectEqualStrings("tabs", service.pick.activeItem().?.id);
+
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try service.handleKey(&enter);
+    try std.testing.expect(!service.isPickOpen());
+    try std.testing.expectEqual(@as(usize, 1), state.accepted);
+    try std.testing.expectEqualStrings("tabs", state.accepted_id[0..state.accepted_len]);
 }

@@ -261,9 +261,11 @@ console API for raw mode, sizing and input polling.
   alignment/priority/compact rules, the bar builds a one-row flex `ui` surface
   (left items grow and right items are row-reverse), and the right side
   shows selection, indentation, encoding, EOL and language. Clicking an entry
-  focuses it and runs its command when one is registered; Arrow keys,
-  Home/End, Enter/Space and Escape navigate while focused, `Ctrl-Alt-S` toggles
-  editor/status focus, and the `Focus Status Bar` command is in the palette.
+  focuses it and runs its command: selection opens Go to Line/Column, and the
+  other values open the indentation, encoding, EOL and language pickers.
+  Arrow keys, Home/End, Enter/Space and Escape navigate while focused,
+  `Ctrl-Alt-S` toggles editor/status focus, and the `Focus Status Bar` command
+  is in the palette.
   The editor view keeps its fallback status row for standalone tests and the
   read-only preview. The bar's terminal adaptations are documented in
   `docs/terminal-ui.md`: codicons are plain text, text ellipsis is

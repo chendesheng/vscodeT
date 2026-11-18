@@ -717,9 +717,9 @@ Library constraints:
   progress/beak prefix and truncation; `StatusbarPart` owns hit testing,
   hover/tooltip and command activation. The item max width is the cell
   equivalent of upstream's `40vw`. Upstream wraps the right group; the terminal
-  keeps it on one line and clips at the row edge, while the left group yields
-  width to the right group so the editor path truncates first. `Ctrl-Alt-S` is
-  a TUI-specific
+  keeps it on one line and clips at the row edge. Standard values open the
+  corresponding quick picker; the file path stays in the tab/title, matching
+  upstream's status bar. `Ctrl-Alt-S` is a TUI-specific
   focus toggle, and `Focus Status Bar` is available from the command palette.
   Not ported: DOM context menus, extension management, window-focus/inactive
   backgrounds, auxiliary/scoped status bars, storage persistence of hidden
