@@ -225,7 +225,7 @@ that make the later phases tractable.
 | View model | `vs/editor/common/viewModel/viewModelLines.zig`, `viewModelDecorations.zig`, `modelLineProjection.zig`, `vs/editor/common/coordinatesConverter.zig` | Ported |
 | View layout and line rendering | `vs/editor/common/viewLayout/lineDecorations.zig`, `viewLineRenderer.zig`, `lineHeights.zig`, `linesLayout.zig`, `vs/editor/common/viewModel/inlineDecorations.zig` | Ported |
 | Editor options and layout | `vs/editor/common/config/editorOptions.zig` (option value types, `IComputedEditorOptions`, `EditorLayoutInfoComputer`, `EditorWrappingInfoComputer`), `vs/editor/browser/config/editorConfiguration.zig` (`ComputedEditorOptions`) | Ported: upstream defaults, layout/minimap/wrapping computation and the 21-case `editorLayoutProvider.test.ts`; `IEditorConfiguration.options` is typed |
-| View parts | `vs/editor/browser/viewParts/viewLines/viewLineOptions.zig`, `vs/editor/browser/viewParts/viewLines/viewLine.zig`, `vs/editor/browser/viewParts/viewLines/viewLines.zig`, `vs/editor/browser/viewParts/lineNumbers/lineNumbers.zig`, `vs/editor/browser/viewParts/currentLineHighlight/currentLineHighlight.zig`, `vs/editor/browser/viewParts/selections/selections.zig`, `vs/editor/browser/viewParts/wordWrapIndicator/wordWrapIndicator.zig`, `vs/editor/browser/viewParts/glyphMargin/glyphMargin.zig` (dedup helpers), `vs/editor/browser/viewParts/linesDecorations/linesDecorations.zig`, `vs/editor/browser/viewParts/marginDecorations/marginDecorations.zig`, `vs/editor/browser/viewParts/viewCursors/viewCursor.zig` and `viewCursors.zig`, `indentGuides.zig`, `overviewRuler/decorationsOverviewRuler.zig` | Line numbers (absolute/relative/interval/custom, final newline, decoration classes), view-line options and the current-line highlight (content/margin, focus-only, empty-selection, word-wrap first pass), selections (styled ranges, rounded-corner enrichment, gaps, multi-selection insets), the word-wrap indicator (indicator presence, wrapping-column position, height, viewport clipping, event/config invalidation), the terminal `viewLine` (`IVisibleLine` over the shared line renderer, invalidation and change detection, integration with `VisibleLinesCollection`) and `viewLines` (viewport-window rendering into a `StringBuilder`, line/option/token/scroll/zones/theme event wiring, and `IViewLines` cell-column ranges/positions), the line/margin decoration overlays (class extraction, glyph-margin dedup/order, viewport clipping, tooltips, zIndex) and the view cursors (plurality, blinking-style resolution, focus/composition visibility, selection-empty state, token invalidation, per-cursor viewport data) ported with tests; the glyph-margin DOM widget host and the pixel cursor geometry/blink timers remain host-side; the overlay/part scaffolding now initializes in place so event handlers point at the final object; the `View` orchestrator, `viewController` and `codeEditorWidget` are next |
+| View parts | `vs/editor/browser/viewParts/viewLines/viewLineOptions.zig`, `vs/editor/browser/viewParts/viewLines/viewLine.zig`, `vs/editor/browser/viewParts/viewLines/viewLines.zig`, `vs/editor/browser/viewParts/lineNumbers/lineNumbers.zig`, `vs/editor/browser/viewParts/currentLineHighlight/currentLineHighlight.zig`, `vs/editor/browser/viewParts/selections/selections.zig`, `vs/editor/browser/viewParts/wordWrapIndicator/wordWrapIndicator.zig`, `vs/editor/browser/viewParts/glyphMargin/glyphMargin.zig` (dedup helpers), `vs/editor/browser/viewParts/linesDecorations/linesDecorations.zig`, `vs/editor/browser/viewParts/marginDecorations/marginDecorations.zig`, `vs/editor/browser/viewParts/viewCursors/viewCursor.zig` and `viewCursors.zig`, `indentGuides.zig`, `overviewRuler/decorationsOverviewRuler.zig` | Line numbers (absolute/relative/interval/custom, final newline, decoration classes), view-line options and the current-line highlight (content/margin, focus-only, empty-selection, word-wrap first pass), selections (styled ranges, rounded-corner enrichment, gaps, multi-selection insets), the word-wrap indicator (indicator presence, wrapping-column position, height, viewport clipping, event/config invalidation), the terminal `viewLine` (`IVisibleLine` over the shared line renderer, invalidation and change detection, integration with `VisibleLinesCollection`) and `viewLines` (viewport-window rendering into a `StringBuilder`, line/option/token/scroll/zones/theme event wiring, and `IViewLines` cell-column ranges/positions), the line/margin decoration overlays (class extraction, glyph-margin dedup/order, viewport clipping, tooltips, zIndex) and the view cursors (plurality, blinking-style resolution, focus/composition visibility, selection-empty state, token invalidation, per-cursor viewport data) ported with tests; the glyph-margin DOM widget host and the pixel cursor geometry/blink timers remain host-side; the overlay/part scaffolding now initializes in place so event handlers point at the final object; the `View` orchestrator, `viewController` and terminal `codeEditorWidget` subset are now ported; the remaining upstream view parts (block decorations, content/overlay widgets, view zones, rulers, whitespace) are next |
 | Cursors and edit operations | `vs/editor/common/cursor/...`, `cursorCommon.zig`, `cursorMoveCommands.zig`, `cursorTypeOperations.zig`, `cursorCollection.zig` | Ported; exercised through `editor.zig` |
 | Editor contributions | Find, hover, suggest, bracket matching, word highlighter, smart select, in-place replace, comment, indentation, multicursor, line selection, line operations, snippet, insert-final-newline, word operations | Ported under `vs/editor/contrib/...` |
 | Workbench editor group | `vs/workbench/common/editor/editorGroupModel.zig`, `vs/workbench/services/editor/common/editorGroupsService.zig` | Ported |
@@ -791,10 +791,11 @@ conversion incl. view zones) are ported, together with the extended
 `viewOverlays.zig` and the thin `View` orchestrator are next; `viewLayer.zig` is also ported (RenderedLinesCollection and the terminal-adapted VisibleLinesCollection window/render loop), with the full `viewLayer.test.ts` case matrix ported; `viewOverlays.zig` ports ViewOverlays/ViewOverlayLine (content/margin subclasses still need layoutInfo options). Visible-lines DOM plumbing stays terminal-side. `viewContext.zig` and `viewPart.zig` (handler registration + prepare/render callbacks) are now ported too, along with `IViewModel.view_layout`/event-handler hooks. The computed-options blocker is removed: `common/config/editorOptions.zig` ports the option value types, `IComputedEditorOptions`, `EditorLayoutInfoComputer` and `EditorWrappingInfoComputer`, `browser/config/editorConfiguration.zig` ports `ComputedEditorOptions` with the upstream defaults and `compute` step, and the 21-case `editorLayoutProvider.test.ts` is ported at the upstream test path. Step 2 has started: `viewParts/viewLines/viewLineOptions.zig`, `viewParts/lineNumbers/lineNumbers.zig`, `viewParts/currentLineHighlight/currentLineHighlight.zig`, `viewParts/selections/selections.zig`, `viewParts/wordWrapIndicator/wordWrapIndicator.zig`, the glyph-margin dedup helpers, the line/margin decoration overlays and the view cursors are ported (structured terminal data instead of DOM HTML) with focused tests, and `ViewPart`/`DynamicViewOverlay` now initialize in place so registered handlers point at the final object. `viewParts/viewLines/viewLine.zig` now provides the terminal `IVisibleLine` over the shared renderer, and `viewLines.zig` renders the viewport window into a `StringBuilder` and implements `IViewLines` with cell-column ranges (the ported `Range.intersectRanges` column bug was fixed while testing it). `browser/view/viewController.zig` ports the mouse dispatch decision tree through an explicit navigation-command sink and the double-click block selection (bracket content, matching-quote string content, RTL/mismatch bail-outs); the complete `viewController.test.ts` suite is ported (bracket/string happy paths, exotic token spans, RTL/mismatch bail-outs and word-select fallbacks), with a per-test token-span harness in the ported test. `browser/view.zig` now provides the terminal `View` orchestrator: it owns `viewLines` plus registered view parts/content overlays, fans view events (configuration, cursor, decorations, flushed/lines/scroll/tokens/zones/theme/focus) across them, and runs the prepare-render/text-render/part-render pipeline; DOM edit-context/animation-frame plumbing is documented as absent and the TUI paints the parts' structured data. `common/viewModel/viewModelImpl.zig` now ports a terminal `ViewModel` subset
 (projected lines + converter, `IViewModel` metrics/rendering data, selections,
 focus, viewport and cell-height layout, plus model-decoration viewport mapping
-into view ranges) with tests, and its wiring to the terminal `View` is tested
-(focus/view integration); rendering real model tokens through `ViewLines` is
-the next blocker. Inline decoration ranges, the browser cursor controller,
-event dispatcher and glyph lanes remain. Next is `codeEditorWidget.zig`.
+into view ranges) with tests, including end-to-end rendering through
+`VisibleLinesCollection` and the terminal `codeEditorWidget` subset
+(model/configuration/view-model/view ownership, `render`, selections, focus and
+cell positions). Inline decoration ranges, the browser cursor controller,
+event dispatcher and glyph lanes remain.
 
 **Suggested commits:**
 
@@ -1081,15 +1082,15 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,096 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,098 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
 dynamic overlays, rendered/visible lines, view overlays), the computed editor
 options (`ComputedEditorOptions`, option value types, layout/wrapping
 computation) with `editorLayoutProvider.test.ts`, and `viewLayer.test.ts`
-ported; the `View` orchestrator, `viewController.ts` and `codeEditorWidget`
-remain. P5a/P5b/P5f/P5g
+ported; the `View` orchestrator and `viewController.ts` are ported; the terminal
+`codeEditorWidget` subset is now ported as well. P5a/P5b/P5f/P5g
 are complete; P5c has color-theme data/registry/loading, a terminal
 workbench theme service (+ its test suite) and the size registry; P5h has the
 configuration model parser/filters/merges/overrides, registry defaults/policies/
@@ -1107,7 +1108,7 @@ folders and forwards its changes into that handler. The broader working-copy
 model (encoding, conflicts, save participants, untitled/diff working copies)
 remains.
 
-**Status at the end of the current session:** 2,096 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,098 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor cursor/controller/widget stack and the URI/file
@@ -1150,13 +1151,6 @@ cannot host are listed under documented omissions.
 - Remaining `editorGroupModel`/`explorerView` cases construct diff and
   side-by-side editor inputs.
 - P5c token-style resolving needs `tokenClassificationRegistry.ts`.
-- Rendering a `ViewModel` through `VisibleLinesCollection` (real model tokens)
-  currently corrupts the test heap. The diagnosis is narrowed: direct
-  `viewLineRenderer` calls and direct `ViewLine.renderLine` calls with the same
-  rendering data pass, and an arena allocator for the collection rules out a
-  free/ownership bug, so the corruption is in the collection/line integration
-  (line window append/render bookkeeping) and needs investigation before
-  `codeEditorWidget` render tests can run.
 - Fuzzy highlighting across multi-byte characters (emoji #113404) selects a later
   match than upstream; filter positions are byte-based, so that case stays
   unported.

@@ -375,6 +375,39 @@ test "view model integrates with the terminal view" {
     defer rendered.deinit(allocator);
     try testing.expectEqualStrings("hello", rendered.bytes);
 
+    const Opts = @import("../../browser/viewParts/viewLines/viewLineOptions.zig").ViewLineOptions;
+    const VL = @import("../../browser/viewParts/viewLines/viewLine.zig").ViewLine;
+    const Factory = struct {
+        allocator: Allocator,
+        context: *@import("./viewContext.zig").ViewContext,
+        options: Opts,
+        fn create(ctx: *anyopaque) anyerror!VL {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return VL.init(self.allocator, self.context, self.options);
+        }
+    };
+    var factory = Factory{ .allocator = allocator, .context = &context, .options = Opts.init(&fixture.configuration, .DARK) };
+    var collection = @import("../../browser/view/viewLayer.zig").VisibleLinesCollection(VL).init(allocator, context.view_layout, .{ .context = &factory, .create = Factory.create });
+    defer collection.deinit();
+    const selections = [_]Selection{Selection.init(1, 1, 1, 1)};
+    const offsets = [_]f64{ 0, 19 };
+    var viewport = @import("../viewLayout/viewLinesViewportData.zig").ViewportData{
+        .selections = &selections,
+        .startLineNumber = 1,
+        .endLineNumber = 2,
+        .relativeVerticalOffset = &offsets,
+        .visibleRange = Range.init(1, 1, 2, 6),
+        .bigNumbersDelta = 0,
+        .whitespaceViewportData = &.{},
+        .lineHeight = 19,
+        ._model = instance.interface(),
+    };
+    var sb = try @import("../core/stringBuilder.zig").StringBuilder.init(allocator, 16);
+    defer sb.deinit();
+    try collection.renderLines(&viewport, &sb);
+    try testing.expectEqualStrings("helloworld", sb.build());
+    _ = collection.onFlushed(&.{});
+
     _ = view.setFocused(true);
     try testing.expect(view.hasFocus());
     try testing.expectEqual(@as(usize, 2), instance.lines.getViewLineCount());

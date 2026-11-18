@@ -265,6 +265,12 @@ const ComposedLanguageConfiguration = struct {
         const arena = registry.arena.allocator();
         const resolved = arena.create(ResolvedLanguageConfiguration) catch return null;
         resolved.* = ResolvedLanguageConfiguration.init(arena, self.languageId, combined) catch return null;
+        // `init` builds the electric-character support against its local
+        // `brackets` value; repoint it at the final resolved struct so the
+        // pointer does not dangle after the return-by-value move.
+        if (resolved.brackets) |*brackets| {
+            resolved.electric_character = BracketElectricCharacterSupport.init(brackets);
+        }
         self.resolved = resolved;
         return resolved;
     }
