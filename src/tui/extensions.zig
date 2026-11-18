@@ -653,8 +653,20 @@ pub const Extensions = struct {
         if (std.mem.eql(u8, method, "$tryCreateDocument")) {
             return .{ .json = try manager.fileUri(arena, "/tmp/untitled") };
         }
-        if (std.mem.eql(u8, method, "$moveTab") or std.mem.eql(u8, method, "$closeTab") or std.mem.eql(u8, method, "$closeGroup")) {
-            return if (std.mem.eql(u8, method, "$moveTab")) .empty else .{ .json = .{ .bool = true } };
+        if (std.mem.eql(u8, method, "$moveTab")) {
+            return .empty;
+        }
+        if (std.mem.eql(u8, method, "$closeTab")) {
+            _ = self.workbench.closeActive() catch false;
+            self.needs_render = true;
+            return .{ .json = .{ .bool = true } };
+        }
+        if (std.mem.eql(u8, method, "$closeGroup")) {
+            while (self.workbench.tabCount() > 0) {
+                if (!(self.workbench.closeActive() catch false)) break;
+            }
+            self.needs_render = true;
+            return .{ .json = .{ .bool = true } };
         }
         if (std.mem.eql(u8, method, "$updateConfigurationOption")) {
             if (args.len > 2 and args[1] == .json and args[1].json == .string) {
