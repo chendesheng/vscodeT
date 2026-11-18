@@ -155,6 +155,7 @@ pub const HostManager = struct {
         self.rpc = rpcProtocol.RpcProtocol.init(allocator, self.sender.transport());
         self.reader = try std.Thread.spawn(.{}, readerLoop, .{self});
         self.stderr_reader = try std.Thread.spawn(.{}, stderrLoop, .{self});
+        self.started = true;
         return self;
     }
 
@@ -182,8 +183,8 @@ pub const HostManager = struct {
         }
         if (self.reader) |thread| {
             self.stream.shutdown(self.io, .both) catch {};
-            self.stream.close(self.io);
             thread.join();
+            self.stream.close(self.io);
             self.reader = null;
         }
         if (self.stderr_reader) |thread| {
