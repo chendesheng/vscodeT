@@ -220,6 +220,9 @@ test "matchesWords basic word filters" {
     try expectWordMatch(allocator, "gipu", "Category: Git: Pull");
     try std.testing.expect((try filters.matchesWords(allocator, "it", "Git: Pull")) == null);
     try std.testing.expect((try filters.matchesWords(allocator, "ll", "Git: Pull")) == null);
+    try expectWordMatch(allocator, "git: プル", "git: プル");
+    try expectWordMatch(allocator, "git プル", "git: プル");
+    try expectWordMatch(allocator, "öäk", "Öhm: Älles Klar");
     try expectWordMatch(allocator, "bar", "foo-bar");
     try expectWordMatch(allocator, "bar test", "foo-bar test");
     try expectWordMatch(allocator, "fbt", "foo-bar test");

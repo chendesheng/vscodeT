@@ -355,7 +355,7 @@ fn matchWordsAt(
     if (word_index == word.len) return try allocator.alloc(Match, 0);
     if (target_index >= target.len) return null;
 
-    if (!charactersMatch(word[word_index], target[target_index])) return null;
+    if (!charactersMatchAt(word, word_index, target, target_index)) return null;
 
     var result = try matchWordsAt(allocator, word, target, word_index + 1, target_index + 1, contiguous);
     if (!contiguous) {
@@ -371,7 +371,7 @@ fn matchWordsAt(
 
     // Different characters mean both are word separators; keep the recursive
     // result but do not include the separator in the match ranges.
-    if (std.ascii.toLower(word[word_index]) != std.ascii.toLower(target[target_index])) return result;
+    if (foldByteAt(word, word_index) != foldByteAt(target, target_index)) return result;
 
     const tail = result.?;
     if (tail.len > 0 and tail[0].start == target_index + 1) {
@@ -385,11 +385,23 @@ fn matchWordsAt(
     return joined;
 }
 
-fn charactersMatch(a: u8, b: u8) bool {
-    const left = std.ascii.toLower(a);
-    const right = std.ascii.toLower(b);
+fn charactersMatchAt(word: []const u8, word_index: usize, target: []const u8, target_index: usize) bool {
+    if (word[word_index] == target[target_index]) return true;
+    const left = foldByteAt(word, word_index);
+    const right = foldByteAt(target, target_index);
     if (left == right) return true;
     return isWordsSeparator(left) and isWordsSeparator(right);
+}
+
+/// ASCII + Latin-1 simple case folding for UTF-8 (the uppercase Latin-1
+/// supplement is `C3 80..9E`, whose continuation byte maps to `A0..BE`). The
+/// browser matcher uses full Unicode lowercasing; other scripts are compared
+/// byte-for-byte.
+fn foldByteAt(text: []const u8, index: usize) u8 {
+    const byte = text[index];
+    if (byte >= 'A' and byte <= 'Z') return byte + ('a' - 'A');
+    if (index > 0 and text[index - 1] == 0xC3 and byte >= 0x80 and byte <= 0x9E) return byte + 0x20;
+    return byte;
 }
 
 fn isWordsSeparator(ch: u8) bool {

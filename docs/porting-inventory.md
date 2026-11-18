@@ -1086,13 +1086,12 @@ of scope:
 
 **Current implementation snapshot (clean build, 2,124 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
-shell/parts models, actions/menus/keybindings/context keys); P4 has the view
-stack scaffolding (rendering/view contexts, view parts, user input translation,
-dynamic overlays, rendered/visible lines, view overlays), the computed editor
-options (`ComputedEditorOptions`, option value types, layout/wrapping
-computation) with `editorLayoutProvider.test.ts`, and `viewLayer.test.ts`
-ported; the `View` orchestrator and `viewController.ts` are ported; the terminal
-`codeEditorWidget` subset is now ported as well. P5a/P5b/P5f/P5g
+shell/parts models, actions/menus/keybindings/context keys). P4 is complete for
+the terminal shape: the view/rendering stack (view contexts, parts, overlays,
+rendered/visible lines), computed editor options, `View`, `viewController`, the
+terminal `codeEditorWidget`, `ViewModel` (lines, selections, decorations, glyph
+lanes, event dispatcher), cursor selection/state, and whitespace/control
+character rendering, with the DOM-only parts documented as omissions. P5a/P5b/P5f/P5g
 are complete; P5c has color-theme data/registry/loading, a terminal
 workbench theme service (+ its test suite) and the size registry; P5h has the
 configuration model parser/filters/merges/overrides, registry defaults/policies/
@@ -1164,12 +1163,6 @@ cannot host are listed under documented omissions.
 
 **Known blockers for the remaining work**
 
-- P5e needs `base/common/uri.zig`, the file service and the concrete editor
-  inputs (`TextResourceEditorInput`, `FileEditorInput`, untitled/diff/side-by-side)
-  before its upstream tests can run.
-- Remaining `editorGroupModel`/`explorerView` cases construct diff and
-  side-by-side editor inputs.
-- P5c token-style resolving needs `tokenClassificationRegistry.ts`.
 - `matchesContiguousSubString`, `matchesSubString`, `matchesPrefix`,
   `matchesStrictPrefix` and `matchesCamelCase` are ported with their upstream
   cases (including camel-case heuristics, weak-first fuzzy scoring and the
@@ -1177,12 +1170,12 @@ cannot host are listed under documented omissions.
   separator-only, top-score ranking and HTML closing-tag cases, plus the
   `patternPos`/`wordPos`, anyScore-highlight, truncated-filter-text and
   Go-to-Symbol regressions; a signed
-  skipped-character penalty fixes a pattern-start underflow found there); the Unicode/alternate-character WordFilter cases in
-  `filters.test.ts` remain unported; separator equivalence, `C++`, punctuation
-  boundaries and the basic word cases are covered by the recursive port.
-- The remaining workbench configuration-service cases cover experiment
-  assignments, remote/folder scopes, policy configuration and the 198-case
-  browser harness.
+  skipped-character penalty fixes a pattern-start underflow found there);
+  separator equivalence, `C++`, punctuation boundaries, the basic word cases
+  and the Japanese/Umlaut WordFilter cases are covered by the recursive port
+  (ASCII + Latin-1 case folding; other scripts compare byte-for-byte).
+- The remaining workbench configuration-service cases are the 198-case browser
+  harness and the remote-scope suites (documented terminal omissions).
 - Workbench extension-contribution registration is absent by design (no
   extension host).
 - The `base/test/browser/comparers.test.ts` suite depends on `Intl.Collator`

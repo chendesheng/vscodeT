@@ -296,9 +296,10 @@ console API for raw mode, sizing and input polling.
   `zig-out`, does not follow symlinks, does not honor `search.exclude`, and
   caps at 100,000 files. Matching uses the ported `fuzzyScorer.scoreItemFuzzy`
   label/description/path scorer, including its path-identity, label-prefix and
-  match-compactness boosts (Unicode words are scored per codepoint, so the
-  emoji/UTF-8 highlight alignment from #113404 matches upstream); the scorer
-  cache is not used by the picker.
+  match-compactness boosts (Unicode words are scored per codepoint and word
+  filters fold ASCII + Latin-1 case, so the emoji/UTF-8 highlight alignment from
+  #113404 and the Japanese/Umlaut word cases match upstream); the scorer cache
+  is not used by the picker.
   Symbol (`@`), go-to-line
   (`:`), link and help providers, absolute/relative path queries, open-to-side,
   icons, quick-input buttons and keybinding labels are not ported. Command
