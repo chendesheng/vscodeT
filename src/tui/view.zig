@@ -2577,6 +2577,35 @@ test "View: gutter fold control collapses and expands a region" {
     try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
 }
 
+test "View: folding keeps a scrolled viewport at the same model line" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "pub const A = struct {\n    x: u8,\n};\npub const B = struct {\n    y: u8,\n};\npub const C = struct {\n    z: u8,\n};\n",
+        "test.zig",
+        40,
+        6,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    // Cursor stays on line 1 while the viewport is scrolled to line 4.
+    _ = editor.setTopViewLine(4);
+    try view.refresh();
+    try std.testing.expectEqual(@as(usize, 4), editor.topViewLine());
+
+    var down = testMouse(.down, editor.gutterWidth() - 1, 0);
+    try std.testing.expect(try view.dispatchMouse(&down));
+    try std.testing.expectEqual(@as(usize, 4), editor.topViewLine());
+    try std.testing.expectEqual(@as(usize, 4), editor.modelLineNumber(editor.topViewLine()));
+}
+
 test "View: mouse target distinguishes text, empty area, gutter and status" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

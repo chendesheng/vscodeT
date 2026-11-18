@@ -617,6 +617,10 @@ pub const Editor = struct {
     /// Applies the fold controller's hidden ranges to the view model and keeps
     /// selections out of them, mirroring `onHiddenRangesChanges`.
     fn applyFoldingVisibility(self: *Editor) !void {
+        // Keep the model line at the top of the viewport stable across the
+        // mapping change. Revealing the cursor here would jump a scrolled
+        // viewport back to the cursor whenever a fold is toggled.
+        const top_model_line = self.modelLineNumber(self.top_view_line);
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
         const adjusted = self.folding.adjustSelections(selections);
@@ -624,7 +628,11 @@ pub const Editor = struct {
         if (changed or adjusted) {
             try self.cursorsRef().setSelections(self.allocator, selections);
         }
-        if (changed) self.ensureCursorVisible();
+        if (changed) {
+            const top_position = self.viewPositionOfModelPosition(Position.init(top_model_line, 1));
+            _ = self.setTopViewLine(top_position.lineNumber);
+        }
+        if (adjusted) self.ensureCursorVisible();
     }
 
     pub fn refreshFoldingIfDirty(self: *Editor) void {
