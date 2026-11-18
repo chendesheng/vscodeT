@@ -321,6 +321,22 @@ pub const ViewModel = struct {
     pub fn setSelections(self: *ViewModel, selections: []const Selection) !void {
         self.selections.clearRetainingCapacity();
         try self.selections.appendSlice(selections);
+
+        const converter = self.converter.interface();
+        var model_selections = std.array_list.Managed(Selection).init(self.allocator);
+        defer model_selections.deinit();
+        for (selections) |selection| {
+            const start = converter.convertViewPositionToModelPosition(converter.context, Position.init(selection.startLineNumber, selection.startColumn));
+            const end = converter.convertViewPositionToModelPosition(converter.context, Position.init(selection.endLineNumber, selection.endColumn));
+            try model_selections.append(Selection.init(start.lineNumber, start.column, end.lineNumber, end.column));
+        }
+
+        const event = view_events.ViewCursorStateChangedEvent{
+            .selections = self.selections.items,
+            .modelSelections = model_selections.items,
+            .reason = .Explicit,
+        };
+        for (self.event_handlers.items) |handler| _ = handler.onCursorStateChanged(&event);
     }
 
     pub fn getSelections(self: *const ViewModel) []const Selection {
@@ -712,4 +728,35 @@ test "view model computes glyph margin lanes from decorations" {
     try testing.expectEqual(@as(usize, 2), lanes.len);
     try testing.expectEqual(GlyphMarginLane.Center, lanes[0]);
     try testing.expectEqual(GlyphMarginLane.Right, lanes[1]);
+}
+
+test "view model dispatches cursor state changes" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    const instance = try fixture.init(allocator, "hello\nworld", 80);
+    defer {
+        instance.deinit();
+        fixture.deinit();
+    }
+
+    const State = struct {
+        count: usize = 0,
+        start_column: usize = 0,
+
+        fn onCursorStateChanged(context: *anyopaque, event: *const view_events.ViewCursorStateChangedEvent) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+            if (event.selections.len > 0) self.start_column = event.selections[0].startColumn;
+            return true;
+        }
+    };
+    var state = State{};
+    var handler = @import("../viewEventHandler.zig").ViewEventHandler.init(&state, .{
+        .onCursorStateChanged = State.onCursorStateChanged,
+    });
+    instance.addViewEventHandler(&handler);
+
+    try instance.setSelections(&.{Selection.init(1, 2, 1, 4)});
+    try testing.expectEqual(@as(usize, 1), state.count);
+    try testing.expectEqual(@as(usize, 2), state.start_column);
 }

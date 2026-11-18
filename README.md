@@ -871,8 +871,8 @@ Editor contributions:
   tracks selections, focus, viewport and a cell-height layout, applies model
   content changes to the projected lines/decorations, computes glyph-margin
   lanes from decorations, dispatches view events
-  (flush/line-mapping/lines/decorations/tokens/focus) to registered
-  `ViewEventHandler`s, wires `ViewModelDecorations` for inline-decoration
+  (flush/line-mapping/lines/decorations/tokens/focus/cursor state) to
+  registered `ViewEventHandler`s, wires `ViewModelDecorations` for inline-decoration
   viewport data, and is wired to
   the terminal `View` (focus/view and collection render integration are
   tested). Rendering real model
