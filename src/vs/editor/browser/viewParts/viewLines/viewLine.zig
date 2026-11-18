@@ -2,8 +2,10 @@
 //
 // Terminal adaptation: upstream manages DOM spans and incrementally updates
 // them; the terminal renders the line text into a `StringBuilder` each frame
-// (the TUI repaints from that builder). GPU rendering, DOM reading, ligatures
-// and cursor text content are not applicable. Inline decorations/whitespace
+// (the TUI repaints from that builder). Change detection uses a hash of the
+// rendered text instead of retaining a second copy of every line. GPU
+// rendering, DOM reading, ligatures and cursor text content are not
+// applicable. Inline decorations/whitespace
 // options are not consumed by the shared terminal line renderer yet; the TUI
 // paints decoration cells separately.
 const std = @import("std");
@@ -25,7 +27,7 @@ pub const ViewLine = struct {
     context: *RenderingContext,
     options: ViewLineOptions,
     is_maybe_invalid: bool = true,
-    rendered_text: ?[]u8 = null,
+    rendered_hash: ?u64 = null,
 
     pub fn init(allocator: Allocator, context: *RenderingContext, options: ViewLineOptions) ViewLine {
         return .{
@@ -36,8 +38,8 @@ pub const ViewLine = struct {
     }
 
     pub fn deinit(self: *ViewLine, allocator: Allocator) void {
-        if (self.rendered_text) |text| allocator.free(text);
-        self.rendered_text = null;
+        _ = allocator;
+        self.rendered_hash = null;
     }
 
     pub fn onContentChanged(self: *ViewLine) void {
@@ -105,11 +107,11 @@ pub const ViewLine = struct {
     }
 
     fn updateRenderedText(self: *ViewLine, text: []const u8) bool {
-        if (self.rendered_text) |previous| {
-            if (std.mem.eql(u8, previous, text)) return false;
-            self.allocator.free(previous);
+        const hash = std.hash.Wyhash.hash(0, text);
+        if (self.rendered_hash) |previous| {
+            if (previous == hash) return false;
         }
-        self.rendered_text = self.allocator.dupe(u8, text) catch null;
+        self.rendered_hash = hash;
         return true;
     }
 };
