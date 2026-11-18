@@ -989,7 +989,7 @@ with the update, workspace-document, DEFAULT change events, restricted-setting t
 reset, override-aware `affectsConfiguration`,
 workspace-reload inspect, `isConfigured` and override-aware inspect cases from
 `configurationService.test.ts`;
-enforced policy configuration and remote/folder scoping remain unported.
+enforced policy configuration and folder scoping are covered; remote scoping is a documented terminal omission.
 `workbench/services/configuration/browser/configurationService.zig` already
 provides the file-backed workspace service (user/workspace/folder scopes,
 `.code-workspace`, settings watcher) with five terminal workspace-scope tests;
@@ -1108,8 +1108,23 @@ remains.
 **Status at the end of the current session:** 2,095 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
-The remaining work is the editor view/controller/widget stack and the URI/file
-service/editor-input wiring described below.
+The remaining work is the editor cursor/controller/widget stack and the URI/file
+service/editor-input working-copy wiring described below. Items the terminal
+cannot host are listed under documented omissions.
+
+**Documented terminal omissions**
+
+- **Icon themes** (P5c): the terminal has no icon surface (file icons, codicon
+  image sprites); theme color data is ported, but icon theme data has no
+  corresponding capability. Extension-enumerated theme values are also absent
+  because the terminal has no extension host that could register themes at
+  runtime.
+- **Remote configuration/experiment suites** (P5h): they require a remote
+  agent, remote environment and remote configuration channel, none of which
+  exist in the terminal host.
+- **Browser tooltip/focus DOM cases** (P2): the TUI status bar and tab strip
+  are `ui` nodes without the browser managed-hover/focus DOM; the portable
+  state machines they exercise are covered by the status/tab model tests.
 
 **Remaining upstream files by slice**
 
@@ -1117,8 +1132,8 @@ service/editor-input wiring described below.
 | --- | --- |
 | P4 | `editor/browser/view.ts`, `editor/browser/view/viewController.ts`, `editor/browser/widget/codeEditor/codeEditorWidget.ts`, the remaining view parts and the layout-dependent overlays; the computed options (`ComputedEditorOptions`, `EditorLayoutInfoComputer`) are ported |
 | P5e | core `base/common/uri.ts`, `network`/`VSBuffer`/`extpath` helpers, `FileType`/`FileOperation`/`FileChangesEvent`, a disk-backed `DiskFileService` (read/write/stat/rename/copy/recursive delete/directory listing/change events), a minimal `TextFileService`, `FileEditorInput`/serializer and the side-by-side/diff input identity/unwrapping and side-by-side/diff serializers, save/revert forwarding and composite untyped matching are ported; the full provider/event file service remains; minimal text-file editor models and untitled/diff/side-by-side inputs (with serializers) are ported |
-| P5c | `tokenClassificationRegistry`, the TextMate scope matcher, `ColorThemeData` token-style resolution, the terminal `workbenchThemeService` (registration/persistence/migrations) and the `ThemeConfiguration` color-theme/preference subset and its static settings schemas are ported; the dynamic theme-enum schema updates, icon themes and config-watcher plumbing remain |
-| P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering and `ExperimentalSettingsService` (assignments/coalescing/keyed requests) are ported; the workbench remote configuration suites remain |
+| P5c | `tokenClassificationRegistry`, the TextMate scope matcher, `ColorThemeData` token-style resolution, the terminal `workbenchThemeService` (registration/persistence/migrations) and the `ThemeConfiguration` color-theme/preference subset and its static settings schemas are ported; icon themes and extension-enumerated theme values are documented terminal omissions, and theme settings re-application is host wiring |
+| P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering and `ExperimentalSettingsService` (assignments/coalescing/keyed requests) are ported; remote-agent configuration suites are a documented terminal omission |
 | P2 | `multiEditorTabsControl.test.ts`, browser tooltip cases in `statusbarItem.test.ts`, and the `explorerView.test.ts` tree cases that construct diff/side-by-side inputs |
 | filters | multi-byte highlight selection (#113404) and `Intl.Collator` locale ordering |
 
