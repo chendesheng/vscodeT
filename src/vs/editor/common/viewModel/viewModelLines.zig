@@ -148,6 +148,11 @@ pub const ProjectedViewModelLines = struct {
         return self.hidden_ranges.items;
     }
 
+    pub fn isModelLineVisible(self: *const ProjectedViewModelLines, line_number: usize) bool {
+        if (line_number < 1 or line_number > self.projections.items.len) return false;
+        return self.projections.items[line_number - 1].isVisible();
+    }
+
     /// Replaces the hidden model-line ranges. Returns whether the line mapping
     /// changed. Port of `ViewModelLinesFromProjectedModel.setHiddenAreas`: the
     /// ranges are validated and normalized, then every affected projection is

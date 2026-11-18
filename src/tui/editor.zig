@@ -639,6 +639,14 @@ pub const Editor = struct {
         return self.folding.foldStateAtLine(line);
     }
 
+    /// Hidden model lines still have content, but no view row. View parts that
+    /// translate a model line (such as indentation guides) must skip them: the
+    /// converter maps a hidden line to the preceding visible line, which would
+    /// paint the hidden line's guides over that line's text.
+    pub fn isModelLineVisible(self: *Editor, line: usize) bool {
+        return self.view_lines.isModelLineVisible(line);
+    }
+
     /// Gutter fold control for a view line. Only the first output line of a
     /// wrapped model line owns the control.
     pub fn toggleFoldAtViewLine(self: *Editor, view_line: usize) !bool {

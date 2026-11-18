@@ -1973,6 +1973,9 @@ fn ceilDiv(value: usize, divisor: usize) usize {
 }
 
 fn viewRowForModelLine(editor: *Editor, top: usize, model_line: usize) ?usize {
+    // Hidden lines map to the preceding visible line; a guide computed for one
+    // of them would otherwise overwrite that line's text.
+    if (!editor.isModelLineVisible(model_line)) return null;
     const view_position = editor.viewPositionOfModelPosition(Position.init(model_line, 1));
     if (view_position.lineNumber < top) return null;
     const row = view_position.lineNumber - top;
@@ -2494,6 +2497,38 @@ test "View: hover highlight paints the anchor range" {
     // Gutter is 2; columns 2..4 of the text are highlighted.
     const background = grid.bg[grid.index(3, 0)];
     try std.testing.expect(background != 0);
+}
+
+test "View: guides from folded hidden lines do not overwrite text" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "pub const Description = struct {\n    label: []u8,\n    description: []u8,\n\n    pub fn deinit(self: Description, allocator: Allocator) void {\n        allocator.free(self.label);\n    }\n};\n",
+        "test.zig",
+        50,
+        10,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    try editor.setCursorPosition(Position.init(1, 1));
+    try editor.foldAtCursor();
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const row = try rowText(view, allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "│") == null);
+    try std.testing.expect(std.mem.indexOf(u8, row, "pub const Description") != null);
 }
 
 test "View: gutter fold control collapses and expands a region" {
