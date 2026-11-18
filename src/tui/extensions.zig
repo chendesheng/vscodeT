@@ -616,6 +616,14 @@ pub const Extensions = struct {
             return .empty;
         }
         if (std.mem.eql(u8, method, "$tryShowTextDocument")) {
+            if (args.len > 0 and args[0] == .json and args[0].json == .object) {
+                if (args[0].json.object.get("path")) |path| {
+                    if (path == .string) {
+                        self.workbench.openPath(path.string) catch {};
+                        self.needs_render = true;
+                    }
+                }
+            }
             return .{ .json = .{ .string = "1" } };
         }
         if (std.mem.eql(u8, method, "$trySaveDocument")) {
@@ -627,7 +635,11 @@ pub const Extensions = struct {
         if (std.mem.eql(u8, method, "$tryOpenDocument")) {
             if (args.len > 0 and args[0] == .json and args[0].json == .object) {
                 if (args[0].json.object.get("path")) |path| {
-                    if (path == .string) return .{ .json = try manager.fileUri(arena, path.string) };
+                    if (path == .string) {
+                        self.workbench.openPath(path.string) catch {};
+                        self.needs_render = true;
+                        return .{ .json = try manager.fileUri(arena, path.string) };
+                    }
                 }
             }
             return .empty;
