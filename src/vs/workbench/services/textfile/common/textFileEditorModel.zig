@@ -21,6 +21,7 @@ pub const TextFileEditorModel = struct {
     disposed: bool = false,
     onDidChangeContent: Emitter(void),
     onDidChangeDirty: Emitter(void),
+    onDidRevert: Emitter(void),
 
     pub fn create(allocator: Allocator, text_files: *TextFileService, path: []const u8) !*TextFileEditorModel {
         const self = try allocator.create(TextFileEditorModel);
@@ -31,6 +32,7 @@ pub const TextFileEditorModel = struct {
             .text_files = text_files,
             .onDidChangeContent = Emitter(void).init(allocator),
             .onDidChangeDirty = Emitter(void).init(allocator),
+            .onDidRevert = Emitter(void).init(allocator),
         };
         return self;
     }
@@ -38,6 +40,7 @@ pub const TextFileEditorModel = struct {
     pub fn destroy(self: *TextFileEditorModel) void {
         self.onDidChangeContent.deinit();
         self.onDidChangeDirty.deinit();
+        self.onDidRevert.deinit();
         if (self.content) |content| self.allocator.free(content);
         if (self.saved_content) |content| self.allocator.free(content);
         self.allocator.free(self.path);
@@ -111,14 +114,26 @@ pub const TextFileEditorModel = struct {
         if (was_dirty or dirty_after_participants) try self.onDidChangeDirty.fire({});
     }
 
+    pub const RevertOptions = struct {
+        /// Soft revert keeps the current text and marks it as saved instead of
+        /// reloading the file from disk.
+        soft: bool = false,
+    };
+
     pub fn revert(self: *TextFileEditorModel) !void {
-        const saved = self.saved_content orelse return self.load();
-        const copy = try self.allocator.dupe(u8, saved);
-        if (self.content) |content| self.allocator.free(content);
-        self.content = copy;
-        self.version +%= 1;
-        try self.onDidChangeContent.fire({});
-        try self.onDidChangeDirty.fire({});
+        return self.revertWithOptions(.{});
+    }
+
+    pub fn revertWithOptions(self: *TextFileEditorModel, options: RevertOptions) !void {
+        if (options.soft) {
+            const saved = try self.allocator.dupe(u8, self.getText());
+            if (self.saved_content) |old| self.allocator.free(old);
+            self.saved_content = saved;
+            try self.onDidChangeDirty.fire({});
+        } else {
+            try self.load();
+        }
+        try self.onDidRevert.fire({});
     }
 };
 
@@ -300,4 +315,44 @@ test "TextFileEditorModel runs save participants and honors skip/error" {
     const unchanged = try text_files.read(path, allocator);
     defer allocator.free(unchanged);
     try std.testing.expectEqualStrings("skipped", unchanged);
+}
+
+test "TextFileEditorModel supports soft and hard revert" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const path = try std.fs.path.join(allocator, &.{ buffer[0..root_len], "revert.txt" });
+    defer allocator.free(path);
+
+    var files = @import("../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+    defer files.deinit();
+    var text_files = TextFileService.init(allocator, &files);
+    defer text_files.deinit();
+    try text_files.write(path, "on disk");
+
+    var model = try TextFileEditorModel.create(allocator, &text_files, path);
+    defer model.destroy();
+    try model.load();
+
+    var revert_events: usize = 0;
+    _ = try model.onDidRevert.listen(&revert_events, struct {
+        fn onRevert(_: void, context: *usize) anyerror!void {
+            context.* += 1;
+        }
+    }.onRevert);
+
+    try model.updateContent("dirty");
+    try model.revertWithOptions(.{ .soft = true });
+    try std.testing.expectEqualStrings("dirty", model.getText());
+    try std.testing.expect(!model.isDirty());
+    try std.testing.expectEqual(@as(usize, 1), revert_events);
+
+    try model.updateContent("dirty again");
+    try model.revert();
+    try std.testing.expectEqualStrings("on disk", model.getText());
+    try std.testing.expect(!model.isDirty());
+    try std.testing.expectEqual(@as(usize, 2), revert_events);
 }

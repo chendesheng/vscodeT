@@ -894,7 +894,8 @@ Editor contributions:
   exposes `readWithEncoding`/`writeWithEncoding`, and `TextFileEditorModel`
   preserves the detected encoding across load/save. Save participants are
   ported (participant-driven content updates, `skipSaveParticipants` and error
-  propagation that keeps the model dirty). Heuristic charset guessing
+  propagation that keeps the model dirty). Soft revert (keep current text,
+  clear dirty) and hard revert (reload from disk) fire `onDidRevert`. Heuristic charset guessing
   (ANSI/ShiftJIS via jschardet/ICU) is a documented terminal omission.
 
 - Visible whitespace rendering is ported through the shared line renderer:
