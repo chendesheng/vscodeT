@@ -867,8 +867,9 @@ Editor contributions:
   rendering data and model-decoration viewport mapping into view ranges), and
   tracks selections, focus, viewport and a cell-height layout, and is wired to
   the terminal `View` (focus/view integration is tested). Rendering real model
-  tokens through `ViewLines` is a known blocker (heap corruption under
-  investigation). Inline decoration ranges, the browser cursor controller,
+  tokens through `VisibleLinesCollection` is a known blocker (direct renderer
+  and single-line rendering pass; the collection/line bookkeeping still
+  corrupts the heap). Inline decoration ranges, the browser cursor controller,
   view-model event dispatcher and glyph lanes remain.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,

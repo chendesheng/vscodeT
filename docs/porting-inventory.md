@@ -1150,10 +1150,13 @@ cannot host are listed under documented omissions.
 - Remaining `editorGroupModel`/`explorerView` cases construct diff and
   side-by-side editor inputs.
 - P5c token-style resolving needs `tokenClassificationRegistry.ts`.
-- Rendering a `ViewModel` through `ViewLines` (real model tokens) currently
-  corrupts the test heap; the `ViewModel`/`View` wiring is tested without the
-  render step, and the render integration needs the token/line-data lifetime
-  investigated before `codeEditorWidget` render tests can run.
+- Rendering a `ViewModel` through `VisibleLinesCollection` (real model tokens)
+  currently corrupts the test heap. The diagnosis is narrowed: direct
+  `viewLineRenderer` calls and direct `ViewLine.renderLine` calls with the same
+  rendering data pass, and an arena allocator for the collection rules out a
+  free/ownership bug, so the corruption is in the collection/line integration
+  (line window append/render bookkeeping) and needs investigation before
+  `codeEditorWidget` render tests can run.
 - Fuzzy highlighting across multi-byte characters (emoji #113404) selects a later
   match than upstream; filter positions are byte-based, so that case stays
   unported.

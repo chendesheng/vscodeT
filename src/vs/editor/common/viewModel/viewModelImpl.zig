@@ -365,6 +365,16 @@ test "view model integrates with the terminal view" {
     view.init(allocator, &context);
     defer view.deinit();
 
+    const rendering = try instance.interface().viewportViewLineRenderingData(Range.init(1, 1, 2, 6), 1);
+    var rendered = try @import("../viewLayout/viewLineRenderer.zig").renderLine(allocator, .{
+        .content = rendering.content,
+        .tokens = rendering.tokens,
+        .tab_size = rendering.tabSize,
+        .start_visible_column = rendering.startVisibleColumn,
+    });
+    defer rendered.deinit(allocator);
+    try testing.expectEqualStrings("hello", rendered.bytes);
+
     _ = view.setFocused(true);
     try testing.expect(view.hasFocus());
     try testing.expectEqual(@as(usize, 2), instance.lines.getViewLineCount());
