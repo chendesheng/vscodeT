@@ -587,6 +587,7 @@ test "HTML closing tag proposal filtered out #38880" {
 
 test "highlighting regressions #113404, #85826, #147423" {
     const allocator = std.testing.allocator;
+    try assertMatches(allocator, "di", "✨div classname=\"\"></div>", "✨^d^iv classname=\"\"></div>", .{});
     try assertMatches(allocator, "di", "adiv classname=\"\"></div>", "adiv classname=\"\"></^d^iv>", .{});
 
     try assertMatches(allocator, "SemanticTokens", "SemanticTokensEdits", "^S^e^m^a^n^t^i^c^T^o^k^e^n^sEdits", .{});

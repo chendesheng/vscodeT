@@ -968,7 +968,7 @@ are ported and registered. The `filters.fuzzyScore` dynamic-programming scorer
 (`filters.ts`) is ported as an explicit `FuzzyScorer` (scratch tables, no
 globals), with its `fuzzyScore` regression and top-score cases, and `scoreFuzzy2` now uses it.
 The #134723 item case passes; only the exact upstream cache-hash identity cases
-and the multi-byte/ICU collation cases remain (the terminal cache key is a readable composite). `fileIndex.zig` now
+and the ICU collation cases remain (the terminal cache key is a readable composite; Unicode fuzzy highlighting now scores per codepoint and the emoji #113404 case is ported). `fileIndex.zig` now
 scores via `scoreItemFuzzy` (label/description/path, all query words required)
 instead of its ad-hoc matcher.
 
@@ -1145,7 +1145,7 @@ cannot host are listed under documented omissions.
 | P5c | `tokenClassificationRegistry`, the TextMate scope matcher, `ColorThemeData` token-style resolution, the terminal `workbenchThemeService` (registration/persistence/migrations) and the `ThemeConfiguration` color-theme/preference subset and its static settings schemas are ported; icon themes and extension-enumerated theme values are documented terminal omissions, and theme settings re-application is host wiring |
 | P5h | in-memory policy service, `PolicyConfiguration`, language overrides, scope/trust filtering and `ExperimentalSettingsService` (assignments/coalescing/keyed requests) are ported; remote-agent configuration suites are a documented terminal omission |
 | P2 | `multiEditorTabsControl.test.ts`, browser tooltip cases in `statusbarItem.test.ts`, and the `explorerView.test.ts` tree cases that construct diff/side-by-side inputs; `editorGroupModel.test.ts` now has the direct-vs-side-by-side open/index preferences |
-| filters | multi-byte highlight selection (#113404) and `Intl.Collator` locale ordering |
+| filters | `Intl.Collator` locale ordering (ICU-dependent) |
 
 **Known blockers for the remaining work**
 
@@ -1158,9 +1158,6 @@ cannot host are listed under documented omissions.
 - Remaining `editorGroupModel`/`explorerView` cases construct diff and
   side-by-side editor inputs.
 - P5c token-style resolving needs `tokenClassificationRegistry.ts`.
-- Fuzzy highlighting across multi-byte characters (emoji #113404) selects a later
-  match than upstream; filter positions are byte-based, so that case stays
-  unported.
 - `matchesContiguousSubString`, `matchesSubString`, `matchesPrefix`,
   `matchesStrictPrefix` and `matchesCamelCase` are ported with their upstream
   cases (including camel-case heuristics, weak-first fuzzy scoring and the

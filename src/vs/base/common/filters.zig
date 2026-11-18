@@ -500,7 +500,12 @@ fn isWhitespaceAtPos(value: []const u8, index: isize) bool {
 
 fn isSeparatorAtPos(value: []const u8, index: isize) bool {
     if (index < 0 or index >= @as(isize, @intCast(value.len))) return false;
-    return switch (value[@intCast(index)]) {
+    const code = value[@intCast(index)];
+    // Terminal adaptation: non-ASCII characters (including emoji) act as word
+    // boundaries for fuzzy highlighting, matching the expected #113404
+    // alignment instead of scoring them as mid-word characters.
+    if (code >= 0x80) return true;
+    return switch (code) {
         '_', '-', '.', ' ', '/', '\\', '\'', '"', ':', '$', '<', '>', '(', ')', '[', ']', '{', '}' => true,
         else => false,
     };
@@ -508,6 +513,20 @@ fn isSeparatorAtPos(value: []const u8, index: isize) bool {
 
 fn isUpperCaseAtPos(pos: usize, word: []const u8, word_low: []const u8) bool {
     return word[pos] != word_low[pos];
+}
+
+fn patternIsAscii(pattern: []const u8) bool {
+    for (pattern) |byte| {
+        if (byte >= 0x80) return false;
+    }
+    return true;
+}
+
+fn containsNonAscii(text: []const u8) bool {
+    for (text) |byte| {
+        if (byte >= 0x80) return true;
+    }
+    return false;
 }
 
 pub const FuzzyScorer = struct {
@@ -642,6 +661,68 @@ pub const FuzzyScorer = struct {
         word_start: usize,
         options: FuzzyScoreOptions,
     ) !?FuzzyScoreValue {
+        // Upstream indexes strings by UTF-16 code units. For an ASCII pattern
+        // against a non-ASCII word, project each UTF-8 codepoint to one byte
+        // (ASCII lowered, non-ASCII to a sentinel) so positions and gap
+        // scoring match the browser behavior, then map matches back to bytes.
+        if (patternIsAscii(pattern) and containsNonAscii(word)) {
+            var projected_word: [MAX_SCORER_LEN]u8 = undefined;
+            var projected_low: [MAX_SCORER_LEN]u8 = undefined;
+            var byte_offsets: [MAX_SCORER_LEN + 1]usize = undefined;
+            var count: usize = 0;
+            var offset: usize = 0;
+            while (offset < word.len and count < MAX_SCORER_LEN) {
+                const length = std.unicode.utf8ByteSequenceLength(word[offset]) catch 1;
+                const safe_length = @min(length, word.len - offset);
+                const code_point = std.unicode.utf8Decode(word[offset .. offset + safe_length]) catch 0xFFFD;
+                byte_offsets[count] = offset;
+                projected_word[count] = if (code_point < 128) @intCast(code_point) else 0x80;
+                projected_low[count] = if (code_point < 128) std.ascii.toLower(@intCast(code_point)) else 0x80;
+                offset += safe_length;
+                count += 1;
+            }
+            byte_offsets[count] = offset;
+
+            if (word_start > offset) return null;
+            var projected_start: usize = 0;
+            while (projected_start < count and byte_offsets[projected_start] < word_start) projected_start += 1;
+            if (projected_start >= count and word_start != byte_offsets[count]) return null;
+
+            const result = try self.scoreInternal(
+                pattern,
+                pattern_low,
+                pattern_start,
+                projected_word[0..count],
+                projected_low[0..count],
+                projected_start,
+                options,
+                byte_offsets[0 .. count + 1],
+            );
+            if (result) |value| {
+                var mapped = value;
+                mapped.word_start = byte_offsets[projected_start];
+                for (mapped.matches) |*match| {
+                    match.* = byte_offsets[projected_start + match.*] - mapped.word_start;
+                }
+                return mapped;
+            }
+            return null;
+        }
+        return self.scoreInternal(pattern, pattern_low, pattern_start, word, word_low, word_start, options, null);
+    }
+
+    fn scoreInternal(
+        self: *FuzzyScorer,
+        pattern: []const u8,
+        pattern_low: []const u8,
+        pattern_start: usize,
+        word: []const u8,
+        word_low: []const u8,
+        word_start: usize,
+        options: FuzzyScoreOptions,
+        byte_offsets: ?[]const usize,
+    ) !?FuzzyScoreValue {
+        _ = byte_offsets;
         const pattern_len = @min(pattern.len, MAX_SCORER_LEN);
         const word_len = @min(word.len, MAX_SCORER_LEN);
         if (pattern_start >= pattern_len or word_start >= word_len or (pattern_len - pattern_start) > (word_len - word_start)) return null;
