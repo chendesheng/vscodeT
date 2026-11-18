@@ -266,9 +266,37 @@ pub const Extensions = struct {
         try delta.put(arena, "newActiveEditor", .{ .string = "1" });
         var args = [_]rpc.Arg{.{ .json = .{ .object = delta } }};
         _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback);
+        try self.sendTabModel(arena, tab.editor, uri_path);
 
         self.active = .{ .editor = tab.editor, .uri = uri, .language_id = language };
         self.needs_render = true;
+    }
+
+    fn sendTabModel(self: *Extensions, arena: Allocator, editor: *Editor, uri_path: []const u8) !void {
+        var tabs = std.json.Array.init(arena);
+        var tab_object: std.json.ObjectMap = .empty;
+        try tab_object.put(arena, "id", .{ .string = "1" });
+        try tab_object.put(arena, "label", .{ .string = try arena.dupe(u8, std.fs.path.basename(uri_path)) });
+        var input: std.json.ObjectMap = .empty;
+        try input.put(arena, "kind", .{ .integer = 1 });
+        try input.put(arena, "uri", try manager.fileUri(arena, uri_path));
+        try tab_object.put(arena, "input", .{ .object = input });
+        try tab_object.put(arena, "editorId", .{ .string = "1" });
+        try tab_object.put(arena, "isActive", .{ .bool = true });
+        try tab_object.put(arena, "isPinned", .{ .bool = true });
+        try tab_object.put(arena, "isPreview", .{ .bool = false });
+        try tab_object.put(arena, "isDirty", .{ .bool = editor.dirty_state });
+        try tabs.append(.{ .object = tab_object });
+
+        var group: std.json.ObjectMap = .empty;
+        try group.put(arena, "isActive", .{ .bool = true });
+        try group.put(arena, "viewColumn", .{ .integer = 1 });
+        try group.put(arena, "tabs", .{ .array = tabs });
+        try group.put(arena, "groupId", .{ .integer = 1 });
+        var groups = std.json.Array.init(arena);
+        try groups.append(.{ .object = group });
+        var args = [_]rpc.Arg{.{ .json = .{ .array = groups } }};
+        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditorTabs), "$acceptEditorTabModel", &args, null, manager.noop_callback) catch {};
     }
 
     fn removeActiveDocument(self: *Extensions) !void {
@@ -321,7 +349,7 @@ pub const Extensions = struct {
     }
 
     pub fn handleKey(self: *Extensions, event: *const ui.KeyEvent) bool {
-        if (!self.activated and self.active == null) return false;
+        if (!self.vim_active) return false;
         const editor = if (self.workbench.activeTab()) |tab| tab.editor else return false;
         switch (event.key) {
             .paste_start => {
@@ -466,6 +494,58 @@ pub const Extensions = struct {
                 }
                 return .empty;
             }
+            if (std.mem.eql(u8, command, "editor.action.insertLineAfter") or std.mem.eql(u8, command, "editor.action.insertLineBefore")) {
+                const editor = if (self.active) |active| active.editor else return .empty;
+                const selections = editor.getSelections() catch return .empty;
+                defer editor.allocator.free(selections);
+                if (selections.len > 0) {
+                    const line = selections[0].endLineNumber;
+                    const column = if (std.mem.eql(u8, command, "editor.action.insertLineAfter"))
+                        editor.model.getLineLength(line) + 1
+                    else
+                        1;
+                    const range = Range.init(line, column, line, column);
+                    editor.replaceRange(range, "\n") catch {};
+                    try self.applyCommandEdit(arena, editor, range, "\n");
+                }
+                return .empty;
+            }
+            if (std.mem.eql(u8, command, "workbench.action.closeActiveEditor")) {
+                _ = self.workbench.closeActive() catch false;
+                self.needs_render = true;
+                return .empty;
+            }
+            if (std.mem.eql(u8, command, "workbench.action.files.save")) {
+                if (self.active) |active| active.editor.save() catch {};
+                self.needs_render = true;
+                return .empty;
+            }
+            if (std.mem.eql(u8, command, "workbench.action.nextEditorInGroup")) {
+                self.workbench.switchTab(1) catch {};
+                self.needs_render = true;
+                return .empty;
+            }
+            if (std.mem.eql(u8, command, "workbench.action.previousEditorInGroup")) {
+                self.workbench.switchTab(-1) catch {};
+                self.needs_render = true;
+                return .empty;
+            }
+            if (std.mem.eql(u8, command, "vscode.open")) {
+                const editor = if (self.active) |active| active.editor else return .empty;
+                _ = editor;
+                if (args.len > 1 and args[1] == .json and args[1].json == .array and args[1].json.array.items.len > 0) {
+                    const first = args[1].json.array.items[0];
+                    if (first == .object) {
+                        if (first.object.get("path")) |path| {
+                            if (path == .string) {
+                                self.workbench.openPath(path.string) catch {};
+                                self.needs_render = true;
+                            }
+                        }
+                    }
+                }
+                return .empty;
+            }
             if (std.mem.eql(u8, command, "_setContext") or std.mem.eql(u8, command, "setContext")) {
                 if (args.len > 1 and args[1] == .json and args[1].json == .array and args[1].json.array.items.len >= 2) {
                     const key_value = args[1].json.array.items[0];
@@ -515,6 +595,26 @@ pub const Extensions = struct {
         if (std.mem.eql(u8, method, "$tryShowTextDocument")) {
             return .{ .json = .{ .string = "1" } };
         }
+        if (std.mem.eql(u8, method, "$trySaveDocument")) {
+            const active = if (self.active) |value| value else return .{ .json = .{ .bool = false } };
+            active.editor.save() catch return .{ .json = .{ .bool = false } };
+            self.needs_render = true;
+            return .{ .json = .{ .bool = true } };
+        }
+        if (std.mem.eql(u8, method, "$tryOpenDocument")) {
+            if (args.len > 0 and args[0] == .json and args[0].json == .object) {
+                if (args[0].json.object.get("path")) |path| {
+                    if (path == .string) return .{ .json = try manager.fileUri(arena, path.string) };
+                }
+            }
+            return .empty;
+        }
+        if (std.mem.eql(u8, method, "$tryCreateDocument")) {
+            return .{ .json = try manager.fileUri(arena, "/tmp/untitled") };
+        }
+        if (std.mem.eql(u8, method, "$moveTab") or std.mem.eql(u8, method, "$closeTab") or std.mem.eql(u8, method, "$closeGroup")) {
+            return if (std.mem.eql(u8, method, "$moveTab")) .empty else .{ .json = .{ .bool = true } };
+        }
         if (std.mem.eql(u8, method, "$setEntry")) {
             try self.setStatusEntry(arena, args);
             return .empty;
@@ -538,6 +638,15 @@ pub const Extensions = struct {
         active.version += 1;
         try self.sendModelChanged(arena, text, start, start);
         try self.sendSelection(arena);
+        self.needs_render = true;
+    }
+
+    fn applyCommandEdit(self: *Extensions, arena: Allocator, editor: *Editor, range: Range, text: []const u8) !void {
+        const active = &(self.active orelse return);
+        active.version += 1;
+        try self.sendModelChanged(arena, text, range.getStartPosition(), range.getEndPosition());
+        try self.sendSelection(arena);
+        _ = editor;
         self.needs_render = true;
     }
 
