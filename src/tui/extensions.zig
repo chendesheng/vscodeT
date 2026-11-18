@@ -59,6 +59,7 @@ pub const Extensions = struct {
     status_entries: std.StringHashMap(OwnedStatus),
     config_arena: std.heap.ArenaAllocator,
     config_values: std.StringHashMap(std.json.Value),
+    tab_signature: u64 = 0,
     activated: bool = false,
     needs_render: bool = false,
     pasting: bool = false,
@@ -219,7 +220,10 @@ pub const Extensions = struct {
             return;
         };
         if (self.active) |active| {
-            if (active.editor == tab.editor) return;
+            if (active.editor == tab.editor) {
+                try self.syncTabs();
+                return;
+            }
             try self.removeActiveDocument();
         }
 
@@ -273,27 +277,42 @@ pub const Extensions = struct {
         try delta.put(arena, "newActiveEditor", .{ .string = "1" });
         var args = [_]rpc.Arg{.{ .json = .{ .object = delta } }};
         _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback);
-        try self.sendTabModel(arena, tab.editor, uri_path);
 
         self.active = .{ .editor = tab.editor, .uri = uri, .language_id = language };
+        try self.syncTabs();
         self.needs_render = true;
     }
 
-    fn sendTabModel(self: *Extensions, arena: Allocator, editor: *Editor, uri_path: []const u8) !void {
+    fn syncTabs(self: *Extensions) !void {
+        const active_tab = self.workbench.activeTab() orelse return;
+        var signature: u64 = @intCast(self.workbench.tabCount());
+        signature ^= std.hash.Wyhash.hash(0, active_tab.editor.path);
+        if (signature == self.tab_signature) return;
+        self.tab_signature = signature;
+
+        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_instance.deinit();
+        const arena = arena_instance.allocator();
         var tabs = std.json.Array.init(arena);
-        var tab_object: std.json.ObjectMap = .empty;
-        try tab_object.put(arena, "id", .{ .string = "1" });
-        try tab_object.put(arena, "label", .{ .string = try arena.dupe(u8, std.fs.path.basename(uri_path)) });
-        var input: std.json.ObjectMap = .empty;
-        try input.put(arena, "kind", .{ .integer = 1 });
-        try input.put(arena, "uri", try manager.fileUri(arena, uri_path));
-        try tab_object.put(arena, "input", .{ .object = input });
-        try tab_object.put(arena, "editorId", .{ .string = "1" });
-        try tab_object.put(arena, "isActive", .{ .bool = true });
-        try tab_object.put(arena, "isPinned", .{ .bool = true });
-        try tab_object.put(arena, "isPreview", .{ .bool = false });
-        try tab_object.put(arena, "isDirty", .{ .bool = editor.dirty_state });
-        try tabs.append(.{ .object = tab_object });
+        for (self.workbench.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const is_active = tab == active_tab;
+                var tab_object: std.json.ObjectMap = .empty;
+                try tab_object.put(arena, "id", .{ .string = try arena.dupe(u8, tab.editor.path) });
+                try tab_object.put(arena, "label", .{ .string = try arena.dupe(u8, std.fs.path.basename(tab.editor.path)) });
+                var input: std.json.ObjectMap = .empty;
+                try input.put(arena, "kind", .{ .integer = 1 });
+                try input.put(arena, "uri", try manager.fileUri(arena, tab.editor.path));
+                try tab_object.put(arena, "input", .{ .object = input });
+                if (is_active) try tab_object.put(arena, "editorId", .{ .string = "1" });
+                try tab_object.put(arena, "isActive", .{ .bool = is_active });
+                try tab_object.put(arena, "isPinned", .{ .bool = true });
+                try tab_object.put(arena, "isPreview", .{ .bool = false });
+                try tab_object.put(arena, "isDirty", .{ .bool = tab.editor.dirty_state });
+                try tabs.append(.{ .object = tab_object });
+            }
+        }
+        if (tabs.items.len == 0) return;
 
         var group: std.json.ObjectMap = .empty;
         try group.put(arena, "isActive", .{ .bool = true });
@@ -657,7 +676,14 @@ pub const Extensions = struct {
             return .empty;
         }
         if (std.mem.eql(u8, method, "$closeTab")) {
-            _ = self.workbench.closeActive() catch false;
+            var closed = false;
+            if (args.len > 0 and args[0] == .json and args[0].json == .array) {
+                for (args[0].json.array.items) |value| {
+                    if (value == .string) closed = (self.workbench.closePath(value.string) catch false) or closed;
+                }
+            }
+            if (!closed) _ = self.workbench.closeActive() catch false;
+            self.tab_signature = 0;
             self.needs_render = true;
             return .{ .json = .{ .bool = true } };
         }

@@ -1388,6 +1388,17 @@ pub const Workbench = struct {
         self.revealActiveEditor();
     }
 
+    /// Closes the tab showing `path`, if any. Used by extension tab commands.
+    pub fn closePath(self: *Workbench, path: []const u8) !bool {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (!std.mem.eql(u8, tab.editor.path, path)) continue;
+                return self.closeTab(pane, tab);
+            }
+        }
+        return false;
+    }
+
     pub fn switchTab(self: *Workbench, delta: isize) !void {
         const pane = self.activePane() orelse return;
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
