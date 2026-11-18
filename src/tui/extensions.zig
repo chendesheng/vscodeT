@@ -18,6 +18,7 @@ const TextEdit = @import("./editor.zig").TextEdit;
 const Workbench = @import("./workbench.zig").Workbench;
 const statusbar = @import("../vs/workbench/services/statusbar/browser/statusbar.zig");
 const statusbar_part = @import("../vs/workbench/browser/parts/statusbar/statusbarPart.zig");
+const configuration = @import("../vs/platform/configuration/common/configuration.zig");
 const Range = @import("../vs/editor/common/core/range.zig").Range;
 const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
@@ -56,6 +57,8 @@ pub const Extensions = struct {
     vim_active: bool = false,
     decoration_count: usize = 0,
     status_entries: std.StringHashMap(OwnedStatus),
+    config_arena: std.heap.ArenaAllocator,
+    config_values: std.StringHashMap(std.json.Value),
     activated: bool = false,
     needs_render: bool = false,
     pasting: bool = false,
@@ -87,6 +90,8 @@ pub const Extensions = struct {
             .description = description,
             .data_path = data,
             .status_entries = std.StringHashMap(OwnedStatus).init(allocator),
+            .config_arena = std.heap.ArenaAllocator.init(allocator),
+            .config_values = std.StringHashMap(std.json.Value).init(allocator),
         };
 
         const host_script = try std.fs.path.join(allocator, &.{ "host", "dist", "extensionHost.mjs" });
@@ -119,6 +124,8 @@ pub const Extensions = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.status_entries.deinit();
+        self.config_values.deinit();
+        self.config_arena.deinit();
         self.host.deinit();
         self.description.deinit(self.allocator);
         self.allocator.free(self.data_path);
@@ -650,6 +657,18 @@ pub const Extensions = struct {
         if (std.mem.eql(u8, method, "$moveTab") or std.mem.eql(u8, method, "$closeTab") or std.mem.eql(u8, method, "$closeGroup")) {
             return if (std.mem.eql(u8, method, "$moveTab")) .empty else .{ .json = .{ .bool = true } };
         }
+        if (std.mem.eql(u8, method, "$updateConfigurationOption")) {
+            if (args.len > 2 and args[1] == .json and args[1].json == .string) {
+                try self.storeConfiguration(args[1].json.string, args[2].json);
+            }
+            return .empty;
+        }
+        if (std.mem.eql(u8, method, "$removeConfigurationOption")) {
+            if (args.len > 1 and args[1] == .json and args[1].json == .string) {
+                _ = self.config_values.remove(args[1].json.string);
+            }
+            return .empty;
+        }
         if (std.mem.eql(u8, method, "$setEntry")) {
             try self.setStatusEntry(arena, args);
             return .empty;
@@ -764,6 +783,54 @@ pub const Extensions = struct {
             .{ .json = .{ .object = properties } },
         };
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditors), "$acceptEditorPropertiesChanged", &args, null, manager.noop_callback) catch {};
+    }
+
+    fn storeConfiguration(self: *Extensions, key: []const u8, value: std.json.Value) !void {
+        const arena = self.config_arena.allocator();
+        if (self.config_values.getPtr(key)) |slot| {
+            slot.* = try configuration.cloneValue(arena, value);
+        } else {
+            const owned_key = try arena.dupe(u8, key);
+            try self.config_values.put(owned_key, try configuration.cloneValue(arena, value));
+        }
+        try self.pushConfiguration();
+    }
+
+    fn pushConfiguration(self: *Extensions) !void {
+        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_instance.deinit();
+        const arena = arena_instance.allocator();
+        var root: std.json.ObjectMap = .empty;
+        for ([_][]const u8{ "defaults", "policy", "application", "userRemote", "workspace" }) |name| {
+            var model: std.json.ObjectMap = .empty;
+            try model.put(arena, "contents", .{ .object = .empty });
+            try model.put(arena, "keys", .{ .array = std.json.Array.init(arena) });
+            try model.put(arena, "overrides", .{ .array = std.json.Array.init(arena) });
+            try root.put(arena, name, .{ .object = model });
+        }
+        var user_local: std.json.ObjectMap = .empty;
+        var contents: std.json.ObjectMap = .empty;
+        var keys = std.json.Array.init(arena);
+        var iterator = self.config_values.iterator();
+        while (iterator.next()) |entry| {
+            try contents.put(arena, try arena.dupe(u8, entry.key_ptr.*), try configuration.cloneValue(arena, entry.value_ptr.*));
+            try keys.append(.{ .string = try arena.dupe(u8, entry.key_ptr.*) });
+        }
+        try user_local.put(arena, "contents", .{ .object = contents });
+        try user_local.put(arena, "keys", .{ .array = keys });
+        try user_local.put(arena, "overrides", .{ .array = std.json.Array.init(arena) });
+        try root.put(arena, "userLocal", .{ .object = user_local });
+        try root.put(arena, "folders", .{ .array = std.json.Array.init(arena) });
+        try root.put(arena, "configurationScopes", .{ .array = std.json.Array.init(arena) });
+
+        var change: std.json.ObjectMap = .empty;
+        try change.put(arena, "keys", .{ .array = keys });
+        try change.put(arena, "overrides", .{ .array = std.json.Array.init(arena) });
+        var args = [_]rpc.Arg{
+            .{ .json = .{ .object = root } },
+            .{ .json = .{ .object = change } },
+        };
+        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostConfiguration), "$acceptConfigurationChanged", &args, null, manager.noop_callback) catch {};
     }
 
     fn setStatusEntry(self: *Extensions, arena: Allocator, args: []const rpc.Arg) !void {
