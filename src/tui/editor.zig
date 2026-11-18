@@ -1903,7 +1903,7 @@ pub const Editor = struct {
         )};
         _ = try self.model.applyEdits(&operations, false);
         self.saved_version = self.model.getAlternativeVersionId();
-        self.conflict = false;
+        self.clearConflict();
         self.refreshDirtyState();
         try self.setCursorPosition(Position.init(1, 1));
     }
@@ -1911,6 +1911,7 @@ pub const Editor = struct {
     /// Marks an external-change conflict (the file changed while dirty).
     pub fn markConflict(self: *Editor) void {
         self.conflict = true;
+        self.setMessage("Conflict: file changed on disk", .{});
     }
 
     pub fn hasConflict(self: *const Editor) bool {
@@ -1919,6 +1920,7 @@ pub const Editor = struct {
 
     pub fn clearConflict(self: *Editor) void {
         self.conflict = false;
+        self.clearMessage();
     }
 
     pub fn save(self: *Editor) !void {
@@ -1946,7 +1948,7 @@ pub const Editor = struct {
         }
 
         self.saved_version = self.model.getAlternativeVersionId();
-        self.conflict = false;
+        self.clearConflict();
         self.refreshDirtyState();
         self.setMessage("Saved {s}", .{self.path});
     }

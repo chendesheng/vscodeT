@@ -1107,7 +1107,7 @@ direct/service/watcher tests), BOM-based UTF-8/UTF-16 encoding
 heuristic charset guessing is a documented terminal omission; clean editors
 now reload on external changes
 (`Workbench.handleFileChanges` → `Editor.reloadFromDisk`), with dirty editors
-preserved and marked as conflicted (cleared by save/reload); the workbench now
+preserved and marked as conflicted (status message, cleared by save/reload); the workbench now
 starts a `UniversalWatcher` for absolute workspace folders and forwards its
 changes into that handler. The broader working-copy model (conflict UI, save
 participants, untitled/diff working copies) remains.

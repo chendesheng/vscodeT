@@ -4001,8 +4001,10 @@ test "Workbench: external file changes reload clean editors only" {
     defer preserved.deinit();
     try std.testing.expectEqualStrings("local after", preserved.items);
     try std.testing.expect(tab.editor.hasConflict());
+    try std.testing.expect(std.mem.indexOf(u8, tab.editor.message(), "Conflict") != null);
     try tab.editor.save();
     try std.testing.expect(!tab.editor.hasConflict());
+    try std.testing.expect(std.mem.indexOf(u8, tab.editor.message(), "Saved") != null);
 }
 
 test "Workbench: starts a workspace file watcher for absolute folders" {
