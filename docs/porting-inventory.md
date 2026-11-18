@@ -1083,7 +1083,7 @@ of scope:
   the port’s `std.ArrayList`/allocator conventions.
 - This document is a snapshot; it is not an implementation commitment.
 
-**Current implementation snapshot (clean build, 2,100 editor tests + 187 UI
+**Current implementation snapshot (clean build, 2,104 editor tests + 187 UI
 tests + 58/60 textmate tests):** P1, P2 and P3 are ported (explorer filter,
 shell/parts models, actions/menus/keybindings/context keys); P4 has the view
 stack scaffolding (rendering/view contexts, view parts, user input translation,
@@ -1102,14 +1102,17 @@ opened editors and on settings reload); P5e has the URI/file-service/editor-inpu
 the in-memory provider, the provider-registry `FileService` (with the upstream
 in-memory service suite) and the disk provider (provider contract over
 `std.Io`, watch-request filtering and host-forwarded change delivery, with
-direct/service/watcher tests); clean editors now reload on external changes
+direct/service/watcher tests), BOM-based UTF-8/UTF-16 encoding
+(detect/decode/encode) and encoding-preserving text-file-model load/save;
+heuristic charset guessing is a documented terminal omission; clean editors
+now reload on external changes
 (`Workbench.handleFileChanges` → `Editor.reloadFromDisk`), with dirty editors
 preserved; the workbench now starts a `UniversalWatcher` for absolute workspace
 folders and forwards its changes into that handler. The broader working-copy
 model (encoding, conflicts, save participants, untitled/diff working copies)
 remains.
 
-**Status at the end of the current session:** 2,100 editor tests, 187 UI tests
+**Status at the end of the current session:** 2,104 editor tests, 187 UI tests
 and 58/60 textmate tests pass from a clean build. All portable P1/P2/P3,
 P5a/P5b/P5f/P5g slices are complete; P5c/P5d/P5h are substantially covered.
 The remaining work is the editor cursor/controller/widget stack and the URI/file
@@ -1123,6 +1126,9 @@ cannot host are listed under documented omissions.
   corresponding capability. Extension-enumerated theme values are also absent
   because the terminal has no extension host that could register themes at
   runtime.
+- **Heuristic charset guessing** (P5e): ANSI/ShiftJIS detection depends on
+  jschardet/ICU, which the terminal does not ship; BOM-based UTF-8/UTF-16
+  detection is ported.
 - **Remote configuration/experiment suites** (P5h): they require a remote
   agent, remote environment and remote configuration channel, none of which
   exist in the terminal host.

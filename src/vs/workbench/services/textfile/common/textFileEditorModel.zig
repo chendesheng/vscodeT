@@ -1,10 +1,12 @@
 // Terminal subset of
 // `src/vs/workbench/services/textfile/common/textFileEditorModel.ts`:
-// text content/version/dirty state backed by `TextFileService`. Working
-// copies, encoding detection, auto-save and file events are not ported.
+// text content/version/dirty state backed by `TextFileService`. BOM-based
+// encoding detection (UTF-8/UTF-16 LE/BE) is ported; heuristic charset
+// guessing, auto-save and external file events are not.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const text_file = @import("./textFileService.zig");
+const encoding_mod = @import("./encoding.zig");
 const TextFileService = text_file.TextFileService;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
@@ -14,6 +16,7 @@ pub const TextFileEditorModel = struct {
     text_files: *TextFileService,
     content: ?[]u8 = null,
     saved_content: ?[]u8 = null,
+    encoding: encoding_mod.Encoding = .utf8,
     version: u32 = 0,
     disposed: bool = false,
     onDidChangeContent: Emitter(void),
@@ -43,10 +46,13 @@ pub const TextFileEditorModel = struct {
     }
 
     pub fn load(self: *TextFileEditorModel) !void {
-        const text = try self.text_files.read(self.path, self.allocator);
+        const result = try self.text_files.readWithEncoding(self.path, self.allocator);
+        errdefer self.allocator.free(result.text);
+        const text = result.text;
         if (self.content) |content| self.allocator.free(content);
         if (self.saved_content) |content| self.allocator.free(content);
         self.content = text;
+        self.encoding = result.encoding;
         self.saved_content = try self.allocator.dupe(u8, text);
         self.version +%= 1;
         try self.onDidChangeContent.fire({});
@@ -75,9 +81,17 @@ pub const TextFileEditorModel = struct {
         try self.onDidChangeDirty.fire({});
     }
 
+    pub fn setEncoding(self: *TextFileEditorModel, encoding: encoding_mod.Encoding) void {
+        self.encoding = encoding;
+    }
+
+    pub fn getEncoding(self: *const TextFileEditorModel) encoding_mod.Encoding {
+        return self.encoding;
+    }
+
     pub fn save(self: *TextFileEditorModel) !void {
         const was_dirty = self.isDirty();
-        try self.text_files.write(self.path, self.getText());
+        try self.text_files.writeWithEncoding(self.path, self.getText(), self.encoding);
         if (self.saved_content) |content| self.allocator.free(content);
         self.saved_content = try self.allocator.dupe(u8, self.getText());
         if (was_dirty) try self.onDidChangeDirty.fire({});
@@ -175,4 +189,44 @@ test "TextFileEditorModel creates missing parents when saving" {
     try model.save();
     try std.testing.expect(files.existsFile(path));
     try std.testing.expect(!model.isDirty());
+}
+
+test "TextFileEditorModel preserves BOM encodings across load and save" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const path = try std.fs.path.join(allocator, &.{ buffer[0..root_len], "encoded.txt" });
+    defer allocator.free(path);
+
+    var files = @import("../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+    defer files.deinit();
+    var text_files = TextFileService.init(allocator, &files);
+
+    try text_files.writeWithEncoding(path, "hello", .utf8_with_bom);
+    var model = try TextFileEditorModel.create(allocator, &text_files, path);
+    defer model.destroy();
+    try model.load();
+    try std.testing.expectEqualStrings("hello", model.getText());
+    try std.testing.expectEqual(encoding_mod.Encoding.utf8_with_bom, model.getEncoding());
+
+    try model.updateContent("changed");
+    try model.save();
+    const read_back = try text_files.readWithEncoding(path, allocator);
+    defer allocator.free(read_back.text);
+    try std.testing.expectEqualStrings("changed", read_back.text);
+    try std.testing.expectEqual(encoding_mod.Encoding.utf8_with_bom, read_back.encoding);
+
+    try text_files.writeWithEncoding(path, "utf16 text", .utf16le_with_bom);
+    try model.load();
+    try std.testing.expectEqualStrings("utf16 text", model.getText());
+    try std.testing.expectEqual(encoding_mod.Encoding.utf16le_with_bom, model.getEncoding());
+    try model.updateContent("utf16 changed");
+    try model.save();
+    const utf16_read = try text_files.readWithEncoding(path, allocator);
+    defer allocator.free(utf16_read.text);
+    try std.testing.expectEqualStrings("utf16 changed", utf16_read.text);
+    try std.testing.expectEqual(encoding_mod.Encoding.utf16le_with_bom, utf16_read.encoding);
 }

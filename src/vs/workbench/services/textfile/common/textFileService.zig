@@ -5,8 +5,14 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const file_service = @import("../../../../platform/files/common/fileService.zig");
 const buffer_mod = @import("../../../../base/common/buffer.zig");
+const encoding_mod = @import("./encoding.zig");
 const DiskFileService = file_service.DiskFileService;
 const VSBuffer = buffer_mod.VSBuffer;
+
+pub const ReadWithEncodingResult = struct {
+    text: []u8,
+    encoding: encoding_mod.Encoding,
+};
 
 pub const TextFileService = struct {
     allocator: Allocator,
@@ -25,6 +31,27 @@ pub const TextFileService = struct {
         var data = try self.files.readFile(path);
         defer data.deinit(self.allocator);
         return data.toString(allocator);
+    }
+
+    /// Reads text and detects its BOM encoding (UTF-8/UTF-16 LE/BE); content
+    /// without a BOM is treated as UTF-8. The caller owns the returned text.
+    pub fn readWithEncoding(self: *TextFileService, path: []const u8, allocator: Allocator) !ReadWithEncodingResult {
+        var data = try self.files.readFile(path);
+        defer data.deinit(self.allocator);
+        const encoding = if (encoding_mod.detectBOM(data.bytes)) |bom| bom.encoding else .utf8;
+        return .{
+            .text = try encoding_mod.decode(allocator, data.bytes, encoding),
+            .encoding = encoding,
+        };
+    }
+
+    /// Encodes `text` with `encoding` (including a BOM for the BOM variants)
+    /// and writes it, creating parent directories.
+    pub fn writeWithEncoding(self: *TextFileService, path: []const u8, text: []const u8, encoding: encoding_mod.Encoding) !void {
+        const bytes = try encoding_mod.encode(self.allocator, text, encoding);
+        defer self.allocator.free(bytes);
+        const data = VSBuffer{ .bytes = bytes };
+        try self.files.writeFileEnsuringParents(path, data);
     }
 
     pub fn write(self: *TextFileService, path: []const u8, text: []const u8) !void {
