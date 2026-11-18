@@ -513,6 +513,7 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.quickOpen", .label = "Go to File...", .category = "File", .context = self, .run = commandQuickOpen },
             .{ .id = "workbench.action.showCommands", .label = "Show All Commands", .context = self, .run = commandShowCommands },
             .{ .id = "workbench.action.files.save", .label = "Save", .category = "File", .context = self, .run = commandSave },
+            .{ .id = "workbench.action.files.revert", .label = "Revert File", .category = "File", .context = self, .run = commandRevert },
             .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
             .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
@@ -2359,6 +2360,11 @@ fn commandSave(context: *anyopaque) anyerror!void {
     try tab.editor.save();
 }
 
+fn commandRevert(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.reloadFromDisk();
+}
+
 fn commandCloseEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     _ = try self.closeActive();
@@ -4021,4 +4027,29 @@ test "Workbench: starts a workspace file watcher for absolute folders" {
     defer workbench.deinit();
     try workbench.setWorkspaceFolders(&.{root});
     try std.testing.expect(workbench.files_watcher != null);
+}
+
+test "Workbench: revert command discards edits and clears conflicts" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "revert.txt", "on disk");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
+    defer workbench.deinit();
+    const tab = workbench.activeTab().?;
+
+    try tab.editor.insertText("local ");
+    try std.testing.expect(tab.editor.isDirty());
+    tab.editor.markConflict();
+
+    try workbench.commands.execute("workbench.action.files.revert");
+    var text = try tab.editor.model.getValue(.TextDefined, true);
+    defer text.deinit();
+    try std.testing.expectEqualStrings("on disk", text.items);
+    try std.testing.expect(!tab.editor.isDirty());
+    try std.testing.expect(!tab.editor.hasConflict());
 }

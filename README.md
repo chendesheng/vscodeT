@@ -860,7 +860,9 @@ Editor contributions:
   forwards updated resources to `Editor.reloadFromDisk` (whole-document edit,
   saved-version reset, cursor reset) while dirty editors keep their in-memory
   content and marks a conflict on the dirty editor (`Conflict: file changed on
-  disk` in its status message, cleared by save or reload). The workbench starts a `UniversalWatcher` for absolute workspace
+  disk` in its status message, cleared by save or reload). The
+  `workbench.action.files.revert` command discards edits/conflicts by reloading
+  the file from disk. The workbench starts a `UniversalWatcher` for absolute workspace
   folders, polls it with the settings watcher and forwards its changes into
   this handler (the terminal loop also polls on its frame timeout).
 
