@@ -89,12 +89,26 @@ pub const TextFileEditorModel = struct {
         return self.encoding;
     }
 
+    pub const SaveOptions = struct {
+        skip_save_participants: bool = false,
+    };
+
     pub fn save(self: *TextFileEditorModel) !void {
+        return self.saveWithOptions(.{});
+    }
+
+    pub fn saveWithOptions(self: *TextFileEditorModel, options: SaveOptions) !void {
         const was_dirty = self.isDirty();
+        if (!options.skip_save_participants) {
+            for (self.text_files.save_participants.items) |participant| {
+                try participant.participate(participant.context, self);
+            }
+        }
+        const dirty_after_participants = self.isDirty();
         try self.text_files.writeWithEncoding(self.path, self.getText(), self.encoding);
         if (self.saved_content) |content| self.allocator.free(content);
         self.saved_content = try self.allocator.dupe(u8, self.getText());
-        if (was_dirty) try self.onDidChangeDirty.fire({});
+        if (was_dirty or dirty_after_participants) try self.onDidChangeDirty.fire({});
     }
 
     pub fn revert(self: *TextFileEditorModel) !void {
@@ -229,4 +243,61 @@ test "TextFileEditorModel preserves BOM encodings across load and save" {
     defer allocator.free(utf16_read.text);
     try std.testing.expectEqualStrings("utf16 changed", utf16_read.text);
     try std.testing.expectEqual(encoding_mod.Encoding.utf16le_with_bom, utf16_read.encoding);
+}
+
+test "TextFileEditorModel runs save participants and honors skip/error" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const path = try std.fs.path.join(allocator, &.{ buffer[0..root_len], "participants.txt" });
+    defer allocator.free(path);
+
+    var files = @import("../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+    defer files.deinit();
+    var text_files = TextFileService.init(allocator, &files);
+    defer text_files.deinit();
+    try text_files.write(path, "initial");
+
+    var model = try TextFileEditorModel.create(allocator, &text_files, path);
+    defer model.destroy();
+    try model.load();
+    try model.updateContent("foo");
+
+    const Participant = struct {
+        count: usize = 0,
+        fail: bool = false,
+
+        fn participate(context: *anyopaque, raw_model: *anyopaque) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+            if (self.fail) return error.ParticipantFailed;
+            const editor_model: *TextFileEditorModel = @ptrCast(@alignCast(raw_model));
+            try editor_model.updateContent("bar");
+        }
+    };
+    var participant = Participant{};
+    try text_files.addSaveParticipant(&participant, Participant.participate);
+
+    try model.save();
+    try std.testing.expectEqual(@as(usize, 1), participant.count);
+    try std.testing.expectEqualStrings("bar", model.getText());
+    try std.testing.expect(!model.isDirty());
+
+    try model.updateContent("skipped");
+    try model.saveWithOptions(.{ .skip_save_participants = true });
+    try std.testing.expectEqual(@as(usize, 1), participant.count);
+    const skipped = try text_files.read(path, allocator);
+    defer allocator.free(skipped);
+    try std.testing.expectEqualStrings("skipped", skipped);
+
+    try model.updateContent("failing");
+    participant.fail = true;
+    try std.testing.expectError(error.ParticipantFailed, model.save());
+    try std.testing.expect(model.isDirty());
+    const unchanged = try text_files.read(path, allocator);
+    defer allocator.free(unchanged);
+    try std.testing.expectEqualStrings("skipped", unchanged);
 }

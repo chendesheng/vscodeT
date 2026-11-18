@@ -14,12 +14,40 @@ pub const ReadWithEncodingResult = struct {
     encoding: encoding_mod.Encoding,
 };
 
+pub const SaveParticipant = struct {
+    context: *anyopaque,
+    participate: *const fn (context: *anyopaque, model: *anyopaque) anyerror!void,
+};
+
 pub const TextFileService = struct {
     allocator: Allocator,
     files: *DiskFileService,
+    save_participants: std.array_list.Managed(SaveParticipant),
 
     pub fn init(allocator: Allocator, files: *DiskFileService) TextFileService {
-        return .{ .allocator = allocator, .files = files };
+        return .{
+            .allocator = allocator,
+            .files = files,
+            .save_participants = std.array_list.Managed(SaveParticipant).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *TextFileService) void {
+        self.save_participants.deinit();
+    }
+
+    pub fn addSaveParticipant(self: *TextFileService, context: *anyopaque, callback: *const fn (context: *anyopaque, model: *anyopaque) anyerror!void) !void {
+        try self.save_participants.append(.{ .context = context, .participate = callback });
+    }
+
+    pub fn removeSaveParticipant(self: *TextFileService, context: *anyopaque) void {
+        var index: usize = 0;
+        while (index < self.save_participants.items.len) : (index += 1) {
+            if (self.save_participants.items[index].context == context) {
+                _ = self.save_participants.orderedRemove(index);
+                return;
+            }
+        }
     }
 
     pub fn exists(self: *TextFileService, path: []const u8) bool {

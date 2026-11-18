@@ -890,7 +890,9 @@ Editor contributions:
   (`workbench/services/textfile/common/encoding.zig`): UTF-8/UTF-16 LE/BE
   detection, decode (stripping BOMs) and encode (adding them); `TextFileService`
   exposes `readWithEncoding`/`writeWithEncoding`, and `TextFileEditorModel`
-  preserves the detected encoding across load/save. Heuristic charset guessing
+  preserves the detected encoding across load/save. Save participants are
+  ported (participant-driven content updates, `skipSaveParticipants` and error
+  propagation that keeps the model dirty). Heuristic charset guessing
   (ANSI/ShiftJIS via jschardet/ICU) is a documented terminal omission.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
