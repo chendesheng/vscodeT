@@ -32,6 +32,8 @@ const ViewLineRenderingData = view_model.ViewLineRenderingData;
 const ViewModelDecoration = @import("./viewModelDecoration.zig").ViewModelDecoration;
 const ModelDecoration = @import("../model.zig").ModelDecoration;
 const InternalModelContentChangeEvent = @import("../textModelEvents.zig").InternalModelContentChangeEvent;
+const view_events = @import("../viewEvents.zig");
+const ViewEventHandler = @import("../viewEventHandler.zig").ViewEventHandler;
 
 pub const ViewModel = struct {
     allocator: Allocator,
@@ -41,6 +43,7 @@ pub const ViewModel = struct {
     converter: CoordinatesConverter,
     decorations: *view_model_decorations.ViewModelDecorations,
     lines_adapter: LinesAdapter,
+    event_handlers: std.array_list.Managed(*ViewEventHandler),
     selections: std.array_list.Managed(Selection),
     focus: bool = false,
     viewport: Viewport = Viewport.init(0, 0, 0, 0),
@@ -169,11 +172,13 @@ pub const ViewModel = struct {
             .converter = undefined,
             .decorations = undefined,
             .lines_adapter = undefined,
+            .event_handlers = std.array_list.Managed(*ViewEventHandler).init(allocator),
             .selections = std.array_list.Managed(Selection).init(allocator),
             .layout = undefined,
         };
         errdefer {
             self.lines.deinit();
+            self.event_handlers.deinit();
             self.selections.deinit();
         }
         self.converter = CoordinatesConverter.init(&self.lines);
@@ -197,6 +202,7 @@ pub const ViewModel = struct {
         self.decorations.destroy();
         self.lines_adapter.deinit();
         self.lines.deinit();
+        self.event_handlers.deinit();
         self.selections.deinit();
         self.allocator.destroy(self);
     }
@@ -206,6 +212,8 @@ pub const ViewModel = struct {
             .context = self,
             .view_layout = self.layout.interface(),
             .coordinates_converter = self.converter.interface(),
+            .add_view_event_handler = addViewEventHandlerFn,
+            .remove_view_event_handler = removeViewEventHandlerFn,
             .getLineMinColumn = getLineMinColumnFn,
             .getLineMaxColumn = getLineMaxColumnFn,
             .getLineCount = getLineCountFn,
@@ -220,6 +228,49 @@ pub const ViewModel = struct {
         try self.lines.applyRawChanges(&event.rawContentChangedEvent);
         self.decorations.onLineMappingChanged();
         self.decorations.onModelDecorationsChanged();
+
+        // The terminal view dispatches a conservative full flush/token change;
+        // parts re-render the small viewport window.
+        const flush = view_events.ViewFlushedEvent{};
+        const mapping = view_events.ViewLineMappingChangedEvent{};
+        const lines_changed = view_events.ViewLinesChangedEvent{ .fromLineNumber = 1, .count = self.lines.getViewLineCount() };
+        const decorations = view_events.ViewDecorationsChangedEvent.init(null);
+        const token_ranges = [_]view_events.ViewTokensChangedRange{.{
+            .fromLineNumber = 1,
+            .toLineNumber = self.lines.getViewLineCount(),
+        }};
+        const tokens = view_events.ViewTokensChangedEvent{ .ranges = &token_ranges };
+        for (self.event_handlers.items) |handler| {
+            _ = handler.onFlushed(&flush);
+            _ = handler.onLineMappingChanged(&mapping);
+            _ = handler.onLinesChanged(&lines_changed);
+            _ = handler.onDecorationsChanged(&decorations);
+            _ = handler.onTokensChanged(&tokens);
+        }
+    }
+
+    pub fn addViewEventHandler(self: *ViewModel, handler: *ViewEventHandler) void {
+        self.event_handlers.append(handler) catch {};
+    }
+
+    pub fn removeViewEventHandler(self: *ViewModel, handler: *ViewEventHandler) void {
+        var index: usize = 0;
+        while (index < self.event_handlers.items.len) : (index += 1) {
+            if (self.event_handlers.items[index] == handler) {
+                _ = self.event_handlers.orderedRemove(index);
+                return;
+            }
+        }
+    }
+
+    fn addViewEventHandlerFn(context: *anyopaque, handler: *anyopaque) void {
+        const self: *ViewModel = @ptrCast(@alignCast(context));
+        self.addViewEventHandler(@ptrCast(@alignCast(handler)));
+    }
+
+    fn removeViewEventHandlerFn(context: *anyopaque, handler: *anyopaque) void {
+        const self: *ViewModel = @ptrCast(@alignCast(context));
+        self.removeViewEventHandler(@ptrCast(@alignCast(handler)));
     }
 
     pub fn lineHeight(self: *const ViewModel) f64 {
@@ -239,6 +290,8 @@ pub const ViewModel = struct {
 
     pub fn setFocus(self: *ViewModel, focused: bool) void {
         self.focus = focused;
+        const event = view_events.ViewFocusChangedEvent{ .isFocused = focused };
+        for (self.event_handlers.items) |handler| _ = handler.onFocusChanged(&event);
     }
 
     pub fn hasFocus(self: *const ViewModel) bool {
@@ -533,4 +586,54 @@ test "view model applies model content changes" {
     try testing.expectEqual(@as(usize, 2), instance.lines.getViewLineCount());
     const second = try instance.lines.getViewLineData(2);
     try testing.expectEqualStrings("bXhello", second.content);
+}
+
+test "view model dispatches view events to registered handlers" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    const instance = try fixture.init(allocator, "hello", 80);
+    defer {
+        instance.deinit();
+        fixture.deinit();
+    }
+
+    const State = struct {
+        flushes: usize = 0,
+        line_changes: usize = 0,
+        focus_changes: usize = 0,
+
+        fn onFlushed(context: *anyopaque, _: *const view_events.ViewFlushedEvent) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.flushes += 1;
+            return true;
+        }
+        fn onLinesChanged(context: *anyopaque, _: *const view_events.ViewLinesChangedEvent) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.line_changes += 1;
+            return true;
+        }
+        fn onFocusChanged(context: *anyopaque, _: *const view_events.ViewFocusChangedEvent) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.focus_changes += 1;
+            return true;
+        }
+    };
+    var state = State{};
+    var handler = @import("../viewEventHandler.zig").ViewEventHandler.init(&state, .{
+        .onFlushed = State.onFlushed,
+        .onLinesChanged = State.onLinesChanged,
+        .onFocusChanged = State.onFocusChanged,
+    });
+    instance.addViewEventHandler(&handler);
+
+    instance.setFocus(true);
+    try testing.expectEqual(@as(usize, 1), state.focus_changes);
+
+    try fixture.model.applyEdit(Range.init(1, 1, 1, 1), "X");
+    try testing.expectEqual(@as(usize, 1), state.flushes);
+    try testing.expectEqual(@as(usize, 1), state.line_changes);
+
+    instance.removeViewEventHandler(&handler);
+    try fixture.model.applyEdit(Range.init(1, 1, 1, 1), "Y");
+    try testing.expectEqual(@as(usize, 1), state.flushes);
 }

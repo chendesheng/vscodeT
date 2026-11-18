@@ -868,8 +868,10 @@ Editor contributions:
   coordinates converter, exposes `IViewModel` (line metrics, viewport
   rendering data and model-decoration viewport mapping into view ranges), and
   tracks selections, focus, viewport and a cell-height layout, applies model
-  content changes to the projected lines/decorations, wires
-  `ViewModelDecorations` for inline-decoration viewport data, and is wired to
+  content changes to the projected lines/decorations, dispatches view events
+  (flush/line-mapping/lines/decorations/tokens/focus) to registered
+  `ViewEventHandler`s, wires `ViewModelDecorations` for inline-decoration
+  viewport data, and is wired to
   the terminal `View` (focus/view and collection render integration are
   tested). Rendering real model
   tokens through `VisibleLinesCollection` and the terminal `codeEditorWidget`
