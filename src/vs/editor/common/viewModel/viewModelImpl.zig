@@ -220,6 +220,7 @@ pub const ViewModel = struct {
             .coordinates_converter = self.converter.interface(),
             .add_view_event_handler = addViewEventHandlerFn,
             .remove_view_event_handler = removeViewEventHandlerFn,
+            .get_selections = getSelectionsFn,
             .getLineMinColumn = getLineMinColumnFn,
             .getLineMaxColumn = getLineMaxColumnFn,
             .getLineCount = getLineCountFn,
@@ -366,6 +367,11 @@ pub const ViewModel = struct {
 
     pub fn getViewLineData(self: *ViewModel, line_number: usize) !ViewLineData {
         return self.lines.getViewLineData(line_number);
+    }
+
+    fn getSelectionsFn(context: *anyopaque) []const Selection {
+        const self: *ViewModel = @ptrCast(@alignCast(context));
+        return self.selections.items;
     }
 
     fn getLineMinColumnFn(context: *anyopaque, line_number: usize) usize {

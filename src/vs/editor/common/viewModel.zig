@@ -248,6 +248,8 @@ pub const IViewModel = struct {
     /// `addViewEventHandler`/`removeViewEventHandler`).
     add_view_event_handler: ?*const fn (context: *anyopaque, handler: *anyopaque) void = null,
     remove_view_event_handler: ?*const fn (context: *anyopaque, handler: *anyopaque) void = null,
+    /// Optional upstream `getSelections` access used by the whitespace overlay.
+    get_selections: ?*const fn (context: *anyopaque) []const @import("./core/selection.zig").Selection = null,
     getLineMinColumn: *const fn (context: *anyopaque, lineNumber: usize) usize,
     getLineMaxColumn: *const fn (context: *anyopaque, lineNumber: usize) usize,
     /// Upstream `IViewModel.getLineCount`.
@@ -286,6 +288,11 @@ pub const IViewModel = struct {
 
     pub fn decorationsInViewport(self: IViewModel, visible_range: Range, allocator: std.mem.Allocator) ![]ViewModelDecoration {
         return self.getDecorationsInViewport(self.context, visible_range, allocator);
+    }
+
+    pub fn getSelections(self: IViewModel) []const @import("./core/selection.zig").Selection {
+        const get = self.get_selections orelse return &.{};
+        return get(self.context);
     }
 };
 

@@ -18,6 +18,7 @@ const tokens_mod = @import("../tokens/lineTokens.zig");
 const IViewLineTokens = tokens_mod.IViewLineTokens;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const RenderWhitespace = @import("../config/editorOptions.zig").RenderWhitespace;
+const OffsetRange = @import("../core/ranges/offsetRange.zig").OffsetRange;
 
 pub const RenderedPart = struct {
     text: []const u8,
@@ -45,6 +46,8 @@ pub const Input = struct {
     tab_size: usize = 4,
     start_visible_column: usize = 0,
     render_whitespace: RenderWhitespace = .none,
+    /// Absolute byte ranges (within `content`) of the current selections.
+    selection_ranges: []const OffsetRange = &.{},
 };
 
 const WhitespaceContext = struct {
@@ -52,6 +55,7 @@ const WhitespaceContext = struct {
     first_non_whitespace: usize,
     last_non_whitespace: usize,
     line_length: usize,
+    selection_ranges: []const OffsetRange,
     offset: *usize,
 };
 
@@ -77,6 +81,7 @@ pub fn expandTabs(
         .first_non_whitespace = 0,
         .last_non_whitespace = 0,
         .line_length = content.len,
+        .selection_ranges = &.{},
         .offset = &offset,
     };
     try appendExpanded(&out, allocator, content, tab_size, &column, &whitespace);
@@ -126,7 +131,13 @@ fn shouldRenderWhitespace(context: *const WhitespaceContext, absolute_index: usi
         .trailing => absolute_index > context.last_non_whitespace,
         // Selection-only rendering needs selection ranges, which are not part
         // of the shared terminal renderer yet.
-        .selection, .none => false,
+        .selection => blk: {
+            for (context.selection_ranges) |range| {
+                if (absolute_index >= range.start and absolute_index < range.endExclusive) break :blk true;
+            }
+            break :blk false;
+        },
+        .none => false,
     };
 }
 
@@ -160,6 +171,7 @@ pub fn renderLine(allocator: Allocator, input: Input) !RenderedLine {
         .first_non_whitespace = firstNonWhitespace(input.content),
         .last_non_whitespace = lastNonWhitespace(input.content),
         .line_length = input.content.len,
+        .selection_ranges = input.selection_ranges,
         .offset = &whitespace_offset,
     };
     const token_count = input.tokens.getCount();
@@ -279,4 +291,28 @@ test "renderLine: visible whitespace modes" {
     const none = try renderTestLine(allocator, "a\tb", .none);
     defer allocator.free(none);
     try std.testing.expectEqualStrings("a   b", none);
+}
+
+test "renderLine: selection-only whitespace" {
+    const allocator = std.testing.allocator;
+    const languages = @import("../languages.zig");
+    const line_tokens = @import("../tokens/lineTokens.zig");
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var owned = std.array_list.Managed(u8).init(allocator);
+    errdefer owned.deinit();
+    try owned.appendSlice("  a  ");
+    var tokens = try line_tokens.LineTokens.createEmpty(allocator, owned, &codec);
+    defer tokens.deinit();
+
+    const ranges = [_]OffsetRange{OffsetRange.init(0, 1)};
+    const rendered = try renderLine(allocator, .{
+        .content = "  a  ",
+        .tokens = line_tokens.IViewLineTokens.init(&tokens),
+        .tab_size = 4,
+        .render_whitespace = .selection,
+        .selection_ranges = &ranges,
+    });
+    defer rendered.deinit(allocator);
+    try std.testing.expectEqualStrings("\u{00B7} a  ", rendered.bytes);
 }

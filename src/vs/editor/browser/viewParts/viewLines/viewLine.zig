@@ -16,6 +16,7 @@ const view_line_renderer = @import("../../../common/viewLayout/viewLineRenderer.
 const viewport_data = @import("../../../common/viewLayout/viewLinesViewportData.zig");
 const view_context = @import("../../../common/viewModel/viewContext.zig");
 const StringBuilder = @import("../../../common/core/stringBuilder.zig").StringBuilder;
+const OffsetRange = @import("../../../common/core/ranges/offsetRange.zig").OffsetRange;
 
 const ViewLineOptions = view_line_options.ViewLineOptions;
 const RenderingContext = view_context.ViewContext;
@@ -93,12 +94,30 @@ pub const ViewLine = struct {
         _ = line_height;
 
         const line_data = viewport.getViewLineRenderingData(line_number) catch return false;
+
+        var selection_ranges: [16]OffsetRange = undefined;
+        var selection_range_count: usize = 0;
+        if (self.options.render_whitespace == .selection) {
+            for (self.context.view_model.getSelections()) |selection| {
+                if (selection.endLineNumber < line_number or selection.startLineNumber > line_number) continue;
+                const start_column = if (selection.startLineNumber == line_number) selection.startColumn else line_data.minColumn;
+                const end_column = if (selection.endLineNumber == line_number) selection.endColumn else line_data.maxColumn;
+                const start = @min(start_column -| 1, line_data.content.len);
+                const end = @min(end_column -| 1, line_data.content.len);
+                if (start < end and selection_range_count < selection_ranges.len) {
+                    selection_ranges[selection_range_count] = OffsetRange.init(start, end);
+                    selection_range_count += 1;
+                }
+            }
+        }
+
         var rendered = view_line_renderer.renderLine(self.allocator, .{
             .content = line_data.content,
             .tokens = line_data.tokens,
             .tab_size = line_data.tabSize,
             .start_visible_column = line_data.startVisibleColumn,
             .render_whitespace = self.options.render_whitespace,
+            .selection_ranges = selection_ranges[0..selection_range_count],
         }) catch return false;
         defer rendered.deinit(self.allocator);
 

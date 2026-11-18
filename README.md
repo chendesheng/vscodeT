@@ -898,9 +898,10 @@ Editor contributions:
   (ANSI/ShiftJIS via jschardet/ICU) is a documented terminal omission.
 
 - Visible whitespace rendering is ported through the shared line renderer:
-  `renderWhitespace` modes `all`, `boundary` and `trailing` draw middle dots for
-  spaces and a right arrow for tabs; `selection` mode and control-character
-  rendering still need selection/context plumbing.
+  `renderWhitespace` modes `all`, `boundary`, `trailing` and `selection` draw
+  middle dots for spaces and a right arrow for tabs (selection mode receives
+  the view selections through `IViewModel.getSelections`). Control-character
+  rendering remains.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
