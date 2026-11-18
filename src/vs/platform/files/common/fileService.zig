@@ -514,11 +514,14 @@ pub const ProviderFileService = struct {
 
         var prefix = std.array_list.Managed(u8).init(self.allocator);
         defer prefix.deinit();
+        if (found.parsed.path.len > 0 and found.parsed.path[0] == '/') try prefix.append('/');
         var iterator = std.mem.splitScalar(u8, found.parsed.path, '/');
+        var first = true;
         while (iterator.next()) |component| {
             if (component.len == 0) continue;
-            if (prefix.items.len > 0) try prefix.append('/');
+            if (!first and prefix.items[prefix.items.len - 1] != '/') try prefix.append('/');
             try prefix.appendSlice(component);
+            first = false;
             _ = found.provider.getStat(prefix.items) catch {
                 try found.provider.makeDirectory(prefix.items);
             };

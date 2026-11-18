@@ -840,7 +840,11 @@ Editor contributions:
   `writeFile` (append)/`createFolder` (recursive)/`move`/`copy`/`del`/
   `onDidRunOperation`/`onDidFilesChange`, including read-only enforcement; the
   complete upstream `inmemoryFileService.test.ts` suite (20 cases, with the
-  stream case adapted to the synchronous terminal read) is ported.
+  stream case adapted to the synchronous terminal read) is ported. The disk
+  provider (`platform/files/node/diskFileSystemProvider.zig`) implements the
+  provider contract over `std.Io` (stat/readdir/read/write/append/delete/
+  rename/copy/open-read-write-close and operation change events) and is tested
+  directly and through `ProviderFileService`.
 
 - Ported infrastructure for the remaining work: `base/common/uri.zig` (components,
   parse/file/toString/encoding, dirname/basename/extname, joinPath, JSON
