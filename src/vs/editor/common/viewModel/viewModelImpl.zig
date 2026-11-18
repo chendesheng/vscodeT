@@ -349,3 +349,23 @@ test "view model: maps model decorations into the viewport" {
     try testing.expectEqual(@as(usize, 1), decorations[0].range.startLineNumber);
     try testing.expectEqual(@as(usize, 4), decorations[0].range.endColumn);
 }
+
+test "view model integrates with the terminal view" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    const instance = try fixture.init(allocator, "hello\nworld", 80);
+    defer {
+        instance.deinit();
+        fixture.deinit();
+    }
+    fixture.options.set(.lineHeight, 19);
+
+    var context = @import("./viewContext.zig").ViewContext.init(&fixture.configuration, @import("../../test/common/viewModelTestStubs.zig").TestColorTheme.dark(), instance.interface());
+    var view: @import("../../browser/view.zig").View = undefined;
+    view.init(allocator, &context);
+    defer view.deinit();
+
+    _ = view.setFocused(true);
+    try testing.expect(view.hasFocus());
+    try testing.expectEqual(@as(usize, 2), instance.lines.getViewLineCount());
+}
