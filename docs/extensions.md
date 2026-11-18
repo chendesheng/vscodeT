@@ -1,6 +1,7 @@
 # Extension system: reuse VS Code's host, port the editor side
 
-Status: proposed design; no extension-system code is in the tree yet.
+Status: proposed design; no extension-system module exists in the tree yet.
+The prerequisite workbench services are now ported (§3.3).
 
 Upstream reference: `../vscode` at **1.147.0**, commit
 `e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
@@ -9,6 +10,11 @@ They are version-specific: upgrading the host invalidates the generated
 protocol table, so the host version is pinned and checked at startup (see
 §2.5 and §6.4). This document replaces an earlier draft that referenced
 1.108.0.
+
+Local snapshot: HEAD `e98be57`. The services the extension system consumes
+(language, configuration, files, working copies, editor groups, status bar,
+themes, keybindings, logging) are already ported; §3.3 maps them. No RPC,
+scanner, contribution, or `MainThread*` module exists yet.
 
 How to read paths and numbers in this document:
 
@@ -244,17 +250,20 @@ Stage numbers refer to §14.
 | `workbench/services/extensions/common/extensionsRegistry.ts` | 729 | `.../extensionsRegistry.zig` | none direct; add extension-point tests | S4 |
 | `workbench/api/common/extHost.protocol.ts` | 4434 | **generated** `workbench/api/common/extHost.protocol.zig` + `extHost.protocol.manifest.zig` | generator assertions (§5.2) | S2 |
 | `workbench/api/browser/mainThread*.ts` | — | `workbench/api/browser/mainThread*.zig` (baseline in §7) | `workbench/api/test/browser/mainThread*.test.ts` | S5/S6 |
-| `workbench/services/language/common/languageService.ts` | 372 | `.../languageService.zig` | no workbench test; the editor test of the same name covers a different service | S4 |
+| `workbench/services/language/common/languageService.ts` | 372 | `.../languageService.zig` (registration and `files.associations` ported) | no dedicated workbench test; add contribution/activation tests | S4 (port exists; activation hook remains) |
+| `editor/common/languageFeatureRegistry.ts` | 236 | `editor/common/languageFeatureRegistry.zig` | no direct test; add selector/scoring tests | S6 (missing; required by `MainThreadLanguageFeatures`) |
 | `workbench/services/actions/common/menusExtensionPoint.ts` | 1297 | `.../menusExtensionPoint.zig` (`commands`) | none direct | S4 |
 | `workbench/services/textMate/common/TMGrammars.ts` | 90 | `.../TMGrammars.zig` (`grammars`) | textMate suites | S6 |
 | `workbench/services/themes/common/themeExtensionPoints.ts` | 306 | `.../themeExtensionPoints.zig` (`themes`) | theme suites | S6 |
 | `workbench/api/common/configurationExtensionPoint.ts` | 583 | `.../configurationExtensionPoint.zig` | none direct; add schema tests | S4 |
-| `platform/keybinding/common/keybindingsRegistry.ts` | 301 | `.../keybindingsRegistry.zig` | `platform/keybinding/test/common/*` | S4 |
-| `platform/contextkey/common/contextkey.ts`, `scanner.ts` | 2199 + 384 | `.../contextkey.zig`, `.../scanner.zig` | `platform/contextkey/test/common/*` | S4 |
-| `workbench/services/keybinding/browser/keybindingService.ts` | 1021 | `.../keybindingService.zig` (resolver only; browser layout stays in `src/tui/`) | `.../test/browser/keybindingIO.test.ts` etc. | S4/S6 |
+| `platform/keybinding/common/keybindingsRegistry.ts` | 301 | `.../keybindingsRegistry.zig` | `platform/keybinding/test/common/*` | S4 (ported; reuse the suite) |
+| `platform/contextkey/common/contextkey.ts`, `scanner.ts` | 2199 + 384 | `.../contextkey.zig`, `.../scanner.zig` | `platform/contextkey/test/common/*` | S4 (ported; flat context service only) |
+| `workbench/services/keybinding/browser/keybindingService.ts` | 1021 | `src/tui/keybindingService.zig` (terminal host over the ported registry/resolver; browser layout stays in `src/tui/`) | `.../test/browser/keybindingIO.test.ts` etc. | S4/S6 (host exists; extension rules remain) |
 
-Three entries need a note. `host/extensionHost.js` has no upstream
-counterpart: it is new launcher code (§6), not a port.
+Several prerequisite rows are already implemented at HEAD `e98be57`
+(§3.3); the table remains the target layout, and the stage column names the
+remaining work. Three entries need a note. `host/extensionHost.js` has no
+upstream counterpart: it is new launcher code (§6), not a port.
 `base/parts/ipc/common/ipc.pipe.zig` is the fd transport, also new code,
 which is why `ipc.net.ts` appears only in the reuse map as replaced. The generated actor table is produced from
 `extHost.protocol.ts` at development time and committed; it is not a
@@ -294,6 +303,41 @@ The rejected alternative is running `extensionHostProcess.js` itself over its
 Unix-socket `IPCExtHostConnection`. That keeps the bootstrap, but requires
 porting `PersistentProtocol` (frame types, flow control, keep-alive,
 reconnection) just to avoid our launcher.
+
+### 3.3 Ported prerequisites at HEAD `e98be57`
+
+The earlier draft treated the editor-side services as future work. They now
+exist under their upstream paths. Consume them through their interfaces; do
+not grow a parallel copy inside the extension layer.
+
+| Capability | Ported Zig surface | Used by the extension system |
+|---|---|---|
+| URI and buffers | `base/common/uri.zig`, `base/common/buffer.zig` | URI components in arguments/init data, document text, `workspace.fs` |
+| Errors and cancellation | `base/common/errors.zig`, `base/common/cancellation.zig` | serialized RPC errors, request cancellation, canceled replies |
+| Language registry and configuration | `workbench/services/language/common/languageService.zig`, `editor/common/services/languageService.zig`, `editor/common/languages/languageConfigurationRegistry.zig`, `src/tui/languageConfiguration.zig` | `languages` contribution, `onLanguage:<id>`, `$acceptModelLanguageChanged`, comments/brackets/on-enter |
+| Configuration | `workbench/services/configuration/browser/configurationService.zig`, `platform/configuration/common/*` | `contributes.configuration`, `$initializeConfiguration`, `$acceptConfigurationChanged`, settings defaults |
+| Commands, actions, menus | `platform/commands/common/commands.zig`, `platform/actions/common/{actions,menuService}.zig`, `src/tui/commands.zig` | `contributes.commands`, `$executeCommand`, palette labels and enablement |
+| Keybindings and context keys | `platform/keybinding/common/*`, `platform/contextkey/common/{contextkey,scanner}.zig`, `src/tui/keybindingService.zig` | `contributes.keybindings`, `when` clauses, command dispatch |
+| File system and text files | `platform/files/common/fileService.zig` (`DiskFileService`, `ProviderFileService`), `platform/files/node/diskFileSystemProvider.zig`, `workbench/services/textfile/common/{textFileService,textFileEditorModel,encoding}.zig` | `$tryOpenDocument`, `$trySaveDocument`, `workspace.fs`, encoding, save participants |
+| Working copies | `workbench/services/workingCopy/common/{workingCopy,workingCopyService,workingCopyEditorService,workingCopyBackupService,workingCopyHistoryService}.zig`, `src/tui/workingCopy.zig` | dirty/content/save deltas, editor lookup, restart backups |
+| Editor groups | `workbench/services/editor/common/editorGroupsService.zig`, `workbench/browser/parts/editor/` | `$tryShowTextDocument`, `$tryShowEditor`, active editor, tab identity |
+| Status bar | `workbench/services/statusbar/browser/statusbar.zig`, `workbench/browser/parts/statusbar/` | `MainThreadStatusBar.$setEntry` / `$disposeEntry` |
+| Themes | `workbench/services/themes/browser/workbenchThemeService.zig`, `workbench/services/themes/common/colorThemeData.zig`, `src/tui/syntaxTheme.zig` | `contributes.themes`, token color resolution |
+| Quick input | `platform/quickinput/**`, `src/tui/quickInput.zig`, `src/tui/quickAccess.zig` | `MainThreadQuickOpen.$show` / `$input` |
+| Logging | `platform/log/common/{log,logService,bufferLog}.zig`, `src/tui/logger.zig` | `MainThreadConsole`, host stderr, launcher diagnostics |
+| Storage | `platform/storage/common/storage.zig` (in-memory) | `MainThreadStorage` mementos |
+| Notifications and progress | `platform/notification/common/*`, `platform/progress/common/progress.zig` | `$showMessage`, `withProgress` |
+| Workspace and untitled inputs | `workbench/services/workspaces/common/workspaceContextService.zig`, `workbench/services/untitled/common/untitledTextEditorInput.zig` | `$initializeWorkspace`, `$tryCreateDocument` |
+
+Still absent at this snapshot: `base/common/{marshalling,json}.zig`,
+`base/common/uriIpc.zig`, the semver subset,
+`editor/common/languageFeatureRegistry.zig`, everything under
+`workbench/services/extensions/`, `workbench/api/`, `platform/extensions/`,
+and `platform/extensionManagement/`. The context-key expression and scanner
+are ported, but there is no scoped `ContextKeyService`; the TUI currently
+resolves against a flat set. Configuration is read-only and has no language
+overrides yet. Storage and working-copy backup/history are in-memory. These
+gaps are called out where they affect an actor in §9-§13 and in §16.
 
 ## 4. Architecture
 
@@ -798,6 +842,18 @@ are from 1.147.0.
 | `MainThreadSecretState` | 37 | 4 | S6 | `context.secrets` |
 | `MainThreadEditorTabs` | 22 | 3 | S6 | `window.tabGroups` |
 
+These actors are adapters over the ported services in §3.3, not new state:
+`MainThreadWorkspace` uses `WorkspaceContextService`/`ConfigurationService`,
+`MainThreadConfiguration` uses `ConfigurationService`,
+`MainThreadStorage` uses `InMemoryStorageService`,
+`MainThreadStatusBar` uses `StatusbarService`, `MainThreadQuickOpen` uses the
+ported `QuickPick`/`QuickAccess`, `MainThreadDocuments`/
+`MainThreadTextEditors` use `WorkingCopyService`/`TextFileService`/
+`EditorGroupsService`, `MainThreadFileSystem` uses `ProviderFileService`,
+`MainThreadLanguageFeatures` uses the language service/configuration
+registry plus a new provider registry (§10), and `MainThreadEditorTabs` uses
+`EditorGroupsService`. Do not copy their state into an actor.
+
 Easy-to-miss methods in the baseline actors:
 
 - `MainThreadExtensionService.$setPerformanceMarks` and `$asBrowserUri`.
@@ -1031,16 +1087,24 @@ table row.
   `ExtHostDocumentsAndEditors.$acceptDocumentsAndEditorsDelta` with
   `addedDocuments`/`removedDocuments` and `addedEditors`/`removedEditors`.
   Each `ITextEditorAddData` carries `id`, `documentUri`, `options`,
-  `selections`, `visibleRanges`, `editorPosition`.
-- **Active editor.** `newActiveEditor` on the same delta.
+  `selections`, `visibleRanges`, `editorPosition`. Use
+  `EditorGroupsService`/`EditorGroupModel` for groups and tabs and
+  `WorkingCopyService`/`WorkingCopyEditorService` for document identity; the
+  host editor id can be the stable workbench editor input id.
+- **Active editor.** `newActiveEditor` on the same delta; derive it from the
+  active editor of `EditorGroupsService`, not from a TUI-only focus flag.
 - **Content changes.** `ExtHostDocuments.$acceptModelChanged` carries
   `ISerializedModelContentChangedEvent` (deltas, not full text), `isDirty` and
   the version id. `$acceptModelSaved`, `$acceptDirtyStateChanged`,
   `$acceptEncodingChanged` and `$acceptModelLanguageChanged` cover the rest.
-- **Host → workbench.** `$tryOpenDocument`, `$tryCreateDocument` and
-  `$trySaveDocument` open/create/save the underlying TUI document.
-  `$tryShowTextDocument` maps to the existing tab/group model and returns the
-  editor id. `$tryShowEditor`/`$tryHideEditor` activate or hide it.
+- **Host → workbench.** `$tryOpenDocument` loads through `TextFileService`
+  (BOM encoding included) and opens through the existing
+  `Workbench.openPath`/`EditorGroupsService` path; `$tryCreateDocument`
+  creates an `UntitledTextEditorInput`; `$trySaveDocument` uses the editor's
+  save path (`FileEditorInput.save`, backed by `Editor` today and by
+  `TextFileEditorModel` once the editor is migrated).
+  `$tryShowTextDocument` uses `EditorGroupsService` and returns the editor
+  id; `$tryShowEditor`/`$tryHideEditor` activate or hide that editor.
 - **Edits.** `$tryApplyEdits` and `$tryInsertSnippet` must go through the
   editor's command/edit stack with the model version check, undo stops and
   selection restoration, not direct model mutation. `$trySetSelections`,
@@ -1049,8 +1113,15 @@ table row.
   `$removeTextEditorDecorationType`, `$trySetDecorations` and
   `$trySetDecorationsFast` feed the existing line-decoration pipeline, not a
   parallel overlay.
-- **Dirty/encoding.** The TUI owns the dirty bit and file encoding; push both
-  to the host on change and answer save/encoding RPCs consistently.
+- **Dirty/encoding.** At HEAD the TUI `Editor`/`FileEditorInput` still owns
+  the live dirty bit and save operation; `TextFileService`/`TextFileEditorModel`
+  provide the ported load/save/encoding model (BOM detection and save
+  participants) and `WorkingCopyService` tracks open copies through
+  `src/tui/workingCopy.zig`. Bridge `$acceptDirtyStateChanged` from the
+  working-copy dirty event and `$acceptEncodingChanged` from the model/input
+  encoding, and do not introduce a second host-side dirty bit. When the TUI
+  editor is migrated onto `TextFileEditorModel`, take those events directly
+  from it.
 
 The editor id is the host's identity for an editor instance; the TUI's tab id
 can be used as that id as long as it is stable across focus changes. A host
@@ -1233,10 +1304,10 @@ other RPC request (§5.3); do not model it as an explicit JSON field.
 | Diagnostics | markers stored on the model, painted as gutter marks + status count |
 | Contributed languages | ported `workbench/services/language/common/languageService.zig`; keep `src/tui/language.zig` only as the no-host fallback |
 | Contributed grammars | grammar registry feeding `textMateTokenizer.zig` |
-| Contributed themes | `tokenColors` through the existing theme trie; map foregrounds to the ANSI palette |
-| Contributed keybindings | `src/vs/platform/keybinding/common/keybindingsRegistry.zig` + terminal key mapping |
-| Configuration | defaults from `contributes.configuration`, user settings file, `getConfiguration()`, `$acceptConfigurationChanged` |
-| Documents | model open/change/close events pushed to the host as deltas (§9) |
+| Contributed themes | `workbench/services/themes/browser/workbenchThemeService.zig` + `ColorThemeData`; map foregrounds to the ANSI palette |
+| Contributed keybindings | `src/vs/platform/keybinding/common/keybindingsRegistry.zig`/`keybindingResolver.zig` + `src/tui/keybindingService.zig` and terminal key mapping |
+| Configuration | `workbench/services/configuration/browser/configurationService.zig` defaults/user/workspace/folder reading, `getConfiguration()`, `$acceptConfigurationChanged` |
+| Documents | `WorkingCopyService`/`TextFileService`/`EditorGroupsService` open/change/close events pushed to the host as deltas (§9) |
 
 `src/tui/extensions.zig` is a thin adapter: it owns the host process and the
 TUI session, and delegates scan/registry/activation/contribution logic to the
@@ -1262,48 +1333,74 @@ instance used elsewhere.
 
 ### 11.1 Languages
 
-Ported language service (upstream `workbench/services/language/common/languageService.ts`)
-owns the id/alias/extension/filename tables and is the source for
-`onLanguage:<id>` activation when a model opens.
-`src/tui/language.zig` keeps the TUI-local fallback only when no host is
-available. The `languages` contribution's `configuration` field must be
-loaded and parsed: the current `commentRuleFor` and bracket tables are
-hard-coded subsets of `language-configuration.json`, and contributed
-languages will otherwise get IDs without working comments/brackets.
+The workbench language service is already ported
+(`workbench/services/language/common/languageService.zig`): language
+registration/validation, `files.associations`, and the id/alias/extension/
+filename tables. It will be the source for `onLanguage:<id>` activation when
+a model opens; the activation hook is still a no-op without an extension
+host. Feed `contributes.languages` through
+`registerLanguageContribution`/`registerExtensionPoint`, and register a
+contributed `configuration` path with
+`LanguageService.registerLanguageConfiguration` (the terminal
+`src/tui/languageConfiguration.zig` host wraps the ported
+`LanguageConfigurationRegistry`). `src/tui/language.zig` remains the
+bundled-language table and the hard-coded `commentRuleFor`/bracket fallback;
+it no longer owns path associations. Do not extend those fallback tables for
+contributed languages: parse `language-configuration.json` (JSONC) and use
+the registry so comments, brackets, on-enter rules and indentation follow
+upstream priority merging.
 
 ### 11.2 Grammars and themes
 
 Built-in languages already take their grammars from the upstream checkout's
 `extensions/*/syntaxes` files (see `README.md`), and built-in colors come from
-Dark+ through `TokenTheme`. Contributed grammars still need a registry from
-`contributes.grammars` (language, `scopeName`, `path`, `injectTo`,
-`embeddedLanguages`, `tokenTypes`) and `GrammarLibrary.addGrammar(path)`.
-Contributed themes can reuse `src/tui/syntaxTheme.zig` and `TokenTheme`: load
-the JSONC theme, feed its `tokenColors` to the trie, and publish the resulting
-color map through `TokenizationRegistry`. The tokenizer applies theme rules to
-the capture scope stack; descendant/exclusion selectors are currently reduced
+Dark+ through `TokenTheme`. Contributed grammars still need a `TMGrammars`
+extension point from `contributes.grammars` (language, `scopeName`, `path`,
+`injectTo`, `embeddedLanguages`, `tokenTypes`) feeding
+`GrammarLibrary.addGrammar(path)`.
+Contributed themes should go through the ported workbench theme service
+(`workbenchThemeService.zig` and `ColorThemeData`), which already handles the
+JSONC theme/include chain and active-theme restore; `syntaxTheme.initFromThemeService`
+converts the active theme's `tokenColors` into `TokenTheme`. Do not add a
+second theme registry or bypass `ColorThemeData`. The tokenizer applies theme
+rules to the capture scope stack; descendant/exclusion selectors are reduced
 to their target scope.
 
 ### 11.3 Keybindings and commands
 
-The keybinding registry and `when`-clause evaluator are portable. The
-browser-specific resolver (`usLayoutResolvedKeybinding`) is not: the TUI
-already has decoded key events in `ui.input`. Implement a terminal key
-normalisation (ctrl/alt/shift/meta, named keys, chords) and match it against
-the registry. Start with single-chord bindings and a small `when` subset
-(`editorTextFocus`, `editorLangId`, `resourceExtname`, `inQuickOpen`, ...);
-document the rest. Command execution is a round trip: `onCommand:<id>` →
-activate (if needed) → `$executeCommand`, with the result returned to the
-palette. Built-in TUI commands and contributed commands share one registry.
+The keybinding registry, resolver and context-key expression/scanner are
+already ported (`platform/keybinding/common/*`,
+`platform/contextkey/common/{contextkey,scanner}.zig`).
+`src/tui/keybindingService.zig` hosts workbench-global, editor-tab,
+status-bar, search and editor shortcuts through the abstract service, and
+`src/tui/keybindings.zig` keeps the older shortcut table for keys not yet
+moved. The browser-specific resolver (`usLayoutResolvedKeybinding`) is not
+the terminal path: the TUI has decoded key events in `ui.input`. Implement
+terminal key normalisation (ctrl/alt/shift/meta, named keys, chords) and feed
+contributed rules into `KeybindingsRegistry.setExtensionKeybindings` (with
+`BuiltinExtension`/`ExternalExtension` weight and the extension id); resolve
+against the flat terminal context. Start with single-chord bindings and the
+`when` keys the TUI exposes (`editorTextFocus`, `editorLangId`,
+`resourceExtname`, `inQuickOpen`, ...); document the missing scoped context
+keys. Command execution is a round trip: `onCommand:<id>` → activate (if
+needed) → `$executeCommand`, with the result returned to the palette.
+Built-in TUI commands and contributed commands share `CommandRegistry`/
+`MenuRegistry`; `src/tui/commands.zig` remains the execution/palette table.
 
 ### 11.4 Configuration, status bar, messages and diagnostics
 
-- Configuration: `contributes.configuration` populates the default schema;
-  the user settings file provides values; `$updateConfigurationOption` /
-  `$removeConfigurationOption` write global or workspace settings. Push
-  `ExtHostConfiguration.$acceptConfigurationChanged(data, change)` whenever
-  the effective configuration changes. Language overrides and
-  `ConfigurationTarget` are part of the contract.
+- Configuration: the file-backed
+  `workbench/services/configuration/browser/configurationService.zig` is
+  ported for defaults, one user settings file, workspace and folder settings
+  (JSONC, correct precedence) and `trusted` filtering. Register
+  `contributes.configuration` defaults/schemas on `ConfigurationRegistry`.
+  Push `ExtHostConfiguration.$acceptConfigurationChanged(data, change)` from
+  the service's change event. Pass the workspace trust flag through
+  `ConfigurationService.updateWorkspaceTrust` when `$initializeWorkspace`
+  receives it, so restricted settings are filtered. `updateValue`/setting
+  writes, language overrides (`[typescript]` blocks) and `ConfigurationTarget`
+  are not ported; until they are, `$updateConfigurationOption` /
+  `$removeConfigurationOption` must reject rather than pretend to write.
 - Status bar: `$setEntry` takes text, tooltip, command, colour, alignment and
   priority; the TUI renders a left/right split on the bottom row. Tooltips
   and `accessibilityInformation` may be simplified, but the entry id and
@@ -1321,9 +1418,12 @@ palette. Built-in TUI commands and contributed commands share one registry.
   same URI for local use; `$getInitialState` reports focus.
 - Dialogs: `$showOpenDialog`/`$showSaveDialog` use the TUI path prompt or the
   existing file picker and return `UriComponents`.
-- Files: `MainThreadFileSystem` implements local `file:` operations for
-  `workspace.fs`; provider registration (`$registerFileSystemProvider`) is
-  deferred.
+- Files: `MainThreadFileSystem` should use the ported
+  `ProviderFileService` plus `DiskFileSystemProvider` for local `file:`
+  operations. `ProviderFileService.registerProvider` gives
+  `$registerFileSystemProvider` a real target, but provider activation,
+  change/watch forwarding and non-file schemes remain partial; keep them
+  rejected until wired.
 
 ### 11.6 Current integration points
 
@@ -1335,9 +1435,29 @@ The adapter is not greenfield; these are the exact seams that change:
 - `src/tui/workbench.zig` — owns `fileWatcherFd()`/`fileWatcherHandle()`,
   the status-bar paint, the Quick Access overlay and the workbench command
   routing. The extension service hangs off the same `Workbench` session.
-- `src/tui/commands.zig` — the command table. Contributed commands register
-  into the same table as built-ins; `onCommand:<id>` fires before dispatch,
-  and the palette reads the union of both.
+- `src/tui/commands.zig` — the TUI command table. Contributed commands
+  register into `platform/commands/common/commands.zig` and the
+  actions/`MenuRegistry` metadata layer, with `src/tui/commands.zig` as the
+  execution/palette table; `onCommand:<id>` fires before dispatch.
+- `src/tui/workingCopy.zig` and `workbench/services/workingCopy/` — the
+  `IWorkingCopy` adapter, dirty/content/save events, editor lookup and
+  backup/history. Document deltas and restart snapshots start here.
+- `workbench/services/textfile/` — `TextFileService` and
+  `TextFileEditorModel` for load/save/save participants/encoding. Do not
+  write files directly from an actor.
+- `workbench/services/editor/common/editorGroupsService.zig` and
+  `workbench/browser/parts/editor/` — group/tab identity and reveal logic for
+  `$tryShowTextDocument`.
+- `workbench/services/language/common/languageService.zig` and
+  `src/tui/languageConfiguration.zig` — language contribution registration,
+  `files.associations`, and the language-configuration registry.
+- `workbench/services/configuration/browser/configurationService.zig` — the
+  single source for defaults/user/workspace/folder values; register
+  contributed defaults there and listen for change events.
+- `platform/log/common/logService.zig` and `src/tui/logger.zig` — host stderr
+  and `MainThreadConsole` output; do not write around the log service.
+- `platform/storage/common/storage.zig` — in-memory storage for mementos and
+  status/menu state; persistence remains an open gap (§16).
 - `src/tui/quickInput.zig`, `src/tui/quickAccess.zig` — the TUI views behind
   `MainThreadQuickOpen`. `$show`, `$setItems`, `$setError`, `$input`,
   `$createOrUpdate`, `$dispose` map to existing state transitions; do not
@@ -1398,17 +1518,24 @@ extension from the editor's files or from the host process.
   after a second crash within a short window and show the error.
 - **Restart is not a reconnect.** The new host has new provider handles,
   decoration-type keys, status-entry ids, output channels, diagnostics owners
-  and memento caches. Discard every handle from the old process before
-  replaying state: re-register decoration types, re-push all open documents
-  and editors, re-send diagnostics and status entries, and re-register
-  language features. Declarative data (scanned manifests, contributions,
-  settings) survives because it lives on the workbench side. A stale handle
-  that is accidentally reused will hit an unrelated object or be rejected;
-  do not keep a handle map across restarts.
+  and memento caches. Discard every host-owned handle before replaying
+  state: re-register decoration types, re-push all open documents and
+  editors, re-send diagnostics and status entries, and re-register language
+  features. Workbench-side state survives and is the source for the replay:
+  scanned manifests/contributions/settings, `WorkingCopyService` working
+  copies, `WorkingCopyBackupService`/`WorkingCopyHistoryService`, editor
+  groups and the open editor state (the `TextFileEditorModel` instances once
+  the TUI editor is migrated). Rebuild the documents-and-editors delta from
+  those services, not from a stale host map. A stale handle that is
+  accidentally reused will hit an unrelated object or be rejected; do not
+  keep a handle map across restarts. Backup and history are in-memory today,
+  so a process crash still loses them (§16).
 - **Quit.** Send `Terminate`, drain, close fd 4, wait for exit with a timeout,
   then kill. Deactivate extensions host-side before the transport closes.
-- **Logs.** Host stderr and `MainThreadConsole` messages go to the editor log
-  file/status line, not the ANSI frame stream.
+- **Logs.** Host stderr and `MainThreadConsole` messages go through the
+  ported `platform/log` service (`ILogService`, with `src/tui/logger.zig` as
+  the terminal file logger), not the ANSI frame stream. Do not keep a second
+  logger in the extension adapter.
 
 The manager state to mirror is small and should not be rebuilt ad hoc:
 
@@ -1434,6 +1561,14 @@ Each stage lands green (`zig build`, `zig build test --summary all`,
 `zig fmt --check <changed>`, clean `git diff --check`) and updates this
 document and `README.md`.
 
+At HEAD `e98be57` the prerequisite services in §3.3 are present, but no
+extension module, protocol or scanner exists. S1 is partial (`buffer`,
+`uri`, `errors` and `cancellation` files exist; their complete upstream
+suites are not all registered; marshalling/JSONC/semver are absent), and the
+S4 host layers (keybindings, context keys, language, configuration, status
+bar, quick input, commands/actions) are ported. The stages below describe the
+remaining work.
+
 **S0 — spike.** Build the host (`pnpm install --frozen-lockfile && pnpm run
 compile`), write `host/extensionHost.js` with fd 3/4 framing and the trimmed
 service list, and boot the real `ExtensionHostMain` with a fixture extension
@@ -1442,17 +1577,16 @@ order, workspace/config calls, `$startExtensionHost`, the host's internal `*`
 activation (there is no workbench `$activateByEvent("*")`), console
 forwarding, clean `Terminate`. Record the boot call list and raw frames here.
 
-**S1 — foundation codecs.** `buffer.zig` (`VSBuffer`), `uri.zig`
-(`UriComponents`, parse, `joinPath`, `$mid`, `revive`), `marshalling.zig`,
-`marshallingIds.zig`, extend `errors.zig` (`SerializedError`,
-`transformErrorForSerialization`), extend `cancellation.zig`, `json.zig`
-(JSONC), and the semver subset. Port `buffer.test.ts`, `uri.test.ts`,
+**S1 — foundation codecs.** `buffer.zig` and `uri.zig` exist; extend
+`errors.zig` (`SerializedError`, `transformErrorForSerialization`) and
+`cancellation.zig` rather than creating second files. The remaining pieces
+are `marshalling.zig`, `marshallingIds.zig`, `uriIpc.zig`, `json.zig`
+(JSONC) and the semver subset. Port `buffer.test.ts`, `uri.test.ts`,
 `marshalling.test.ts`, `errors.test.ts` and `cancellation.test.ts`
 completely. For `json.test.ts`, port the scanner/parser cases for the JSONC
 surface the manifests use; JSON editing/formatting/visitor behavior is out of
 scope and is listed in §16. The semver subset gets focused tests for the
-`valid`/compare/prerelease behavior the scanner and validator use. Do not
-create a second `errors.zig`; extend `src/vs/base/common/errors.zig`.
+`valid`/compare/prerelease behavior the scanner and validator use.
 
 **S2 — RPC and interop smoke test.** `proxyIdentifier.zig`,
 `rpcProtocol.zig`, `extensionHostProtocol.zig`, `ipc.zig`,
@@ -1473,24 +1607,30 @@ dirs), and `extensionDescriptionRegistry.test.ts`. The scanner's profile and
 cache behavior is a documented deviation, not a reason to skip manifest
 validation.
 
-**S4 — contributions and TUI.** `extensionsRegistry.zig`,
-`menusExtensionPoint.zig`, `languageService.zig`, `TMGrammars.zig`,
-`themeExtensionPoints.zig`, `configurationExtensionPoint.zig`,
-`contextkey.zig` + `scanner.zig`, `keybindingsRegistry.zig`, the contribution
-points from §8, palette, quick input, status bar, diagnostics. Port
-`mainThreadCommands.test.ts`, the contextkey suites and the applicable
-`mainThreadQuickOpen.test.ts` harness cases; add focused extension-point
-tests because upstream has no single registry suite.
+**S4 — contributions and TUI.** The keybinding registry/resolver, context-key
+expression/scanner, workbench language service, configuration service,
+status bar, quick input and commands/actions layers already exist. This stage
+adds `extensionsRegistry.zig`, `menusExtensionPoint.zig`, `TMGrammars.zig`,
+`themeExtensionPoints.zig`, `configurationExtensionPoint.zig`, the
+contribution points from §8, and the palette/diagnostics wiring. Port
+`mainThreadCommands.test.ts` and the applicable `mainThreadQuickOpen.test.ts`
+harness cases; reuse the existing context-key/resolver suites and add focused
+extension-point tests because upstream has no single registry suite.
 
 **S5 — manager and actors.** `extensionHostManager.zig`,
 `extensionHostProxy.zig`, and the baseline `mainThread*.zig` set from §7,
-boot-critical first. Restart and shutdown from §13. Use the browser
-`extensionService.test.ts` as the behavior reference for the manager state
-machine, with a fake protocol instead of a browser workbench.
+boot-critical first. Restart and shutdown from §13. Use the ported working
+copy/text file/editor group/file/status/log services from §3.3 rather than
+new state; use the browser `extensionService.test.ts` as the behavior
+reference for the manager state machine, with a fake protocol instead of a
+browser workbench.
 
 **S6 — documents, editors and features.** §9 and §10: document/editor deltas,
 text-editor RPCs, language features, filesystem, output, progress, secrets,
-editor tabs, languages/grammars/themes.
+editor tabs, languages/grammars/themes. Port
+`editor/common/languageFeatureRegistry.ts` (selector scoring, exclusivity,
+ordering, release) before `MainThreadLanguageFeatures`; use the existing
+working-copy/text-file/editor-group services from §3.3.
 
 **S7 — end to end and docs.** `src/tui/extensions.zig` wiring, `app.zig`
 pump, README scope and limitations, this document's status, and the
@@ -1519,7 +1659,11 @@ pump, README scope and limitations, this document's status, and the
 
 ### 15.1 What each suite must cover
 
-Ported suites are not "the happy path with the upstream name". The minimum
+Ported suites are not "the happy path with the upstream name". Several
+prerequisite suites already exist and should be extended rather than
+duplicated: keybinding/resolver and context-key scanner/parser, the
+configuration service, working copy and text-file model, language service and
+language configuration, status bar, and log. The extension-specific minimum
 case list, taken from the upstream tests and the protocol rules above:
 
 - **`rpcProtocol.test.ts`**: simple call; call whose handler returns
@@ -1552,6 +1696,10 @@ case list, taken from the upstream tests and the protocol rules above:
 - **`extensionDescriptionRegistry.test.ts`**: add/remove/contains/
   activation-events, global vs local registry, and the "same extension,
   changed value" delta behavior from §8.3.
+- **`languageFeatureRegistry` (new)**: selector scoring, language/scheme/
+  pattern matching, exclusive-provider takeover, registration order,
+  provider release and handle disposal. This registry is missing today; the
+  actor tests are not meaningful until it exists.
 - **Manager/actor tests**: boot order, `$initializeWorkspace` before
   `$startExtensionHost`, `*`/`onStartupFinished` host-driven activation,
   crash/restart handle invalidation, clean shutdown, and one test per
@@ -1632,7 +1780,19 @@ Constraints:
   selection ranges, call/type hierarchy, inline completions, paste/drop
   edits: the host exposes them, calls reject.
 - File system providers other than local `file:`; `workspace.fs` is local
-  read/write only.
+  read/write only. `ProviderFileService.registerProvider` exists, but provider
+  activation, change/watch forwarding and non-file schemes are not wired.
+- Scoped `ContextKeyService`: only the expression/scanner plus the terminal's
+  flat context are ported, so contributed `when` clauses that need scoped keys
+  cannot be resolved yet.
+- Configuration writes (`updateValue`), language overrides and
+  `ConfigurationTarget`; `$updateConfigurationOption` /
+  `$removeConfigurationOption` must reject until those exist.
+- Persistent storage: `InMemoryStorageService`, in-memory working-copy
+  backups/history, and no disk memento backend, so state does not survive a
+  process restart.
+- The console logger and URI-keyed logger registry; the terminal has one file
+  logger (`src/tui/logger.zig`) and no per-channel log resources.
 - Localization bundles (`nlsBaseUrl` is omitted) and manifest
   `package.nls.json` localization.
 - Full JSONC/schema validation; only the subset the TUI consumes is
@@ -1654,9 +1814,12 @@ Constraints:
    `VSCODE_HOST_PATH`, `../vscode/out`, then a downloaded release. Every hit
    is validated against the pinned version and commit; a mismatch is an
    error, not a fallback to the next candidate.
-3. **Storage.** `MainThreadStorage` is required: mementos always go through
-   `$initializeExtensionStorage`/`$setValue`. Host-side persistence would
-   require modifying upstream and is not an option under decision 2.
+3. **Storage persistence.** `MainThreadStorage` is required: mementos always
+   go through `$initializeExtensionStorage`/`$setValue`. The current
+   `InMemoryStorageService` is session-only and working-copy backups/history
+   are in-memory, so decide on a workbench-side disk backend (or document
+   per-session mementos). Host-side persistence would require modifying
+   upstream and is not an option under decision 2.
 4. **`onStartupFinished` timing.** The host fires it internally after eager
    `*` activation (or its 10-second cap); the workbench cannot make it fire
    later with `$activateByEvent`. Decide whether to delay
