@@ -76,7 +76,7 @@ starts the pinned host, mirrors the active tab as a document/editor, routes
 printable keys through the `type` command, and applies the extension's edits
 and selections back to the editor. VSCodeVim 1.32.4 insert/normal/visual
 editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
-`o`/`O`, `:e`/`:w`/`:q`, `:bd`, and `:bnext` across open tabs work in this loop;
+`o`/`O`, `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
 the status bar shows its mode entry.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally

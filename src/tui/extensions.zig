@@ -16,6 +16,7 @@ const time_compat = @import("../vs/base/common/timeCompat.zig");
 const Editor = @import("./editor.zig").Editor;
 const TextEdit = @import("./editor.zig").TextEdit;
 const Workbench = @import("./workbench.zig").Workbench;
+const SplitDirection = @import("./workbench.zig").SplitDirection;
 const statusbar = @import("../vs/workbench/services/statusbar/browser/statusbar.zig");
 const statusbar_part = @import("../vs/workbench/browser/parts/statusbar/statusbarPart.zig");
 const configuration = @import("../vs/platform/configuration/common/configuration.zig");
@@ -569,6 +570,12 @@ pub const Extensions = struct {
                     editor.replaceRange(range, "\n") catch {};
                     try self.applyCommandEdit(arena, editor, range, "\n");
                 }
+                return .empty;
+            }
+            if (std.mem.eql(u8, command, "workbench.action.splitEditorRight") or std.mem.eql(u8, command, "workbench.action.splitEditorDown")) {
+                const direction: SplitDirection = if (std.mem.eql(u8, command, "workbench.action.splitEditorRight")) .horizontal else .vertical;
+                self.workbench.splitActive(direction) catch {};
+                self.needs_render = true;
                 return .empty;
             }
             if (std.mem.eql(u8, command, "workbench.action.closeActiveEditor")) {
