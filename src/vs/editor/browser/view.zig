@@ -155,14 +155,32 @@ pub const View = struct {
         }
     }
 
-    /// Prepares overlays, renders the text lines, then renders the view parts.
+    /// Port of upstream `View._flushAccumulatedAndRenderNow` for the terminal
+    /// host: notify parts before rendering, render the text lines when dirty,
+    /// then prepare and render the parts collected after the text pass.
     pub fn renderText(self: *View, viewport: *const ViewportData, sb: *StringBuilder) !void {
-        self.prepareRender(viewport);
-        try self.view_lines.renderText(viewport, sb);
+        for (self.view_parts.items) |part| {
+            if (part.handler.shouldRender()) part.onBeforeRender(viewport);
+        }
+
+        if (self.view_lines.shouldRender()) {
+            try self.view_lines.renderText(viewport, sb);
+            self.view_lines.onDidRender();
+        }
+
+        const parts = try self.getViewPartsToRender(self.allocator);
+        defer self.allocator.free(parts);
+
+        var rendering = RenderingContext.init(self.context.view_layout, viewport, self.view_lines.interface());
+        for (self.content_overlays.items) |overlay| {
+            if (!overlay.handler.shouldRender()) continue;
+            overlay.prepareRender(&rendering);
+            overlay.handler.onDidRender();
+        }
+        for (parts) |part| part.prepareRender(&rendering);
 
         var restricted = RestrictedRenderingContext.init(self.context.view_layout, viewport);
-        for (self.view_parts.items) |part| {
-            if (!part.handler.shouldRender()) continue;
+        for (parts) |part| {
             part.render(&restricted);
             part.handler.onDidRender();
         }
@@ -402,10 +420,16 @@ test "view renders lines and drives view parts" {
     try testing.expectEqual(@as(usize, 1), part.prepared);
     try testing.expectEqual(@as(usize, 1), part.rendered);
 
-    // A second render only renders parts that ask for it.
+    // A second render only renders parts that ask for it; the text view lines
+    // were marked rendered and do not append their text again.
     sb.reset();
     try view.renderText(&fixture.viewport, &sb);
+    try testing.expectEqualStrings("", sb.build());
     try testing.expectEqual(@as(usize, 1), part.prepared);
+
+    view.view_lines.forceShouldRender();
+    try view.renderText(&fixture.viewport, &sb);
+    try testing.expectEqualStrings("hello", sb.build());
 }
 
 test "view fans configuration and focus events out to parts and overlays" {

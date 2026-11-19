@@ -84,6 +84,20 @@ pub const ViewLines = struct {
         self.base.initWithHandlerContext(context, self, callbacks(), prepareRenderCallback, renderCallback);
     }
 
+    /// Upstream `ViewLines` is a `ViewPart`; its render dirty bit lives on the
+    /// view part handler.
+    pub fn shouldRender(self: *const ViewLines) bool {
+        return self.base.handler.shouldRender();
+    }
+
+    pub fn forceShouldRender(self: *ViewLines) void {
+        self.base.handler.forceShouldRender();
+    }
+
+    pub fn onDidRender(self: *ViewLines) void {
+        self.base.handler.onDidRender();
+    }
+
     pub fn deinit(self: *ViewLines) void {
         self.base.deinit();
         _ = self.visible_lines.onFlushed(&.{});
