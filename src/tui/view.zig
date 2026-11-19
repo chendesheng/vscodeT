@@ -362,6 +362,16 @@ pub const View = struct {
 
     /// Enables or disables the view's own status row. Disabling it gives the
     /// surface's last row back to editor text.
+    /// Changes the cell columns reserved for the overview ruler/scrollbar.
+    /// The read-only preview uses zero; the multi-pane workbench keeps the
+    /// default computed width.
+    pub fn setScrollbarWidth(self: *View, width: usize) !void {
+        if (self.scrollbar_width == width) return;
+        self.scrollbar_width = width;
+        self.editor.setScrollbarWidth(width);
+        try self.refresh();
+    }
+
     pub fn setStatusBarVisible(self: *View, visible: bool) !void {
         if (self.status_bar_visible == visible) return;
         self.status_bar_visible = visible;

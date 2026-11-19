@@ -8,7 +8,6 @@ const input = ui.input;
 const terminal_input = @import("../vs/workbench/contrib/terminal/browser/terminalInput.zig");
 const Editor = @import("./editor.zig").Editor;
 const View = @import("./view.zig").View;
-const Preview = @import("./preview.zig").Preview;
 const Workbench = @import("./workbench.zig").Workbench;
 const extensions = @import("./extensions.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
@@ -899,10 +898,12 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
 
-    const preview = try Preview.init(allocator, editor);
-    defer preview.deinit();
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.setScrollbarWidth(0);
+    try setPreviewStatus(editor, view);
 
-    try preview.render(out);
+    try view.render(out);
     try out.flush();
 
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 256);
@@ -914,9 +915,9 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
         if (try tui.resizedSize()) |new_size| {
             size = new_size;
             editor.setViewport(size.width, size.height);
-            try preview.resize();
+            try view.resize();
             try tui.clearScreen(out);
-            try preview.render(out);
+            try view.render(out);
             try out.flush();
             continue;
         }
@@ -932,14 +933,15 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
         var redraw = false;
         for (events.items) |*item| {
             switch (item.*) {
-                .key => |*event| {
-                    if (try preview.handleKey(event.*)) redraw = true;
+                .key => |event| {
+                    if (handlePreviewKey(editor, view, event)) |changed| {
+                        if (changed) redraw = true;
+                    } else return;
                 },
-                .mouse => |*event| {
-                    if (try preview.handleMouse(event)) redraw = true;
+                .mouse => |event| {
+                    if (handlePreviewMouse(editor, view, event)) redraw = true;
                 },
             }
-            if (preview.shouldQuit()) return;
         }
         if (consumed < input_buffer.items.len) {
             const remainder = input_buffer.items.len - consumed;
@@ -949,10 +951,64 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
             input_buffer.clearRetainingCapacity();
         }
         if (redraw) {
-            try preview.render(out);
+            try view.render(out);
             try out.flush();
         }
     }
+}
+
+/// Fills the view's fallback status row with the read-only preview text.
+fn setPreviewStatus(editor: *Editor, view: *View) !void {
+    const position = editor.modelCursorPosition();
+    var status_buf: [1024]u8 = undefined;
+    const status = std.fmt.bufPrint(
+        &status_buf,
+        " {s}{s}  Ln {d}, Col {d}  {s}  PREVIEW  wheel/Up/Down scroll  Ctrl-Q quit{s}{s}",
+        .{
+            editor.path,
+            if (editor.isDirty()) "*" else "",
+            position.lineNumber,
+            position.column,
+            editor.languageId(),
+            if (editor.message().len > 0) "  " else "",
+            editor.message(),
+        },
+    ) catch status_buf[0..0];
+    view.setStatusText(status, "");
+    try view.refresh();
+}
+
+/// Returns null when the key asked to quit, otherwise whether the view moved.
+fn handlePreviewKey(editor: *Editor, view: *View, event: input.KeyEvent) ?bool {
+    const ctrl_q = event.mods.ctrl and switch (event.key) {
+        .char => |ch| ch == 'q',
+        else => false,
+    };
+    if (ctrl_q) return null;
+    if (event.mods.ctrl or event.mods.alt) return false;
+
+    const page = editor.textHeight();
+    const maximum = editor.viewLineCount() -| page;
+    const changed = switch (event.key) {
+        .up => editor.scrollViewLines(-1),
+        .down => editor.scrollViewLines(1),
+        .page_up => editor.scrollViewLines(-@as(isize, @intCast(page))),
+        .page_down => editor.scrollViewLines(@intCast(page)),
+        .home => editor.setTopViewLine(1),
+        .end => editor.setTopViewLine(maximum + 1),
+        else => false,
+    };
+    if (changed) view.refresh() catch return false;
+    return changed;
+}
+
+fn handlePreviewMouse(editor: *Editor, view: *View, event: ui.MouseEvent) bool {
+    if (event.kind != .wheel or event.default_prevented) return false;
+    if (event.y >= editor.textHeight()) return false;
+    if (event.delta_y == 0) return false;
+    if (!editor.scrollViewLines(event.delta_y)) return false;
+    view.refresh() catch return false;
+    return true;
 }
 
 fn isCtrlQ(event: input.KeyEvent) bool {

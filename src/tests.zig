@@ -62,7 +62,6 @@ comptime {
     _ = @import("./vs/workbench/services/search/test/common/queryBuilder.test.zig");
     _ = @import("./tui/searchWidget.zig");
     _ = @import("./tui/searchView.zig");
-    _ = @import("./tui/preview.zig");
     _ = @import("./tui/editorInput.zig");
     _ = @import("./tui/tabBar.zig");
     _ = @import("./vs/base/test/browser/ui/breadcrumbs/breadcrumbsWidget.test.zig");
