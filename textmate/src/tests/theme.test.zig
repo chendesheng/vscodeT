@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/tests/themes.test.ts` unit tests.
+// Port of `vscode-textmate/src/tests/themes.test.ts` unit tests.
 const std = @import("std");
 const theme = @import("../theme.zig");
 

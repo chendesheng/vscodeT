@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/grammar/grammarDependencies.ts`
+// Port of `vscode-textmate/src/grammar/grammarDependencies.ts`
 // (microsoft/vscode-textmate v9.3.2).
 //
 // `IGrammarRepository` lives here rather than in `grammar.zig` to avoid an

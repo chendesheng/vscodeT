@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/grammar/basicScopesAttributeProvider.ts`
+// Port of `vscode-textmate/src/grammar/basicScopesAttributeProvider.ts`
 // (microsoft/vscode-textmate v9.3.2).
 //
 // The TypeScript implementation builds a regular expression for embedded

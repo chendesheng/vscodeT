@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/tests/grammar.test.ts`
+// Port of `vscode-textmate/src/tests/grammar.test.ts`
 // (microsoft/vscode-textmate v9.3.2).
 const std = @import("std");
 const encoded = @import("../encodedTokenAttributes.zig");

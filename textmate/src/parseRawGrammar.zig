@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/parseRawGrammar.ts`
+// Port of `vscode-textmate/src/parseRawGrammar.ts`
 // (microsoft/vscode-textmate v9.3.2).
 const std = @import("std");
 const rawGrammar = @import("rawGrammar.zig");

@@ -4,7 +4,7 @@ This directory is a faithful Zig port of
 [`microsoft/vscode-textmate`](https://github.com/microsoft/vscode-textmate),
 the TextMate engine used by VS Code.
 
-- Reference checkout: `../vscode-textmate`
+- Reference checkout: `vscode-textmate/` (shallow git submodule)
 - Pinned version: **9.3.2** (commit `5fc1758`, package.json version `9.3.2`)
 - Zig: 0.17
 - Status: **complete port of the engine and its upstream test suites**, and

@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/registry.ts`
+// Port of `vscode-textmate/src/registry.ts`
 // (microsoft/vscode-textmate v9.3.2).
 const std = @import("std");
 const grammar = @import("grammar/grammar.zig");

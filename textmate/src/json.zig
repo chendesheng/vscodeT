@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/json.ts` (microsoft/vscode-textmate
+// Port of `vscode-textmate/src/json.ts` (microsoft/vscode-textmate
 // v9.3.2).
 //
 // The upstream parser is a streaming reader with explicit state; this port is

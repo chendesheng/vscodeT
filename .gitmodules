@@ -2,3 +2,7 @@
 	path = vscode
 	url = https://github.com/microsoft/vscode.git
 	shallow = true
+[submodule "vscode-textmate"]
+	path = vscode-textmate
+	url = https://github.com/microsoft/vscode-textmate.git
+	shallow = true

@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/encodedTokenAttributes.ts`
+// Port of `vscode-textmate/src/encodedTokenAttributes.ts`
 // (microsoft/vscode-textmate v9.3.2).
 //
 // JS bitwise operators are 32-bit and the upstream code applies `>>> 0`;

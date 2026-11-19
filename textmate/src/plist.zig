@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/plist.ts` (microsoft/vscode-textmate
+// Port of `vscode-textmate/src/plist.ts` (microsoft/vscode-textmate
 // v9.3.2).
 //
 // Adaptation: dates are preserved as their raw text (`Value.date`) and

@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/grammar/tokenizeString.ts`
+// Port of `vscode-textmate/src/grammar/tokenizeString.ts`
 // (microsoft/vscode-textmate v9.3.2).
 //
 // All positions are UTF-16 code units. Capture slices returned by an

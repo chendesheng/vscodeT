@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/tests/matcher.test.ts` (v9.3.2).
+// Port of `vscode-textmate/src/tests/matcher.test.ts` (v9.3.2).
 const std = @import("std");
 const matcher = @import("matcher.zig");
 

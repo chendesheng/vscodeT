@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/onigLib.ts` (microsoft/vscode-textmate
+// Port of `vscode-textmate/src/onigLib.ts` (microsoft/vscode-textmate
 // v9.3.2), plus the libonig-backed implementation used by this standalone
 // package.
 //

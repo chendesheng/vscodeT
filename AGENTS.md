@@ -9,11 +9,13 @@ vscode/src/vs/editor/...
 
 Do not edit upstream files. Port behavior into this repository instead.
 
-`vscode/` is a shallow git submodule pinned to VS Code 1.147.0 at commit
-`e31c2e52f563620846caab877103f630ea361b9c`. Initialize it with
-`git submodule update --init --depth 1`. Do not bump the pin in an unrelated
-change: the generated extension-host protocol table and the port inventory are
-tied to that commit.
+`vscode/` and `vscode-textmate/` are shallow git submodules. `vscode/` is
+pinned to VS Code 1.147.0 at commit
+`e31c2e52f563620846caab877103f630ea361b9c`; `vscode-textmate/` is pinned to
+v9.3.2 at commit `5fc1758043624ace930a2b417259852e534668d8`. Initialize both
+with `git submodule update --init --depth 1`. Do not bump either pin in an
+unrelated change: the generated extension-host protocol table and the port
+inventory are tied to the `vscode` commit.
 
 ## Source layout
 
@@ -39,9 +41,9 @@ state that in the comment and keep the behavioral contract intact.
 
 ## Standalone vscode-textmate port
 
-- `textmate/` is a standalone Zig package outside `src/` porting
-  `../vscode-textmate` (currently v9.3.2). It must not import anything from
-  `src/`.
+- `textmate/` is a standalone Zig package outside `src/` porting the
+  `vscode-textmate/` submodule (currently v9.3.2). It must not import anything
+  from `src/`.
 - Keep upstream basenames (`matcher.ts` → `matcher.zig`) and port the upstream
   tests. See `textmate/README.md` for the source map, status, faithful-port
   rules and remaining integration work. The engine and all upstream test

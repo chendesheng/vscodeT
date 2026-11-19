@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/utils.ts` (microsoft/vscode-textmate
+// Port of `vscode-textmate/src/utils.ts` (microsoft/vscode-textmate
 // v9.3.2).
 const std = @import("std");
 const onigLib = @import("onigLib.zig");

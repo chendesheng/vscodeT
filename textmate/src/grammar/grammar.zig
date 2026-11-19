@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/grammar/grammar.ts`
+// Port of `vscode-textmate/src/grammar/grammar.ts`
 // (microsoft/vscode-textmate v9.3.2).
 //
 // Adaptation notes:

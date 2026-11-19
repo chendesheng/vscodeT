@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/matcher.ts` (microsoft/vscode-textmate v9.3.2).
+// Port of `vscode-textmate/src/matcher.ts` (microsoft/vscode-textmate v9.3.2).
 //
 // Faithfulness notes:
 //  * TypeScript closures are represented as an explicit matcher tree. The
@@ -14,7 +14,7 @@
 //    an arena per public result, and unmanaged `std.ArrayList` for internal
 //    work.
 //
-// The tests below are a direct port of `../vscode-textmate/src/tests/matcher.test.ts`.
+// The tests below are a direct port of `vscode-textmate/src/tests/matcher.test.ts`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 

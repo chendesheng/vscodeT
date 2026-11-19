@@ -720,8 +720,8 @@ TextMate tokenization:
   aliases such as `js`, `ts`, `py`, `rs`, `yml`, `md`, `sh` and `c++`. VS
   Code's built-in fence list does not cover Zig or TOML.
 - A faithful Zig port of `microsoft/vscode-textmate` lives in `textmate/`,
-  with the reference checkout at `../vscode-textmate`. It covers the engine
-  and all upstream test suites, including the first-mate/suite1 tokenization
+  with the reference checkout at the `vscode-textmate/` submodule. It covers
+  the engine and all upstream test suites, including the first-mate/suite1 tokenization
   fixtures and all 14×72 theme fixtures. It is the editor's tokenizer and
   converts UTF-16 token boundaries to the editor's UTF-8 offsets at the
   adapter boundary. See `textmate/README.md` for the source map, UTF-16 index

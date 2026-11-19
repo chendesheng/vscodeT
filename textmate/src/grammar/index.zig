@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/grammar/index.ts`
+// Port of `vscode-textmate/src/grammar/index.ts`
 // (microsoft/vscode-textmate v9.3.2).
 pub const grammar = @import("grammar.zig");
 pub const grammar_dependencies = @import("grammarDependencies.zig");

@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/tests/themes.test.ts` fixture tests and
+// Port of `vscode-textmate/src/tests/themes.test.ts` fixture tests and
 // `themeTest.ts` (microsoft/vscode-textmate v9.3.2).
 const std = @import("std");
 const main = @import("../main.zig");

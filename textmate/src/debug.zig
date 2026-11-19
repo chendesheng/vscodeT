@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/debug.ts`
+// Port of `vscode-textmate/src/debug.ts`
 // (microsoft/vscode-textmate v9.3.2).
 //
 // The upstream flags are read from `process.env.VSCODE_TEXTMATE_DEBUG` at

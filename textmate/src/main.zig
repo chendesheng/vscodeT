@@ -1,4 +1,4 @@
-// Port of `../vscode-textmate/src/main.ts` (microsoft/vscode-textmate
+// Port of `vscode-textmate/src/main.ts` (microsoft/vscode-textmate
 // v9.3.2).
 //
 // Adaptation: the TypeScript API returns Promises; this port is synchronous.
