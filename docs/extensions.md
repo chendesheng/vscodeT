@@ -10,10 +10,11 @@ directories. Declarative scanning now loads the bundled `theme-defaults` and
 `markdown-basics` contributions: the theme files (including the
 `dark_plus.json` → `dark_vs.json` include chain), the markdown language and
 grammar, and its JSONC language configuration. `zig build test-e2e` activates VSCodeVim 1.32.4 and asserts insert
-mode, a normal-mode `x`, and the resulting TUI editor text. The remaining
-`MainThread*` actors, the contribution scanner, configuration writes,
+mode, a normal-mode `x`, and the resulting TUI editor text. Declarative
+scanning now loads `theme-defaults` and `markdown-basics`. The remaining
+`MainThread*` actors, the general contribution scanner, configuration writes,
 `tabGroups`, extension keybindings and the built-in command set are still
-stubs. The prerequisite workbench services are ported (§3.3).
+incomplete. The prerequisite workbench services are ported (§3.3).
 
 Upstream reference: `../vscode` at **1.147.0**, commit
 `e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
