@@ -307,8 +307,9 @@ pub const TerminalViewHost = struct {
                 .scrollTopChanged = range_changed or self.first_frame,
             } });
         }
-        // The cursor-line overlay is cheap to rebuild and its dirty bit is
-        // not reliably set by the terminal's synthesized event batch.
+        // The cursor-line overlay is one cheap allocation and its dirty bit
+        // is not reliably set by the synthesized event batch; keep it fresh
+        // until the terminal editor dispatches real view events.
         self.current_line.base.handler.forceShouldRender();
         self.last_version = version;
         self.last_selection_hash = selection_hash;
@@ -321,6 +322,7 @@ pub const TerminalViewHost = struct {
         // their dirty bits.
         self.scratch_text.reset();
         try self.view.renderText(&viewport, &self.scratch_text);
+
         var rendering = RenderingContext.init(self.context.view_layout, &viewport, self.view.getViewLines().interface());
         self.view_cursors.prepareRender(&rendering);
         var restricted = RestrictedRenderingContext.init(self.context.view_layout, &viewport);
@@ -541,4 +543,26 @@ test "terminal view host renders lines through the ported ViewLines" {
     const cursors = host.getCursorRenderData();
     try std.testing.expect(cursors.len > 0);
     try std.testing.expectEqual(@as(usize, 1), cursors[0].position.lineNumber);
+}
+
+test "terminal view host updates the current-line overlay on cursor moves" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\nb", "test.zig", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+
+    try host.renderRange(1, 2);
+    try std.testing.expect(host.getCurrentLineHighlight(1).?.highlight);
+    try std.testing.expect(!host.getCurrentLineHighlight(2).?.highlight);
+
+    try editor.moveDown(false);
+    try host.renderRange(1, 2);
+    try std.testing.expect(!host.getCurrentLineHighlight(1).?.highlight);
+    try std.testing.expect(host.getCurrentLineHighlight(2).?.highlight);
 }
