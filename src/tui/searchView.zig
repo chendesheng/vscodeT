@@ -950,7 +950,7 @@ pub const SearchView = struct {
         _ = drawText(grid, x + width -| 3, y, 3, "...", .{ .fg = ui.cell.packColor(dim), .bg = ui.cell.packColor(header_background) });
 
         try self.widget.render(width);
-        grid.blit(self.widget.grid(), x, y + 1, width, self.widget.layout.height);
+        try grid.blit(self.widget.grid(), x, y + 1, width, self.widget.layout.height);
 
         const status_y = y + 1 + self.widget.layout.height;
         var status_buffer: [240]u8 = undefined;

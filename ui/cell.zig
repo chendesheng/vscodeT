@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const cell_border = @import("cell_border.zig");
+const grapheme = @import("grapheme.zig");
 const style = @import("style.zig");
 
 pub const Attr = struct {
@@ -58,7 +59,12 @@ pub const CellGrid = struct {
     cols: usize,
     rows: usize,
     /// Glyph scalar value. 0 = empty; continuation cells of a wide glyph are 0.
+    /// For multi-codepoint clusters this is the first codepoint; the full text
+    /// lives in the interned `grapheme` plane.
     cluster: []u32,
+    /// Interned UTF-8 grapheme id per cell; 0 means the single `cluster`
+    /// codepoint is the complete glyph.
+    grapheme: []u32,
     fg: []u32,
     bg: []u32,
     attrs: []u16,
@@ -67,25 +73,52 @@ pub const CellGrid = struct {
     border: []u16,
     borders: *cell_border.Table,
     owns_borders: bool,
+    graphemes: *grapheme.Table,
+    owns_graphemes: bool,
 
     pub fn init(allocator: std.mem.Allocator, cols: usize, rows: usize) !CellGrid {
         const table = try allocator.create(cell_border.Table);
         table.* = .{};
         errdefer allocator.destroy(table);
-        var grid = try initInternal(allocator, cols, rows, table);
+        const graphemes = try allocator.create(grapheme.Table);
+        errdefer allocator.destroy(graphemes);
+        graphemes.* = try grapheme.Table.init(allocator);
+        errdefer graphemes.deinit();
+        var grid = try initInternal(allocator, cols, rows, table, graphemes);
         grid.owns_borders = true;
+        grid.owns_graphemes = true;
         return grid;
     }
 
-    /// Initialises a grid on a table owned by the caller. Double-buffered
-    /// frames share one table so border ids are comparable across buffers.
+    /// Initialises a grid on a border table owned by the caller. Double-buffered
+    /// frames share one table so border ids are comparable across buffers. The
+    /// grapheme table is private to this grid; use `initWithTables` when both
+    /// intern tables are shared.
     pub fn initWithTable(
         allocator: std.mem.Allocator,
         cols: usize,
         rows: usize,
         table: *cell_border.Table,
     ) !CellGrid {
-        return initInternal(allocator, cols, rows, table);
+        const graphemes = try allocator.create(grapheme.Table);
+        errdefer allocator.destroy(graphemes);
+        graphemes.* = try grapheme.Table.init(allocator);
+        errdefer graphemes.deinit();
+        var grid = try initInternal(allocator, cols, rows, table, graphemes);
+        grid.owns_graphemes = true;
+        return grid;
+    }
+
+    /// Initialises a grid on tables owned by the caller. Both intern tables are
+    /// shared by the two buffers of a frame.
+    pub fn initWithTables(
+        allocator: std.mem.Allocator,
+        cols: usize,
+        rows: usize,
+        borders: *cell_border.Table,
+        graphemes: *grapheme.Table,
+    ) !CellGrid {
+        return initInternal(allocator, cols, rows, borders, graphemes);
     }
 
     fn initInternal(
@@ -93,12 +126,15 @@ pub const CellGrid = struct {
         cols: usize,
         rows: usize,
         table: *cell_border.Table,
+        graphemes: *grapheme.Table,
     ) !CellGrid {
         const c = @max(cols, 1);
         const r = @max(rows, 1);
         const size = c * r;
         const cluster = try allocator.alloc(u32, size);
         errdefer allocator.free(cluster);
+        const grapheme_ids = try allocator.alloc(u32, size);
+        errdefer allocator.free(grapheme_ids);
         const fg = try allocator.alloc(u32, size);
         errdefer allocator.free(fg);
         const bg = try allocator.alloc(u32, size);
@@ -113,12 +149,15 @@ pub const CellGrid = struct {
             .cols = c,
             .rows = r,
             .cluster = cluster,
+            .grapheme = grapheme_ids,
             .fg = fg,
             .bg = bg,
             .attrs = attrs,
             .border = border,
             .borders = table,
             .owns_borders = false,
+            .graphemes = graphemes,
+            .owns_graphemes = false,
         };
         grid.clear();
         return grid;
@@ -126,15 +165,21 @@ pub const CellGrid = struct {
 
     pub fn deinit(self: *CellGrid) void {
         self.allocator.free(self.cluster);
+        self.allocator.free(self.grapheme);
         self.allocator.free(self.fg);
         self.allocator.free(self.bg);
         self.allocator.free(self.attrs);
         self.allocator.free(self.border);
         if (self.owns_borders) self.allocator.destroy(self.borders);
+        if (self.owns_graphemes) {
+            self.graphemes.deinit();
+            self.allocator.destroy(self.graphemes);
+        }
     }
 
     pub fn clear(self: *CellGrid) void {
         @memset(self.cluster, 0);
+        @memset(self.grapheme, 0);
         @memset(self.fg, 0);
         @memset(self.bg, 0);
         @memset(self.attrs, 0);
@@ -194,6 +239,7 @@ pub const CellGrid = struct {
         if (col >= self.cols or row >= self.rows) return;
         const i = self.index(col, row);
         self.cluster[i] = cluster;
+        self.grapheme[i] = 0;
         self.fg[i] = paint.fg;
         self.bg[i] = paint.bg;
         self.attrs[i] = (paint.attrs & Attr.style_mask) |
@@ -228,6 +274,47 @@ pub const CellGrid = struct {
             // The continuation cell is empty and advances no cursor of its own.
             self.put(col + 1, row, 0, 0, paint);
         }
+    }
+
+    /// Writes one multi-codepoint grapheme cluster. `width` is 1 or 2 cells;
+    /// the bytes are interned for the frame diff and the ANSI writer. The first
+    /// codepoint is kept in the `cluster` plane for the existing single-glyph
+    /// helpers.
+    pub fn putGrapheme(
+        self: *CellGrid,
+        col: usize,
+        row: usize,
+        text: []const u8,
+        width: usize,
+        paint: PaintStyle,
+    ) !void {
+        if (col >= self.cols or row >= self.rows) return;
+        if (width == 0) return;
+        if (text.len == 0) {
+            self.putSpace(col, row, paint);
+            return;
+        }
+        if (width >= 2 and col + 1 >= self.cols) {
+            self.putSpace(col, row, paint);
+            return;
+        }
+        const cells = @min(width, 2);
+        const first_len = std.unicode.utf8ByteSequenceLength(text[0]) catch 1;
+        const first = if (first_len <= text.len)
+            std.unicode.utf8Decode(text[0..first_len]) catch '?'
+        else
+            '?';
+        const id = try self.graphemes.intern(text);
+        self.put(col, row, first, cells, paint);
+        self.grapheme[self.index(col, row)] = id;
+        if (cells == 2) self.put(col + 1, row, 0, 0, paint);
+    }
+
+    /// Returns the interned grapheme bytes at a cell, or an empty slice for a
+    /// single-codepoint cell.
+    pub fn graphemeAt(self: *const CellGrid, col: usize, row: usize) []const u8 {
+        if (col >= self.cols or row >= self.rows) return "";
+        return self.graphemes.get(self.grapheme[self.index(col, row)]);
     }
 
     pub fn putSpace(self: *CellGrid, col: usize, row: usize, paint: PaintStyle) void {
@@ -282,7 +369,7 @@ pub const CellGrid = struct {
         dest_row: usize,
         width: usize,
         height: usize,
-    ) void {
+    ) !void {
         if (dest_col >= self.cols or dest_row >= self.rows) return;
         const copy_width = @min(width, @min(source.cols, self.cols - dest_col));
         const copy_height = @min(height, @min(source.rows, self.rows - dest_row));
@@ -302,14 +389,26 @@ pub const CellGrid = struct {
                     self.border[dest_start + col] = self.borders.remap(source.borders, source.border[source_start + col]);
                 }
             }
+            if (self.graphemes == source.graphemes) {
+                @memcpy(self.grapheme[dest_start .. dest_start + copy_width], source.grapheme[source_start .. source_start + copy_width]);
+            } else {
+                var col: usize = 0;
+                while (col < copy_width) : (col += 1) {
+                    self.grapheme[dest_start + col] = try self.graphemes.remap(source.graphemes, source.grapheme[source_start + col]);
+                }
+            }
         }
     }
 
     pub fn rowHasContent(self: *const CellGrid, row: usize) bool {
         if (row >= self.rows) return false;
         const start = row * self.cols;
-        for (self.cluster[start .. start + self.cols], self.border[start .. start + self.cols]) |c, border| {
-            if (c != 0 or border != 0) return true;
+        for (
+            self.cluster[start .. start + self.cols],
+            self.grapheme[start .. start + self.cols],
+            self.border[start .. start + self.cols],
+        ) |c, grapheme_id, border| {
+            if (c != 0 or grapheme_id != 0 or border != 0) return true;
         }
         return false;
     }
@@ -319,6 +418,7 @@ pub const CellGrid = struct {
             a.fg[a_index] == b.fg[b_index] and
             a.bg[a_index] == b.bg[b_index] and
             a.attrs[a_index] == b.attrs[b_index] and
+            grapheme.Table.eql(a.graphemes, b.graphemes, a.grapheme[a_index], b.grapheme[b_index]) and
             sameBorder(a, a_index, b, b_index);
     }
 
@@ -340,6 +440,10 @@ pub const CellGrid = struct {
                 if (c == 0) continue;
                 if (self.widthAt(col, row) == 0 and col > 0 and self.cluster[start + col - 1] != 0) {
                     // Should not happen; wide continuations are empty.
+                    continue;
+                }
+                if (self.grapheme[start + col] != 0) {
+                    try out.appendSlice(allocator, self.graphemes.get(self.grapheme[start + col]));
                     continue;
                 }
                 var buf: [4]u8 = undefined;
@@ -420,7 +524,7 @@ test "CellGrid blit remaps border sets into the destination table" {
 
     const stroke = cell_border.Stroke{ .width = 16, .color = .default_fg };
     source.addBorder(0, 0, cell_border.Segment.bottom, stroke);
-    dest.blit(&source, 1, 0, 1, 1);
+    try dest.blit(&source, 1, 0, 1, 1);
 
     try std.testing.expect(dest.borderIdAt(0, 0) == 0);
     const copied = dest.borderSetAt(1, 0);
@@ -466,4 +570,39 @@ test "packColor distinguishes black from default" {
     try std.testing.expect(black != 0);
     try std.testing.expectEqual(@as(u32, 0), 0);
     try std.testing.expect(style.Color.eql(.{ .r = 0, .g = 0, .b = 0 }, unpackColor(black)));
+}
+
+test "CellGrid stores and copies multi-codepoint graphemes" {
+    const allocator = std.testing.allocator;
+    var source = try CellGrid.init(allocator, 4, 1);
+    defer source.deinit();
+    var dest = try CellGrid.init(allocator, 4, 1);
+    defer dest.deinit();
+
+    try source.putGrapheme(0, 0, "e\u{301}", 1, .{});
+    try source.putGrapheme(1, 0, "\u{1F469}\u{200D}\u{1F4BB}", 2, .{});
+    try std.testing.expectEqualStrings("e\u{301}", source.graphemeAt(0, 0));
+    try std.testing.expectEqualStrings("\u{1F469}\u{200D}\u{1F4BB}", source.graphemeAt(1, 0));
+    try std.testing.expectEqual(@as(usize, 2), source.widthAt(1, 0));
+
+    try dest.blit(&source, 0, 0, 4, 1);
+    try std.testing.expectEqualStrings("e\u{301}", dest.graphemeAt(0, 0));
+    try std.testing.expectEqualStrings("\u{1F469}\u{200D}\u{1F4BB}", dest.graphemeAt(1, 0));
+    try std.testing.expect(CellGrid.sameCell(&source, 0, &dest, 0));
+
+    const text = try dest.rowText(allocator, 0);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("e\u{301}\u{1F469}\u{200D}\u{1F4BB}", text);
+}
+
+test "CellGrid grapheme equality compares the bytes" {
+    const allocator = std.testing.allocator;
+    var a = try CellGrid.init(allocator, 2, 1);
+    defer a.deinit();
+    var b = try CellGrid.init(allocator, 2, 1);
+    defer b.deinit();
+
+    try a.putGrapheme(0, 0, "e\u{301}", 1, .{});
+    try b.putGrapheme(0, 0, "e\u{302}", 1, .{});
+    try std.testing.expect(!CellGrid.sameCell(&a, 0, &b, 0));
 }

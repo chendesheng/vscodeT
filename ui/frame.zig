@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const cell_border = @import("cell_border.zig");
+const grapheme = @import("grapheme.zig");
 const CellGrid = @import("cell.zig").CellGrid;
 
 pub const Frame = struct {
@@ -13,6 +14,8 @@ pub const Frame = struct {
     /// One table for both buffers: a border id means the same set in `prev`
     /// and `next`, so the frame diff can compare ids directly.
     borders: *cell_border.Table,
+    /// One intern table for both buffers, for the same reason.
+    graphemes: *grapheme.Table,
     prev: CellGrid,
     next: CellGrid,
     have_prev: bool = false,
@@ -22,12 +25,18 @@ pub const Frame = struct {
         borders.* = .{};
         errdefer allocator.destroy(borders);
 
-        var prev = try CellGrid.initWithTable(allocator, cols, rows, borders);
+        const graphemes = try allocator.create(grapheme.Table);
+        errdefer allocator.destroy(graphemes);
+        graphemes.* = try grapheme.Table.init(allocator);
+        errdefer graphemes.deinit();
+
+        var prev = try CellGrid.initWithTables(allocator, cols, rows, borders, graphemes);
         errdefer prev.deinit();
-        const next = try CellGrid.initWithTable(allocator, cols, rows, borders);
+        const next = try CellGrid.initWithTables(allocator, cols, rows, borders, graphemes);
         return .{
             .allocator = allocator,
             .borders = borders,
+            .graphemes = graphemes,
             .prev = prev,
             .next = next,
         };
@@ -37,6 +46,8 @@ pub const Frame = struct {
         self.prev.deinit();
         self.next.deinit();
         self.allocator.destroy(self.borders);
+        self.graphemes.deinit();
+        self.allocator.destroy(self.graphemes);
     }
 
     pub fn begin(self: *Frame) void {

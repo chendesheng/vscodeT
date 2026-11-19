@@ -84,7 +84,7 @@ fn encodeRow(
     var col = grid.cols;
     while (col > 0) {
         col -= 1;
-        if (grid.cluster[start + col] != 0 or grid.border[start + col] != 0) {
+        if (grid.cluster[start + col] != 0 or grid.grapheme[start + col] != 0 or grid.border[start + col] != 0) {
             last = col;
             has_last = true;
             break;
@@ -99,9 +99,10 @@ fn encodeRow(
     while (col <= last) : (col += 1) {
         const index = start + col;
         const cluster = grid.cluster[index];
+        const grapheme_id = grid.grapheme[index];
         const width = grid.widthAt(col, row);
 
-        if (cluster == 0) {
+        if (cluster == 0 and grapheme_id == 0) {
             // Continuation of the wide glyph on the previous column: the glyph
             // already advanced the cursor over this cell. A border that differs
             // on the continuation cell cannot be applied without reprinting the
@@ -117,7 +118,9 @@ fn encodeRow(
 
         try emitStyle(allocator, out, &current, &any_style, grid, index, depth, &current_pen);
         try emitBorderPen(allocator, out, grid, index, &current_pen);
-        if (cluster >= 0x20 and cluster <= 0x7e) {
+        if (grapheme_id != 0) {
+            try out.appendSlice(allocator, grid.graphemes.get(grapheme_id));
+        } else if (cluster >= 0x20 and cluster <= 0x7e) {
             try out.append(allocator, @intCast(cluster));
         } else {
             var buf: [4]u8 = undefined;
@@ -357,4 +360,17 @@ test "ansi: synchronized output wraps only non-empty frames" {
     defer allocator.free(out);
     try std.testing.expect(std.mem.startsWith(u8, out, "\x1b[?2026h"));
     try std.testing.expect(std.mem.endsWith(u8, out, "\x1b[?2026l"));
+}
+
+test "ansi: emits interned grapheme bytes" {
+    const allocator = std.testing.allocator;
+    var next = try CellGrid.init(allocator, 3, 1);
+    defer next.deinit();
+    try next.putGrapheme(0, 0, "e\u{301}", 1, .{});
+    try next.putGrapheme(1, 0, "\u{1F469}\u{200D}\u{1F4BB}", 2, .{});
+
+    const encoded = try encode(allocator, null, &next, .{ .synchronized = false });
+    defer allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "e\u{301}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\u{1F469}\u{200D}\u{1F4BB}") != null);
 }

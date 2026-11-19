@@ -430,7 +430,7 @@ pub const StatusbarPart = struct {
 
         doc.setRoot(root);
         try self.surface.paintFrame();
-        grid.blit(self.surface.grid(), x, y, width, 1);
+        try grid.blit(self.surface.grid(), x, y, width, 1);
         for (self.nodes.items) |*node_entry| {
             const text_box = self.surface.box_tree.find(node_entry.text_node) orelse continue;
             const text_x = ui.cell.snap(text_box.rect.x);

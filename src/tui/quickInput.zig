@@ -165,7 +165,7 @@ pub const QuickPickWidget = struct {
         doc.setRoot(root);
         _ = doc.focus(input_node);
         try surface.paintFrame();
-        grid.blit(surface.grid(), layout.x, layout.y, layout.width, 1);
+        try grid.blit(surface.grid(), layout.x, layout.y, layout.width, 1);
     }
 
     fn renderList(
