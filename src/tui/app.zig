@@ -118,12 +118,24 @@ fn defaultExtensionPath(allocator: std.mem.Allocator, environ: *const std.proces
         while (iterator.next(time_compat.io) catch null) |entry| {
             if (entry.kind != .directory) continue;
             if (!std.mem.startsWith(u8, entry.name, "vscodevim.vim-")) continue;
-            const extension = std.fs.path.join(allocator, &.{ root, entry.name, "extension" }) catch continue;
-            std.Io.Dir.accessAbsolute(time_compat.io, extension, .{}) catch {
-                allocator.free(extension);
-                continue;
+            // A `.vsix` extraction yields `<version>/extension`; VS Code's own
+            // installer unpacks the extension directly into `<version>`.
+            const nested = std.fs.path.join(allocator, &.{ root, entry.name, "extension" }) catch continue;
+            std.Io.Dir.accessAbsolute(time_compat.io, nested, .{}) catch {
+                allocator.free(nested);
+                const installed = std.fs.path.join(allocator, &.{ root, entry.name }) catch continue;
+                const manifest = std.fs.path.join(allocator, &.{ installed, "package.json" }) catch {
+                    allocator.free(installed);
+                    continue;
+                };
+                defer allocator.free(manifest);
+                std.Io.Dir.accessAbsolute(time_compat.io, manifest, .{}) catch {
+                    allocator.free(installed);
+                    continue;
+                };
+                return installed;
             };
-            return extension;
+            return nested;
         }
     }
     return null;
