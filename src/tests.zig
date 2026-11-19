@@ -1,4 +1,21 @@
 comptime {
+    _ = @import("./vs/platform/terminal/common/terminal.zig");
+    _ = @import("./vs/platform/terminal/common/terminalEnvironment.zig");
+    _ = @import("./vs/platform/terminal/common/terminalProfiles.zig");
+    _ = @import("./vs/platform/terminal/node/terminalProfiles.zig");
+    _ = @import("./vs/platform/terminal/node/pty.zig");
+    _ = @import("./vs/platform/terminal/test/common/terminalEnvironment.test.zig");
+    _ = @import("./vs/platform/terminal/test/node/terminalProfiles.test.zig");
+    _ = @import("./vs/workbench/contrib/terminal/browser/terminalEmulator.zig");
+    _ = @import("./vs/workbench/contrib/terminal/browser/terminalInstance.zig");
+    _ = @import("./vs/workbench/contrib/terminal/browser/terminalGroup.zig");
+    _ = @import("./vs/workbench/contrib/terminal/browser/terminalService.zig");
+    _ = @import("./vs/workbench/contrib/terminal/common/terminal.zig");
+    _ = @import("./vs/workbench/contrib/terminal/common/terminalConfiguration.zig");
+    _ = @import("./tui/terminalInput.zig");
+    _ = @import("./tui/terminalView.zig");
+    _ = @import("./tui/terminalView.test.zig");
+    _ = @import("./tui/terminalPanel.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorDropTarget.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorPanes.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorGroupView.zig");

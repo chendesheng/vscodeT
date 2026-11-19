@@ -381,17 +381,34 @@ pub const PollResult = struct {
 /// Polls stdin plus an optional extra POSIX fd (the file watcher's
 /// inotify/kqueue handle). The caller drains the extra fd when `extra` is true.
 pub fn pollInputWithFd(extra_fd: ?i32, timeout_ms: i32) !PollResult {
-    var fds = [_]posix.pollfd{
-        .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
-        .{ .fd = extra_fd orelse -1, .events = posix.POLL.IN, .revents = 0 },
-    };
-    const count: posix.nfds_t = if (extra_fd == null) 1 else 2;
-    const result = try posix.poll(fds[0..count], timeout_ms);
-    if (result == 0) return .{ .input = false, .extra = false };
-    return .{
-        .input = fds[0].revents != 0,
-        .extra = count == 2 and fds[1].revents != 0,
-    };
+    var ready: [1]bool = .{false};
+    const input = try pollInputWithFds(if (extra_fd) |fd| &.{fd} else &.{}, &ready, timeout_ms);
+    return .{ .input = input, .extra = ready[0] };
+}
+
+pub const max_poll_fds = 32;
+
+/// Polls stdin plus a list of host fds. `ready` receives one flag per entry in
+/// `extra_fds`; at most `max_poll_fds` entries are polled. Used by the terminal
+/// panel so every pty is watched together with stdin and the file watcher.
+pub fn pollInputWithFds(
+    extra_fds: []const posix.fd_t,
+    ready: []bool,
+    timeout_ms: i32,
+) !bool {
+    var fds: [max_poll_fds + 1]posix.pollfd = undefined;
+    fds[0] = .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 };
+    const count = @min(extra_fds.len, max_poll_fds);
+    for (extra_fds[0..count], 0..) |fd, index| {
+        fds[index + 1] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 };
+        if (index < ready.len) ready[index] = false;
+    }
+    const result = try posix.poll(fds[0 .. count + 1], timeout_ms);
+    if (result == 0) return false;
+    for (0..count) |index| {
+        if (index < ready.len) ready[index] = fds[index + 1].revents != 0;
+    }
+    return fds[0].revents != 0;
 }
 
 /// Windows variant of `pollInputWithFd`, using the watcher's native handle.

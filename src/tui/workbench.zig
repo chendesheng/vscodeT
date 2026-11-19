@@ -138,10 +138,18 @@ const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const EOL = @import("../vs/editor/common/core/misc/eolCounter.zig").EOL;
 const encoding_mod = @import("../vs/workbench/services/textfile/common/encoding.zig");
 const SearchOption = @import("./searchWidget.zig").Option;
+const terminal_service_mod = @import("../vs/workbench/contrib/terminal/browser/terminalService.zig");
+const terminal_configuration = @import("../vs/workbench/contrib/terminal/common/terminalConfiguration.zig");
+const terminal_common = @import("../vs/workbench/contrib/terminal/common/terminal.zig");
+const terminal_panel = @import("./terminalPanel.zig");
+const terminal_input_mod = @import("./terminalInput.zig");
+const terminal_view = @import("./terminalView.zig");
+const TerminalService = terminal_service_mod.TerminalService;
+const TerminalSize = struct { cols: u16, rows: u16 };
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
-pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs };
+pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal };
 
 /// Pane chrome for the terminal editor part. The active pane's outline uses
 /// the focused border colour and priority 1, so it wins a shared edge in a
@@ -267,6 +275,10 @@ pub const Workbench = struct {
     document_symbol_listener: ?@import("../vs/base/common/event.zig").Emitter(usize).ListenerId = null,
     focus: Focus = .editor,
     is_pasting: bool = false,
+    terminal_service: ?*TerminalService = null,
+    terminal_input: terminal_input_mod.Encoder = .{},
+    terminal_size: ?TerminalSize = null,
+    suppress_global_command: bool = false,
     /// Set when the quit confirmation commits to closing the window.
     quit_requested: bool = false,
     /// The modal save confirmation, if one is open.
@@ -292,6 +304,10 @@ pub const Workbench = struct {
         self.statusbar_service = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
+        self.terminal_service = null;
+        self.terminal_input = .{};
+        self.terminal_size = null;
+        self.suppress_global_command = false;
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
@@ -381,6 +397,10 @@ pub const Workbench = struct {
         self.statusbar_service = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
+        self.terminal_service = null;
+        self.terminal_input = .{};
+        self.terminal_size = null;
+        self.suppress_global_command = false;
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
@@ -486,6 +506,10 @@ pub const Workbench = struct {
         self.statusbar_service = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
+        self.terminal_service = null;
+        self.terminal_input = .{};
+        self.terminal_size = null;
+        self.suppress_global_command = false;
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
@@ -603,6 +627,8 @@ pub const Workbench = struct {
         try self.layout_model.setVisible(.sidebar, false);
         try self.layout_model.setVisible(.activitybar, true);
         try self.layout_model.setVisible(.statusbar, true);
+        try self.layout_model.setSize(.panel, 10);
+        try self.layout_model.setVisible(.panel, false);
 
         for (activity_bar_mod.default_activities) |activity| {
             try self.activity_bar_part.addActivity(activity);
@@ -697,6 +723,14 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
             .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
             .{ .id = "workbench.action.focusStatusBar", .label = "Focus Status Bar", .category = "View", .context = self, .run = commandFocusStatusBar },
+            .{ .id = "workbench.action.terminal.toggleTerminal", .label = "Toggle Terminal", .category = "Terminal", .context = self, .run = commandToggleTerminal },
+            .{ .id = "workbench.action.terminal.new", .label = "New Terminal", .category = "Terminal", .context = self, .run = commandNewTerminal },
+            .{ .id = "workbench.action.terminal.kill", .label = "Kill Terminal", .category = "Terminal", .context = self, .run = commandKillTerminal },
+            .{ .id = "workbench.action.terminal.focus", .label = "Focus Terminal", .category = "Terminal", .context = self, .run = commandFocusTerminal },
+            .{ .id = "workbench.action.terminal.focusNext", .label = "Focus Next Terminal", .category = "Terminal", .context = self, .run = commandFocusNextTerminal },
+            .{ .id = "workbench.action.terminal.focusPrevious", .label = "Focus Previous Terminal", .category = "Terminal", .context = self, .run = commandFocusPreviousTerminal },
+            .{ .id = "workbench.action.terminal.resizeUp", .label = "Resize Terminal Panel Up", .category = "Terminal", .context = self, .run = commandResizeTerminalUp },
+            .{ .id = "workbench.action.terminal.resizeDown", .label = "Resize Terminal Panel Down", .category = "Terminal", .context = self, .run = commandResizeTerminalDown },
             .{ .id = "workbench.action.findInFiles", .label = "Find in Files", .category = "Search", .context = self, .run = commandFindInFiles },
             .{ .id = "workbench.action.replaceInFiles", .label = "Replace in Files", .category = "Search", .context = self, .run = commandReplaceInFiles },
             .{ .id = "toggleSearchCaseSensitive", .label = "Toggle Case Sensitive", .category = "Search", .context = self, .run = commandToggleSearchCase },
@@ -879,6 +913,10 @@ pub const Workbench = struct {
             watcher.stop();
             watcher.deinit();
         }
+        if (self.terminal_service) |service| {
+            service.deinit();
+            self.terminal_service = null;
+        }
         if (self.configuration) |configuration| configuration.deinit();
         if (self.user_settings_path) |path| self.allocator.free(path);
         self.workspace.deinit();
@@ -916,8 +954,52 @@ pub const Workbench = struct {
         };
     }
 
-    fn editorRows(self: *const Workbench) usize {
+    fn workbenchRows(self: *const Workbench) usize {
         return if (self.statusBarVisible()) self.rows - 1 else self.rows;
+    }
+
+    /// The bottom panel is visible only while it has a terminal. Hiding the
+    /// layout state keeps the editor area full height when the last tab closes.
+    pub fn terminalVisible(self: *const Workbench) bool {
+        return self.layout_model.isVisible(.panel) and
+            self.terminal_service != null and
+            self.terminal_service.?.count() > 0;
+    }
+
+    fn panelHeight(self: *const Workbench) usize {
+        if (!self.terminalVisible()) return 0;
+        const available = self.workbenchRows();
+        const wanted = if (self.layout_model.size(.panel) == 0) 10 else self.layout_model.size(.panel);
+        const max_height = @max(@min(available / 2, available -| 1), 1);
+        return @min(@max(wanted, 1), max_height);
+    }
+
+    fn editorRows(self: *const Workbench) usize {
+        return @max(self.workbenchRows() -| self.panelHeight(), 1);
+    }
+
+    pub fn panelRect(self: *const Workbench) ui.Rect {
+        if (!self.terminalVisible()) return .{};
+        const x = self.editorAreaX();
+        const width = self.editorAreaWidth();
+        const height = self.panelHeight();
+        return .{
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(self.editorRows()),
+            .w = @floatFromInt(width),
+            .h = @floatFromInt(height),
+        };
+    }
+
+    fn editorAreaX(self: *const Workbench) usize {
+        if (self.sidebarShown()) {
+            return self.activityBarWidth() + self.sidebarWidth() + 1;
+        }
+        return 0;
+    }
+
+    fn editorAreaWidth(self: *const Workbench) usize {
+        return self.cols -| self.editorAreaX();
     }
 
     /// Editor content height: the rows above the workbench status bar minus the
@@ -981,7 +1063,7 @@ pub const Workbench = struct {
             .x = 0,
             .y = 0,
             .w = @floatFromInt(self.activityBarWidth()),
-            .h = @floatFromInt(self.editorRows()),
+            .h = @floatFromInt(self.workbenchRows()),
         };
     }
 
@@ -990,7 +1072,7 @@ pub const Workbench = struct {
             .x = @floatFromInt(self.activityBarWidth()),
             .y = 0,
             .w = @floatFromInt(self.sidebarWidth()),
-            .h = @floatFromInt(self.editorRows()),
+            .h = @floatFromInt(self.workbenchRows()),
         };
     }
 
@@ -1054,7 +1136,7 @@ pub const Workbench = struct {
             self.workspace,
             .{
                 .user_settings_path = self.user_settings_path,
-                .defaults_json = &.{search_configuration.defaults_json},
+                .defaults_json = &.{ search_configuration.defaults_json, terminal_configuration.defaults_json },
             },
         );
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
@@ -1344,20 +1426,268 @@ pub const Workbench = struct {
         if (self.search_view) |view| view.blur();
     }
 
-    fn editorAreaRect(self: *const Workbench) ui.Rect {
-        if (self.sidebarShown()) {
-            const width = self.sidebarWidth();
-            return .{
-                .x = @floatFromInt(self.activityBarWidth() + width + 1),
-                .y = 0,
-                .w = @floatFromInt(self.cols - self.activityBarWidth() - width - 1),
-                .h = @floatFromInt(self.editorRows()),
-            };
+    pub fn terminalFocused(self: *const Workbench) bool {
+        return self.focus == .terminal and self.terminalVisible();
+    }
+
+    pub fn ensureTerminalService(self: *Workbench) !*TerminalService {
+        if (self.terminal_service) |service| return service;
+        const service = try TerminalService.init(self.allocator, self.io, .{
+            .workspace_root = self.workspaceFolderPath(),
+            .configuration = self.configuration,
+            .multi_root = self.workspace.getWorkspace().folders.items.len > 1,
+        });
+        self.terminal_service = service;
+        return service;
+    }
+
+    pub fn showTerminal(self: *Workbench) !void {
+        const service = try self.ensureTerminalService();
+        if (service.count() == 0) _ = try service.create();
+        try self.layout_model.setVisible(.panel, true);
+        self.focus = .terminal;
+        self.statusbar.main_part.clearFocus();
+        if (self.breadcrumbs_control) |control| control.setFocused(false);
+        if (self.search_view) |view| view.blur();
+        self.layoutAll();
+    }
+
+    pub fn hideTerminal(self: *Workbench) void {
+        self.layout_model.setVisible(.panel, false) catch {};
+        self.focus = .editor;
+        self.terminal_size = null;
+        self.layoutAll();
+    }
+
+    pub fn toggleTerminal(self: *Workbench) !void {
+        if (self.terminalVisible() and self.focus == .terminal) {
+            self.hideTerminal();
+            return;
         }
+        try self.showTerminal();
+    }
+
+    pub fn newTerminal(self: *Workbench) !void {
+        try self.showTerminal();
+        const service = self.terminal_service orelse return;
+        _ = try service.create();
+        self.focus = .terminal;
+        self.layoutAll();
+    }
+
+    pub fn killTerminal(self: *Workbench) !void {
+        const service = self.terminal_service orelse return;
+        service.killActive();
+        if (service.count() == 0) {
+            self.hideTerminal();
+            return;
+        }
+        self.focus = .terminal;
+        self.layoutAll();
+    }
+
+    pub fn focusTerminal(self: *Workbench) !void {
+        try self.showTerminal();
+    }
+
+    pub fn focusNextTerminal(self: *Workbench) void {
+        const service = self.terminal_service orelse return;
+        service.next();
+        self.focus = .terminal;
+    }
+
+    pub fn focusPreviousTerminal(self: *Workbench) void {
+        const service = self.terminal_service orelse return;
+        service.previous();
+        self.focus = .terminal;
+    }
+
+    pub fn resizeTerminalPanel(self: *Workbench, delta: isize) void {
+        if (!self.terminalVisible()) return;
+        const current = self.panelHeight();
+        const available = self.workbenchRows();
+        const max_height = @max(@min(available / 2, available -| 1), 1);
+        const next_value = @as(isize, @intCast(current)) + delta;
+        const next: usize = @intCast(@min(@max(next_value, 1), @as(isize, @intCast(max_height))));
+        if (next == current) return;
+        self.layout_model.setSize(.panel, next) catch {};
+        self.layoutAll();
+    }
+
+    pub fn terminalAcceptsPaste(self: *const Workbench) bool {
+        return self.terminalFocused() and !self.quick_access.isOpen() and self.dialog == null;
+    }
+
+    pub fn pasteTerminal(self: *Workbench, content: []const u8) !void {
+        const service = self.terminal_service orelse return;
+        const instance = service.active() orelse return;
+        var out = std.array_list.Managed(u8).init(self.allocator);
+        defer out.deinit();
+        try self.terminal_input.paste(&instance.emulator, self.allocator, content, &out);
+        if (out.items.len == 0) return;
+        instance.writeInput(out.items);
+        instance.scrollToBottom();
+    }
+
+    pub fn handleTerminalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+        if (!self.terminalFocused()) return false;
+        if (self.dialog != null or self.quick_access.isOpen()) return false;
+        const service = self.terminal_service orelse return false;
+        const instance = service.active() orelse return false;
+
+        if (event.mods.ctrl and !event.mods.alt and !event.mods.shift) {
+            switch (event.key) {
+                .page_up => {
+                    service.previous();
+                    return true;
+                },
+                .page_down => {
+                    service.next();
+                    return true;
+                },
+                else => {},
+            }
+        }
+        if (event.mods.alt and event.mods.shift and !event.mods.ctrl) {
+            switch (event.key) {
+                .up => {
+                    self.resizeTerminalPanel(1);
+                    return true;
+                },
+                .down => {
+                    self.resizeTerminalPanel(-1);
+                    return true;
+                },
+                .char => |ch| switch (ch) {
+                    'T' => {
+                        self.toggleTerminal() catch {};
+                        return true;
+                    },
+                    'N' => {
+                        self.newTerminal() catch {};
+                        return true;
+                    },
+                    'W' => {
+                        self.killTerminal() catch {};
+                        return true;
+                    },
+                    else => {},
+                },
+                else => {},
+            }
+        }
+
+        var out = std.array_list.Managed(u8).init(self.allocator);
+        defer out.deinit();
+        self.terminal_input.key(&instance.emulator, event.*, &out) catch return true;
+        if (out.items.len > 0) {
+            instance.writeInput(out.items);
+            instance.scrollToBottom();
+        }
+        // The shell owns the focused keyboard. Even keys that produce no bytes
+        // (for example bracketed-paste markers) must not fall through to the
+        // editor beneath the panel.
+        return true;
+    }
+
+    pub fn handleTerminalMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        if (!self.terminalVisible()) return false;
+        const service = self.terminal_service orelse return false;
+        const rect = self.panelRect();
+        const hit = terminal_panel.hitTest(service, rect, event.x, event.y);
+        switch (hit) {
+            .none => return false,
+            .tab => |index| {
+                _ = service.setActive(index);
+                self.focus = .terminal;
+                return true;
+            },
+            .new_terminal => {
+                self.newTerminal() catch {};
+                return true;
+            },
+            .kill_terminal => {
+                self.killTerminal() catch {};
+                return true;
+            },
+            .content => {},
+        }
+
+        self.focus = .terminal;
+        const instance = service.active() orelse return true;
+        const content = terminal_panel.contentRect(rect);
+        const local = ui.MouseEvent{
+            .kind = event.kind,
+            .x = event.x -| ui.cell.snap(content.x),
+            .y = event.y -| ui.cell.snap(content.y),
+            .button = event.button,
+            .mods = event.mods,
+            .delta_x = event.delta_x,
+            .delta_y = event.delta_y,
+        };
+        if ((event.kind == .wheel or event.kind == .down or event.kind == .up or event.kind == .move) and
+            !instance.emulator.mouseReporting())
+        {
+            if (event.kind == .wheel) {
+                instance.scroll(event.delta_y);
+            }
+            return true;
+        }
+        var out = std.array_list.Managed(u8).init(self.allocator);
+        defer out.deinit();
+        const written = self.terminal_input.mouse(
+            &instance.emulator,
+            local,
+            instance.cols,
+            instance.rows,
+            &out,
+        ) catch false;
+        if (written) instance.writeInput(out.items);
+        return true;
+    }
+
+    pub fn terminalCount(self: *const Workbench) usize {
+        const service = self.terminal_service orelse return 0;
+        return service.count();
+    }
+
+    pub fn terminalFd(self: *const Workbench, index: usize) ?std.posix.fd_t {
+        const service = self.terminal_service orelse return null;
+        const instance = service.at(index) orelse return null;
+        return instance.fd();
+    }
+
+    pub fn onTerminalReady(self: *Workbench, index: usize) bool {
+        const service = self.terminal_service orelse return false;
+        const instance = service.at(index) orelse return false;
+        const changed = instance.feedOutput() catch false;
+        if (instance.exit != null) return true;
+        return changed;
+    }
+
+    pub fn flushTerminals(self: *Workbench) void {
+        const service = self.terminal_service orelse return;
+        for (service.group.instances.items) |instance| instance.flushInput();
+    }
+
+    pub fn hasPendingTerminalWrites(self: *const Workbench) bool {
+        const service = self.terminal_service orelse return false;
+        for (service.group.instances.items) |instance| {
+            if (instance.hasPendingWrite()) return true;
+        }
+        return false;
+    }
+
+    pub fn pollTerminalExits(self: *Workbench) bool {
+        const service = self.terminal_service orelse return false;
+        return service.pollExits();
+    }
+
+    fn editorAreaRect(self: *const Workbench) ui.Rect {
         return .{
-            .x = 0,
+            .x = @floatFromInt(self.editorAreaX()),
             .y = 0,
-            .w = @floatFromInt(self.cols),
+            .w = @floatFromInt(self.editorAreaWidth()),
             .h = @floatFromInt(self.editorRows()),
         };
     }
@@ -1377,6 +1707,24 @@ pub const Workbench = struct {
                 expanded.layout();
             }
         }
+        self.syncTerminalSize();
+    }
+
+    fn syncTerminalSize(self: *Workbench) void {
+        const service = self.terminal_service orelse return;
+        if (!self.terminalVisible()) {
+            self.terminal_size = null;
+            return;
+        }
+        const rect = terminal_panel.contentRect(self.panelRect());
+        const cols: u16 = @intCast(@min(ui.cell.snap(rect.w), std.math.maxInt(u16)));
+        const rows: u16 = @intCast(@min(ui.cell.snap(rect.h), std.math.maxInt(u16)));
+        if (cols == 0 or rows == 0) return;
+        if (self.terminal_size) |size| {
+            if (size.cols == cols and size.rows == rows) return;
+        }
+        self.terminal_size = .{ .cols = cols, .rows = rows };
+        service.resizeAll(cols, rows);
     }
 
     fn paneExists(self: *const Workbench, pane: *GroupPane) bool {
@@ -2028,8 +2376,14 @@ pub const Workbench = struct {
     /// the open picker.
     pub fn handleGlobalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         if (self.quick_access.isOpen()) return false;
+        self.suppress_global_command = false;
         const service = try self.ensureGlobalService();
-        return service.dispatch(event.*);
+        const handled = service.dispatch(event.*);
+        if (self.suppress_global_command) {
+            self.suppress_global_command = false;
+            return false;
+        }
+        return handled;
     }
 
     fn ensureTabService(self: *Workbench) !*keybinding_service.KeybindingService {
@@ -2898,7 +3252,7 @@ pub const Workbench = struct {
                 .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
             };
             var row: usize = 0;
-            while (row < self.editorRows()) : (row += 1) {
+            while (row < self.workbenchRows()) : (row += 1) {
                 self.frame.next.putCodepoint(divider_x, row, '│', 1, style);
             }
         }
@@ -2923,6 +3277,16 @@ pub const Workbench = struct {
                 if (self.drag_target) |target| self.renderDropTarget(target);
             } else {
                 self.renderDividers(self.part.root);
+            }
+        }
+        if (self.terminalVisible()) {
+            if (self.terminal_service) |service| {
+                try terminal_panel.render(
+                    &self.frame.next,
+                    service,
+                    self.panelRect(),
+                    self.focus == .terminal,
+                );
             }
         }
         if (self.statusBarVisible()) {
@@ -2998,7 +3362,7 @@ pub const Workbench = struct {
         }
         if (pane.activeTab()) |active| {
             try active.view.paint();
-            ui.CellGrid.blit(
+            try ui.CellGrid.blit(
                 &self.frame.next,
                 active.view.grid(),
                 x,
@@ -3321,6 +3685,13 @@ pub const Workbench = struct {
     pub fn cursorCell(self: *Workbench) ?ViewCell {
         if (self.quick_access.isOpen()) return null;
         if (self.dialog != null) return null;
+        if (self.focus == .terminal) {
+            if (!self.terminalVisible()) return null;
+            const service = self.terminal_service orelse return null;
+            const instance = service.active() orelse return null;
+            const cursor = terminal_view.cursorCell(&instance.emulator, terminal_panel.contentRect(self.panelRect())) orelse return null;
+            return .{ .row = cursor.row, .col = cursor.col };
+        }
         if (self.focus != .editor) return null;
         const pane = self.activePane() orelse return null;
         const active = pane.activeTab() orelse return null;
@@ -3606,6 +3977,46 @@ fn statusFocusEditor(context: *anyopaque) void {
 fn commandFocusStatusBar(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     self.focusStatusBar();
+}
+
+fn commandToggleTerminal(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.toggleTerminal();
+}
+
+fn commandNewTerminal(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.newTerminal();
+}
+
+fn commandKillTerminal(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.killTerminal();
+}
+
+fn commandFocusTerminal(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusTerminal();
+}
+
+fn commandFocusNextTerminal(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.focusNextTerminal();
+}
+
+fn commandFocusPreviousTerminal(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.focusPreviousTerminal();
+}
+
+fn commandResizeTerminalUp(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.resizeTerminalPanel(1);
+}
+
+fn commandResizeTerminalDown(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.resizeTerminalPanel(-1);
 }
 
 fn executeStatusbarCommand(context: *anyopaque, command: statusbar_types.StatusbarCommand) anyerror!void {
@@ -5360,6 +5771,11 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.focusStatusBar", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyS) } },
     .{ .id = "breadcrumbs.focusAndSelect", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Period) } },
     .{ .id = "breadcrumbs.focus", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Semicolon) } },
+    .{ .id = "workbench.action.terminal.toggleTerminal", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyT) } },
+    .{ .id = "workbench.action.terminal.new", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyN) } },
+    .{ .id = "workbench.action.terminal.kill", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyW) } },
+    .{ .id = "workbench.action.terminal.resizeUp", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.UpArrow) } },
+    .{ .id = "workbench.action.terminal.resizeDown", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.DownArrow) } },
 };
 
 test "workbench: global shortcuts dispatch through the keybinding registry" {
@@ -5397,7 +5813,17 @@ fn executeStatusbarKeyCommand(context: *anyopaque, command_id: []const u8) anyer
 
 fn executeGlobalCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.focus == .terminal and self.terminalVisible() and !terminalCommandSkipsShell(command_id)) {
+        // The shell owns this chord. Tell handleGlobalKey it was not handled so
+        // the app can hand the bytes to the pty instead of the workbench.
+        self.suppress_global_command = true;
+        return;
+    }
     try self.commands.execute(command_id);
+}
+
+fn terminalCommandSkipsShell(command_id: []const u8) bool {
+    return terminal_common.skipsShell(command_id);
 }
 
 test "Workbench: files.associations change the opened editor language" {
