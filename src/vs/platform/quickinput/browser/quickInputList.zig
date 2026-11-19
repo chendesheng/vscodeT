@@ -14,7 +14,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
-const QuickPick = @import("../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
+const QuickPick = @import("./quickInput.zig").QuickPick;
 
 const background = ui.Color{ .r = 45, .g = 45, .b = 55 };
 const foreground = ui.Color{ .r = 230, .g = 230, .b = 230 };
@@ -381,7 +381,7 @@ fn drawText(
     max_width: usize,
     text: []const u8,
     style: ui.cell.PaintStyle,
-    matches: []const @import("../vs/base/common/filters.zig").Match,
+    matches: []const @import("../../../base/common/filters.zig").Match,
 ) usize {
     var col = x;
     var offset: usize = 0;
@@ -399,7 +399,7 @@ fn drawText(
     return col - x;
 }
 
-fn isMatched(matches: []const @import("../vs/base/common/filters.zig").Match, offset: usize) bool {
+fn isMatched(matches: []const @import("../../../base/common/filters.zig").Match, offset: usize) bool {
     for (matches) |match| {
         if (offset >= match.start and offset < match.end) return true;
     }

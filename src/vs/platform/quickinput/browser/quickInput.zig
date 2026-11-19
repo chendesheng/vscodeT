@@ -3,7 +3,7 @@
 //
 // The browser class also owns the DOM list and input box. This model keeps the
 // value, the items, the active/selected item and the activation/navigation
-// rules; `src/tui/quickInput.zig` renders it and forwards keys. Filtering is
+// rules; `quickInputList.zig` renders it and forwards keys. Filtering is
 // intentionally absent: quick access providers hand over already filtered
 // picks, exactly as `PickerQuickAccessProvider` does upstream by disabling
 // `matchOnLabel`, `matchOnDescription`, `matchOnDetail` and `sortByLabel`.

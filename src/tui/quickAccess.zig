@@ -40,7 +40,7 @@ const QuickAccessController = controller_mod.QuickAccessController;
 const quick_input_service_mod = @import("../vs/platform/quickinput/browser/quickInputService.zig");
 const QuickInputService = quick_input_service_mod.QuickInputService;
 const QuickPick = @import("../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
-const widget_mod = @import("./quickInput.zig");
+const widget_mod = @import("../vs/platform/quickinput/browser/quickInputList.zig");
 const QuickPickWidget = widget_mod.QuickPickWidget;
 
 pub const Host = struct {

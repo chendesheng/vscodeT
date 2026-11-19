@@ -559,7 +559,7 @@ comptime {
     _ = @import("./vs/workbench/test/browser/quickAccess.test.zig");
     _ = @import("./tui/commands.zig");
     _ = @import("./tui/fileIndex.zig");
-    _ = @import("./tui/quickInput.zig");
+    _ = @import("./vs/platform/quickinput/browser/quickInputList.zig");
     _ = @import("./tui/quickAccess.zig");
     _ = @import("./tui/extensions.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
