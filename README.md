@@ -544,8 +544,9 @@ console API for raw mode, sizing and input polling.
   Arrow keys, Home/End, Enter/Space and Escape navigate while focused,
   `Ctrl-Alt-S` toggles editor/status focus, and the `Focus Status Bar` command
   is in the palette.
-  The editor view keeps its fallback status row for standalone tests and the
-  read-only preview. The bar's terminal adaptations are documented in
+  The workbench uses its status-bar part; the editor view no longer renders a
+  built-in fallback status string. The read-only preview supplies its own status
+  row text through `setStatusText`. The bar's terminal adaptations are documented in
   `docs/terminal-ui.md`: codicons are plain text, text ellipsis is
   pre-truncation, focus is an underline, the tooltip is plain text, hidden
   entry state is in memory, and the context menu/auxiliary parts are not
