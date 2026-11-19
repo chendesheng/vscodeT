@@ -50,6 +50,7 @@ const language = @import("../../../../workbench/services/language/common/bundled
 const language_configuration = @import("../../../common/languages/languageConfiguration.zig");
 const encoding_mod = @import("../../../../workbench/services/textfile/common/encoding.zig");
 const EOL = @import("../../../common/core/misc/eolCounter.zig").EOL;
+const countEOL = @import("../../../common/core/misc/eolCounter.zig").countEOL;
 const editor_status = @import("../../../../workbench/browser/parts/editor/editorStatus.zig");
 const editor_common = @import("../../../common/editorCommon.zig");
 const ICommand = editor_common.ICommand;
@@ -72,8 +73,10 @@ const CancellationToken = @import("../../../../base/common/cancellation.zig").Ca
 const extensions_registry = @import("../../../../workbench/services/extensions/common/extensionsRegistry.zig");
 const language_config_point = @import("../../../../workbench/services/language/common/languageConfigurationExtensionPoint.zig");
 const text_mate_tokenizer = @import("../../../common/model/tokens/textMateTokenizer.zig");
+const AttachedView = @import("../../../common/model/tokens/abstractSyntaxTokenBackend.zig").AttachedView;
 const json_language = @import("../../../../workbench/services/language/common/jsonLanguageClient.zig");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
+const async_mod = @import("../../../../base/common/async.zig");
 const languagesAssociations = @import("../../../common/services/languagesAssociations.zig");
 const input = @import("ui").input;
 const keybinding_service = @import("../../../../workbench/services/keybinding/browser/keybindingService.zig");
@@ -219,6 +222,16 @@ pub const Editor = struct {
     /// them on the next view rebuild rather than inside the model change event,
     /// where moving selections would be re-entrant.
     folding_dirty: bool,
+    /// Upstream schedules folding ranges through a Delayer with a 200 ms
+    /// minimum debounce. The terminal drives it from the main-loop tick.
+    folding_delayer: async_mod.ThrottledDelayer,
+    folding_due: bool,
+    folding_delay_ms: i64,
+    /// Deferred bracket-pair AST/guide build for large documents. Building
+    /// the AST scans every line, so the first paint and key echo skip it and
+    /// the main loop refreshes it after the debounce.
+    bracket_guides_delayer: async_mod.ThrottledDelayer,
+    bracket_guides_due: bool,
     smart_select: smart_select.SmartSelectController,
     in_place_replace_deadline: ?i64,
     language_config_service: *LanguageConfigurationService,
@@ -255,6 +268,9 @@ pub const Editor = struct {
     pending_selection_count: usize,
     last_content_change: ?LastContentChange = null,
     tokens_need_refresh: bool,
+    /// The model stays attached for the lifetime of the terminal editor, so
+    /// the ported default background tokenizer can run from the main loop.
+    attached_view: ?*AttachedView = null,
     /// Whether multi-cursor paste spreads clipboard lines over cursors. The
     /// terminal has no settings service yet; upstream's default is `spread`.
     multi_cursor_paste_spread: bool = true,
@@ -279,8 +295,31 @@ pub const Editor = struct {
     marker_decorations: ?*MarkerDecorationsService = null,
     json_completion_registration: ?IDisposable = null,
 
+    /// Terminal host options. `reserve_scrollbar` makes the first wrapping
+    /// pass use the final text width, avoiding a second full-file wrap when
+    /// the View attaches.
+    pub const CreateOptions = struct {
+        reserve_scrollbar: bool = false,
+    };
+
+    pub fn overviewRulerWidthFor(screen_width: usize, gutter: usize) usize {
+        const available = screen_width -| gutter;
+        return if (available >= 3) 2 else 0;
+    }
+
     pub fn create(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Editor {
-        return createInternal(allocator, io, path, width, height, null, null);
+        return createInternal(allocator, io, path, width, height, null, null, .{});
+    }
+
+    pub fn createWithOptions(
+        allocator: Allocator,
+        io: Io,
+        path: []const u8,
+        width: usize,
+        height: usize,
+        options: CreateOptions,
+    ) !*Editor {
+        return createInternal(allocator, io, path, width, height, null, null, options);
     }
 
     pub fn createWithDeclarative(
@@ -291,7 +330,19 @@ pub const Editor = struct {
         height: usize,
         declarative: ?*const extensions_registry.Registry,
     ) !*Editor {
-        return createInternal(allocator, io, path, width, height, null, declarative);
+        return createInternal(allocator, io, path, width, height, null, declarative, .{});
+    }
+
+    pub fn createWithDeclarativeOptions(
+        allocator: Allocator,
+        io: Io,
+        path: []const u8,
+        width: usize,
+        height: usize,
+        declarative: ?*const extensions_registry.Registry,
+        options: CreateOptions,
+    ) !*Editor {
+        return createInternal(allocator, io, path, width, height, null, declarative, options);
     }
 
     pub fn createWithExtensions(
@@ -303,17 +354,34 @@ pub const Editor = struct {
         declarative: ?*const extensions_registry.Registry,
         json_client: ?*json_language.Client,
     ) !*Editor {
-        const editor = try createInternal(allocator, io, path, width, height, null, declarative);
+        return createWithExtensionsOptions(allocator, io, path, width, height, declarative, json_client, .{});
+    }
+
+    pub fn createWithExtensionsOptions(
+        allocator: Allocator,
+        io: Io,
+        path: []const u8,
+        width: usize,
+        height: usize,
+        declarative: ?*const extensions_registry.Registry,
+        json_client: ?*json_language.Client,
+        options: CreateOptions,
+    ) !*Editor {
+        const editor = try createInternal(allocator, io, path, width, height, null, declarative, options);
         editor.json_client = json_client;
         editor.attachJsonLanguage() catch {};
         return editor;
     }
 
     pub fn createFromText(allocator: Allocator, io: Io, text: []const u8, path: []const u8, width: usize, height: usize) !*Editor {
-        return createInternal(allocator, io, path, width, height, text, null);
+        return createInternal(allocator, io, path, width, height, text, null, .{});
     }
 
-    fn createInternal(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize, text: ?[]const u8, declarative: ?*const extensions_registry.Registry) !*Editor {
+    pub fn createFromTextWithOptions(allocator: Allocator, io: Io, text: []const u8, path: []const u8, width: usize, height: usize, options: CreateOptions) !*Editor {
+        return createInternal(allocator, io, path, width, height, text, null, options);
+    }
+
+    fn createInternal(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize, text: ?[]const u8, declarative: ?*const extensions_registry.Registry, options: CreateOptions) !*Editor {
         const editor = try allocator.create(Editor);
         errdefer allocator.destroy(editor);
 
@@ -415,10 +483,20 @@ pub const Editor = struct {
             model.deinit();
             allocator.destroy(model);
         }
+        // The fallback bracket matcher resolves RichEditBrackets through the
+        // terminal language-configuration host; the AST path does not need it.
+        model.bracketPairs().setLanguageConfigurationProvider(.{
+            .context = language_config_service,
+            .get = resolvedLanguageConfigurationForBrackets,
+        });
 
         const resolved = model.getOptions();
         const gutter = gutterWidthFor(model.getLineCount());
-        const text_width = @max(1, width - gutter);
+        const initial_scrollbar = if (options.reserve_scrollbar)
+            overviewRulerWidthFor(width, gutter)
+        else
+            0;
+        const text_width = @max(1, width -| gutter -| initial_scrollbar);
 
         var view_lines = try ProjectedViewModelLines.init(
             allocator,
@@ -466,6 +544,11 @@ pub const Editor = struct {
             .bracket_matching = BracketMatchingController.init(allocator, model),
             .folding = undefined,
             .folding_dirty = false,
+            .folding_delayer = undefined,
+            .folding_due = false,
+            .folding_delay_ms = folding_debounce_min_ms,
+            .bracket_guides_delayer = undefined,
+            .bracket_guides_due = false,
             .smart_select = smart_select.SmartSelectController.init(allocator, &.{}, .{}),
             .in_place_replace_deadline = null,
             .language_config_service = language_config_service,
@@ -483,7 +566,7 @@ pub const Editor = struct {
             .screen_height = @max(height, 1),
             .status_row = true,
             .gutter_width = gutter,
-            .scrollbar_width = 0,
+            .scrollbar_width = initial_scrollbar,
             .top_view_line = 1,
             .status = undefined,
             .status_len = 0,
@@ -499,6 +582,8 @@ pub const Editor = struct {
             .declarative_arena = declarative_arena,
             .json_client = null,
         };
+        editor.folding_delayer = async_mod.ThrottledDelayer.init(editor, foldingDue, folding_debounce_min_ms);
+        editor.bracket_guides_delayer = async_mod.ThrottledDelayer.init(editor, bracketGuidesDue, bracket_guides_debounce_ms);
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
         if (editor.character_pair) |*pair_support| {
             editor.cursor_config.auto_closing_pairs = pair_support.getAutoClosingPairs();
@@ -524,9 +609,11 @@ pub const Editor = struct {
         errdefer folding_controller.deinit();
         editor.folding = folding_controller;
         try editor.refreshFoldingRules();
-        try editor.refreshFolding();
+        editor.triggerFoldingUpdate(time_compat.milliTimestamp());
+        editor.triggerBracketGuidesUpdate(time_compat.milliTimestamp());
 
         try model.onDidChangeContentWithContext(editor, contentChangedCallback);
+        editor.attached_view = try model.onBeforeAttached();
 
         return editor;
     }
@@ -924,6 +1011,10 @@ pub const Editor = struct {
         if (self.multicursor_session) |*session| session.deinit();
         self.word_separators.deinit();
         self.view_lines.deinit();
+        if (self.attached_view) |view| {
+            self.model.onBeforeDetached(view) catch {};
+            self.attached_view = null;
+        }
         self.model.deinit();
         self.allocator.destroy(self.model);
         self.undo_redo.deinit();
@@ -963,8 +1054,24 @@ pub const Editor = struct {
                 self.last_content_change = .{ .range = change.range, .text = text };
             } else |_| {}
         }
+        // Apply the change to the wrapping model incrementally. Upstream's
+        // ViewModelLines does this on every content event; the terminal
+        // editor previously bypassed it with a full rebuild in afterEdit.
+        self.view_lines.applyRawChanges(&event.rawContentChangedEvent) catch {
+            self.tokens_need_refresh = true;
+            self.view_lines.rebuildAll() catch return;
+        };
+        var has_line_changes = false;
+        for (event.contentChangedEvent.changes.items) |change| {
+            if (change.range.endLineNumber != change.range.startLineNumber or countEOL(change.text.items()).eolCount != 0) {
+                has_line_changes = true;
+                break;
+            }
+        }
+        self.folding.hidden_model.notifyChangeModelContent(has_line_changes);
         self.refreshDirtyState();
-        self.folding_dirty = true;
+        self.triggerFoldingUpdate(time_compat.milliTimestamp());
+        self.triggerBracketGuidesUpdate(time_compat.milliTimestamp());
         for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
     }
 
@@ -1090,6 +1197,9 @@ pub const Editor = struct {
 
     /// Recomputes the provider ranges and applies the resulting hidden areas.
     fn refreshFolding(self: *Editor) !void {
+        self.folding_delayer.cancel();
+        self.folding_due = false;
+        const start_us = std.Io.Timestamp.now(time_compat.io, .awake).toMicroseconds();
         // A line-count change may leave the wrapping model one change behind;
         // rebuild it before a hidden range can point past its projections.
         self.ensureTokensVisible();
@@ -1098,6 +1208,11 @@ pub const Editor = struct {
         try self.folding.refresh(selections);
         self.folding_dirty = false;
         try self.applyFoldingVisibility();
+        const elapsed_ms: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(time_compat.io, .awake).toMicroseconds() - start_us, 1000));
+        if (elapsed_ms > 0) {
+            self.folding_delay_ms = @max(folding_debounce_min_ms, @min(elapsed_ms, folding_debounce_max_ms));
+            self.folding_delayer.delay_ms = self.folding_delay_ms;
+        }
     }
 
     /// Applies the fold controller's hidden ranges to the view model and keeps
@@ -1119,6 +1234,82 @@ pub const Editor = struct {
             _ = self.setTopViewLine(top_position.lineNumber);
         }
         if (adjusted) self.ensureCursorVisible();
+    }
+
+    const folding_debounce_min_ms: i64 = 200;
+    const folding_debounce_max_ms: i64 = 40_000;
+    const bracket_guides_debounce_ms: i64 = 200;
+    const bracket_guides_defer_line_count: usize = 500;
+
+    fn foldingDue(context: *anyopaque) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        self.folding_due = true;
+    }
+
+    fn bracketGuidesDue(context: *anyopaque) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        self.bracket_guides_due = true;
+    }
+
+    /// True when the view should skip bracket guides this frame: the AST is
+    /// dirty and building it would scan the whole document.
+    pub fn shouldDeferBracketGuides(self: *Editor) bool {
+        return self.model.getLineCount() > bracket_guides_defer_line_count and
+            self.model.bracketPairs().isDirty();
+    }
+
+    /// Reschedules the deferred bracket guides when the view noticed that
+    /// token updates made the AST stale.
+    pub fn scheduleBracketGuides(self: *Editor, now_ms: i64) void {
+        self.triggerBracketGuidesUpdate(now_ms);
+    }
+
+    fn triggerBracketGuidesUpdate(self: *Editor, now_ms: i64) void {
+        if (self.model.getLineCount() <= bracket_guides_defer_line_count) {
+            self.bracket_guides_delayer.cancel();
+            return;
+        }
+        self.bracket_guides_delayer.trigger(now_ms, null);
+    }
+
+    /// Drives the deferred bracket-pair AST/guide build. Returns true when a
+    /// repaint is needed.
+    pub fn pollBracketGuides(self: *Editor, now_ms: i64) bool {
+        if (!self.bracket_guides_delayer.poll(now_ms)) return false;
+        if (!self.bracket_guides_due) return false;
+        self.bracket_guides_due = false;
+        self.model.bracketPairs().updateNow() catch return true;
+        return true;
+    }
+
+    pub fn bracketGuidesTimeout(self: *const Editor, now_ms: i64) ?u32 {
+        return self.bracket_guides_delayer.nextTimeout(now_ms);
+    }
+
+    /// Schedules a folding recompute. Content changes reset the deadline, so
+    /// rapid typing coalesces into one range computation, like upstream's
+    /// `Delayer`-based `triggerFoldingModelChanged`.
+    fn triggerFoldingUpdate(self: *Editor, now_ms: i64) void {
+        self.folding_dirty = true;
+        self.folding_delayer.trigger(now_ms, null);
+    }
+
+    /// Drives the debounced folding pass from the main loop. Returns true when
+    /// ranges were recomputed and the view should repaint.
+    pub fn pollFolding(self: *Editor, now_ms: i64) bool {
+        if (!self.folding_delayer.poll(now_ms)) return false;
+        if (!self.folding_due) return false;
+        self.folding_due = false;
+        self.refreshFolding() catch |err| {
+            self.folding_dirty = false;
+            self.setMessage("folding failed: {s}", .{@errorName(err)});
+            return true;
+        };
+        return true;
+    }
+
+    pub fn foldingTimeout(self: *const Editor, now_ms: i64) ?u32 {
+        return self.folding_delayer.nextTimeout(now_ms);
     }
 
     pub fn refreshFoldingIfDirty(self: *Editor) void {
@@ -1265,7 +1456,7 @@ pub const Editor = struct {
             self.character_pair = null;
         }
         try self.refreshFoldingRules();
-        self.folding_dirty = true;
+        self.triggerFoldingUpdate(time_compat.milliTimestamp());
     }
 
     pub fn getEncoding(self: *const Editor) encoding_mod.Encoding {
@@ -1439,6 +1630,27 @@ pub const Editor = struct {
 
     pub fn clearMessage(self: *Editor) void {
         self.status_len = 0;
+    }
+
+    /// Advances the ported default background tokenizer by one ~1 ms chunk.
+    /// Returns true when tokens changed and the view should repaint.
+    pub fn pollBackgroundTokenization(self: *Editor) bool {
+        return self.model.pollBackgroundTokenization();
+    }
+
+    pub fn backgroundTokenizationPending(self: *Editor) bool {
+        return self.model.backgroundTokenizationPending();
+    }
+
+    /// Forces the visible-range tokenization after the first paint. Returns
+    /// true when a repaint with syntax colors is needed.
+    fn ensureLinesTokenized(self: *Editor, selections: []const Selection) void {
+        for (selections) |selection| {
+            const line = selection.getStartPosition().lineNumber;
+            if (!self.model.hasAccurateTokensForLine(line)) {
+                self.model.forceTokenization(line);
+            }
+        }
     }
 
     pub fn ensureTokensVisible(self: *Editor) void {
@@ -1946,7 +2158,9 @@ pub const Editor = struct {
 
     fn afterEdit(self: *Editor) !void {
         self.tokens_need_refresh = true;
-        try self.view_lines.rebuildAll();
+        if (self.view_lines.projections.items.len != self.model.getLineCount()) {
+            try self.view_lines.rebuildAll();
+        }
         self.resetCursorViewState() catch {};
         try self.refreshLayout();
     }
@@ -1985,6 +2199,7 @@ pub const Editor = struct {
 
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
+        self.ensureLinesTokenized(selections);
 
         var auto_indent_result = try AutoIndentOperation.getEdits(
             self.allocator,
@@ -2064,6 +2279,7 @@ pub const Editor = struct {
 
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
+        self.ensureLinesTokenized(selections);
         const targets = try self.allocator.alloc(Selection, selections.len);
         defer self.allocator.free(targets);
         for (selections, 0..) |selection, index| {
@@ -2354,7 +2570,9 @@ pub const Editor = struct {
 
     fn afterUndoRedo(self: *Editor) !void {
         self.tokens_need_refresh = true;
-        try self.view_lines.rebuildAll();
+        if (self.view_lines.projections.items.len != self.model.getLineCount()) {
+            try self.view_lines.rebuildAll();
+        }
         if (self.pending_selection_count > 0) {
             try self.cursorsRef().setSelections(self.allocator, self.pending_selection[0..self.pending_selection_count]);
             self.pending_selection_count = 0;
@@ -2939,6 +3157,14 @@ fn gutterWidthFor(line_count: usize) usize {
     var n = line_count;
     while (n >= 10) : (n /= 10) digits += 1;
     return @max(@as(usize, 3), digits + 1);
+}
+
+fn resolvedLanguageConfigurationForBrackets(
+    context: *anyopaque,
+    language_id: []const u8,
+) ?*const language_configuration_registry.ResolvedLanguageConfiguration {
+    const service: *LanguageConfigurationService = @ptrCast(@alignCast(context));
+    return service.resolved(language_id);
 }
 
 fn createModel(
@@ -3803,6 +4029,7 @@ test "Editor: folding hides a region and unfolds it again" {
         allocator.destroy(editor);
     }
 
+    editor.refreshFoldingIfDirty();
     try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
     try std.testing.expectEqual(folding.FoldState.expanded, editor.foldStateAtModelLine(1));
 
@@ -4691,4 +4918,129 @@ test "Editor: Alt+F dispatches formatDocument" {
     const event = input.KeyEvent{ .key = .{ .char = 'F' }, .mods = .{ .alt = true } };
     try std.testing.expect(try editor.dispatchShortcut(event));
     try std.testing.expectEqualStrings("No JSON language server", editor.message());
+}
+
+test "Editor: incremental edits do not rebuild the whole wrapping model" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var text: Io.Writer.Allocating = .init(allocator);
+    defer text.deinit();
+    for (0..100) |i| try text.writer.print("const line_{d} = {d};\n", .{ i, i });
+
+    var editor = try Editor.createFromText(allocator, io, text.written(), "test.zig", 80, 10);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expectEqual(@as(usize, 101), editor.model.getLineCount());
+    const rebuilds_before = editor.view_lines.rebuildAllCount();
+    try editor.insertText("x");
+    try std.testing.expectEqual(rebuilds_before, editor.view_lines.rebuildAllCount());
+
+    try editor.insertText("\n");
+    try std.testing.expectEqual(rebuilds_before, editor.view_lines.rebuildAllCount());
+    try std.testing.expectEqual(@as(usize, 102), editor.model.getLineCount());
+    try std.testing.expectEqual(editor.model.getLineCount(), editor.viewLineCount());
+}
+
+test "Editor: folding is scheduled with the upstream debounce" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(
+        allocator,
+        io,
+        "class A {\n  void f() {\n    x();\n  }\n}",
+        "test.zig",
+        40,
+        10,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const now = time_compat.milliTimestamp();
+    // Re-arm with a known "now" so a slow create cannot already have passed
+    // the initial 200 ms deadline.
+    editor.triggerFoldingUpdate(now);
+    try std.testing.expect(editor.folding_dirty);
+    try std.testing.expectEqual(folding.FoldState.none, editor.foldStateAtModelLine(1));
+    try std.testing.expect(!editor.pollFolding(now));
+    try std.testing.expect(editor.pollFolding(now + 200));
+    try std.testing.expectEqual(folding.FoldState.expanded, editor.foldStateAtModelLine(1));
+    try std.testing.expect(!editor.pollFolding(now + 400));
+}
+
+test "Editor: reserving the scrollbar avoids a second wrapping pass" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromTextWithOptions(
+        allocator,
+        io,
+        "abcdefgh",
+        "test.txt",
+        12,
+        5,
+        .{ .reserve_scrollbar = true },
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expectEqual(@as(usize, 2), editor.scrollbar_width);
+    try std.testing.expectEqual(@as(usize, 7), editor.textAreaWidth());
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+    try std.testing.expectEqual(@as(usize, 1), editor.view_lines.rebuildAllCount());
+
+    const View = @import("../../viewTerminal.zig").View;
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    // View.init still sets the same width; it must not trigger another wrap.
+    try std.testing.expectEqual(@as(usize, 1), editor.view_lines.rebuildAllCount());
+}
+
+test "Editor: fallback bracket matching (colorization disabled)" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.ensureTokensVisible();
+    const bracket_pairs = editor.model.bracketPairs();
+    const matched = bracket_pairs.matchBracket(Position.init(1, 2), null);
+    try std.testing.expect(matched != null);
+    try std.testing.expectEqual(@as(usize, 1), matched.?[0].startColumn);
+    try std.testing.expectEqual(@as(usize, 3), matched.?[1].startColumn);
+    const enclosing = bracket_pairs.findEnclosingBrackets(Position.init(1, 2), null);
+    try std.testing.expect(enclosing != null);
+    try std.testing.expectEqual(@as(usize, 1), enclosing.?[0].startColumn);
+
+    var multi = try Editor.createFromText(allocator, io, "if (a) {\n  b();\n}\n", "test.zig", 40, 8);
+    defer {
+        multi.deinit();
+        allocator.destroy(multi);
+    }
+    multi.ensureTokensVisible();
+    const multi_pairs = multi.model.bracketPairs();
+    const braces = multi_pairs.matchBracket(Position.init(1, 8), null).?;
+    try std.testing.expectEqual(Position.init(1, 8), braces[0].getStartPosition());
+    try std.testing.expectEqual(Position.init(3, 1), braces[1].getStartPosition());
+    const outer = multi_pairs.findEnclosingBrackets(Position.init(2, 3), null).?;
+    try std.testing.expectEqual(Position.init(1, 8), outer[0].getStartPosition());
+    const next = multi_pairs.findNextBracket(Position.init(1, 1)).?;
+    try std.testing.expectEqual(@as(usize, 4), next.range.startColumn);
+    try std.testing.expectEqualStrings("(", next.bracketText);
+    const previous = multi_pairs.findPrevBracket(Position.init(1, 7)).?;
+    try std.testing.expectEqual(@as(usize, 6), previous.range.startColumn);
+    try std.testing.expectEqualStrings(")", previous.bracketText);
+
+    // Brackets inside strings are ignored by the fallback token filter.
+    var stringed = try Editor.createFromText(allocator, io, "const s = \"{\";", "test.zig", 40, 8);
+    defer {
+        stringed.deinit();
+        allocator.destroy(stringed);
+    }
+    stringed.ensureTokensVisible();
+    try std.testing.expect(stringed.model.bracketPairs().matchBracket(Position.init(1, 12), null) == null);
 }

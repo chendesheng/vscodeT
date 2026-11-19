@@ -103,6 +103,9 @@ pub const PolicyConfiguration = struct {
     onDidChangeConfiguration: Emitter(ConfigurationModel),
     submitted: std.StringHashMap(PolicyDefinition),
     name_by_key: std.StringHashMap([]const u8),
+    /// Owns the keys in `name_by_key`; the default configuration model can
+    /// rebuild and free its key strings while a registry listener is running.
+    name_by_key_arena: std.heap.ArenaAllocator,
     listener_id: ?usize = null,
     registry_listener: ?usize = null,
 
@@ -115,6 +118,7 @@ pub const PolicyConfiguration = struct {
             .onDidChangeConfiguration = Emitter(ConfigurationModel).init(allocator),
             .submitted = std.StringHashMap(PolicyDefinition).init(allocator),
             .name_by_key = std.StringHashMap([]const u8).init(allocator),
+            .name_by_key_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
@@ -125,6 +129,7 @@ pub const PolicyConfiguration = struct {
         self.onDidChangeConfiguration.deinit();
         self.submitted.deinit();
         self.name_by_key.deinit();
+        self.name_by_key_arena.deinit();
     }
 
     pub fn configurationModel(self: *const PolicyConfiguration) *const ConfigurationModel {
@@ -181,7 +186,10 @@ pub const PolicyConfiguration = struct {
                 if (std.meta.eql(existing, definition)) continue;
             }
             try self.submitted.put(policy_name, definition);
-            try self.name_by_key.put(key, policy_name);
+            if (self.name_by_key.get(key) == null) {
+                const owned_key = try self.name_by_key_arena.allocator().dupe(u8, key);
+                try self.name_by_key.put(owned_key, policy_name);
+            }
             try changed.append(definition);
         }
         if (changed.items.len > 0) try self.policy_service.updatePolicyDefinitions(changed.items);

@@ -516,6 +516,13 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.fileWatcherTimeout(now_ms)) |watcher_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(watcher_timeout, 250))));
         }
+        if (workbench.foldingTimeout(now_ms)) |folding_timeout| {
+            timeout = @min(timeout, @as(i32, @intCast(@min(folding_timeout, 250))));
+        }
+        if (workbench.bracketGuidesTimeout(now_ms)) |guides_timeout| {
+            timeout = @min(timeout, @as(i32, @intCast(@min(guides_timeout, 250))));
+        }
+        if (workbench.backgroundTokenizationPending()) timeout = 0;
 
         workbench.flushTerminals();
         if (workbench.hasPendingTerminalWrites()) timeout = @min(timeout, 20);
@@ -572,6 +579,13 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (!ready) {
+            // Only spend deferred analysis when no input is buffered, so rapid
+            // typing is echoed before syntax colors/folding/guides catch up.
+            // Run at most one heavy pass per idle tick.
+            var maintenance = workbench.pollFolding(now_ms);
+            if (!maintenance) maintenance = workbench.pollBracketGuides(now_ms);
+            if (workbench.pollBackgroundTokenization()) maintenance = true;
+            if (maintenance) needs_render = true;
             if (resized or needs_render) {
                 if (workbench.activeTab()) |current| {
                     current.onEditorChanged(now_ms);

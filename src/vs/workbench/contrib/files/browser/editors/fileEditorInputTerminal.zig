@@ -134,7 +134,7 @@ pub const FileEditorSerializer = struct {
 
     fn deserialize(context: *anyopaque, data: []const u8) anyerror!?*EditorInput {
         const self: *FileEditorSerializer = @ptrCast(@alignCast(context));
-        const editor = Editor.create(self.allocator, self.io, data, self.width, self.height) catch return null;
+        const editor = Editor.createWithOptions(self.allocator, self.io, data, self.width, self.height, .{ .reserve_scrollbar = true }) catch return null;
         errdefer {
             editor.deinit();
             self.allocator.destroy(editor);

@@ -122,6 +122,14 @@ pub const TokenizationTextModelPart = struct {
         self.tokens.handleDidChangeAttached();
     }
 
+    pub fn pollBackgroundTokenization(self: *TokenizationTextModelPart) bool {
+        return self.tokens.pollBackgroundTokenization();
+    }
+
+    pub fn backgroundTokenizationPending(self: *TokenizationTextModelPart) bool {
+        return self.tokens.backgroundTokenizationPending();
+    }
+
     pub fn getLineTokens(self: *TokenizationTextModelPart, lineNumber: usize) !LineTokens {
         self.validateLineNumber(lineNumber);
         const syntacticTokens = try self.tokens.getLineTokens(lineNumber);

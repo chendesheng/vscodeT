@@ -23,7 +23,40 @@ zig build run -- --session <file> [<folder>] [<file>...]  # restore/save the tab
 zig build run -- --preview <file>   # read-only terminal UI preview
 zig build test   # run the editor and ui library tests
 zig build test-watcher -Dwatcher-only=true   # run the file-watcher tests without the TUI
+zig build bench-open   # Debug open/edit benchmarks (skipped by zig build test)
 ```
+
+## Performance
+
+The TUI targets a reasonable default **Debug** build; no ReleaseFast step is
+required for the measurements below.
+
+- Opening a file performs one view rebuild and one full wrapping pass. The
+  workbench reserves the overview-ruler/scrollbar columns before that pass, and
+  a path that is already open reuses its existing tab/editor instead of
+  re-reading and constructing a new one.
+- Edits apply the model's raw changes through
+  `ProjectedViewModelLines.applyRawChanges` instead of re-wrapping the whole
+  file, matching upstream's incremental view-model update.
+- Folding is scheduled like upstream: a 200 ms minimum debounce, coalesced while
+  typing, and driven by the main-loop tick. Fold commands and gutter clicks
+  still compute immediately.
+- Large documents defer the bracket-pair AST/guide build (another
+  whole-document pass) until the debounced main-loop tick; bracket matching
+  itself uses the ported upstream fallback matcher when bracket-pair
+  colorization is disabled. The deferral keeps first paint and key echo fast,
+  but the one-time AST build can cause a brief pause when the app is idle after
+  opening or editing a large file.
+- Tokenization stays viewport-scoped. The model is not attached to an editor,
+  so the ported background tokenizer's whole-file loop stays dormant; editable
+  views force tokens only up to the last visible line, and scrolling extends
+  that range. Large documents first paint plain text and tokenize the viewport
+  on the next idle main-loop tick; small documents tokenize synchronously. The
+  first open of a language still loads its TextMate grammar once per process.
+- `zig build bench-open` runs the opt-in `benchmark:` tests: open stages, one
+  edit frame, word-highlight scanning, and the viewport-tokenization contract.
+  Set `VSCODE_TEXTBUFFER_BENCH_FILE` to benchmark another file (default
+  `src/tui/app.zig`).
 
 ## Upstream VS Code checkout
 
@@ -595,7 +628,11 @@ Bracket-pair colorization:
   parser falls back to a full rebuild when no reusable node is available.
 - `TextModel.bracketPairs()` exposes `getBracketPairsInRange`,
   `getBracketsInRange`, matching/enclosing/navigation helpers, and
-  unmatched-closing detection.
+  unmatched-closing detection. The upstream non-AST fallback matcher is ported
+  as well; the TUI uses it when bracket-pair colorization is disabled (the
+  default), so matching does not force tokenization of the whole document. The
+  AST is still built for the visible bracket guides and is deferred for large
+  documents.
 - `ColorizedBracketPairsDecorationProvider` turns colorized brackets into
   `bracket-highlighting-N` / `unexpected-closing-bracket` decorations, honoring
   `bracketPairColorizationOptions`.
@@ -628,7 +665,10 @@ Bracket-pair colorization:
 - Not ported: tree-sitter tokenization, font-token annotations, and custom
   `wordPattern` language configurations.
 - Background tokenization is synchronous (1 ms chunks) because this port has
-  no browser idle loop; behavior is otherwise equivalent.
+  no browser idle loop. The TUI never calls `onBeforeAttached`, so the default
+  background tokenizer is dormant; editable views force tokens for the visible
+  range instead. Do not attach a model without first making the background
+  tokenizer tick-based, or it will tokenize the whole document in one call.
 
 View model:
 
@@ -935,7 +975,9 @@ Editor contributions:
   `foldingModel` (region state and collapse transitions),
   `hiddenRangeModel` (hidden-line ranges and selection adjustment), and the
   terminal-facing `folding` controller (range computation, collapse actions,
-  gutter state). `ProjectedViewModelLines.setHiddenAreas` removes collapsed
+  gutter state). Range computation is scheduled through upstream's ~200 ms
+  `Delayer` debounce on the main-loop tick; fold actions force it immediately.
+  `ProjectedViewModelLines.setHiddenAreas` removes collapsed
   lines from the view projection, so view/model conversion, cursor movement,
   selection adjustment, wrapping and the scrollbar all see the folded view.
   The TUI gutter paints `▾`/`▸` in its last cell and handles the click; the

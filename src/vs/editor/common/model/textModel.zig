@@ -548,6 +548,15 @@ pub const TextModel = struct {
         return self._attachedEditorCount;
     }
 
+    /// Main-loop tick for the ported default background tokenizer.
+    pub fn pollBackgroundTokenization(self: *TextModel) bool {
+        return self._tokenizationTextModelPart.pollBackgroundTokenization();
+    }
+
+    pub fn backgroundTokenizationPending(self: *TextModel) bool {
+        return self._tokenizationTextModelPart.backgroundTokenizationPending();
+    }
+
     pub fn isTooLargeForSyncing(self: *const TextModel) bool {
         return self._isTooLargeForSyncing;
     }

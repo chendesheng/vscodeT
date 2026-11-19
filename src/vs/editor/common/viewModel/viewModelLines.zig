@@ -51,6 +51,9 @@ pub const ProjectedViewModelLines = struct {
     /// Model line ranges hidden by folding. The projections carry the actual
     /// visibility flag; this list is the normalized source used to rebuild it.
     hidden_ranges: ArrayList(Range),
+    /// Diagnostic counter: how many times the whole projection list was
+    /// rebuilt. Incremental edit mapping must not bump this on a normal edit.
+    rebuild_all_count: usize = 0,
 
     // Scratch storage used by the cursor interface and the renderer. Data
     // returned by `getLineContent`/`getViewLineData` is borrowed until the next
@@ -190,6 +193,7 @@ pub const ProjectedViewModelLines = struct {
     }
 
     pub fn rebuildAll(self: *ProjectedViewModelLines) !void {
+        self.rebuild_all_count += 1;
         var new_projections = ArrayList(ModelLineProjection).init(self.allocator);
         var projections_owned = true;
         defer if (projections_owned) {
@@ -304,6 +308,11 @@ pub const ProjectedViewModelLines = struct {
 
     pub fn getViewLineCount(self: *ProjectedViewModelLines) usize {
         return self.prefix.getTotalSum();
+    }
+
+    /// Number of full projection rebuilds; diagnostics for tests/benchmarks.
+    pub fn rebuildAllCount(self: *const ProjectedViewModelLines) usize {
+        return self.rebuild_all_count;
     }
 
     fn toValidViewLineNumber(self: *ProjectedViewModelLines, view_line_number: usize) usize {

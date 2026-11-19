@@ -496,6 +496,18 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const markdown_test_step = b.step("test-markdown", "Run markdown/TextMate syntax tests");
     markdown_test_step.dependOn(&run_markdown_tests.step);
 
+    // Debug-build performance harness for the file-open/edit hot paths. The
+    // tests are skipped in the normal suite unless this step enables them.
+    const bench_tests = b.addTest(.{
+        .name = "open_bench",
+        .root_module = tests.root_module,
+        .filters = &.{"benchmark:"},
+    });
+    const run_bench_tests = b.addRunArtifact(bench_tests);
+    run_bench_tests.setEnvironmentVariable("VSCODE_TEXTBUFFER_BENCH", "1");
+    const bench_test_step = b.step("bench-open", "Run the Debug open/edit benchmarks");
+    bench_test_step.dependOn(&run_bench_tests.step);
+
     const ui_tests = b.addTest(.{
         .name = "ui_tests",
         .root_module = b.createModule(.{

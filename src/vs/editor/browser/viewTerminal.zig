@@ -38,6 +38,7 @@ const ui = @import("ui");
 
 const Editor = @import("./widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const tokenization = @import("../common/tokenizationRegistry.zig");
+const time_compat = @import("../../base/common/timeCompat.zig");
 const CursorColumns = @import("../common/core/cursorColumns.zig").CursorColumns;
 const CursorState = @import("../common/cursorCommon.zig").CursorState;
 const Position = @import("../common/core/position.zig").Position;
@@ -260,6 +261,12 @@ pub const View = struct {
     /// Whether this view paints the editor's fallback status row. The
     /// multi-group workbench disables it in favour of its status-bar part.
     status_bar_visible: bool = true,
+    /// Set when a widget/status/layout change made the current document
+    /// stale. The next paint/render flushes it, so a burst of registrations
+    /// costs one rebuild instead of one per call.
+    needs_rebuild: bool = true,
+    /// Diagnostic counter for tests/benchmarks: full document rebuilds.
+    rebuild_count: usize = 0,
 
     const LineEntry = struct {
         node: *ui.Node,
@@ -334,7 +341,9 @@ pub const View = struct {
             .measure_width = measureCodepoint,
         });
         errdefer self.surface.deinit();
-        try self.rebuild();
+        // The first paint/render flushes the initial rebuild. Callers that
+        // only construct a view (the workbench open path) can batch widget
+        // and layout changes before paying for it.
         return self;
     }
 
@@ -348,17 +357,36 @@ pub const View = struct {
         self.allocator.destroy(self);
     }
 
+    /// Marks the current document stale. The next paint/render rebuilds it.
+    pub fn invalidate(self: *View) void {
+        self.needs_rebuild = true;
+    }
+
+    pub fn needsRebuild(self: *const View) bool {
+        return self.needs_rebuild;
+    }
+
+    /// Diagnostic counter for tests/benchmarks: full document rebuilds.
+    pub fn rebuildCount(self: *const View) usize {
+        return self.rebuild_count;
+    }
+
+    fn ensureBuilt(self: *View) !void {
+        if (!self.needs_rebuild) return;
+        try self.rebuild();
+    }
+
     /// Registers an overlay widget. The caller owns the widget struct and must
     /// keep its context alive until it is removed or the view is destroyed.
     pub fn addOverlayWidget(self: *View, widget: editorBrowser.IOverlayWidget) !void {
         try self.overlays.append(widget);
-        try self.refresh();
+        self.invalidate();
     }
 
     /// Registers a content widget anchored to a model position.
     pub fn addContentWidget(self: *View, widget: editorBrowser.IContentWidget) !void {
         try self.content_widgets.append(widget);
-        try self.refresh();
+        self.invalidate();
     }
 
     /// Enables or disables the view's own status row. Disabling it gives the
@@ -377,7 +405,7 @@ pub const View = struct {
         if (self.status_bar_visible == visible) return;
         self.status_bar_visible = visible;
         self.editor.setStatusRow(visible);
-        try self.refresh();
+        self.invalidate();
     }
 
     /// Supplies the standalone editor view's fallback status text. Workbench
@@ -468,7 +496,7 @@ pub const View = struct {
             const widget = self.overlays.items[index];
             if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
                 _ = self.overlays.orderedRemove(index);
-                try self.refresh();
+                self.invalidate();
                 return;
             }
         }
@@ -480,7 +508,7 @@ pub const View = struct {
             const widget = self.content_widgets.items[index];
             if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
                 _ = self.content_widgets.orderedRemove(index);
-                try self.refresh();
+                self.invalidate();
                 return;
             }
         }
@@ -490,6 +518,7 @@ pub const View = struct {
     /// Returns true when a listener consumed it, so the editor must not also
     /// handle the key.
     pub fn dispatchKey(self: *View, event: *ui.KeyEvent) bool {
+        self.ensureBuilt() catch return false;
         const doc = self.surface.document();
         if (doc.active_element == null) return false;
         doc.dispatchEvent(event);
@@ -500,6 +529,7 @@ pub const View = struct {
     /// default actions: a press places the caret, a drag selects, and the wheel
     /// scrolls the viewport. Returns true when the caret or selection changed.
     pub fn dispatchMouse(self: *View, event: *ui.MouseEvent) !bool {
+        try self.ensureBuilt();
         const doc = self.surface.document();
         const target = (try self.surface.elementFromPoint(event.x, event.y)) orelse
             (doc.root orelse return false);
@@ -692,6 +722,7 @@ pub const View = struct {
     /// types. Hover needs to know whether the pointer is on text, past the end
     /// of a line, on the gutter or on a widget.
     pub fn mouseTargetAt(self: *View, x: usize, y: usize) !editorBrowser.MouseTarget {
+        try self.ensureBuilt();
         const doc = self.surface.document();
         const target = (try self.surface.elementFromPoint(x, y)) orelse doc.root orelse
             return .{ .mouse_column = x + 1 };
@@ -812,7 +843,8 @@ pub const View = struct {
         const width = self.editor.screen_width;
         const height = self.editor.screen_height;
         if (self.surface.document().cols == width and self.surface.document().rows == height) {
-            return self.refresh();
+            self.invalidate();
+            return;
         }
 
         const replacement = try ui.Surface.init(self.allocator, .{
@@ -825,10 +857,11 @@ pub const View = struct {
         var previous = self.surface;
         self.surface = replacement;
         previous.deinit();
-        try self.rebuild();
+        self.invalidate();
     }
 
-    /// Rebuilds the whole document from the editor state.
+    /// Rebuilds the whole document from the editor state. This is the forced
+    /// path used after an input batch; batching call sites use `invalidate`.
     pub fn refresh(self: *View) !void {
         try self.rebuild();
     }
@@ -852,6 +885,7 @@ pub const View = struct {
     /// Paints into the view's own frame without writing ANSI. The multi-file
     /// workbench composites this grid below the tab strip.
     pub fn paint(self: *View) !void {
+        try self.ensureBuilt();
         try self.surface.paintFrame();
     }
 
@@ -860,12 +894,14 @@ pub const View = struct {
     }
 
     pub fn render(self: *View, writer: *std.Io.Writer) !void {
+        try self.ensureBuilt();
         try self.surface.render(writer, .{ .synchronized = true });
     }
 
     /// The hardware cursor cell, valid after `render` has laid the tree out.
     /// Returns null when the caret is outside the text area.
     pub fn cursorCell(self: *View) ?Cell {
+        self.ensureBuilt() catch return null;
         // A focused widget paints its own block caret; the hardware cursor
         // belongs to the editor.
         if (self.surface.document().active_element != null) return null;
@@ -893,11 +929,13 @@ pub const View = struct {
     }
 
     fn rebuild(self: *View) !void {
+        self.rebuild_count += 1;
         const editor = self.editor;
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
         editor.ensureTokensVisible();
-        editor.refreshFoldingIfDirty();
+        // Folding is scheduled by the debounced main-loop pass; rebuilding
+        // must not block on a full-document range scan.
         // The cursor is revealed by cursor moves and edits, not on every
         // rebuild: a wheel scroll is allowed to leave it off-screen.
         _ = editor.scrollViewLines(0);
@@ -1018,35 +1056,39 @@ pub const View = struct {
             // underlying cell is leading whitespace; a terminal cell cannot
             // show both the guide and a text glyph.
             if (guide_end_model_line >= guide_start_model_line) {
-                const bracket_guides = try indent_guides.getBracketGuides(
-                    self.allocator,
-                    editor.model,
-                    guide_start_model_line,
-                    guide_end_model_line,
-                    editor.modelCursorPosition(),
-                );
-                defer {
-                    for (bracket_guides) |*line_guides| line_guides.deinit();
-                    self.allocator.free(bracket_guides);
-                }
+                if (editor.shouldDeferBracketGuides()) {
+                    editor.scheduleBracketGuides(time_compat.milliTimestamp());
+                } else {
+                    const bracket_guides = try indent_guides.getBracketGuides(
+                        self.allocator,
+                        editor.model,
+                        guide_start_model_line,
+                        guide_end_model_line,
+                        editor.modelCursorPosition(),
+                    );
+                    defer {
+                        for (bracket_guides) |*line_guides| line_guides.deinit();
+                        self.allocator.free(bracket_guides);
+                    }
 
-                for (bracket_guides, 0..) |line_guides, index| {
-                    const model_line = guide_start_model_line + index;
-                    const row = viewRowForModelLine(editor, top, model_line) orelse continue;
-                    var content = try editor.model.getLineContent(model_line);
-                    defer content.deinit();
-                    const indent_width = computeIndentLevel(content.items, tab_size);
-                    for (line_guides.items) |guide| {
-                        if (guide.column >= text_width) continue;
-                        if (indent_width >= 0 and guide.column >= @as(usize, @intCast(indent_width))) continue;
-                        try guide_specs.append(.{
-                            .row = row,
-                            .col = guide.column,
-                            .color = if (guide.active)
-                                bracket_guide_active_color
-                            else
-                                bracket_guide_colors[guide.level % bracket_guide_colors.len],
-                        });
+                    for (bracket_guides, 0..) |line_guides, index| {
+                        const model_line = guide_start_model_line + index;
+                        const row = viewRowForModelLine(editor, top, model_line) orelse continue;
+                        var content = try editor.model.getLineContent(model_line);
+                        defer content.deinit();
+                        const indent_width = computeIndentLevel(content.items, tab_size);
+                        for (line_guides.items) |guide| {
+                            if (guide.column >= text_width) continue;
+                            if (indent_width >= 0 and guide.column >= @as(usize, @intCast(indent_width))) continue;
+                            try guide_specs.append(.{
+                                .row = row,
+                                .col = guide.column,
+                                .color = if (guide.active)
+                                    bracket_guide_active_color
+                                else
+                                    bracket_guide_colors[guide.level % bracket_guide_colors.len],
+                            });
+                        }
                     }
                 }
             }
@@ -1278,6 +1320,7 @@ pub const View = struct {
         try self.buildScrollbar(doc, root, states, text_height, cols);
         try self.buildOverlays(doc, root, cols, text_height);
         try self.buildContentWidgets(doc, root, cols, text_right, text_height, gutter, tab_size);
+        self.needs_rebuild = false;
     }
 
     /// Filters the inline model decorations for a line, then clips them to
@@ -1599,8 +1642,7 @@ pub const View = struct {
 /// marker and thumb layers share these cells. Very narrow terminals keep their
 /// text instead.
 fn overviewRulerWidth(editor: *const Editor) usize {
-    const available = editor.screen_width -| editor.gutterWidth();
-    return if (available >= 3) 2 else 0;
+    return Editor.overviewRulerWidthFor(editor.screen_width, editor.gutterWidth());
 }
 
 fn markerGlyph(lane: decorationsOverviewRuler.Lane, vertical: decorationsOverviewRuler.Vertical) []const u8 {
@@ -2610,6 +2652,9 @@ test "View: gutter fold control collapses and expands a region" {
     }
     const view = try View.init(allocator, editor);
     defer view.deinit();
+    // Folding is computed by the debounced pass in the running workbench;
+    // the test wants the markers on its first frame.
+    editor.refreshFoldingIfDirty();
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -3587,4 +3632,28 @@ test "view: snippet placeholder decoration classes map to cell flags" {
     try std.testing.expectEqual(CellFlag.snippet_placeholder, decorationBit("snippet-placeholder").?);
     try std.testing.expectEqual(CellFlag.finish_snippet_placeholder, decorationBit("finish-snippet-placeholder").?);
     try std.testing.expectEqual(CellFlag.value_set_replacement, decorationBit("valueSetReplacement").?);
+}
+
+test "View: init, paint and invalidate batch rebuilds" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), view.rebuildCount());
+    try view.paint();
+    try std.testing.expectEqual(@as(usize, 1), view.rebuildCount());
+    try view.paint();
+    try std.testing.expectEqual(@as(usize, 1), view.rebuildCount());
+
+    view.invalidate();
+    try std.testing.expect(view.needsRebuild());
+    try view.paint();
+    try std.testing.expectEqual(@as(usize, 2), view.rebuildCount());
+    try std.testing.expect(!view.needsRebuild());
 }

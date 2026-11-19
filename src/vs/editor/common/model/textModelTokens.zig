@@ -413,7 +413,9 @@ fn safeTokenize(allocator: Allocator, languageIdCodec: *LanguageIdCodec, languag
 
 pub const DefaultBackgroundTokenizer = struct {
     _isDisposed: bool = false,
-    _isScheduled: bool = false,
+    /// Set by content/attach/visible-range changes; cleared when the store has
+    /// no invalid lines left. The main loop calls `poll` to advance it.
+    _hasPendingWork: bool = false,
     tokenizerWithStateStore: *TokenizerWithStateStoreAndTextModel,
     backgroundTokenStore: IBackgroundTokenizationStore,
 
@@ -428,19 +430,37 @@ pub const DefaultBackgroundTokenizer = struct {
     }
 
     pub fn handleChanges(self: *BackgroundSelf) void {
-        self._beginBackgroundTokenization();
-    }
-
-    fn _beginBackgroundTokenization(self: *BackgroundSelf) void {
-        if (self._isDisposed or self._isScheduled or !self.tokenizerWithStateStore.textModel().isAttachedToEditor() or !self._hasLinesToTokenize()) {
+        if (self._isDisposed or !self.tokenizerWithStateStore.textModel().isAttachedToEditor()) return;
+        if (!self._hasLinesToTokenize()) {
+            self.checkFinished();
             return;
         }
-        self._isScheduled = true;
-        defer self._isScheduled = false;
-        self._backgroundTokenizeForAtLeast1ms();
-        if (self._hasLinesToTokenize()) {
-            self._beginBackgroundTokenization();
+        self._hasPendingWork = true;
+    }
+
+    /// Advances the background pass for at most ~1 ms, like upstream's idle
+    /// callback. Returns true when tokens changed and a repaint is needed.
+    pub fn poll(self: *BackgroundSelf) bool {
+        if (self._isDisposed) {
+            self._hasPendingWork = false;
+            return false;
         }
+        if (!self._hasPendingWork) return false;
+        if (!self.tokenizerWithStateStore.textModel().isAttachedToEditor() or !self._hasLinesToTokenize()) {
+            self._hasPendingWork = false;
+            self.checkFinished();
+            return false;
+        }
+        self._backgroundTokenizeForAtLeast1ms();
+        if (!self._hasLinesToTokenize()) self._hasPendingWork = false;
+        self.checkFinished();
+        return true;
+    }
+
+    pub fn isPending(self: *BackgroundSelf) bool {
+        return self._hasPendingWork and !self._isDisposed and
+            self.tokenizerWithStateStore.textModel().isAttachedToEditor() and
+            self._hasLinesToTokenize();
     }
 
     fn _backgroundTokenizeForAtLeast1ms(self: *BackgroundSelf) void {
@@ -482,5 +502,6 @@ pub const DefaultBackgroundTokenizer = struct {
 
     pub fn requestTokens(self: *BackgroundSelf, startLineNumber: usize, endLineNumberExclusive: usize) void {
         self.tokenizerWithStateStore.getStore().invalidateEndStateRange(LineRange.init(startLineNumber, endLineNumberExclusive)) catch {};
+        if (!self._isDisposed and self.tokenizerWithStateStore.textModel().isAttachedToEditor()) self._hasPendingWork = true;
     }
 };

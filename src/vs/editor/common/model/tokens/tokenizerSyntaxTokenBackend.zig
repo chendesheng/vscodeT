@@ -257,6 +257,18 @@ pub const TokenizerSyntaxTokenBackend = struct {
         if (self._defaultBackgroundTokenizer) |*tokenizer| tokenizer.handleChanges();
     }
 
+    /// Drives the ported `DefaultBackgroundTokenizer` from the terminal main
+    /// loop. Upstream schedules it through `runWhenGlobalIdle`/`setTimeout0`.
+    pub fn pollBackgroundTokenization(self: *TokenizerSyntaxTokenBackend) bool {
+        if (self._defaultBackgroundTokenizer) |*tokenizer| return tokenizer.poll();
+        return false;
+    }
+
+    pub fn backgroundTokenizationPending(self: *TokenizerSyntaxTokenBackend) bool {
+        if (self._defaultBackgroundTokenizer) |*tokenizer| return tokenizer.isPending();
+        return false;
+    }
+
     pub fn handleDidChangeContent(self: *TokenizerSyntaxTokenBackend, e: ModelContentChangedEvent) void {
         if (e.isFlush) {
             self.todo_resetTokenization(false);

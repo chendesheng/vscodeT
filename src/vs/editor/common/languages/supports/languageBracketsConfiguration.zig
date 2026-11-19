@@ -193,12 +193,13 @@ pub const LanguageBracketsConfiguration = struct {
     }
 
     pub fn getBracketInfo(self: *const Self, bracketText: []const u8) ?BracketKind {
-        if (self.getOpeningBracketInfo(bracketText)) |bracketInfo|
-            BracketKind{ .openingBracketKind = bracketInfo }
-        else if (self.getClosingBracketInfo(bracketText)) |bracketInfo|
-            BracketKind{ .closingBracketKind = bracketInfo }
-        else
-            null;
+        if (self.getOpeningBracketInfo(bracketText)) |bracketInfo| {
+            return BracketKind{ .openingBracketKind = bracketInfo };
+        }
+        if (self.getClosingBracketInfo(bracketText)) |bracketInfo| {
+            return BracketKind{ .closingBracketKind = bracketInfo };
+        }
+        return null;
     }
 
     pub fn getBracketRegExp(self: *const Self, options: ?RegExpOptions) !RegExp {
@@ -251,14 +252,14 @@ fn closingOpeningColorizedMut(kind: *ClosingBracketKind) *BracketKindSet(Opening
     return @ptrCast(@alignCast(@constCast(kind.openingColorizedBrackets)));
 }
 
-pub const BracketKind = union {
+pub const BracketKind = union(enum) {
     openingBracketKind: OpeningBracketKind,
     closingBracketKind: ClosingBracketKind,
 
     pub fn languageId(self: *const BracketKind) []const u8 {
-        return switch (self) {
-            .openingBracketKind => self.openingBracketKind.languageId(),
-            .closingBracketKind => self.closingBracketKind.languageId(),
+        return switch (self.*) {
+            .openingBracketKind => |opening| opening.languageId(),
+            .closingBracketKind => |closing| closing.languageId(),
         };
     }
 };

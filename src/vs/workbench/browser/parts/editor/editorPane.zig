@@ -57,7 +57,7 @@ pub const Tab = struct {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
 
-        const editor = try Editor.createWithDeclarative(allocator, io, path, width, height, declarative);
+        const editor = try Editor.createWithDeclarativeOptions(allocator, io, path, width, height, declarative, .{ .reserve_scrollbar = true });
         errdefer {
             editor.deinit();
             allocator.destroy(editor);

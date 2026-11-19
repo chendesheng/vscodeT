@@ -59,8 +59,9 @@ pub const BracketMatchingController = struct {
         return self.model.bracketPairs();
     }
 
-    /// The bracket parser consumes token metadata. Tokenization is lazy in this
-    /// port, so make sure every line has its tokens before parsing.
+    /// The AST parser consumes token metadata and the headless tests do not
+    /// attach a view, so the AST path still tokenizes the model. The terminal
+    /// uses the fallback matcher, which tokenizes only the lines it scans.
     fn ensureTokenized(self: *BracketMatchingController) void {
         var line_number: usize = 1;
         while (line_number <= self.model.getLineCount()) : (line_number += 1) {
@@ -70,10 +71,14 @@ pub const BracketMatchingController = struct {
         }
     }
 
+    fn ensureAstTokens(self: *BracketMatchingController) void {
+        if (!self.model.bracketPairs().useFallbackMatcher()) self.ensureTokenized();
+    }
+
     /// Finds matching brackets for the start position of `selection` and moves
     /// the cursor to the other bracket.
     pub fn jumpToBracket(self: *BracketMatchingController, selection: Selection) ?Selection {
-        self.ensureTokenized();
+        self.ensureAstTokens();
         const position = selection.getStartPosition();
         const brackets = self.modelBrackets().matchBracket(position, 20);
         var new_position: ?Position = null;
@@ -104,7 +109,7 @@ pub const BracketMatchingController = struct {
         selection: Selection,
         select_brackets: bool,
     ) ?Selection {
-        self.ensureTokenized();
+        self.ensureAstTokens();
         const position = selection.getStartPosition();
         var brackets = self.modelBrackets().matchBracket(position, 20);
 
@@ -159,7 +164,7 @@ pub const BracketMatchingController = struct {
 
     /// Returns the two bracket ranges to delete for `selection`, if any.
     pub fn removeBracketsForSelection(self: *BracketMatchingController, selection: Selection) ?Brackets {
-        self.ensureTokenized();
+        self.ensureAstTokens();
         const position = selection.getPosition();
         var brackets = self.modelBrackets().matchBracket(position, 20);
         if (brackets == null) {
@@ -210,7 +215,7 @@ pub const BracketMatchingController = struct {
             return self.last_brackets_data.items;
         }
 
-        if (self.last_version_id != version_id) self.ensureTokenized();
+        if (self.last_version_id != version_id) self.ensureAstTokens();
 
         var previous = ArrayList(BracketsData).init(self.allocator);
         defer previous.deinit();

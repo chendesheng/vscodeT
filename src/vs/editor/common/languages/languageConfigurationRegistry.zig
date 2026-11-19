@@ -444,25 +444,31 @@ pub const LanguageConfigurationService = struct {
         };
     }
 
-    fn get(self: *LanguageConfigurationService, language_id: []const u8) ResolvedLanguageConfiguration {
-        if (self.registry.getLanguageConfiguration(language_id)) |resolved| {
-            return resolved.*;
-        }
+    /// Returns the registry-owned resolved configuration. The pointer is
+    /// stable until the registry re-resolves that language; callers that only
+    /// use it for the duration of a command can borrow it.
+    pub fn resolved(self: *LanguageConfigurationService, language_id: []const u8) ?*const ResolvedLanguageConfiguration {
+        if (self.registry.getLanguageConfiguration(language_id)) |configuration| return configuration;
 
+        // Promote the editor language service's configuration into the
+        // registry so priority merging and invalidation use the upstream path.
         if (self.language_service.getLanguageConfiguration(language_id)) |config| {
             var registration = self.registry.register(language_id, config, 0) catch
-                return self.plaintext();
+                return self.registry.getLanguageConfiguration("plaintext");
             registration.disposed = true;
-            if (self.registry.getLanguageConfiguration(language_id)) |resolved| {
-                return resolved.*;
-            }
+            return self.registry.getLanguageConfiguration(language_id);
         }
+        return self.registry.getLanguageConfiguration("plaintext");
+    }
+
+    fn get(self: *LanguageConfigurationService, language_id: []const u8) ResolvedLanguageConfiguration {
+        if (self.resolved(language_id)) |configuration| return configuration.*;
         return self.plaintext();
     }
 
     fn plaintext(self: *LanguageConfigurationService) ResolvedLanguageConfiguration {
-        const resolved = self.registry.getLanguageConfiguration("plaintext") orelse unreachable;
-        return resolved.*;
+        const configuration = self.registry.getLanguageConfiguration("plaintext") orelse unreachable;
+        return configuration.*;
     }
 };
 

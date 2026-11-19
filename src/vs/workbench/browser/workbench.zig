@@ -1889,6 +1889,53 @@ pub const Workbench = struct {
         return tab.editor.pollJsonLanguage();
     }
 
+    /// Advances the ported background tokenizer for every open editor, like
+    /// upstream's per-model background tokenization. Returns true when the
+    /// active editor's tokens changed and the view should repaint.
+    pub fn pollBackgroundTokenization(self: *Workbench) bool {
+        const active = self.activeTab();
+        var active_changed = false;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const changed = tab.editor.pollBackgroundTokenization();
+                if (changed and active == tab) active_changed = true;
+            }
+        }
+        return active_changed;
+    }
+
+    pub fn backgroundTokenizationPending(self: *Workbench) bool {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.editor.backgroundTokenizationPending()) return true;
+            }
+        }
+        return false;
+    }
+
+    /// Drives the active editor's debounced folding pass. Called from the
+    /// main-loop tick so a full-document range scan never blocks a key echo.
+    pub fn pollFolding(self: *Workbench, now_ms: i64) bool {
+        const tab = self.activeTab() orelse return false;
+        return tab.editor.pollFolding(now_ms);
+    }
+
+    pub fn foldingTimeout(self: *Workbench, now_ms: i64) ?u32 {
+        const tab = self.activeTab() orelse return null;
+        return tab.editor.foldingTimeout(now_ms);
+    }
+
+    /// Drives the deferred bracket-pair AST/guide build for large documents.
+    pub fn pollBracketGuides(self: *Workbench, now_ms: i64) bool {
+        const tab = self.activeTab() orelse return false;
+        return tab.editor.pollBracketGuides(now_ms);
+    }
+
+    pub fn bracketGuidesTimeout(self: *Workbench, now_ms: i64) ?u32 {
+        const tab = self.activeTab() orelse return null;
+        return tab.editor.bracketGuidesTimeout(now_ms);
+    }
+
     pub fn openPath(self: *Workbench, path: []const u8) !void {
         return self.openPathWithOptions(path, .{});
     }
@@ -1897,8 +1944,45 @@ pub const Workbench = struct {
         return self.openPathWithOptions(path, .{ .pinned = false });
     }
 
+    /// Finds the tab/input already showing `path`, if the group model still
+    /// owns it. Reusing it avoids reading and constructing a whole editor for
+    /// a file that is already open.
+    fn findOpenInput(self: *Workbench, path: []const u8) ?*FileEditorInput {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (!std.mem.eql(u8, tab.editor.path, path)) continue;
+                if (!pane.group.model.contains(.{ .input = &tab.input.base }, .{})) continue;
+                return tab.input;
+            }
+        }
+        return null;
+    }
+
+    fn openExistingInput(self: *Workbench, path: []const u8, existing: *FileEditorInput, options: OpenOptions) !void {
+        const opened = try self.service.openEditor(
+            &existing.base,
+            null,
+            .{ .open = .{ .pinned = options.pinned, .active = true } },
+        );
+        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (self.autoRevealEnabled(path)) {
+            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
+        }
+        if (pane.tabForInput(opened.result.editor)) |tab| {
+            try pane.activateTab(tab);
+            if (self.language_features) |features| tab.attachLanguageRegistry(features);
+            try tab.ensureControllers();
+            tab.view.focusEditor();
+        }
+        try self.history.add(path);
+        self.pruneTabs(pane);
+    }
+
     pub fn openPathWithOptions(self: *Workbench, path: []const u8, options: OpenOptions) !void {
-        const editor = try Editor.createWithExtensions(self.allocator, self.io, path, self.cols, self.editorContentHeight(), self.declarative, self.json_client);
+        if (self.findOpenInput(path)) |existing| {
+            return self.openExistingInput(path, existing, options);
+        }
+        const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, self.cols, self.editorContentHeight(), self.declarative, self.json_client, .{ .reserve_scrollbar = true });
         errdefer {
             editor.deinit();
             self.allocator.destroy(editor);
@@ -3793,12 +3877,7 @@ pub const Workbench = struct {
         self.clearTabDrag();
         const new_cols = @max(cols, 1);
         const new_rows = @max(rows, 1);
-        if (new_cols == self.cols and new_rows == self.rows) {
-            for (self.part.group_views.items) |pane| {
-                for (pane.tabs.items) |tab| try tab.refresh();
-            }
-            return;
-        }
+        if (new_cols == self.cols and new_rows == self.rows) return;
 
         self.cols = new_cols;
         self.rows = new_rows;
@@ -4681,6 +4760,49 @@ test "Workbench: opens two files, switches tabs and closes them" {
     try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.base.getName());
     try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
+}
+
+test "Workbench: reopening an open file reuses its tab and editor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "reuse.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
+    defer workbench.deinit();
+
+    const tab = workbench.activeTab().?;
+    const editor = tab.editor;
+    try workbench.openPath(path);
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expect(workbench.activeTab().? == tab);
+    try std.testing.expect(workbench.activeTab().?.editor == editor);
+}
+
+test "Workbench: opening a new file rebuilds its view once" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "one.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "two.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{path_a}, 40, 9);
+    defer workbench.deinit();
+
+    try workbench.openPath(path_b);
+    const tab = workbench.activeTab().?;
+    try std.testing.expectEqual(@as(usize, 0), tab.view.rebuildCount());
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expectEqual(@as(usize, 1), tab.view.rebuildCount());
 }
 
 test "Workbench: split moves the active tab into a second group" {

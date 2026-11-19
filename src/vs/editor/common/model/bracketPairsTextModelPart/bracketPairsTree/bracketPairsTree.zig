@@ -441,6 +441,52 @@ const Tokenizer = struct {
         }
     }
 
+    /// Upstream's `FastTokenizer`: an initial AST without token metadata.
+    /// It scans the text with the language's bracket regexes and deliberately
+    /// ignores string/comment token types. VS Code uses it for the first
+    /// bracket colorization/guide pass and switches to the token-aware tree
+    /// when background tokenization completes; the terminal has no
+    /// whole-document background tokenizer, so this remains the guide tree.
+    fn tokenizeFast(self: *Tokenizer) !void {
+        const line_count = self.model.getLineCount();
+        var line_number: usize = 1;
+        while (line_number <= line_count) : (line_number += 1) {
+            var line_content = try self.model.getLineContent(line_number);
+            defer line_content.deinit();
+            const text = line_content.items;
+            if (text.len == 0) continue;
+
+            const language = self.fallbackLanguage;
+            const defs = try self.getBrackets(language);
+            if (defs.defs.items.len == 0) continue;
+
+            var pos: usize = 0;
+            while (pos < text.len) {
+                if (matchAt(text, pos, defs, true)) |open| {
+                    if (matchAt(text, pos, defs, false)) |close| {
+                        if (close.len >= open.len) {
+                            try self.emitBracket(line_number, pos, close, false, language);
+                            pos += close.len;
+                            continue;
+                        }
+                    }
+                    try self.emitBracket(line_number, pos, open, true, language);
+                    pos += open.len;
+                    continue;
+                }
+                if (matchAt(text, pos, defs, false)) |close| {
+                    try self.emitBracket(line_number, pos, close, false, language);
+                    pos += close.len;
+                    continue;
+                }
+                pos += utf8Len(text[pos..]);
+            }
+        }
+
+        const end = Position.init(line_count, self.model.getLineMaxColumn(line_count));
+        try self.emitText(end);
+    }
+
     fn tokenize(self: *Tokenizer) !void {
         var lineNumber: usize = 1;
         while (lineNumber <= self.model.getLineCount()) : (lineNumber += 1) {
@@ -599,7 +645,14 @@ pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languag
 
     var tokenizer = Tokenizer.init(allocator, model, languageService, &ids, &brackets);
     defer tokenizer.deinit();
-    try tokenizer.tokenize();
+    // Terminal adaptation: with bracket-pair colorization disabled there is
+    // no completed background tokenization to wait for, so use upstream's
+    // fast initial tree for guides instead of the token-aware parser.
+    if (!model.getOptions().bracketPairColorizationOptions.enabled) {
+        try tokenizer.tokenizeFast();
+    } else {
+        try tokenizer.tokenize();
+    }
 
     var parser = Parser{ .allocator = a, .tokenizer = &tokenizer };
     if (oldRoot) |root_| {
