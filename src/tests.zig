@@ -348,6 +348,7 @@ comptime {
     _ = @import("./vs/editor/contrib/folding/test/browser/foldingRanges.test.zig");
     _ = @import("./vs/editor/contrib/folding/test/browser/indentRangeProvider.test.zig");
     _ = @import("./vs/editor/contrib/folding/test/browser/hiddenRangeModel.test.zig");
+    _ = @import("./vs/editor/contrib/folding/browser/foldingDecorations.zig");
     _ = @import("./vs/editor/contrib/insertFinalNewLine/browser/insertFinalNewLineCommand.zig");
     _ = @import("./vs/editor/contrib/linesOperations/browser/copyLinesCommand.zig");
     _ = @import("./vs/editor/contrib/linesOperations/browser/moveLinesCommand.zig");
@@ -409,6 +410,7 @@ comptime {
     _ = @import("./vs/editor/contrib/folding/test/browser/foldingRanges.test.zig");
     _ = @import("./vs/editor/contrib/folding/test/browser/indentRangeProvider.test.zig");
     _ = @import("./vs/editor/contrib/folding/test/browser/hiddenRangeModel.test.zig");
+    _ = @import("./vs/editor/contrib/folding/browser/foldingDecorations.zig");
     _ = @import("./vs/editor/test/common/port/commandTestSupport.zig");
     _ = @import("./vs/editor/contrib/linesOperations/test/browser/copyLinesCommand.test.zig");
     _ = @import("./vs/editor/contrib/linesOperations/test/browser/moveLinesCommand.test.zig");

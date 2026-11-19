@@ -61,6 +61,8 @@ const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.z
 const mouse_target = @import("./controller/mouseTarget.zig");
 const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
 const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
+const folding_decorations_mod = @import("../contrib/folding/browser/foldingDecorations.zig");
+const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvider;
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
 const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
 const TerminalScrollbar = editor_scrollbar_mod.TerminalScrollbar;
@@ -265,6 +267,9 @@ pub const View = struct {
     /// Whether this view paints the editor's fallback status row. The
     /// multi-group workbench disables it in favour of its status-bar part.
     status_bar_visible: bool = true,
+    /// Ported folding option provider (gutter icon, folded background and
+    /// `inline-folded` ellipsis selection).
+    folding_decorations: FoldingDecorationProvider = .{},
     /// Set when a widget/status/layout change made the current document
     /// stale. The next paint/render flushes it, so a burst of registrations
     /// costs one rebuild instead of one per call.
@@ -759,6 +764,12 @@ pub const View = struct {
         return self.editor.positionAtViewPoint(view_line, column);
     }
 
+    fn foldingDecorationsShowEllipsis(self: *const View, model_line: usize) bool {
+        const state = self.editor.foldStateAtModelLine(model_line);
+        if (state == .none) return false;
+        return self.folding_decorations.getDecorationOption(state == .collapsed, false, false).ellipsis;
+    }
+
     /// The last gutter cell is the fold-control column. It only toggles when
     /// the view line is the first output line of a model line with a region.
     fn foldControlAt(self: *const View, x: usize, y: usize) ?usize {
@@ -1137,19 +1148,22 @@ pub const View = struct {
             if (output_index == 0 and gutter >= 2) {
                 const state = editor.foldStateAtModelLine(model_line);
                 if (state != .none) {
-                    const fold_cell = try doc.createElement(.div);
-                    fold_cell.setStyle(.{
-                        .position = .absolute,
-                        .left = .{ .cells = @floatFromInt(gutter - 1) },
-                        .top = .{ .cells = row_cells },
-                        .width = .{ .cells = 1 },
-                        .height = .{ .cells = 1 },
-                        .white_space = .pre,
-                    });
-                    const glyph = try doc.createText(if (state == .collapsed) "▸" else "▾");
-                    glyph.setStyle(.{ .color = color(gutter_color) });
-                    _ = try fold_cell.appendChild(glyph);
-                    _ = try root.appendChild(fold_cell);
+                    const option = self.folding_decorations.getDecorationOption(state == .collapsed, false, false);
+                    if (option.fold_icon != .none) {
+                        const fold_cell = try doc.createElement(.div);
+                        fold_cell.setStyle(.{
+                            .position = .absolute,
+                            .left = .{ .cells = @floatFromInt(gutter - 1) },
+                            .top = .{ .cells = row_cells },
+                            .width = .{ .cells = 1 },
+                            .height = .{ .cells = 1 },
+                            .white_space = .pre,
+                        });
+                        const glyph = try doc.createText(if (option.fold_icon == .collapsed) "▸" else "▾");
+                        glyph.setStyle(.{ .color = color(gutter_color) });
+                        _ = try fold_cell.appendChild(glyph);
+                        _ = try root.appendChild(fold_cell);
+                    }
                 }
             }
 
@@ -1209,7 +1223,7 @@ pub const View = struct {
             // `inline-folded` ellipsis. It is painted after the text and is not
             // part of the selectable line width.
             if (output_index == 0 and line_width < text_width and
-                editor.foldStateAtModelLine(model_line) == .collapsed)
+                self.foldingDecorationsShowEllipsis(model_line))
             {
                 const ellipsis = try doc.createElement(.div);
                 ellipsis.setStyle(.{
