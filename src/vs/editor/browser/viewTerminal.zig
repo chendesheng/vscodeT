@@ -58,7 +58,10 @@ const GuidesTextModelPart = @import("../common/model/guidesTextModelPart.zig").G
 const computeIndentLevel = @import("../common/model/utils.zig").computeIndentLevel;
 const indent_guides = @import("./viewParts/indentGuides/indentGuides.zig");
 const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.zig");
+const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
+const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
+const ContentWidgetEntry = content_widgets_mod.ContentWidgetEntry;
 
 const gutter_color = [3]u8{ 110, 110, 110 };
 const continuation_color = [3]u8{ 90, 90, 90 };
@@ -222,10 +225,9 @@ pub const View = struct {
     overlay_widgets: ViewOverlayWidgets,
     /// Content widgets anchored to model positions, painted above the lines
     /// and below the overlays (the hover widget is one).
-    content_widgets: std.array_list.Managed(editorBrowser.IContentWidget),
+    content_widgets: ViewContentWidgets,
     /// Content widget containers for the current frame, used to hit-test and
     /// to keep pointer events out of the text.
-    content_entries: std.array_list.Managed(ContentEntry),
     /// Overlay widget rectangles for the current frame; pointer events on an
     /// overlay must not reach the editor's hover logic.
     /// The line element under the primary cursor, filled in while building.
@@ -277,20 +279,6 @@ pub const View = struct {
         text_width: usize = 0,
     };
 
-    const ContentEntry = struct {
-        widget: editorBrowser.IContentWidget,
-        node: *ui.Node,
-        left: usize,
-        top: usize,
-        width: usize,
-        height: usize,
-
-        fn contains(self: ContentEntry, x: usize, y: usize) bool {
-            return x >= self.left and x < self.left + self.width and
-                y >= self.top and y < self.top + self.height;
-        }
-    };
-
     const MousePress = struct {
         x: usize,
         y: usize,
@@ -310,8 +298,7 @@ pub const View = struct {
             .guides = GuidesTextModelPart.init(editor.model),
             .surface = undefined,
             .overlay_widgets = ViewOverlayWidgets.init(allocator),
-            .content_widgets = std.array_list.Managed(editorBrowser.IContentWidget).init(allocator),
-            .content_entries = std.array_list.Managed(ContentEntry).init(allocator),
+            .content_widgets = ViewContentWidgets.init(allocator),
 
             .line_entries = std.array_list.Managed(LineEntry).init(allocator),
             .terminal_view_host = undefined,
@@ -320,7 +307,6 @@ pub const View = struct {
         errdefer self.terminal_view_host.deinit();
         errdefer self.overlay_widgets.deinit();
         errdefer self.content_widgets.deinit();
-        errdefer self.content_entries.deinit();
 
         errdefer self.line_entries.deinit();
         editor.setScrollbarWidth(overviewRulerWidth(editor));
@@ -341,7 +327,6 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.terminal_view_host.deinit();
         self.line_entries.deinit();
-        self.content_entries.deinit();
         self.content_widgets.deinit();
         self.overlay_widgets.deinit();
         self.surface.deinit();
@@ -376,7 +361,7 @@ pub const View = struct {
 
     /// Registers a content widget anchored to a model position.
     pub fn addContentWidget(self: *View, widget: editorBrowser.IContentWidget) !void {
-        try self.content_widgets.append(widget);
+        try self.content_widgets.add(widget);
         self.invalidate();
     }
 
@@ -495,10 +480,10 @@ pub const View = struct {
 
     pub fn removeContentWidget(self: *View, id: []const u8) !void {
         var index: usize = 0;
-        while (index < self.content_widgets.items.len) : (index += 1) {
-            const widget = self.content_widgets.items[index];
+        while (index < self.content_widgets.widgets.items.len) : (index += 1) {
+            const widget = self.content_widgets.widgets.items[index];
             if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
-                _ = self.content_widgets.orderedRemove(index);
+                _ = self.content_widgets.widgets.orderedRemove(index);
                 self.invalidate();
                 return;
             }
@@ -644,7 +629,7 @@ pub const View = struct {
     }
 
     fn pointInWidget(self: *const View, x: usize, y: usize) bool {
-        for (self.content_entries.items) |entry| {
+        for (self.content_widgets.entries.items) |entry| {
             if (entry.contains(x, y)) return true;
         }
         for (self.overlay_widgets.entries.items) |entry| {
@@ -718,7 +703,7 @@ pub const View = struct {
         const target = (try self.surface.elementFromPoint(x, y)) orelse doc.root orelse
             return .{ .mouse_column = x + 1 };
 
-        for (self.content_entries.items) |entry| {
+        for (self.content_widgets.entries.items) |entry| {
             if (entry.contains(x, y)) {
                 return .{ .element = target, .type = .content_widget, .mouse_column = x + 1 };
             }
@@ -913,7 +898,7 @@ pub const View = struct {
         for (self.overlay_widgets.widgets.items) |overlay| {
             if (overlay.is_focused(overlay.context)) return false;
         }
-        for (self.content_widgets.items) |widget| {
+        for (self.content_widgets.widgets.items) |widget| {
             if (widget.is_focused(widget.context)) return false;
         }
         return true;
@@ -955,7 +940,6 @@ pub const View = struct {
         self.cursor_line = null;
         self.cursor_offset = 0;
         self.line_entries.clearRetainingCapacity();
-        self.content_entries.clearRetainingCapacity();
 
         const cols = doc.cols;
         const rows = doc.rows;
@@ -1305,7 +1289,7 @@ pub const View = struct {
         try appendStatus(self, doc, root, rows);
         try self.buildScrollbar(doc, root, states, text_height, cols);
         try self.overlay_widgets.render(doc, root, cols, text_height);
-        try self.buildContentWidgets(doc, root, cols, text_right, text_height, gutter, tab_size);
+        try self.content_widgets.render(doc, root, editor, cols, text_right, text_height, gutter, tab_size);
         self.needs_rebuild = false;
     }
 
@@ -1458,87 +1442,6 @@ pub const View = struct {
             @floatFromInt(editor.topViewLine() - 1),
             1,
         );
-    }
-
-    /// Places content widgets at their model anchor. Upstream positions them
-    /// in pixels next to the view position and lets the content widget layer
-    /// clamp them to the editor; the terminal maps the anchor to a cell and
-    /// keeps the box inside the text area.
-    fn buildContentWidgets(
-        self: *View,
-        doc: *ui.Document,
-        root: *ui.Node,
-        cols: usize,
-        text_right: usize,
-        text_height: usize,
-        gutter: usize,
-        tab_size: usize,
-    ) !void {
-        const editor = self.editor;
-        const top = editor.topViewLine();
-        if (text_right == 0) return;
-        for (self.content_widgets.items) |widget| {
-            const widget_position = widget.get_position(widget.context) orelse continue;
-            const view_position = editor.viewPositionOfModelPosition(widget_position.position);
-            if (view_position.lineNumber < top or view_position.lineNumber >= top + text_height) {
-                continue;
-            }
-            const row = view_position.lineNumber - top;
-
-            const width = @min(widget.width(widget.context, cols), text_right);
-            const height = @min(widget.height(widget.context), text_height);
-            if (width == 0 or height == 0) continue;
-
-            const data = try editor.viewLineData(view_position.lineNumber);
-            const model_line = editor.modelLineNumber(view_position.lineNumber);
-            const model_column = editor.modelColumnOfViewPosition(view_position.lineNumber, view_position.column);
-            const model_content = try editor.model.getLineContent(model_line);
-            defer model_content.deinit();
-            const anchor_cell = visibleOffset(
-                model_content.items,
-                model_column,
-                tab_size,
-                data.startVisibleColumn,
-                data.minColumn - 1,
-            );
-
-            const left = @min(gutter + anchor_cell, text_right -| width);
-            var widget_top: usize = switch (widget_position.preference) {
-                .below => row + 1,
-                .above => row -| height,
-            };
-            if (widget_top + height > text_height) {
-                widget_top = text_height -| height;
-            }
-
-            const container = try doc.createElement(.div);
-            container.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = @floatFromInt(left) },
-                .top = .{ .cells = @floatFromInt(widget_top) },
-                .width = .{ .cells = @floatFromInt(width) },
-                .height = .{ .cells = @floatFromInt(height) },
-                .overflow = .hidden,
-            });
-
-            const content = try widget.build(widget.context, doc);
-            _ = try container.appendChild(content);
-            _ = try root.appendChild(container);
-            try self.content_entries.append(.{
-                .widget = widget,
-                .node = container,
-                .left = left,
-                .top = widget_top,
-                .width = width,
-                .height = height,
-            });
-
-            if (widget.is_focused(widget.context)) {
-                if (widget.focus_node(widget.context)) |node| {
-                    _ = doc.focus(node);
-                }
-            }
-        }
     }
 };
 
@@ -2326,8 +2229,8 @@ test "View: content widget anchors to a model position" {
     defer out.deinit();
     try view.render(&out.writer);
 
-    try std.testing.expectEqual(@as(usize, 1), view.content_entries.items.len);
-    const entry = view.content_entries.items[0];
+    try std.testing.expectEqual(@as(usize, 1), view.content_widgets.entries.items.len);
+    const entry = view.content_widgets.entries.items[0];
     // Gutter is 3 cells wide, and column 3 starts at cell 2 of the text.
     try std.testing.expectEqual(@as(usize, 5), entry.left);
     try std.testing.expectEqual(@as(usize, 1), entry.top);
@@ -2367,10 +2270,10 @@ test "View: content widget anchors on a wrapped line" {
     defer out.deinit();
     try view.render(&out.writer);
 
-    try std.testing.expectEqual(@as(usize, 2), view.content_entries.items[0].top);
+    try std.testing.expectEqual(@as(usize, 2), view.content_widgets.entries.items[0].top);
     // Column 18 is the third cell of the wrapped segment, which starts at the
     // left edge of the text area.
-    try std.testing.expectEqual(@as(usize, 5), view.content_entries.items[0].left);
+    try std.testing.expectEqual(@as(usize, 5), view.content_widgets.entries.items[0].left);
 }
 
 test "View: content widget flips above and clamps to the text area" {
@@ -2399,12 +2302,12 @@ test "View: content widget flips above and clamps to the text area" {
 
     // Row 1 is the anchor; two rows below do not fit the three-row text area,
     // so the widget is clamped to its last two rows.
-    try std.testing.expectEqual(@as(usize, 1), view.content_entries.items[0].top);
+    try std.testing.expectEqual(@as(usize, 1), view.content_widgets.entries.items[0].top);
 
     below.preference = .above;
     try view.refresh();
     try view.render(&out.writer);
-    try std.testing.expectEqual(@as(usize, 0), view.content_entries.items[0].top);
+    try std.testing.expectEqual(@as(usize, 0), view.content_widgets.entries.items[0].top);
 }
 
 test "View: word highlight decorations paint text and strong colors" {
