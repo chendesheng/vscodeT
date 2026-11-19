@@ -21,7 +21,6 @@
 const std = @import("std");
 const ui = @import("ui");
 const editor_group_view = @import("../vs/workbench/browser/parts/editor/editorGroupView.zig");
-const file_icon = @import("./fileIcon.zig");
 
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
@@ -82,13 +81,13 @@ fn textWidth(text: []const u8) usize {
 }
 
 fn badgeWidth(tab: TabInfo) usize {
-    if (file_icon.width(iconFor(tab)) == 0) return 0;
-    return file_icon.width(iconFor(tab)) + 1;
+    if (iconFor(tab).len == 0) return 0;
+    return iconFor(tab).len + 1;
 }
 
 fn iconFor(tab: TabInfo) []const u8 {
     if (tab.language.len == 0) return "";
-    return file_icon.badge(tab.language);
+    return languageBadge(tab.language);
 }
 
 fn closeWidth(tab: TabInfo) usize {
@@ -199,7 +198,7 @@ pub fn draw(
                 .fg = if (is_active) ui.cell.packColor(.{ .r = 210, .g = 190, .b = 120 }) else ui.cell.packColor(.{ .r = 160, .g = 160, .b = 160 }),
                 .bg = paint.bg,
             };
-            _ = file_icon.draw(grid, cursor, row, icon, 2, badge_paint);
+            _ = drawBadge(grid, cursor, row, icon, 2, badge_paint);
             cursor += 2;
             grid.putCodepoint(cursor, row, ' ', 1, paint);
             cursor += 1;
@@ -366,4 +365,57 @@ test "tabBar italicizes preview tabs" {
         if (grid.attrs[col] & ui.cell.Attr.italic != 0) found_italic = true;
     }
     try std.testing.expect(found_italic);
+}
+
+/// Returns the badge text for a language id. The result is at most two cells
+/// and is a static string owned by this module.
+pub fn languageBadge(language_id: []const u8) []const u8 {
+    const table = .{
+        .{ "javascript", "JS" },
+        .{ "typescript", "TS" },
+        .{ "javascriptreact", "JX" },
+        .{ "typescriptreact", "TX" },
+        .{ "zig", "ZG" },
+        .{ "python", "PY" },
+        .{ "rust", "RS" },
+        .{ "go", "GO" },
+        .{ "c", "C" },
+        .{ "cpp", "C+" },
+        .{ "java", "JV" },
+        .{ "html", "HT" },
+        .{ "css", "CS" },
+        .{ "scss", "SC" },
+        .{ "markdown", "MD" },
+        .{ "yaml", "YM" },
+        .{ "toml", "TM" },
+        .{ "shellscript", "SH" },
+        .{ "json", "{}" },
+        .{ "jsonc", "{}" },
+    };
+    inline for (table) |entry| {
+        if (std.mem.eql(u8, entry[0], language_id)) return entry[1];
+    }
+    if (std.mem.eql(u8, language_id, "plaintext") or language_id.len == 0) return "";
+    return "??";
+}
+
+/// Width of a badge in cells. Badges are ASCII, so this is the byte length.
+/// Paints a badge's text, returning the number of cells written.
+pub fn drawBadge(grid: *ui.CellGrid, x: usize, row: usize, text: []const u8, max_cells: usize, style: ui.cell.PaintStyle) usize {
+    const visible = @min(text.len, max_cells);
+    var col: usize = 0;
+    while (col < visible) : (col += 1) {
+        grid.putCodepoint(x + col, row, text[col], 1, style);
+    }
+    return visible;
+}
+
+test "tabBar: language badges" {
+    try std.testing.expectEqualStrings("JS", languageBadge("javascript"));
+    try std.testing.expectEqualStrings("TS", languageBadge("typescript"));
+    try std.testing.expectEqualStrings("ZG", languageBadge("zig"));
+    try std.testing.expectEqualStrings("{}", languageBadge("json"));
+    try std.testing.expectEqualStrings("", languageBadge("plaintext"));
+    try std.testing.expectEqualStrings("??", languageBadge("a-b?"));
+    try std.testing.expectEqual(@as(usize, 2), languageBadge("javascript").len);
 }

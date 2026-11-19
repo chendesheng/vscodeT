@@ -68,7 +68,6 @@ comptime {
     _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbModel.test.zig");
     _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbsControl.test.zig");
     _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbsPicker.test.zig");
-    _ = @import("./tui/fileIcon.zig");
     _ = @import("./vs/platform/dialogs/common/dialogs.zig");
     _ = @import("./vs/base/browser/ui/breadcrumbs/breadcrumbsWidget.zig");
     _ = @import("./vs/workbench/browser/parts/editor/breadcrumbs.zig");

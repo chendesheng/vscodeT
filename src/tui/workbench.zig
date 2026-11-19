@@ -101,7 +101,6 @@ const OutlineEditor = outline_mod.OutlineEditor;
 const IOutlineCreator = outline_mod.IOutlineCreator;
 const DocumentSymbolsOutline = @import("../vs/workbench/contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutline;
 const OutlineModel = @import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModel;
-const file_icon = @import("./fileIcon.zig");
 const quick_input_common = @import("../vs/platform/quickinput/common/quickInput.zig");
 const QuickPickItem = quick_input_common.QuickPickItem;
 const QuickPick = @import("../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
@@ -3923,7 +3922,7 @@ fn breadcrumbOutlineEditor(context: *anyopaque) ?OutlineEditor {
 }
 
 fn breadcrumbFileBadge(context: *anyopaque) []const u8 {
-    return file_icon.badge(breadcrumbActiveLanguage(context));
+    return tab_bar.languageBadge(breadcrumbActiveLanguage(context));
 }
 
 fn breadcrumbSymbolIcon(_: *anyopaque, kind: ?u32) []const u8 {
