@@ -263,6 +263,7 @@ comptime {
     _ = @import("./vs/editor/common/modelLineProjectionData.zig");
     _ = @import("./vs/editor/common/model/mirrorTextModel.zig");
     _ = @import("./vs/editor/common/viewLayout/lineDecorations.zig");
+    _ = @import("./vs/editor/test/common/viewLayout/lineDecorations.test.zig");
     _ = @import("./vs/editor/common/core/text/abstractText.zig");
     _ = @import("./vs/editor/common/core/edits/edit.zig");
     _ = @import("./vs/editor/common/core/edits/lengthEdit.zig");

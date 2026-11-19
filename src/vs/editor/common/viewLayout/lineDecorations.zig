@@ -219,12 +219,15 @@ const Stack = struct {
             }
 
             // Basically we are consuming the first i + 1 elements of the stack.
-            const className = try joinClassNames(self.allocator, self.classNames.items[0 .. i + 1]);
+            // Upstream joins all currently active class names here, not just
+            // the ones whose end offset is being consumed: a decoration that
+            // continues past this boundary still applies to the segment.
+            const className = try joinClassNames(self.allocator, self.classNames.items);
             try result.append(DecorationSegment.init(
                 nextStartOffset,
                 self.stopOffsets.items[i],
                 className,
-                metadataOf(self.metadata.items[0 .. i + 1]),
+                metadataOf(self.metadata.items),
             ));
             nextStartOffset = self.stopOffsets.items[i] + 1;
 
@@ -404,9 +407,12 @@ test "lineDecorations: normalize overlapping decorations and pseudo metadata" {
     try std.testing.expectEqual(@as(usize, 0), segments.items[0].startOffset);
     try std.testing.expectEqual(@as(usize, 1), segments.items[0].endOffset);
 
-    try std.testing.expectEqualStrings("a", segments.items[1].className);
+    // Both decorations are active at offset 2, so the segment carries both
+    // class names and the pseudo metadata (upstream `classNames.join(' ')`).
+    try std.testing.expectEqualStrings("a b", segments.items[1].className);
     try std.testing.expectEqual(@as(usize, 2), segments.items[1].startOffset);
     try std.testing.expectEqual(@as(usize, 2), segments.items[1].endOffset);
+    try std.testing.expectEqual(LinePartMetadata.PSEUDO_BEFORE, segments.items[1].metadata & LinePartMetadata.PSEUDO_BEFORE);
 
     try std.testing.expectEqualStrings("b", segments.items[2].className);
     try std.testing.expectEqual(@as(usize, 3), segments.items[2].startOffset);
