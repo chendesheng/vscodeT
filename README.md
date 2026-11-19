@@ -112,7 +112,7 @@ the same Enter/auto-indent path as the TUI key handler, and the bridge mirrors
 the actual edit (including inserted indentation) to the extension host.
 VSCodeVim 1.32.4 insert/normal/visual
 editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
-`o`/`O` (with the editor's language auto-indent), `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
+`o`/`O` (with the editor's language auto-indent), insert-mode `Tab`/`Shift-Tab` (editor indentation, not VSCodeVim's normal-mode tab command), `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
 the status bar shows its mode entry.
 
 Declarative built-ins are scanned from `../vscode/extensions/theme-defaults`

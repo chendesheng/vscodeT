@@ -83,6 +83,7 @@ pub const Extensions = struct {
     /// indentation; ignore that one stale selection update.
     pending_type_selection: ?Selection = null,
     vim_active: bool = false,
+    vim_mode_insert: bool = false,
     decoration_count: usize = 0,
     status_entries: std.StringHashMap(OwnedStatus),
     config_arena: std.heap.ArenaAllocator,
@@ -585,10 +586,21 @@ pub const Extensions = struct {
                 return true;
             },
             .tab => {
+                // VSCodeVim disables its Tab binding in insert mode; the
+                // editor owns it there so insertSpaces/tabSize apply instead
+                // of inserting the literal "<tab>" notation.
+                if (self.vim_mode_insert) {
+                    if (self.workbench.activeTab()) |tab| tab.editor.insertTab() catch {};
+                    return true;
+                }
                 self.executeCommand("extension.vim_tab", &.{});
                 return true;
             },
             .backtab => {
+                if (self.vim_mode_insert) {
+                    if (self.workbench.activeTab()) |tab| tab.editor.outdent() catch {};
+                    return true;
+                }
                 self.executeCommand("extension.vim_shift+tab", &.{});
                 return true;
             },
@@ -748,8 +760,17 @@ pub const Extensions = struct {
             if (std.mem.eql(u8, command, "_setContext") or std.mem.eql(u8, command, "setContext")) {
                 if (args.len > 1 and args[1] == .json and args[1].json == .array and args[1].json.array.items.len >= 2) {
                     const key_value = args[1].json.array.items[0];
-                    if (key_value == .string and std.mem.eql(u8, key_value.string, "vim.active")) {
-                        if (args[1].json.array.items[1] == .bool) self.vim_active = args[1].json.array.items[1].bool;
+                    if (key_value == .string) {
+                        if (std.mem.eql(u8, key_value.string, "vim.active")) {
+                            if (args[1].json.array.items[1] == .bool) {
+                                self.vim_active = args[1].json.array.items[1].bool;
+                                if (!self.vim_active) self.vim_mode_insert = false;
+                            }
+                        } else if (std.mem.eql(u8, key_value.string, "vim.mode")) {
+                            const mode = args[1].json.array.items[1];
+                            self.vim_mode_insert = mode == .string and
+                                (std.mem.eql(u8, mode.string, "Insert") or std.mem.eql(u8, mode.string, "Replace"));
+                        }
                     }
                 }
                 return .empty;
