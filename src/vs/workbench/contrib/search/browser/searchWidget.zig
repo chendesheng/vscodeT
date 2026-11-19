@@ -5,7 +5,7 @@
 // toggles and the query-details file-pattern inputs. The terminal version
 // renders those rows into one `ui.Surface`; labels and toggles are text nodes
 // in that surface, and editing/focus/caret behavior comes from `ui.InputBox`.
-// The results tree is painted separately by `searchView.zig` because a
+// The results tree is painted separately by `searchViewTerminal.zig` because a
 // terminal search panel is a fixed sidebar, not a browser overflow container.
 
 const std = @import("std");

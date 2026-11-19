@@ -106,7 +106,7 @@ const QuickPickItem = quick_input_common.QuickPickItem;
 const QuickPick = @import("../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
 const dialogs = @import("../vs/platform/dialogs/common/dialogs.zig");
 
-const search_view_mod = @import("./searchView.zig");
+const search_view_mod = @import("../vs/workbench/contrib/search/browser/searchViewTerminal.zig");
 const SearchView = search_view_mod.SearchView;
 const search_service_mod = @import("../vs/workbench/services/search/common/searchService.zig");
 const SearchService = search_service_mod.SearchService;
