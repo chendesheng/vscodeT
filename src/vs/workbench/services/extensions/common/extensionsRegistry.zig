@@ -89,7 +89,7 @@ pub const Registry = struct {
 
     pub fn theme(self: *const Registry, id: []const u8) ?Theme {
         for (self.themes) |item| {
-            if (std.mem.eql(u8, item.id, id)) return item;
+            if (std.mem.eql(u8, item.id, id) or std.mem.eql(u8, item.label, id)) return item;
         }
         return null;
     }
@@ -182,6 +182,18 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
     if (contributes != .object) return true;
     const points = contributes.object;
 
+    // VS Code manifests store theme labels as `%nlsKey%`; resolve the default
+    // `package.nls.json` so the scanner exposes the same label a user sees.
+    var nls: ?std.json.ObjectMap = null;
+    const nls_path = try std.fs.path.join(allocator, &.{ absolute, "package.nls.json" });
+    defer allocator.free(nls_path);
+    if (std.Io.Dir.cwd().readFileAlloc(time_compat.io, nls_path, allocator, .unlimited)) |nls_text| {
+        defer allocator.free(nls_text);
+        if (std.json.parseFromSliceLeaky(std.json.Value, scratch, nls_text, .{})) |nls_value| {
+            if (nls_value == .object) nls = nls_value.object;
+        } else |_| {}
+    } else |_| {}
+
     if (points.get("languages")) |items| {
         if (items == .array) {
             for (items.array.items) |item| {
@@ -229,7 +241,7 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
                 try contributions.themes.append(.{
                     .root = root_copy,
                     .id = try scratch.dupe(u8, stringField(theme, "id") orelse path),
-                    .label = try scratch.dupe(u8, stringField(theme, "label") orelse ""),
+                    .label = try scratch.dupe(u8, resolveNls(nls, stringField(theme, "label") orelse "")),
                     .ui_theme = try scratch.dupe(u8, ui_theme),
                     .path = try scratch.dupe(u8, path),
                 });
@@ -281,6 +293,17 @@ fn scanExtensionDirectory(allocator: Allocator, scratch: Allocator, absolute: []
 
 fn lessThanPath(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
+}
+
+fn resolveNls(nls: ?std.json.ObjectMap, raw: []const u8) []const u8 {
+    if (raw.len < 3 or raw[0] != '%' or raw[raw.len - 1] != '%') return raw;
+    const map = nls orelse return raw;
+    const key = raw[1 .. raw.len - 1];
+    const value = map.get(key) orelse return raw;
+    return switch (value) {
+        .string => |text| text,
+        else => raw,
+    };
 }
 
 fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
