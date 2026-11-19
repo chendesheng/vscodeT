@@ -1202,7 +1202,11 @@ pub const View = struct {
                 }
             }
 
-            const is_cursor_line = view_line == cursor.lineNumber;
+            const current_line = self.terminal_view_host.getCurrentLineHighlight(view_line);
+            const is_cursor_line = if (current_line) |highlight|
+                highlight.highlight and highlight.in_content
+            else
+                view_line == cursor.lineNumber;
             const line = try doc.createElement(.div);
             line.setStyle(.{
                 .position = .absolute,
