@@ -61,6 +61,10 @@ const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.z
 const mouse_target = @import("./controller/mouseTarget.zig");
 const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
 const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
+const view_line_mod = @import("./viewParts/viewLines/viewLine.zig");
+const ViewLine = view_line_mod.ViewLine;
+const view_lines_mod = @import("./viewParts/viewLines/viewLines.zig");
+const ViewLines = view_lines_mod.ViewLines;
 const folding_decorations_mod = @import("../contrib/folding/browser/foldingDecorations.zig");
 const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvider;
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
@@ -1056,73 +1060,26 @@ pub const View = struct {
             text_height,
         );
 
-        var row: usize = 0;
-        while (row < text_height) : (row += 1) {
-            const view_line = top + row;
-            const model_line = editor.modelLineNumber(view_line);
-            const output_index = editor.outputLineIndex(view_line);
-
-            const current_line = self.terminal_view_host.getCurrentLineHighlight(view_line);
-            const is_cursor_line = if (current_line) |highlight|
-                highlight.highlight and highlight.in_content
-            else
-                view_line == cursor.lineNumber;
-            const data = try editor.viewLineData(view_line);
-            const rendered_line = self.terminal_view_host.getRenderedLine(view_line) orelse continue;
-            const rendered = rendered_line.rendered;
-            const painted_line = self.terminal_view_host.getViewLine(view_line) orelse continue;
-
-            const model_content = try editor.model.getLineContent(model_line);
-            defer model_content.deinit();
-
-            const indent_cells = data.minColumn - 1;
-            const line_width = doc.measureText(rendered.bytes);
-            const flags = try self.allocator.alloc(u32, @max(line_width, 1));
-            defer self.allocator.free(flags);
-            @memset(flags, CellFlag.normal);
-
-            if (self.terminal_view_host.getSelectionRanges(view_line)) |selection| {
-                for (selection.ranges) |range| {
-                    if (range.width <= 0) continue;
-                    const start: usize = @intCast(@max(range.left, 0));
-                    const end = @min(start +| @as(usize, @intCast(range.width)), flags.len);
-                    var cell = start;
-                    while (cell < end and cell < flags.len) : (cell += 1) {
-                        flags[cell] |= CellFlag.selected;
-                    }
-                }
-            }
-            markSecondaryCursors(
-                states,
-                view_line,
-                model_content.items,
-                tab_size,
-                data.startVisibleColumn,
-                indent_cells,
-                flags,
-            );
-            var row_guides = std.array_list.Managed(@import("./viewParts/viewLines/viewLine.zig").ViewLine.Guide).init(self.allocator);
-            defer row_guides.deinit();
-            for (guide_specs.items) |spec| {
-                if (spec.row != row) continue;
-                try row_guides.append(.{ .column = spec.col, .color = color(spec.color) });
-            }
-
-            const line = try painted_line.paint(doc, .{
-                .left_cells = gutter,
-                .top_cells = row,
-                .width_cells = text_width,
-                .background = if (is_cursor_line) color(current_line_background) else null,
-                .flags = flags,
-                .decoration_bits_fn = decorationBits,
-                .folded_ellipsis = output_index == 0 and line_width < text_width and
-                    self.foldingDecorationsShowEllipsis(model_line),
-                .folded_ellipsis_style = .{ .color = color(continuation_color) },
-                .guides = row_guides.items,
-            }, lineStyleForPart);
-
-            _ = try root.appendChild(line);
-        }
+        var paint_context = LinePaintContext{
+            .view = self,
+            .guide_specs = guide_specs.items,
+            .states = states,
+            .top = top,
+            .tab_size = tab_size,
+            .text_width = text_width,
+            .cursor = cursor,
+        };
+        try self.terminal_view_host.viewRef().getViewLines().paintViewport(.{
+            .allocator = self.allocator,
+            .doc = doc,
+            .root = root,
+            .left_cells = gutter,
+            .width_cells = text_width,
+            .top_row = 0,
+            .provider = .{ .context = &paint_context, .get = linePaintData },
+            .style_fn = lineStyleForPart,
+            .decoration_bits_fn = decorationBits,
+        });
 
         try appendStatus(self, doc, root, rows);
         try self.buildScrollbar(doc, root, states, text_height, cols);
@@ -1269,6 +1226,82 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
     const text = try doc.createText(status);
     _ = try bar.appendChild(text);
     _ = try root.appendChild(bar);
+}
+
+const LinePaintContext = struct {
+    view: *View,
+    guide_specs: []const GuideSpec,
+    states: []const CursorState,
+    top: usize,
+    tab_size: usize,
+    text_width: usize,
+    cursor: Position,
+};
+
+fn linePaintData(context: *anyopaque, view_line: usize) anyerror!ViewLines.LinePaintData {
+    const ctx: *LinePaintContext = @ptrCast(@alignCast(context));
+    const self = ctx.view;
+    const editor = self.editor;
+    const line_width = self.terminal_view_host.getLineWidth(view_line);
+    const flags = try self.allocator.alloc(u32, @max(line_width, 1));
+    errdefer self.allocator.free(flags);
+    @memset(flags, CellFlag.normal);
+
+    if (self.terminal_view_host.getSelectionRanges(view_line)) |selection| {
+        for (selection.ranges) |range| {
+            if (range.width <= 0) continue;
+            const start: usize = @intCast(@max(range.left, 0));
+            const end = @min(start +| @as(usize, @intCast(range.width)), flags.len);
+            var cell = start;
+            while (cell < end and cell < flags.len) : (cell += 1) {
+                flags[cell] |= CellFlag.selected;
+            }
+        }
+    }
+
+    const data = try editor.viewLineData(view_line);
+    const model_line = editor.modelLineNumber(view_line);
+    const output_index = editor.outputLineIndex(view_line);
+    var model_content = try editor.model.getLineContent(model_line);
+    defer model_content.deinit();
+    markSecondaryCursors(
+        ctx.states,
+        view_line,
+        model_content.items,
+        ctx.tab_size,
+        data.startVisibleColumn,
+        data.minColumn - 1,
+        flags,
+    );
+
+    const row = view_line -| ctx.top;
+    var guide_count: usize = 0;
+    for (ctx.guide_specs) |spec| {
+        if (spec.row == row) guide_count += 1;
+    }
+    const guides = try self.allocator.alloc(ViewLine.Guide, guide_count);
+    errdefer self.allocator.free(guides);
+    var guide_index: usize = 0;
+    for (ctx.guide_specs) |spec| {
+        if (spec.row != row) continue;
+        guides[guide_index] = .{ .column = spec.col, .color = color(spec.color) };
+        guide_index += 1;
+    }
+
+    const current_line = self.terminal_view_host.getCurrentLineHighlight(view_line);
+    const is_cursor_line = if (current_line) |highlight|
+        highlight.highlight and highlight.in_content
+    else
+        view_line == ctx.cursor.lineNumber;
+
+    return .{
+        .flags = flags,
+        .background = if (is_cursor_line) color(current_line_background) else null,
+        .folded_ellipsis = output_index == 0 and line_width < ctx.text_width and
+            self.foldingDecorationsShowEllipsis(model_line),
+        .folded_ellipsis_style = .{ .color = color(continuation_color) },
+        .guides = guides,
+    };
 }
 
 /// Terminal paint adapter for one rendered part and its cell flags.

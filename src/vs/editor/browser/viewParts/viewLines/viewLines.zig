@@ -251,6 +251,65 @@ pub const ViewLines = struct {
         self.context.view_layout.setMaxLineWidth(self.max_line_width);
     }
 
+    /// Per-line terminal paint data supplied by the host.
+    pub const LinePaintData = struct {
+        flags: []u32,
+        background: ?ui.Color = null,
+        folded_ellipsis: bool = false,
+        folded_ellipsis_style: ui.Style = .{},
+        guides: []view_line.ViewLine.Guide = &.{},
+
+        pub fn deinit(self: *LinePaintData, allocator: Allocator) void {
+            allocator.free(self.flags);
+            if (self.guides.len > 0) allocator.free(self.guides);
+        }
+    };
+
+    pub const LinePaintProvider = struct {
+        context: *anyopaque,
+        get: *const fn (context: *anyopaque, view_line: usize) anyerror!LinePaintData,
+    };
+
+    /// Terminal `ViewLines.renderText` assembly: paints each visible line into
+    /// the document through its ported `ViewLine`.
+    pub const ViewportPaintOptions = struct {
+        allocator: Allocator,
+        doc: *ui.Document,
+        root: *ui.Node,
+        left_cells: usize,
+        width_cells: usize,
+        top_row: usize,
+        provider: LinePaintProvider,
+        style_fn: view_line.ViewLine.PartStyleFn,
+        decoration_bits_fn: ?*const fn (classes: []const u8) u32 = null,
+    };
+
+    pub fn paintViewport(self: *ViewLines, options: ViewportPaintOptions) !void {
+        const start = self.visible_lines.getStartLineNumber();
+        const end = self.visible_lines.getEndLineNumber();
+        if (start == 0 or end < start) return;
+
+        var line_number = start;
+        while (line_number <= end) : (line_number += 1) {
+            const line = self.visible_lines.getVisibleLine(line_number);
+            var data = try options.provider.get(options.provider.context, line_number);
+            defer data.deinit(options.allocator);
+
+            const node = try line.paint(options.doc, .{
+                .left_cells = options.left_cells,
+                .top_cells = options.top_row + (line_number - start),
+                .width_cells = options.width_cells,
+                .background = data.background,
+                .flags = data.flags,
+                .decoration_bits_fn = options.decoration_bits_fn,
+                .folded_ellipsis = data.folded_ellipsis,
+                .folded_ellipsis_style = data.folded_ellipsis_style,
+                .guides = data.guides,
+            }, options.style_fn);
+            _ = try options.root.appendChild(node);
+        }
+    }
+
     /// Compatibility wrapper used by the terminal `View`: renders the window
     /// and appends each line's text to `sb`.
     pub fn renderText(self: *ViewLines, viewport: *const ViewportData, sb: *StringBuilder) !void {
