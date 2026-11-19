@@ -10,7 +10,7 @@
 // Terminal adaptations:
 // - the result tree is flattened into one windowed column instead of a
 //   virtualized DOM tree;
-// - the input rows are a small `ui.Surface` built by `searchWidget.zig`;
+// - the input rows are a small `ui.Surface` built by `contrib/search/browser/searchWidget.zig`;
 // - folder compression, multi-selection, context menus and drag/drop are not
 //   ported;
 // - opening a match is explicit (Enter/click) rather than focusing a browser
@@ -42,9 +42,9 @@ const Match = tree.Match;
 const ChangeEvent = tree.ChangeEvent;
 const replace_service = @import("../vs/workbench/contrib/search/browser/replaceService.zig");
 const Edit = replace_service.Edit;
-const SearchWidget = @import("searchWidget.zig").SearchWidget;
-const Field = @import("searchWidget.zig").Field;
-const Option = @import("searchWidget.zig").Option;
+const SearchWidget = @import("../vs/workbench/contrib/search/browser/searchWidget.zig").SearchWidget;
+const Field = @import("../vs/workbench/contrib/search/browser/searchWidget.zig").Field;
+const Option = @import("../vs/workbench/contrib/search/browser/searchWidget.zig").Option;
 const Range = @import("../vs/editor/common/core/range.zig").Range;
 const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;

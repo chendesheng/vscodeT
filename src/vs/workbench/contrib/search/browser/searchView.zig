@@ -9,7 +9,7 @@
 // Terminal adaptations:
 // - the result tree is flattened by the TUI; the controller talks to a
 //   `Viewer` over the visible rows (`searchActionsBase.zig`);
-// - the input widget is a `Widget` vtable over `tui/searchWidget.zig`;
+// - the input widget is a `Widget` vtable over `searchWidget.zig`;
 // - replace-all confirmation is exposed as a request/execute pair so the TUI
 //   can use its inline message row instead of a native dialog;
 // - messages are plain text (no command links, ARIA live regions or progress).

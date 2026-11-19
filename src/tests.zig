@@ -60,7 +60,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/search/test/browser/mockSearchTree.zig");
     _ = @import("./vs/workbench/contrib/search/test/common/extractRange.test.zig");
     _ = @import("./vs/workbench/services/search/test/common/queryBuilder.test.zig");
-    _ = @import("./tui/searchWidget.zig");
+    _ = @import("./vs/workbench/contrib/search/browser/searchWidget.zig");
     _ = @import("./tui/searchView.zig");
     _ = @import("./tui/editorInput.zig");
     _ = @import("./tui/tabBar.zig");
