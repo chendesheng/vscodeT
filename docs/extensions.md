@@ -1551,7 +1551,7 @@ following slice is required before claiming VSCodeVim support:
 | Built-in command surface | `default:type`, `default:replacePreviousChar` (no-op), `_setContext`/`setContext`, `vscode.open`, `$tryOpenDocument`/`$trySaveDocument`, `$tryShowTextDocument`, `workbench.action.files.save`, `workbench.action.closeActiveEditor`, `nextEditorInGroup`/`previousEditorInGroup`, `splitEditorRight`/`Down`, and `insertLineBefore`/`After` are wired. | The rest: `cursorMove`, `editorScroll`, `moveActiveEditor`, `joinAllGroups`, `closeOtherEditors`, snippets, formatting, hover/definition/link, and snippet-placeholder navigation. |
 | Extension keybindings | The adapter maps VSCodeVim's printable, Escape, Backspace/Delete, arrows, Home/End, Page keys and Ctrl+letter commands directly. | Feed all 75 contributed rules into `KeybindingsRegistry.setExtensionKeybindings`, resolve against the terminal context, and ensure the TUI does not swallow keys before the extension rule. |
 | Debug breakpoints | Debug is deferred (§16); no `MainThreadDebugService`. | A breakpoint-only subset: `vscode.debug.breakpoints`, add/remove source and function breakpoints and the breakpoint change event. Without it the `:breakpoints` ex-commands fail; core editing still works. |
-| Editor events | §9.1 defines the push shapes. | Implement `onDidChangeTextEditorSelection`, `onDidChangeActiveTextEditor`, `onDidChangeVisibleTextEditors` and `onDidChangeTextEditorVisibleRanges` from the workbench. VSCodeVim updates its mode state from these. |
+| Editor events | §9.1 defines the push shapes. `src/tui/extensions.zig` pushes selection changes through `$acceptEditorPropertiesChanged` whenever the TUI moved the caret itself (click, drag, TUI-handled key, find, tab switch), tagged with the upstream `source` string (`"mouse"`/`"keyboard"`) and deduplicated against the last selection the host applied or received. That is what keeps VSCodeVim's cursor on the clicked position instead of snapping back on the next Vim key. `options` and `visibleRanges` are still sent as `null`. | Fire `onDidChangeActiveTextEditor`/`onDidChangeVisibleTextEditors` and push `options`/`visibleRanges` deltas; VSCodeVim reads mode and view state from those too. |
 | Storage | In-memory mementos and working-copy history (§16). | Session support is enough to activate; persistence is needed for VSCodeVim history/registers across restarts. `globalStorageUri` plus local `workspace.fs` already covers its file-backed register storage. |
 
 `workspace.applyEdit` appears only in VSCodeVim's tests, not its runtime, so
@@ -1566,7 +1566,7 @@ Minimum compatibility slice, in order:
 3. Configuration writes for `Global` (and `Workspace` when supported).
 4. The built-in command set above.
 5. Extension keybinding routing.
-6. Selection/visible/active editor event pushes.
+6. Visible-range and active-editor event pushes (selection pushes now exist; see the Editor events row above).
 7. Breakpoint subset for `:breakpoints`.
 
 Until those exist, expect VSCodeVim to activate and handle simple insert/normal

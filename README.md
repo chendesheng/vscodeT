@@ -142,10 +142,13 @@ Host stderr is written to `<data dir>/extension-host.log` (normally
 corrupt the TUI frame. Startup failures that disable the host are logged to
 the main log (`$XDG_STATE_HOME/vscode-textbuffer/logs/main.log`, normally
 `~/.local/state/vscode-textbuffer/logs/main.log`). `test-e2e` is skipped unless `host/dist/extensionHost.mjs`
-and the extracted fixture at `.cache-ext/vim/extension` are present. Still missing: the
-contribution scanner, configuration writes, full `tabGroups`, the built-in
-command set VSCodeVim delegates to, and the extension keybinding registry. See
-`docs/extensions.md` for the port status and the remaining work.
+and the extracted fixture at `.cache-ext/vim/extension` are present. Caret and
+selection changes the TUI makes itself (click, drag, TUI-handled keys, find)
+are pushed to the host with upstream's `source` string, so VSCodeVim's cursor
+follows a mouse click instead of snapping back on the next Vim key. Still
+missing: the contribution scanner, configuration writes, full `tabGroups`, the
+built-in command set VSCodeVim delegates to, and the extension keybinding
+registry. See `docs/extensions.md` for the port status and the remaining work.
 
 ## Continuous integration
 
