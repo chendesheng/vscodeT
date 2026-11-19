@@ -541,12 +541,14 @@ pub fn main(init: std.process.Init) !void {
                 .key => |*event| {
                     // The save confirmation is modal: it owns every key,
                     // including the global quit shortcut.
-                    if (workbench.handleDialogKey(event)) continue;
+                    if (workbench.handleDialogKey(event)) {
+                        if (workbench.shouldQuit()) return;
+                        continue;
+                    }
                     if (isCtrlQ(event.*)) {
                         if (workbench.requestQuit()) return;
                         continue;
                     }
-                    workbench.clearQuitArmed();
                     workbench.clearStatusHover();
 
                     if (try workbench.handleGlobalKey(event)) continue;
@@ -586,14 +588,16 @@ pub fn main(init: std.process.Init) !void {
                     )) return;
                 },
                 .mouse => |*event| {
-                    if (workbench.handleDialogMouse(event)) continue;
+                    if (workbench.handleDialogMouse(event)) {
+                        if (workbench.shouldQuit()) return;
+                        continue;
+                    }
                     if (workbench.handleTabDragMouse(event)) continue;
                     if (workbench.handleQuickAccessMouse(event)) continue;
                     if (workbench.handleStatusbarMouse(event)) continue;
                     if (workbench.handleSashMouse(event)) continue;
                     if (workbench.handleSidebarMouse(event)) continue;
                     if (workbench.handleTabMouse(event)) continue;
-                    workbench.clearQuitArmed();
 
                     var adjusted = workbench.editorMouseEvent(event.*) orelse continue;
                     const current = workbench.activeTab() orelse continue;
@@ -646,10 +650,10 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-/// Handles one decoded event. A focused widget owns the keyboard; Ctrl-Q stays
-/// global so the quit prompt works from inside a widget, and Ctrl-F/Ctrl-R open
-/// the find bar from either side (Ctrl-H is Backspace on terminals). Returns
-/// true when the app should quit.
+/// Handles one decoded editor event. The workbench routes Ctrl-Q (and the
+/// modal quit confirmation) before this helper; Ctrl-F/Ctrl-R still open the
+/// find bar from either side (Ctrl-H is Backspace on terminals). Returns true
+/// when the app should quit.
 fn handleKeyEvent(
     view: *View,
     hover: *ContentHoverController,
@@ -661,11 +665,6 @@ fn handleKeyEvent(
     is_pasting: *bool,
     now_ms: i64,
 ) !bool {
-    if (isCtrlQ(event.*)) {
-        const quit = dispatch(editor, event.*, is_pasting);
-        find.onEditorChanged();
-        return quit;
-    }
     if (suggest) |controller| {
         if (try controller.handleKey(event, now_ms)) return false;
     }
@@ -711,7 +710,6 @@ fn handleMouseEvent(
     event: *input.MouseEvent,
 ) !void {
     if (event.kind != .move) {
-        editor.clearQuitArmed();
         editor.clearMessage();
     }
 
@@ -896,10 +894,7 @@ fn setViewDecorations(context: ?*anyopaque, decorations: []const editorBrowser.D
 }
 
 fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
-    if (!isCtrlQ(event)) {
-        editor.clearQuitArmed();
-        editor.clearMessage();
-    }
+    if (!isCtrlQ(event)) editor.clearMessage();
 
     if (is_pasting.*) {
         switch (event.key) {
@@ -915,9 +910,6 @@ fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
         }
     }
 
-    if (std.meta.activeTag(event.key) == .char and event.mods.ctrl and !event.mods.alt and event.key.char == 'q') {
-        return editor.requestQuit();
-    }
     if (editor.dispatchShortcut(event) catch |err| blk: {
         editor.setMessage("shortcut failed: {s}", .{@errorName(err)});
         break :blk false;
@@ -1024,7 +1016,7 @@ fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
     return false;
 }
 
-test "app: q inserts text and Ctrl-Q is the quit key" {
+test "app: q inserts text" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 40, 8);
@@ -1040,11 +1032,6 @@ test "app: q inserts text and Ctrl-Q is the quit key" {
     defer line.deinit();
     try std.testing.expectEqualStrings("qhello", line.items);
     try std.testing.expect(editor.isDirty());
-
-    const ctrl_q = input.KeyEvent{ .key = .{ .char = 'q' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect(!dispatch(editor, ctrl_q, &pasting));
-    try std.testing.expect(editor.quit_armed);
-    try std.testing.expect(dispatch(editor, ctrl_q, &pasting));
 }
 
 test "app: move lines and line comment shortcuts" {

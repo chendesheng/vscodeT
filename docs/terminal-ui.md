@@ -617,6 +617,15 @@ Enter/Space and cancels with Escape. The hardware caret is hidden while it is
 open. The browser dialog's action-bar close button, custom body/footer,
 checkbox, inputs, dropdown and shadow are not ported.
 
+`Ctrl-Q` is the terminal equivalent of the window close button and follows
+upstream `AbstractCloseAllAction` plus `doCloseAll`: it collects every dirty
+tab, reveals one dirty editor per group, and shows one save confirmation for
+the whole set. The message names the files (up to ten, then a summary), the
+primary action is `Save All`, and `Don't Save` reverts every dirty editor
+before closing. A failed save vetoes the quit and leaves the failing tab
+active with its error message. Success closes every tab and lets the host
+leave the event loop.
+
 The breadcrumb row is the cell adaptation of `breadcrumbsWidget.ts` and
 `breadcrumbsControl.ts`. Items are painted left to right with a dim `>` between
 them; focused/selected items are underlined and white, hovered items brighten,

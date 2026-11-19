@@ -181,9 +181,18 @@ pub const GroupPane = editor_group_view.EditorGroupView(*Tab);
 /// The tab a save confirmation is currently acting on. The dialog itself
 /// owns the message/detail strings; these pointers stay valid because the
 /// modal blocks every other close path until the dialog is resolved.
-const PendingClose = struct {
+const CloseTabRequest = struct {
     pane: *GroupPane,
     tab: *Tab,
+};
+
+/// What a modal save confirmation resolves to. Closing one tab and quitting
+/// share the same Save / Don't Save / Cancel wording but act on different
+/// editor sets, matching upstream `doHandleCloseConfirmation` and
+/// `AbstractCloseAllAction`.
+const DialogRequest = union(enum) {
+    close_tab: CloseTabRequest,
+    quit,
 };
 
 const editor_mod = @import("../vs/workbench/common/editor.zig");
@@ -258,10 +267,11 @@ pub const Workbench = struct {
     document_symbol_listener: ?@import("../vs/base/common/event.zig").Emitter(usize).ListenerId = null,
     focus: Focus = .editor,
     is_pasting: bool = false,
-    quit_armed: bool = false,
+    /// Set when the quit confirmation commits to closing the window.
+    quit_requested: bool = false,
     /// The modal save confirmation, if one is open.
     dialog: ?*ui.Dialog = null,
-    pending_close: ?PendingClose = null,
+    pending_dialog: ?DialogRequest = null,
 
     pub fn init(
         allocator: Allocator,
@@ -282,9 +292,9 @@ pub const Workbench = struct {
         self.statusbar_service = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
-        self.quit_armed = false;
+        self.quit_requested = false;
         self.dialog = null;
-        self.pending_close = null;
+        self.pending_dialog = null;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -371,9 +381,9 @@ pub const Workbench = struct {
         self.statusbar_service = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
-        self.quit_armed = false;
+        self.quit_requested = false;
         self.dialog = null;
-        self.pending_close = null;
+        self.pending_dialog = null;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -476,9 +486,9 @@ pub const Workbench = struct {
         self.statusbar_service = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
-        self.quit_armed = false;
+        self.quit_requested = false;
         self.dialog = null;
-        self.pending_close = null;
+        self.pending_dialog = null;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -775,6 +785,12 @@ pub const Workbench = struct {
         return self.dialog != null;
     }
 
+    /// True once the quit confirmation saved or discarded every dirty tab and
+    /// the host should leave the event loop.
+    pub fn shouldQuit(self: *const Workbench) bool {
+        return self.quit_requested;
+    }
+
     pub fn pollQuickAccess(self: *Workbench, now_ms: i64) !bool {
         return self.quick_access.poll(now_ms);
     }
@@ -826,7 +842,7 @@ pub const Workbench = struct {
             dialog.deinit();
             self.dialog = null;
         }
-        self.pending_close = null;
+        self.pending_dialog = null;
         if (self.outline_registration) |registration| {
             registration.dispose();
             self.outline_registration = null;
@@ -1742,7 +1758,59 @@ pub const Workbench = struct {
 
         prompt.deinit();
         self.dialog = dialog;
-        self.pending_close = .{ .pane = pane, .tab = tab };
+        self.pending_dialog = .{ .close_tab = .{ .pane = pane, .tab = tab } };
+    }
+
+    /// Upstream `AbstractCloseAllAction.run` for the close-window path: collect
+    /// every dirty editor, reveal one per group to help the user decide, and
+    /// ask a single multi-file save confirmation. Ctrl-Q uses this path.
+    fn openQuitConfirm(self: *Workbench) !void {
+        if (self.dialog != null) return;
+
+        var names = std.array_list.Managed([]const u8).init(self.allocator);
+        defer names.deinit();
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.editor.isDirty()) try names.append(tab.input.base.getName());
+            }
+        }
+        if (names.items.len == 0) return;
+
+        var prompt = (try dialogs.saveConfirmPrompt(self.allocator, names.items)) orelse return;
+        errdefer prompt.deinit();
+        const dialog = try ui.Dialog.init(
+            self.allocator,
+            prompt.message,
+            prompt.detail,
+            &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
+        );
+        errdefer dialog.deinit();
+
+        self.part.active_sash = null;
+        self.clearTabDrag();
+        self.pending_tab_drag = null;
+        self.last_tab_click = null;
+
+        // Upstream reveals the editors to confirm, one per group. The active
+        // group ends up being the last group that had a dirty editor.
+        var reveal_pane: ?*GroupPane = null;
+        for (self.part.group_views.items) |pane| {
+            var dirty_tab: ?*Tab = null;
+            for (pane.tabs.items) |tab| {
+                if (tab.editor.isDirty()) dirty_tab = tab;
+            }
+            if (dirty_tab) |tab| {
+                try pane.activateTab(tab);
+                reveal_pane = pane;
+            }
+        }
+        if (reveal_pane) |pane| self.service.activateGroup(pane.group);
+        if (self.activeTab()) |tab| try tab.ensureControllers();
+        self.focusActiveEditor();
+
+        prompt.deinit();
+        self.dialog = dialog;
+        self.pending_dialog = .quit;
     }
 
     fn resolveDialogButton(self: *Workbench, index: usize) void {
@@ -1755,29 +1823,33 @@ pub const Workbench = struct {
     }
 
     fn resolveDialog(self: *Workbench, result: dialogs.ConfirmResult) void {
-        self.resolveSaveConfirm(result) catch |err| {
-            if (self.activeTab()) |tab| {
-                tab.editor.setMessage("Close failed: {s}", .{@errorName(err)});
-            }
+        const dialog = self.dialog orelse return;
+        const request = self.pending_dialog;
+        self.dialog = null;
+        self.pending_dialog = null;
+        dialog.deinit();
+
+        const pending = request orelse {
             self.focusActiveEditor();
+            return;
         };
+        switch (pending) {
+            .close_tab => |close| self.resolveCloseTab(close, result) catch |err| self.reportDialogError(err),
+            .quit => self.resolveQuit(result) catch |err| self.reportDialogError(err),
+        }
+    }
+
+    fn reportDialogError(self: *Workbench, err: anyerror) void {
+        if (self.activeTab()) |tab| {
+            tab.editor.setMessage("Close failed: {s}", .{@errorName(err)});
+        }
+        self.focusActiveEditor();
     }
 
     /// Upstream `doHandleCloseConfirmation`: Save closes only when the save
     /// leaves the buffer clean; Don't Save discards the buffer and closes;
-    /// Cancel vetoes the close. The dialog is destroyed before the tab so a
-    /// failed close cannot leave a modal pointing at freed tab state.
-    fn resolveSaveConfirm(self: *Workbench, result: dialogs.ConfirmResult) !void {
-        const dialog = self.dialog orelse return;
-        const pending = self.pending_close;
-        self.dialog = null;
-        self.pending_close = null;
-        dialog.deinit();
-
-        const close = pending orelse {
-            self.focusActiveEditor();
-            return;
-        };
+    /// Cancel vetoes the close.
+    fn resolveCloseTab(self: *Workbench, close: CloseTabRequest, result: dialogs.ConfirmResult) !void {
         if (close.pane.indexOfTab(close.tab) == null) {
             self.focusActiveEditor();
             return;
@@ -1815,6 +1887,70 @@ pub const Workbench = struct {
         }
 
         self.focusActiveEditor();
+    }
+
+    /// Upstream `AbstractCloseAllAction` then `doCloseAll`: save or revert every
+    /// dirty editor, close the whole workbench and let the host exit. A failed
+    /// save vetoes the quit and keeps the window open.
+    fn resolveQuit(self: *Workbench, result: dialogs.ConfirmResult) !void {
+        var save_failure: ?CloseTabRequest = null;
+        switch (result) {
+            .CANCEL => {
+                self.focusActiveEditor();
+                return;
+            },
+            .SAVE => {
+                for (self.part.group_views.items) |pane| {
+                    for (pane.tabs.items) |tab| {
+                        if (!tab.editor.isDirty()) continue;
+                        tab.editor.save() catch |err| {
+                            tab.editor.setMessage(
+                                "Unable to save {s}: {s}",
+                                .{ tab.input.base.getName(), @errorName(err) },
+                            );
+                            save_failure = .{ .pane = pane, .tab = tab };
+                            break;
+                        };
+                        if (tab.editor.isDirty()) {
+                            save_failure = .{ .pane = pane, .tab = tab };
+                            break;
+                        }
+                    }
+                    if (save_failure != null) break;
+                }
+            },
+            .DONT_SAVE => {
+                for (self.part.group_views.items) |pane| {
+                    for (pane.tabs.items) |tab| {
+                        if (tab.editor.isDirty()) tab.editor.reloadFromDisk() catch {};
+                    }
+                }
+            },
+        }
+
+        if (save_failure) |failure| {
+            self.service.activateGroup(failure.pane.group);
+            try failure.pane.activateTab(failure.tab);
+            try failure.tab.ensureControllers();
+            self.focusEditorAfterDialog(failure.tab);
+            return;
+        }
+
+        try self.closeAllTabs();
+        self.quit_requested = true;
+    }
+
+    fn closeAllTabs(self: *Workbench) !void {
+        while (self.tabCount() > 0) {
+            var closed = false;
+            for (self.part.group_views.items) |pane| {
+                if (pane.tabs.items.len == 0) continue;
+                try self.performCloseTab(pane, pane.tabs.items[0]);
+                closed = true;
+                break;
+            }
+            if (!closed) break;
+        }
     }
 
     fn focusEditorAfterDialog(self: *Workbench, tab: *Tab) void {
@@ -2024,18 +2160,16 @@ pub const Workbench = struct {
     }
 
     pub fn requestQuit(self: *Workbench) bool {
+        if (self.dialog != null) return false;
         if (!self.hasDirtyTabs()) return true;
-        if (self.quit_armed) return true;
 
-        self.quit_armed = true;
-        if (self.activeTab()) |tab| {
-            tab.editor.setMessage("Unsaved changes: Ctrl-Q again to quit, Ctrl-S to save", .{});
-        }
+        self.openQuitConfirm() catch |err| {
+            if (self.activeTab()) |tab| {
+                tab.editor.setMessage("Unable to open quit confirmation: {s}", .{@errorName(err)});
+            }
+            return false;
+        };
         return false;
-    }
-
-    pub fn clearQuitArmed(self: *Workbench) void {
-        self.quit_armed = false;
     }
 
     fn paneAt(self: *Workbench, x: usize, y: usize) ?*GroupPane {
@@ -5771,6 +5905,103 @@ test "Workbench: Ctrl-W on a dirty tab opens the save confirmation" {
     try std.testing.expect(workbench.handleDialogKey(&escape));
     try std.testing.expect(!workbench.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+}
+
+test "Workbench: Ctrl-Q quits clean and confirms one dirty tab" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "quit_one.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
+    defer workbench.deinit();
+    try workbench.activeTab().?.ensureControllers();
+
+    // A clean workbench closes the window immediately.
+    try std.testing.expect(workbench.requestQuit());
+    try std.testing.expect(!workbench.isDialogOpen());
+
+    try workbench.activeTab().?.editor.insertText("x");
+    try std.testing.expect(!workbench.requestQuit());
+    try std.testing.expect(workbench.isDialogOpen());
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const dialog_text = try frameText(allocator, &workbench.frame);
+    defer allocator.free(dialog_text);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "Do you want to save the changes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "quit_one.txt?") != null);
+
+    // Cancel keeps the window and the dirty tab.
+    var escape = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(workbench.handleDialogKey(&escape));
+    try std.testing.expect(!workbench.shouldQuit());
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expect(workbench.activeTab().?.editor.isDirty());
+
+    // Save All saves the dirty tab, closes the window and lets the host exit.
+    try std.testing.expect(!workbench.requestQuit());
+    try std.testing.expect(workbench.isDialogOpen());
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(workbench.handleDialogKey(&enter));
+    try std.testing.expect(!workbench.isDialogOpen());
+    try std.testing.expect(workbench.shouldQuit());
+    try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
+
+    const saved = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024));
+    defer allocator.free(saved);
+    try std.testing.expectEqualStrings("xalpha", saved);
+}
+
+test "Workbench: Ctrl-Q lists every dirty tab and don't save closes all" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "quit_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "quit_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 20);
+    defer workbench.deinit();
+    try workbench.activateIndex(0);
+    try workbench.activeTab().?.editor.insertText("a");
+    try workbench.activateIndex(1);
+    try workbench.activeTab().?.editor.insertText("b");
+
+    try std.testing.expect(!workbench.requestQuit());
+    try std.testing.expect(workbench.isDialogOpen());
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const dialog_text = try frameText(allocator, &workbench.frame);
+    defer allocator.free(dialog_text);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "following 2 files?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "quit_a.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "quit_b.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "Save All") != null);
+
+    // Down moves focus to Don't Save; Enter discards both tabs and quits.
+    var down = ui.KeyEvent{ .key = .down };
+    try std.testing.expect(workbench.handleDialogKey(&down));
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(workbench.handleDialogKey(&enter));
+    try std.testing.expect(workbench.shouldQuit());
+    try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
+
+    const saved_a = try Io.Dir.cwd().readFileAlloc(io, path_a, allocator, .limited(1024));
+    defer allocator.free(saved_a);
+    const saved_b = try Io.Dir.cwd().readFileAlloc(io, path_b, allocator, .limited(1024));
+    defer allocator.free(saved_b);
+    try std.testing.expectEqualStrings("alpha", saved_a);
+    try std.testing.expectEqualStrings("beta", saved_b);
 }
 
 test "Workbench: preview replacement and dirty pin" {

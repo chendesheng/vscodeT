@@ -249,7 +249,6 @@ pub const Editor = struct {
     top_view_line: usize,
     status: [MAX_STATUS]u8,
     status_len: usize,
-    quit_armed: bool,
     prev_edit_operation_type: EditOperationType,
     pending_selection: [8]Selection,
     pending_selection_count: usize,
@@ -487,7 +486,6 @@ pub const Editor = struct {
             .top_view_line = 1,
             .status = undefined,
             .status_len = 0,
-            .quit_armed = false,
             .prev_edit_operation_type = .Other,
             .pending_selection = undefined,
             .pending_selection_count = 0,
@@ -2887,18 +2885,6 @@ pub const Editor = struct {
             return self.removeSecondaryCursors();
         }
         return self.cancelSelection();
-    }
-
-    pub fn requestQuit(self: *Editor) bool {
-        if (!self.isDirty()) return true;
-        if (self.quit_armed) return true;
-        self.quit_armed = true;
-        self.setMessage("Unsaved changes: Ctrl-Q again to quit, Ctrl-S to save", .{});
-        return false;
-    }
-
-    pub fn clearQuitArmed(self: *Editor) void {
-        self.quit_armed = false;
     }
 };
 

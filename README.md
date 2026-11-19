@@ -224,9 +224,10 @@ console API for raw mode, sizing and input polling.
   Explorer single clicks open a preview editor, while Enter, quick open, CLI
   paths and session restore open pinned; editing a preview pins it.
   `Ctrl-W` closes the active tab, `Ctrl-PgUp`/`Ctrl-PgDn` switch tabs, `Alt-1..9`
-  activates a tab by position, `Ctrl-S` saves and `Ctrl-Q` quits (a second
-  `Ctrl-Q` is required while any tab is dirty). Empty groups collapse out of
-  the split tree when their last tab closes, the divider between panes is a
+  activates a tab by position, `Ctrl-S` saves and `Ctrl-Q` quits. With dirty
+  tabs, `Ctrl-Q` opens the same save confirmation for all of them (Save All /
+  Don't Save / Cancel) and exits after saving or discarding. Empty groups
+  collapse out of the split tree when their last tab closes, the divider between panes is a
   draggable sash, and dragging a tab into another pane (or onto its edge)
   retiles the editor part. `--preview` remains a single-file mode.
 - The breadcrumb row shows the workspace-relative file path (absolute segments
@@ -616,8 +617,8 @@ TUI editor:
   `ui` text engine (UAX #14, `white-space`, line fragments) wraps widget and
   prose text; editor line boxes stay `pre` so the view-model wrapping is not
   applied twice.
-- `q` is ordinary text. Quit with `Ctrl-Q` (press twice if there are unsaved
-  changes); save with `Ctrl-S`; undo/redo with `Ctrl-Z`/`Ctrl-Y`.
+- `q` is ordinary text. Quit with `Ctrl-Q`; unsaved tabs open the save
+  confirmation first. Save with `Ctrl-S`; undo/redo with `Ctrl-Z`/`Ctrl-Y`.
 - Navigation: arrows, `Shift`+arrows for selection, `Ctrl`+left/right for words,
   `Home`/`End`, `Ctrl`+`Home`/`End` for buffer edges, `PageUp`/`PageDown`.
 - Mouse: left-click places the caret, `Shift`-click extends, drag selects, and
