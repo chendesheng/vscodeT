@@ -19,6 +19,8 @@ const StringBuilder = @import("../common/core/stringBuilder.zig").StringBuilder;
 const view_lines_mod = @import("./viewParts/viewLines/viewLines.zig");
 const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
 const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.zig");
+const margin_mod = @import("./viewParts/margin/margin.zig");
+const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
 const view_event_handler = @import("../common/viewEventHandler.zig");
 const ViewEventHandler = view_event_handler.ViewEventHandler;
 const ViewEvent = view_events.ViewEvent;
@@ -34,6 +36,8 @@ const ViewportData = viewport_data.ViewportData;
 const ViewLines = view_lines_mod.ViewLines;
 const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
+const TerminalMargin = margin_mod.TerminalMargin;
+const TerminalScrollbar = editor_scrollbar_mod.TerminalScrollbar;
 const IContentWidget = @import("./editorBrowser.zig").IContentWidget;
 const IOverlayWidget = @import("./editorBrowser.zig").IOverlayWidget;
 
@@ -45,6 +49,8 @@ pub const View = struct {
     view_lines: ViewLines,
     content_widgets: ViewContentWidgets,
     overlay_widgets: ViewOverlayWidgets,
+    margin: TerminalMargin,
+    scrollbar: TerminalScrollbar,
     view_parts: std.array_list.Managed(*ViewPart),
     content_overlays: std.array_list.Managed(*DynamicViewOverlay),
     is_focused: bool = false,
@@ -58,6 +64,8 @@ pub const View = struct {
             .view_lines = undefined,
             .content_widgets = ViewContentWidgets.init(allocator),
             .overlay_widgets = ViewOverlayWidgets.init(allocator),
+            .margin = .{},
+            .scrollbar = TerminalScrollbar.init(allocator),
             .view_parts = std.array_list.Managed(*ViewPart).init(allocator),
             .content_overlays = std.array_list.Managed(*DynamicViewOverlay).init(allocator),
         };
@@ -71,6 +79,8 @@ pub const View = struct {
         self.view_lines.deinit();
         self.content_widgets.deinit();
         self.overlay_widgets.deinit();
+        self.margin = .{};
+        self.scrollbar.deinit();
         self.view_parts.deinit();
         self.content_overlays.deinit();
     }
@@ -122,6 +132,17 @@ pub const View = struct {
 
     pub fn overlayWidgetsConst(self: *const View) *const ViewOverlayWidgets {
         return &self.overlay_widgets;
+    }
+    pub fn marginPart(self: *View) *TerminalMargin {
+        return &self.margin;
+    }
+
+    pub fn scrollbarPart(self: *View) *TerminalScrollbar {
+        return &self.scrollbar;
+    }
+
+    pub fn scrollbarPartConst(self: *const View) *const TerminalScrollbar {
+        return &self.scrollbar;
     }
 
     /// Port of upstream `View._getViewPartsToRender`: the view parts that

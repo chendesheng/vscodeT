@@ -62,12 +62,9 @@ const mouse_target = @import("./controller/mouseTarget.zig");
 const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
 const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
 const folding_decorations_mod = @import("../contrib/folding/browser/foldingDecorations.zig");
-const margin_mod = @import("./viewParts/margin/margin.zig");
 const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvider;
-const TerminalMargin = margin_mod.TerminalMargin;
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
 const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
-const TerminalScrollbar = editor_scrollbar_mod.TerminalScrollbar;
 const ContentWidgetEntry = content_widgets_mod.ContentWidgetEntry;
 
 const gutter_color = [3]u8{ 110, 110, 110 };
@@ -242,7 +239,6 @@ pub const View = struct {
     /// Width of the rightmost cells reserved for the combined overview ruler
     /// and scrollbar. The editor wraps around the same width.
     scrollbar_width: usize = 0,
-    scrollbar_part: TerminalScrollbar,
     /// The active thumb/track drag. The state is cloned at press time so the
     /// pointer delta maps against the geometry that was under the pointer.
     scrollbar_drag: ?ScrollbarDrag = null,
@@ -266,7 +262,6 @@ pub const View = struct {
     /// Ported folding option provider (gutter icon, folded background and
     /// `inline-folded` ellipsis selection).
     folding_decorations: FoldingDecorationProvider = .{},
-    margin: TerminalMargin = .{},
     /// Set when a widget/status/layout change made the current document
     /// stale. The next paint/render flushes it, so a burst of registrations
     /// costs one rebuild instead of one per call.
@@ -297,7 +292,6 @@ pub const View = struct {
             .surface = undefined,
 
             .terminal_view_host = undefined,
-            .scrollbar_part = TerminalScrollbar.init(allocator),
         };
         self.terminal_view_host = try TerminalViewHost.init(allocator, editor);
         errdefer self.terminal_view_host.deinit();
@@ -318,7 +312,6 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
-        self.scrollbar_part.deinit();
         self.terminal_view_host.deinit();
         self.surface.deinit();
         self.allocator.destroy(self);
@@ -623,7 +616,7 @@ pub const View = struct {
         if (height == 0) return;
         const row = @min(y, height - 1);
 
-        var state = self.scrollbar_part.state(self.editor);
+        var state = self.terminal_view_host.viewRef().scrollbarPart().state(self.editor);
         if (!state.isNeeded()) return;
 
         const geometry = thumbGeometry(state, height);
@@ -1053,7 +1046,7 @@ pub const View = struct {
             }
         }
 
-        try self.margin.render(
+        try self.terminal_view_host.viewRef().marginPart().render(
             doc,
             root,
             editor,
@@ -1155,7 +1148,7 @@ pub const View = struct {
         text_height: usize,
         cols: usize,
     ) !void {
-        try self.scrollbar_part.render(
+        try self.terminal_view_host.viewRef().scrollbarPart().render(
             doc,
             root,
             self.editor,
