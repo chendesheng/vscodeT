@@ -8,41 +8,41 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
-const manager = @import("../vs/workbench/services/extensions/common/extensionHostManager.zig");
-const extension_service = @import("../vs/workbench/services/extensions/common/extensionService.zig");
-const rpc = @import("../vs/workbench/services/extensions/common/rpcProtocol.zig");
-const proxyIdentifier = @import("../vs/workbench/services/extensions/common/proxyIdentifier.zig");
-const protocol = @import("../vs/workbench/api/common/extHost.protocol.zig");
-const time_compat = @import("../vs/base/common/timeCompat.zig");
-const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const TextEdit = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
-const Workbench = @import("./workbench.zig").Workbench;
-const SplitDirection = @import("./workbench.zig").SplitDirection;
-const statusbar = @import("../vs/workbench/services/statusbar/browser/statusbar.zig");
-const statusbar_part = @import("../vs/workbench/browser/parts/statusbar/statusbarPart.zig");
-const configuration = @import("../vs/platform/configuration/common/configuration.zig");
-const Range = @import("../vs/editor/common/core/range.zig").Range;
-const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
-const Position = @import("../vs/editor/common/core/position.zig").Position;
+const manager = @import("../../services/extensions/common/extensionHostManager.zig");
+const extension_service = @import("../../services/extensions/common/extensionService.zig");
+const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
+const proxyIdentifier = @import("../../services/extensions/common/proxyIdentifier.zig");
+const protocol = @import("../common/extHost.protocol.zig");
+const time_compat = @import("../../../base/common/timeCompat.zig");
+const Editor = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const TextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
+const Workbench = @import("../../browser/workbench.zig").Workbench;
+const SplitDirection = @import("../../browser/workbench.zig").SplitDirection;
+const statusbar = @import("../../services/statusbar/browser/statusbar.zig");
+const statusbar_part = @import("../../browser/parts/statusbar/statusbarPart.zig");
+const configuration = @import("../../../platform/configuration/common/configuration.zig");
+const Range = @import("../../../editor/common/core/range.zig").Range;
+const Selection = @import("../../../editor/common/core/selection.zig").Selection;
+const Position = @import("../../../editor/common/core/position.zig").Position;
 const ui = @import("ui");
-const MainThreadLanguageFeatures = @import("../vs/workbench/api/browser/mainThreadLanguageFeatures.zig").MainThreadLanguageFeatures;
-const languageFeaturesHost = @import("../vs/workbench/api/browser/mainThreadLanguageFeatures.zig").HostProxy;
-const MainThreadDiagnostics = @import("../vs/workbench/api/browser/mainThreadDiagnostics.zig").MainThreadDiagnostics;
-const MainThreadStorage = @import("../vs/workbench/api/browser/mainThreadStorage.zig").MainThreadStorage;
-const MainThreadStatusBar = @import("../vs/workbench/api/browser/mainThreadStatusBar.zig").MainThreadStatusBar;
-const MainThreadCommands = @import("../vs/workbench/api/browser/mainThreadCommands.zig").MainThreadCommands;
-const MainThreadConfiguration = @import("../vs/workbench/api/browser/mainThreadConfiguration.zig").MainThreadConfiguration;
-const documents_and_editors = @import("../vs/workbench/api/browser/mainThreadDocumentsAndEditors.zig");
-const MainThreadDocuments = @import("../vs/workbench/api/browser/mainThreadDocuments.zig").MainThreadDocuments;
-const MainThreadTextEditors = @import("../vs/workbench/api/browser/mainThreadTextEditors.zig").MainThreadTextEditors;
-const EditSpec = @import("../vs/workbench/api/browser/mainThreadTextEditors.zig").EditSpec;
-const MainThreadEditorTabs = @import("../vs/workbench/api/browser/mainThreadEditorTabs.zig").MainThreadEditorTabs;
-const MainThreadWindow = @import("../vs/workbench/api/browser/mainThreadWindow.zig").MainThreadWindow;
-const MainThreadExtensionService = @import("../vs/workbench/api/browser/mainThreadExtensionService.zig").MainThreadExtensionService;
-const diagnosticsHost = @import("../vs/workbench/api/browser/mainThreadDiagnostics.zig").HostProxy;
-const markers_mod = @import("../vs/platform/markers/common/markers.zig");
-const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
-const position_converter = @import("../vs/workbench/api/common/positionConverter.zig");
+const MainThreadLanguageFeatures = @import("./mainThreadLanguageFeatures.zig").MainThreadLanguageFeatures;
+const languageFeaturesHost = @import("./mainThreadLanguageFeatures.zig").HostProxy;
+const MainThreadDiagnostics = @import("./mainThreadDiagnostics.zig").MainThreadDiagnostics;
+const MainThreadStorage = @import("./mainThreadStorage.zig").MainThreadStorage;
+const MainThreadStatusBar = @import("./mainThreadStatusBar.zig").MainThreadStatusBar;
+const MainThreadCommands = @import("./mainThreadCommands.zig").MainThreadCommands;
+const MainThreadConfiguration = @import("./mainThreadConfiguration.zig").MainThreadConfiguration;
+const documents_and_editors = @import("./mainThreadDocumentsAndEditors.zig");
+const MainThreadDocuments = @import("./mainThreadDocuments.zig").MainThreadDocuments;
+const MainThreadTextEditors = @import("./mainThreadTextEditors.zig").MainThreadTextEditors;
+const EditSpec = @import("./mainThreadTextEditors.zig").EditSpec;
+const MainThreadEditorTabs = @import("./mainThreadEditorTabs.zig").MainThreadEditorTabs;
+const MainThreadWindow = @import("./mainThreadWindow.zig").MainThreadWindow;
+const MainThreadExtensionService = @import("./mainThreadExtensionService.zig").MainThreadExtensionService;
+const diagnosticsHost = @import("./mainThreadDiagnostics.zig").HostProxy;
+const markers_mod = @import("../../../platform/markers/common/markers.zig");
+const TextModel = @import("../../../editor/common/model/textModel.zig").TextModel;
+const position_converter = @import("../common/positionConverter.zig");
 
 const EntryAccessor = statusbar_part.EntryAccessor;
 
@@ -294,7 +294,7 @@ pub const Extensions = struct {
         }, .{ .context = self, .model_for = diagnosticsModelFor });
     }
 
-    fn languageFeaturesRequest(context: *anyopaque, allocator: Allocator, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, timeout_ms: u32) anyerror!std.json.Value {
+    fn languageFeaturesRequest(context: *anyopaque, allocator: Allocator, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, timeout_ms: u32) anyerror!std.json.Value {
         const self: *Extensions = @ptrCast(@alignCast(context));
         return self.host.requestSync(allocator, proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguageFeatures), method, args, token, timeout_ms);
     }
@@ -329,76 +329,76 @@ pub const Extensions = struct {
         return null;
     }
 
-    fn invokeLanguageFeatures(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeLanguageFeatures(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.language_features_actor) |*actor| return actor.invoke(method, args, token, arena);
         return .empty;
     }
 
-    fn invokeDiagnostics(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeDiagnostics(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.diagnostics_actor) |actor| return actor.invoke(method, args, arena);
         return .empty;
     }
 
-    fn invokeStorage(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeStorage(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.storage_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
 
-    fn invokeStatusBar(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeStatusBar(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.statusbar_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
 
-    fn invokeCommands(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeCommands(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.commands_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
 
-    fn invokeConfiguration(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeConfiguration(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.configuration_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
 
-    fn invokeDocuments(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeDocuments(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.documents_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
 
-    fn invokeTextEditors(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeTextEditors(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.text_editors_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
 
-    fn invokeEditorTabs(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeEditorTabs(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.editor_tabs_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
 
-    fn invokeWindow(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeWindow(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.window_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
     }
 
-    fn invokeExtensionService(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invokeExtensionService(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.extension_service_actor) |*actor| return actor.invoke(method, args, arena);
@@ -900,7 +900,7 @@ pub const Extensions = struct {
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &args, null, manager.noop_callback) catch {};
     }
 
-    fn invoke(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+    fn invoke(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         _ = args;
         _ = context;
@@ -1450,7 +1450,7 @@ test "Extensions: language feature registration reaches the workbench registries
         hover_providers[0].context,
         model,
         Position.init(1, 1),
-        @import("../vs/base/common/cancellation.zig").CancellationToken.None,
+        @import("../../../base/common/cancellation.zig").CancellationToken.None,
         null,
     );
     try std.testing.expect(hover != null);
@@ -1501,7 +1501,7 @@ test "Extensions: real TypeScript extension drives the language features" {
     const model = tab.editor.model;
     var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
     defer resource.deinit(allocator);
-    const token = @import("../vs/base/common/cancellation.zig").CancellationToken.None;
+    const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
 
     const deadline = time_compat.milliTimestamp() + 60_000;
 

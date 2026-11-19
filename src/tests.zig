@@ -76,7 +76,7 @@ comptime {
     _ = @import("./vs/workbench/services/outline/browser/outlineService.zig");
     _ = @import("./vs/workbench/contrib/files/browser/views/explorerView.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorPane.zig");
-    _ = @import("./tui/workbench.zig");
+    _ = @import("./vs/workbench/browser/workbench.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorSession.zig");
     _ = @import("./vs/editor/contrib/hover/browser/terminalHoverProvider.zig");
     _ = @import("./vs/base/common/cache.zig");
@@ -559,7 +559,7 @@ comptime {
     _ = @import("./vs/workbench/services/search/common/fileIndex.zig");
     _ = @import("./vs/platform/quickinput/browser/quickInputList.zig");
     _ = @import("./vs/workbench/browser/quickaccess.zig");
-    _ = @import("./tui/extensions.zig");
+    _ = @import("./vs/workbench/api/browser/extensionHostAdapter.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
     _ = @import("./vs/workbench/services/extensions/common/extensionService.zig");

@@ -34,117 +34,117 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const ui = @import("ui");
-const grid_mod = @import("../vs/base/browser/ui/grid/grid.zig");
-const editor_drop_target = @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig");
-const editor_group_view = @import("../vs/workbench/browser/parts/editor/editorGroupView.zig");
-const editor_part = @import("../vs/workbench/browser/parts/editor/editorPart.zig");
-const Tab = @import("../vs/workbench/browser/parts/editor/editorPane.zig").Tab;
-const FileEditorInput = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
-const FileEditorSerializer = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorSerializer;
-const editor_factory = @import("../vs/workbench/common/editor/editorFactory.zig");
-const tui_editor_mod = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
+const grid_mod = @import("../../base/browser/ui/grid/grid.zig");
+const editor_drop_target = @import("./parts/editor/editorDropTarget.zig");
+const editor_group_view = @import("./parts/editor/editorGroupView.zig");
+const editor_part = @import("./parts/editor/editorPart.zig");
+const Tab = @import("./parts/editor/editorPane.zig").Tab;
+const FileEditorInput = @import("../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
+const FileEditorSerializer = @import("../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorSerializer;
+const editor_factory = @import("../common/editor/editorFactory.zig");
+const tui_editor_mod = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
 const Editor = tui_editor_mod.Editor;
-const TextEdit = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
-const View = @import("../vs/editor/browser/viewTerminal.zig").View;
-const ViewCell = @import("../vs/editor/browser/viewTerminal.zig").Cell;
-const tab_bar = @import("../vs/workbench/browser/parts/editor/multiEditorTabsControl.zig");
-const Sidebar = @import("../vs/workbench/contrib/files/browser/views/explorerView.zig").Sidebar;
-const activity_bar_mod = @import("../vs/workbench/browser/parts/activitybar/activitybarPart.zig");
-const ActivityBarPart = @import("../vs/workbench/browser/parts/activitybar/activitybarPart.zig").ActivityBarPart;
-const SidebarPart = @import("../vs/workbench/browser/parts/sidebar/sidebarPart.zig").SidebarPart;
-const LayoutModel = @import("../vs/workbench/browser/layout.zig").LayoutModel;
-const statusbar_mod = @import("../vs/workbench/browser/parts/statusbar/statusbarPart.zig");
+const TextEdit = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
+const View = @import("../../editor/browser/viewTerminal.zig").View;
+const ViewCell = @import("../../editor/browser/viewTerminal.zig").Cell;
+const tab_bar = @import("./parts/editor/multiEditorTabsControl.zig");
+const Sidebar = @import("../contrib/files/browser/views/explorerView.zig").Sidebar;
+const activity_bar_mod = @import("./parts/activitybar/activitybarPart.zig");
+const ActivityBarPart = @import("./parts/activitybar/activitybarPart.zig").ActivityBarPart;
+const SidebarPart = @import("./parts/sidebar/sidebarPart.zig").SidebarPart;
+const LayoutModel = @import("./layout.zig").LayoutModel;
+const statusbar_mod = @import("./parts/statusbar/statusbarPart.zig");
 const StatusbarService = statusbar_mod.StatusbarService;
 const EntryAccessor = statusbar_mod.EntryAccessor;
-const statusbar_types = @import("../vs/workbench/services/statusbar/browser/statusbar.zig");
-const ActivityService = @import("../vs/workbench/services/activity/browser/activityService.zig").ActivityService;
-const history_mod = @import("../vs/workbench/services/history/common/history.zig");
+const statusbar_types = @import("../services/statusbar/browser/statusbar.zig");
+const ActivityService = @import("../services/activity/browser/activityService.zig").ActivityService;
+const history_mod = @import("../services/history/common/history.zig");
 const HistoryService = history_mod.HistoryService;
-const commands_mod = @import("../vs/workbench/browser/commands.zig");
+const commands_mod = @import("./commands.zig");
 const CommandRegistry = commands_mod.CommandRegistry;
-const quick_access_mod = @import("../vs/workbench/browser/quickaccess.zig");
+const quick_access_mod = @import("./quickaccess.zig");
 const QuickAccessService = quick_access_mod.QuickAccessService;
-const editor_status_mod = @import("../vs/workbench/browser/parts/editor/editorStatus.zig");
+const editor_status_mod = @import("./parts/editor/editorStatus.zig");
 const EditorStatus = editor_status_mod.EditorStatus;
-const workspace_context = @import("../vs/workbench/services/workspaces/common/workspaceContextService.zig");
+const workspace_context = @import("../services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
-const configuration_mod = @import("../vs/workbench/services/configuration/browser/configurationService.zig");
+const configuration_mod = @import("../services/configuration/browser/configurationService.zig");
 const ConfigurationService = configuration_mod.ConfigurationService;
-const universal_watcher_mod = @import("../vs/platform/files/node/watcher/watcher.zig");
+const universal_watcher_mod = @import("../../platform/files/node/watcher/watcher.zig");
 const UniversalWatcher = universal_watcher_mod.UniversalWatcher;
-const watch_common = @import("../vs/platform/files/common/watcher.zig");
+const watch_common = @import("../../platform/files/common/watcher.zig");
 const WatchRequest = watch_common.WatchRequest;
-const languages_associations = @import("../vs/editor/common/services/languagesAssociations.zig");
-const working_copy_service_mod = @import("../vs/workbench/services/workingCopy/common/workingCopyService.zig");
+const languages_associations = @import("../../editor/common/services/languagesAssociations.zig");
+const working_copy_service_mod = @import("../services/workingCopy/common/workingCopyService.zig");
 const WorkingCopyService = working_copy_service_mod.WorkingCopyService;
-const keybinding_service = @import("../vs/workbench/services/keybinding/browser/keybindingService.zig");
-const key_codes = @import("../vs/base/common/keyCodes.zig");
-const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
+const keybinding_service = @import("../services/keybinding/browser/keybindingService.zig");
+const key_codes = @import("../../base/common/keyCodes.zig");
+const keybinding_registry = @import("../../platform/keybinding/common/keybindingsRegistry.zig");
 const SettingsWatcher = configuration_mod.SettingsWatcher;
-const lifecycle_mod = @import("../vs/base/common/lifecycle.zig");
+const lifecycle_mod = @import("../../base/common/lifecycle.zig");
 const IDisposable = lifecycle_mod.IDisposable;
-const breadcrumbs_mod = @import("../vs/workbench/browser/parts/editor/breadcrumbs.zig");
+const breadcrumbs_mod = @import("./parts/editor/breadcrumbs.zig");
 const BreadcrumbsService = breadcrumbs_mod.BreadcrumbsService;
 const BreadcrumbsSettings = breadcrumbs_mod.Settings;
-const breadcrumbs_model = @import("../vs/workbench/browser/parts/editor/breadcrumbsModel.zig");
-const breadcrumbs_picker = @import("../vs/workbench/browser/parts/editor/breadcrumbsPicker.zig");
-const breadcrumbs_control_mod = @import("../vs/workbench/browser/parts/editor/breadcrumbsControl.zig");
+const breadcrumbs_model = @import("./parts/editor/breadcrumbsModel.zig");
+const breadcrumbs_picker = @import("./parts/editor/breadcrumbsPicker.zig");
+const breadcrumbs_control_mod = @import("./parts/editor/breadcrumbsControl.zig");
 const BreadcrumbsControl = breadcrumbs_control_mod.BreadcrumbsControl;
 const BreadcrumbsSelection = breadcrumbs_control_mod.Selection;
 const BreadcrumbsSelectMode = breadcrumbs_control_mod.SelectMode;
 const BreadcrumbsHost = breadcrumbs_control_mod.Host;
-const outline_service_mod = @import("../vs/workbench/services/outline/browser/outlineService.zig");
+const outline_service_mod = @import("../services/outline/browser/outlineService.zig");
 const OutlineService = outline_service_mod.OutlineService;
-const outline_mod = @import("../vs/workbench/services/outline/browser/outline.zig");
+const outline_mod = @import("../services/outline/browser/outline.zig");
 const OutlineEditor = outline_mod.OutlineEditor;
 const IOutlineCreator = outline_mod.IOutlineCreator;
-const DocumentSymbolsOutline = @import("../vs/workbench/contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutline;
-const OutlineModel = @import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModel;
-const quick_input_common = @import("../vs/platform/quickinput/common/quickInput.zig");
+const DocumentSymbolsOutline = @import("../contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutline;
+const OutlineModel = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModel;
+const quick_input_common = @import("../../platform/quickinput/common/quickInput.zig");
 const QuickPickItem = quick_input_common.QuickPickItem;
-const QuickPick = @import("../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
-const dialogs = @import("../vs/platform/dialogs/common/dialogs.zig");
+const QuickPick = @import("../../platform/quickinput/browser/quickInput.zig").QuickPick;
+const dialogs = @import("../../platform/dialogs/common/dialogs.zig");
 
-const search_view_mod = @import("../vs/workbench/contrib/search/browser/searchViewTerminal.zig");
+const search_view_mod = @import("../contrib/search/browser/searchViewTerminal.zig");
 const SearchView = search_view_mod.SearchView;
-const search_service_mod = @import("../vs/workbench/services/search/common/searchService.zig");
+const search_service_mod = @import("../services/search/common/searchService.zig");
 const SearchService = search_service_mod.SearchService;
-const search_types = @import("../vs/workbench/services/search/common/search.zig");
+const search_types = @import("../services/search/common/search.zig");
 const FileContentProvider = search_types.FileContentProvider;
-const replace_service_mod = @import("../vs/workbench/contrib/search/browser/replaceService.zig");
+const replace_service_mod = @import("../contrib/search/browser/replaceService.zig");
 const replace_types = replace_service_mod;
-const search_configuration = @import("../vs/workbench/contrib/search/common/searchConfiguration.zig");
-const tree = @import("../vs/workbench/contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
-const group_mod = @import("../vs/workbench/common/editor/editorGroupModel.zig");
-const editor_groups = @import("../vs/workbench/services/editor/common/editorGroupsService.zig");
-const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
-const time_compat = @import("../vs/base/common/timeCompat.zig");
-const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
-const configuration_extension_point = @import("../vs/workbench/api/common/configurationExtensionPoint.zig");
-const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
+const search_configuration = @import("../contrib/search/common/searchConfiguration.zig");
+const tree = @import("../contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
+const group_mod = @import("../common/editor/editorGroupModel.zig");
+const editor_groups = @import("../services/editor/common/editorGroupsService.zig");
+const extensions_registry = @import("../services/extensions/common/extensionsRegistry.zig");
+const time_compat = @import("../../base/common/timeCompat.zig");
+const json_language = @import("../services/language/common/jsonLanguageClient.zig");
+const configuration_extension_point = @import("../api/common/configurationExtensionPoint.zig");
+const editor_input = @import("../common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
-const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
-const Range = @import("../vs/editor/common/core/range.zig").Range;
-const LanguageFeaturesService = @import("../vs/editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
-const languages = @import("../vs/editor/common/languages.zig");
-const CancellationToken = @import("../vs/base/common/cancellation.zig").CancellationToken;
-const std_uri = @import("../vs/base/common/stdUri.zig");
-const MarkerService = @import("../vs/platform/markers/common/markerService.zig").MarkerService;
-const MarkerDecorationsService = @import("../vs/editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
-const markerChangeEvent = @import("../vs/platform/markers/common/markerService.zig").MarkerChangeEvent;
-const markers_mod = @import("../vs/platform/markers/common/markers.zig");
-const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
-const Position = @import("../vs/editor/common/core/position.zig").Position;
-const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
-const EOL = @import("../vs/editor/common/core/misc/eolCounter.zig").EOL;
-const encoding_mod = @import("../vs/workbench/services/textfile/common/encoding.zig");
-const SearchOption = @import("../vs/workbench/contrib/search/browser/searchWidget.zig").Option;
-const terminal_service_mod = @import("../vs/workbench/contrib/terminal/browser/terminalService.zig");
-const terminal_configuration = @import("../vs/workbench/contrib/terminal/common/terminalConfiguration.zig");
-const terminal_common = @import("../vs/workbench/contrib/terminal/common/terminal.zig");
-const terminal_panel = @import("../vs/workbench/contrib/terminal/browser/terminalTabbedView.zig");
-const terminal_input_mod = @import("../vs/workbench/contrib/terminal/browser/terminalInput.zig");
-const terminal_view = @import("../vs/workbench/contrib/terminal/browser/terminalRenderer.zig");
+const editorBrowser = @import("../../editor/browser/editorBrowser.zig");
+const Range = @import("../../editor/common/core/range.zig").Range;
+const LanguageFeaturesService = @import("../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const languages = @import("../../editor/common/languages.zig");
+const CancellationToken = @import("../../base/common/cancellation.zig").CancellationToken;
+const std_uri = @import("../../base/common/stdUri.zig");
+const MarkerService = @import("../../platform/markers/common/markerService.zig").MarkerService;
+const MarkerDecorationsService = @import("../../editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
+const markerChangeEvent = @import("../../platform/markers/common/markerService.zig").MarkerChangeEvent;
+const markers_mod = @import("../../platform/markers/common/markers.zig");
+const WordBasedCompletionProvider = @import("../../editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
+const Position = @import("../../editor/common/core/position.zig").Position;
+const Selection = @import("../../editor/common/core/selection.zig").Selection;
+const EOL = @import("../../editor/common/core/misc/eolCounter.zig").EOL;
+const encoding_mod = @import("../services/textfile/common/encoding.zig");
+const SearchOption = @import("../contrib/search/browser/searchWidget.zig").Option;
+const terminal_service_mod = @import("../contrib/terminal/browser/terminalService.zig");
+const terminal_configuration = @import("../contrib/terminal/common/terminalConfiguration.zig");
+const terminal_common = @import("../contrib/terminal/common/terminal.zig");
+const terminal_panel = @import("../contrib/terminal/browser/terminalTabbedView.zig");
+const terminal_input_mod = @import("../contrib/terminal/browser/terminalInput.zig");
+const terminal_view = @import("../contrib/terminal/browser/terminalRenderer.zig");
 const TerminalService = terminal_service_mod.TerminalService;
 const TerminalSize = struct { cols: u16, rows: u16 };
 
@@ -204,7 +204,7 @@ const DialogRequest = union(enum) {
     quit,
 };
 
-const editor_mod = @import("../vs/workbench/common/editor.zig");
+const editor_mod = @import("../common/editor.zig");
 
 pub const Workbench = struct {
     allocator: Allocator,
@@ -269,11 +269,11 @@ pub const Workbench = struct {
     language_features: ?*LanguageFeaturesService = null,
     marker_service: ?*MarkerService = null,
     marker_decorations: ?*MarkerDecorationsService = null,
-    marker_listener: ?@import("../vs/base/common/event.zig").Emitter(markerChangeEvent).ListenerId = null,
+    marker_listener: ?@import("../../base/common/event.zig").Emitter(markerChangeEvent).ListenerId = null,
     word_completion_provider: ?*WordBasedCompletionProvider = null,
     word_completion_registration: ?IDisposable = null,
     outline_registration: ?IDisposable = null,
-    document_symbol_listener: ?@import("../vs/base/common/event.zig").Emitter(usize).ListenerId = null,
+    document_symbol_listener: ?@import("../../base/common/event.zig").Emitter(usize).ListenerId = null,
     focus: Focus = .editor,
     is_pasting: bool = false,
     terminal_service: ?*TerminalService = null,
@@ -1198,7 +1198,7 @@ pub const Workbench = struct {
     /// performed (or an event was emitted) and the host should repaint.
     /// Handles external file changes: clean open editors are reloaded, dirty
     /// ones keep the user's in-memory content (upstream marks the conflict).
-    pub fn handleFileChanges(self: *Workbench, changes: []const @import("../vs/platform/files/common/files.zig").FileChange) void {
+    pub fn handleFileChanges(self: *Workbench, changes: []const @import("../../platform/files/common/files.zig").FileChange) void {
         for (changes) |change| {
             if (change.type != .UPDATED) continue;
             for (self.part.group_views.items) |pane| {
@@ -1260,7 +1260,7 @@ pub const Workbench = struct {
         self.files_watcher = watcher;
     }
 
-    fn onWorkspaceFileChanges(changes: []const @import("../vs/platform/files/common/files.zig").FileChange, self: *Workbench) !void {
+    fn onWorkspaceFileChanges(changes: []const @import("../../platform/files/common/files.zig").FileChange, self: *Workbench) !void {
         self.handleFileChanges(changes);
     }
 
@@ -1954,7 +1954,7 @@ pub const Workbench = struct {
         if (providers.len == 0) return false;
 
         var target_uri: ?[]u8 = null;
-        var target_range: ?@import("../vs/editor/common/core/range.zig").Range = null;
+        var target_range: ?@import("../../editor/common/core/range.zig").Range = null;
         defer if (target_uri) |uri| self.allocator.free(uri);
         for (providers) |provider| {
             const locations = provider.provide_definition(
@@ -2041,7 +2041,7 @@ pub const Workbench = struct {
         try tab.ensureControllers();
         self.focusEditor();
         tab.view.focusEditor();
-        tab.onEditorChanged(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+        tab.onEditorChanged(@import("../../base/common/timeCompat.zig").milliTimestamp());
         try tab.refresh();
         try self.history.add(tab.input.editor.path);
         self.revealActiveEditor();
@@ -3145,7 +3145,7 @@ pub const Workbench = struct {
             // A double click is matched against the rectangle the first click
             // recorded. Activating a partially visible tab can scroll the
             // strip, so the second cell may now belong to a different tab.
-            const now = @import("../vs/base/common/timeCompat.zig").milliTimestamp();
+            const now = @import("../../base/common/timeCompat.zig").milliTimestamp();
             if (event.button == .left) {
                 if (self.last_tab_click) |previous| {
                     if (previous.pane == pane and event.y == previous.y and
@@ -3199,7 +3199,7 @@ pub const Workbench = struct {
                         self.last_tab_click = .{
                             .pane = pane,
                             .tab = value,
-                            .at_ms = @import("../vs/base/common/timeCompat.zig").milliTimestamp(),
+                            .at_ms = @import("../../base/common/timeCompat.zig").milliTimestamp(),
                             .x = event.x,
                             .y = event.y,
                             .start = entry.start,
@@ -5105,7 +5105,7 @@ test "Workbench: workspace search streams results and opens a match" {
     try view.startSearch();
     var guard: usize = 0;
     while ((view.model.isSearching() or view.wantsTick()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
     }
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
 
@@ -5138,7 +5138,7 @@ test "Workbench: opening a search match selects its range" {
     try view.startSearch();
     var guard: usize = 0;
     while (view.model.isSearching() and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
     }
     try std.testing.expect(view.rows.items.len > 0);
 
@@ -5189,7 +5189,7 @@ test "Workbench: search replace all updates an open editor" {
     try view.startSearch();
     var guard: usize = 0;
     while (view.model.isSearching() and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
     }
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
     view.commandReplaceAll();
@@ -5470,7 +5470,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
     try view.startSearch();
     var guard: usize = 0;
     while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
     }
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -5481,7 +5481,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
     try view.startSearch();
     guard = 0;
     while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
     }
     var rendered: std.Io.Writer.Allocating = .init(allocator);
     defer rendered.deinit();
@@ -5511,7 +5511,7 @@ test "Workbench: typing a search query restarts results without stale collapse k
         try view.startSearch();
         var guard: usize = 0;
         while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
-            _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+            _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
         }
     }
 
@@ -5569,7 +5569,7 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     try view.startSearch();
     var guard: usize = 0;
     while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
     }
 
     var out: std.Io.Writer.Allocating = .init(allocator);
