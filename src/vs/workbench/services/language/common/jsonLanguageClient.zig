@@ -377,3 +377,36 @@ test "JSON language client reports syntax diagnostics" {
     const completion = try client.completion(scratch, "file:///tmp/test.json", 2, 3);
     try std.testing.expect(completion.len > 0);
 }
+
+test "JSON language client hover uses a local schema" {
+    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const client = try Client.start(allocator, "node", "host/dist/jsonServer.mjs");
+    defer client.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "schema.json", .data =
+        \\{
+        \\  "type": "object",
+        \\  "properties": {
+        \\    "name": { "type": "string", "description": "The name field" }
+        \\  }
+        \\}
+    });
+    var schema_path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const schema_path_length = try tmp.dir.realPathFile(time_compat.io, "schema.json", &schema_path_buffer);
+    const schema_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{schema_path_buffer[0..schema_path_length]});
+    defer allocator.free(schema_uri);
+
+    const text = try std.fmt.allocPrint(allocator, "{{\n  \"$schema\": \"{s}\",\n  \"name\": \"demo\"\n}}\n", .{schema_uri});
+    defer allocator.free(text);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const document_uri = "file:///tmp/json-hover-test.json";
+    try client.didOpen(scratch, document_uri, "json", text);
+    const hover = try client.hover(scratch, document_uri, 2, 4);
+    try std.testing.expect(hover != null);
+    try std.testing.expect(std.mem.indexOf(u8, hover.?.text, "The name field") != null);
+}

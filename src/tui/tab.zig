@@ -184,6 +184,7 @@ pub const Controllers = struct {
         self.word_sink = .{ .model = editor.model, .owner = 3 };
 
         self.hover_provider = TuiHoverProvider.init(allocator);
+        self.hover_provider.setJsonDocument(editor.json_client, editor.json_uri);
         errdefer self.hover_provider.deinit();
         self.hover_providers = .{self.hover_provider.interface()};
 
