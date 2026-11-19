@@ -5,7 +5,7 @@
 // controls. This port keeps the group registry, the oriented split tree from
 // `src/vs/base/browser/ui/grid/grid.zig`, branch demotion when a group
 // collapses, and the sash hit-test/resize math. Group rendering and tab
-// interaction stay in `src/tui/workbench.zig`.
+// interaction stay in `src/vs/workbench/browser/workbench.zig`.
 //
 // `GroupView` is a comptime parameter with this contract:
 //

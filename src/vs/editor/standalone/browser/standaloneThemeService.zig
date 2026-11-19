@@ -502,7 +502,8 @@ test "syntax theme: markdown list continuation keeps inline code" {
     const text =
         "- Multi-file editing uses the ported workbench editor-group model\n" ++
         "  (`src/vs/workbench/common/editor/editorGroupModel.zig`) with a terminal tab\n" ++
-        "  strip (`src/tui/tabBar.zig`, `src/tui/workbench.zig`). Each tab keeps its own\n" ++
+        "  strip (`src/vs/workbench/browser/parts/editor/multiEditorTabsControl.zig`,\n" ++
+        "  `src/vs/workbench/browser/workbench.zig`). Each tab keeps its own\n" ++
         "  `Editor`, `View` and lazy editor contributions; only the active view is\n" ++
         "  decorations. `Ctrl-W` closes the active tab (a dirty tab asks\n";
     var model = try TestModel.init(std.testing.allocator, text, "markdown");

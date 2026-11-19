@@ -9,8 +9,8 @@
 //   chord cannot be safe in Zig. Construct `Keybinding{ .chords = ... }`
 //   directly instead.
 // - `ResolvedKeybinding` is an interface (context + vtable), matching the
-//   repository's `I*` adapter convention; concrete terminal adapters live in
-//   `src/tui/`.
+//   repository's `I*` adapter convention; the terminal adapter lives in
+//   `workbench/services/keybinding/browser/keybindingService.zig`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const key_codes = @import("keyCodes.zig");

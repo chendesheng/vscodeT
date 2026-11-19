@@ -3,7 +3,7 @@
 //
 // The browser tests drive the real Grid and DOM sash endpoints. The terminal
 // port tests the part-visibility/size state that the terminal workbench uses
-// instead; grid composition stays in `src/tui/workbench.zig`.
+// instead; grid composition stays in `src/vs/workbench/browser/workbench.zig`.
 
 const std = @import("std");
 const layout_mod = @import("../../browser/layout.zig");

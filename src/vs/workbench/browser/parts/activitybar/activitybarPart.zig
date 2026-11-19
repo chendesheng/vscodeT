@@ -4,7 +4,7 @@
 // The browser part is a DOM view with menu/action/composite-bar services. The
 // terminal port keeps the activity entries, their order and visibility, the
 // active container, compact sizing and the change event. Rendering, hit
-// testing and the terminal glyph/color mapping stay in `src/tui/`.
+// testing and the terminal glyph/color mapping live in this file.
 //
 // Terminal adaptation: dimensions are whole cells instead of CSS pixels. The
 // compact mode narrows the rail by one cell; the floating-panel pixel margins

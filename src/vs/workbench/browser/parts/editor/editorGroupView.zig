@@ -15,9 +15,10 @@
 //   editorInput(self: *Tab) *EditorInput
 //   layoutCells(self: *Tab, width: usize, height: usize) void
 //
-// Tab rendering, editor input handling and tab-strip painting stay in
-// `src/tui/`; this file only decides which tab is associated with which model
-// editor and how the group's views are laid out.
+// Tab rendering and input handling live in `editorPane.zig`, and the
+// tab-strip layout/paint in `multiEditorTabsControl.zig`; this file only
+// decides which tab is associated with which model editor and how the group's
+// views are laid out.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
