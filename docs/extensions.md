@@ -1855,12 +1855,13 @@ capabilities, opens JSON/JSONC documents, sends full-text changes, pulls
 syntax diagnostics, and forwards completion requests.
 
 The TUI polls only the active editor, publishes a `JSON Problems` status-bar
-entry, registers the server completion provider on JSON/JSONC tabs, and forwards
+entry, registers the server completion provider on JSON/JSONC tabs, forwards
 mouse hover through `TuiHoverProvider` (schemas referenced by `$schema` are
-resolved by the server). The server bundle is optional: without
+resolved by the server), and applies `textDocument/formatting` edits through
+`Editor.formatJson` (command `editor.action.formatDocument`). The server bundle is optional: without
 `host/dist/jsonServer.mjs` the editor keeps the bundled grammar and no JSON
-language features are attached. Formatting, code actions, configured
-`json.schemas` associations and workspace diagnostics remain unwired.
+language features are attached. Code actions, configured `json.schemas`
+associations and workspace diagnostics remain unwired.
 
 ## 16. Deferred / explicit limitations
 

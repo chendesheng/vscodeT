@@ -28,6 +28,14 @@ pub const Hover = struct {
     text: []u8,
 };
 
+pub const FormattingEdit = struct {
+    start_line: u32,
+    start_character: u32,
+    end_line: u32,
+    end_character: u32,
+    new_text: []u8,
+};
+
 pub const Error = error{
     ServerUnavailable,
     InvalidMessage,
@@ -90,7 +98,9 @@ pub const Client = struct {
         try text_document.put(arena.allocator(), "completion", .{ .object = completion_capability });
         try capabilities.put(arena.allocator(), "textDocument", .{ .object = text_document });
         try params.put(arena.allocator(), "capabilities", .{ .object = capabilities });
-        try params.put(arena.allocator(), "initializationOptions", .{ .object = .empty });
+        var init_options: std.json.ObjectMap = .empty;
+        try init_options.put(arena.allocator(), "provideFormatter", .{ .bool = true });
+        try params.put(arena.allocator(), "initializationOptions", .{ .object = init_options });
         const result = try self.request(arena.allocator(), "initialize", .{ .object = params });
         if (result != .object or result.object.get("capabilities") == null) return Error.InvalidMessage;
         self.notify(arena.allocator(), "initialized", .{ .object = .empty }) catch {};
@@ -227,6 +237,38 @@ pub const Client = struct {
         const contents = result.object.get("contents") orelse return null;
         const text = try hoverText(arena, contents);
         return .{ .text = text };
+    }
+
+    pub fn formatting(self: *Client, arena: Allocator, uri: []const u8, tab_size: u32, insert_spaces: bool) ![]FormattingEdit {
+        var doc: std.json.ObjectMap = .empty;
+        try doc.put(arena, "uri", .{ .string = try arena.dupe(u8, uri) });
+        var options: std.json.ObjectMap = .empty;
+        try options.put(arena, "tabSize", .{ .integer = @intCast(tab_size) });
+        try options.put(arena, "insertSpaces", .{ .bool = insert_spaces });
+        var params: std.json.ObjectMap = .empty;
+        try params.put(arena, "textDocument", .{ .object = doc });
+        try params.put(arena, "options", .{ .object = options });
+        const result = try self.request(arena, "textDocument/formatting", .{ .object = params });
+        if (result != .array) return &.{};
+        var edits = std.array_list.Managed(FormattingEdit).init(arena);
+        for (result.array.items) |item| {
+            if (item != .object) continue;
+            const range = item.object.get("range") orelse continue;
+            if (range != .object) continue;
+            const start_position = range.object.get("start") orelse continue;
+            const end_position = range.object.get("end") orelse continue;
+            if (start_position != .object or end_position != .object) continue;
+            const new_text = item.object.get("newText") orelse continue;
+            if (new_text != .string) continue;
+            try edits.append(.{
+                .start_line = integerField(start_position.object, "line"),
+                .start_character = integerField(start_position.object, "character"),
+                .end_line = integerField(end_position.object, "line"),
+                .end_character = integerField(end_position.object, "character"),
+                .new_text = try arena.dupe(u8, new_text.string),
+            });
+        }
+        return edits.toOwnedSlice();
     }
 
     fn notify(self: *Client, arena: Allocator, method: []const u8, params: std.json.Value) !void {
@@ -376,6 +418,11 @@ test "JSON language client reports syntax diagnostics" {
     try client.didChange(scratch, "file:///tmp/test.json", 2, "{\n  \"name\": 1,\n  \"");
     const completion = try client.completion(scratch, "file:///tmp/test.json", 2, 3);
     try std.testing.expect(completion.len > 0);
+
+    try client.didChange(scratch, "file:///tmp/test.json", 3, "{\"a\":1}");
+    const edits = try client.formatting(scratch, "file:///tmp/test.json", 4, true);
+    try std.testing.expect(edits.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, edits[0].new_text, "\n") != null);
 }
 
 test "JSON language client hover uses a local schema" {

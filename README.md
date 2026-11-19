@@ -103,8 +103,8 @@ JSON and JSONC editors use the bundled VS Code JSON language server when
 `host/dist/jsonServer.mjs` is present. Syntax diagnostics are pulled after
 edits and shown in the status bar as `JSON Problems`; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
-bundled grammar and reports no diagnostics. Hover is forwarded to the same server; formatting and
-schema settings (including `json.schemas`) are not wired yet.
+bundled grammar and reports no diagnostics. Hover and formatting are forwarded to the same
+server; schema settings (including `json.schemas`) are not wired yet.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally
 `~/.local/state/vscode-textbuffer/extensions/extension-host.log`) so it cannot

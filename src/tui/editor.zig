@@ -612,6 +612,45 @@ pub const Editor = struct {
         }
     }
 
+    pub fn formatJson(self: *Editor) !void {
+        const client = self.json_client orelse {
+            self.setMessage("No JSON language server", .{});
+            return;
+        };
+        if (self.json_uri == null) {
+            self.setMessage("Not a JSON document", .{});
+            return;
+        }
+        if (self.model.getVersionId() != self.json_version) self.syncJsonDocument() catch {};
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const edits = try client.formatting(
+            arena.allocator(),
+            self.json_uri.?,
+            @intCast(self.cursor_config.tabSize),
+            self.cursor_config.insertSpaces,
+        );
+        if (edits.len == 0) {
+            self.setMessage("JSON already formatted", .{});
+            return;
+        }
+        const text_edits = try self.allocator.alloc(TextEdit, edits.len);
+        defer self.allocator.free(text_edits);
+        for (edits, 0..) |edit, index| {
+            text_edits[index] = .{
+                .range = Range.init(
+                    @intCast(edit.start_line + 1),
+                    @intCast(edit.start_character + 1),
+                    @intCast(edit.end_line + 1),
+                    @intCast(edit.end_character + 1),
+                ),
+                .text = edit.new_text,
+            };
+        }
+        try self.applyTextEdits(text_edits, &.{});
+        self.setMessage("Formatted JSON", .{});
+    }
+
     pub fn jsonProvideCompletion(
         context: *anyopaque,
         allocator: Allocator,
@@ -3584,6 +3623,7 @@ const shortcut_specs = [_]struct {
     run: *const fn (*anyopaque) anyerror!void,
 }{
     .{ .id = "workbench.action.files.save", .run = cmdSave },
+    .{ .id = "editor.action.formatDocument", .run = cmdFormatDocument },
     .{ .id = "undo", .run = cmdUndo },
     .{ .id = "redo", .run = cmdRedo },
     .{ .id = "editor.action.selectAll", .run = cmdSelectAll },
@@ -3653,6 +3693,9 @@ fn editorOf(context: *anyopaque) *Editor {
     return @ptrCast(@alignCast(context));
 }
 
+fn cmdFormatDocument(context: *anyopaque) anyerror!void {
+    return editorOf(context).formatJson();
+}
 fn cmdSave(context: *anyopaque) anyerror!void {
     return editorOf(context).save();
 }
@@ -3856,6 +3899,7 @@ fn cmdStartFindReplace(context: *anyopaque) anyerror!void {
 
 const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.files.save", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyS) } },
+    .{ .id = "editor.action.formatDocument", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyF) } },
     .{ .id = "undo", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyZ) } },
     .{ .id = "redo", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyY) } },
     .{ .id = "editor.action.selectAll", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyA) } },
@@ -4005,4 +4049,28 @@ test "Editor: JSON language features populate diagnostics and completion" {
     try std.testing.expectEqualStrings("json", editor.languageId());
     try std.testing.expect(editor.json_error_count > 0);
     try std.testing.expect(std.mem.startsWith(u8, editor.message(), "JSON "));
+}
+
+test "Editor: formats JSON through the language server" {
+    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const client = try json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs");
+    defer client.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "format.json", .data = "{\"a\":1}" });
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const length = try tmp.dir.realPathFile(time_compat.io, "format.json", &buffer);
+
+    const editor = try Editor.createWithExtensions(allocator, time_compat.io, buffer[0..length], 40, 8, null, client);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.formatJson();
+    var value = try editor.model.getValue(.TextDefined, false);
+    defer value.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, value.items, "\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, value.items, ": 1") != null);
 }
