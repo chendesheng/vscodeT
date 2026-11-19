@@ -13,6 +13,11 @@ const Allocator = std.mem.Allocator;
 
 const view_line_options = @import("./viewLineOptions.zig");
 const view_line_renderer = @import("../../../common/viewLayout/viewLineRenderer.zig");
+const line_decorations_mod = @import("../../../common/viewLayout/lineDecorations.zig");
+const LineDecoration = line_decorations_mod.LineDecoration;
+const inline_decorations_mod = @import("../../../common/viewModel/inlineDecorations.zig");
+const InlineDecorationType = inline_decorations_mod.InlineDecorationType;
+const theme = @import("../../../../platform/theme/common/theme.zig");
 const viewport_data = @import("../../../common/viewLayout/viewLinesViewportData.zig");
 const view_context = @import("../../../common/viewModel/viewContext.zig");
 const StringBuilder = @import("../../../common/core/stringBuilder.zig").StringBuilder;
@@ -28,7 +33,26 @@ pub const ViewLine = struct {
     context: *RenderingContext,
     options: ViewLineOptions,
     is_maybe_invalid: bool = true,
-    rendered_hash: ?u64 = null,
+    rendered_view_line: ?RenderedViewLine = null,
+
+    /// Port of upstream `RenderedViewLine`: the input that produced the last
+    /// render and the terminal runs it produced.
+    pub const RenderedViewLine = struct {
+        input: view_line_renderer.Input,
+        rendered: view_line_renderer.RenderedLine,
+        /// Owned by this record; `input.line_decorations` points into it.
+        decorations: []LineDecoration,
+        /// Owned by this record; `input.selection_ranges` points into it.
+        selection_ranges: []OffsetRange,
+        delta_top: f64 = 0,
+        line_height: f64 = 0,
+
+        pub fn deinit(self: *RenderedViewLine, allocator: Allocator) void {
+            self.rendered.deinit(allocator);
+            allocator.free(self.decorations);
+            allocator.free(self.selection_ranges);
+        }
+    };
 
     pub fn init(allocator: Allocator, context: *RenderingContext, options: ViewLineOptions) ViewLine {
         return .{
@@ -39,8 +63,8 @@ pub const ViewLine = struct {
     }
 
     pub fn deinit(self: *ViewLine, allocator: Allocator) void {
-        _ = allocator;
-        self.rendered_hash = null;
+        if (self.rendered_view_line) |*rendered| rendered.deinit(allocator);
+        self.rendered_view_line = null;
     }
 
     pub fn onContentChanged(self: *ViewLine) void {
@@ -60,10 +84,13 @@ pub const ViewLine = struct {
         self.options = new_options;
     }
 
-    /// Only `renderWhitespace: selection` depends on the selection in the
-    /// terminal renderer, so other selection changes do not invalidate.
+    /// Port of upstream `ViewLine.onSelectionChanged`: high-contrast themes
+    /// paint `inline-selected-text`, and `renderWhitespace: selection` depends
+    /// on the selection ranges.
     pub fn onSelectionChanged(self: *ViewLine) bool {
-        if (self.options.render_whitespace == .selection) {
+        if (theme.isHighContrast(self.options.theme_type) or
+            self.options.render_whitespace == .selection)
+        {
             self.is_maybe_invalid = true;
             return true;
         }
@@ -80,8 +107,8 @@ pub const ViewLine = struct {
         self.is_maybe_invalid = false;
     }
 
-    /// Appends the rendered terminal text for `line_number` to `sb` and returns
-    /// whether the rendered content changed since the previous call.
+    /// Port of upstream `ViewLine.renderLine`: build the render input, skip
+    /// when it is unchanged, render, and append the terminal text.
     pub fn renderLine(
         self: *ViewLine,
         line_number: usize,
@@ -90,50 +117,126 @@ pub const ViewLine = struct {
         viewport: *const viewport_data.ViewportData,
         sb: *StringBuilder,
     ) bool {
-        _ = delta_top;
-        _ = line_height;
-
         const line_data = viewport.getViewLineRenderingData(line_number) catch return false;
 
-        var selection_ranges: [16]OffsetRange = undefined;
-        var selection_range_count: usize = 0;
-        if (self.options.render_whitespace == .selection) {
-            for (self.context.view_model.getSelections()) |selection| {
+        const actual_inline_decorations = line_decorations_mod.LineDecoration.filter(
+            self.allocator,
+            line_data.inlineDecorations,
+            line_number,
+            line_data.minColumn,
+            line_data.maxColumn,
+        ) catch return false;
+        errdefer self.allocator.free(actual_inline_decorations);
+
+        // High-contrast themes draw the selection as an inline decoration.
+        var decorations = std.array_list.Managed(LineDecoration).init(self.allocator);
+        defer decorations.deinit();
+        decorations.appendSlice(actual_inline_decorations) catch return false;
+        self.allocator.free(actual_inline_decorations);
+
+        var selection_ranges = std.array_list.Managed(OffsetRange).init(self.allocator);
+        defer selection_ranges.deinit();
+
+        const render_whitespace = if (self.options.experimental_whitespace_rendering == .off)
+            self.options.render_whitespace
+        else
+            .none;
+        if (theme.isHighContrast(self.options.theme_type) or render_whitespace == .selection) {
+            for (viewport.selections) |selection| {
                 if (selection.endLineNumber < line_number or selection.startLineNumber > line_number) continue;
                 const start_column = if (selection.startLineNumber == line_number) selection.startColumn else line_data.minColumn;
                 const end_column = if (selection.endLineNumber == line_number) selection.endColumn else line_data.maxColumn;
-                const start = @min(start_column -| 1, line_data.content.len);
-                const end = @min(end_column -| 1, line_data.content.len);
-                if (start < end and selection_range_count < selection_ranges.len) {
-                    selection_ranges[selection_range_count] = OffsetRange.init(start, end);
-                    selection_range_count += 1;
+                if (start_column >= end_column) continue;
+                if (theme.isHighContrast(self.options.theme_type)) {
+                    decorations.append(LineDecoration.init(start_column, end_column, "inline-selected-text", .Regular)) catch return false;
+                }
+                if (render_whitespace == .selection) {
+                    selection_ranges.append(OffsetRange.init(start_column - 1, end_column - 1)) catch return false;
                 }
             }
         }
 
-        var rendered = view_line_renderer.renderLine(self.allocator, .{
+        // Upstream compares the rendered input to avoid rebuilding the DOM.
+        // The terminal renderer uses the same input equality contract.
+        const owned_decorations = decorations.toOwnedSlice() catch return false;
+        errdefer self.allocator.free(owned_decorations);
+        const owned_selections = selection_ranges.toOwnedSlice() catch return false;
+        errdefer self.allocator.free(owned_selections);
+
+        const input = view_line_renderer.Input{
             .content = line_data.content,
             .tokens = line_data.tokens,
             .tab_size = line_data.tabSize,
             .start_visible_column = line_data.startVisibleColumn,
-            .render_whitespace = self.options.render_whitespace,
-            .selection_ranges = selection_ranges[0..selection_range_count],
+            .render_whitespace = render_whitespace,
+            .selection_ranges = owned_selections,
             .render_control_characters = self.options.render_control_characters,
-        }) catch return false;
-        defer rendered.deinit(self.allocator);
+            .line_decorations = owned_decorations,
+            .continues_with_wrapped_line = line_data.continuesWithWrappedLine,
+            .is_basic_ascii = line_data.isBasicASCII,
+            .contains_rtl = line_data.containsRTL,
+            .faux_indent_length = line_data.minColumn - 1,
+            .stop_rendering_line_after = self.options.stop_rendering_line_after,
+            .text_direction = line_data.textDirection,
+        };
 
-        const changed = self.updateRenderedText(rendered.bytes);
+        if (self.rendered_view_line) |rendered| {
+            if (rendered.input.equals(&input)) {
+                self.allocator.free(owned_decorations);
+                self.allocator.free(owned_selections);
+                sb.appendString(rendered.rendered.bytes) catch return false;
+                return false;
+            }
+        }
+
+        var rendered = view_line_renderer.renderLine(self.allocator, input) catch {
+            self.allocator.free(owned_decorations);
+            self.allocator.free(owned_selections);
+            return false;
+        };
+        errdefer rendered.deinit(self.allocator);
+
+        if (self.rendered_view_line) |*previous| previous.deinit(self.allocator);
+        self.rendered_view_line = .{
+            .input = input,
+            .rendered = rendered,
+            .decorations = owned_decorations,
+            .selection_ranges = owned_selections,
+            .delta_top = delta_top,
+            .line_height = line_height,
+        };
         sb.appendString(rendered.bytes) catch return false;
-        return changed;
+        return true;
     }
 
-    fn updateRenderedText(self: *ViewLine, text: []const u8) bool {
-        const hash = std.hash.Wyhash.hash(0, text);
-        if (self.rendered_hash) |previous| {
-            if (previous == hash) return false;
-        }
-        self.rendered_hash = hash;
-        return true;
+    pub fn getRenderedViewLine(self: *const ViewLine) ?*const RenderedViewLine {
+        return if (self.rendered_view_line) |*rendered| rendered else null;
+    }
+
+    pub fn getDomNode(self: *const ViewLine) ?*anyopaque {
+        _ = self;
+        return null;
+    }
+
+    pub fn getWidth(self: *const ViewLine) usize {
+        const rendered = self.rendered_view_line orelse return 0;
+        return std.unicode.utf8CountCodepointsLossy(rendered.rendered.bytes);
+    }
+
+    pub fn getHeight(self: *const ViewLine) f64 {
+        return if (self.rendered_view_line) |rendered| rendered.line_height else 0;
+    }
+
+    pub fn getTop(self: *const ViewLine) f64 {
+        return if (self.rendered_view_line) |rendered| rendered.delta_top else 0;
+    }
+
+    pub fn getBottom(self: *const ViewLine) f64 {
+        return self.getTop() + self.getHeight();
+    }
+
+    pub fn setTop(self: *ViewLine, top: f64) void {
+        if (self.rendered_view_line) |*rendered| rendered.delta_top = top;
     }
 };
 
@@ -152,6 +255,7 @@ const languages = @import("../../../common/languages.zig");
 const line_tokens = @import("../../../common/tokens/lineTokens.zig");
 const Range = @import("../../../common/core/range.zig").Range;
 const Position = @import("../../../common/core/position.zig").Position;
+const Selection = @import("../../../common/core/selection.zig").Selection;
 const TextDirection = @import("../../../common/standalone/standaloneEnums.zig").TextDirection;
 const LanguageIdCodec = languages.LanguageIdCodec;
 const ViewLineRenderingData = view_model.ViewLineRenderingData;
@@ -286,4 +390,87 @@ test "view line renders through the visible lines collection" {
     try collection.renderLines(&fixture.viewport, &sb);
     try testing.expectEqualStrings("x   y", sb.build());
     _ = collection.onFlushed(&.{});
+}
+
+test "view line: unchanged render input skips rebuilding" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    try fixture.init(allocator, "plain");
+    defer fixture.deinit();
+
+    const line_options = ViewLineOptions.init(&fixture.configuration, .DARK);
+    var line = ViewLine.init(allocator, &fixture.context, line_options);
+    defer line.deinit(allocator);
+
+    var sb = try StringBuilder.init(allocator, 8);
+    defer sb.deinit();
+
+    try testing.expect(line.renderLine(1, 3, 19, &fixture.viewport, &sb));
+    const first = line.getRenderedViewLine().?;
+    try testing.expectEqual(@as(f64, 3), first.delta_top);
+    try testing.expectEqual(@as(f64, 19), first.line_height);
+
+    sb.reset();
+    try testing.expect(!line.renderLine(1, 9, 19, &fixture.viewport, &sb));
+    try testing.expectEqualStrings("plain", sb.build());
+    // The previous render is retained when the input did not change.
+    try testing.expectEqual(@as(f64, 3), line.getRenderedViewLine().?.delta_top);
+}
+
+test "view line: high contrast selection adds the inline-selected-text decoration" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    try fixture.init(allocator, "abcdef");
+    defer fixture.deinit();
+
+    const line_options = ViewLineOptions.init(&fixture.configuration, .HIGH_CONTRAST_DARK);
+    var line = ViewLine.init(allocator, &fixture.context, line_options);
+    defer line.deinit(allocator);
+
+    const selections = [_]Selection{Selection.init(1, 2, 1, 5)};
+    fixture.viewport.selections = &selections;
+
+    var sb = try StringBuilder.init(allocator, 8);
+    defer sb.deinit();
+    try testing.expect(line.renderLine(1, 0, 19, &fixture.viewport, &sb));
+
+    const rendered = line.getRenderedViewLine().?;
+    var found = false;
+    for (rendered.input.line_decorations) |decoration| {
+        if (std.mem.eql(u8, decoration.className, "inline-selected-text")) {
+            found = true;
+            try testing.expectEqual(@as(usize, 2), decoration.startColumn);
+            try testing.expectEqual(@as(usize, 5), decoration.endColumn);
+        }
+    }
+    try testing.expect(found);
+
+    // Selection changes invalidate in high contrast even without selection
+    // whitespace rendering.
+    try testing.expect(line.onSelectionChanged());
+}
+
+test "view line: renderWhitespace selection builds selection ranges" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    try fixture.init(allocator, "a b c");
+    defer fixture.deinit();
+    fixture.options.set(.renderWhitespace, .selection);
+    fixture.options.set(.experimentalWhitespaceRendering, .off);
+
+    const line_options = ViewLineOptions.init(&fixture.configuration, .DARK);
+    var line = ViewLine.init(allocator, &fixture.context, line_options);
+    defer line.deinit(allocator);
+
+    const selections = [_]Selection{Selection.init(1, 1, 1, 4)};
+    fixture.viewport.selections = &selections;
+
+    var sb = try StringBuilder.init(allocator, 8);
+    defer sb.deinit();
+    try testing.expect(line.renderLine(1, 0, 19, &fixture.viewport, &sb));
+
+    const rendered = line.getRenderedViewLine().?;
+    try testing.expectEqual(@as(usize, 1), rendered.selection_ranges.len);
+    try testing.expectEqual(@as(usize, 0), rendered.selection_ranges[0].start);
+    try testing.expectEqual(@as(usize, 3), rendered.selection_ranges[0].endExclusive);
 }

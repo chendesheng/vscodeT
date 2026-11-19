@@ -24,6 +24,16 @@ pub const ThemeTypeSelector = enum(u8) {
     HC_LIGHT,
 };
 
+/// Port of upstream `isHighContrast`.
+pub fn isHighContrast(scheme: ColorScheme) bool {
+    return scheme == .HIGH_CONTRAST_DARK or scheme == .HIGH_CONTRAST_LIGHT;
+}
+
+/// Port of upstream `isDark`.
+pub fn isDark(scheme: ColorScheme) bool {
+    return scheme == .DARK or scheme == .HIGH_CONTRAST_DARK;
+}
+
 test "theme: color scheme string values" {
     try std.testing.expectEqualStrings("dark", ColorScheme.DARK.toString());
     try std.testing.expectEqualStrings("light", ColorScheme.LIGHT.toString());

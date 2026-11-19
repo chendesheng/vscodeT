@@ -64,6 +64,38 @@ pub const Input = struct {
     /// Inline decorations in model columns for this line. The renderer sorts
     /// and normalizes them; the caller keeps ownership.
     line_decorations: []const LineDecoration = &.{},
+    continues_with_wrapped_line: bool = false,
+    is_basic_ascii: bool = true,
+    contains_rtl: bool = false,
+    faux_indent_length: usize = 0,
+    stop_rendering_line_after: i32 = -1,
+    text_direction: ?@import("../standalone/standaloneEnums.zig").TextDirection = null,
+
+    /// Upstream `RenderLineInput.equals`: the input is equal when every value
+    /// that can change the rendered line is equal.
+    pub fn equals(a: *const Input, b: *const Input) bool {
+        if (!std.mem.eql(u8, a.content, b.content)) return false;
+        if (!a.tokens.equals(b.tokens)) return false;
+        if (!LineDecoration.equalsArr(a.line_decorations, b.line_decorations)) return false;
+        if (a.tab_size != b.tab_size or
+            a.start_visible_column != b.start_visible_column or
+            a.render_whitespace != b.render_whitespace or
+            a.render_control_characters != b.render_control_characters or
+            a.continues_with_wrapped_line != b.continues_with_wrapped_line or
+            a.is_basic_ascii != b.is_basic_ascii or
+            a.contains_rtl != b.contains_rtl or
+            a.faux_indent_length != b.faux_indent_length or
+            a.stop_rendering_line_after != b.stop_rendering_line_after or
+            a.text_direction != b.text_direction)
+        {
+            return false;
+        }
+        if (a.selection_ranges.len != b.selection_ranges.len) return false;
+        for (a.selection_ranges, b.selection_ranges) |x, y| {
+            if (x.start != y.start or x.endExclusive != y.endExclusive) return false;
+        }
+        return true;
+    }
 };
 
 const WhitespaceContext = struct {
