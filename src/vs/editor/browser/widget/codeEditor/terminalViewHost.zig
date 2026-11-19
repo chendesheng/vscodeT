@@ -277,13 +277,6 @@ pub const TerminalViewHost = struct {
         self.view.getViewLines().forceShouldRender();
 
         self.selections_overlay.setSelections(self.selections);
-        const cursor_event = view_events.ViewCursorStateChangedEvent{
-            .selections = self.selections,
-            .modelSelections = self.selections,
-            .reason = .NotSet,
-        };
-        _ = self.current_line.base.handler.onCursorStateChanged(&cursor_event);
-        _ = self.view_cursors.base.handler.onCursorStateChanged(&cursor_event);
 
         // Dispatch the view events that upstream's event handler would have
         // sent from the model/view model. The terminal editor has no event
@@ -314,10 +307,6 @@ pub const TerminalViewHost = struct {
                 .scrollTopChanged = range_changed or self.first_frame,
             } });
         }
-        // The cursor-line overlay is one cheap allocation and its dirty bit
-        // is not reliably set by the synthesized event batch; keep it fresh
-        // until the terminal editor dispatches real view events.
-        self.current_line.base.handler.forceShouldRender();
         self.last_version = version;
         self.last_selection_hash = selection_hash;
         self.last_start_line = start_line;
