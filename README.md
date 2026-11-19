@@ -1,4 +1,11 @@
-Port of vscode's pieceTree to zig.
+# vscodeT
+
+`vscodeT` is a Zig 0.17 port of Visual Studio Code's editor and workbench
+internals to a terminal UI. It started as a port of the editor's pieceTree text
+buffer; the target is now the whole pinned VS Code tree in the `vscode/`
+submodule: editor core, view/view-model/controller layers, workbench services,
+and the Node extension host bridge. Upstream files are never modified; behavior
+is ported into `src/vs/...` at matching upstream paths.
 
 Requires Zig 0.17 or newer.
 

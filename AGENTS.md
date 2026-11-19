@@ -1,4 +1,4 @@
-# AGENTS.md — porting rules for vscode-textbuffer
+# AGENTS.md — porting rules for vscodeT
 
 This repository is a Zig 0.17 port of VS Code editor internals. The upstream
 checkout is expected at `vscode/`. Upstream source paths therefore start with:
