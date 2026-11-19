@@ -63,7 +63,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/search/browser/searchWidget.zig");
     _ = @import("./tui/searchView.zig");
     _ = @import("./tui/editorInput.zig");
-    _ = @import("./tui/tabBar.zig");
+    _ = @import("./vs/workbench/browser/parts/editor/multiEditorTabsControl.zig");
     _ = @import("./vs/base/test/browser/ui/breadcrumbs/breadcrumbsWidget.test.zig");
     _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbModel.test.zig");
     _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbsControl.test.zig");

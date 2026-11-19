@@ -20,7 +20,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
-const editor_group_view = @import("../vs/workbench/browser/parts/editor/editorGroupView.zig");
+const editor_group_view = @import("./editorGroupView.zig");
 
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
