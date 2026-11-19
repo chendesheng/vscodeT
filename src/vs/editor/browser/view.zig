@@ -25,6 +25,11 @@ const view_event_handler = @import("../common/viewEventHandler.zig");
 const ViewEventHandler = view_event_handler.ViewEventHandler;
 const ViewEvent = view_events.ViewEvent;
 const Position = @import("../common/core/position.zig").Position;
+const ui = @import("ui");
+const Editor = @import("./widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const LineNumbersOverlay = @import("./viewParts/lineNumbers/lineNumbers.zig").LineNumbersOverlay;
+const FoldingDecorationProvider = @import("../contrib/folding/browser/foldingDecorations.zig").FoldingDecorationProvider;
+const CursorState = @import("../common/cursorCommon.zig").CursorState;
 const PositionAffinity = @import("../common/model.zig").PositionAffinity;
 
 const RenderingContext = render_ctx.RenderingContext;
@@ -143,6 +148,56 @@ pub const View = struct {
 
     pub fn scrollbarPartConst(self: *const View) *const TerminalScrollbar {
         return &self.scrollbar;
+    }
+
+    /// Terminal paint-boundary assembly: paints the margin, scrollbar,
+    /// overlay widgets and content widgets into the document. The line pass is
+    /// driven separately through `ViewLines.paintViewport`.
+    pub const DocumentPartsOptions = struct {
+        doc: *ui.Document,
+        root: *ui.Node,
+        editor: *Editor,
+        states: []const CursorState,
+        cols: usize,
+        text_height: usize,
+        text_right: usize,
+        gutter: usize,
+        tab_size: usize,
+        scrollbar_width: usize,
+        line_numbers: *const LineNumbersOverlay,
+        folding: *const FoldingDecorationProvider,
+    };
+
+    pub fn renderDocumentParts(self: *View, options: DocumentPartsOptions) !void {
+        try self.margin.render(
+            options.doc,
+            options.root,
+            options.editor,
+            options.line_numbers,
+            options.folding,
+            options.gutter,
+            options.text_height,
+        );
+        try self.scrollbar.render(
+            options.doc,
+            options.root,
+            options.editor,
+            options.states,
+            options.text_height,
+            options.cols,
+            options.scrollbar_width,
+        );
+        try self.overlay_widgets.render(options.doc, options.root, options.cols, options.text_height);
+        try self.content_widgets.render(
+            options.doc,
+            options.root,
+            options.editor,
+            options.cols,
+            options.text_right,
+            options.text_height,
+            options.gutter,
+            options.tab_size,
+        );
     }
 
     /// Port of upstream `View._getViewPartsToRender`: the view parts that

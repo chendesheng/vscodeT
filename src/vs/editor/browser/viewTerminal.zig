@@ -1039,16 +1039,6 @@ pub const View = struct {
             }
         }
 
-        try self.terminal_view_host.viewRef().marginPart().render(
-            doc,
-            root,
-            editor,
-            &self.terminal_view_host.line_numbers,
-            self.terminal_view_host.foldingDecorations(),
-            gutter,
-            text_height,
-        );
-
         var paint_guides = std.array_list.Managed(TerminalViewHost.PaintGuide).init(self.allocator);
         defer paint_guides.deinit();
         for (guide_specs.items) |spec| {
@@ -1074,10 +1064,21 @@ pub const View = struct {
             .ellipsis_style = .{ .color = color(continuation_color) },
         });
 
+        try self.terminal_view_host.viewRef().renderDocumentParts(.{
+            .doc = doc,
+            .root = root,
+            .editor = editor,
+            .states = states,
+            .cols = cols,
+            .text_height = text_height,
+            .text_right = text_right,
+            .gutter = gutter,
+            .tab_size = tab_size,
+            .scrollbar_width = self.scrollbar_width,
+            .line_numbers = &self.terminal_view_host.line_numbers,
+            .folding = self.terminal_view_host.foldingDecorations(),
+        });
         try appendStatus(self, doc, root, rows);
-        try self.buildScrollbar(doc, root, states, text_height, cols);
-        try self.terminal_view_host.viewRef().overlayWidgets().render(doc, root, cols, text_height);
-        try self.terminal_view_host.viewRef().contentWidgets().render(doc, root, editor, cols, text_right, text_height, gutter, tab_size);
         self.needs_rebuild = false;
     }
 
@@ -1088,25 +1089,6 @@ pub const View = struct {
         markers: *std.array_list.Managed(decorationsOverviewRuler.Decoration),
     ) !void {
         try editor_scrollbar_mod.appendOverviewMarkers(markers, self.editor, self.allocator);
-    }
-
-    fn buildScrollbar(
-        self: *View,
-        doc: *ui.Document,
-        root: *ui.Node,
-        states: []const CursorState,
-        text_height: usize,
-        cols: usize,
-    ) !void {
-        try self.terminal_view_host.viewRef().scrollbarPart().render(
-            doc,
-            root,
-            self.editor,
-            states,
-            text_height,
-            cols,
-            self.scrollbar_width,
-        );
     }
 };
 
