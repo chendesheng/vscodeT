@@ -89,6 +89,7 @@ pub const TestViewLayout = struct {
     viewport: view_model.Viewport = .{ .top = 0, .left = 0, .width = 80, .height = 24 },
     line_height: f64 = 1,
     line_heights: []const f64 = &.{},
+    max_line_width: f64 = 0,
 
     pub fn interface(self: *TestViewLayout) view_model.IViewLayout {
         return .{
@@ -99,7 +100,12 @@ pub const TestViewLayout = struct {
             .get_vertical_offset_for_line_number = getVerticalOffset,
             .get_vertical_offset_after_line_number = getVerticalOffset,
             .get_line_height_for_line_number = getLineHeight,
+            .set_max_line_width = setMaxLineWidth,
         };
+    }
+
+    fn setMaxLineWidth(context: *anyopaque, width: f64) void {
+        @as(*TestViewLayout, @ptrCast(@alignCast(context))).max_line_width = width;
     }
 
     fn getScrollWidth(self: *anyopaque) f64 {

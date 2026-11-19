@@ -117,7 +117,7 @@ pub const ViewLine = struct {
         delta_top: f64,
         line_height: f64,
         viewport: *const viewport_data.ViewportData,
-        sb: *StringBuilder,
+        sb: ?*StringBuilder,
     ) bool {
         const line_data = viewport.getViewLineRenderingData(line_number) catch return false;
 
@@ -186,7 +186,7 @@ pub const ViewLine = struct {
             if (rendered.input.equals(&input)) {
                 self.allocator.free(owned_decorations);
                 self.allocator.free(owned_selections);
-                sb.appendString(rendered.rendered.bytes) catch return false;
+                if (sb) |buffer| buffer.appendString(rendered.rendered.bytes) catch return false;
                 return false;
             }
         }
@@ -208,7 +208,7 @@ pub const ViewLine = struct {
             .delta_top = delta_top,
             .line_height = line_height,
         };
-        sb.appendString(rendered.bytes) catch return false;
+        if (sb) |buffer| buffer.appendString(rendered.bytes) catch return false;
         return true;
     }
 

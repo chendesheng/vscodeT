@@ -110,6 +110,7 @@ pub const ViewModel = struct {
 
     const Layout = struct {
         view_model: *ViewModel,
+        max_line_width: f64 = 0,
 
         fn getScrollWidth(context: *anyopaque) f64 {
             _ = context;
@@ -136,6 +137,10 @@ pub const ViewModel = struct {
             const self: *Layout = @ptrCast(@alignCast(context));
             return self.view_model.lineHeight();
         }
+        fn setMaxLineWidth(context: *anyopaque, max_line_width: f64) void {
+            const self: *Layout = @ptrCast(@alignCast(context));
+            self.max_line_width = max_line_width;
+        }
 
         fn interface(self: *Layout) IViewLayout {
             return .{
@@ -146,6 +151,7 @@ pub const ViewModel = struct {
                 .get_vertical_offset_for_line_number = getVerticalOffsetForLineNumber,
                 .get_vertical_offset_after_line_number = getVerticalOffsetAfterLineNumber,
                 .get_line_height_for_line_number = getLineHeightForLineNumber,
+                .set_max_line_width = setMaxLineWidth,
             };
         }
     };

@@ -361,8 +361,8 @@ pub fn VisibleLinesCollection(comptime T: type) type {
             return &self.lines.lines.items[line_number - self.lines.rend_line_number_start];
         }
 
-        /// Rebuilds the line window when needed and renders each line into `sb`.
-        pub fn renderLines(self: *Self, viewport: *const @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData, sb: *@import("../../common/core/stringBuilder.zig").StringBuilder) !void {
+        /// Rebuilds the line window when needed for `viewport`.
+        pub fn syncWindow(self: *Self, viewport: *const @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData) !void {
             const start = viewport.startLineNumber;
             const end = viewport.endLineNumber;
             if (self.lines.getCount() == 0 or self.lines.getStartLineNumber() != start or self.lines.getEndLineNumber() != end) {
@@ -370,6 +370,13 @@ pub fn VisibleLinesCollection(comptime T: type) type {
                 self.lines.rend_line_number_start = start;
                 for (start..end + 1) |_| try self.lines.lines.append(try self.line_factory.create(self.line_factory.context));
             }
+        }
+
+        /// Rebuilds the line window when needed and renders each line into `sb`.
+        pub fn renderLines(self: *Self, viewport: *const @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData, sb: *@import("../../common/core/stringBuilder.zig").StringBuilder) !void {
+            try self.syncWindow(viewport);
+            const start = viewport.startLineNumber;
+            const end = viewport.endLineNumber;
 
             var line_number = start;
             while (line_number <= end) : (line_number += 1) {

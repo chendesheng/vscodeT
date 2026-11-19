@@ -47,6 +47,7 @@ pub const ViewLines = struct {
     visible_lines: view_layer.VisibleLinesCollection(ViewLine),
     last_viewport: ?*const ViewportData = null,
     last_visible_range: Range = Range.init(1, 1, 1, 1),
+    max_line_width: f64 = 0,
     scratch: std.heap.ArenaAllocator,
 
     const LineFactory = struct {
@@ -208,12 +209,49 @@ pub const ViewLines = struct {
         _ = part;
     }
 
-    /// Renders the visible line window. Upstream calls this from `renderText`;
-    /// the terminal `View` orchestrator will use it the same way.
-    pub fn renderText(self: *ViewLines, viewport: *const ViewportData, sb: *StringBuilder) !void {
+    /// Port of upstream `ViewLines.renderText`/`renderLines`: rebuild the
+    /// visible window, render each line that changed, and propagate the
+    /// maximum line width to the view layout. The terminal view paints the
+    /// rendered runs; no DOM is built here.
+    pub fn renderLines(self: *ViewLines, viewport: *const ViewportData) !void {
         self.last_viewport = viewport;
         self.last_visible_range = viewport.visibleRange;
-        try self.visible_lines.renderLines(viewport, sb);
+        self.max_line_width = 0;
+
+        try self.visible_lines.syncWindow(viewport);
+        const start = viewport.startLineNumber;
+        const end = viewport.endLineNumber;
+        var line_number = start;
+        while (line_number <= end) : (line_number += 1) {
+            const line = self.visible_lines.getVisibleLine(line_number);
+            const delta_top = viewport.relativeVerticalOffset[line_number - start];
+            const line_height = self.context.view_layout.getLineHeightForLineNumber(line_number);
+            line.layoutLine(line_number, delta_top, line_height);
+            if (line.shouldRender()) {
+                _ = line.renderLine(line_number, delta_top, line_height, viewport, null);
+                line.onDidRender();
+            }
+            self.max_line_width = @max(self.max_line_width, @as(f64, @floatFromInt(line.getWidth())));
+        }
+        self.context.view_layout.setMaxLineWidth(self.max_line_width);
+    }
+
+    /// Compatibility wrapper used by the terminal `View`: renders the window
+    /// and appends each line's text to `sb`.
+    pub fn renderText(self: *ViewLines, viewport: *const ViewportData, sb: *StringBuilder) !void {
+        try self.renderLines(viewport);
+        const start = viewport.startLineNumber;
+        const end = viewport.endLineNumber;
+        var line_number = start;
+        while (line_number <= end) : (line_number += 1) {
+            const rendered = self.visible_lines.getVisibleLine(line_number).getRenderedViewLine() orelse continue;
+            try sb.appendString(rendered.rendered.bytes);
+        }
+    }
+
+    /// Upstream `ViewLines._maxLineWidth`, exposed for tests and the View.
+    pub fn getMaxLineWidth(self: *const ViewLines) f64 {
+        return self.max_line_width;
     }
 
     /// The current viewport data, once `renderText` has run.
@@ -420,6 +458,8 @@ test "view lines renders the viewport and maps cell ranges" {
     try testing.expectEqual(@as(usize, 5), lines.getLineWidth(1));
     try testing.expectEqual(@as(usize, 0), lines.getLineWidth(2));
     try testing.expectEqual(@as(usize, 1), lines.getCurrentVisibleRange().startLineNumber);
+    try testing.expectEqual(@as(f64, 5), lines.getMaxLineWidth());
+    try testing.expectEqual(@as(f64, 5), fixture.layout.max_line_width);
 
     const ranges = lines.linesVisibleRangesForRange(Range.init(1, 2, 1, 4), false).?;
     try testing.expectEqual(@as(usize, 1), ranges.len);

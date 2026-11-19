@@ -485,6 +485,8 @@ fn testLineTokens(allocator: std.mem.Allocator, content: []const u8) !@import(".
 /// The subset of upstream `IViewLayout` consumed by `view/renderingContext.ts`.
 /// The scroll/set operations, whitespace data and overlay-widget width are not
 /// ported until the view layout is split out of the terminal view.
+fn noopSetMaxLineWidth(_: *anyopaque, _: f64) void {}
+
 pub const IViewLayout = struct {
     context: *anyopaque,
     get_scroll_width: *const fn (context: *anyopaque) f64,
@@ -493,6 +495,9 @@ pub const IViewLayout = struct {
     get_vertical_offset_for_line_number: *const fn (context: *anyopaque, line_number: usize, include_view_zones: bool) f64,
     get_vertical_offset_after_line_number: *const fn (context: *anyopaque, line_number: usize, include_view_zones: bool) f64,
     get_line_height_for_line_number: *const fn (context: *anyopaque, line_number: usize) f64,
+    /// Upstream `IViewLayout.setMaxLineWidth`; defaults to a no-op so test
+    /// stubs that do not track line width can omit it.
+    set_max_line_width: *const fn (context: *anyopaque, max_line_width: f64) void = noopSetMaxLineWidth,
 
     pub fn getScrollWidth(self: IViewLayout) f64 {
         return self.get_scroll_width(self.context);
@@ -516,5 +521,9 @@ pub const IViewLayout = struct {
 
     pub fn getLineHeightForLineNumber(self: IViewLayout, line_number: usize) f64 {
         return self.get_line_height_for_line_number(self.context, line_number);
+    }
+
+    pub fn setMaxLineWidth(self: IViewLayout, max_line_width: f64) void {
+        self.set_max_line_width(self.context, max_line_width);
     }
 };
