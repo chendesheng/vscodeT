@@ -1,5 +1,10 @@
 # TUI porting inventory
 
+> Snapshot note: this document describes the 2026-11-16 tree (28 files,
+> 19,012 lines). The current file-by-file verdict and roadmap are in
+> [`tui-review.md`](tui-review.md); use this document for the subsystem notes
+> and test map, not for line numbers or "remaining" status.
+
 Status: all inventory slices are implemented in the terminal's shape. P1–P3
 are complete; P4 has the full terminal view/view-model/controller/widget stack
 (DOM-only parts are documented omissions); P5a–P5h are complete except the
