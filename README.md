@@ -33,8 +33,10 @@ exact tree the port inventory, generated extension-host RPC table and line
 counts were taken from. The `1.147.0` release tag points at a different commit
 (`8a14f0cc`), so pin the commit, not the tag.
 
-The submodule is shallow (`.gitmodules` sets `shallow = true`), so cloning
-fetches only the pinned revision, not VS Code's history:
+The submodule is shallow (`.gitmodules` sets `shallow = true`), so cloning does
+not download VS Code's history and the checkout is pinned to the recorded
+commit. Git's submodule initializer may also fetch the current default-branch
+tip at depth 1; that tip is not checked out.
 
 ```sh
 git clone --recurse-submodules --shallow-submodules <repo-url>
