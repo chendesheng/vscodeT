@@ -1150,6 +1150,7 @@ pub const View = struct {
             // `lineNumbersWidth` and `lineDecorationsWidth` and starts the text
             // at `contentLeft`; the terminal uses one decorations cell, so the
             // number column is `gutter - 1` and the last gutter cell is blank.
+            var number_buf: [32]u8 = undefined;
             const gutter_line = try doc.createElement(.div);
             gutter_line.setStyle(.{
                 .position = .absolute,
@@ -1162,11 +1163,19 @@ pub const View = struct {
             });
 
             if (output_index == 0) {
-                var number_buf: [32]u8 = undefined;
-                const number = std.fmt.bufPrint(&number_buf, "{d}", .{model_line}) catch "";
-                const node = try doc.createText(number);
-                node.setStyle(.{ .color = color(gutter_color) });
-                _ = try gutter_line.appendChild(node);
+                // The gutter text is produced by the ported
+                // `LineNumbersOverlay`, including relative/custom numbering
+                // and the final-newline rules.
+                const line_number = self.terminal_view_host.getLineNumber(view_line);
+                const number = if (line_number) |rendered|
+                    rendered.text
+                else
+                    std.fmt.bufPrint(&number_buf, "{d}", .{model_line}) catch "";
+                if (number.len > 0) {
+                    const node = try doc.createText(number);
+                    node.setStyle(.{ .color = color(gutter_color) });
+                    _ = try gutter_line.appendChild(node);
+                }
             } else if (gutter >= 2) {
                 const node = try doc.createText("↪");
                 node.setStyle(.{ .color = color(continuation_color) });
@@ -1219,14 +1228,24 @@ pub const View = struct {
             defer self.allocator.free(flags);
             @memset(flags, CellFlag.normal);
 
-            markSelections(
+            if (self.terminal_view_host.getSelectionRanges(view_line)) |selection| {
+                for (selection.ranges) |range| {
+                    if (range.width <= 0) continue;
+                    const start: usize = @intCast(@max(range.left, 0));
+                    const end = @min(start +| @as(usize, @intCast(range.width)), flags.len);
+                    var cell = start;
+                    while (cell < end and cell < flags.len) : (cell += 1) {
+                        flags[cell] |= CellFlag.selected;
+                    }
+                }
+            }
+            markSecondaryCursors(
                 states,
                 view_line,
                 model_content.items,
                 tab_size,
                 data.startVisibleColumn,
                 indent_cells,
-                line_width,
                 flags,
             );
             try appendRuns(doc, line, rendered, flags);
@@ -1872,37 +1891,15 @@ fn appendRuns(
     }
 }
 
-fn markSelections(
+fn markSecondaryCursors(
     states: []const CursorState,
     view_line: usize,
     model_content: []const u8,
     tab_size: usize,
     start_visible_column: usize,
     indent_cells: usize,
-    line_width: usize,
     flags: []u32,
 ) void {
-    for (states) |state| {
-        const selection = state.viewState.selection;
-        if (selection.isEmpty()) continue;
-        if (view_line < selection.startLineNumber or view_line > selection.endLineNumber) continue;
-
-        var start: usize = 0;
-        if (view_line == selection.startLineNumber) {
-            start = visibleOffset(model_content, selection.startColumn, tab_size, start_visible_column, indent_cells);
-        }
-        var end: usize = line_width;
-        if (view_line == selection.endLineNumber) {
-            end = visibleOffset(model_content, selection.endColumn, tab_size, start_visible_column, indent_cells);
-        }
-        start = @min(start, line_width);
-        end = @min(end, line_width);
-        var cell = start;
-        while (cell < end and cell < flags.len) : (cell += 1) {
-            flags[cell] |= CellFlag.selected;
-        }
-    }
-
     if (states.len > 1) {
         for (states[1..]) |state| {
             const position = state.viewState.position;

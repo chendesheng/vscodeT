@@ -114,10 +114,16 @@ pub const SelectionsOverlay = struct {
         return true;
     }
 
+    /// Feeds the current selections when the host does not dispatch view
+    /// events through the view model.
+    pub fn setSelections(self: *SelectionsOverlay, selections: []const Selection) void {
+        self.selections.clearRetainingCapacity();
+        self.selections.appendSlice(selections) catch {};
+    }
+
     fn onCursorStateChanged(context: *anyopaque, event: *const view_events.ViewCursorStateChangedEvent) bool {
         const self: *SelectionsOverlay = @ptrCast(@alignCast(context));
-        self.selections.clearRetainingCapacity();
-        self.selections.appendSlice(event.selections) catch {};
+        self.setSelections(event.selections);
         return true;
     }
 

@@ -15,6 +15,9 @@ const view_context = @import("../../../common/viewModel/viewContext.zig");
 const viewport_data = @import("../../../common/viewLayout/viewLinesViewportData.zig");
 const view_lines_mod = @import("../../viewParts/viewLines/viewLines.zig");
 const view_model_decorations = @import("../../../common/viewModel/viewModelDecorations.zig");
+const line_numbers_mod = @import("../../viewParts/lineNumbers/lineNumbers.zig");
+const selections_mod = @import("../../viewParts/selections/selections.zig");
+const rendering_context = @import("../../view/renderingContext.zig");
 const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
 const editor_configuration = @import("../../../common/config/editorConfiguration.zig");
 const browser_config = @import("../../config/editorConfiguration.zig");
@@ -31,6 +34,11 @@ const IViewLayout = view_model.IViewLayout;
 const ViewportData = viewport_data.ViewportData;
 const ViewLines = view_lines_mod.ViewLines;
 const ViewModelDecorations = view_model_decorations.ViewModelDecorations;
+const LineNumbersOverlay = line_numbers_mod.LineNumbersOverlay;
+const RenderedLineNumber = line_numbers_mod.RenderedLineNumber;
+const RenderingContext = rendering_context.RenderingContext;
+const SelectionsOverlay = selections_mod.SelectionsOverlay;
+const LineSelectionRender = selections_mod.LineSelectionRender;
 const InlineDecoration = @import("../../../common/viewModel/inlineDecorations.zig").InlineDecoration;
 const IViewModelLines = view_model_decorations.IViewModelLines;
 const ViewContext = view_context.ViewContext;
@@ -130,6 +138,8 @@ pub const TerminalViewHost = struct {
     context: ViewContext,
     view_lines: ViewLines,
     decorations: *ViewModelDecorations,
+    line_numbers: LineNumbersOverlay,
+    selections_overlay: SelectionsOverlay,
     lines_adapter: LinesAdapter,
     offsets: std.ArrayListUnmanaged(f64) = .empty,
     selections: []Selection = &.{},
@@ -148,6 +158,8 @@ pub const TerminalViewHost = struct {
             .context = undefined,
             .view_lines = undefined,
             .decorations = undefined,
+            .line_numbers = undefined,
+            .selections_overlay = undefined,
             .lines_adapter = undefined,
         };
 
@@ -172,10 +184,14 @@ pub const TerminalViewHost = struct {
         );
         self.context = ViewContext.init(&self.configuration, self.theme.interface(), self.modelInterface());
         self.view_lines.init(allocator, &self.context);
+        self.line_numbers.init(allocator, &self.context);
+        self.selections_overlay.init(allocator, &self.context);
         return self;
     }
 
     pub fn deinit(self: *TerminalViewHost) void {
+        self.selections_overlay.deinit();
+        self.line_numbers.deinit();
         self.decorations.destroy();
         self.lines_adapter.deinit();
         self.view_lines.deinit();
@@ -210,6 +226,11 @@ pub const TerminalViewHost = struct {
         // Retained render inputs would point at the previous line's data.
         self.view_lines.invalidateRenderedInputs();
         try self.view_lines.renderLines(&viewport);
+
+        var rendering = RenderingContext.init(self.context.view_layout, &viewport, self.view_lines.interface());
+        self.selections_overlay.setSelections(self.selections);
+        self.line_numbers.prepareRender(&rendering);
+        self.selections_overlay.prepareRender(&rendering);
     }
 
     pub fn getRenderedLine(self: *const TerminalViewHost, line_number: usize) ?*const @import("../../viewParts/viewLines/viewLine.zig").ViewLine.RenderedViewLine {
@@ -220,6 +241,14 @@ pub const TerminalViewHost = struct {
         return self.view_lines.getMaxLineWidth();
     }
 
+    pub fn getLineNumber(self: *const TerminalViewHost, view_line: usize) ?*const RenderedLineNumber {
+        return self.line_numbers.renderedLine(view_line);
+    }
+
+    pub fn getSelectionRanges(self: *const TerminalViewHost, view_line: usize) ?*const LineSelectionRender {
+        return self.selections_overlay.renderedLine(view_line);
+    }
+
     fn modelInterface(self: *TerminalViewHost) IViewModel {
         return .{
             .context = self,
@@ -227,6 +256,7 @@ pub const TerminalViewHost = struct {
             .coordinates_converter = self.editor.converter.interface(),
             .add_view_event_handler = addViewEventHandler,
             .remove_view_event_handler = removeViewEventHandler,
+            .get_selections = getSelections,
             .getLineMinColumn = getLineMinColumn,
             .getLineMaxColumn = getLineMaxColumn,
             .getLineCount = getLineCount,
@@ -283,6 +313,10 @@ pub const TerminalViewHost = struct {
     }
     fn setMaxLineWidth(context: *anyopaque, width: f64) void {
         host(context).max_line_width = width;
+    }
+
+    fn getSelections(context: *anyopaque) []const Selection {
+        return host(context).selections;
     }
 
     fn addViewEventHandler(_: *anyopaque, _: *anyopaque) void {}
@@ -362,4 +396,8 @@ test "terminal view host renders lines through the ported ViewLines" {
     try std.testing.expectEqualStrings("a   b", first.rendered.bytes);
     const second = host.getRenderedLine(2).?;
     try std.testing.expectEqualStrings("second", second.rendered.bytes);
+
+    // The gutter text comes from the ported `LineNumbersOverlay`.
+    try std.testing.expectEqualStrings("1", host.getLineNumber(1).?.text);
+    try std.testing.expectEqualStrings("2", host.getLineNumber(2).?.text);
 }
