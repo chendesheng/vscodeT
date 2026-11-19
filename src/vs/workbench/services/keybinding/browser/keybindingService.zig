@@ -11,17 +11,17 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const input = @import("ui").input;
-const platform = @import("../vs/base/common/platform.zig");
-const key_codes = @import("../vs/base/common/keyCodes.zig");
-const key_bindings = @import("../vs/base/common/keybindings.zig");
-const contextkey = @import("../vs/platform/contextkey/common/contextkey.zig");
-const registry_module = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
-const resolver_module = @import("../vs/platform/keybinding/common/keybindingResolver.zig");
-const item_module = @import("../vs/platform/keybinding/common/resolvedKeybindingItem.zig");
-const us_module = @import("../vs/platform/keybinding/common/usLayoutResolvedKeybinding.zig");
-const notification_mod = @import("../vs/platform/notification/common/notification.zig");
-const abstract_mod = @import("../vs/platform/keybinding/common/abstractKeybindingService.zig");
-const keybinding_mod = @import("../vs/platform/keybinding/common/keybinding.zig");
+const platform = @import("../../../../base/common/platform.zig");
+const key_codes = @import("../../../../base/common/keyCodes.zig");
+const key_bindings = @import("../../../../base/common/keybindings.zig");
+const contextkey = @import("../../../../platform/contextkey/common/contextkey.zig");
+const registry_module = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
+const resolver_module = @import("../../../../platform/keybinding/common/keybindingResolver.zig");
+const item_module = @import("../../../../platform/keybinding/common/resolvedKeybindingItem.zig");
+const us_module = @import("../../../../platform/keybinding/common/usLayoutResolvedKeybinding.zig");
+const notification_mod = @import("../../../../platform/notification/common/notification.zig");
+const abstract_mod = @import("../../../../platform/keybinding/common/abstractKeybindingService.zig");
+const keybinding_mod = @import("../../../../platform/keybinding/common/keybinding.zig");
 
 const ResolvedKeybindingItem = item_module.ResolvedKeybindingItem;
 const USLayoutResolvedKeybinding = us_module.USLayoutResolvedKeybinding;
@@ -272,7 +272,7 @@ fn noopNotify(context: *anyopaque, _: notification_mod.INotification) notificati
     return noop.interface();
 }
 fn noopMessage(_: *anyopaque, _: notification_mod.NotificationMessage) void {}
-fn noopPrompt(context: *anyopaque, _: @import("../vs/base/common/severity.zig").Severity, _: notification_mod.NotificationMessage, _: []const notification_mod.IPromptChoice, _: ?notification_mod.IPromptOptions) notification_mod.INotificationHandle {
+fn noopPrompt(context: *anyopaque, _: @import("../../../../base/common/severity.zig").Severity, _: notification_mod.NotificationMessage, _: []const notification_mod.IPromptChoice, _: ?notification_mod.IPromptOptions) notification_mod.INotificationHandle {
     const noop: *notification_mod.NoOpNotification = @ptrCast(@alignCast(context));
     return noop.interface();
 }
@@ -307,10 +307,10 @@ test "keybinding service dispatches single and multi-chord bindings" {
     };
     var state = State{};
 
-    var registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig").KeybindingsRegistry.init(allocator);
+    var registry = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig").KeybindingsRegistry.init(allocator);
     defer registry.deinit();
 
-    const rules = [_]@import("../vs/platform/keybinding/common/keybindingsRegistry.zig").IKeybindingRule{
+    const rules = [_]@import("../../../../platform/keybinding/common/keybindingsRegistry.zig").IKeybindingRule{
         .{ .id = "test.single", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyA) } },
         .{ .id = "test.chord", .weight = 200, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyI)) } },
     };
