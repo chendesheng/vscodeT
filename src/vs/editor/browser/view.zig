@@ -17,6 +17,8 @@ const view_events = @import("../common/viewEvents.zig");
 const viewport_data = @import("../common/viewLayout/viewLinesViewportData.zig");
 const StringBuilder = @import("../common/core/stringBuilder.zig").StringBuilder;
 const view_lines_mod = @import("./viewParts/viewLines/viewLines.zig");
+const Position = @import("../common/core/position.zig").Position;
+const PositionAffinity = @import("../common/model.zig").PositionAffinity;
 
 const RenderingContext = render_ctx.RenderingContext;
 const RestrictedRenderingContext = render_ctx.RestrictedRenderingContext;
@@ -63,6 +65,63 @@ pub const View = struct {
 
     pub fn getViewLines(self: *View) *ViewLines {
         return &self.view_lines;
+    }
+
+    /// Port of upstream `View._getViewPartsToRender`: the view parts that
+    /// currently need a render pass. The caller owns the returned slice.
+    pub fn getViewPartsToRender(self: *View, allocator: Allocator) ![]*ViewPart {
+        var result = std.array_list.Managed(*ViewPart).init(allocator);
+        errdefer result.deinit();
+        for (self.view_parts.items) |part| {
+            if (part.handler.shouldRender()) try result.append(part);
+        }
+        return result.toOwnedSlice();
+    }
+
+    /// Port of upstream `View.getLineWidth`, in terminal cells. Model line
+    /// numbers are converted to view lines exactly like upstream.
+    pub fn getLineWidth(self: *View, model_line_number: usize) usize {
+        const converter = self.context.view_model.coordinates_converter;
+        const model_position = Position.init(model_line_number, self.context.view_model.lineMaxColumn(model_line_number));
+        const view_position = converter.convertModelPositionToViewPosition(
+            converter.context,
+            model_position,
+            .None,
+            false,
+            false,
+        );
+        return self.view_lines.getLineWidth(view_position.lineNumber);
+    }
+
+    /// Port of upstream `View.resetLineWidthCaches`.
+    pub fn resetLineWidthCaches(self: *View) void {
+        self.view_lines.resetLineWidthCaches();
+    }
+
+    /// Port of upstream `View.getOffsetForColumn`, in terminal cells. Returns
+    /// null when the position is outside the rendered lines.
+    pub fn getOffsetForColumn(self: *View, model_line_number: usize, model_column: usize) ?f64 {
+        const converter = self.context.view_model.coordinates_converter;
+        const model_position = Position.init(model_line_number, model_column);
+        const view_position = converter.convertModelPositionToViewPosition(
+            converter.context,
+            model_position,
+            .None,
+            false,
+            false,
+        );
+        const range = self.view_lines.visibleRangeForPosition(view_position) orelse return null;
+        return @floatFromInt(range.left);
+    }
+
+    /// Port of upstream `View.focus`.
+    pub fn focus(self: *View) void {
+        _ = self.setFocused(true);
+    }
+
+    /// Port of upstream `View.isFocused`.
+    pub fn isFocused(self: *const View) bool {
+        return self.is_focused;
     }
 
     pub fn hasFocus(self: *const View) bool {
@@ -382,4 +441,34 @@ test "view fans configuration and focus events out to parts and overlays" {
     try testing.expect(view.setFocused(true));
     try testing.expect(view.hasFocus());
     try testing.expectEqual(@as(usize, 1), part.focus_events);
+}
+
+test "view exposes line widths, cell offsets and width cache reset" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    try fixture.init(allocator, "a\tb");
+    defer fixture.deinit();
+
+    var view: View = undefined;
+    view.init(allocator, &fixture.context);
+    defer view.deinit();
+
+    var sb = try StringBuilder.init(allocator, 16);
+    defer sb.deinit();
+
+    try testing.expect(view.getOffsetForColumn(1, 3) == null);
+    try view.renderText(&fixture.viewport, &sb);
+    try testing.expectEqual(@as(usize, 5), view.getLineWidth(1));
+    try testing.expectEqual(@as(f64, 4), view.getOffsetForColumn(1, 3).?);
+
+    view.resetLineWidthCaches();
+    try testing.expectEqual(@as(usize, 5), view.getLineWidth(1));
+
+    try testing.expect(view.isFocused() == false);
+    view.focus();
+    try testing.expect(view.isFocused());
+
+    const parts = try view.getViewPartsToRender(allocator);
+    defer allocator.free(parts);
+    try testing.expectEqual(@as(usize, 0), parts.len);
 }

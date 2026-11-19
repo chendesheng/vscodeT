@@ -225,6 +225,18 @@ pub const ViewLine = struct {
         return self.width;
     }
 
+    /// Port of upstream `ViewLine.resetCachedWidth`: drop the measured width
+    /// and force the next render to rebuild it.
+    pub fn resetCachedWidth(self: *ViewLine) void {
+        // The terminal width is derived from the rendered runs, so it can be
+        // recomputed without invalidating the line or re-rendering it.
+        if (self.rendered_view_line) |rendered| {
+            self.width = measureCells(rendered.rendered.bytes);
+        } else {
+            self.width = 0;
+        }
+    }
+
     pub fn getHeight(self: *const ViewLine) f64 {
         return if (self.rendered_view_line) |rendered| rendered.line_height else 0;
     }

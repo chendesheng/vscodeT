@@ -264,6 +264,18 @@ pub const ViewLines = struct {
         return self.last_visible_range;
     }
 
+    /// Port of upstream `ViewLines.resetLineWidthCaches`: clear the measured
+    /// width of every rendered line so the next frame recomputes it.
+    pub fn resetLineWidthCaches(self: *ViewLines) void {
+        const start = self.visible_lines.getStartLineNumber();
+        const end = self.visible_lines.getEndLineNumber();
+        if (start == 0 or end < start) return;
+        var line_number = start;
+        while (line_number <= end) : (line_number += 1) {
+            self.visible_lines.getVisibleLine(line_number).resetCachedWidth();
+        }
+    }
+
     /// Port of upstream `ViewLines.getLineWidth`, in terminal cells.
     pub fn getLineWidth(self: *const ViewLines, line_number: usize) usize {
         if (self.visible_lines.getStartLineNumber() == 0 or
