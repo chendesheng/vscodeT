@@ -112,7 +112,7 @@ the same Enter/auto-indent path as the TUI key handler, and the bridge mirrors
 the actual edit (including inserted indentation) to the extension host.
 VSCodeVim 1.32.4 insert/normal/visual
 editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
-`o`/`O` (with the editor's language auto-indent), insert-mode `Tab`/`Shift-Tab` (editor indentation, not VSCodeVim's normal-mode tab command), `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
+`o`/`O` (with the editor's language auto-indent), insert-mode `Tab`/`Shift-Tab` (editor indentation, not VSCodeVim's normal-mode tab command), insert-mode `Backspace`/`Delete` (the core `deleteLeft`/`deleteRight` commands VSCodeVim delegates to), `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
 the status bar shows its mode entry.
 
 Declarative built-ins are scanned from `../vscode/extensions/theme-defaults`
@@ -155,8 +155,9 @@ selection changes the TUI makes itself (click, drag, TUI-handled keys, find)
 are pushed to the host with upstream's `source` string, so VSCodeVim's cursor
 follows a mouse click instead of snapping back on the next Vim key. Still
 missing: the contribution scanner, configuration writes, full `tabGroups`, the
-built-in command set VSCodeVim delegates to, and the extension keybinding
-registry. See `docs/extensions.md` for the port status and the remaining work.
+rest of the built-in command set VSCodeVim delegates to, and the extension
+keybinding registry. See `docs/extensions.md` for the port status and the
+remaining work.
 
 ## Continuous integration
 

@@ -705,6 +705,16 @@ pub const Extensions = struct {
                 }
                 return .empty;
             }
+            // VSCodeVim's insert-mode Backspace/Delete actions do not edit the
+            // document themselves: they delegate to the editor's core
+            // `deleteLeft`/`deleteRight` command. Without this branch the key
+            // is swallowed and nothing happens.
+            if (std.mem.eql(u8, command, "deleteLeft") or std.mem.eql(u8, command, "deleteRight")) {
+                const editor = if (self.active) |active| active.editor else return .empty;
+                _ = try runEditorCommand(editor, command);
+                try self.applyCommandEdit(arena, editor);
+                return .empty;
+            }
             if (std.mem.eql(u8, command, "editor.action.insertLineAfter") or std.mem.eql(u8, command, "editor.action.insertLineBefore")) {
                 const editor = if (self.active) |active| active.editor else return .empty;
                 if (std.mem.eql(u8, command, "editor.action.insertLineAfter")) {
@@ -1177,6 +1187,21 @@ pub const Extensions = struct {
     }
 };
 
+/// Applies a core editor command the extension host delegates back to the
+/// TUI. VSCodeVim's insert-mode Backspace and Delete actions are wrappers
+/// around these core commands; the caller mirrors the resulting edit.
+fn runEditorCommand(editor: *Editor, command: []const u8) !bool {
+    if (std.mem.eql(u8, command, "deleteLeft")) {
+        try editor.deleteLeft();
+        return true;
+    }
+    if (std.mem.eql(u8, command, "deleteRight")) {
+        try editor.deleteRight();
+        return true;
+    }
+    return false;
+}
+
 const WaitFlag = struct {
     done: bool = false,
     failed: bool = false,
@@ -1249,6 +1274,35 @@ fn integerField(object: std.json.ObjectMap, name: []const u8) ?usize {
     return @intCast(value.integer);
 }
 
+test "Extensions: insert-mode Backspace and Delete run the core editor commands" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    // VSCodeVim's BackspaceInInsertMode delegates to `deleteLeft`; the key is
+    // not an edit by itself, so the TUI must run the command.
+    try editor.setSelections(&[_]Selection{Selection.init(1, 4, 1, 4)});
+    try std.testing.expect(try runEditorCommand(editor, "deleteLeft"));
+    const after_backspace = try editor.model.getValue(.TextDefined, false);
+    defer after_backspace.deinit();
+    try std.testing.expectEqualStrings("ab", after_backspace.items);
+    try std.testing.expectEqual(Position.init(1, 3), editor.modelCursorPosition());
+
+    // DeleteInInsertMode delegates to `deleteRight`.
+    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 1)});
+    try std.testing.expect(try runEditorCommand(editor, "deleteRight"));
+    const after_delete = try editor.model.getValue(.TextDefined, false);
+    defer after_delete.deinit();
+    try std.testing.expectEqualStrings("b", after_delete.items);
+    try std.testing.expectEqual(Position.init(1, 1), editor.modelCursorPosition());
+
+    try std.testing.expect(!try runEditorCommand(editor, "unhandled.command"));
+}
+
 test "Extensions: VSCodeVim inserts text into the active TUI editor" {
     if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
     std.Io.Dir.cwd().access(time_compat.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
@@ -1293,6 +1347,33 @@ test "Extensions: VSCodeVim inserts text into the active TUI editor" {
     var line = try workbench.activeTab().?.editor.model.getLineContent(1);
     defer line.deinit();
     try std.testing.expectEqualStrings("Xhello", line.items);
+
+    // The TUI routes Backspace to VSCodeVim while it is active. In insert mode
+    // VSCodeVim delegates the edit back through the core `deleteLeft` command;
+    // the bridge must run it instead of swallowing the key.
+    _ = extension_host.handleKey(&.{ .key = .backspace });
+    const backspace_until = time_compat.milliTimestamp() + 5_000;
+    while (time_compat.milliTimestamp() < backspace_until) {
+        _ = extension_host.pump();
+        var current = try workbench.activeTab().?.editor.model.getLineContent(1);
+        defer current.deinit();
+        if (std.mem.eql(u8, current.items, "hello")) break;
+        time_compat.sleepMillis(10);
+    }
+    var after_backspace = try workbench.activeTab().?.editor.model.getLineContent(1);
+    defer after_backspace.deinit();
+    try std.testing.expectEqualStrings("hello", after_backspace.items);
+
+    // Restore the typed prefix for the normal-mode `x` check below.
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'X' } });
+    const retype_until = time_compat.milliTimestamp() + 5_000;
+    while (time_compat.milliTimestamp() < retype_until) {
+        _ = extension_host.pump();
+        var current = try workbench.activeTab().?.editor.model.getLineContent(1);
+        defer current.deinit();
+        if (std.mem.startsWith(u8, current.items, "Xhello")) break;
+        time_compat.sleepMillis(10);
+    }
 
     _ = extension_host.handleKey(&.{ .key = .escape });
     _ = extension_host.pump();
