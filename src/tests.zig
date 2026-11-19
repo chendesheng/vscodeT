@@ -548,6 +548,7 @@ comptime {
     _ = @import("./tui/extensions.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
+    _ = @import("./vs/workbench/services/extensions/common/extensionsRegistry.zig");
 }
 comptime {
     _ = @import("./vs/platform/files/test/common/files.test.zig");

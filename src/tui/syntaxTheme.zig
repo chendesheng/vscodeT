@@ -28,6 +28,8 @@ const Color = @import("../vs/base/common/color.zig").Color;
 const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
 const theme_service_mod = @import("../vs/workbench/services/themes/browser/workbenchThemeService.zig");
 const color_theme_mod = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+const theme_mod = @import("../vs/platform/theme/common/theme.zig");
+const time_compat = @import("../vs/base/common/timeCompat.zig");
 
 pub const SyntaxTheme = struct {
     theme: TokenTheme = undefined,
@@ -110,6 +112,35 @@ pub const SyntaxTheme = struct {
         try self.initFromColorThemeData(allocator, service.getActiveTheme());
     }
 
+    /// Loads a theme contributed by a declarative extension from its real
+    /// files, including `include` chains resolved relative to the extension.
+    pub fn initFromThemeFiles(
+        self: *SyntaxTheme,
+        allocator: Allocator,
+        root: []const u8,
+        path: []const u8,
+        ui_theme: []const u8,
+    ) !void {
+        var reader = FileThemeReader{ .root = root, .arena = std.heap.ArenaAllocator.init(allocator) };
+        defer reader.arena.deinit();
+
+        var registry = color_utils.ColorRegistry.init(allocator);
+        defer registry.deinit();
+        const service = try theme_service_mod.ThemeService.init(allocator, &registry, null);
+        defer service.deinit();
+        const scheme: theme_mod.ColorScheme = if (std.mem.eql(u8, ui_theme, "vs"))
+            .LIGHT
+        else if (std.mem.eql(u8, ui_theme, "hc-black"))
+            .HIGH_CONTRAST_DARK
+        else if (std.mem.eql(u8, ui_theme, "hc-light"))
+            .HIGH_CONTRAST_LIGHT
+        else
+            .DARK;
+        try service.registerTheme("extension-theme", "Extension Theme", scheme);
+        try service.setTheme("extension-theme", FileThemeReader.interface(&reader), path);
+        try self.initFromColorThemeData(allocator, service.getActiveTheme());
+    }
+
     fn installTheme(self: *SyntaxTheme, allocator: Allocator, rules: []const ITokenThemeRule) !void {
         self.theme = try TokenTheme.createFromRawTokenTheme(allocator, rules, &.{});
         tokenization.setActiveTokenTheme(&self.theme);
@@ -131,6 +162,23 @@ pub const ThemeAssetReader = struct {
     }
 
     pub fn interface(self: *ThemeAssetReader) color_theme_mod.ResourceReader {
+        return .{ .context = self, .read = read };
+    }
+};
+
+/// Reads theme files and `include` targets relative to an extension root.
+const FileThemeReader = struct {
+    root: []const u8,
+    arena: std.heap.ArenaAllocator,
+
+    fn read(context: *anyopaque, path: []const u8) anyerror![]const u8 {
+        const self: *FileThemeReader = @ptrCast(@alignCast(context));
+        const arena = self.arena.allocator();
+        const full_path = try std.fs.path.join(arena, &.{ self.root, path });
+        return std.Io.Dir.cwd().readFileAlloc(time_compat.io, full_path, arena, .unlimited);
+    }
+
+    fn interface(self: *FileThemeReader) color_theme_mod.ResourceReader {
         return .{ .context = self, .read = read };
     }
 };
@@ -492,4 +540,17 @@ test "syntax theme loads through the workbench theme service" {
     const legacy_map = legacy.theme.getColorMap();
     try std.testing.expect(themed_map.len > 1);
     try std.testing.expectEqual(legacy_map.len, themed_map.len);
+}
+
+test "declarative theme-defaults loads a token theme" {
+    const registry_mod = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
+    const allocator = std.testing.allocator;
+    var registry = registry_mod.scan(allocator, &.{"../vscode/extensions/theme-defaults"}) catch return error.SkipZigTest;
+    defer registry.deinit();
+    const theme = registry.theme("Dark+") orelse return error.SkipZigTest;
+
+    var syntax: SyntaxTheme = undefined;
+    try syntax.initFromThemeFiles(allocator, theme.root, theme.path, theme.ui_theme);
+    defer syntax.deinit();
+    try std.testing.expect(TokenizationRegistry.instance.getColorMap() != null);
 }

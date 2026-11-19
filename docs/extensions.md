@@ -6,7 +6,10 @@ codec, the generated `extHost.protocol.zig` table has all 171 identifiers,
 and `src/tui/extensions.zig` mirrors the active tab, routes text through
 `type`/`default:type`, applies edits and selections, publishes status bar
 entries, and discovers `vscodevim.vim-*` under the usual VS Code extension
-directories. `zig build test-e2e` activates VSCodeVim 1.32.4 and asserts insert
+directories. Declarative scanning now loads the bundled `theme-defaults` and
+`markdown-basics` contributions: the theme files (including the
+`dark_plus.json` → `dark_vs.json` include chain), the markdown language and
+grammar, and its JSONC language configuration. `zig build test-e2e` activates VSCodeVim 1.32.4 and asserts insert
 mode, a normal-mode `x`, and the resulting TUI editor text. The remaining
 `MainThread*` actors, the contribution scanner, configuration writes,
 `tabGroups`, extension keybindings and the built-in command set are still
@@ -950,10 +953,14 @@ name) with this contract:
 
 ## 8. Declarative extensions
 
-Ported to
-`src/vs/platform/extensionManagement/common/extensionsScannerService.zig`,
-`src/vs/platform/extensions/common/extensionValidator.zig`, and
-`src/vs/workbench/services/extensions/common/{extensionsRegistry,extensionDescriptionRegistry}.zig`.
+Ported (subset) to
+`src/vs/workbench/services/extensions/common/extensionsRegistry.zig` and
+`src/vs/workbench/services/language/common/languageConfigurationExtensionPoint.zig`.
+The current scanner covers the `theme-defaults` and `markdown-basics` fixtures:
+manifest JSONC, NLS placeholders skipped, and the `languages`, `grammars`,
+`themes` and `snippets` contribution records are parsed. Snippet files are not
+consumed by the editor yet. Full `extensionValidator`, profile scanning and
+NLS resolution remain deferred.
 
 Scan roots: bundled extensions, the user extensions directory
 (`~/.local/share/zig-editor/extensions/<publisher>.<name>-<version>/`), and

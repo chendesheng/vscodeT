@@ -64,6 +64,10 @@ const BracketMatchingController = bracket_matching.BracketMatchingController;
 const folding = @import("../vs/editor/contrib/folding/browser/folding.zig");
 const FoldingRules = @import("../vs/editor/common/languages/languageConfiguration.zig").FoldingRules;
 const language_configuration_service = @import("./languageConfiguration.zig");
+const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
+const language_config_point = @import("../vs/workbench/services/language/common/languageConfigurationExtensionPoint.zig");
+const text_mate_tokenizer = @import("../vs/editor/common/model/tokens/textMateTokenizer.zig");
+const time_compat = @import("../vs/base/common/timeCompat.zig");
 const languagesAssociations = @import("../vs/editor/common/services/languagesAssociations.zig");
 const input = @import("ui").input;
 const keybinding_service = @import("./keybindingService.zig");
@@ -85,7 +89,6 @@ const InPlaceReplaceCommand = @import("../vs/editor/contrib/inPlaceReplace/brows
 const model_module = @import("../vs/editor/common/model.zig");
 const ModelDecorationOptions = model_module.ModelDecorationOptions;
 const ModelDeltaDecoration = model_module.ModelDeltaDecoration;
-const time_compat = @import("../vs/base/common/timeCompat.zig");
 
 const MAX_STATUS: usize = 512;
 
@@ -207,16 +210,29 @@ pub const Editor = struct {
     /// Find controller hooks, installed by the per-tab controllers.
     find_context: ?*anyopaque = null,
     find_start_fn: ?*const fn (context: *anyopaque, replace: bool) anyerror!void = null,
+    declarative: ?*const extensions_registry.Registry = null,
+    declarative_arena: std.heap.ArenaAllocator,
 
     pub fn create(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Editor {
-        return createInternal(allocator, io, path, width, height, null);
+        return createInternal(allocator, io, path, width, height, null, null);
+    }
+
+    pub fn createWithDeclarative(
+        allocator: Allocator,
+        io: Io,
+        path: []const u8,
+        width: usize,
+        height: usize,
+        declarative: ?*const extensions_registry.Registry,
+    ) !*Editor {
+        return createInternal(allocator, io, path, width, height, null, declarative);
     }
 
     pub fn createFromText(allocator: Allocator, io: Io, text: []const u8, path: []const u8, width: usize, height: usize) !*Editor {
-        return createInternal(allocator, io, path, width, height, text);
+        return createInternal(allocator, io, path, width, height, text, null);
     }
 
-    fn createInternal(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize, text: ?[]const u8) !*Editor {
+    fn createInternal(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize, text: ?[]const u8, declarative: ?*const extensions_registry.Registry) !*Editor {
         const editor = try allocator.create(Editor);
         errdefer allocator.destroy(editor);
 
@@ -235,25 +251,54 @@ pub const Editor = struct {
         for (language.bundled_languages) |bundled| {
             try language_service.registerLanguage(.{ .id = bundled.id, .aliases = bundled.names, .extensions = bundled.extensions });
         }
+        if (declarative) |registry| {
+            for (registry.languages) |contribution| {
+                try language_service.registerLanguage(.{
+                    .id = contribution.id,
+                    .aliases = contribution.aliases,
+                    .extensions = contribution.extensions,
+                    .filenames = contribution.filenames,
+                    .filenamePatterns = contribution.filename_patterns,
+                });
+            }
+        }
 
         // Path matching goes through the ported language associations, which the
         // service derives from the registered language contributions.
         const language_id = language_service.guessLanguageIdByFilepathOrFirstLine(path, null) orelse "plaintext";
         try codec.register(language_id);
 
+        var declarative_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer declarative_arena.deinit();
+
         var language_config = language_configuration.empty();
         var has_language_config = false;
-        if (language.commentRuleFor(language_id)) |comments| {
-            language_config.comments = comments;
-            has_language_config = true;
+        if (declarative) |registry| {
+            if (registry.language(language_id)) |contribution| {
+                if (contribution.configuration) |relative| {
+                    if (language_config_point.load(declarative_arena.allocator(), contribution.root, relative)) |config| {
+                        language_config = config;
+                        has_language_config = true;
+                    } else |_| {}
+                }
+                if (registry.grammarForLanguage(language_id)) |grammar| {
+                    registerDeclarativeGrammar(io, allocator, contribution.root, grammar);
+                }
+            }
         }
-        if (language.bracketsFor(language_id)) |brackets| {
-            language_config.brackets = brackets;
-            has_language_config = true;
-        }
-        if (language.foldingRulesFor(language_id)) |rules| {
-            language_config.folding = rules;
-            has_language_config = true;
+        if (!has_language_config) {
+            if (language.commentRuleFor(language_id)) |comments| {
+                language_config.comments = comments;
+                has_language_config = true;
+            }
+            if (language.bracketsFor(language_id)) |brackets| {
+                language_config.brackets = brackets;
+                has_language_config = true;
+            }
+            if (language.foldingRulesFor(language_id)) |rules| {
+                language_config.folding = rules;
+                has_language_config = true;
+            }
         }
         if (has_language_config) {
             try language_service.registerLanguageConfiguration(language_id, language_config);
@@ -356,6 +401,8 @@ pub const Editor = struct {
             .shortcut_commands = CommandRegistry.init(allocator),
             .find_context = null,
             .find_start_fn = null,
+            .declarative = declarative,
+            .declarative_arena = declarative_arena,
         };
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
         if (editor.character_pair) |*pair_support| {
@@ -447,6 +494,34 @@ pub const Editor = struct {
         return true;
     }
 
+    /// Applies declarative language contributions to an editor created before
+    /// the extension scan completed.
+    pub fn applyDeclarativeExtensions(self: *Editor, registry: *const extensions_registry.Registry) !void {
+        self.declarative = registry;
+        for (registry.languages) |contribution| {
+            try self.language_service.registerLanguage(.{
+                .id = contribution.id,
+                .aliases = contribution.aliases,
+                .extensions = contribution.extensions,
+                .filenames = contribution.filenames,
+                .filenamePatterns = contribution.filename_patterns,
+            });
+        }
+        if (registry.language(self.languageId())) |contribution| {
+            if (contribution.configuration) |relative| {
+                if (language_config_point.load(self.declarative_arena.allocator(), contribution.root, relative)) |config| {
+                    try self.language_service.registerLanguageConfiguration(self.languageId(), config);
+                } else |_| {}
+            }
+            if (registry.grammarForLanguage(self.languageId())) |grammar| {
+                registerDeclarativeGrammar(self.io, self.allocator, contribution.root, grammar);
+            }
+        }
+        if (self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null)) |guessed| {
+            if (!std.mem.eql(u8, guessed, self.languageId())) try self.setLanguage(guessed);
+        }
+    }
+
     pub fn deinit(self: *Editor) void {
         self.folding.deinit();
         if (self.cursors) |*cursors| cursors.deinit();
@@ -456,6 +531,7 @@ pub const Editor = struct {
         self.smart_select.deinit();
         self.language_config_service.deinit();
         self.allocator.destroy(self.language_config_service);
+        self.declarative_arena.deinit();
         if (self.multicursor_session) |*session| session.deinit();
         self.word_separators.deinit();
         self.view_lines.deinit();
@@ -2413,6 +2489,14 @@ fn createModel(
     return try TextModel.init(allocator, &fixed, language_id, options, null, undo_redo, language_service);
 }
 
+fn registerDeclarativeGrammar(io: Io, allocator: Allocator, root: []const u8, grammar: extensions_registry.Grammar) void {
+    const path = std.fs.path.join(allocator, &.{ root, grammar.path }) catch return;
+    defer allocator.free(path);
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch return;
+    defer allocator.free(data);
+    text_mate_tokenizer.registerGrammar(grammar.language, grammar.scope, data);
+}
+
 test "Editor: create, edit, undo, and render" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -3698,4 +3782,26 @@ test "editor applies configured files.associations" {
     // Clearing the configured associations restores the bundled detection.
     try editor.applyFileAssociations(&.{});
     try std.testing.expectEqualStrings("plaintext", editor.languageId());
+}
+
+test "declarative markdown-basics configuration reaches the editor" {
+    const allocator = std.testing.allocator;
+    var registry = extensions_registry.scan(allocator, &.{"../vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
+    defer registry.deinit();
+    if (registry.language("markdown") == null) return error.SkipZigTest;
+
+    const editor = try Editor.createWithDeclarative(allocator, time_compat.io, "README.md", 40, 8, &registry);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expectEqualStrings("markdown", editor.languageId());
+    const config = editor.language_service.getLanguageConfiguration("markdown") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(config.comments != null);
+    try std.testing.expect(config.comments.?.blockComment != null);
+    try std.testing.expectEqualStrings("<!--", config.comments.?.blockComment.?[0]);
+    try std.testing.expectEqualStrings("-->", config.comments.?.blockComment.?[1]);
+    try std.testing.expect(config.folding != null);
+    try std.testing.expect(config.folding.?.offSide orelse false);
+    try std.testing.expect(config.brackets != null and config.brackets.?.len >= 3);
 }

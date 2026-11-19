@@ -116,6 +116,8 @@ const search_configuration = @import("../vs/workbench/contrib/search/common/sear
 const tree = @import("../vs/workbench/contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
 const group_mod = @import("../vs/workbench/common/editor/editorGroupModel.zig");
 const editor_groups = @import("../vs/workbench/services/editor/common/editorGroupsService.zig");
+const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
+const time_compat = @import("../vs/base/common/timeCompat.zig");
 const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
@@ -222,6 +224,7 @@ pub const Workbench = struct {
     hovered_pane: ?*GroupPane = null,
     last_tab_click: ?TabClick = null,
     expanded_pane: ?*GroupPane = null,
+    declarative: ?*const extensions_registry.Registry = null,
     focus: Focus = .editor,
     is_pasting: bool = false,
     quit_armed: bool = false,
@@ -273,6 +276,7 @@ pub const Workbench = struct {
         self.hovered_pane = null;
         self.last_tab_click = null;
         self.expanded_pane = null;
+        self.declarative = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -350,6 +354,7 @@ pub const Workbench = struct {
         self.hovered_pane = null;
         self.last_tab_click = null;
         self.expanded_pane = null;
+        self.declarative = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -443,6 +448,7 @@ pub const Workbench = struct {
         self.hovered_pane = null;
         self.last_tab_click = null;
         self.expanded_pane = null;
+        self.declarative = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -1293,6 +1299,15 @@ pub const Workbench = struct {
     /// Opens a path through the editor-groups service. If the resource is
     /// already open in another group, the service reveals that group and the
     /// newly created input is discarded.
+    /// Applies declarative language/grammar contributions to the open tabs and
+    /// to tabs opened later.
+    pub fn setDeclarativeExtensions(self: *Workbench, registry: *const extensions_registry.Registry) void {
+        self.declarative = registry;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| tab.editor.applyDeclarativeExtensions(registry) catch {};
+        }
+    }
+
     pub fn openPath(self: *Workbench, path: []const u8) !void {
         return self.openPathWithOptions(path, .{});
     }
@@ -1302,7 +1317,7 @@ pub const Workbench = struct {
     }
 
     pub fn openPathWithOptions(self: *Workbench, path: []const u8, options: OpenOptions) !void {
-        const editor = try Editor.create(self.allocator, self.io, path, self.cols, self.editorContentHeight());
+        const editor = try Editor.createWithDeclarative(self.allocator, self.io, path, self.cols, self.editorContentHeight(), self.declarative);
         errdefer {
             editor.deinit();
             self.allocator.destroy(editor);
@@ -3536,6 +3551,30 @@ fn seedFile(allocator: Allocator, io: Io, tmp: *std.testing.TmpDir, name: []cons
     editor.deinit();
     allocator.destroy(editor);
     return path;
+}
+
+test "Workbench: declarative markdown configuration applies to open tabs" {
+    const allocator = std.testing.allocator;
+    var registry = extensions_registry.scan(allocator, &.{"../vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
+    defer registry.deinit();
+    if (registry.language("markdown") == null) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "README.md", .data = "# Hello\n" });
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const length = try tmp.dir.realPathFile(time_compat.io, "README.md", &buffer);
+
+    const workbench = try Workbench.init(allocator, time_compat.io, &.{buffer[0..length]}, 40, 9);
+    defer workbench.deinit();
+    workbench.setDeclarativeExtensions(&registry);
+
+    const tab = workbench.activeTab().?;
+    try std.testing.expectEqualStrings("markdown", tab.editor.languageId());
+    const config = tab.editor.language_service.getLanguageConfiguration("markdown") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(config.comments != null);
+    try std.testing.expectEqualStrings("<!--", config.comments.?.blockComment.?[0]);
+    try std.testing.expect(config.folding.?.offSide orelse false);
 }
 
 test "Workbench: opens two files, switches tabs and closes them" {

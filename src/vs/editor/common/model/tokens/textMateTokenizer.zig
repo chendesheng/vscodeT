@@ -26,6 +26,13 @@ var registry: ?*tm_main.Registry = null;
 var fence_grammar: ?*tm_raw.RawGrammar = null;
 var loader_context: u8 = 0;
 
+const DynamicGrammar = struct {
+    language: []const u8,
+    scope: []const u8,
+    data: []const u8,
+};
+var dynamic_grammars: ?std.array_list.Managed(DynamicGrammar) = null;
+
 fn ensureInitialized() !void {
     if (initialized) return;
     onig_lib = tm_main.OnigLib.init(std.heap.page_allocator);
@@ -37,8 +44,46 @@ fn ensureInitialized() !void {
     initialized = true;
 }
 
+/// Registers a grammar contributed by a declarative extension. The language
+/// and scope mappings take precedence over the bundled grammar table.
+pub fn registerGrammar(language: []const u8, scope: []const u8, data: []const u8) void {
+    if (dynamic_grammars == null) dynamic_grammars = std.array_list.Managed(DynamicGrammar).init(std.heap.page_allocator);
+    const list = &dynamic_grammars.?;
+    for (list.items) |*entry| {
+        if (!std.mem.eql(u8, entry.language, language)) continue;
+        std.heap.page_allocator.free(entry.scope);
+        std.heap.page_allocator.free(entry.data);
+        entry.scope = std.heap.page_allocator.dupe(u8, scope) catch return;
+        entry.data = std.heap.page_allocator.dupe(u8, data) catch return;
+        return;
+    }
+    const scope_copy = std.heap.page_allocator.dupe(u8, scope) catch return;
+    const data_copy = std.heap.page_allocator.dupe(u8, data) catch return;
+    const language_copy = std.heap.page_allocator.dupe(u8, language) catch return;
+    list.append(.{ .language = language_copy, .scope = scope_copy, .data = data_copy }) catch {};
+}
+
+fn dynamicGrammarForLanguage(language: []const u8) ?DynamicGrammar {
+    if (dynamic_grammars) |list| {
+        for (list.items) |entry| {
+            if (std.mem.eql(u8, entry.language, language)) return entry;
+        }
+    }
+    return null;
+}
+
+fn dynamicGrammarForScope(scope: []const u8) ?DynamicGrammar {
+    if (dynamic_grammars) |list| {
+        for (list.items) |entry| {
+            if (std.mem.eql(u8, entry.scope, scope)) return entry;
+        }
+    }
+    return null;
+}
+
 fn loadGrammar(_: *anyopaque, scope: []const u8) anyerror!?*tm_raw.RawGrammar {
-    const data = vscode_syntax.dataForScope(scope) orelse return null;
+    const dynamic_data = if (dynamicGrammarForScope(scope)) |entry| entry.data else null;
+    const data = dynamic_data orelse (vscode_syntax.dataForScope(scope) orelse return null);
     const raw = try std.heap.page_allocator.create(tm_raw.RawGrammar);
     errdefer std.heap.page_allocator.destroy(raw);
     raw.* = try tm.parseRawGrammar.parseRawGrammar(std.heap.page_allocator, data, "embedded.json");
@@ -67,6 +112,7 @@ fn installMarkdownCodeFences(markdown: *tm_raw.RawGrammar) !void {
 }
 
 fn grammarScope(languageId: []const u8) ?[]const u8 {
+    if (dynamicGrammarForLanguage(languageId)) |entry| return entry.scope;
     if (vscode_syntax.scopeForLanguage(languageId)) |scope| return scope;
     const map = .{
         .{ "zig", "source.zig" },

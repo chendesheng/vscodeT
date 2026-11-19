@@ -10,6 +10,7 @@ const View = @import("./view.zig").View;
 const Preview = @import("./preview.zig").Preview;
 const Workbench = @import("./workbench.zig").Workbench;
 const extensions = @import("./extensions.zig");
+const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
 const session = @import("./session.zig");
 const SyntaxTheme = @import("./syntaxTheme.zig").SyntaxTheme;
 const FileEditorSerializer = @import("./editorInput.zig").FileEditorSerializer;
@@ -167,11 +168,31 @@ pub fn main(init: std.process.Init) !void {
     const log_service: ?log_module.ILogger = if (file_logger) |value| value.logger() else null;
     defer infoLog(log_service, "exit", .{});
 
+    var declarative: ?extensions_registry.Registry = extensions_registry.scan(allocator, &.{
+        "../vscode/extensions/theme-defaults",
+        "../vscode/extensions/markdown-basics",
+    }) catch null;
+    defer if (declarative) |*registry| registry.deinit();
+
     var syntax_theme: SyntaxTheme = undefined;
-    syntax_theme.initFromThemeService(allocator) catch |err| {
-        infoLog(log_service, "theme service unavailable: {s}; using the bundled loader", .{@errorName(err)});
-        try syntax_theme.init(allocator);
-    };
+    if (declarative) |*registry| {
+        if (registry.theme("Dark+")) |theme| {
+            syntax_theme.initFromThemeFiles(allocator, theme.root, theme.path, theme.ui_theme) catch |err| {
+                infoLog(log_service, "declarative theme unavailable: {s}; using the bundled loader", .{@errorName(err)});
+                syntax_theme.initFromThemeService(allocator) catch try syntax_theme.init(allocator);
+            };
+        } else {
+            syntax_theme.initFromThemeService(allocator) catch |err| {
+                infoLog(log_service, "theme service unavailable: {s}; using the bundled loader", .{@errorName(err)});
+                try syntax_theme.init(allocator);
+            };
+        }
+    } else {
+        syntax_theme.initFromThemeService(allocator) catch |err| {
+            infoLog(log_service, "theme service unavailable: {s}; using the bundled loader", .{@errorName(err)});
+            try syntax_theme.init(allocator);
+        };
+    }
     defer syntax_theme.deinit();
     // The whole-word search classifier cache is process-lifetime by design;
     // release it before the safe allocator checks for leaks on exit.
@@ -224,7 +245,7 @@ pub fn main(init: std.process.Init) !void {
     var size = try tui.getTerminalSize();
 
     if (args.preview) {
-        var editor = try Editor.create(allocator, io, paths.items[0], size.width, size.height);
+        var editor = try Editor.createWithDeclarative(allocator, io, paths.items[0], size.width, size.height, if (declarative) |*registry| registry else null);
         defer {
             editor.deinit();
             allocator.destroy(editor);
@@ -325,6 +346,7 @@ pub fn main(init: std.process.Init) !void {
     }
     defer workbench.deinit();
     workbench.setCellBorders(border_probe.supported);
+    if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
 
     const user_settings_path = try defaultUserSettingsPath(allocator, init.environ_map);
     defer if (user_settings_path) |path| allocator.free(path);

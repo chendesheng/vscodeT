@@ -79,6 +79,12 @@ editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
 `o`/`O`, `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
 the status bar shows its mode entry.
 
+Declarative built-ins are scanned from `../vscode/extensions/theme-defaults`
+and `../vscode/extensions/markdown-basics`: their themes, languages, grammars
+and language configurations are loaded at startup. The markdown language
+therefore gets its upstream `<!-- -->` comment rule, bracket pairs, auto-closing
+pairs and off-side folding even when the built-in grammar was already bundled.
+
 Host stderr is written to `<data dir>/extension-host.log` (normally
 `~/.local/state/vscode-textbuffer/extensions/extension-host.log`) so it cannot
 corrupt the TUI frame. `test-e2e` is skipped unless `host/dist/extensionHost.mjs`

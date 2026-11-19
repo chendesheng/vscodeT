@@ -41,10 +41,21 @@ pub const Tab = struct {
     controllers: ?*Controllers = null,
 
     pub fn init(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Tab {
+        return initWithDeclarative(allocator, io, path, width, height, null);
+    }
+
+    pub fn initWithDeclarative(
+        allocator: Allocator,
+        io: Io,
+        path: []const u8,
+        width: usize,
+        height: usize,
+        declarative: ?*const @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig").Registry,
+    ) !*Tab {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
 
-        const editor = try Editor.create(allocator, io, path, width, height);
+        const editor = try Editor.createWithDeclarative(allocator, io, path, width, height, declarative);
         errdefer {
             editor.deinit();
             allocator.destroy(editor);
