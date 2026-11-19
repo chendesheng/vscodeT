@@ -43,7 +43,8 @@ const Tab = @import("./tab.zig").Tab;
 const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
 const FileEditorSerializer = @import("./editorInput.zig").FileEditorSerializer;
 const editor_factory = @import("../vs/workbench/common/editor/editorFactory.zig");
-const Editor = @import("./editor.zig").Editor;
+const tui_editor_mod = @import("./editor.zig");
+const Editor = tui_editor_mod.Editor;
 const TextEdit = @import("./editor.zig").TextEdit;
 const View = @import("./view.zig").View;
 const ViewCell = @import("./view.zig").Cell;
@@ -75,7 +76,6 @@ const UniversalWatcher = universal_watcher_mod.UniversalWatcher;
 const watch_common = @import("../vs/platform/files/common/watcher.zig");
 const WatchRequest = watch_common.WatchRequest;
 const languages_associations = @import("../vs/editor/common/services/languagesAssociations.zig");
-const working_copy_mod = @import("./workingCopy.zig");
 const working_copy_service_mod = @import("../vs/workbench/services/workingCopy/common/workingCopyService.zig");
 const WorkingCopyService = working_copy_service_mod.WorkingCopyService;
 const keybinding_service = @import("../vs/workbench/services/keybinding/browser/keybindingService.zig");
@@ -1220,11 +1220,11 @@ pub const Workbench = struct {
     }
 
     fn registerWorkingCopy(self: *Workbench, tab: *Tab) void {
-        self.working_copy_service.registerWorkingCopy(working_copy_mod.interface(tab.editor)) catch {};
+        self.working_copy_service.registerWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor)) catch {};
     }
 
     fn unregisterWorkingCopy(self: *Workbench, tab: *Tab) void {
-        _ = self.working_copy_service.unregisterWorkingCopy(working_copy_mod.interface(tab.editor));
+        _ = self.working_copy_service.unregisterWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor));
     }
 
     pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {

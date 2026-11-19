@@ -4496,6 +4496,82 @@ const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "editor.action.startFindReplaceAction", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyR) } },
 };
 
+// ---------------------------------------------------------------------------
+// Workbench `IWorkingCopy` adapter
+//
+// Upstream a text editor input owns a `TextFileEditorModel` that is itself a
+// working copy. The TUI editor already owns the text model and dirty/save
+// state, so this adapter exposes that state to `WorkingCopyService` without a
+// second model.
+// ---------------------------------------------------------------------------
+
+const working_copy = @import("../vs/workbench/services/workingCopy/common/workingCopy.zig");
+const IWorkingCopy = working_copy.IWorkingCopy;
+const WorkingCopyListener = working_copy.WorkingCopyListener;
+
+pub const TYPE_ID = "workbench.editors.files.textFileEditor";
+
+fn wcResource(context: *anyopaque) []const u8 {
+    const editor: *Editor = @ptrCast(@alignCast(context));
+    return editor.path;
+}
+fn wcTypeId(_: *anyopaque) []const u8 {
+    return TYPE_ID;
+}
+fn wcName(context: *anyopaque) []const u8 {
+    const editor: *Editor = @ptrCast(@alignCast(context));
+    return std.fs.path.basename(editor.path);
+}
+fn wcIsDirty(context: *anyopaque) bool {
+    const editor: *Editor = @ptrCast(@alignCast(context));
+    return editor.isDirty();
+}
+fn wcIsModified(context: *anyopaque) bool {
+    return wcIsDirty(context);
+}
+
+fn wcAddDirty(context: *anyopaque, listener: WorkingCopyListener) void {
+    const editor: *Editor = @ptrCast(@alignCast(context));
+    editor.addWorkingCopyDirtyListener(.{ .context = listener.context, .callback = listener.callback });
+}
+fn wcRemoveDirty(context: *anyopaque, listener: WorkingCopyListener) void {
+    const editor: *Editor = @ptrCast(@alignCast(context));
+    editor.removeWorkingCopyDirtyListener(.{ .context = listener.context, .callback = listener.callback });
+}
+fn wcAddContent(context: *anyopaque, listener: WorkingCopyListener) void {
+    const editor: *Editor = @ptrCast(@alignCast(context));
+    editor.addWorkingCopyContentListener(.{ .context = listener.context, .callback = listener.callback });
+}
+fn wcRemoveContent(context: *anyopaque, listener: WorkingCopyListener) void {
+    const editor: *Editor = @ptrCast(@alignCast(context));
+    editor.removeWorkingCopyContentListener(.{ .context = listener.context, .callback = listener.callback });
+}
+fn wcAddSave(context: *anyopaque, listener: WorkingCopyListener) void {
+    const editor: *Editor = @ptrCast(@alignCast(context));
+    editor.addWorkingCopySaveListener(.{ .context = listener.context, .callback = listener.callback });
+}
+fn wcRemoveSave(context: *anyopaque, listener: WorkingCopyListener) void {
+    const editor: *Editor = @ptrCast(@alignCast(context));
+    editor.removeWorkingCopySaveListener(.{ .context = listener.context, .callback = listener.callback });
+}
+
+pub fn workingCopyInterface(editor: *Editor) IWorkingCopy {
+    return .{
+        .context = editor,
+        .resource = wcResource,
+        .type_id = wcTypeId,
+        .name = wcName,
+        .is_dirty = wcIsDirty,
+        .is_modified = wcIsModified,
+        .add_dirty_listener = wcAddDirty,
+        .remove_dirty_listener = wcRemoveDirty,
+        .add_content_listener = wcAddContent,
+        .remove_content_listener = wcRemoveContent,
+        .add_save_listener = wcAddSave,
+        .remove_save_listener = wcRemoveSave,
+    };
+}
+
 test "Editor: bundled languages are registered on the language service" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
