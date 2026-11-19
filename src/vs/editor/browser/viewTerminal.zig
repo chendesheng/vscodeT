@@ -62,7 +62,9 @@ const mouse_target = @import("./controller/mouseTarget.zig");
 const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
 const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
 const folding_decorations_mod = @import("../contrib/folding/browser/foldingDecorations.zig");
+const margin_mod = @import("./viewParts/margin/margin.zig");
 const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvider;
+const TerminalMargin = margin_mod.TerminalMargin;
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
 const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
 const TerminalScrollbar = editor_scrollbar_mod.TerminalScrollbar;
@@ -270,6 +272,7 @@ pub const View = struct {
     /// Ported folding option provider (gutter icon, folded background and
     /// `inline-folded` ellipsis selection).
     folding_decorations: FoldingDecorationProvider = .{},
+    margin: TerminalMargin = .{},
     /// Set when a widget/status/layout change made the current document
     /// stale. The next paint/render flushes it, so a burst of registrations
     /// costs one rebuild instead of one per call.
@@ -1079,93 +1082,21 @@ pub const View = struct {
         else
             states[0].viewState.position;
 
+        try self.margin.render(
+            doc,
+            root,
+            editor,
+            &self.terminal_view_host.line_numbers,
+            &self.folding_decorations,
+            gutter,
+            text_height,
+        );
+
         var row: usize = 0;
         while (row < text_height) : (row += 1) {
             const view_line = top + row;
-            const row_cells: f64 = @floatFromInt(row);
-
-            if (view_line > total) {
-                if (gutter >= 2) {
-                    const filler = try doc.createElement(.div);
-                    filler.setStyle(.{
-                        .position = .absolute,
-                        .left = .{ .cells = 0 },
-                        .top = .{ .cells = row_cells },
-                        .width = .{ .cells = @floatFromInt(gutter - 1) },
-                        .height = .{ .cells = 1 },
-                        .white_space = .pre,
-                        .text_align = .right,
-                    });
-                    const tilde = try doc.createText("~");
-                    tilde.setStyle(.{ .color = color(tilde_color) });
-                    _ = try filler.appendChild(tilde);
-                    _ = try root.appendChild(filler);
-                }
-                continue;
-            }
-
             const model_line = editor.modelLineNumber(view_line);
             const output_index = editor.outputLineIndex(view_line);
-
-            // Gutter: the model line number on the first view line, a
-            // continuation arrow on the rest. Upstream splits this into
-            // `lineNumbersWidth` and `lineDecorationsWidth` and starts the text
-            // at `contentLeft`; the terminal uses one decorations cell, so the
-            // number column is `gutter - 1` and the last gutter cell is blank.
-            var number_buf: [32]u8 = undefined;
-            const gutter_line = try doc.createElement(.div);
-            gutter_line.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = 0 },
-                .top = .{ .cells = row_cells },
-                .width = .{ .cells = @floatFromInt(gutter - 1) },
-                .height = .{ .cells = 1 },
-                .white_space = .pre,
-                .text_align = .right,
-            });
-
-            if (output_index == 0) {
-                // The gutter text is produced by the ported
-                // `LineNumbersOverlay`, including relative/custom numbering
-                // and the final-newline rules.
-                const line_number = self.terminal_view_host.getLineNumber(view_line);
-                const number = if (line_number) |rendered|
-                    rendered.text
-                else
-                    std.fmt.bufPrint(&number_buf, "{d}", .{model_line}) catch "";
-                if (number.len > 0) {
-                    const node = try doc.createText(number);
-                    node.setStyle(.{ .color = color(gutter_color) });
-                    _ = try gutter_line.appendChild(node);
-                }
-            } else if (gutter >= 2) {
-                const node = try doc.createText("↪");
-                node.setStyle(.{ .color = color(continuation_color) });
-                _ = try gutter_line.appendChild(node);
-            }
-            _ = try root.appendChild(gutter_line);
-
-            if (output_index == 0 and gutter >= 2) {
-                const state = editor.foldStateAtModelLine(model_line);
-                if (state != .none) {
-                    const option = self.folding_decorations.getDecorationOption(state == .collapsed, false, false);
-                    if (option.fold_icon != .none) {
-                        const fold_cell = try doc.createElement(.div);
-                        fold_cell.setStyle(.{
-                            .position = .absolute,
-                            .left = .{ .cells = @floatFromInt(gutter - 1) },
-                            .top = .{ .cells = row_cells },
-                            .width = .{ .cells = 1 },
-                            .height = .{ .cells = 1 },
-                            .white_space = .pre,
-                        });
-                        const glyph = try doc.createText(if (option.fold_icon == .collapsed) "▸" else "▾");
-                        glyph.setStyle(.{ .color = color(gutter_color) });
-                        _ = try fold_cell.appendChild(glyph);
-                        _ = try root.appendChild(fold_cell);
-                    }
-                }
-            }
 
             const current_line = self.terminal_view_host.getCurrentLineHighlight(view_line);
             const is_cursor_line = if (current_line) |highlight|
