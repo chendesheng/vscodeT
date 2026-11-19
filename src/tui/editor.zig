@@ -366,7 +366,10 @@ pub const Editor = struct {
                     } else |_| {}
                 }
                 if (registry.grammarForLanguage(language_id)) |grammar| {
-                    registerDeclarativeGrammar(io, allocator, contribution.root, grammar);
+                    // The grammar may come from a different extension than the
+                    // language contribution; resolve its path against its own
+                    // root, like VS Code's extension location.
+                    registerDeclarativeGrammar(io, allocator, grammar.root, grammar);
                 }
             }
         }
@@ -840,7 +843,7 @@ pub const Editor = struct {
                 } else |_| {}
             }
             if (registry.grammarForLanguage(self.languageId())) |grammar| {
-                registerDeclarativeGrammar(self.io, self.allocator, contribution.root, grammar);
+                registerDeclarativeGrammar(self.io, self.allocator, grammar.root, grammar);
             }
         }
         if (self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null)) |guessed| {

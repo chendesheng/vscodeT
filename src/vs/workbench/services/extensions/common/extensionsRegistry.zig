@@ -65,11 +65,19 @@ pub const Registry = struct {
         self.arena.deinit();
     }
 
+    /// Returns the primary contribution for `id`. VS Code merges every
+    /// contribution with the same language id; the one carrying the
+    /// `configuration` file is the primary definition, so it must win even
+    /// when an earlier extension (for example the bundled `copilot` manifest)
+    /// also contributes the same language without a configuration.
     pub fn language(self: *const Registry, id: []const u8) ?Language {
+        var fallback: ?Language = null;
         for (self.languages) |item| {
-            if (std.mem.eql(u8, item.id, id)) return item;
+            if (!std.mem.eql(u8, item.id, id)) continue;
+            if (item.configuration != null) return item;
+            if (fallback == null) fallback = item;
         }
-        return null;
+        return fallback;
     }
 
     pub fn grammarForLanguage(self: *const Registry, id: []const u8) ?Grammar {
@@ -94,9 +102,23 @@ pub const Registry = struct {
     }
 };
 
-/// Scans `roots`, keeping only directories that contain a `package.json`.
-/// Missing roots and invalid manifests are skipped: a bundled fixture may be
-/// absent in a checkout without `../vscode`.
+const Contributions = struct {
+    extensions: *std.array_list.Managed(Extension),
+    languages: *std.array_list.Managed(Language),
+    grammars: *std.array_list.Managed(Grammar),
+    themes: *std.array_list.Managed(Theme),
+    snippets: *std.array_list.Managed(Snippet),
+};
+
+/// Scans `roots`.
+///
+/// A root that is itself an extension (its `package.json` has `name`,
+/// `version` and `engines.vscode`) is scanned as one extension. A root
+/// without a valid extension manifest is treated as a directory of
+/// extensions, like upstream's location scan: its direct child directories
+/// with a `package.json` are scanned in location order. Missing roots and
+/// invalid manifests are skipped: a bundled fixture may be absent in a
+/// checkout without `../vscode`.
 pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -107,102 +129,19 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
     var grammars = std.array_list.Managed(Grammar).init(scratch);
     var themes = std.array_list.Managed(Theme).init(scratch);
     var snippets = std.array_list.Managed(Snippet).init(scratch);
+    const contributions: Contributions = .{
+        .extensions = &extensions,
+        .languages = &languages,
+        .grammars = &grammars,
+        .themes = &themes,
+        .snippets = &snippets,
+    };
 
     for (roots) |root| {
         const absolute = std.Io.Dir.cwd().realPathFileAlloc(time_compat.io, root, allocator) catch continue;
         defer allocator.free(absolute);
-        const manifest_path = try std.fs.path.join(allocator, &.{ absolute, "package.json" });
-        defer allocator.free(manifest_path);
-        const text = std.Io.Dir.cwd().readFileAlloc(time_compat.io, manifest_path, allocator, .unlimited) catch continue;
-        defer allocator.free(text);
-        const sanitized = configuration_models.stripJsonc(allocator, text) catch continue;
-        defer allocator.free(sanitized);
-        const value = std.json.parseFromSliceLeaky(std.json.Value, scratch, sanitized, .{}) catch continue;
-        if (value != .object) continue;
-        const object = value.object;
-
-        const name = stringField(object, "name") orelse continue;
-        const version = stringField(object, "version") orelse continue;
-        if (!hasEngines(object)) continue;
-        const publisher = stringField(object, "publisher") orelse "undefined_publisher";
-        const identifier = try std.fmt.allocPrint(scratch, "{s}.{s}@{s}", .{ publisher, name, version });
-        const root_copy = try scratch.dupe(u8, absolute);
-        try extensions.append(.{ .root = root_copy, .identifier = identifier, .is_builtin = true });
-
-        const contributes = object.get("contributes") orelse continue;
-        if (contributes != .object) continue;
-        const points = contributes.object;
-
-        if (points.get("languages")) |items| {
-            if (items == .array) {
-                for (items.array.items) |item| {
-                    if (item != .object) continue;
-                    const language = item.object;
-                    const id = stringField(language, "id") orelse continue;
-                    try languages.append(.{
-                        .root = root_copy,
-                        .id = try scratch.dupe(u8, id),
-                        .aliases = try stringArray(scratch, language, "aliases"),
-                        .extensions = try stringArray(scratch, language, "extensions"),
-                        .filenames = try stringArray(scratch, language, "filenames"),
-                        .filename_patterns = try stringArray(scratch, language, "filenamePatterns"),
-                        .configuration = if (stringField(language, "configuration")) |path| try scratch.dupe(u8, path) else null,
-                    });
-                }
-            }
-        }
-
-        if (points.get("grammars")) |items| {
-            if (items == .array) {
-                for (items.array.items) |item| {
-                    if (item != .object) continue;
-                    const grammar = item.object;
-                    const language = stringField(grammar, "language") orelse continue;
-                    const scope = stringField(grammar, "scopeName") orelse continue;
-                    const path = stringField(grammar, "path") orelse continue;
-                    try grammars.append(.{
-                        .root = root_copy,
-                        .language = try scratch.dupe(u8, language),
-                        .scope = try scratch.dupe(u8, scope),
-                        .path = try scratch.dupe(u8, path),
-                    });
-                }
-            }
-        }
-
-        if (points.get("themes")) |items| {
-            if (items == .array) {
-                for (items.array.items) |item| {
-                    if (item != .object) continue;
-                    const theme = item.object;
-                    const path = stringField(theme, "path") orelse continue;
-                    const ui_theme = stringField(theme, "uiTheme") orelse continue;
-                    try themes.append(.{
-                        .root = root_copy,
-                        .id = try scratch.dupe(u8, stringField(theme, "id") orelse path),
-                        .label = try scratch.dupe(u8, stringField(theme, "label") orelse ""),
-                        .ui_theme = try scratch.dupe(u8, ui_theme),
-                        .path = try scratch.dupe(u8, path),
-                    });
-                }
-            }
-        }
-
-        if (points.get("snippets")) |items| {
-            if (items == .array) {
-                for (items.array.items) |item| {
-                    if (item != .object) continue;
-                    const snippet = item.object;
-                    const language = stringField(snippet, "language") orelse continue;
-                    const path = stringField(snippet, "path") orelse continue;
-                    try snippets.append(.{
-                        .root = root_copy,
-                        .language = try scratch.dupe(u8, language),
-                        .path = try scratch.dupe(u8, path),
-                    });
-                }
-            }
-        }
+        if (try scanExtensionRoot(allocator, scratch, absolute, contributions)) continue;
+        try scanExtensionDirectory(allocator, scratch, absolute, contributions);
     }
 
     return .{
@@ -214,6 +153,134 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
         .themes = try themes.toOwnedSlice(),
         .snippets = try snippets.toOwnedSlice(),
     };
+}
+
+/// Scans one extension directory. Returns false when the directory does not
+/// contain a usable extension manifest, so the caller can treat it as a
+/// container of extensions instead (`../vscode/extensions/package.json` is a
+/// build manifest, not an extension).
+fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const u8, contributions: Contributions) !bool {
+    const manifest_path = try std.fs.path.join(allocator, &.{ absolute, "package.json" });
+    defer allocator.free(manifest_path);
+    const text = std.Io.Dir.cwd().readFileAlloc(time_compat.io, manifest_path, allocator, .unlimited) catch return false;
+    defer allocator.free(text);
+    const sanitized = configuration_models.stripJsonc(allocator, text) catch return true;
+    defer allocator.free(sanitized);
+    const value = std.json.parseFromSliceLeaky(std.json.Value, scratch, sanitized, .{}) catch return true;
+    if (value != .object) return true;
+    const object = value.object;
+
+    const name = stringField(object, "name") orelse return false;
+    const version = stringField(object, "version") orelse return false;
+    if (!hasEngines(object)) return false;
+    const publisher = stringField(object, "publisher") orelse "undefined_publisher";
+    const identifier = try std.fmt.allocPrint(scratch, "{s}.{s}@{s}", .{ publisher, name, version });
+    const root_copy = try scratch.dupe(u8, absolute);
+    try contributions.extensions.append(.{ .root = root_copy, .identifier = identifier, .is_builtin = true });
+
+    const contributes = object.get("contributes") orelse return true;
+    if (contributes != .object) return true;
+    const points = contributes.object;
+
+    if (points.get("languages")) |items| {
+        if (items == .array) {
+            for (items.array.items) |item| {
+                if (item != .object) continue;
+                const language = item.object;
+                const id = stringField(language, "id") orelse continue;
+                try contributions.languages.append(.{
+                    .root = root_copy,
+                    .id = try scratch.dupe(u8, id),
+                    .aliases = try stringArray(scratch, language, "aliases"),
+                    .extensions = try stringArray(scratch, language, "extensions"),
+                    .filenames = try stringArray(scratch, language, "filenames"),
+                    .filename_patterns = try stringArray(scratch, language, "filenamePatterns"),
+                    .configuration = if (stringField(language, "configuration")) |path| try scratch.dupe(u8, path) else null,
+                });
+            }
+        }
+    }
+
+    if (points.get("grammars")) |items| {
+        if (items == .array) {
+            for (items.array.items) |item| {
+                if (item != .object) continue;
+                const grammar = item.object;
+                const language = stringField(grammar, "language") orelse continue;
+                const scope = stringField(grammar, "scopeName") orelse continue;
+                const path = stringField(grammar, "path") orelse continue;
+                try contributions.grammars.append(.{
+                    .root = root_copy,
+                    .language = try scratch.dupe(u8, language),
+                    .scope = try scratch.dupe(u8, scope),
+                    .path = try scratch.dupe(u8, path),
+                });
+            }
+        }
+    }
+
+    if (points.get("themes")) |items| {
+        if (items == .array) {
+            for (items.array.items) |item| {
+                if (item != .object) continue;
+                const theme = item.object;
+                const path = stringField(theme, "path") orelse continue;
+                const ui_theme = stringField(theme, "uiTheme") orelse continue;
+                try contributions.themes.append(.{
+                    .root = root_copy,
+                    .id = try scratch.dupe(u8, stringField(theme, "id") orelse path),
+                    .label = try scratch.dupe(u8, stringField(theme, "label") orelse ""),
+                    .ui_theme = try scratch.dupe(u8, ui_theme),
+                    .path = try scratch.dupe(u8, path),
+                });
+            }
+        }
+    }
+
+    if (points.get("snippets")) |items| {
+        if (items == .array) {
+            for (items.array.items) |item| {
+                if (item != .object) continue;
+                const snippet = item.object;
+                const language = stringField(snippet, "language") orelse continue;
+                const path = stringField(snippet, "path") orelse continue;
+                try contributions.snippets.append(.{
+                    .root = root_copy,
+                    .language = try scratch.dupe(u8, language),
+                    .path = try scratch.dupe(u8, path),
+                });
+            }
+        }
+    }
+
+    return true;
+}
+
+/// Scans the direct child directories of `absolute` that contain a
+/// `package.json`, in path order.
+fn scanExtensionDirectory(allocator: Allocator, scratch: Allocator, absolute: []const u8, contributions: Contributions) !void {
+    var dir = std.Io.Dir.cwd().openDir(time_compat.io, absolute, .{ .iterate = true }) catch return;
+    defer dir.close(time_compat.io);
+
+    var children = std.array_list.Managed([]const u8).init(scratch);
+    var iterator = dir.iterate();
+    while (try iterator.next(time_compat.io)) |entry| {
+        if (entry.name.len == 0 or entry.name[0] == '.') continue;
+        const child = try std.fs.path.join(scratch, &.{ absolute, entry.name });
+        const manifest_path = try std.fs.path.join(scratch, &.{ child, "package.json" });
+        std.Io.Dir.cwd().access(time_compat.io, manifest_path, .{}) catch continue;
+        try children.append(child);
+    }
+    // Keep the scan deterministic even though directory iteration order is
+    // filesystem-specific. Upstream sorts scanned extensions by location.
+    std.mem.sort([]const u8, children.items, {}, lessThanPath);
+    for (children.items) |child| {
+        _ = try scanExtensionRoot(allocator, scratch, child, contributions);
+    }
+}
+
+fn lessThanPath(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
 }
 
 fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -259,4 +326,109 @@ test "declarative scanner reads markdown-basics and theme-defaults" {
     const theme = registry.theme("Dark+") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("vs-dark", theme.ui_theme);
     try std.testing.expect(std.mem.endsWith(u8, theme.path, "dark_plus.json"));
+}
+
+test "declarative scanner reads a directory of bundled extensions" {
+    const allocator = std.testing.allocator;
+    var registry = try scan(allocator, &.{"../vscode/extensions"});
+    defer registry.deinit();
+    if (registry.extensions.len == 0) return error.SkipZigTest;
+
+    // A full checkout also contains the `copilot` manifest, which contributes
+    // `markdown` without a configuration. The scanner must still select the
+    // markdown-basics contribution so the language configuration and grammar
+    // keep working.
+    const markdown = registry.language("markdown") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(markdown.configuration != null);
+    try std.testing.expect(std.mem.endsWith(u8, markdown.root, "markdown-basics"));
+
+    const grammar = registry.grammarForLanguage("markdown") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("text.html.markdown", grammar.scope);
+    try std.testing.expect(std.mem.endsWith(u8, grammar.root, "markdown-basics"));
+
+    const theme = registry.theme("Dark+") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("vs-dark", theme.ui_theme);
+}
+
+test "declarative scanner keeps duplicate language contributions and selects the configured one" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "first");
+    try tmp.dir.createDirPath(io, "second");
+    try tmp.dir.createDirPath(io, "third");
+    try writeTestManifest(&tmp, io, "first",
+        \\{
+        \\  "name": "markdown-copy",
+        \\  "version": "1.0.0",
+        \\  "publisher": "example",
+        \\  "engines": { "vscode": "*" },
+        \\  "contributes": {
+        \\    "languages": [
+        \\      { "id": "markdown", "extensions": [".copy"] }
+        \\    ]
+        \\  }
+        \\}
+    );
+    try writeTestManifest(&tmp, io, "second",
+        \\{
+        \\  "name": "markdown-basics",
+        \\  "version": "1.0.0",
+        \\  "publisher": "example",
+        \\  "engines": { "vscode": "*" },
+        \\  "contributes": {
+        \\    "languages": [
+        \\      {
+        \\        "id": "markdown",
+        \\        "extensions": [".md"],
+        \\        "configuration": "./language-configuration.json"
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    );
+    try writeTestManifest(&tmp, io, "third",
+        \\{
+        \\  "name": "markdown-grammar",
+        \\  "version": "1.0.0",
+        \\  "publisher": "example",
+        \\  "engines": { "vscode": "*" },
+        \\  "contributes": {
+        \\    "grammars": [
+        \\      {
+        \\        "language": "markdown",
+        \\        "scopeName": "text.html.markdown",
+        \\        "path": "./syntaxes/markdown.tmLanguage.json"
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    );
+
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(io, &path_buffer);
+    var registry = try scan(allocator, &.{path_buffer[0..path_len]});
+    defer registry.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), registry.extensions.len);
+    try std.testing.expectEqual(@as(usize, 2), registry.languages.len);
+
+    const markdown = registry.language("markdown") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(markdown.configuration != null);
+    try std.testing.expect(std.mem.endsWith(u8, markdown.root, "second"));
+
+    // The grammar comes from a third extension. Consumers must resolve its
+    // path against `grammar.root`, not the language contribution's root.
+    const grammar = registry.grammarForLanguage("markdown") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.endsWith(u8, grammar.root, "third"));
+}
+
+fn writeTestManifest(tmp: *std.testing.TmpDir, io: std.Io, directory: []const u8, text: []const u8) !void {
+    const path = try std.fs.path.join(std.testing.allocator, &.{ directory, "package.json" });
+    defer std.testing.allocator.free(path);
+    var file = try tmp.dir.createFile(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, text);
 }

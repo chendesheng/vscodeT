@@ -978,12 +978,22 @@ manifest JSONC, NLS placeholders skipped, and the `languages`, `grammars`,
 consumed by the editor yet. Full `extensionValidator`, profile scanning and
 NLS resolution remain deferred.
 
-Scan roots: bundled extensions, the user extensions directory
+Scan roots may be an extension directory or a directory of extensions (for
+example `../vscode/extensions`): a root without a valid extension manifest is
+scanned one level deep, keeping direct child directories that contain a
+`package.json` in path order. Bundled extensions, the user extensions directory
 (`~/.local/share/zig-editor/extensions/<publisher>.<name>-<version>/`), and
-every `--extension-development-path`. For each directory we read
-`package.json`, normalise the identifier, apply defaults, validate with
+every `--extension-development-path` are scanned this way. For each extension
+we read `package.json`, normalise the identifier, apply defaults, validate with
 `extensionValidator`, and keep the manifest JSON arena for the process
 lifetime because contribution values borrow from it.
+
+When several extensions contribute the same language id, VS Code merges their
+contribution fields. `Registry.language` returns the contribution that carries
+a `configuration` file as the primary definition (falling back to the first
+contribution), so a configuration-less contribution cannot hide the upstream
+language configuration. The editor still registers every raw contribution's
+associations, so extensions and filenames from all of them apply.
 
 The description the host receives is `IRelaxedExtensionManifest` plus the
 resolved identity: `identifier` (`ExtensionIdentifier` with optional `uuid`),
