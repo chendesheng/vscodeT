@@ -1049,6 +1049,12 @@ pub const TextModel = struct {
         self._commandManager.popStackElement();
     }
 
+    /// Drops the undo/redo history. Upstream does this from
+    /// `_setValueFromTextBuffer` when a snapshot replaces the buffer.
+    pub fn clearUndoRedo(self: *TextModel) void {
+        self._commandManager.clear();
+    }
+
     pub fn pushEOL(self: *TextModel, eol: EOL) !void {
         const currentEOL = self.getEOL();
         if (currentEOL == eol) {
@@ -1104,7 +1110,7 @@ pub const TextModel = struct {
         return result;
     }
 
-    pub fn pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations: []IdentifiedSingleEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
+    pub fn pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations: []IdentifiedSingleEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?*UndoRedoGroup) !?[]Selection {
         self._onDidChangeDecorations.beginDeferredEmit();
         defer self._onDidChangeDecorations.endDeferredEmit();
 
@@ -1116,7 +1122,7 @@ pub const TextModel = struct {
         return try self._pushEditOperations(beforeCursorState, ops, cursorStateComputer, group);
     }
 
-    fn _pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations_: ArrayList(ValidAnnotatedEditOperation), cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
+    fn _pushEditOperations(self: *TextModel, beforeCursorState: ?[]Selection, editOperations_: ArrayList(ValidAnnotatedEditOperation), cursorStateComputer: ?CursorStateComputer, group: ?*UndoRedoGroup) !?[]Selection {
         var editOperations = editOperations_;
         if (self._options.trimAutoWhitespace and self._trimAutoWhitespaceLines != null) {
             // Go through each saved line number and insert a trim whitespace edit
@@ -2162,7 +2168,8 @@ test "TextModel.pushEditOperations" {
     var opts = [_]IdentifiedSingleEditOperation{
         .init(Range.init(1, 1, 1, 6), String.initBorrowed("yo")),
     };
-    _ = try textModel.pushEditOperations(null, &opts, null, UndoRedoGroup.init());
+    var group = UndoRedoGroup.init();
+    _ = try textModel.pushEditOperations(null, &opts, null, &group);
 
     const line = try textModel.getLineContent(1);
     defer line.deinit();
@@ -2176,6 +2183,164 @@ test "TextModel.pushEditOperations" {
     const line2 = try textModel.getLineContent(1);
     defer line2.deinit();
     try std.testing.expectEqualStrings("yo, world!", line2.items);
+}
+
+test "UndoRedoService.restoreSnapshot keeps the recorded elements" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "a", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    for ([_][]const u8{ "b", "c", "d" }) |text| {
+        var ops = [_]IdentifiedSingleEditOperation{
+            .init(Range.init(1, 2, 1, 2), String.initBorrowed(text)),
+        };
+        _ = try textModel.pushEditOperations(null, &ops, null, null);
+        textModel.pushStackElement();
+    }
+
+    var snapshot = try undoRedoService.createSnapshot(textModel.uri());
+    defer snapshot.deinit();
+
+    // Restoring the snapshot from a split past/future state must keep the
+    // chronological element order and not drop the redo side.
+    try textModel.undo();
+    try textModel.undo();
+    var future_snapshot = try undoRedoService.createSnapshot(textModel.uri());
+    defer future_snapshot.deinit();
+    try undoRedoService.restoreSnapshot(future_snapshot);
+    var split_elements = try undoRedoService.getElements(textModel.uri());
+    defer split_elements.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), split_elements.past.len);
+    try std.testing.expectEqual(@as(usize, 2), split_elements.future.len);
+    try textModel.redo();
+    try textModel.redo();
+
+    // Move one element into the future and then back before restoring the
+    // snapshot: all three elements still match, so the stack must be intact.
+    try textModel.undo();
+    try textModel.redo();
+    try undoRedoService.restoreSnapshot(snapshot);
+    var elements = try undoRedoService.getElements(textModel.uri());
+    defer elements.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), elements.past.len);
+    try std.testing.expectEqual(@as(usize, 0), elements.future.len);
+
+    // A new edit is not part of the snapshot and gets dropped by a restore.
+    var ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 2, 1, 2), String.initBorrowed("e")),
+    };
+    _ = try textModel.pushEditOperations(null, &ops, null, null);
+    textModel.pushStackElement();
+    try undoRedoService.restoreSnapshot(snapshot);
+    var restored = try undoRedoService.getElements(textModel.uri());
+    defer restored.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), restored.past.len);
+    try std.testing.expectEqual(@as(usize, 0), restored.future.len);
+}
+
+test "TextModel.clearUndoRedo drops the history" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "hello", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 6, 1, 6), String.initBorrowed("!")),
+    };
+    _ = try textModel.pushEditOperations(null, &ops, null, null);
+    try std.testing.expect(try textModel.canUndo());
+
+    textModel.clearUndoRedo();
+    try std.testing.expect(!try textModel.canUndo());
+    try std.testing.expect(!try textModel.canRedo());
+}
+
+test "TextModel.pushEditOperations: multi-line batch maps raw line changes" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "a\nb\nc\nd", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    // The first edit removes a line and the second one changes the then-last
+    // line: the raw change line number differs from the old model line, which
+    // used to throw while applying the batch and lose the undo entry.
+    var ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 1, 2, 1), null),
+        .init(Range.init(4, 2, 4, 2), String.initBorrowed("X")),
+    };
+    _ = try textModel.pushEditOperations(null, &ops, null, null);
+
+    const after = try textModel.getValue(.LF, false);
+    defer after.deinit();
+    try std.testing.expectEqualStrings("b\nc\ndX", after.items);
+
+    try textModel.undo();
+    const undone = try textModel.getValue(.LF, false);
+    defer undone.deinit();
+    try std.testing.expectEqualStrings("a\nb\nc\nd", undone.items);
+
+    try textModel.redo();
+    const redone = try textModel.getValue(.LF, false);
+    defer redone.deinit();
+    try std.testing.expectEqualStrings("b\nc\ndX", redone.items);
+}
+
+test "TextModel.pushEOL is undoable" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "a\r\nb", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+    try std.testing.expectEqual(EOL.CRLF, textModel.getEOL());
+
+    try textModel.pushEOL(.LF);
+    try std.testing.expectEqual(EOL.LF, textModel.getEOL());
+    const changed = try textModel.getValue(.TextDefined, false);
+    defer changed.deinit();
+    try std.testing.expectEqualStrings("a\nb", changed.items);
+
+    try textModel.undo();
+    try std.testing.expectEqual(EOL.CRLF, textModel.getEOL());
+    const undone = try textModel.getValue(.TextDefined, false);
+    defer undone.deinit();
+    try std.testing.expectEqualStrings("a\r\nb", undone.items);
+
+    try textModel.redo();
+    try std.testing.expectEqual(EOL.LF, textModel.getEOL());
+}
+
+test "TextModel.pushEditOperations: lone CR before CRLF is normalized" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "a\r\nb", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+    try std.testing.expectEqual(EOL.CRLF, textModel.getEOL());
+
+    // The replacement ends with a lone CR at the end of line 1. It must not
+    // be inserted before the existing CRLF.
+    var ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 2, 1, 2), String.initBorrowed("x\r")),
+    };
+    _ = try textModel.pushEditOperations(null, &ops, null, null);
+
+    const after = try textModel.getValue(.TextDefined, false);
+    defer after.deinit();
+    try std.testing.expectEqualStrings("ax\r\nb", after.items);
+
+    try textModel.undo();
+    const undone = try textModel.getValue(.TextDefined, false);
+    defer undone.deinit();
+    try std.testing.expectEqualStrings("a\r\nb", undone.items);
 }
 
 pub fn indentOfLine(line: []const u8) usize {

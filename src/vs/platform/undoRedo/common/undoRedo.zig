@@ -7,7 +7,7 @@ pub const ResourceEditStackSnapshot = struct {
     resource: Uri,
     elements: ArrayList(u64),
 
-    pub fn deinit(self: *const ResourceEditStackSnapshot) void {
+    pub fn deinit(self: *ResourceEditStackSnapshot) void {
         self.elements.deinit();
     }
 };
@@ -41,8 +41,13 @@ pub const UndoRedoGroup = struct {
 };
 
 pub const PastFutureElements = struct {
-    past: []const EditStackElement,
-    future: []const EditStackElement,
+    past: []const *const EditStackElement,
+    future: []const *const EditStackElement,
+
+    pub fn deinit(self: *PastFutureElements, allocator: std.mem.Allocator) void {
+        allocator.free(self.past);
+        allocator.free(self.future);
+    }
 };
 
 pub const UndoRedoSource = struct {

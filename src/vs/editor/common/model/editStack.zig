@@ -47,10 +47,10 @@ pub const EditStackElement = union(enum) {
         }
     }
 
-    pub fn open(self: *EditStackElement) void {
+    pub fn open(self: *EditStackElement) !void {
         switch (self.*) {
             .singleModel => |*singleModel| {
-                singleModel.open();
+                try singleModel.open();
             },
             .multiModel => {},
         }
@@ -312,16 +312,12 @@ pub const SingleModelEditStackDataUnserialized = struct {
             const selectionStartColumn = try b.takeInt(u32, .big);
             const positionLineNumber = try b.takeInt(u32, .big);
             const positionColumn = try b.takeInt(u32, .big);
-            try dest.append(Selection{
-                .startLineNumber = 0,
-                .startColumn = 0,
-                .endLineNumber = 0,
-                .endColumn = 0,
-                .selectionStartLineNumber = selectionStartLineNumber,
-                .selectionStartColumn = selectionStartColumn,
-                .positionLineNumber = positionLineNumber,
-                .positionColumn = positionColumn,
-            });
+            try dest.append(Selection.init(
+                selectionStartLineNumber,
+                selectionStartColumn,
+                positionLineNumber,
+                positionColumn,
+            ));
         }
     }
 
@@ -518,10 +514,8 @@ pub const SingleModelEditStackElement = struct {
     }
 
     pub fn close(self: *SingleModelEditStackElement) !void {
-        var data = self._data;
-        switch (data) {
+        switch (self._data) {
             .unserialized => |*dat| {
-                errdefer dat.deinit();
                 const serialized = try dat.serialize();
                 dat.deinit();
                 self._data = .{ .serialized = serialized };
@@ -530,12 +524,13 @@ pub const SingleModelEditStackElement = struct {
         }
     }
 
-    pub fn open(self: *SingleModelEditStackElement) void {
+    pub fn open(self: *SingleModelEditStackElement) !void {
         switch (self._data) {
             .serialized => |data| {
                 const allocator = self.allocator;
-                self._data = try SingleModelEditStackDataUnserialized.deserialize(allocator, data.items);
+                const unserialized = try SingleModelEditStackDataUnserialized.deserialize(allocator, data.items);
                 allocator.free(data);
+                self._data = .{ .unserialized = unserialized };
             },
             .unserialized => {},
         }
@@ -642,14 +637,16 @@ pub const MultiModelEditStackElement = struct {
 
     _isOpen: bool,
     _editStackElementsArr: ArrayList(SingleModelEditStackElement),
-    _editStackElementsMap: UriHashMap(SingleModelEditStackElement),
+    // Points into `_editStackElementsArr`, mirroring upstream's map of the
+    // same objects. The array is fixed after `init`.
+    _editStackElementsMap: UriHashMap(*SingleModelEditStackElement),
     _delegate: ?UndoRedoDelegate,
 
     pub fn init(allocator: Allocator, label: []const u8, code: []const u8, editStackElements: []SingleModelEditStackElement) !MultiModelEditStackElement {
-        const editStackElementsMap = UriHashMap(SingleModelEditStackElement).init(allocator);
+        const editStackElementsMap = UriHashMap(*SingleModelEditStackElement).init(allocator);
         const arr = ArrayList(SingleModelEditStackElement).init(allocator);
         try arr.appendSlice(editStackElements);
-        for (arr.items) |item| {
+        for (arr.items) |*item| {
             try editStackElementsMap.put(item.resource(), item);
         }
         return MultiModelEditStackElement{
@@ -697,8 +694,7 @@ pub const MultiModelEditStackElement = struct {
 
     pub fn resources(self: *const MultiModelEditStackElement) !ArrayList(Uri) {
         var result = ArrayList(Uri).init(self.allocator);
-        var iter = self._editStackElementsMap.valueIterator();
-        while (iter.next()) |item| {
+        for (self._editStackElementsArr.items) |*item| {
             try result.append(item.resource());
         }
         return result;
@@ -726,7 +722,7 @@ pub const MultiModelEditStackElement = struct {
     }
 
     pub fn append(self: *MultiModelEditStackElement, model: *const TextModel, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
-        if (self._editStackElementsMap.getPtr(model.uri())) |editStackElement| {
+        if (self._editStackElementsMap.get(model.uri())) |editStackElement| {
             try editStackElement.append(textChanges, afterEOL, afterVersionId, afterCursorState);
         }
     }
@@ -749,9 +745,9 @@ pub const MultiModelEditStackElement = struct {
         }
     }
 
-    pub fn heapSize(self: *const MultiModelEditStackElement, resourceUri: Uri) usize {
+    pub fn heapSize(self: *const MultiModelEditStackElement, resourceUri: Uri) !usize {
         if (self._editStackElementsMap.get(resourceUri)) |editStackElement| {
-            return editStackElement.heapSize();
+            return try editStackElement.heapSize();
         }
         return 0;
     }
@@ -811,15 +807,15 @@ pub const EditStack = struct {
 
     pub fn popStackElement(self: *EditStack) void {
         if (self._undoRedoService.getLastElement(self.textModel().uri()) catch null) |lastElement| {
-            lastElement.open();
+            lastElement.open() catch {};
         }
     }
 
     pub fn clear(self: *EditStack) void {
-        self._undoRedoService.removeElements(self.textModel().uri());
+        self._undoRedoService.removeElements(self.textModel().uri()) catch {};
     }
 
-    fn _getOrCreateEditStackElement(self: *EditStack, beforeCursorState: ?[]Selection, group: ?UndoRedoGroup) !*EditStackElement {
+    fn _getOrCreateEditStackElement(self: *EditStack, beforeCursorState: ?[]Selection, group: ?*UndoRedoGroup) !*EditStackElement {
         if (try self._undoRedoService.getLastElement(self.textModel().uri())) |lastElement| {
             if (lastElement.canAppend(self.textModel())) {
                 return lastElement;
@@ -836,10 +832,10 @@ pub const EditStack = struct {
     pub fn pushEOL(self: *EditStack, eol: EOL) !void {
         const editStackElement = try self._getOrCreateEditStackElement(null, null);
         try self.textModel().setEOL(eol);
-        try editStackElement.append(self.textModel(), &[_]TextChange{}, eol, self.textModel().getVersionId(), null);
+        try editStackElement.append(self.textModel(), &[_]TextChange{}, self.textModel().getEOL(), self.textModel().getAlternativeVersionId(), null);
     }
 
-    pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []ValidAnnotatedEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?UndoRedoGroup) !?[]Selection {
+    pub fn pushEditOperation(self: *EditStack, beforeCursorState: ?[]Selection, editOperations: []ValidAnnotatedEditOperation, cursorStateComputer: ?CursorStateComputer, group: ?*UndoRedoGroup) !?[]Selection {
         var editStackElement = try self._getOrCreateEditStackElement(beforeCursorState, group);
         var inverseEditOperations = (try self.textModel().applyValidatedEdits(editOperations, true)).?;
         defer {
