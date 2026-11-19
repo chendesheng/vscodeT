@@ -16,6 +16,7 @@ pub const input = @import("input.zig");
 pub const inputbox = @import("inputbox.zig");
 pub const layout = @import("layout.zig");
 pub const paint = @import("paint.zig");
+pub const screen = @import("screen.zig");
 pub const scroll_view = @import("scroll_view.zig");
 pub const style = @import("style.zig");
 pub const surface = @import("surface.zig");

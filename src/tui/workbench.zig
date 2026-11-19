@@ -38,7 +38,6 @@ const grid_mod = @import("../vs/base/browser/ui/grid/grid.zig");
 const editor_drop_target = @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig");
 const editor_group_view = @import("../vs/workbench/browser/parts/editor/editorGroupView.zig");
 const editor_part = @import("../vs/workbench/browser/parts/editor/editorPart.zig");
-const tui = @import("./tui.zig");
 const Tab = @import("../vs/workbench/browser/parts/editor/editorPane.zig").Tab;
 const FileEditorInput = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const FileEditorSerializer = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorSerializer;
@@ -3820,10 +3819,10 @@ pub const Workbench = struct {
 
     pub fn syncCursor(self: *Workbench, out: *std.Io.Writer) !void {
         if (self.cursorCell()) |cell| {
-            try tui.moveCursor(out, .{ .row = cell.row + 1, .col = cell.col + 1 });
-            try tui.showCursor(out);
+            try ui.screen.moveCursor(out, cell.row + 1, cell.col + 1);
+            try ui.screen.showCursor(out);
         } else {
-            try tui.hideCursor(out);
+            try ui.screen.hideCursor(out);
         }
     }
 };
