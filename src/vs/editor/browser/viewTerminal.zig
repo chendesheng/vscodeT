@@ -37,6 +37,7 @@ const std = @import("std");
 const ui = @import("ui");
 
 const Editor = @import("./widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const TerminalViewHost = @import("./widget/codeEditor/terminalViewHost.zig").TerminalViewHost;
 const tokenization = @import("../common/tokenizationRegistry.zig");
 const time_compat = @import("../../base/common/timeCompat.zig");
 const CursorColumns = @import("../common/core/cursorColumns.zig").CursorColumns;
@@ -267,6 +268,9 @@ pub const View = struct {
     needs_rebuild: bool = true,
     /// Diagnostic counter for tests/benchmarks: full document rebuilds.
     rebuild_count: usize = 0,
+    /// Bridges the terminal editor to the ported `ViewLines` stack. The
+    /// renderer below consumes its rendered line records.
+    terminal_view_host: *TerminalViewHost,
 
     const LineEntry = struct {
         node: *ui.Node,
@@ -326,7 +330,10 @@ pub const View = struct {
             .content_entries = std.array_list.Managed(ContentEntry).init(allocator),
             .overlay_entries = std.array_list.Managed(WidgetRect).init(allocator),
             .line_entries = std.array_list.Managed(LineEntry).init(allocator),
+            .terminal_view_host = undefined,
         };
+        self.terminal_view_host = try TerminalViewHost.init(allocator, editor);
+        errdefer self.terminal_view_host.deinit();
         errdefer self.overlays.deinit();
         errdefer self.content_widgets.deinit();
         errdefer self.content_entries.deinit();
@@ -348,6 +355,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.terminal_view_host.deinit();
         self.line_entries.deinit();
         self.overlay_entries.deinit();
         self.content_entries.deinit();
@@ -984,6 +992,10 @@ pub const View = struct {
         const tab_size = editor.tabSize();
         const indent_size = @max(editor.indentSize(), 1);
 
+        if (top <= total) {
+            try self.terminal_view_host.renderRange(top, @min(total, top + text_height -| 1));
+        }
+
         var guide_counts: []usize = &.{};
         var guide_start_model_line: usize = 0;
         var guide_end_model_line: usize = 0;
@@ -1199,48 +1211,23 @@ pub const View = struct {
             });
 
             const data = try editor.viewLineData(view_line);
+            const rendered_line = self.terminal_view_host.getRenderedLine(view_line) orelse continue;
+            const rendered = rendered_line.rendered;
 
             const model_content = try editor.model.getLineContent(model_line);
             defer model_content.deinit();
 
             // Bracket and find ranges are model columns; clip them to this
-            // wrapped segment's model span before mapping to cells. Without
-            // this, a range on another segment maps to cell zero of every
-            // continuation line.
+            // wrapped segment's model span before mapping to cells. The ported
+            // `ViewLine` path will take these over once the terminal view model
+            // exposes view-space inline decorations.
             const segment_start_column = editor.modelColumnOfViewPosition(view_line, data.minColumn);
             const segment_end_column = editor.modelColumnOfViewPosition(view_line, data.maxColumn);
             const line_start_offset = editor.model.getOffsetAt(Position.init(model_line, 1));
             const segment_start_offset = editor.model.getOffsetAt(Position.init(model_line, segment_start_column)) - line_start_offset;
             const segment_end_offset = editor.model.getOffsetAt(Position.init(model_line, segment_end_column)) - line_start_offset;
 
-            // Upstream `ViewLine` filters the inline model decorations for the
-            // line and clips them to the wrapped segment before rendering.
-            const wrapped_decorations = try self.segmentLineDecorations(
-                model_line,
-                segment_start_offset,
-                segment_end_offset,
-            );
-            defer self.allocator.free(wrapped_decorations);
-
-            // `data.content` includes the synthetic wrap indentation, while
-            // `extractWrapped` returns columns relative to the model segment.
-            // Shift them onto the rendered line, as upstream `ViewLine` does
-            // with the wrapping indent offset.
             const indent_cells = data.minColumn - 1;
-            for (wrapped_decorations) |*decoration| {
-                decoration.startColumn += indent_cells;
-                decoration.endColumn += indent_cells;
-            }
-
-            const rendered = try line_renderer.renderLine(self.allocator, .{
-                .content = data.content,
-                .tokens = data.tokens,
-                .tab_size = tab_size,
-                .start_visible_column = data.startVisibleColumn,
-                .line_decorations = wrapped_decorations,
-            });
-            defer rendered.deinit(self.allocator);
-
             const line_width = doc.measureText(rendered.bytes);
             const flags = try self.allocator.alloc(u32, @max(line_width, 1));
             defer self.allocator.free(flags);
@@ -1249,6 +1236,18 @@ pub const View = struct {
             markSelections(
                 states,
                 view_line,
+                model_content.items,
+                tab_size,
+                data.startVisibleColumn,
+                indent_cells,
+                line_width,
+                flags,
+            );
+            try self.markDecorations(
+                model_line,
+                segment_start_column,
+                segment_start_offset,
+                segment_end_offset,
                 model_content.items,
                 tab_size,
                 data.startVisibleColumn,
@@ -1351,6 +1350,46 @@ pub const View = struct {
             segment_start_offset,
             segment_end_offset,
         );
+    }
+
+    /// Applies inline model decorations to this wrapped view line. This is
+    /// the terminal flag projection of upstream `ViewLine` decorations; the
+    /// text/renderer path is already driven by the ported `ViewLine`.
+    fn markDecorations(
+        self: *View,
+        model_line: usize,
+        segment_start_column: usize,
+        segment_start_offset: usize,
+        segment_end_offset: usize,
+        model_content: []const u8,
+        tab_size: usize,
+        start_visible_column: usize,
+        indent_cells: usize,
+        line_width: usize,
+        flags: []u32,
+    ) !void {
+        const wrapped = try self.segmentLineDecorations(
+            model_line,
+            segment_start_offset,
+            segment_end_offset,
+        );
+        defer self.allocator.free(wrapped);
+
+        for (wrapped) |decoration| {
+            const bit = decorationBit(decoration.className) orelse continue;
+            const start_model_column = segment_start_column + decoration.startColumn - 1;
+            const end_model_column = segment_start_column + decoration.endColumn - 1;
+            var start = visibleOffset(model_content, start_model_column, tab_size, start_visible_column, indent_cells);
+            var end = visibleOffset(model_content, end_model_column, tab_size, start_visible_column, indent_cells);
+            if (start >= end) continue;
+            start = @min(start, line_width);
+            end = @min(end, line_width);
+
+            var cell = start;
+            while (cell < end and cell < flags.len) : (cell += 1) {
+                flags[cell] |= bit;
+            }
+        }
     }
 
     fn buildScrollbar(

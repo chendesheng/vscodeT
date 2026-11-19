@@ -130,6 +130,9 @@ pub const TerminalViewHost = struct {
             .lineHeight = 1,
         };
         const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
+        // The terminal view model owns one reusable line-content buffer.
+        // Retained render inputs would point at the previous line's data.
+        self.view_lines.invalidateRenderedInputs();
         try self.view_lines.renderLines(&viewport);
     }
 

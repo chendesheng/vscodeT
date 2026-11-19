@@ -225,6 +225,16 @@ pub const ViewLine = struct {
         return self.width;
     }
 
+    /// Drops the retained render input. The terminal adapter's line data
+    /// buffers are reused by the view model, so input slices cannot be
+    /// compared across frames; the host calls this before each render pass.
+    pub fn clearRenderedInput(self: *ViewLine) void {
+        if (self.rendered_view_line) |*rendered| rendered.deinit(self.allocator);
+        self.rendered_view_line = null;
+        self.width = 0;
+        self.is_maybe_invalid = true;
+    }
+
     /// Port of upstream `ViewLine.resetCachedWidth`: drop the measured width
     /// and force the next render to rebuild it.
     pub fn resetCachedWidth(self: *ViewLine) void {
