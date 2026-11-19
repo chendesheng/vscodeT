@@ -173,6 +173,14 @@ pub const TextEdit = struct {
     text: []const u8,
 };
 
+/// The most recent model change, used by the extension-host bridge to mirror
+/// the *actual* edit (including auto-indent and auto-closing text) instead of
+/// only the requested character.
+pub const LastContentChange = struct {
+    range: Range,
+    text: []u8,
+};
+
 /// The position of an applied edit after all edits in the batch were applied.
 pub const AppliedTextEdit = struct {
     start: Position,
@@ -246,6 +254,7 @@ pub const Editor = struct {
     prev_edit_operation_type: EditOperationType,
     pending_selection: [8]Selection,
     pending_selection_count: usize,
+    last_content_change: ?LastContentChange = null,
     tokens_need_refresh: bool,
     /// Whether multi-cursor paste spreads clipboard lines over cursors. The
     /// terminal has no settings service yet; upstream's default is `spread`.
@@ -879,6 +888,7 @@ pub const Editor = struct {
         if (self.keybindings) |service| service.deinit();
         self.shortcut_commands.deinit();
         self.on_did_change_dirty.deinit();
+        if (self.last_content_change) |change| self.allocator.free(change.text);
         self.allocator.free(self.path);
     }
 
@@ -894,9 +904,23 @@ pub const Editor = struct {
                 self.pending_selection_count = count;
             }
         }
+        if (event.contentChangedEvent.changes.items.len > 0) {
+            const change = event.contentChangedEvent.changes.items[0];
+            if (self.last_content_change) |old| self.allocator.free(old.text);
+            self.last_content_change = null;
+            if (self.allocator.dupe(u8, change.text.items())) |text| {
+                self.last_content_change = .{ .range = change.range, .text = text };
+            } else |_| {}
+        }
         self.refreshDirtyState();
         self.folding_dirty = true;
         for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
+    }
+
+    pub fn takeLastContentChange(self: *Editor) ?LastContentChange {
+        const change = self.last_content_change;
+        self.last_content_change = null;
+        return change;
     }
 
     /// Recomputes the dirty bit and emits the change event when it flips.
@@ -1891,6 +1915,12 @@ pub const Editor = struct {
 
     pub fn typeCharacter(self: *Editor, text: []const u8) !void {
         if (text.len == 0) return;
+        // `default:type` from the extension host sends a newline as text rather
+        // than going through the key handler; keep Enter's auto-indent for it.
+        if (std.mem.eql(u8, text, "\n")) {
+            try self.newline();
+            return;
+        }
         self.refreshAutoIndent();
 
         const selections = try self.getSelectionsCopy();
@@ -3793,6 +3823,26 @@ test "Editor: JSON Enter between braces indents and leaves the closing brace" {
     try std.testing.expectEqualStrings("{", line1.items);
     try std.testing.expectEqualStrings("    ", line2.items);
     try std.testing.expectEqualStrings("}", line3.items);
+    try std.testing.expectEqual(Position.init(2, 5), editor.modelCursorPosition());
+}
+
+test "Editor: extension-host newline typing honors JSON indentation" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "{\n}", "test.json", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(1, 2));
+    // `default:type` from the extension host inserts "\n" through typeCharacter.
+    try editor.typeCharacter("\n");
+
+    const line2 = try editor.model.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("    ", line2.items);
     try std.testing.expectEqual(Position.init(2, 5), editor.modelCursorPosition());
 }
 

@@ -59,11 +59,13 @@ const ActiveDocument = struct {
 pub const SelectionSource = enum {
     keyboard,
     mouse,
+    command,
 
     fn wireName(self: SelectionSource) []const u8 {
         return switch (self) {
             .keyboard => "keyboard",
             .mouse => "mouse",
+            .command => "command",
         };
     }
 };
@@ -76,6 +78,10 @@ pub const Extensions = struct {
     description: manager.ExtensionDescription,
     data_path: []u8,
     active: ?ActiveDocument = null,
+    /// Cursor produced by the last host-driven type. VSCodeVim computes its
+    /// own cursor from the requested text, which does not include automatic
+    /// indentation; ignore that one stale selection update.
+    pending_type_selection: ?Selection = null,
     vim_active: bool = false,
     decoration_count: usize = 0,
     status_entries: std.StringHashMap(OwnedStatus),
@@ -651,6 +657,9 @@ pub const Extensions = struct {
     fn invoke(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
+        // The type's stale selection update is the next request after a type;
+        // any other host action invalidates the guard.
+        if (!std.mem.eql(u8, method, "$trySetSelections")) self.pending_type_selection = null;
         if (std.mem.eql(u8, method, "$getInitialState")) {
             var state: std.json.ObjectMap = .empty;
             try state.put(arena, "isFocused", .{ .bool = true });
@@ -766,6 +775,17 @@ pub const Extensions = struct {
                     selections[index] = selectionFromJson(value) orelse .init(1, 1, 1, 1);
                 }
                 if (selections.len > 0) {
+                    if (self.pending_type_selection) |pending| {
+                        self.pending_type_selection = null;
+                        if (!sameSelection(pending, selections[0]) and
+                            isStaleAutoIndentSelection(editor, pending, selections[0]))
+                        {
+                            var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
+                            defer arena_instance.deinit();
+                            self.sendSelection(arena_instance.allocator(), .command) catch {};
+                            return .{ .json = .{ .bool = true } };
+                        }
+                    }
                     editor.setSelections(selections) catch {};
                     self.needs_render = true;
                 }
@@ -878,11 +898,21 @@ pub const Extensions = struct {
         const before = try editor.getSelections();
         defer editor.allocator.free(before);
         const start = if (before.len > 0) before[0].getStartPosition() else Position.init(1, 1);
+        self.pending_type_selection = null;
         try editor.typeCharacter(text);
+        const post_type = try editor.getSelections();
+        defer editor.allocator.free(post_type);
+        self.pending_type_selection = if (post_type.len > 0) post_type[0] else null;
+        const change = editor.takeLastContentChange();
+        defer if (change) |value| editor.allocator.free(value.text);
         const active = &(self.active orelse return);
         active.version += 1;
-        try self.sendModelChanged(arena, text, start, start);
-        try self.sendSelection(arena, .keyboard);
+        if (change) |value| {
+            try self.sendModelChanged(arena, value.text, value.range.getStartPosition(), value.range.getEndPosition());
+        } else {
+            try self.sendModelChanged(arena, text, start, start);
+        }
+        try self.sendSelection(arena, .command);
         self.needs_render = true;
     }
 
@@ -985,6 +1015,30 @@ pub const Extensions = struct {
         defer editor.allocator.free(selections);
         self.last_selections.clearRetainingCapacity();
         self.last_selections.appendSlice(selections) catch {};
+    }
+
+    /// VSCodeVim computes its post-type cursor from the requested text. When
+    /// auto-indent inserted extra whitespace, that cursor lands before the
+    /// indentation; keep the editor's real cursor instead.
+    fn isStaleAutoIndentSelection(editor: *Editor, pending: Selection, incoming: Selection) bool {
+        if (incoming.startLineNumber != pending.startLineNumber or
+            incoming.startColumn >= pending.startColumn or
+            incoming.startColumn != incoming.endColumn)
+        {
+            return false;
+        }
+        const line = editor.model.getLineContent(incoming.startLineNumber) catch return false;
+        defer line.deinit();
+        const prefix_end = @min(incoming.startColumn - 1, line.items.len);
+        for (line.items[0..prefix_end]) |ch| {
+            if (ch != ' ' and ch != '\t') return false;
+        }
+        return true;
+    }
+
+    fn sameSelection(a: Selection, b: Selection) bool {
+        return a.startLineNumber == b.startLineNumber and a.startColumn == b.startColumn and
+            a.endLineNumber == b.endLineNumber and a.endColumn == b.endColumn;
     }
 
     fn sameSelections(a: []const Selection, b: []const Selection) bool {

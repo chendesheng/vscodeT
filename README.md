@@ -107,7 +107,10 @@ are read, dot-directories are skipped, and VSCodeVim is selected by its
 identifier. Other extensions are scanned but not activated yet. The TUI
 starts the pinned host, mirrors the active tab as a document/editor, routes
 printable keys through the `type` command, and applies the extension's edits
-and selections back to the editor. VSCodeVim 1.32.4 insert/normal/visual
+and selections back to the editor. A host `default:type` newline goes through
+the same Enter/auto-indent path as the TUI key handler, and the bridge mirrors
+the actual edit (including inserted indentation) to the extension host.
+VSCodeVim 1.32.4 insert/normal/visual
 editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
 `o`/`O`, `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
 the status bar shows its mode entry.
