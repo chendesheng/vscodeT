@@ -14,6 +14,8 @@ const view_model = @import("../../../common/viewModel.zig");
 const view_context = @import("../../../common/viewModel/viewContext.zig");
 const viewport_data = @import("../../../common/viewLayout/viewLinesViewportData.zig");
 const view_lines_mod = @import("../../viewParts/viewLines/viewLines.zig");
+const view_model_decorations = @import("../../../common/viewModel/viewModelDecorations.zig");
+const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
 const editor_configuration = @import("../../../common/config/editorConfiguration.zig");
 const browser_config = @import("../../config/editorConfiguration.zig");
 const editor_options = @import("../../../common/config/editorOptions.zig");
@@ -28,6 +30,9 @@ const IViewModel = view_model.IViewModel;
 const IViewLayout = view_model.IViewLayout;
 const ViewportData = viewport_data.ViewportData;
 const ViewLines = view_lines_mod.ViewLines;
+const ViewModelDecorations = view_model_decorations.ViewModelDecorations;
+const InlineDecoration = @import("../../../common/viewModel/inlineDecorations.zig").InlineDecoration;
+const IViewModelLines = view_model_decorations.IViewModelLines;
 const ViewContext = view_context.ViewContext;
 const IColorTheme = theme_service.IColorTheme;
 
@@ -61,6 +66,60 @@ const TerminalColorTheme = struct {
     }
 };
 
+/// Upstream `IViewModelLines` adapter over the terminal projection.
+const LinesAdapter = struct {
+    editor: *Editor,
+    scratch: []ModelDecoration = &.{},
+
+    fn deinit(self: *LinesAdapter) void {
+        if (self.scratch.len > 0) self.editor.allocator.free(self.scratch);
+        self.scratch = &.{};
+    }
+
+    fn interface(self: *LinesAdapter) IViewModelLines {
+        return .{
+            .context = self,
+            .getDecorationsInRange = getDecorationsInRange,
+            .getViewLineMinColumn = getViewLineMinColumn,
+            .getViewLineMaxColumn = getViewLineMaxColumn,
+        };
+    }
+
+    fn getDecorationsInRange(
+        context: *anyopaque,
+        view_range: Range,
+        owner_id: i32,
+        filter_validation_decorations: bool,
+        _: bool,
+        only_minimap_decorations: bool,
+        only_margin_decorations: bool,
+    ) []const ModelDecoration {
+        const self: *LinesAdapter = @ptrCast(@alignCast(context));
+        if (self.scratch.len > 0) self.editor.allocator.free(self.scratch);
+        self.scratch = &.{};
+        const converter = self.editor.converter.interface();
+        const model_range = converter.convertViewRangeToModelRange(converter.context, view_range);
+        self.scratch = self.editor.model.getDecorationsInRange(
+            model_range,
+            @intCast(@max(owner_id, 0)),
+            filter_validation_decorations,
+            only_minimap_decorations,
+            only_margin_decorations,
+        ) catch return &.{};
+        return self.scratch;
+    }
+
+    fn getViewLineMinColumn(context: *anyopaque, line_number: usize) usize {
+        const self: *LinesAdapter = @ptrCast(@alignCast(context));
+        return self.editor.view_lines.getLineMinColumn(line_number);
+    }
+
+    fn getViewLineMaxColumn(context: *anyopaque, line_number: usize) usize {
+        const self: *LinesAdapter = @ptrCast(@alignCast(context));
+        return self.editor.view_lines.getLineMaxColumn(line_number);
+    }
+};
+
 /// Owns the terminal adapters and a ported `ViewLines` instance.
 pub const TerminalViewHost = struct {
     allocator: Allocator,
@@ -70,6 +129,8 @@ pub const TerminalViewHost = struct {
     theme: TerminalColorTheme,
     context: ViewContext,
     view_lines: ViewLines,
+    decorations: *ViewModelDecorations,
+    lines_adapter: LinesAdapter,
     offsets: std.ArrayListUnmanaged(f64) = .empty,
     selections: []Selection = &.{},
     max_line_width: f64 = 0,
@@ -86,6 +147,8 @@ pub const TerminalViewHost = struct {
             .theme = .{},
             .context = undefined,
             .view_lines = undefined,
+            .decorations = undefined,
+            .lines_adapter = undefined,
         };
 
         self.options.set(.lineHeight, 1);
@@ -97,12 +160,24 @@ pub const TerminalViewHost = struct {
             .context_menu_id = actions.menu_ids.EditorContext,
             .options = self.options.interface(),
         };
+        self.lines_adapter = .{ .editor = editor };
+        self.decorations = try ViewModelDecorations.create(
+            allocator,
+            0,
+            editor.model,
+            false,
+            false,
+            self.lines_adapter.interface(),
+            editor.converter.interface(),
+        );
         self.context = ViewContext.init(&self.configuration, self.theme.interface(), self.modelInterface());
         self.view_lines.init(allocator, &self.context);
         return self;
     }
 
     pub fn deinit(self: *TerminalViewHost) void {
+        self.decorations.destroy();
+        self.lines_adapter.deinit();
         self.view_lines.deinit();
         self.offsets.deinit(self.allocator);
         if (self.selections.len > 0) self.allocator.free(self.selections);
@@ -129,6 +204,7 @@ pub const TerminalViewHost = struct {
             .completelyVisibleEndLineNumber = end_line,
             .lineHeight = 1,
         };
+        self.decorations.onModelDecorationsChanged();
         const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
         // The terminal view model owns one reusable line-content buffer.
         // Retained render inputs would point at the previous line's data.
@@ -224,9 +300,21 @@ pub const TerminalViewHost = struct {
         const data = host(context).editor.viewLineData(line_number) catch return 0;
         return data.content.len;
     }
-    fn getViewportViewLineRenderingData(context: *anyopaque, _: Range, line_number: usize) anyerror!view_model.ViewLineRenderingData {
+    fn getViewportViewLineRenderingData(context: *anyopaque, visible_range: Range, line_number: usize) anyerror!view_model.ViewLineRenderingData {
         const self = host(context);
         const data = try self.editor.viewLineData(line_number);
+
+        var inline_decorations: []const InlineDecoration = &.{};
+        var has_variable_fonts = false;
+        const collection = try self.decorations.getDecorationsViewportData(visible_range);
+        const line_index = line_number -| visible_range.startLineNumber;
+        if (line_index < collection.inlineDecorations.len) {
+            inline_decorations = collection.inlineDecorations[line_index];
+        }
+        if (line_index < collection.hasVariableFonts.len) {
+            has_variable_fonts = collection.hasVariableFonts[line_index];
+        }
+
         return view_model.ViewLineRenderingData.init(
             data.minColumn,
             data.maxColumn,
@@ -235,11 +323,11 @@ pub const TerminalViewHost = struct {
             false,
             false,
             data.tokens,
-            data.inlineDecorations orelse &.{},
+            inline_decorations,
             self.editor.tabSize(),
             data.startVisibleColumn,
             TextDirection.LTR,
-            false,
+            has_variable_fonts,
         );
     }
     fn getViewLineContinuesWithWrappedLine(context: *anyopaque, line_number: usize) bool {
