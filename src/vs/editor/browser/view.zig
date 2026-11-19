@@ -17,6 +17,9 @@ const view_events = @import("../common/viewEvents.zig");
 const viewport_data = @import("../common/viewLayout/viewLinesViewportData.zig");
 const StringBuilder = @import("../common/core/stringBuilder.zig").StringBuilder;
 const view_lines_mod = @import("./viewParts/viewLines/viewLines.zig");
+const view_event_handler = @import("../common/viewEventHandler.zig");
+const ViewEventHandler = view_event_handler.ViewEventHandler;
+const ViewEvent = view_events.ViewEvent;
 const Position = @import("../common/core/position.zig").Position;
 const PositionAffinity = @import("../common/model.zig").PositionAffinity;
 
@@ -37,6 +40,8 @@ pub const View = struct {
     view_parts: std.array_list.Managed(*ViewPart),
     content_overlays: std.array_list.Managed(*DynamicViewOverlay),
     is_focused: bool = false,
+    handler: ViewEventHandler = .{},
+    should_render: bool = true,
 
     pub fn init(self: *View, allocator: Allocator, context: *ViewContext) void {
         self.* = .{
@@ -47,9 +52,12 @@ pub const View = struct {
             .content_overlays = std.array_list.Managed(*DynamicViewOverlay).init(allocator),
         };
         self.view_lines.init(allocator, context);
+        self.handler = ViewEventHandler.init(self, handlerCallbacks());
+        context.addEventHandler(&self.handler);
     }
 
     pub fn deinit(self: *View) void {
+        self.context.removeEventHandler(&self.handler);
         self.view_lines.deinit();
         self.view_parts.deinit();
         self.content_overlays.deinit();
@@ -140,6 +148,27 @@ pub const View = struct {
             should_render = overlay.handler.onFocusChanged(&event) or should_render;
         }
         return should_render;
+    }
+
+    /// Port of upstream `View.handleEvents`: dispatch the events to the view
+    /// handler and mark the view dirty so the host schedules a render.
+    pub fn handleEvents(self: *View, events: []const ViewEvent) void {
+        self.handler.handleEvents(events);
+        self.should_render = true;
+    }
+
+    /// Port of upstream `ViewEventHandler.shouldRender`.
+    pub fn shouldRender(self: *const View) bool {
+        return self.should_render;
+    }
+
+    pub fn forceRender(self: *View) void {
+        self.should_render = true;
+    }
+
+    /// Called by the host after a frame has been presented.
+    pub fn onDidRender(self: *View) void {
+        self.should_render = false;
     }
 
     pub fn prepareRender(self: *View, viewport: *const ViewportData) void {
@@ -267,6 +296,82 @@ pub const View = struct {
     }
 
     // --- end event fan-out
+
+    /// View event callbacks. Upstream `View` extends `ViewEventHandler`; the Zig
+    /// port uses the callback table and marks the view dirty on every event.
+    fn handlerCallbacks() view_event_handler.EventHandlerCallbacks {
+        return .{
+            .onConfigurationChanged = markDirtyConfiguration,
+            .onCursorStateChanged = markDirtyCursor,
+            .onDecorationsChanged = markDirtyDecorations,
+            .onFlushed = markDirtyFlushed,
+            .onFocusChanged = markDirtyFocus,
+            .onLinesChanged = markDirtyLines,
+            .onLinesDeleted = markDirtyLinesDeleted,
+            .onLinesInserted = markDirtyLinesInserted,
+            .onScrollChanged = markDirtyScroll,
+            .onThemeChanged = markDirtyTheme,
+            .onTokensChanged = markDirtyTokens,
+            .onZonesChanged = markDirtyZones,
+        };
+    }
+
+    fn markDirty(context: *anyopaque) *View {
+        const view: *View = @ptrCast(@alignCast(context));
+        view.should_render = true;
+        return view;
+    }
+
+    fn markDirtyConfiguration(context: *anyopaque, _: *const view_events.ViewConfigurationChangedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
+    fn markDirtyCursor(context: *anyopaque, _: *const view_events.ViewCursorStateChangedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
+    fn markDirtyDecorations(context: *anyopaque, _: *const view_events.ViewDecorationsChangedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
+    fn markDirtyFlushed(context: *anyopaque, _: *const view_events.ViewFlushedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
+    fn markDirtyFocus(context: *anyopaque, event: *const view_events.ViewFocusChangedEvent) bool {
+        const view = markDirty(context);
+        view.is_focused = event.isFocused;
+        return false;
+    }
+    fn markDirtyLines(context: *anyopaque, _: *const view_events.ViewLinesChangedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
+    fn markDirtyLinesDeleted(context: *anyopaque, _: *const view_events.ViewLinesDeletedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
+    fn markDirtyLinesInserted(context: *anyopaque, _: *const view_events.ViewLinesInsertedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
+    fn markDirtyScroll(context: *anyopaque, _: *const view_events.ViewScrollChangedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
+    fn markDirtyTheme(context: *anyopaque, event: *const view_events.ViewThemeChangedEvent) bool {
+        const view = markDirty(context);
+        view.context.theme.update(event.theme.*);
+        return false;
+    }
+    fn markDirtyTokens(context: *anyopaque, _: *const view_events.ViewTokensChangedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
+    fn markDirtyZones(context: *anyopaque, _: *const view_events.ViewZonesChangedEvent) bool {
+        _ = markDirty(context);
+        return false;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -495,4 +600,26 @@ test "view exposes line widths, cell offsets and width cache reset" {
     const parts = try view.getViewPartsToRender(allocator);
     defer allocator.free(parts);
     try testing.expectEqual(@as(usize, 0), parts.len);
+}
+
+test "view is a view event handler and schedules render on events" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    try fixture.init(allocator, "x");
+    defer fixture.deinit();
+
+    var view: View = undefined;
+    view.init(allocator, &fixture.context);
+    defer view.deinit();
+
+    try testing.expect(fixture.view_model.added_handlers >= 1);
+    try testing.expect(view.shouldRender());
+    view.onDidRender();
+    try testing.expect(!view.shouldRender());
+
+    view.handleEvents(&[_]ViewEvent{
+        .{ .ViewFocusChanged = .{ .isFocused = true } },
+    });
+    try testing.expect(view.shouldRender());
+    try testing.expect(view.hasFocus());
 }
