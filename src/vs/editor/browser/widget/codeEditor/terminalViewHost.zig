@@ -15,6 +15,8 @@ const view_events = @import("../../../common/viewEvents.zig");
 const view_context = @import("../../../common/viewModel/viewContext.zig");
 const viewport_data = @import("../../../common/viewLayout/viewLinesViewportData.zig");
 const view_lines_mod = @import("../../viewParts/viewLines/viewLines.zig");
+const view_mod = @import("../../view.zig");
+const StringBuilder = @import("../../../common/core/stringBuilder.zig").StringBuilder;
 const view_model_decorations = @import("../../../common/viewModel/viewModelDecorations.zig");
 const line_numbers_mod = @import("../../viewParts/lineNumbers/lineNumbers.zig");
 const selections_mod = @import("../../viewParts/selections/selections.zig");
@@ -37,6 +39,7 @@ const IViewModel = view_model.IViewModel;
 const IViewLayout = view_model.IViewLayout;
 const ViewportData = viewport_data.ViewportData;
 const ViewLines = view_lines_mod.ViewLines;
+const View = view_mod.View;
 const ViewModelDecorations = view_model_decorations.ViewModelDecorations;
 const LineNumbersOverlay = line_numbers_mod.LineNumbersOverlay;
 const RenderedLineNumber = line_numbers_mod.RenderedLineNumber;
@@ -145,7 +148,8 @@ pub const TerminalViewHost = struct {
     configuration: editor_configuration.IEditorConfiguration,
     theme: TerminalColorTheme,
     context: ViewContext,
-    view_lines: ViewLines,
+    view: View,
+    scratch_text: StringBuilder,
     decorations: *ViewModelDecorations,
     line_numbers: LineNumbersOverlay,
     selections_overlay: SelectionsOverlay,
@@ -167,7 +171,8 @@ pub const TerminalViewHost = struct {
             .configuration = undefined,
             .theme = .{},
             .context = undefined,
-            .view_lines = undefined,
+            .view = undefined,
+            .scratch_text = undefined,
             .decorations = undefined,
             .line_numbers = undefined,
             .selections_overlay = undefined,
@@ -196,22 +201,30 @@ pub const TerminalViewHost = struct {
             editor.converter.interface(),
         );
         self.context = ViewContext.init(&self.configuration, self.theme.interface(), self.modelInterface());
-        self.view_lines.init(allocator, &self.context);
+        self.view.init(allocator, &self.context);
+        self.scratch_text = try StringBuilder.init(allocator, 256);
         self.line_numbers.init(allocator, &self.context);
         self.selections_overlay.init(allocator, &self.context);
         self.current_line.initContent(allocator, &self.context);
         self.view_cursors.init(allocator, &self.context);
+
+        // The ported `View` coordinates the render pass. Register the overlays
+        // as content overlays exactly like upstream `ContentViewOverlays`.
+        try self.view.addContentOverlay(&self.line_numbers.base);
+        try self.view.addContentOverlay(&self.selections_overlay.base);
+        try self.view.addContentOverlay(&self.current_line.base);
         return self;
     }
 
     pub fn deinit(self: *TerminalViewHost) void {
+        self.view.deinit();
+        self.scratch_text.deinit();
         self.view_cursors.deinit();
         self.current_line.deinit();
         self.selections_overlay.deinit();
         self.line_numbers.deinit();
         self.decorations.destroy();
         self.lines_adapter.deinit();
-        self.view_lines.deinit();
         self.offsets.deinit(self.allocator);
         if (self.selections.len > 0) self.allocator.free(self.selections);
         self.allocator.destroy(self);
@@ -225,7 +238,7 @@ pub const TerminalViewHost = struct {
         for (0..count) |i| self.offsets.items[i] = @floatFromInt(i);
 
         if (self.selections.len > 0) self.allocator.free(self.selections);
-        self.selections = try self.editor.getSelections();
+        self.selections = try self.editor.getViewSelections();
 
         const partial = view_model.IPartialViewLinesViewportData{
             .bigNumbersDelta = 0,
@@ -241,36 +254,44 @@ pub const TerminalViewHost = struct {
         const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
         // The terminal view model owns one reusable line-content buffer.
         // Retained render inputs would point at the previous line's data.
-        self.view_lines.invalidateRenderedInputs();
-        try self.view_lines.renderLines(&viewport);
+        self.view.getViewLines().invalidateRenderedInputs();
+        // The viewport is a stack value, so `ViewLines.last_viewport` must be
+        // refreshed on every pass before overlays query it.
+        self.view.getViewLines().forceShouldRender();
 
-        var rendering = RenderingContext.init(self.context.view_layout, &viewport, self.view_lines.interface());
         self.selections_overlay.setSelections(self.selections);
-        _ = self.current_line.base.handler.onCursorStateChanged(&view_events.ViewCursorStateChangedEvent{
+        const cursor_event = view_events.ViewCursorStateChangedEvent{
             .selections = self.selections,
             .modelSelections = self.selections,
             .reason = .NotSet,
-        });
-        self.line_numbers.prepareRender(&rendering);
-        self.selections_overlay.prepareRender(&rendering);
-        self.current_line.prepareRender(&rendering);
+        };
+        _ = self.current_line.base.handler.onCursorStateChanged(&cursor_event);
+        _ = self.view_cursors.base.handler.onCursorStateChanged(&cursor_event);
 
-        _ = self.view_cursors.base.handler.onCursorStateChanged(&view_events.ViewCursorStateChangedEvent{
-            .selections = self.selections,
-            .modelSelections = self.selections,
-            .reason = .NotSet,
-        });
+        // The terminal host has no view-event dispatch loop yet, so every
+        // overlay is dirty per frame. Upstream marks them dirty through the
+        // view event handler when the viewport or folding changes.
+        self.line_numbers.base.handler.forceShouldRender();
+        self.selections_overlay.base.handler.forceShouldRender();
+        self.current_line.base.handler.forceShouldRender();
+
+        // The ported `View` owns the render pass: it prepares content
+        // overlays, renders `ViewLines`, collects dirty parts and clears
+        // their dirty bits.
+        self.scratch_text.reset();
+        try self.view.renderText(&viewport, &self.scratch_text);
+        var rendering = RenderingContext.init(self.context.view_layout, &viewport, self.view.getViewLines().interface());
         self.view_cursors.prepareRender(&rendering);
         var restricted = RestrictedRenderingContext.init(self.context.view_layout, &viewport);
         self.view_cursors.render(&restricted);
     }
 
     pub fn getRenderedLine(self: *const TerminalViewHost, line_number: usize) ?*const @import("../../viewParts/viewLines/viewLine.zig").ViewLine.RenderedViewLine {
-        return self.view_lines.getRenderedViewLine(line_number);
+        return self.view.viewLinesConst().getRenderedViewLine(line_number);
     }
 
     pub fn getMaxLineWidth(self: *const TerminalViewHost) f64 {
-        return self.view_lines.getMaxLineWidth();
+        return self.view.viewLinesConst().getMaxLineWidth();
     }
 
     pub fn getLineNumber(self: *const TerminalViewHost, view_line: usize) ?*const RenderedLineNumber {
@@ -427,8 +448,8 @@ test "terminal view host renders lines through the ported ViewLines" {
     defer host.deinit();
 
     try host.renderRange(1, 2);
-    try std.testing.expectEqual(@as(usize, 5), host.view_lines.getLineWidth(1));
-    try std.testing.expectEqual(@as(usize, 6), host.view_lines.getLineWidth(2));
+    try std.testing.expectEqual(@as(usize, 5), host.view.getViewLines().getLineWidth(1));
+    try std.testing.expectEqual(@as(usize, 6), host.view.getViewLines().getLineWidth(2));
     try std.testing.expectEqual(@as(f64, 6), host.getMaxLineWidth());
     try std.testing.expectEqual(@as(f64, 6), host.max_line_width);
 

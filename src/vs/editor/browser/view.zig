@@ -75,6 +75,10 @@ pub const View = struct {
         return &self.view_lines;
     }
 
+    pub fn viewLinesConst(self: *const View) *const ViewLines {
+        return &self.view_lines;
+    }
+
     /// Port of upstream `View._getViewPartsToRender`: the view parts that
     /// currently need a render pass. The caller owns the returned slice.
     pub fn getViewPartsToRender(self: *View, allocator: Allocator) ![]*ViewPart {

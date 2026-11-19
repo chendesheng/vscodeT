@@ -2597,6 +2597,12 @@ pub const Editor = struct {
         return self.cursorsRef().getSelections(self.allocator);
     }
 
+    /// The selections in view coordinates, matching the selections upstream
+    /// dispatches to view parts.
+    pub fn getViewSelections(self: *Editor) ![]Selection {
+        return self.cursorsRef().getViewSelections(self.allocator);
+    }
+
     fn applyCommandResult(self: *Editor, after: ?[]Selection) !void {
         const selections = after orelse return;
         defer self.allocator.free(selections);
