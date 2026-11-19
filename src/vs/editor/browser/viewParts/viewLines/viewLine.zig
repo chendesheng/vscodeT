@@ -34,6 +34,8 @@ pub const ViewLine = struct {
     options: ViewLineOptions,
     is_maybe_invalid: bool = true,
     rendered_view_line: ?RenderedViewLine = null,
+    /// Width in terminal cells of the last rendered line.
+    width: usize = 0,
 
     /// Port of upstream `RenderedViewLine`: the input that produced the last
     /// render and the terminal runs it produced.
@@ -196,6 +198,7 @@ pub const ViewLine = struct {
         };
         errdefer rendered.deinit(self.allocator);
 
+        self.width = measureCells(rendered.bytes);
         if (self.rendered_view_line) |*previous| previous.deinit(self.allocator);
         self.rendered_view_line = .{
             .input = input,
@@ -219,8 +222,7 @@ pub const ViewLine = struct {
     }
 
     pub fn getWidth(self: *const ViewLine) usize {
-        const rendered = self.rendered_view_line orelse return 0;
-        return std.unicode.utf8CountCodepointsLossy(rendered.rendered.bytes);
+        return self.width;
     }
 
     pub fn getHeight(self: *const ViewLine) f64 {
@@ -237,6 +239,22 @@ pub const ViewLine = struct {
 
     pub fn setTop(self: *ViewLine, top: f64) void {
         if (self.rendered_view_line) |*rendered| rendered.delta_top = top;
+    }
+
+    /// Terminal `ViewLine` width in cells. The browser reads client rects; the
+    /// terminal uses the same codepoint widths the renderer lays out.
+    fn measureCells(text: []const u8) usize {
+        const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
+        var column: usize = 0;
+        var offset: usize = 0;
+        while (offset < text.len) {
+            const len = std.unicode.utf8ByteSequenceLength(text[offset]) catch 1;
+            const safe_len = @min(len, text.len - offset);
+            const cp = std.unicode.utf8Decode(text[offset .. offset + safe_len]) catch @as(u21, text[offset]);
+            offset += safe_len;
+            column = CursorColumns.nextVisibleColumn(cp, column, 1);
+        }
+        return column;
     }
 };
 
@@ -473,4 +491,20 @@ test "view line: renderWhitespace selection builds selection ranges" {
     try testing.expectEqual(@as(usize, 1), rendered.selection_ranges.len);
     try testing.expectEqual(@as(usize, 0), rendered.selection_ranges[0].start);
     try testing.expectEqual(@as(usize, 3), rendered.selection_ranges[0].endExclusive);
+}
+
+test "view line: width is measured in terminal cells" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    try fixture.init(allocator, "a\u{4E2D}b");
+    defer fixture.deinit();
+
+    const line_options = ViewLineOptions.init(&fixture.configuration, .DARK);
+    var line = ViewLine.init(allocator, &fixture.context, line_options);
+    defer line.deinit(allocator);
+
+    var sb = try StringBuilder.init(allocator, 8);
+    defer sb.deinit();
+    try testing.expect(line.renderLine(1, 0, 19, &fixture.viewport, &sb));
+    try testing.expectEqual(@as(usize, 4), line.getWidth());
 }

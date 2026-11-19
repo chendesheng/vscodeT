@@ -221,6 +221,22 @@ pub const ViewLines = struct {
         return self.last_viewport;
     }
 
+    /// Port of upstream `ViewLines.getCurrentVisibleRange`.
+    pub fn getCurrentVisibleRange(self: *const ViewLines) Range {
+        return self.last_visible_range;
+    }
+
+    /// Port of upstream `ViewLines.getLineWidth`, in terminal cells.
+    pub fn getLineWidth(self: *const ViewLines, line_number: usize) usize {
+        if (self.visible_lines.getStartLineNumber() == 0 or
+            line_number < self.visible_lines.getStartLineNumber() or
+            line_number > self.visible_lines.getEndLineNumber())
+        {
+            return 0;
+        }
+        return self.visible_lines.getVisibleLine(line_number).getWidth();
+    }
+
     // --- begin IViewLines
 
     pub fn interface(self: *ViewLines) IViewLines {
@@ -401,6 +417,9 @@ test "view lines renders the viewport and maps cell ranges" {
     defer sb.deinit();
     try lines.renderText(&fixture.viewport, &sb);
     try testing.expectEqualStrings("a   b", sb.build());
+    try testing.expectEqual(@as(usize, 5), lines.getLineWidth(1));
+    try testing.expectEqual(@as(usize, 0), lines.getLineWidth(2));
+    try testing.expectEqual(@as(usize, 1), lines.getCurrentVisibleRange().startLineNumber);
 
     const ranges = lines.linesVisibleRangesForRange(Range.init(1, 2, 1, 4), false).?;
     try testing.expectEqual(@as(usize, 1), ranges.len);
