@@ -3419,6 +3419,67 @@ test "Editor: a closing brace stays on the newly inserted line" {
     try std.testing.expectEqualStrings("/// comment", line4.items);
 }
 
+test "Editor: multi-cursor edit across shifted lines is undoable" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "a\nb\nc\nd", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    // One cursor removes the first line, the other edits the last line. The
+    // raw change for the last line is computed after the line count shifted.
+    try editor.setSelections(&[_]Selection{
+        Selection.init(1, 1, 2, 1),
+        Selection.init(4, 2, 4, 2),
+    });
+    try editor.insertText("X");
+
+    const after = try editor.model.getValue(.LF, false);
+    defer after.deinit();
+    try std.testing.expectEqualStrings("Xb\nc\ndX", after.items);
+
+    try editor.undo();
+    const undone = try editor.model.getValue(.LF, false);
+    defer undone.deinit();
+    try std.testing.expectEqualStrings("a\nb\nc\nd", undone.items);
+
+    try editor.redo();
+    const redone = try editor.model.getValue(.LF, false);
+    defer redone.deinit();
+    try std.testing.expectEqualStrings("Xb\nc\ndX", redone.items);
+}
+
+test "Editor: undo restores cursor state for following edits" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(1, 6));
+    try editor.insertText("X");
+    try std.testing.expectEqual(Position.init(1, 7), editor.modelCursorPosition());
+
+    try editor.undo();
+    const undone = try editor.model.getValue(.LF, false);
+    defer undone.deinit();
+    try std.testing.expectEqualStrings("hello", undone.items);
+    try std.testing.expectEqual(Position.init(1, 6), editor.modelCursorPosition());
+
+    // The restored selection must be usable by the next edit.
+    try editor.insertText("Y");
+    const retyped = try editor.model.getValue(.LF, false);
+    defer retyped.deinit();
+    try std.testing.expectEqualStrings("helloY", retyped.items);
+    try std.testing.expectEqual(Position.init(1, 7), editor.modelCursorPosition());
+}
+
 test "Editor: undo of grouped typing restores the original text" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
