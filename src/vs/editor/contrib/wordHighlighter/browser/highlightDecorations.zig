@@ -5,7 +5,7 @@
 // `selectionHighlight`) and maps a `DocumentHighlightKind` to one of them. The
 // terminal view paints ranges directly, so this file maps the kind to the
 // portable decoration kind instead. The matching cell colors live in
-// `viewTerminal.zig`; the classes keep the upstream names:
+// `src/tui/editorView.zig`; the classes keep the upstream names:
 //  * `wordHighlight`      read access, translucent gray;
 //  * `wordHighlightStrong` write access, translucent blue;
 //  * `wordHighlightText`  textual occurrence (default), same gray as read.

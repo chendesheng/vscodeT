@@ -1531,7 +1531,7 @@ The adapter is not greenfield; these are the exact seams that change:
   create a second picker.
 - `src/vs/workbench/browser/parts/statusbar/` — the ported status-bar model
   and part. `MainThreadStatusBar.$setEntry` adds an entry to the model, not to
-  `src/vs/editor/browser/viewTerminal.zig`.
+  `src/tui/editorView.zig`.
 - `src/vs/editor/common/model/tokens/textMateTokenizer.zig` and
   `src/vs/editor/standalone/browser/standaloneThemeService.zig` — grammar and theme targets. A contributed
   grammar registers a tokenizer for a language id; a contributed theme

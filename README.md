@@ -527,7 +527,7 @@ console API for raw mode, sizing and input polling.
   folder shows that folder as the Explorer root and starts with an empty
   editor group; files on the command line still open as tabs. Opening only
   files uses an empty workspace, as upstream does.
-- The editor is rendered through the library (`src/vs/editor/browser/viewTerminal.zig`): text,
+- The editor is rendered through the library (`src/tui/editorView.zig`): text,
   syntax colors, right-aligned line numbers, wrapped-line markers, selections,
   the current line and a hardware cursor. The workbench status bar is a
   full-width bottom row built from the ported

@@ -57,7 +57,7 @@ The biggest problem is not a missing port, it is a **second editor runtime**:
 - `src/tui/editor.zig` (~3,000 production lines) is not a widget; it owns the model,
   view model lines, cursor controller, command wrappers, folding, multicursor,
   status contribution, file save/reload and working-copy listeners.
-- `src/tui/view.zig` (2,043 code lines) collapses `View`, `ViewLayer`,
+- `src/tui/editorView.zig` (2,043 code lines) collapses `View`, `ViewLayer`,
   `ViewOverlays` and fourteen view parts into one rebuild-and-paint function.
 - The real ports already exist under `src/vs/editor/browser/`:
   `widget/codeEditor/codeEditorWidget.zig` (215), `view.zig` (385),

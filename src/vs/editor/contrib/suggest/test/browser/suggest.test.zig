@@ -126,7 +126,7 @@ test "SuggestController: widget renders below the caret and filters" {
     try editor.setCursorPosition(Position.init(2, 1));
     try editor.insertText("al");
 
-    const View = @import("../../../../browser/viewTerminal.zig").View;
+    const View = @import("../../../../../../tui/editorView.zig").View;
     const view = try View.init(allocator, editor);
     defer view.deinit();
 
@@ -433,7 +433,7 @@ test "SuggestController: resolved documentation appears in the details pane" {
     }
     try editor.setCursorPosition(Position.init(2, 2));
 
-    const View = @import("../../../../browser/viewTerminal.zig").View;
+    const View = @import("../../../../../../tui/editorView.zig").View;
     const view = try View.init(allocator, editor);
     defer view.deinit();
 

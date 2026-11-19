@@ -13,7 +13,7 @@ const Io = std.Io;
 
 const ui = @import("ui");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const View = @import("../../../../editor/browser/viewTerminal.zig").View;
+const View = @import("../../../../../tui/editorView.zig").View;
 const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
 const FindController = @import("../../../../editor/contrib/find/browser/findController.zig").FindController;

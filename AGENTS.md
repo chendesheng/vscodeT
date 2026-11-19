@@ -92,7 +92,7 @@ state that in the comment and keep the behavioral contract intact.
   `focus`/`blur` plus bubbling `focusin`/`focusout`; Tab is a default action,
   not a global shortcut. Keep these rules in the library, not in `src/tui/`.
 - TUI integration (terminal raw mode/read loop, status) stays in `src/tui/`.
-  `src/tui/view.zig` is the editor view on the `ui` tree: it owns the gutter,
+  `src/tui/editorView.zig` is the editor view on the `ui` tree: it owns the gutter,
   token runs, selection, cursor cell and status bar, and rebuilds the document
   through `Document.clear` so the `Surface` keeps its frame diff. The
   read-only `--preview` variant is `src/tui/preview.zig`.

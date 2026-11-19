@@ -7,7 +7,7 @@ Status: proposed design.
 This repository is a Zig 0.17 port of VS Code editor internals. The model,
 commands and contributions are ported; `src/tui/` contains the terminal
 frontend. The editor is now rendered through the standalone `ui` library
-(`src/vs/editor/browser/viewTerminal.zig`); the read-only `--preview` mode shares the same renderer.
+(`src/tui/editorView.zig`); the read-only `--preview` mode shares the same renderer.
 The next step is to port the browser-facing editor UI (`viewParts`, widgets,
 and the contributions in `src/vs/editor/contrib`) while keeping the code close
 to upstream.
@@ -773,7 +773,7 @@ Library constraints:
     `{ text, class_name, inline_style, metadata }` instead of HTML.
   - `src/vs/editor/common/tokenizationRegistry.zig` / a small adapter resolves token metadata to
     `ui.Style` colors and attributes (using the existing token color palette).
-- `src/vs/editor/browser/viewTerminal.zig` builds the editor view on the library:
+- `src/tui/editorView.zig` builds the editor view on the library:
   - Uses the existing `Editor`, `ProjectedViewModelLines`, and `viewLineData`
     to iterate visible view lines.
   - Creates a gutter column (right-aligned line numbers) and a text column; one
@@ -805,7 +805,7 @@ Library constraints:
   Not ported: DOM context menus, extension management, window-focus/inactive
   backgrounds, auxiliary/scoped status bars, storage persistence of hidden
   entries and codicon rendering.
-- `src/vs/editor/browser/viewTerminal.zig` remains the read-only `--preview` variant, adding
+- `src/tui/editorView.zig` remains the read-only `--preview` variant, adding
   Up/Down, PageUp/PageDown, Home/End and mouse-wheel scrolling.
 - Overlay widgets use the terminal adaptation of upstream `IOverlayWidget`
   in `src/vs/editor/browser/editorBrowser.zig`. A widget reports its size in
@@ -844,7 +844,7 @@ Library constraints:
   ranges, keeps collapse state and produces hidden model-line ranges;
   `ProjectedViewModelLines.setHiddenAreas` marks those projections invisible
   and updates the prefix sums, and the converter maps positions on hidden
-  lines to the preceding visible line. `src/vs/editor/browser/viewTerminal.zig` paints the last
+  lines to the preceding visible line. `src/tui/editorView.zig` paints the last
   gutter cell as `▾`/`▸` and makes it a `GUTTER_LINE_DECORATIONS` hit target;
   clicking it toggles the region. The first visible line of a collapsed region
   gets the upstream `…` suffix. The editor binds `Ctrl-Shift-[`/`]`,
@@ -1202,7 +1202,7 @@ approximated by the cursor position and block/inverse paint.
   mouse hit-testing, press-to-focus, wheel cancellation, and the terminal
   decoder (control keys, modifiers, paste, lone Escape, SGR mouse).
 - No view model or view-part architecture ports in this POC; the editor view
-  remains the collapsed `src/vs/editor/browser/viewTerminal.zig`. Cursor, selection and a two-cell
+  remains the collapsed `src/tui/editorView.zig`. Cursor, selection and a two-cell
   scrollbar/overview ruler are painted, but there is no generic scrollable
   viewport.
 
@@ -1217,7 +1217,7 @@ approximated by the cursor position and block/inverse paint.
 4. `viewLayer`, `viewPart`, `renderingContext`, `viewOverlays`,
    `viewLines`/`viewLine`, margin/lineNumbers/currentLineHighlight/selections/
    viewCursors; `TerminalView` orchestrator. The terminal editor view
-   (`src/vs/editor/browser/viewTerminal.zig`) already covers gutter, tokens, selection, cursor and
+   (`src/tui/editorView.zig`) already covers gutter, tokens, selection, cursor and
    status; the split into upstream-shaped view parts is still open.
 5. Generic scrollable viewport (`overflow: auto` boxes) and CSS-style
    `:hover`; cursor blink/timers; row damage bands and the `DECSTBM` +

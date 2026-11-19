@@ -10,7 +10,7 @@ const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
 const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const View = @import("../../../../browser/viewTerminal.zig").View;
+const View = @import("../../../../../../tui/editorView.zig").View;
 const editorBrowser = @import("../../../../browser/editorBrowser.zig");
 const FindController = @import("../../browser/findController.zig").FindController;
 

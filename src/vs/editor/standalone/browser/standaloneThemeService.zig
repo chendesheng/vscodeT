@@ -420,7 +420,7 @@ test "syntax theme: markdown inline code and bold use dark+ styles" {
 
 test "syntax theme: editor paints the dark+ colors" {
     const Editor = @import("../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-    const View = @import("../../browser/viewTerminal.zig").View;
+    const View = @import("../../../../tui/editorView.zig").View;
 
     var theme: SyntaxTheme = undefined;
     try theme.init(std.testing.allocator);

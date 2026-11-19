@@ -3251,7 +3251,7 @@ fn registerDeclarativeGrammar(io: Io, allocator: Allocator, root: []const u8, gr
 test "Editor: create, edit, undo, and render" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const View = @import("../../viewTerminal.zig").View;
+    const View = @import("../../../../../tui/editorView.zig").View;
 
     var editor = try Editor.createFromText(allocator, io, "hello world\nsecond line", "test.txt", 24, 6);
     defer {
@@ -3505,7 +3505,7 @@ test "Editor: missing file opens empty and save creates it" {
 test "Editor: tokenized Zig lines render through the wrapped view" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const View = @import("../../viewTerminal.zig").View;
+    const View = @import("../../../../../tui/editorView.zig").View;
 
     var editor = try Editor.createFromText(allocator, io, "// hi\nconst x = 1;\n", "test.zig", 40, 8);
     defer {
@@ -3529,7 +3529,7 @@ test "Editor: tokenized Zig lines render through the wrapped view" {
 test "Editor: syntax stays visible after inserting blank lines" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const View = @import("../../viewTerminal.zig").View;
+    const View = @import("../../../../../tui/editorView.zig").View;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -3608,7 +3608,7 @@ test "Editor: random edits release token storage" {
 test "Editor: typing a function keeps following comments highlighted" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const View = @import("../../viewTerminal.zig").View;
+    const View = @import("../../../../../tui/editorView.zig").View;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -4997,7 +4997,7 @@ test "Editor: reserving the scrollbar avoids a second wrapping pass" {
     try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
     try std.testing.expectEqual(@as(usize, 1), editor.view_lines.rebuildAllCount());
 
-    const View = @import("../../viewTerminal.zig").View;
+    const View = @import("../../../../../tui/editorView.zig").View;
     const view = try View.init(allocator, editor);
     defer view.deinit();
     // View.init still sets the same width; it must not trigger another wrap.
