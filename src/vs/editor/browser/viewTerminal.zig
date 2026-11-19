@@ -44,6 +44,7 @@ const Position = @import("../common/core/position.zig").Position;
 const Range = @import("../common/core/range.zig").Range;
 const Selection = @import("../common/core/selection.zig").Selection;
 const lineDecorations = @import("../common/viewLayout/lineDecorations.zig");
+const LineDecoration = lineDecorations.LineDecoration;
 const inlineDecorations = @import("../common/viewModel/inlineDecorations.zig");
 const InlineDecoration = inlineDecorations.InlineDecoration;
 const line_renderer = @import("../common/viewLayout/viewLineRenderer.zig");
@@ -1156,13 +1157,6 @@ pub const View = struct {
             });
 
             const data = try editor.viewLineData(view_line);
-            const rendered = try line_renderer.renderLine(self.allocator, .{
-                .content = data.content,
-                .tokens = data.tokens,
-                .tab_size = tab_size,
-                .start_visible_column = data.startVisibleColumn,
-            });
-            defer rendered.deinit(self.allocator);
 
             const model_content = try editor.model.getLineContent(model_line);
             defer model_content.deinit();
@@ -1177,7 +1171,34 @@ pub const View = struct {
             const segment_start_offset = editor.model.getOffsetAt(Position.init(model_line, segment_start_column)) - line_start_offset;
             const segment_end_offset = editor.model.getOffsetAt(Position.init(model_line, segment_end_column)) - line_start_offset;
 
+            // Upstream `ViewLine` filters the inline model decorations for the
+            // line and clips them to the wrapped segment before rendering.
+            const wrapped_decorations = try self.segmentLineDecorations(
+                model_line,
+                segment_start_offset,
+                segment_end_offset,
+            );
+            defer self.allocator.free(wrapped_decorations);
+
+            // `data.content` includes the synthetic wrap indentation, while
+            // `extractWrapped` returns columns relative to the model segment.
+            // Shift them onto the rendered line, as upstream `ViewLine` does
+            // with the wrapping indent offset.
             const indent_cells = data.minColumn - 1;
+            for (wrapped_decorations) |*decoration| {
+                decoration.startColumn += indent_cells;
+                decoration.endColumn += indent_cells;
+            }
+
+            const rendered = try line_renderer.renderLine(self.allocator, .{
+                .content = data.content,
+                .tokens = data.tokens,
+                .tab_size = tab_size,
+                .start_visible_column = data.startVisibleColumn,
+                .line_decorations = wrapped_decorations,
+            });
+            defer rendered.deinit(self.allocator);
+
             const line_width = doc.measureText(rendered.bytes);
             const flags = try self.allocator.alloc(u32, @max(line_width, 1));
             defer self.allocator.free(flags);
@@ -1193,19 +1214,6 @@ pub const View = struct {
                 line_width,
                 flags,
             );
-            try self.markDecorations(
-                model_line,
-                segment_start_column,
-                segment_start_offset,
-                segment_end_offset,
-                model_content.items,
-                tab_size,
-                data.startVisibleColumn,
-                indent_cells,
-                line_width,
-                flags,
-            );
-
             try appendRuns(doc, line, rendered, flags);
 
             // A collapsed region ends its first line with the upstream
@@ -1272,23 +1280,18 @@ pub const View = struct {
         try self.buildContentWidgets(doc, root, cols, text_right, text_height, gutter, tab_size);
     }
 
-    fn markDecorations(
+    /// Filters the inline model decorations for a line, then clips them to
+    /// this wrapped view-line segment (upstream `ViewLine` decoration path).
+    fn segmentLineDecorations(
         self: *View,
         model_line: usize,
-        segment_start_column: usize,
         segment_start_offset: usize,
         segment_end_offset: usize,
-        model_content: []const u8,
-        tab_size: usize,
-        start_visible_column: usize,
-        indent_cells: usize,
-        line_width: usize,
-        flags: []u32,
-    ) !void {
+    ) ![]LineDecoration {
         var inline_list = std.array_list.Managed(InlineDecoration).init(self.allocator);
         defer inline_list.deinit();
         try appendModelInlineDecorations(&inline_list, self.editor.model, model_line, self.allocator);
-        if (inline_list.items.len == 0) return;
+        if (inline_list.items.len == 0) return self.allocator.alloc(LineDecoration, 0);
 
         const filtered = try lineDecorations.LineDecoration.filter(
             self.allocator,
@@ -1299,31 +1302,12 @@ pub const View = struct {
         );
         defer self.allocator.free(filtered);
 
-        // Upstream's ViewLine does the same: filter the model decorations for
-        // this line, then extract the slice for each wrapped output line.
-        const wrapped = try lineDecorations.LineDecoration.extractWrapped(
+        return lineDecorations.LineDecoration.extractWrapped(
             self.allocator,
             filtered,
             segment_start_offset,
             segment_end_offset,
         );
-        defer self.allocator.free(wrapped);
-
-        for (wrapped) |decoration| {
-            const bit = decorationBit(decoration.className) orelse continue;
-            const start_model_column = segment_start_column + decoration.startColumn - 1;
-            const end_model_column = segment_start_column + decoration.endColumn - 1;
-            var start = visibleOffset(model_content, start_model_column, tab_size, start_visible_column, indent_cells);
-            var end = visibleOffset(model_content, end_model_column, tab_size, start_visible_column, indent_cells);
-            if (start >= end) continue;
-            start = @min(start, line_width);
-            end = @min(end, line_width);
-
-            var cell = start;
-            while (cell < end and cell < flags.len) : (cell += 1) {
-                flags[cell] |= bit;
-            }
-        }
     }
 
     fn buildScrollbar(
@@ -1792,7 +1776,7 @@ fn appendRuns(
     doc: *ui.Document,
     line: *ui.Node,
     rendered: line_renderer.RenderedLine,
-    flags: []const u32,
+    flags: []u32,
 ) !void {
     var part_index: usize = 0;
     var byte_in_part: usize = 0;
@@ -1815,6 +1799,10 @@ fn appendRuns(
         const width = measureCodepoint(decoded.cp);
 
         var style = tokenStyle(part);
+        if (part.decoration_class) |classes| {
+            const decoration_flags = decorationBits(classes);
+            if (decoration_flags != 0 and cell < flags.len) flags[cell] |= decoration_flags;
+        }
         if (cell < flags.len) {
             const flag = flags[cell];
             if (flag & CellFlag.search_range_highlight != 0) {
@@ -2006,6 +1994,17 @@ fn appendModelInlineDecorations(
             .type = .Regular,
         });
     }
+}
+
+/// Parses the normalizer's merged class-name string (`"c1 c2"`) into cell
+/// flags. Unknown classes are ignored; they have no terminal paint rule.
+fn decorationBits(classes: []const u8) u32 {
+    var bits: u32 = 0;
+    var iterator = std.mem.splitScalar(u8, classes, ' ');
+    while (iterator.next()) |class_name| {
+        if (decorationBit(class_name)) |bit| bits |= bit;
+    }
+    return bits;
 }
 
 fn decorationBit(class_name: []const u8) ?u32 {
