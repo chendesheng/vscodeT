@@ -1288,7 +1288,9 @@ pub const TextModel = struct {
 
     fn _emitContentChangedEvent(self: *TextModel, rawChange: ModelRawContentChangedEvent, change: ModelContentChangedEvent) void {
         if (self.__isDisposing) {
-            // Do not confuse listeners by emitting any event after disposing
+            // Do not confuse listeners by emitting any event after disposing.
+            // The caller transferred ownership of the change payload to us.
+            change.deinit();
             return;
         }
         self._tokenizationTextModelPart.handleDidChangeContent(change);
@@ -1298,12 +1300,15 @@ pub const TextModel = struct {
 
     fn _createContentChanged2(self: *TextModel, range: Range, rangeOffset: usize, rangeLength: usize, rangeEndPosition: Position, text: String, isUndoing: bool, isRedoing: bool, isFlush: bool, isEolChange: bool) !ModelContentChangedEvent {
         _ = rangeEndPosition;
+        var owned_text = text;
+        errdefer owned_text.deinit();
         var changes = ArrayList(ModelContentChange).init(self.getAllocator());
-        try changes.append(.{
+        try changes.ensureTotalCapacity(1);
+        changes.appendAssumeCapacity(.{
             .range = range,
             .rangeOffset = rangeOffset,
             .rangeLength = rangeLength,
-            .text = text,
+            .text = owned_text,
         });
         return ModelContentChangedEvent{
             .changes = changes,
@@ -1336,7 +1341,7 @@ pub const TextModel = struct {
         defer rawChanges.deinit();
         try rawChanges.append(.{ .eolChanged = ModelRawEOLChanged.init() });
 
-        var contentChanged = try self._createContentChanged2(
+        const contentChanged = try self._createContentChanged2(
             Range.init(1, 1, endLineNumber, endColumn),
             0,
             oldModelValueLength,
@@ -1347,7 +1352,8 @@ pub const TextModel = struct {
             false,
             true,
         );
-        defer contentChanged.deinit();
+        // Ownership transfers to the emitter; it frees the event after the
+        // deferred listeners run.
         self._emitContentChangedEvent(ModelRawContentChangedEvent.init(rawChanges, self._versionId, false, false), contentChanged);
     }
 
@@ -1538,13 +1544,14 @@ pub const TextModel = struct {
             }
 
             var changes = ArrayList(ModelContentChange).init(allocator);
+            try changes.ensureTotalCapacity(contentChanges.len);
             for (contentChanges) |*change| {
                 var copy = change.modelContentChange;
-                // The event is emitted synchronously. Its text is borrowed
-                // while the owning ApplyEditsResult lives; tokenization runs
-                // inside the emit call before the result is released.
-                copy.text = String.initBorrowed(change.modelContentChange.text.items());
-                try changes.append(copy);
+                // The deferred emitter owns the change list until it dispatches
+                // the event, so the text must not stay borrowed from the
+                // `ApplyEditsResult` that lives only for this call.
+                copy.text = change.modelContentChange.text.move();
+                changes.appendAssumeCapacity(copy);
             }
 
             const changedEvent = ModelContentChangedEvent{
@@ -1556,7 +1563,8 @@ pub const TextModel = struct {
                 .isRedoing = self._isRedoing,
                 .isFlush = false,
             };
-            defer changedEvent.deinit();
+            // Ownership of `changedEvent` transfers to the emitter, which
+            // releases it after the (possibly deferred) listeners run.
             self._emitContentChangedEvent(
                 ModelRawContentChangedEvent.init(rawContentChanges, self.getVersionId(), self._isUndoing, self._isRedoing),
                 changedEvent,
@@ -2072,6 +2080,35 @@ fn createTestTextModel(allocator: Allocator, text: []const u8, undoRedoService: 
     );
 }
 
+fn makeOwnedContentChangedEvent(allocator: Allocator, text: []const u8) !ModelContentChangedEvent {
+    var changes = ArrayList(ModelContentChange).init(allocator);
+    errdefer {
+        for (changes.items) |*change| change.deinit();
+        changes.deinit();
+    }
+    try changes.ensureTotalCapacity(1);
+
+    var owned_text = ArrayList(u8).init(allocator);
+    errdefer owned_text.deinit();
+    try owned_text.appendSlice(text);
+
+    changes.appendAssumeCapacity(.{
+        .range = Range.init(1, 1, 1, 1),
+        .rangeOffset = 0,
+        .rangeLength = 0,
+        .text = String.initOwned(owned_text),
+    });
+    return .{
+        .changes = changes,
+        .eol = .LF,
+        .versionId = 1,
+        .isUndoing = false,
+        .isRedoing = false,
+        .isFlush = false,
+        .isEolChange = false,
+    };
+}
+
 test "TextModel.init" {
     const allocator = std.testing.allocator;
     const text = "Hello, world!";
@@ -2183,6 +2220,69 @@ test "TextModel.pushEditOperations" {
     const line2 = try textModel.getLineContent(1);
     defer line2.deinit();
     try std.testing.expectEqualStrings("yo, world!", line2.items);
+}
+
+test "TextModel content change text survives deferred emit" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "Hello, world!", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    const Listener = struct {
+        var seen: bool = false;
+
+        fn onDidChangeContent(event: InternalModelContentChangeEvent, ctx: void) !void {
+            _ = ctx;
+            try std.testing.expectEqual(@as(usize, 1), event.contentChangedEvent.changes.items.len);
+            try std.testing.expectEqualStrings("yo", event.contentChangedEvent.changes.items[0].text.items());
+            seen = true;
+        }
+    };
+    Listener.seen = false;
+    try textModel.onDidChangeContentWithContext({}, Listener.onDidChangeContent);
+
+    var ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 1, 1, 6), String.initBorrowed("yo")),
+    };
+    _ = try textModel.pushEditOperations(null, &ops, null, null);
+
+    try std.testing.expect(Listener.seen);
+}
+
+test "DidChangeContentEmitter merges deferred content changes" {
+    const allocator = std.testing.allocator;
+    var emitter = DidChangeContentEmitter.init(allocator);
+    defer emitter.deinit();
+
+    const Listener = struct {
+        fn onDidChangeContent(event: InternalModelContentChangeEvent, ctx: void) !void {
+            _ = ctx;
+            try std.testing.expectEqual(@as(usize, 2), event.contentChangedEvent.changes.items.len);
+            try std.testing.expectEqualStrings("a", event.contentChangedEvent.changes.items[0].text.items());
+            try std.testing.expectEqualStrings("b", event.contentChangedEvent.changes.items[1].text.items());
+        }
+    };
+    try emitter.slowEvent({}, Listener.onDidChangeContent);
+
+    // The raw change lists are borrowed; only the content changes transfer
+    // ownership to the emitter.
+    var raw_a = ArrayList(ModelRawChange).init(allocator);
+    defer raw_a.deinit();
+    var raw_b = ArrayList(ModelRawChange).init(allocator);
+    defer raw_b.deinit();
+
+    emitter.beginDeferredEmit();
+    emitter.fire(InternalModelContentChangeEvent.init(
+        ModelRawContentChangedEvent.init(raw_a, 1, false, false),
+        try makeOwnedContentChangedEvent(allocator, "a"),
+    ));
+    emitter.fire(InternalModelContentChangeEvent.init(
+        ModelRawContentChangedEvent.init(raw_b, 2, false, false),
+        try makeOwnedContentChangedEvent(allocator, "b"),
+    ));
+    emitter.endDeferredEmit(null);
 }
 
 test "UndoRedoService.restoreSnapshot keeps the recorded elements" {
@@ -2751,21 +2851,39 @@ pub const DidChangeContentEmitter = struct {
     _fastEmitter: Emitter(InternalModelContentChangeEvent),
     _slowEmitter: Emitter(InternalModelContentChangeEvent),
 
+    _allocator: Allocator,
     _deferredCnt: usize,
+    // While deferred, this event owns its content change list (and the text in
+    // it) plus a copy of the raw change list. The raw change elements
+    // themselves stay borrowed from the model.
     _deferredEvent: ?InternalModelContentChangeEvent,
 
     pub fn init(allocator: Allocator) DidChangeContentEmitter {
         return DidChangeContentEmitter{
             ._fastEmitter = Emitter(InternalModelContentChangeEvent).init(allocator),
             ._slowEmitter = Emitter(InternalModelContentChangeEvent).init(allocator),
+            ._allocator = allocator,
             ._deferredCnt = 0,
             ._deferredEvent = null,
         };
     }
 
     pub fn deinit(self: *DidChangeContentEmitter) void {
+        if (self._deferredEvent) |evt| {
+            var e = evt;
+            self._deferredEvent = null;
+            e.contentChangedEvent.deinit();
+            e.rawContentChangedEvent.changes.deinit();
+        }
         self._fastEmitter.deinit();
         self._slowEmitter.deinit();
+    }
+
+    fn cloneRawChangeList(allocator: Allocator, changes: []const ModelRawChange) !ArrayList(ModelRawChange) {
+        var copy = ArrayList(ModelRawChange).init(allocator);
+        errdefer copy.deinit();
+        try copy.appendSlice(changes);
+        return copy;
     }
 
     pub fn fastEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent, @TypeOf(context)) anyerror!void) !void {
@@ -2792,21 +2910,35 @@ pub const DidChangeContentEmitter = struct {
                 self._deferredEvent = null;
                 self._fastEmitter.fire(e) catch {};
                 self._slowEmitter.fire(e) catch {};
+                e.contentChangedEvent.deinit();
+                e.rawContentChangedEvent.changes.deinit();
             }
         }
     }
 
+    /// Takes ownership of `e.contentChangedEvent`. The event is released after
+    /// the listeners run, which may be deferred to the end of the outermost
+    /// deferred-emit scope. `e.rawContentChangedEvent` is borrowed.
     pub fn fire(self: *DidChangeContentEmitter, e: InternalModelContentChangeEvent) void {
         if (self._deferredCnt > 0) {
+            var stored = e;
+            // The raw change list is owned by the model and is replaced by the
+            // next edit, while the deferred event is dispatched later. Copy
+            // the list buffer (not the elements) so the dispatch stays valid.
+            stored.rawContentChangedEvent.changes = cloneRawChangeList(
+                self._allocator,
+                e.rawContentChangedEvent.changes.items,
+            ) catch unreachable;
             if (self._deferredEvent) |evt| {
-                self._deferredEvent = evt.merge(e) catch unreachable;
+                self._deferredEvent = evt.merge(stored) catch unreachable;
             } else {
-                self._deferredEvent = e;
+                self._deferredEvent = stored;
             }
             return;
         }
         self._fastEmitter.fire(e) catch {};
         self._slowEmitter.fire(e) catch {};
+        e.contentChangedEvent.deinit();
     }
 };
 

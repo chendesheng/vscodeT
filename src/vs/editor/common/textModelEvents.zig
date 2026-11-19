@@ -407,33 +407,50 @@ pub const InternalModelContentChangeEvent = struct {
         };
     }
 
+    /// Merges a deferred change with a newer one. Both events must own their
+    /// change lists: the content change payloads are moved into the result and
+    /// the two list buffers are released here. The raw change elements stay
+    /// borrowed from the model and are not freed.
     pub fn merge(self: InternalModelContentChangeEvent, other: InternalModelContentChangeEvent) !InternalModelContentChangeEvent {
-        const rawContentChangedEvent = try ModelRawContentChangedEvent.merge(self.rawContentChangedEvent, other.rawContentChangedEvent);
-        const contentChangedEvent = try InternalModelContentChangeEvent._mergeChangeEvents(self.contentChangedEvent, other.contentChangedEvent);
-        return InternalModelContentChangeEvent{
-            .rawContentChangedEvent = rawContentChangedEvent,
-            .contentChangedEvent = contentChangedEvent,
-        };
-    }
+        var a = self;
+        var b = other;
 
-    fn _mergeChangeEvents(a: ModelContentChangedEvent, b: ModelContentChangedEvent) !ModelContentChangedEvent {
-        var changes = ArrayList(ModelContentChange).init(a.changes.allocator);
-        try changes.appendSlice(a.changes.items);
-        try changes.appendSlice(b.changes.items);
-        const eol = b.eol;
-        const versionId = b.versionId;
-        const isUndoing = (a.isUndoing or b.isUndoing);
-        const isRedoing = (a.isRedoing or b.isRedoing);
-        const isFlush = (a.isFlush or b.isFlush);
-        const isEolChange = a.isEolChange and b.isEolChange; // both must be true to not confuse listeners who skip such edits
-        return ModelContentChangedEvent{
-            .changes = changes,
-            .eol = eol,
-            .isEolChange = isEolChange,
-            .versionId = versionId,
-            .isUndoing = isUndoing,
-            .isRedoing = isRedoing,
-            .isFlush = isFlush,
+        var raw_changes = ArrayList(ModelRawChange).init(a.rawContentChangedEvent.changes.allocator);
+        errdefer raw_changes.deinit();
+        try raw_changes.ensureTotalCapacity(a.rawContentChangedEvent.changes.items.len + b.rawContentChangedEvent.changes.items.len);
+        raw_changes.appendSliceAssumeCapacity(a.rawContentChangedEvent.changes.items);
+        raw_changes.appendSliceAssumeCapacity(b.rawContentChangedEvent.changes.items);
+        a.rawContentChangedEvent.changes.deinit();
+        b.rawContentChangedEvent.changes.deinit();
+
+        var content_changes = ArrayList(ModelContentChange).init(a.contentChangedEvent.changes.allocator);
+        errdefer {
+            for (content_changes.items) |*change| change.deinit();
+            content_changes.deinit();
+        }
+        try content_changes.ensureTotalCapacity(a.contentChangedEvent.changes.items.len + b.contentChangedEvent.changes.items.len);
+        content_changes.appendSliceAssumeCapacity(a.contentChangedEvent.changes.items);
+        content_changes.appendSliceAssumeCapacity(b.contentChangedEvent.changes.items);
+        a.contentChangedEvent.changes.deinit();
+        b.contentChangedEvent.changes.deinit();
+
+        return InternalModelContentChangeEvent{
+            .rawContentChangedEvent = ModelRawContentChangedEvent.init(
+                raw_changes,
+                b.rawContentChangedEvent.versionId,
+                a.rawContentChangedEvent.isUndoing or b.rawContentChangedEvent.isUndoing,
+                a.rawContentChangedEvent.isRedoing or b.rawContentChangedEvent.isRedoing,
+            ),
+            .contentChangedEvent = ModelContentChangedEvent{
+                .changes = content_changes,
+                .eol = b.contentChangedEvent.eol,
+                .versionId = b.contentChangedEvent.versionId,
+                .isUndoing = a.contentChangedEvent.isUndoing or b.contentChangedEvent.isUndoing,
+                .isRedoing = a.contentChangedEvent.isRedoing or b.contentChangedEvent.isRedoing,
+                .isFlush = a.contentChangedEvent.isFlush or b.contentChangedEvent.isFlush,
+                // both must be true to not confuse listeners who skip such edits
+                .isEolChange = a.contentChangedEvent.isEolChange and b.contentChangedEvent.isEolChange,
+            },
         };
     }
 };
