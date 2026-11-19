@@ -290,6 +290,17 @@ pub const ViewLines = struct {
         }
     }
 
+    /// The rendered line record, used by the terminal host to paint the runs.
+    pub fn getRenderedViewLine(self: *const ViewLines, line_number: usize) ?*const view_line.ViewLine.RenderedViewLine {
+        if (self.visible_lines.getStartLineNumber() == 0 or
+            line_number < self.visible_lines.getStartLineNumber() or
+            line_number > self.visible_lines.getEndLineNumber())
+        {
+            return null;
+        }
+        return self.visible_lines.getVisibleLine(line_number).getRenderedViewLine();
+    }
+
     /// Port of upstream `ViewLines.getLineWidth`, in terminal cells.
     pub fn getLineWidth(self: *const ViewLines, line_number: usize) usize {
         if (self.visible_lines.getStartLineNumber() == 0 or

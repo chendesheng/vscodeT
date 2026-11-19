@@ -1,0 +1,274 @@
+// Terminal adapter that exposes the terminal `Editor` through the upstream
+// `IViewModel`/`IViewLayout`/`IEditorConfiguration` contracts so the ported
+// `ViewLines` stack can render it.
+//
+// This is the wiring seam for replacing the collapsed terminal renderer: the
+// model stays in `Editor`, while `ViewLines` owns line layout, dirty tracking,
+// decoration normalization and width bookkeeping exactly as upstream.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const Editor = @import("./codeEditorWidgetTerminal.zig").Editor;
+const view_model = @import("../../../common/viewModel.zig");
+const view_context = @import("../../../common/viewModel/viewContext.zig");
+const viewport_data = @import("../../../common/viewLayout/viewLinesViewportData.zig");
+const view_lines_mod = @import("../../viewParts/viewLines/viewLines.zig");
+const editor_configuration = @import("../../../common/config/editorConfiguration.zig");
+const browser_config = @import("../../config/editorConfiguration.zig");
+const editor_options = @import("../../../common/config/editorOptions.zig");
+const theme_service = @import("../../../../platform/theme/common/themeService.zig");
+const actions = @import("../../../../platform/actions/common/actions.zig");
+const Range = @import("../../../common/core/range.zig").Range;
+const Selection = @import("../../../common/core/selection.zig").Selection;
+const Position = @import("../../../common/core/position.zig").Position;
+const TextDirection = @import("../../../common/standalone/standaloneEnums.zig").TextDirection;
+
+const IViewModel = view_model.IViewModel;
+const IViewLayout = view_model.IViewLayout;
+const ViewportData = viewport_data.ViewportData;
+const ViewLines = view_lines_mod.ViewLines;
+const ViewContext = view_context.ViewContext;
+const IColorTheme = theme_service.IColorTheme;
+
+/// Minimal terminal color theme. The terminal renderer resolves token colors
+/// through `TokenizationRegistry`; the view context only needs the scheme type
+/// and a vtable that reports no CSS colors.
+const TerminalColorTheme = struct {
+    scheme: @import("../../../../platform/theme/common/theme.zig").ColorScheme = .DARK,
+
+    fn getColor(_: *anyopaque, _: []const u8, _: bool) ?@import("../../../../base/common/color.zig").Color {
+        return null;
+    }
+    fn defines(_: *anyopaque, _: []const u8) bool {
+        return false;
+    }
+    fn getTokenStyleMetadata(_: *anyopaque, _: []const u8, _: []const []const u8, _: []const u8) ?theme_service.ITokenStyle {
+        return null;
+    }
+
+    fn interface(self: *TerminalColorTheme) IColorTheme {
+        return .{
+            .theme_type = self.scheme,
+            .label = "terminal",
+            .context = self,
+            .vtable = &.{
+                .getColor = getColor,
+                .defines = defines,
+                .getTokenStyleMetadata = getTokenStyleMetadata,
+            },
+        };
+    }
+};
+
+/// Owns the terminal adapters and a ported `ViewLines` instance.
+pub const TerminalViewHost = struct {
+    allocator: Allocator,
+    editor: *Editor,
+    options: browser_config.ComputedEditorOptions,
+    configuration: editor_configuration.IEditorConfiguration,
+    theme: TerminalColorTheme,
+    context: ViewContext,
+    view_lines: ViewLines,
+    offsets: std.ArrayListUnmanaged(f64) = .empty,
+    selections: []Selection = &.{},
+    max_line_width: f64 = 0,
+
+    pub fn init(allocator: Allocator, editor: *Editor) !*TerminalViewHost {
+        const self = try allocator.create(TerminalViewHost);
+        errdefer allocator.destroy(self);
+
+        self.* = .{
+            .allocator = allocator,
+            .editor = editor,
+            .options = browser_config.ComputedEditorOptions.init(),
+            .configuration = undefined,
+            .theme = .{},
+            .context = undefined,
+            .view_lines = undefined,
+        };
+
+        self.options.set(.lineHeight, 1);
+        self.options.set(.experimentalWhitespaceRendering, .off);
+        self.options.set(.renderWhitespace, .none);
+        self.options.set(.stopRenderingLineAfter, -1);
+        self.configuration = .{
+            .is_simple_widget = false,
+            .context_menu_id = actions.menu_ids.EditorContext,
+            .options = self.options.interface(),
+        };
+        self.context = ViewContext.init(&self.configuration, self.theme.interface(), self.modelInterface());
+        self.view_lines.init(allocator, &self.context);
+        return self;
+    }
+
+    pub fn deinit(self: *TerminalViewHost) void {
+        self.view_lines.deinit();
+        self.offsets.deinit(self.allocator);
+        if (self.selections.len > 0) self.allocator.free(self.selections);
+        self.allocator.destroy(self);
+    }
+
+    /// Renders `[start_line, end_line]` (1-based view lines) through the ported
+    /// `ViewLines`. The model is expected to have a viewport of that size.
+    pub fn renderRange(self: *TerminalViewHost, start_line: usize, end_line: usize) !void {
+        const count = end_line -| start_line + 1;
+        try self.offsets.resize(self.allocator, count);
+        for (0..count) |i| self.offsets.items[i] = @floatFromInt(i);
+
+        if (self.selections.len > 0) self.allocator.free(self.selections);
+        self.selections = try self.editor.getSelections();
+
+        const partial = view_model.IPartialViewLinesViewportData{
+            .bigNumbersDelta = 0,
+            .startLineNumber = start_line,
+            .endLineNumber = end_line,
+            .relativeVerticalOffset = self.offsets.items,
+            .centeredLineNumber = start_line + count / 2,
+            .completelyVisibleStartLineNumber = start_line,
+            .completelyVisibleEndLineNumber = end_line,
+            .lineHeight = 1,
+        };
+        const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
+        try self.view_lines.renderLines(&viewport);
+    }
+
+    pub fn getRenderedLine(self: *const TerminalViewHost, line_number: usize) ?*const @import("../../viewParts/viewLines/viewLine.zig").ViewLine.RenderedViewLine {
+        return self.view_lines.getRenderedViewLine(line_number);
+    }
+
+    pub fn getMaxLineWidth(self: *const TerminalViewHost) f64 {
+        return self.view_lines.getMaxLineWidth();
+    }
+
+    fn modelInterface(self: *TerminalViewHost) IViewModel {
+        return .{
+            .context = self,
+            .view_layout = self.layoutInterface(),
+            .coordinates_converter = self.editor.converter.interface(),
+            .add_view_event_handler = addViewEventHandler,
+            .remove_view_event_handler = removeViewEventHandler,
+            .getLineMinColumn = getLineMinColumn,
+            .getLineMaxColumn = getLineMaxColumn,
+            .getLineCount = getLineCount,
+            .getLineLength = getLineLength,
+            .getViewportViewLineRenderingData = getViewportViewLineRenderingData,
+            .getViewLineContinuesWithWrappedLine = getViewLineContinuesWithWrappedLine,
+            .getDecorationsInViewport = getDecorationsInViewport,
+        };
+    }
+
+    fn layoutInterface(self: *TerminalViewHost) IViewLayout {
+        return .{
+            .context = self,
+            .get_scroll_width = getScrollWidth,
+            .get_scroll_height = getScrollHeight,
+            .get_current_viewport = getCurrentViewport,
+            .get_vertical_offset_for_line_number = getVerticalOffsetBefore,
+            .get_vertical_offset_after_line_number = getVerticalOffsetAfter,
+            .get_line_height_for_line_number = getLineHeight,
+            .set_max_line_width = setMaxLineWidth,
+        };
+    }
+
+    fn host(context: *anyopaque) *TerminalViewHost {
+        return @ptrCast(@alignCast(context));
+    }
+
+    fn getScrollWidth(context: *anyopaque) f64 {
+        return @floatFromInt(host(context).editor.textAreaWidth());
+    }
+    fn getScrollHeight(context: *anyopaque) f64 {
+        return @floatFromInt(host(context).editor.scrollHeight());
+    }
+    fn getCurrentViewport(context: *anyopaque) view_model.Viewport {
+        const self = host(context);
+        return view_model.Viewport.init(
+            @floatFromInt(self.editor.topViewLine() -| 1),
+            0,
+            @floatFromInt(self.editor.textAreaWidth()),
+            @floatFromInt(self.editor.textHeight()),
+        );
+    }
+    fn getVerticalOffsetBefore(context: *anyopaque, line_number: usize, _: bool) f64 {
+        _ = host(context);
+        return @floatFromInt(line_number -| 1);
+    }
+    fn getVerticalOffsetAfter(context: *anyopaque, line_number: usize, _: bool) f64 {
+        _ = host(context);
+        return @floatFromInt(line_number);
+    }
+    fn getLineHeight(context: *anyopaque, _: usize) f64 {
+        _ = host(context);
+        return 1;
+    }
+    fn setMaxLineWidth(context: *anyopaque, width: f64) void {
+        host(context).max_line_width = width;
+    }
+
+    fn addViewEventHandler(_: *anyopaque, _: *anyopaque) void {}
+    fn removeViewEventHandler(_: *anyopaque, _: *anyopaque) void {}
+    fn getLineMinColumn(context: *anyopaque, line_number: usize) usize {
+        return host(context).editor.view_lines.getLineMinColumn(line_number);
+    }
+    fn getLineMaxColumn(context: *anyopaque, line_number: usize) usize {
+        return host(context).editor.view_lines.getLineMaxColumn(line_number);
+    }
+    fn getLineCount(context: *anyopaque) usize {
+        return host(context).editor.viewLineCount();
+    }
+    fn getLineLength(context: *anyopaque, line_number: usize) usize {
+        const data = host(context).editor.viewLineData(line_number) catch return 0;
+        return data.content.len;
+    }
+    fn getViewportViewLineRenderingData(context: *anyopaque, _: Range, line_number: usize) anyerror!view_model.ViewLineRenderingData {
+        const self = host(context);
+        const data = try self.editor.viewLineData(line_number);
+        return view_model.ViewLineRenderingData.init(
+            data.minColumn,
+            data.maxColumn,
+            data.content,
+            data.continuesWithWrappedLine,
+            false,
+            false,
+            data.tokens,
+            data.inlineDecorations orelse &.{},
+            self.editor.tabSize(),
+            data.startVisibleColumn,
+            TextDirection.LTR,
+            false,
+        );
+    }
+    fn getViewLineContinuesWithWrappedLine(context: *anyopaque, line_number: usize) bool {
+        const data = host(context).editor.viewLineData(line_number) catch return false;
+        return data.continuesWithWrappedLine;
+    }
+    fn getDecorationsInViewport(context: *anyopaque, _: Range, allocator: Allocator) anyerror![]view_model.ViewModelDecoration {
+        _ = host(context);
+        return allocator.alloc(view_model.ViewModelDecoration, 0);
+    }
+};
+
+test "terminal view host renders lines through the ported ViewLines" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\tb\nsecond", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+
+    try host.renderRange(1, 2);
+    try std.testing.expectEqual(@as(usize, 5), host.view_lines.getLineWidth(1));
+    try std.testing.expectEqual(@as(usize, 6), host.view_lines.getLineWidth(2));
+    try std.testing.expectEqual(@as(f64, 6), host.getMaxLineWidth());
+    try std.testing.expectEqual(@as(f64, 6), host.max_line_width);
+
+    const first = host.getRenderedLine(1).?;
+    try std.testing.expectEqualStrings("a   b", first.rendered.bytes);
+    const second = host.getRenderedLine(2).?;
+    try std.testing.expectEqualStrings("second", second.rendered.bytes);
+}
