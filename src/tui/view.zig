@@ -37,7 +37,7 @@ const std = @import("std");
 const ui = @import("ui");
 
 const Editor = @import("./editor.zig").Editor;
-const theme = @import("./theme.zig");
+const tokenization = @import("../vs/editor/common/tokenizationRegistry.zig");
 const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
 const CursorState = @import("../vs/editor/common/cursorCommon.zig").CursorState;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
@@ -1948,10 +1948,30 @@ fn tokenStyle(part: line_renderer.RenderedPart) ui.Style {
         .underline = part.underline,
         .strikethrough = part.strikethrough,
     };
-    if (theme.colorForToken(part.foreground)) |rgb| {
+    if (colorForToken(part.foreground)) |rgb| {
         style.color = color(rgb);
     }
     return style;
+}
+
+/// Token color lookup for the terminal view. The fallback palette keeps the
+/// standalone view and tests readable before a theme is installed; the real
+/// colors come from the active `TokenTheme` color map.
+fn colorForToken(foreground: u9) ?[3]u8 {
+    if (tokenization.TokenizationRegistry.instance.getColorForToken(foreground)) |c| {
+        return .{ c.r, c.g, c.b };
+    }
+    return switch (foreground) {
+        5 => .{ 106, 153, 85 },
+        6 => .{ 206, 145, 120 },
+        7 => .{ 209, 105, 105 },
+        8 => .{ 197, 134, 192 },
+        9 => .{ 181, 206, 168 },
+        10 => .{ 220, 220, 170 },
+        11 => .{ 78, 201, 176 },
+        12 => .{ 156, 220, 254 },
+        else => null,
+    };
 }
 
 fn styleEql(a: ui.Style, b: ui.Style) bool {

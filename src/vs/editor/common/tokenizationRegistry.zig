@@ -125,6 +125,18 @@ pub const TokenizationRegistry = struct {
         self._onDidChange.fire(.{ .changedLanguages = languages.items, .changedColorMap = true }) catch {};
     }
 
+    /// Resolves a token color id through the active theme's color map.
+    ///
+    /// Upstream consumers index `getColorMap()` directly. The terminal view
+    /// needs one lookup for the `u9` color id stored in the token metadata, so
+    /// this helper keeps the bounds check in one place. Callers decide the
+    /// fallback when no theme has been installed yet.
+    pub fn getColorForToken(self: *const TokenizationRegistry, foreground: u9) ?Color {
+        const color_map = self._colorMap orelse return null;
+        if (foreground >= color_map.len) return null;
+        return color_map[foreground];
+    }
+
     pub fn getDefaultBackground(self: *TokenizationRegistry) ?Color {
         const colorMap = self._colorMap orelse return null;
         if (colorMap.len > @backingInt(ColorId.DefaultBackground)) {

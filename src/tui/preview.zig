@@ -11,7 +11,7 @@ const std = @import("std");
 const ui = @import("ui");
 
 const Editor = @import("./editor.zig").Editor;
-const theme = @import("./theme.zig");
+const tokenization = @import("../vs/editor/common/tokenizationRegistry.zig");
 const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
 const line_renderer = @import("../vs/editor/common/viewLayout/viewLineRenderer.zig");
 
@@ -322,8 +322,8 @@ fn color(rgb: [3]u8) ui.Color {
 }
 
 fn tokenColor(foreground: u9) ?ui.Color {
-    const rgb = theme.colorForToken(foreground) orelse return null;
-    return color(rgb);
+    const c = tokenization.TokenizationRegistry.instance.getColorForToken(foreground) orelse return null;
+    return color(.{ c.r, c.g, c.b });
 }
 
 fn rowText(preview: *Preview, allocator: std.mem.Allocator, row: usize) ![]u8 {
