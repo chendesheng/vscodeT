@@ -67,16 +67,32 @@ watched.
 The workbench half of VS Code's extension system is being ported under
 `src/vs/workbench/services/extensions/` and `src/vs/workbench/api/`. The Node
 extension host itself is reused, not vendored: the launcher in
-`host/extensionHost.ts` bundles the module graph reachable from
-`../vscode/src/vs/workbench/api/common/extensionHostMain.ts` with esbuild, so
-a full `../vscode/out` build is not required.
+`host/extensionHost.ts` bundles the module graph reachable from the pinned
+tree's `src/vs/workbench/api/common/extensionHostMain.ts` with esbuild, so a
+full VS Code `out/` build is not required.
+
+The bundle must come from the **pinned VS Code 1.147.0** tree (commit
+`e31c2e5`): the Zig workbench's generated RPC actor table only matches that
+version, and a mismatch makes every handshake call land on the wrong actor.
+`host/build.js` refuses any other version instead of producing a bundle that
+fails at runtime.
 
 ```sh
-cd host && npm install && npm run build   # host/dist/extensionHost.mjs
-npm run build:json                        # optional: host/dist/jsonServer.mjs
+cd host && npm ci                          # esbuild, @vscode/ripgrep, @vscode/spdlog
+cd .. && zig build host -Dvscode-source=/path/to/vscode-1.147.0
 zig build run -- [--extensions-dir <dir>] [<file>...]
 zig build test-e2e                        # boots the host and edits through VSCodeVim
 ```
+
+`-Dvscode-source` becomes `VSCODE_SOURCE_PATH` for `host/build.js` and defaults
+to `../vscode`, which must be the pinned checkout. `zig build` itself never
+runs Node; `zig build host` is the explicit step that produces
+`host/dist/extensionHost.mjs`.
+
+`npm run build:json` (in `host/`) is the optional `host/dist/jsonServer.mjs`
+step. If the host bundle is missing at startup, the app reports
+`extension host disabled: host/dist/extensionHost.mjs is missing` in the main
+log instead of waiting for the host socket to time out.
 
 The JSON server bundle reuses the runtime dependencies of the pinned
 `../vscode/extensions/json-language-features/server`; install them there first
@@ -112,7 +128,9 @@ drive validation, completion and hover.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally
 `~/.local/state/vscode-textbuffer/extensions/extension-host.log`) so it cannot
-corrupt the TUI frame. `test-e2e` is skipped unless `host/dist/extensionHost.mjs`
+corrupt the TUI frame. Startup failures that disable the host are logged to
+the main log (`$XDG_STATE_HOME/vscode-textbuffer/logs/main.log`, normally
+`~/.local/state/vscode-textbuffer/logs/main.log`). `test-e2e` is skipped unless `host/dist/extensionHost.mjs`
 and the extracted fixture at `.cache-ext/vim/extension` are present. Still missing: the
 contribution scanner, configuration writes, full `tabGroups`, the built-in
 command set VSCodeVim delegates to, and the extension keybinding registry. See

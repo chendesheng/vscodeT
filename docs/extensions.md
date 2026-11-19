@@ -677,6 +677,18 @@ The launcher can import the compiled `ExtensionHostMain` and the trimmed
 service modules from the host build. It does not need to modify upstream
 files.
 
+The launcher is bundled, not run from an `out/` build: `host/build.js` asks
+esbuild for the module graph reachable from `host/extensionHost.ts` and writes
+`host/dist/extensionHost.mjs`. The launcher's `../../vscode/` imports resolve
+against `VSCODE_SOURCE_PATH` (default `../vscode`), so the bundle is always
+built from the tree the RPC table was generated from. `zig build host`
+wraps that step and accepts `-Dvscode-source=<dir>`; `zig build` itself stays
+free of Node and npm. The bundle needs `@vscode/ripgrep` and `@vscode/spdlog`
+at runtime: the first is imported by the search services, the second by
+`SpdLogLogger`. Both are declared in `host/package.json`, as is `esbuild`
+(the bundler is a dependency, not a dev-only tool, so `npm ci` is enough even
+where npm omits dev dependencies).
+
 ### 6.2 Order
 
 `ExtensionHostMain` receives its init data as the **first message** on the
@@ -746,9 +758,10 @@ does nothing with the marks.
 The host only compares `initData.commit` to its own `product.commit` when
 both are present (`extensionHostProcess.ts:341-349`). Two checks are needed:
 
-1. The launcher reads the host build's `package.json` version and
-   `product.commit` and, before spawning, compares them to the pinned values.
-   Fail closed with a clear message if they differ.
+1. `host/build.js` reads the selected tree's `package.json` version before
+   bundling and fails closed with a clear message when it is not `1.147.0`.
+   The generated actor table is baked into the bundle, so this build-time
+   check is what keeps a mismatched host from being produced at all.
 2. `initData.commit` carries the expected host commit. The host's own check
    then catches a mismatched `--vscode-host-path` even if the launcher was
    pointed at the wrong tree.
