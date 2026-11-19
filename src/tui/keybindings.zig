@@ -47,6 +47,7 @@ pub fn keyCodeFor(event: input.KeyEvent) ?key_codes.KeyCode {
         .end => .End,
         .page_up => .PageUp,
         .page_down => .PageDown,
+        .f12 => .F12,
         .char => |codepoint| charKeyCode(codepoint),
         .text, .paste_start, .paste_end => null,
     };

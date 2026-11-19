@@ -413,8 +413,11 @@ pub fn main(init: std.process.Init) !void {
         report(log_service, "extension discovery failed: {s}", .{@errorName(err)});
         break :blk null;
     };
+    // Keep the Vim path alive until the extension host has copied it into its
+    // descriptions; freeing it at the end of this block leaves a dangling
+    // slice in `extension_paths` and the host init fails with FileNotFound.
+    defer if (extension_path) |path| allocator.free(path);
     if (extension_path) |path| {
-        defer allocator.free(path);
         try extension_paths.append(.{ .path = path, .is_under_development = true });
     }
     const typescript_extension_path = "host/dist/extensions/typescript-language-features";
@@ -999,6 +1002,7 @@ fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
             return false;
         },
         .paste_end => return false,
+        .f12 => {},
         .text => |text| {
             var offset: usize = 0;
             while (offset < text.len) {

@@ -162,7 +162,8 @@ pub const Extensions = struct {
         // Fail before spawning node: without the bundle the host can never
         // connect, and the manager would otherwise wait for its socket timeout.
         std.Io.Dir.cwd().access(io, host_script, .{}) catch return error.ExtensionHostBundleMissing;
-        const workspace_path = workbench.workspaceFolderPath() orelse ".";
+        const workspace_path = try std.fs.path.resolve(allocator, &.{workbench.workspaceFolderPath() orelse "."});
+        defer allocator.free(workspace_path);
         self.host = try manager.HostManager.start(allocator, .{
             .host_script = host_script,
             .extensions = self.extension_ptrs,
@@ -544,7 +545,7 @@ pub const Extensions = struct {
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
-        const workspace = self.workbench.workspaceFolderPath() orelse ".";
+        const workspace = try std.fs.path.resolve(arena, &.{self.workbench.workspaceFolderPath() orelse "."});
         const init_data = try manager.buildInitData(arena, .{
             .host_script = "",
             .extensions = self.extension_ptrs,
@@ -760,6 +761,7 @@ pub const Extensions = struct {
                 self.pasting = false;
                 return false;
             },
+            .f12 => return false,
             .text => |text| {
                 if (self.pasting) return false;
                 if (event.mods.ctrl or event.mods.alt) return false;
@@ -1107,6 +1109,11 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
     }
     if (std.mem.eql(u8, command, "workbench.action.closeActiveEditor")) {
         _ = self.workbench.closeActive() catch false;
+        self.needs_render = true;
+        return null;
+    }
+    if (std.mem.eql(u8, command, "editor.action.revealDefinition")) {
+        _ = self.workbench.revealDefinition() catch false;
         self.needs_render = true;
         return null;
     }
@@ -1573,6 +1580,25 @@ test "Extensions: real TypeScript extension drives the language features" {
         if (!found_hover) time_compat.sleepMillis(200);
     }
     try std.testing.expect(found_hover);
+
+    // Definition: `value` on line 2 resolves to its declaration on line 1.
+    const definition_tab = workbench.activeTab().?;
+    try definition_tab.editor.setCursorPosition(Position.init(2, 13));
+    var found_definition = false;
+    while (!found_definition and time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        if (try workbench.revealDefinition()) {
+            if (workbench.activeTab()) |opened| {
+                const target = opened.editor.modelCursorPosition();
+                if (target.lineNumber == 1 and std.mem.eql(u8, opened.editor.path, definition_tab.editor.path)) {
+                    found_definition = true;
+                    break;
+                }
+            }
+        }
+        time_compat.sleepMillis(200);
+    }
+    try std.testing.expect(found_definition);
 
     // Document symbols: the extension's provider feeds the breadcrumb/outline
     // registries with UTF-16-converted ranges.

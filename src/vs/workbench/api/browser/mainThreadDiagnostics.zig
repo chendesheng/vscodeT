@@ -193,6 +193,10 @@ pub const MainThreadDiagnostics = struct {
                     var owned = resource;
                     owned.deinit(self.allocator);
                 }
+                // `changeOne` removes the old bucket before copying the new
+                // data, so the data must not borrow strings from `all`.
+                var data_arena = std.heap.ArenaAllocator.init(self.allocator);
+                defer data_arena.deinit();
                 var data = std.array_list.Managed(markers.MarkerData).init(self.allocator);
                 defer data.deinit();
                 for (all) |marker| {
@@ -200,7 +204,7 @@ pub const MainThreadDiagnostics = struct {
                     if (marker.origin) |origin| {
                         if (std.mem.eql(u8, origin, self.ext_host_id)) continue;
                     }
-                    data.append(markerDataFromMarker(marker)) catch {};
+                    data.append(markerDataFromMarkerCopy(data_arena.allocator(), marker) catch continue) catch {};
                 }
                 self.marker_service.changeOne(owner, resource, data.items, null) catch {};
             }
@@ -217,6 +221,16 @@ pub const MainThreadDiagnostics = struct {
         return .notification;
     }
 };
+
+fn markerDataFromMarkerCopy(allocator: Allocator, marker: *const markers.Marker) !markers.MarkerData {
+    var data = markerDataFromMarker(marker);
+    data.code = if (marker.code) |value| try allocator.dupe(u8, value) else null;
+    data.message = try allocator.dupe(u8, marker.message);
+    data.source = if (marker.source) |value| try allocator.dupe(u8, value) else null;
+    data.origin = if (marker.origin) |value| try allocator.dupe(u8, value) else null;
+    data.tags = try allocator.dupe(u32, marker.tags);
+    return data;
+}
 
 fn markerDataFromMarker(marker: *const markers.Marker) markers.MarkerData {
     return .{

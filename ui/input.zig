@@ -379,6 +379,7 @@ fn decodeCsi(
                 3 => try result.append(allocator, .{ .key = .{ .key = .delete, .mods = mods } }),
                 5 => try result.append(allocator, .{ .key = .{ .key = .page_up, .mods = mods } }),
                 6 => try result.append(allocator, .{ .key = .{ .key = .page_down, .mods = mods } }),
+                24 => try result.append(allocator, .{ .key = .{ .key = .f12, .mods = mods } }),
                 200 => try result.append(allocator, .{ .key = .{ .key = .paste_start } }),
                 201 => try result.append(allocator, .{ .key = .{ .key = .paste_end } }),
                 else => {},
@@ -474,15 +475,16 @@ test "input: printable runs and control keys" {
 
 test "input: named keys and modifiers" {
     const allocator = std.testing.allocator;
-    var events = try decodeKeys(allocator, "\x1b[A\x1b[3~\x1b[1;5C\x1b[5~\x1b[Z");
+    var events = try decodeKeys(allocator, "\x1b[A\x1b[3~\x1b[1;5C\x1b[5~\x1b[Z\x1b[24~");
     defer events.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 5), events.items.len);
+    try std.testing.expectEqual(@as(usize, 6), events.items.len);
     try std.testing.expect(events.items[0].key == .up);
     try std.testing.expect(events.items[1].key == .delete);
     try std.testing.expect(events.items[2].key == .right);
     try std.testing.expect(events.items[2].mods.ctrl);
     try std.testing.expect(events.items[3].key == .page_up);
     try std.testing.expect(events.items[4].key == .backtab);
+    try std.testing.expect(events.items[5].key == .f12);
 }
 
 test "input: comment shortcuts and alt characters" {

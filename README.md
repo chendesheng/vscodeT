@@ -222,8 +222,8 @@ TypeScript and JavaScript editors use VS Code's real
 provisioned. The extension is activated by `onLanguage:<id>` after the document
 delta is queued; its own tsserver client provides semantic/syntax diagnostics
 (shown as squiggly underlines, overview marks and the `Problems` count),
-`Ctrl-Space` completion, hover, `Alt-F` document formatting and breadcrumb
-document symbols. Without the extension bundle, TS/JS tabs keep the bundled
+`Ctrl-Space` completion, hover, `F12`/`Ctrl-]` go-to-definition, `Alt-F`
+document formatting and breadcrumb document symbols. Without the extension bundle, TS/JS tabs keep the bundled
 grammar and indentation behavior. The extension host receives the extension's
 `contributes.configuration` defaults, so settings such as
 `js/ts.format.enabled` resolve like VS Code. Position-bearing RPCs (diagnostics,
@@ -231,7 +231,8 @@ completion/hover ranges, formatting edits, document changes and selections) are
 converted between the host's UTF-16 code units and the editor's UTF-8 byte
 columns. Semantic tokens, inlay hints, code lens, links, colors, call
 hierarchy and inline completions are registered by the extension but have no
-terminal renderer; definition and code-action providers still have no TUI
+terminal renderer; definition is wired to `F12`/`Ctrl-]` (and the
+`editor.action.revealDefinition` command), while code actions still have no TUI
 command surface. Configuration writes are accepted in memory and are not
 persisted.
 
@@ -284,6 +285,9 @@ console API for raw mode, sizing and input polling.
   `src/tui/` to the VS Code internals it should port, with a UI/view code map
   (what is still collapsed into `view.zig`/`editor.zig` and where it belongs)
   and a prioritized, dependency-ordered roadmap.
+- [TUI review](docs/tui-review.md) — current file-by-file verdict on `src/tui/`:
+  what still has a VS Code port, what moves into `ui/`, what is dead or
+  duplicated, and the dependency-ordered path to a thin host.
 
 ## Terminal UI library
 

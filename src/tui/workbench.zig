@@ -129,6 +129,9 @@ const EditorInput = editor_input.EditorInput;
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 const Range = @import("../vs/editor/common/core/range.zig").Range;
 const LanguageFeaturesService = @import("../vs/editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const languages = @import("../vs/editor/common/languages.zig");
+const CancellationToken = @import("../vs/base/common/cancellation.zig").CancellationToken;
+const std_uri = @import("../vs/base/common/stdUri.zig");
 const MarkerService = @import("../vs/platform/markers/common/markerService.zig").MarkerService;
 const MarkerDecorationsService = @import("../vs/editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
 const markerChangeEvent = @import("../vs/platform/markers/common/markerService.zig").MarkerChangeEvent;
@@ -1943,6 +1946,64 @@ pub const Workbench = struct {
         self.pruneTabs(pane);
     }
 
+    /// Opens the first definition target for the cursor. Ports the action
+    /// behind upstream's `editor.action.revealDefinition` (F12 in VS Code);
+    /// the terminal surfaces it as `Ctrl-]` and through the command bridge.
+    pub fn revealDefinition(self: *Workbench) !bool {
+        const tab = self.activeTab() orelse return false;
+        const features = self.language_features orelse return false;
+        const providers = try features.definition_provider.ordered(self.allocator, tab.editor.model, false);
+        defer self.allocator.free(providers);
+        if (providers.len == 0) return false;
+
+        var target_uri: ?[]u8 = null;
+        var target_range: ?@import("../vs/editor/common/core/range.zig").Range = null;
+        defer if (target_uri) |uri| self.allocator.free(uri);
+        for (providers) |provider| {
+            const locations = provider.provide_definition(
+                provider.context,
+                self.allocator,
+                tab.editor.model,
+                tab.editor.modelCursorPosition(),
+                CancellationToken.None,
+            ) catch continue;
+            if (locations.len == 0) {
+                self.allocator.free(locations);
+                continue;
+            }
+            target_uri = try self.allocator.dupe(u8, locations[0].uri);
+            target_range = locations[0].target_selection_range;
+            for (locations) |location| self.allocator.free(location.uri);
+            self.allocator.free(locations);
+            break;
+        }
+        const uri = target_uri orelse return false;
+        const range = target_range orelse return false;
+        const start = range.getStartPosition();
+        // `LocationLink.uri` is the resource key (`file:///...`), while the
+        // workbench opens filesystem paths. Non-file targets (for example a
+        // virtual scheme) have no terminal editor surface yet.
+        const parsed = std.Uri.parse(uri) catch return false;
+        if (!std.mem.eql(u8, parsed.scheme, "file")) return false;
+        var path_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer path_arena.deinit();
+        const path = try std_uri.fsPath(parsed, path_arena.allocator());
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const current_uri = try std_uri.resourceKey(scratch.allocator(), tab.editor.model.uri());
+        if (std.mem.eql(u8, current_uri, uri)) {
+            try tab.editor.setCursorPosition(start);
+        } else {
+            try self.openPath(path);
+            if (self.activeTab()) |opened| {
+                opened.editor.setCursorPosition(start) catch {};
+            }
+        }
+        self.refreshStatus();
+        self.revealActiveEditor();
+        return true;
+    }
+
     /// Removes tab views whose input the group model no longer contains. This
     /// is needed when a preview editor is replaced by the next preview.
     fn pruneTabs(self: *Workbench, pane: *GroupPane) void {
@@ -2402,6 +2463,9 @@ pub const Workbench = struct {
     pub fn handleGlobalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         if (self.quick_access.isOpen()) return false;
         self.suppress_global_command = false;
+        if (event.key == .f12 or isCtrlChar(event, ']')) {
+            if (try self.revealDefinition()) return true;
+        }
         const service = try self.ensureGlobalService();
         const handled = service.dispatch(event.*);
         if (self.suppress_global_command) {
