@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const tui = @import("./tui.zig");
-const cellBorders = @import("./cellBorders.zig");
 const ui = @import("ui");
 const input = ui.input;
 const terminal_input = @import("../vs/workbench/contrib/terminal/browser/terminalInput.zig");
@@ -159,6 +158,22 @@ fn defaultUserSettingsPath(
     return null;
 }
 
+const ProbeHost = struct {
+    io: Io,
+
+    fn poll(_: *anyopaque, timeout_ms: i32) anyerror!bool {
+        return tui.pollInput(timeout_ms);
+    }
+
+    fn read(context: *anyopaque, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) anyerror!void {
+        const self: *ProbeHost = @ptrCast(@alignCast(context));
+        var bytes = std.array_list.Managed(u8).init(allocator);
+        defer bytes.deinit();
+        const read_bytes = try tui.readFd(self.io, 0, &bytes);
+        try buffer.appendSlice(allocator, read_bytes);
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
@@ -273,7 +288,12 @@ pub fn main(init: std.process.Init) !void {
 
     // Probe once, inside the alternate screen, before the first frame: the
     // answer decides whether borders reserve cells or paint on cell edges.
-    const border_probe = try cellBorders.probe(allocator, io, out);
+    var probe_host = ProbeHost{ .io = io };
+    const border_probe = try ui.cell_border.probe(allocator, io, out, .{
+        .context = &probe_host,
+        .poll = ProbeHost.poll,
+        .read = ProbeHost.read,
+    });
     defer border_probe.deinit(allocator);
 
     var folders = ArrayList([]u8).init(allocator);

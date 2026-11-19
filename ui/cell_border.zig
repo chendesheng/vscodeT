@@ -525,3 +525,71 @@ test "cell border: parse a capability reply" {
     try std.testing.expect(containsDa1("\x1b[?62;22c"));
     try std.testing.expect(!containsDa1("plain"));
 }
+
+/// Host I/O for the capability probe. The UI library owns the protocol state
+/// machine; the host supplies the terminal byte stream and the poll/timeout.
+pub const ProbeHost = struct {
+    context: *anyopaque,
+    /// Returns true when input is available before `timeout_ms` elapses.
+    poll: *const fn (context: *anyopaque, timeout_ms: i32) anyerror!bool,
+    /// Appends bytes read from the terminal to `buffer` (may append nothing at
+    /// EOF). The buffer is owned by the caller.
+    read: *const fn (context: *anyopaque, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) anyerror!void,
+};
+
+pub const probe_timeout_ms: i64 = 250;
+
+pub const ProbeResult = struct {
+    supported: bool = false,
+    capabilities: Capabilities = .{},
+    /// Bytes read while probing, including the replies. The caller feeds them
+    /// through the normal input decoder so a key typed during startup is not
+    /// lost.
+    leftover: ?[]u8 = null,
+
+    pub fn deinit(self: *const ProbeResult, allocator: std.mem.Allocator) void {
+        if (self.leftover) |bytes| allocator.free(bytes);
+    }
+};
+
+/// Sends the capability query followed by Primary Device Attributes and reads
+/// replies in order: a cell-border answer before DA1 means support, DA1 without
+/// one means the terminal (or multiplexer) discarded the unknown DCS. A short
+/// timeout covers terminals that answer neither.
+pub fn probe(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    host: ProbeHost,
+) !ProbeResult {
+    try out.writeAll(query);
+    try out.writeAll(da1);
+    try out.flush();
+
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(allocator);
+
+    const deadline = std.Io.Timestamp.now(io, .real).toMilliseconds() + probe_timeout_ms;
+    while (true) {
+        const now = std.Io.Timestamp.now(io, .real).toMilliseconds();
+        if (now >= deadline) break;
+        const remaining: i32 = @intCast(@min(deadline - now, probe_timeout_ms));
+        if (!try host.poll(host.context, remaining)) break;
+        const before = buffer.items.len;
+        try host.read(host.context, allocator, &buffer);
+        // A readable fd with no bytes is EOF (piped stdin); stop instead of
+        // spinning until the deadline.
+        if (buffer.items.len == before) break;
+        if (containsDa1(buffer.items)) break;
+    }
+
+    const capabilities = parseReply(buffer.items);
+    const supported = if (capabilities) |value| value.has(.pen) else false;
+    const leftover = if (buffer.items.len == 0) null else try allocator.dupe(u8, buffer.items);
+
+    return .{
+        .supported = supported,
+        .capabilities = capabilities orelse .{},
+        .leftover = leftover,
+    };
+}
