@@ -1206,6 +1206,13 @@ pub const View = struct {
                 indent_cells,
                 flags,
             );
+            var row_guides = std.array_list.Managed(@import("./viewParts/viewLines/viewLine.zig").ViewLine.Guide).init(self.allocator);
+            defer row_guides.deinit();
+            for (guide_specs.items) |spec| {
+                if (spec.row != row) continue;
+                try row_guides.append(.{ .column = spec.col, .color = color(spec.color) });
+            }
+
             const line = try painted_line.paint(doc, .{
                 .left_cells = gutter,
                 .top_cells = row,
@@ -1213,50 +1220,11 @@ pub const View = struct {
                 .background = if (is_cursor_line) color(current_line_background) else null,
                 .flags = flags,
                 .decoration_bits_fn = decorationBits,
+                .folded_ellipsis = output_index == 0 and line_width < text_width and
+                    self.foldingDecorationsShowEllipsis(model_line),
+                .folded_ellipsis_style = .{ .color = color(continuation_color) },
+                .guides = row_guides.items,
             }, lineStyleForPart);
-
-            // A collapsed region ends its first line with the upstream
-            // `inline-folded` ellipsis. It is painted after the text and is not
-            // part of the selectable line width.
-            if (output_index == 0 and line_width < text_width and
-                self.foldingDecorationsShowEllipsis(model_line))
-            {
-                const ellipsis = try doc.createElement(.div);
-                ellipsis.setStyle(.{
-                    .position = .absolute,
-                    .left = .{ .cells = @floatFromInt(line_width) },
-                    .top = .{ .cells = 0 },
-                    .width = .{ .cells = 1 },
-                    .height = .{ .cells = 1 },
-                    .white_space = .pre,
-                });
-                const glyph = try doc.createText("…");
-                glyph.setStyle(.{ .color = color(continuation_color) });
-                _ = try ellipsis.appendChild(glyph);
-                _ = try line.appendChild(ellipsis);
-            }
-
-            // Guides paint after the text runs, but only in cells that are
-            // leading whitespace or on blank lines, so a text glyph is never
-            // replaced by a guide line.
-            if (output_index == 0) {
-                for (guide_specs.items) |spec| {
-                    if (spec.row != row) continue;
-                    const guide = try doc.createElement(.div);
-                    guide.setStyle(.{
-                        .position = .absolute,
-                        .left = .{ .cells = @floatFromInt(spec.col) },
-                        .top = .{ .cells = 0 },
-                        .width = .{ .cells = 1 },
-                        .height = .{ .cells = 1 },
-                        .white_space = .pre,
-                    });
-                    const glyph = try doc.createText("│");
-                    glyph.setStyle(.{ .color = color(spec.color) });
-                    _ = try guide.appendChild(glyph);
-                    _ = try line.appendChild(guide);
-                }
-            }
 
             if (is_cursor_line) {
                 self.cursor_line = line;

@@ -226,6 +226,12 @@ pub const ViewLine = struct {
     /// with one span per styled run. The terminal equivalent creates one `ui`
     /// element and text nodes for each run. `style_fn` is the paint-boundary
     /// adapter from token/decoration data to terminal cell attributes.
+    /// A terminal indentation/bracket guide painted inside the line element.
+    pub const Guide = struct {
+        column: usize,
+        color: ui.Color,
+    };
+
     pub const PaintOptions = struct {
         left_cells: usize,
         top_cells: usize,
@@ -234,6 +240,11 @@ pub const ViewLine = struct {
         background: ?ui.Color = null,
         flags: []u32,
         decoration_bits_fn: ?*const fn (classes: []const u8) u32 = null,
+        /// Upstream `inline-folded`: a collapsed region paints an ellipsis
+        /// after the line's text content.
+        folded_ellipsis: bool = false,
+        folded_ellipsis_style: ui.Style = .{},
+        guides: []const Guide = &.{},
     };
 
     pub const PartStyleFn = *const fn (part: view_line_renderer.RenderedPart, flag: u32) ui.Style;
@@ -308,6 +319,42 @@ pub const ViewLine = struct {
             const node = try doc.createText(rendered.rendered.bytes[run_start..absolute]);
             node.setStyle(run_style.?);
             _ = try line.appendChild(node);
+        }
+
+        if (options.folded_ellipsis) {
+            // `inline-folded` after-content, painted at the end of the text
+            // and outside the selectable line width.
+            const ellipsis = try doc.createElement(.div);
+            ellipsis.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = @floatFromInt(cell) },
+                .top = .{ .cells = 0 },
+                .width = .{ .cells = 1 },
+                .height = .{ .cells = 1 },
+                .white_space = .pre,
+            });
+            const glyph = try doc.createText("\u{2026}");
+            glyph.setStyle(options.folded_ellipsis_style);
+            _ = try ellipsis.appendChild(glyph);
+            _ = try line.appendChild(ellipsis);
+        }
+
+        // Indent/bracket guides are overlay paint in the browser; terminal
+        // cells are children of the line so they can share its clipping.
+        for (options.guides) |guide| {
+            const guide_node = try doc.createElement(.div);
+            guide_node.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = @floatFromInt(guide.column) },
+                .top = .{ .cells = 0 },
+                .width = .{ .cells = 1 },
+                .height = .{ .cells = 1 },
+                .white_space = .pre,
+            });
+            const glyph = try doc.createText("\u{2502}");
+            glyph.setStyle(.{ .color = guide.color });
+            _ = try guide_node.appendChild(glyph);
+            _ = try line.appendChild(guide_node);
         }
         return line;
     }
