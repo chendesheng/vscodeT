@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 const Editor = @import("./codeEditorWidgetTerminal.zig").Editor;
 const view_model = @import("../../../common/viewModel.zig");
 const view_events = @import("../../../common/viewEvents.zig");
+const view_event_handler = @import("../../../common/viewEventHandler.zig");
 const view_context = @import("../../../common/viewModel/viewContext.zig");
 const viewport_data = @import("../../../common/viewLayout/viewLinesViewportData.zig");
 const view_lines_mod = @import("../../viewParts/viewLines/viewLines.zig");
@@ -40,6 +41,8 @@ const IViewLayout = view_model.IViewLayout;
 const ViewportData = viewport_data.ViewportData;
 const ViewLines = view_lines_mod.ViewLines;
 const View = view_mod.View;
+const ViewEventHandler = view_event_handler.ViewEventHandler;
+const ViewEvent = view_events.ViewEvent;
 const ViewModelDecorations = view_model_decorations.ViewModelDecorations;
 const LineNumbersOverlay = line_numbers_mod.LineNumbersOverlay;
 const RenderedLineNumber = line_numbers_mod.RenderedLineNumber;
@@ -159,6 +162,12 @@ pub const TerminalViewHost = struct {
     offsets: std.ArrayListUnmanaged(f64) = .empty,
     selections: []Selection = &.{},
     max_line_width: f64 = 0,
+    view_handlers: std.ArrayListUnmanaged(*ViewEventHandler) = .empty,
+    last_version: u32 = 0,
+    last_selection_hash: u64 = 0,
+    last_start_line: usize = 0,
+    last_end_line: usize = 0,
+    first_frame: bool = true,
 
     pub fn init(allocator: Allocator, editor: *Editor) !*TerminalViewHost {
         const self = try allocator.create(TerminalViewHost);
@@ -227,6 +236,7 @@ pub const TerminalViewHost = struct {
         self.lines_adapter.deinit();
         self.offsets.deinit(self.allocator);
         if (self.selections.len > 0) self.allocator.free(self.selections);
+        self.view_handlers.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -268,12 +278,43 @@ pub const TerminalViewHost = struct {
         _ = self.current_line.base.handler.onCursorStateChanged(&cursor_event);
         _ = self.view_cursors.base.handler.onCursorStateChanged(&cursor_event);
 
-        // The terminal host has no view-event dispatch loop yet, so every
-        // overlay is dirty per frame. Upstream marks them dirty through the
-        // view event handler when the viewport or folding changes.
-        self.line_numbers.base.handler.forceShouldRender();
-        self.selections_overlay.base.handler.forceShouldRender();
+        // Dispatch the view events that upstream's event handler would have
+        // sent from the model/view model. The terminal editor has no event
+        // bus yet, so the host compares the rendered snapshots instead.
+        const version = self.editor.model.getVersionId();
+        const selection_hash = selectionHash(self.selections);
+        const range_changed = start_line != self.last_start_line or end_line != self.last_end_line;
+        if (self.first_frame or version != self.last_version or range_changed) {
+            self.dispatch(.{ .ViewFlushed = .{} });
+            self.dispatch(.{ .ViewZonesChanged = .{} });
+        }
+        if (self.first_frame or selection_hash != self.last_selection_hash) {
+            self.dispatch(.{ .ViewCursorStateChanged = .{
+                .selections = self.selections,
+                .modelSelections = self.selections,
+                .reason = .NotSet,
+            } });
+        }
+        if (self.first_frame or range_changed) {
+            self.dispatch(.{ .ViewScrollChanged = .{
+                .scrollWidth = 0,
+                .scrollLeft = 0,
+                .scrollHeight = @floatFromInt(self.editor.scrollHeight()),
+                .scrollTop = @floatFromInt(self.editor.topViewLine() -| 1),
+                .scrollWidthChanged = false,
+                .scrollLeftChanged = false,
+                .scrollHeightChanged = true,
+                .scrollTopChanged = range_changed or self.first_frame,
+            } });
+        }
+        // The cursor-line overlay is cheap to rebuild and its dirty bit is
+        // not reliably set by the terminal's synthesized event batch.
         self.current_line.base.handler.forceShouldRender();
+        self.last_version = version;
+        self.last_selection_hash = selection_hash;
+        self.last_start_line = start_line;
+        self.last_end_line = end_line;
+        self.first_frame = false;
 
         // The ported `View` owns the render pass: it prepares content
         // overlays, renders `ViewLines`, collects dirty parts and clears
@@ -380,8 +421,37 @@ pub const TerminalViewHost = struct {
         return host(context).selections;
     }
 
-    fn addViewEventHandler(_: *anyopaque, _: *anyopaque) void {}
-    fn removeViewEventHandler(_: *anyopaque, _: *anyopaque) void {}
+    fn addViewEventHandler(context: *anyopaque, handler: *anyopaque) void {
+        const self = host(context);
+        self.view_handlers.append(self.allocator, @ptrCast(@alignCast(handler))) catch {};
+    }
+
+    fn removeViewEventHandler(context: *anyopaque, handler: *anyopaque) void {
+        const self = host(context);
+        const target: *ViewEventHandler = @ptrCast(@alignCast(handler));
+        for (self.view_handlers.items, 0..) |candidate, index| {
+            if (candidate == target) {
+                _ = self.view_handlers.orderedRemove(index);
+                return;
+            }
+        }
+    }
+
+    fn dispatch(self: *TerminalViewHost, event: ViewEvent) void {
+        var events = [_]ViewEvent{event};
+        for (self.view_handlers.items) |handler| handler.handleEvents(&events);
+    }
+
+    fn selectionHash(selections: []const Selection) u64 {
+        var hash = std.hash.Wyhash.init(0);
+        for (selections) |selection| {
+            hash.update(std.mem.asBytes(&selection.startLineNumber));
+            hash.update(std.mem.asBytes(&selection.startColumn));
+            hash.update(std.mem.asBytes(&selection.endLineNumber));
+            hash.update(std.mem.asBytes(&selection.endColumn));
+        }
+        return hash.final();
+    }
     fn getLineMinColumn(context: *anyopaque, line_number: usize) usize {
         return host(context).editor.view_lines.getLineMinColumn(line_number);
     }
