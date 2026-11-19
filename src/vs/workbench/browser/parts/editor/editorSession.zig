@@ -15,11 +15,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
-const group_mod = @import("../vs/workbench/common/editor/editorGroupModel.zig");
-const editor_groups = @import("../vs/workbench/services/editor/common/editorGroupsService.zig");
-const storage_mod = @import("../vs/platform/storage/common/storage.zig");
+const group_mod = @import("../../../common/editor/editorGroupModel.zig");
+const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
+const storage_mod = @import("../../../../platform/storage/common/storage.zig");
 const InMemoryStorageService = storage_mod.InMemoryStorageService;
-const memento_mod = @import("../vs/workbench/common/memento.zig");
+const memento_mod = @import("../../../common/memento.zig");
 const Memento = memento_mod.Memento;
 const MementoStore = memento_mod.MementoStore;
 

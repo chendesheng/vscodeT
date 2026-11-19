@@ -77,7 +77,7 @@ comptime {
     _ = @import("./tui/explorerTreeSidebar.zig");
     _ = @import("./tui/tab.zig");
     _ = @import("./tui/workbench.zig");
-    _ = @import("./tui/session.zig");
+    _ = @import("./vs/workbench/browser/parts/editor/editorSession.zig");
     _ = @import("./tui/hoverProvider.zig");
     _ = @import("./vs/base/common/cache.zig");
     _ = @import("./vs/base/common/event.zig");
