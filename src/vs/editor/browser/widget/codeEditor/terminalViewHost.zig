@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const ui = @import("ui");
 
 const Editor = @import("./codeEditorWidgetTerminal.zig").Editor;
 const view_model = @import("../../../common/viewModel.zig");
@@ -23,6 +24,7 @@ const line_numbers_mod = @import("../../viewParts/lineNumbers/lineNumbers.zig");
 const selections_mod = @import("../../viewParts/selections/selections.zig");
 const current_line_mod = @import("../../viewParts/currentLineHighlight/currentLineHighlight.zig");
 const view_cursors_mod = @import("../../viewParts/viewCursors/viewCursors.zig");
+const folding_decorations_mod = @import("../../../contrib/folding/browser/foldingDecorations.zig");
 const restricted_context = @import("../../view/renderingContext.zig");
 const rendering_context = @import("../../view/renderingContext.zig");
 const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
@@ -52,6 +54,10 @@ const LineSelectionRender = selections_mod.LineSelectionRender;
 const CurrentLineHighlightOverlay = current_line_mod.CurrentLineHighlightOverlay;
 const LineHighlightRenderData = current_line_mod.LineHighlightRenderData;
 const ViewCursors = view_cursors_mod.ViewCursors;
+const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvider;
+const CursorState = @import("../../../common/cursorCommon.zig").CursorState;
+const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
+const ViewLine = @import("../../viewParts/viewLines/viewLine.zig").ViewLine;
 const ViewCursorRenderData = @import("../../viewParts/viewCursors/viewCursor.zig").ViewCursorRenderData;
 const RestrictedRenderingContext = restricted_context.RestrictedRenderingContext;
 const InlineDecoration = @import("../../../common/viewModel/inlineDecorations.zig").InlineDecoration;
@@ -168,6 +174,7 @@ pub const TerminalViewHost = struct {
     last_start_line: usize = 0,
     last_end_line: usize = 0,
     first_frame: bool = true,
+    folding_decorations: FoldingDecorationProvider = .{},
 
     pub fn init(allocator: Allocator, editor: *Editor) !*TerminalViewHost {
         const self = try allocator.create(TerminalViewHost);
@@ -343,6 +350,175 @@ pub const TerminalViewHost = struct {
 
     pub fn getLineWidth(self: *const TerminalViewHost, line_number: usize) usize {
         return self.view.viewLinesConst().getLineWidth(line_number);
+    }
+
+    pub fn foldingDecorations(self: *TerminalViewHost) *FoldingDecorationProvider {
+        return &self.folding_decorations;
+    }
+
+    pub fn foldingDecorationsConst(self: *const TerminalViewHost) *const FoldingDecorationProvider {
+        return &self.folding_decorations;
+    }
+
+    pub fn foldingShowsEllipsis(self: *const TerminalViewHost, model_line: usize) bool {
+        const state = self.editor.foldStateAtModelLine(model_line);
+        if (state == .none) return false;
+        return self.folding_decorations.getDecorationOption(state == .collapsed, false, false).ellipsis;
+    }
+
+    pub const PaintGuide = struct {
+        row: usize,
+        column: usize,
+        color: [3]u8,
+    };
+
+    pub const ViewportPaintArgs = struct {
+        doc: *ui.Document,
+        root: *ui.Node,
+        left_cells: usize,
+        width_cells: usize,
+        top_row: usize,
+        guides: []const PaintGuide,
+        top: usize,
+        tab_size: usize,
+        text_width: usize,
+        cursor: Position,
+        states: []const CursorState,
+        style_fn: ViewLine.PartStyleFn,
+        decoration_bits_fn: ?*const fn (classes: []const u8) u32,
+        selected_flag: u32,
+        secondary_cursor_flag: u32,
+        background_color: ui.Color,
+        ellipsis_style: ui.Style,
+    };
+
+    /// Paints the visible viewport through `ViewLines`. The per-line flag,
+    /// guide and fold decisions stay host-side because they are terminal paint
+    /// inputs; the assembly and line DOM belong to the ported stack.
+    pub fn paintViewport(self: *TerminalViewHost, args: ViewportPaintArgs) !void {
+        const Context = struct {
+            host: *TerminalViewHost,
+            args: *const ViewportPaintArgs,
+        };
+        var context = Context{ .host = self, .args = &args };
+        try self.view.getViewLines().paintViewport(.{
+            .allocator = self.allocator,
+            .doc = args.doc,
+            .root = args.root,
+            .left_cells = args.left_cells,
+            .width_cells = args.width_cells,
+            .top_row = args.top_row,
+            .provider = .{ .context = &context, .get = linePaintData },
+            .style_fn = args.style_fn,
+            .decoration_bits_fn = args.decoration_bits_fn,
+        });
+    }
+
+    fn linePaintData(context: *anyopaque, view_line: usize) anyerror!ViewLines.LinePaintData {
+        const Context = struct {
+            host: *TerminalViewHost,
+            args: *const ViewportPaintArgs,
+        };
+        const ctx: *Context = @ptrCast(@alignCast(context));
+        const self = ctx.host;
+        const args = ctx.args;
+        const editor = self.editor;
+
+        const line_width = self.getLineWidth(view_line);
+        const flags = try self.allocator.alloc(u32, @max(line_width, 1));
+        errdefer self.allocator.free(flags);
+        @memset(flags, 0);
+
+        if (self.getSelectionRanges(view_line)) |selection| {
+            for (selection.ranges) |range| {
+                if (range.width <= 0) continue;
+                const start: usize = @intCast(@max(range.left, 0));
+                const end = @min(start +| @as(usize, @intCast(range.width)), flags.len);
+                var cell = start;
+                while (cell < end and cell < flags.len) : (cell += 1) {
+                    flags[cell] |= args.selected_flag;
+                }
+            }
+        }
+
+        const data = try editor.viewLineData(view_line);
+        const model_line = editor.modelLineNumber(view_line);
+        const output_index = editor.outputLineIndex(view_line);
+        var model_content = try editor.model.getLineContent(model_line);
+        defer model_content.deinit();
+        markSecondaryCursors(
+            args.states,
+            view_line,
+            model_content.items,
+            args.tab_size,
+            data.startVisibleColumn,
+            data.minColumn - 1,
+            flags,
+            args.secondary_cursor_flag,
+        );
+
+        const row = view_line -| args.top;
+        var guide_count: usize = 0;
+        for (args.guides) |guide| {
+            if (guide.row == row) guide_count += 1;
+        }
+        const guides = try self.allocator.alloc(ViewLine.Guide, guide_count);
+        errdefer self.allocator.free(guides);
+        var guide_index: usize = 0;
+        for (args.guides) |guide| {
+            if (guide.row != row) continue;
+            guides[guide_index] = .{
+                .column = guide.column,
+                .color = .{ .r = guide.color[0], .g = guide.color[1], .b = guide.color[2] },
+            };
+            guide_index += 1;
+        }
+
+        const current_line = self.getCurrentLineHighlight(view_line);
+        const is_cursor_line = if (current_line) |highlight|
+            highlight.highlight and highlight.in_content
+        else
+            view_line == args.cursor.lineNumber;
+
+        return .{
+            .flags = flags,
+            .background = if (is_cursor_line) args.background_color else null,
+            .folded_ellipsis = output_index == 0 and line_width < args.text_width and
+                self.foldingShowsEllipsis(model_line),
+            .folded_ellipsis_style = args.ellipsis_style,
+            .guides = guides,
+        };
+    }
+
+    fn markSecondaryCursors(
+        states: []const CursorState,
+        view_line: usize,
+        model_content: []const u8,
+        tab_size: usize,
+        start_visible_column: usize,
+        indent_cells: usize,
+        flags: []u32,
+        secondary_flag: u32,
+    ) void {
+        if (states.len > 1) {
+            for (states[1..]) |state| {
+                const position = state.viewState.position;
+                if (position.lineNumber != view_line) continue;
+                const cell = visibleOffset(model_content, position.column, tab_size, start_visible_column, indent_cells);
+                if (cell < flags.len) flags[cell] |= secondary_flag;
+            }
+        }
+    }
+
+    pub fn visibleOffset(
+        model_content: []const u8,
+        column: usize,
+        tab_size: usize,
+        start_visible_column: usize,
+        indent_cells: usize,
+    ) usize {
+        const visible = CursorColumns.visibleColumnFromColumn(model_content, column, tab_size);
+        return (visible -| start_visible_column) + indent_cells;
     }
 
     pub fn getMaxLineWidth(self: *const TerminalViewHost) f64 {

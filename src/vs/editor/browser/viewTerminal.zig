@@ -65,8 +65,6 @@ const view_line_mod = @import("./viewParts/viewLines/viewLine.zig");
 const ViewLine = view_line_mod.ViewLine;
 const view_lines_mod = @import("./viewParts/viewLines/viewLines.zig");
 const ViewLines = view_lines_mod.ViewLines;
-const folding_decorations_mod = @import("../contrib/folding/browser/foldingDecorations.zig");
-const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvider;
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
 const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
 const ContentWidgetEntry = content_widgets_mod.ContentWidgetEntry;
@@ -263,9 +261,6 @@ pub const View = struct {
     /// Whether this view paints the editor's fallback status row. The
     /// multi-group workbench disables it in favour of its status-bar part.
     status_bar_visible: bool = true,
-    /// Ported folding option provider (gutter icon, folded background and
-    /// `inline-folded` ellipsis selection).
-    folding_decorations: FoldingDecorationProvider = .{},
     /// Set when a widget/status/layout change made the current document
     /// stale. The next paint/render flushes it, so a burst of registrations
     /// costs one rebuild instead of one per call.
@@ -717,12 +712,6 @@ pub const View = struct {
         return self.editor.positionAtViewPoint(view_line, column);
     }
 
-    fn foldingDecorationsShowEllipsis(self: *const View, model_line: usize) bool {
-        const state = self.editor.foldStateAtModelLine(model_line);
-        if (state == .none) return false;
-        return self.folding_decorations.getDecorationOption(state == .collapsed, false, false).ellipsis;
-    }
-
     /// The last gutter cell is the fold-control column. It only toggles when
     /// the view line is the first output line of a model line with a region.
     fn foldControlAt(self: *const View, x: usize, y: usize) ?usize {
@@ -1055,30 +1044,34 @@ pub const View = struct {
             root,
             editor,
             &self.terminal_view_host.line_numbers,
-            &self.folding_decorations,
+            self.terminal_view_host.foldingDecorations(),
             gutter,
             text_height,
         );
 
-        var paint_context = LinePaintContext{
-            .view = self,
-            .guide_specs = guide_specs.items,
-            .states = states,
-            .top = top,
-            .tab_size = tab_size,
-            .text_width = text_width,
-            .cursor = cursor,
-        };
-        try self.terminal_view_host.viewRef().getViewLines().paintViewport(.{
-            .allocator = self.allocator,
+        var paint_guides = std.array_list.Managed(TerminalViewHost.PaintGuide).init(self.allocator);
+        defer paint_guides.deinit();
+        for (guide_specs.items) |spec| {
+            try paint_guides.append(.{ .row = spec.row, .column = spec.col, .color = spec.color });
+        }
+        try self.terminal_view_host.paintViewport(.{
             .doc = doc,
             .root = root,
             .left_cells = gutter,
             .width_cells = text_width,
             .top_row = 0,
-            .provider = .{ .context = &paint_context, .get = linePaintData },
+            .guides = paint_guides.items,
+            .top = top,
+            .tab_size = tab_size,
+            .text_width = text_width,
+            .cursor = cursor,
+            .states = states,
             .style_fn = lineStyleForPart,
             .decoration_bits_fn = decorationBits,
+            .selected_flag = CellFlag.selected,
+            .secondary_cursor_flag = CellFlag.secondary_cursor,
+            .background_color = color(current_line_background),
+            .ellipsis_style = .{ .color = color(continuation_color) },
         });
 
         try appendStatus(self, doc, root, rows);
@@ -1228,82 +1221,6 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
     _ = try root.appendChild(bar);
 }
 
-const LinePaintContext = struct {
-    view: *View,
-    guide_specs: []const GuideSpec,
-    states: []const CursorState,
-    top: usize,
-    tab_size: usize,
-    text_width: usize,
-    cursor: Position,
-};
-
-fn linePaintData(context: *anyopaque, view_line: usize) anyerror!ViewLines.LinePaintData {
-    const ctx: *LinePaintContext = @ptrCast(@alignCast(context));
-    const self = ctx.view;
-    const editor = self.editor;
-    const line_width = self.terminal_view_host.getLineWidth(view_line);
-    const flags = try self.allocator.alloc(u32, @max(line_width, 1));
-    errdefer self.allocator.free(flags);
-    @memset(flags, CellFlag.normal);
-
-    if (self.terminal_view_host.getSelectionRanges(view_line)) |selection| {
-        for (selection.ranges) |range| {
-            if (range.width <= 0) continue;
-            const start: usize = @intCast(@max(range.left, 0));
-            const end = @min(start +| @as(usize, @intCast(range.width)), flags.len);
-            var cell = start;
-            while (cell < end and cell < flags.len) : (cell += 1) {
-                flags[cell] |= CellFlag.selected;
-            }
-        }
-    }
-
-    const data = try editor.viewLineData(view_line);
-    const model_line = editor.modelLineNumber(view_line);
-    const output_index = editor.outputLineIndex(view_line);
-    var model_content = try editor.model.getLineContent(model_line);
-    defer model_content.deinit();
-    markSecondaryCursors(
-        ctx.states,
-        view_line,
-        model_content.items,
-        ctx.tab_size,
-        data.startVisibleColumn,
-        data.minColumn - 1,
-        flags,
-    );
-
-    const row = view_line -| ctx.top;
-    var guide_count: usize = 0;
-    for (ctx.guide_specs) |spec| {
-        if (spec.row == row) guide_count += 1;
-    }
-    const guides = try self.allocator.alloc(ViewLine.Guide, guide_count);
-    errdefer self.allocator.free(guides);
-    var guide_index: usize = 0;
-    for (ctx.guide_specs) |spec| {
-        if (spec.row != row) continue;
-        guides[guide_index] = .{ .column = spec.col, .color = color(spec.color) };
-        guide_index += 1;
-    }
-
-    const current_line = self.terminal_view_host.getCurrentLineHighlight(view_line);
-    const is_cursor_line = if (current_line) |highlight|
-        highlight.highlight and highlight.in_content
-    else
-        view_line == ctx.cursor.lineNumber;
-
-    return .{
-        .flags = flags,
-        .background = if (is_cursor_line) color(current_line_background) else null,
-        .folded_ellipsis = output_index == 0 and line_width < ctx.text_width and
-            self.foldingDecorationsShowEllipsis(model_line),
-        .folded_ellipsis_style = .{ .color = color(continuation_color) },
-        .guides = guides,
-    };
-}
-
 /// Terminal paint adapter for one rendered part and its cell flags.
 fn lineStyleForPart(part: line_renderer.RenderedPart, flag: u32) ui.Style {
     var style = tokenStyle(part);
@@ -1368,25 +1285,6 @@ fn applyFlagStyle(style: *ui.Style, flag: u32) void {
         style.background = color(secondary_cursor_background);
     }
     if (flag & CellFlag.selected != 0) style.reverse = true;
-}
-
-fn markSecondaryCursors(
-    states: []const CursorState,
-    view_line: usize,
-    model_content: []const u8,
-    tab_size: usize,
-    start_visible_column: usize,
-    indent_cells: usize,
-    flags: []u32,
-) void {
-    if (states.len > 1) {
-        for (states[1..]) |state| {
-            const position = state.viewState.position;
-            if (position.lineNumber != view_line) continue;
-            const cell = visibleOffset(model_content, position.column, tab_size, start_visible_column, indent_cells);
-            if (cell < flags.len) flags[cell] |= CellFlag.secondary_cursor;
-        }
-    }
 }
 
 fn visibleOffset(
