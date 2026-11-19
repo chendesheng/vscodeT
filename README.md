@@ -53,6 +53,15 @@ Console loggers, the URI-keyed `ILoggerService` registry and the log-output
 picker are not ported: the TUI owns the terminal (alternate screen, raw mode)
 and has a single log file instead of per-channel resources.
 
+## File watcher
+
+The workspace watcher is the ported parcel watcher. macOS uses its kqueue
+backend, which needs one descriptor per watched file and directory, so the
+backend stops adding watches at 75% of `RLIMIT_NOFILE` instead of starving
+later `spawn` calls (the extension host) of descriptors. `files.watcherExclude`
+is not wired yet: a workspace with large build caches is only partially
+watched.
+
 ## Extension host (experimental)
 
 The workbench half of VS Code's extension system is being ported under

@@ -51,15 +51,27 @@ pub const Backend = struct {
     io: Io,
     kq: posix.fd_t,
     bindings: std.array_list.Managed(Binding),
+    /// kqueue needs one descriptor per watched file and directory, so a
+    /// recursive watch of a large tree can exhaust `RLIMIT_NOFILE` before the
+    /// app has a chance to spawn anything else. Stop adding watches at 75% of
+    /// the soft limit; the rest of the tree stays unwatched instead of failing
+    /// the whole watch or starving `spawn` of descriptors.
+    fd_budget: usize,
 
     pub fn init(allocator: Allocator, io: Io) !Backend {
         const kq = std.c.kqueue();
         if (kq < 0) return error.KqueueInitFailed;
+        const limits = std.posix.getrlimit(.NOFILE) catch std.posix.rlimit{ .cur = 0, .max = 0 };
+        const fd_budget: usize = if (limits.cur >= 64)
+            @intCast(@min(limits.cur - limits.cur / 4, @as(u64, std.math.maxInt(usize))))
+        else
+            64;
         return .{
             .allocator = allocator,
             .io = io,
             .kq = kq,
             .bindings = std.array_list.Managed(Binding).init(allocator),
+            .fd_budget = fd_budget,
         };
     }
 
@@ -78,6 +90,7 @@ pub const Backend = struct {
     }
 
     fn watchTree(self: *Backend, watcher: *Watcher, path: []const u8, root: bool) !void {
+        if (self.bindings.items.len >= self.fd_budget) return;
         try self.addWatch(watcher, path, root);
 
         const stat = Io.Dir.cwd().statFile(self.io, path, .{ .follow_symlinks = false }) catch return;
@@ -96,6 +109,10 @@ pub const Backend = struct {
                 continue;
             }
             if (watcher.recursive) {
+                if (self.bindings.items.len >= self.fd_budget) {
+                    self.allocator.free(child);
+                    return;
+                }
                 try self.watchTree(watcher, child, false);
                 self.allocator.free(child);
             } else {
@@ -113,6 +130,7 @@ pub const Backend = struct {
     }
 
     fn addWatch(self: *Backend, watcher: *Watcher, path: []const u8, root: bool) !void {
+        if (self.bindings.items.len >= self.fd_budget) return error.WatchLimitReached;
         const stat = Io.Dir.cwd().statFile(self.io, path, .{ .follow_symlinks = false }) catch {
             if (root) return error.WatchFailed;
             return;
@@ -122,7 +140,7 @@ pub const Backend = struct {
 
         const path_z = try std.fmt.allocPrintSentinel(self.allocator, "{s}", .{path}, 0);
         defer self.allocator.free(path_z);
-        const raw_fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY, .EVTONLY = true, .NONBLOCK = true });
+        const raw_fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY, .EVTONLY = true, .NONBLOCK = true, .CLOEXEC = true });
         if (raw_fd < 0) {
             if (root) return error.WatchFailed;
             return;
