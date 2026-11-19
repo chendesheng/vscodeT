@@ -228,6 +228,7 @@ comptime {
     _ = @import("./vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
     _ = @import("./vs/editor/browser/widget/codeEditor/terminalViewHost.zig");
     _ = @import("./vs/editor/browser/viewTerminal.zig");
+    _ = @import("./vs/editor/browser/controller/mouseHandler.zig");
     _ = @import("./vs/workbench/services/language/common/bundledLanguages.zig");
     _ = @import("./vs/editor/common/core/wordHelper.zig");
     _ = @import("./vs/editor/common/tokens/contiguousMultilineTokens.zig");

@@ -59,6 +59,8 @@ const computeIndentLevel = @import("../common/model/utils.zig").computeIndentLev
 const indent_guides = @import("./viewParts/indentGuides/indentGuides.zig");
 const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.zig");
 const mouse_target = @import("./controller/mouseTarget.zig");
+const mouse_handler_mod = @import("./controller/mouseHandler.zig");
+const TerminalMouseHandler = mouse_handler_mod.TerminalMouseHandler;
 const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
 const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
 const view_line_mod = @import("./viewParts/viewLines/viewLine.zig");
@@ -241,13 +243,7 @@ pub const View = struct {
     /// Width of the rightmost cells reserved for the combined overview ruler
     /// and scrollbar. The editor wraps around the same width.
     scrollbar_width: usize = 0,
-    /// The last left-button press, in cells, kept across document rebuilds so
-    /// a release can synthesize a click without retaining node pointers.
-    mouse_press: ?MousePress = null,
-    /// Where a left-button drag started, in model coordinates.
-    drag_anchor: ?Position = null,
-    /// A drag moved the selection, so the release is not a click.
-    drag_moved: bool = false,
+    mouse_handler: TerminalMouseHandler = .{},
     /// Workbench status-bar text supplied through the ported
     /// `StatusbarModel`. Empty slices fall back to the editor's own status
     /// string so standalone editor view tests keep their old contract.
@@ -267,11 +263,6 @@ pub const View = struct {
     /// Bridges the terminal editor to the ported `ViewLines` stack. The
     /// renderer below consumes its rendered line records.
     terminal_view_host: *TerminalViewHost,
-
-    const MousePress = struct {
-        x: usize,
-        y: usize,
-    };
 
     pub fn init(allocator: std.mem.Allocator, editor: *Editor) !*View {
         const self = try allocator.create(View);
@@ -473,127 +464,130 @@ pub const View = struct {
         const target = (try self.surface.elementFromPoint(event.x, event.y)) orelse
             (doc.root orelse return false);
         ui.event.dispatchMouse(doc, target, event);
+        return self.mouse_handler.dispatch(.{
+            .context = self,
+            .element_from_point = mouseElementAt,
+            .root_node = mouseRootNode,
+            .is_scrollbar_hit = mouseIsScrollbarHit,
+            .begin_scrollbar_drag = mouseBeginScrollbarDrag,
+            .end_scrollbar_drag = mouseEndScrollbarDrag,
+            .scrollbar_dragging = mouseScrollbarDragging,
+            .drag_scrollbar = mouseDragScrollbar,
+            .toggle_fold = mouseToggleFold,
+            .line_for_node = mouseLineForNode,
+            .position_at_cell = mousePositionAtCell,
+            .set_cursor = mouseSetCursor,
+            .selection_start = mouseSelectionStart,
+            .select_from = mouseSelectFrom,
+            .update_drag_selection = mouseUpdateDragSelection,
+            .dispatch_click = mouseDispatchClick,
+            .scroll_lines = mouseScrollLines,
+        }, event, target);
+    }
 
-        const scrollbar_hit = self.isScrollbarCell(event.x) and
-            event.y < self.editor.textHeight() and
-            !self.pointInWidget(event.x, event.y);
+    fn mouseIsScrollbarHit(context: *anyopaque, x: usize, y: usize) bool {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.isScrollbarCell(x) and
+            y < self.editor.textHeight() and
+            !self.pointInWidget(x, y);
+    }
 
-        var caret_changed = false;
-        switch (event.kind) {
-            .down => {
-                if (event.button == .left and scrollbar_hit) {
-                    self.mouse_press = null;
-                    self.drag_anchor = null;
-                    self.drag_moved = false;
-                    if (!event.default_prevented) {
-                        self.terminal_view_host.viewRef().scrollbarPart().beginDrag(
-                            self.editor,
-                            event.x,
-                            event.y,
-                            self.surface.document().cols,
-                            self.scrollbar_width,
-                            self.editor.textHeight(),
-                        );
-                    }
-                    return false;
-                }
-                self.terminal_view_host.viewRef().scrollbarPart().endDrag();
-                if (event.button == .left and
-                    !event.default_prevented and
-                    try self.toggleFoldControl(event.x, event.y))
-                {
-                    self.mouse_press = null;
-                    self.drag_anchor = null;
-                    self.drag_moved = false;
-                    return true;
-                }
-                if (event.button == .left) {
-                    self.mouse_press = .{ .x = event.x, .y = event.y };
-                    self.drag_anchor = null;
-                    self.drag_moved = false;
-                    if (!event.default_prevented) {
-                        if (self.lineViewLineAt(target)) |view_line| {
-                            const position = try self.positionAtCell(view_line, event.x);
-                            if (event.mods.shift) {
-                                const previous = self.editor.modelSelection();
-                                const anchor = previous.getSelectionStart();
-                                self.drag_anchor = anchor;
-                                try self.selectFrom(anchor, position);
-                            } else {
-                                try self.editor.setCursorPosition(position);
-                                self.drag_anchor = position;
-                            }
-                            caret_changed = true;
-                        }
-                    }
-                }
-            },
-            .move => {
-                if (self.terminal_view_host.viewRef().scrollbarPart().isDragging()) {
-                    _ = self.terminal_view_host.viewRef().scrollbarPart().dragTo(
-                        self.editor,
-                        event.y,
-                        self.editor.textHeight(),
-                    );
-                    return false;
-                }
-                if (event.button == .left) {
-                    if (self.drag_anchor) |anchor| {
-                        if (self.lineViewLineAt(target)) |view_line| {
-                            const position = try self.positionAtCell(view_line, event.x);
-                            if (position.lineNumber != anchor.lineNumber or
-                                position.column != anchor.column)
-                            {
-                                try self.editor.updateDragSelection(anchor, position);
-                                self.drag_moved = true;
-                                caret_changed = true;
-                            }
-                        }
-                    }
-                }
-            },
-            .up => {
-                if (self.terminal_view_host.viewRef().scrollbarPart().isDragging()) {
-                    self.terminal_view_host.viewRef().scrollbarPart().endDrag();
-                    return false;
-                }
-                if (event.button == .left) {
-                    if (self.mouse_press) |press| {
-                        self.mouse_press = null;
-                        const drag_moved = self.drag_moved;
-                        self.drag_anchor = null;
-                        self.drag_moved = false;
-                        // A selecting drag is not a click; otherwise a press
-                        // and a release on different elements click their
-                        // common ancestor.
-                        if (!drag_moved) {
-                            const press_target = (try self.surface.elementFromPoint(press.x, press.y)) orelse
-                                (doc.root orelse target);
-                            const click_target = ui.event.commonInclusiveAncestor(press_target, target) orelse
-                                press_target;
-                            var click = ui.MouseEvent{
-                                .kind = .click,
-                                .x = event.x,
-                                .y = event.y,
-                                .button = .left,
-                                .mods = event.mods,
-                            };
-                            ui.event.dispatchMouse(doc, click_target, &click);
-                        }
-                    }
-                }
-            },
-            .wheel => {
-                if (!event.default_prevented and
-                    event.y < self.editor.textHeight() and
-                    event.delta_y != 0)
-                {
-                    _ = self.editor.scrollViewLines(event.delta_y);
-                }
-            },
-            .click => {},
-        }
-        return caret_changed;
+    fn mouseBeginScrollbarDrag(context: *anyopaque, x: usize, y: usize) void {
+        const self: *View = @ptrCast(@alignCast(context));
+        self.terminal_view_host.viewRef().scrollbarPart().beginDrag(
+            self.editor,
+            x,
+            y,
+            self.surface.document().cols,
+            self.scrollbar_width,
+            self.editor.textHeight(),
+        );
+    }
+
+    fn mouseEndScrollbarDrag(context: *anyopaque) void {
+        const self: *View = @ptrCast(@alignCast(context));
+        self.terminal_view_host.viewRef().scrollbarPart().endDrag();
+    }
+
+    fn mouseScrollbarDragging(context: *anyopaque) bool {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.terminal_view_host.viewRef().scrollbarPart().isDragging();
+    }
+
+    fn mouseDragScrollbar(context: *anyopaque, y: usize) void {
+        const self: *View = @ptrCast(@alignCast(context));
+        _ = self.terminal_view_host.viewRef().scrollbarPart().dragTo(
+            self.editor,
+            y,
+            self.editor.textHeight(),
+        );
+    }
+
+    fn mouseToggleFold(context: *anyopaque, x: usize, y: usize) !bool {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.toggleFoldControl(x, y);
+    }
+
+    fn mouseLineForNode(context: *anyopaque, node: *ui.Node) ?usize {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.lineViewLineAt(node);
+    }
+
+    fn mousePositionAtCell(context: *anyopaque, view_line: usize, x: usize) !Position {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.positionAtCell(view_line, x);
+    }
+
+    fn mouseSetCursor(context: *anyopaque, position: Position) !void {
+        const self: *View = @ptrCast(@alignCast(context));
+        try self.editor.setCursorPosition(position);
+    }
+
+    fn mouseSelectionStart(context: *anyopaque) Position {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.editor.modelSelection().getSelectionStart();
+    }
+
+    fn mouseSelectFrom(context: *anyopaque, anchor: Position, position: Position) !void {
+        const self: *View = @ptrCast(@alignCast(context));
+        try self.selectFrom(anchor, position);
+    }
+
+    fn mouseUpdateDragSelection(context: *anyopaque, anchor: Position, position: Position) !void {
+        const self: *View = @ptrCast(@alignCast(context));
+        try self.editor.updateDragSelection(anchor, position);
+    }
+
+    fn mouseDispatchClick(
+        context: *anyopaque,
+        press_x: usize,
+        press_y: usize,
+        x: usize,
+        y: usize,
+        mods: ui.Modifiers,
+    ) void {
+        const self: *View = @ptrCast(@alignCast(context));
+        const doc = self.surface.document();
+        const target = self.surface.elementFromPoint(x, y) catch null;
+        const target_node = target orelse doc.root orelse return;
+        const press_target = (self.surface.elementFromPoint(press_x, press_y) catch null) orelse
+            (doc.root orelse target_node);
+        const click_target = ui.event.commonInclusiveAncestor(press_target, target_node) orelse press_target;
+        var click = ui.MouseEvent{
+            .kind = .click,
+            .x = x,
+            .y = y,
+            .button = .left,
+            .mods = mods,
+        };
+        ui.event.dispatchMouse(doc, click_target, &click);
+    }
+
+    fn mouseScrollLines(context: *anyopaque, y: usize, delta: f64) bool {
+        const self: *View = @ptrCast(@alignCast(context));
+        if (y >= self.editor.textHeight()) return false;
+        _ = self.editor.scrollViewLines(@as(isize, @intFromFloat(delta)));
+        return true;
     }
 
     fn isScrollbarCell(self: *View, x: usize) bool {
@@ -638,6 +632,11 @@ pub const View = struct {
     fn mouseElementAt(context: *anyopaque, x: usize, y: usize) ?*ui.Node {
         const self: *View = @ptrCast(@alignCast(context));
         return self.surface.elementFromPoint(x, y) catch null;
+    }
+
+    fn mouseRootNode(context: *anyopaque) ?*ui.Node {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.surface.document().root;
     }
 
     fn mouseContentWidgetContains(context: *anyopaque, x: usize, y: usize) bool {
