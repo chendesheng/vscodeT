@@ -228,7 +228,7 @@ comptime {
     _ = @import("./tui/app.zig");
     _ = @import("./tui/editor.zig");
     _ = @import("./tui/view.zig");
-    _ = @import("./tui/language.zig");
+    _ = @import("./vs/workbench/services/language/common/bundledLanguages.zig");
     _ = @import("./vs/editor/common/core/wordHelper.zig");
     _ = @import("./vs/editor/common/tokens/contiguousMultilineTokens.zig");
     _ = @import("./vs/editor/common/tokens/contiguousMultilineTokensBuilder.zig");

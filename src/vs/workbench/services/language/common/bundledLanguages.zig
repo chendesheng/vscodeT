@@ -1,8 +1,16 @@
+//! Terminal bundled language subset.
+//!
+//! Upstream ships each built-in language as a built-in extension contribution
+//! (`languages` extension point + `language-configuration.json`). The terminal
+//! has no extension host for built-ins, so this module declares the bundled
+//! grammars and the portable comment/bracket/folding data they need. It is a
+//! Zig adaptation, not a port of one upstream file; the registration path goes
+//! through the ported `WorkbenchLanguageService`/`LanguageService`.
 const std = @import("std");
 const vscode_syntax = @import("vscode-syntax");
-const LanguageIdCodec = @import("../vs/editor/common/languages.zig").LanguageIdCodec;
-const LanguageService = @import("../vs/editor/common/services/languageService.zig").LanguageService;
-const language_configuration = @import("../vs/editor/common/languages/languageConfiguration.zig");
+const LanguageIdCodec = @import("../../../../editor/common/languages.zig").LanguageIdCodec;
+const LanguageService = @import("../../../../editor/common/services/languageService.zig").LanguageService;
+const language_configuration = @import("../../../../editor/common/languages/languageConfiguration.zig");
 const CommentRule = language_configuration.CommentRule;
 const LineCommentConfig = language_configuration.LineCommentConfig;
 const CharacterPair = language_configuration.CharacterPair;
