@@ -250,7 +250,6 @@ pub const Editor = struct {
     status: [MAX_STATUS]u8,
     status_len: usize,
     quit_armed: bool,
-    close_tab_armed: bool,
     prev_edit_operation_type: EditOperationType,
     pending_selection: [8]Selection,
     pending_selection_count: usize,
@@ -489,7 +488,6 @@ pub const Editor = struct {
             .status = undefined,
             .status_len = 0,
             .quit_armed = false,
-            .close_tab_armed = false,
             .prev_edit_operation_type = .Other,
             .pending_selection = undefined,
             .pending_selection_count = 0,
@@ -2901,21 +2899,6 @@ pub const Editor = struct {
 
     pub fn clearQuitArmed(self: *Editor) void {
         self.quit_armed = false;
-    }
-
-    /// Asks before closing this editor's tab, mirroring the dirty check of the
-    /// workbench's editor-part close. The first request arms; the second
-    /// returns true.
-    pub fn requestCloseTab(self: *Editor) bool {
-        if (!self.isDirty()) return true;
-        if (self.close_tab_armed) return true;
-        self.close_tab_armed = true;
-        self.setMessage("Unsaved changes: Ctrl-W again to close, Ctrl-S to save", .{});
-        return false;
-    }
-
-    pub fn clearCloseTabArmed(self: *Editor) void {
-        self.close_tab_armed = false;
     }
 };
 

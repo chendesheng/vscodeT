@@ -578,10 +578,11 @@ The tab strip is the cell adaptation of `editorTabsControl.ts`/
 (`JS`, `TS`, `ZG`, …), preview tabs are italic, the active tab uses the active
 background and bold text, and every tab reserves action space. The active or
 hovered tab paints `×`; a modified tab paints `●` in the same cell (hovering it
-paints `×`). Clicking that cell or middle-clicking the tab closes it, with the
-same second-activation rule for dirty tabs as `Ctrl-W`. Double-clicking a
-preview tab pins it; double-clicking a pinned tab toggles the group's expanded
-state (default `doubleClickTabToToggleEditorGroupSizes: 'expand'`). An expanded
+paints `×`). Clicking that cell or middle-clicking the tab closes it; a dirty
+tab first opens the modal save confirmation and `Ctrl-W` takes the same close
+path. Double-clicking a preview tab pins it; double-clicking a pinned tab
+toggles the group's expanded state (default
+`doubleClickTabToToggleEditorGroupSizes: 'expand'`). An expanded
 group is laid out over the whole editor area and its siblings are not painted;
 toggling it off restores the split from the existing grid rects. Sash resizing
 and tab dragging are disabled while a group is expanded. There is no 1px
@@ -590,6 +591,31 @@ control, tab context menu or tab drag reordering; overflow clips leading tabs
 behind an ellipsis and reveals the active tab. Preview editors come from
 Explorer single clicks; Enter/quick open/CLI/session opens stay pinned, and an
 edit pins a preview.
+
+### Editor close confirmation dialog
+
+`ui/dialog.zig` is the reusable modal message widget. The editor close path
+feeds it the VS Code save confirmation built by
+`src/vs/platform/dialogs/common/dialogs.zig`. It follows the native macOS save
+sheet from VS Code: a warning glyph above the bold, wrapped
+"Do you want to save the changes you made to …?" message, the
+"Your changes will be lost if you don't save them." detail, and full-width
+buttons stacked vertically. A terminal shorter than the stacked layout turns
+the buttons into one row and drops the icon and blank separators; the dialog is
+centered, bordered and dims every cell outside its rectangle.
+
+The close path is upstream's `EditorGroupView.doHandleCloseConfirmation`.
+Clicking a tab's close cell, middle-clicking, `Ctrl-W` or the
+`workbench.action.closeActiveEditor` command all go through the same
+`closeTab`: a custom `IEditorCloseHandler` can veto, otherwise a dirty editor
+that is not opened in another group asks; `Save` writes and then closes only
+when the buffer is clean, `Don't Save` attempts the revert and closes, and
+`Cancel` vetoes. The dialog is modal and workbench-level: it consumes every key
+and mouse event (a press only focuses; the matching release activates), focuses
+`Save` when it opens, cycles with Tab/Left/Right/Up/Down, activates with
+Enter/Space and cancels with Escape. The hardware caret is hidden while it is
+open. The browser dialog's action-bar close button, custom body/footer,
+checkbox, inputs, dropdown and shadow are not ported.
 
 The breadcrumb row is the cell adaptation of `breadcrumbsWidget.ts` and
 `breadcrumbsControl.ts`. Items are painted left to right with a dim `>` between

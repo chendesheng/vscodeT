@@ -539,6 +539,9 @@ pub fn main(init: std.process.Init) !void {
             }
             switch (item.*) {
                 .key => |*event| {
+                    // The save confirmation is modal: it owns every key,
+                    // including the global quit shortcut.
+                    if (workbench.handleDialogKey(event)) continue;
                     if (isCtrlQ(event.*)) {
                         if (workbench.requestQuit()) return;
                         continue;
@@ -568,7 +571,6 @@ pub fn main(init: std.process.Init) !void {
 
                     const current = workbench.activeTab() orelse continue;
                     try current.ensureControllers();
-                    current.editor.clearCloseTabArmed();
 
                     const tab_controllers = current.controllers.?;
                     if (try handleKeyEvent(
@@ -584,6 +586,7 @@ pub fn main(init: std.process.Init) !void {
                     )) return;
                 },
                 .mouse => |*event| {
+                    if (workbench.handleDialogMouse(event)) continue;
                     if (workbench.handleTabDragMouse(event)) continue;
                     if (workbench.handleQuickAccessMouse(event)) continue;
                     if (workbench.handleStatusbarMouse(event)) continue;
@@ -596,7 +599,6 @@ pub fn main(init: std.process.Init) !void {
                     const current = workbench.activeTab() orelse continue;
                     if (event.kind == .down) {
                         workbench.focusEditor();
-                        current.editor.clearCloseTabArmed();
                     }
                     const tab_controllers = current.controllers orelse blk: {
                         try current.ensureControllers();

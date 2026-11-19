@@ -106,6 +106,7 @@ const file_icon = @import("./fileIcon.zig");
 const quick_input_common = @import("../vs/platform/quickinput/common/quickInput.zig");
 const QuickPickItem = quick_input_common.QuickPickItem;
 const QuickPick = @import("../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
+const dialogs = @import("../vs/platform/dialogs/common/dialogs.zig");
 
 const search_view_mod = @import("./searchView.zig");
 const SearchView = search_view_mod.SearchView;
@@ -176,6 +177,14 @@ const LayoutNode = grid_mod.Node(*GroupPane);
 /// the group model, the tabs (views/controllers), the tab-strip hit cache and
 /// the cell rectangle it occupies.
 pub const GroupPane = editor_group_view.EditorGroupView(*Tab);
+
+/// The tab a save confirmation is currently acting on. The dialog itself
+/// owns the message/detail strings; these pointers stay valid because the
+/// modal blocks every other close path until the dialog is resolved.
+const PendingClose = struct {
+    pane: *GroupPane,
+    tab: *Tab,
+};
 
 const editor_mod = @import("../vs/workbench/common/editor.zig");
 
@@ -250,6 +259,9 @@ pub const Workbench = struct {
     focus: Focus = .editor,
     is_pasting: bool = false,
     quit_armed: bool = false,
+    /// The modal save confirmation, if one is open.
+    dialog: ?*ui.Dialog = null,
+    pending_close: ?PendingClose = null,
 
     pub fn init(
         allocator: Allocator,
@@ -271,6 +283,8 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
+        self.dialog = null;
+        self.pending_close = null;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -358,6 +372,8 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
+        self.dialog = null;
+        self.pending_close = null;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -461,6 +477,8 @@ pub const Workbench = struct {
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.quit_armed = false;
+        self.dialog = null;
+        self.pending_close = null;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -732,6 +750,31 @@ pub const Workbench = struct {
         return self.quick_access.handleMouse(event);
     }
 
+    /// Routes one key to the modal dialog. Returns false when no dialog is
+    /// open. Every key is consumed while it is open; Escape cancels, Enter or
+    /// Space activates the focused button.
+    pub fn handleDialogKey(self: *Workbench, event: *ui.KeyEvent) bool {
+        const dialog = self.dialog orelse return false;
+        switch (dialog.handleKey(event)) {
+            .none => {},
+            .activate => |index| self.resolveDialogButton(index),
+            .cancel => self.resolveDialog(.CANCEL),
+        }
+        return true;
+    }
+
+    /// Routes one mouse event to the modal dialog. Every event is consumed
+    /// while it is open; a click outside the buttons only changes focus.
+    pub fn handleDialogMouse(self: *Workbench, event: *ui.MouseEvent) bool {
+        const dialog = self.dialog orelse return false;
+        if (dialog.handleMouse(event)) |index| self.resolveDialogButton(index);
+        return true;
+    }
+
+    pub fn isDialogOpen(self: *const Workbench) bool {
+        return self.dialog != null;
+    }
+
     pub fn pollQuickAccess(self: *Workbench, now_ms: i64) !bool {
         return self.quick_access.poll(now_ms);
     }
@@ -779,6 +822,11 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
+        if (self.dialog) |dialog| {
+            dialog.deinit();
+            self.dialog = null;
+        }
+        self.pending_close = null;
         if (self.outline_registration) |registration| {
             registration.dispose();
             self.outline_registration = null;
@@ -1633,19 +1681,162 @@ pub const Workbench = struct {
         return self.closeTab(pane, tab);
     }
 
-    /// Closes `tab` from `pane`, applying the dirty-close arming rule and the
-    /// empty-pane collapse. Used by Ctrl-W, the tab close cell and middle click.
+    /// Closes `tab` from `pane`, applying upstream's dirty-close confirmation
+    /// and the empty-pane collapse. Used by Ctrl-W, the tab close cell and
+    /// middle click.
     fn closeTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !bool {
-        if (!tab.editor.requestCloseTab()) return false;
+        if (self.dialog != null) return false;
+        if (self.shouldConfirmClose(pane, tab)) {
+            try self.openSaveConfirm(pane, tab);
+            return false;
+        }
+        try self.performCloseTab(pane, tab);
+        return false;
+    }
 
+    /// Upstream `EditorGroupView.shouldConfirmClose`: a custom close handler
+    /// wins, otherwise a dirty editor asks unless it is opened elsewhere.
+    /// Saving is synchronous in the terminal editor, so `isSaving()` is always
+    /// false and needs no separate check.
+    fn shouldConfirmClose(self: *Workbench, pane: *GroupPane, tab: *Tab) bool {
+        if (tab.input.base.close_handler) |handler| {
+            return handler.show_confirm(handler.context);
+        }
+        if (!tab.editor.isDirty()) return false;
+        return !self.isOpenedInAnotherGroup(pane, tab);
+    }
+
+    fn isOpenedInAnotherGroup(self: *const Workbench, pane: *GroupPane, tab: *Tab) bool {
+        for (self.part.group_views.items) |candidate| {
+            if (candidate == pane) continue;
+            if (candidate.group.model.contains(.{ .input = &tab.input.base }, .{})) return true;
+        }
+        return false;
+    }
+
+    /// Opens the modal save confirmation. Upstream reveals the editor before
+    /// asking (`doHandleCloseConfirmation`); the terminal does the same by
+    /// activating the tab so the user sees which buffer is being closed.
+    fn openSaveConfirm(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
+        if (self.dialog != null) return;
+
+        var prompt = (try dialogs.saveConfirmPrompt(self.allocator, &.{tab.input.base.getName()})) orelse return;
+        errdefer prompt.deinit();
+        const dialog = try ui.Dialog.init(
+            self.allocator,
+            prompt.message,
+            prompt.detail,
+            &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
+        );
+        errdefer dialog.deinit();
+
+        self.part.active_sash = null;
+        self.clearTabDrag();
+        self.pending_tab_drag = null;
+        self.last_tab_click = null;
+        self.service.activateGroup(pane.group);
+        try pane.activateTab(tab);
+        try tab.ensureControllers();
+        self.focusEditor();
+        tab.view.focusEditor();
+
+        prompt.deinit();
+        self.dialog = dialog;
+        self.pending_close = .{ .pane = pane, .tab = tab };
+    }
+
+    fn resolveDialogButton(self: *Workbench, index: usize) void {
+        const result: dialogs.ConfirmResult = switch (index) {
+            0 => .SAVE,
+            1 => .DONT_SAVE,
+            else => .CANCEL,
+        };
+        self.resolveDialog(result);
+    }
+
+    fn resolveDialog(self: *Workbench, result: dialogs.ConfirmResult) void {
+        self.resolveSaveConfirm(result) catch |err| {
+            if (self.activeTab()) |tab| {
+                tab.editor.setMessage("Close failed: {s}", .{@errorName(err)});
+            }
+            self.focusActiveEditor();
+        };
+    }
+
+    /// Upstream `doHandleCloseConfirmation`: Save closes only when the save
+    /// leaves the buffer clean; Don't Save discards the buffer and closes;
+    /// Cancel vetoes the close. The dialog is destroyed before the tab so a
+    /// failed close cannot leave a modal pointing at freed tab state.
+    fn resolveSaveConfirm(self: *Workbench, result: dialogs.ConfirmResult) !void {
+        const dialog = self.dialog orelse return;
+        const pending = self.pending_close;
+        self.dialog = null;
+        self.pending_close = null;
+        dialog.deinit();
+
+        const close = pending orelse {
+            self.focusActiveEditor();
+            return;
+        };
+        if (close.pane.indexOfTab(close.tab) == null) {
+            self.focusActiveEditor();
+            return;
+        }
+
+        switch (result) {
+            .SAVE => {
+                close.tab.editor.save() catch |err| {
+                    close.tab.editor.setMessage(
+                        "Unable to save {s}: {s}",
+                        .{ close.tab.input.base.getName(), @errorName(err) },
+                    );
+                    self.focusEditorAfterDialog(close.tab);
+                    return;
+                };
+                if (close.tab.editor.isDirty()) {
+                    // Upstream vetoes the close when the save did not clear
+                    // the dirty state.
+                    self.focusEditorAfterDialog(close.tab);
+                    return;
+                }
+                try self.performCloseTab(close.pane, close.tab);
+            },
+            .DONT_SAVE => {
+                // Upstream tries a normal revert first and falls back to a
+                // soft revert. This tab's single view is destroyed immediately
+                // afterwards, so a failed reload still closes.
+                close.tab.editor.reloadFromDisk() catch {};
+                try self.performCloseTab(close.pane, close.tab);
+            },
+            .CANCEL => {
+                self.focusEditorAfterDialog(close.tab);
+                return;
+            },
+        }
+
+        self.focusActiveEditor();
+    }
+
+    fn focusEditorAfterDialog(self: *Workbench, tab: *Tab) void {
+        self.focusEditor();
+        tab.view.focusEditor();
+    }
+
+    fn focusActiveEditor(self: *Workbench) void {
+        self.focusEditor();
+        if (self.activeTab()) |tab| tab.view.focusEditor();
+    }
+
+    fn performCloseTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
         _ = try pane.group.model.closeEditor(&tab.input.base, .UNKNOWN, true);
         _ = pane.removeTab(tab);
         pane.syncActivePane();
         if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
+        if (self.hovered_tab == tab) self.hovered_tab = null;
         self.unregisterWorkingCopy(tab);
         tab.deinit();
 
-        if (self.tabCount() == 0) return false;
+        if (self.tabCount() == 0) return;
 
         if (self.expanded_pane == pane and pane.tabs.items.len == 0) self.expanded_pane = null;
 
@@ -1672,7 +1863,6 @@ pub const Workbench = struct {
         if (self.activeTab()) |active| {
             try active.ensureControllers();
         }
-        return false;
     }
 
     /// Upstream `toggleExpandGroup`: the group temporarily occupies the whole
@@ -2608,6 +2798,7 @@ pub const Workbench = struct {
             });
         }
         try self.quick_access.render(&self.frame.next);
+        if (self.dialog) |dialog| dialog.render(&self.frame.next);
 
         const encoded = try ui.ansi.encode(
             self.allocator,
@@ -2995,6 +3186,7 @@ pub const Workbench = struct {
     }
     pub fn cursorCell(self: *Workbench) ?ViewCell {
         if (self.quick_access.isOpen()) return null;
+        if (self.dialog != null) return null;
         if (self.focus != .editor) return null;
         const pane = self.activePane() orelse return null;
         const active = pane.activeTab() orelse return null;
@@ -3782,6 +3974,19 @@ fn seedFile(allocator: Allocator, io: Io, tmp: *std.testing.TmpDir, name: []cons
     editor.deinit();
     allocator.destroy(editor);
     return path;
+}
+
+fn frameText(allocator: Allocator, frame: *const ui.Frame) ![]u8 {
+    var text = std.array_list.Managed(u8).init(allocator);
+    errdefer text.deinit();
+    var row: usize = 0;
+    while (row < frame.prev.rows) : (row += 1) {
+        const line = try frame.prev.rowText(allocator, row);
+        defer allocator.free(line);
+        try text.appendSlice(line);
+        try text.append('\n');
+    }
+    return text.toOwnedSlice();
 }
 
 test "Workbench: declarative markdown configuration applies to open tabs" {
@@ -5425,7 +5630,7 @@ test "Workbench: breadcrumb symbols come from a registered outline provider" {
     try std.testing.expect(std.mem.indexOf(u8, row, "port") != null);
 }
 
-test "Workbench: tab close cell closes and a dirty close arms first" {
+test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
@@ -5452,30 +5657,120 @@ test "Workbench: tab close cell closes and a dirty close arms first" {
     try std.testing.expect(workbench.handleTabMouse(&click));
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
-    // A dirty tab arms on the first close activation.
+    // A dirty tab opens the save confirmation instead of closing.
     try workbench.openPath(path);
     try workbench.activeTab().?.ensureControllers();
     try workbench.activeTab().?.editor.insertText("x");
     try workbench.render(&out.writer);
     const pane2 = workbench.activePane().?;
-    const hit2 = pane2.hits.items[0];
     var click2 = ui.MouseEvent{
-        .kind = .down,
-        .x = hit2.close_start.?,
-        .y = ui.cell.snap(pane2.rect.y),
-        .button = .left,
-    };
-    try std.testing.expect(workbench.handleTabMouse(&click2));
-    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
-    try workbench.render(&out.writer);
-    var click3 = ui.MouseEvent{
         .kind = .down,
         .x = pane2.hits.items[0].close_start.?,
         .y = ui.cell.snap(pane2.rect.y),
         .button = .left,
     };
+    try std.testing.expect(workbench.handleTabMouse(&click2));
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expect(workbench.isDialogOpen());
+
+    try workbench.render(&out.writer);
+    const dialog_text = try frameText(allocator, &workbench.frame);
+    defer allocator.free(dialog_text);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "Do you want to save the changes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "close.txt?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "Your changes will be lost") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dialog_text, "Don't Save") != null);
+
+    // Escape cancels the close and leaves the buffer dirty.
+    var escape = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(workbench.handleDialogKey(&escape));
+    try std.testing.expect(!workbench.isDialogOpen());
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expect(workbench.activeTab().?.editor.isDirty());
+
+    // Enter activates the focused primary button, saves, then closes.
+    try workbench.render(&out.writer);
+    const pane3 = workbench.activePane().?;
+    var click3 = ui.MouseEvent{
+        .kind = .down,
+        .x = pane3.hits.items[0].close_start.?,
+        .y = ui.cell.snap(pane3.rect.y),
+        .button = .left,
+    };
     try std.testing.expect(workbench.handleTabMouse(&click3));
+    try std.testing.expect(workbench.isDialogOpen());
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(workbench.handleDialogKey(&enter));
+    try std.testing.expect(!workbench.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
+
+    const saved = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024));
+    defer allocator.free(saved);
+    try std.testing.expectEqualStrings("xalpha", saved);
+}
+
+test "Workbench: don't save closes a dirty tab without writing" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "discard.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
+    defer workbench.deinit();
+    try workbench.activeTab().?.ensureControllers();
+    try workbench.activeTab().?.editor.insertText("local ");
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const pane = workbench.activePane().?;
+    var click = ui.MouseEvent{
+        .kind = .down,
+        .x = pane.hits.items[0].close_start.?,
+        .y = ui.cell.snap(pane.rect.y),
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&click));
+    try std.testing.expect(workbench.isDialogOpen());
+
+    var down = ui.KeyEvent{ .key = .down };
+    try std.testing.expect(workbench.handleDialogKey(&down));
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(workbench.handleDialogKey(&enter));
+    try std.testing.expect(!workbench.isDialogOpen());
+    try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
+
+    const unchanged = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024));
+    defer allocator.free(unchanged);
+    try std.testing.expectEqualStrings("alpha", unchanged);
+}
+
+test "Workbench: Ctrl-W on a dirty tab opens the save confirmation" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "ctrl-w.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
+    defer workbench.deinit();
+    try workbench.activeTab().?.ensureControllers();
+    try workbench.activeTab().?.editor.insertText("x");
+
+    var ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
+    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expect(workbench.isDialogOpen());
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+
+    var escape = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(workbench.handleDialogKey(&escape));
+    try std.testing.expect(!workbench.isDialogOpen());
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
 }
 
 test "Workbench: preview replacement and dirty pin" {

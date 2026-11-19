@@ -212,8 +212,13 @@ console API for raw mode, sizing and input polling.
   composited under the two chrome rows, so switching tabs preserves scroll
   position and decorations. Tabs show a two-cell language badge (the file icon
   theme is not ported), preview italics, a close cell and a dirty dot; the close
-  cell and middle click close the tab, and a dirty tab still asks for a second
-  activation. Double-clicking a preview tab pins it; double-clicking a pinned
+  cell and middle click close the tab, and `Ctrl-W` closes the active tab. A
+  dirty tab first opens VS Code's save confirmation (Save / Don't Save /
+  Cancel): Save writes and then closes only if the buffer is clean, Don't Save
+  discards the changes, and Cancel or Escape leaves the tab open. The dialog is
+  modal, names the file, dims the rest of the workbench and hides the caret;
+  short terminals collapse its vertical buttons to one row.
+  Double-clicking a preview tab pins it; double-clicking a pinned
   tab toggles the group's expanded (whole-editor-area) state, matching
   upstream's default `doubleClickTabToToggleEditorGroupSizes: 'expand'`.
   Explorer single clicks open a preview editor, while Enter, quick open, CLI
