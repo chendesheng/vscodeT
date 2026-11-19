@@ -657,9 +657,6 @@ pub const Extensions = struct {
     fn invoke(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
         const self: *Extensions = @ptrCast(@alignCast(context));
-        // The type's stale selection update is the next request after a type;
-        // any other host action invalidates the guard.
-        if (!std.mem.eql(u8, method, "$trySetSelections")) self.pending_type_selection = null;
         if (std.mem.eql(u8, method, "$getInitialState")) {
             var state: std.json.ObjectMap = .empty;
             try state.put(arena, "isFocused", .{ .bool = true });
@@ -698,18 +695,12 @@ pub const Extensions = struct {
             }
             if (std.mem.eql(u8, command, "editor.action.insertLineAfter") or std.mem.eql(u8, command, "editor.action.insertLineBefore")) {
                 const editor = if (self.active) |active| active.editor else return .empty;
-                const selections = editor.getSelections() catch return .empty;
-                defer editor.allocator.free(selections);
-                if (selections.len > 0) {
-                    const line = selections[0].endLineNumber;
-                    const column = if (std.mem.eql(u8, command, "editor.action.insertLineAfter"))
-                        editor.model.getLineLength(line) + 1
-                    else
-                        1;
-                    const range = Range.init(line, column, line, column);
-                    editor.replaceRange(range, "\n") catch {};
-                    try self.applyCommandEdit(arena, editor, range, "\n");
+                if (std.mem.eql(u8, command, "editor.action.insertLineAfter")) {
+                    try editor.insertLineAfter();
+                } else {
+                    try editor.insertLineBefore();
                 }
+                try self.applyCommandEdit(arena, editor);
                 return .empty;
             }
             if (std.mem.eql(u8, command, "workbench.action.splitEditorRight") or std.mem.eql(u8, command, "workbench.action.splitEditorDown")) {
@@ -776,14 +767,15 @@ pub const Extensions = struct {
                 }
                 if (selections.len > 0) {
                     if (self.pending_type_selection) |pending| {
-                        self.pending_type_selection = null;
-                        if (!sameSelection(pending, selections[0]) and
-                            isStaleAutoIndentSelection(editor, pending, selections[0]))
-                        {
+                        if (sameSelection(pending, selections[0])) {
+                            self.pending_type_selection = null;
+                        } else if (isStaleAutoIndentSelection(editor, pending, selections[0])) {
                             var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
                             defer arena_instance.deinit();
                             self.sendSelection(arena_instance.allocator(), .command) catch {};
                             return .{ .json = .{ .bool = true } };
+                        } else {
+                            self.pending_type_selection = null;
                         }
                     }
                     editor.setSelections(selections) catch {};
@@ -796,6 +788,7 @@ pub const Extensions = struct {
             return .{ .json = .{ .bool = true } };
         }
         if (std.mem.eql(u8, method, "$tryApplyEdits")) {
+            self.pending_type_selection = null;
             const editor = if (self.active) |active| active.editor else return .empty;
             if (args.len > 2 and args[2] == .json and args[2].json == .array) {
                 try self.applyEdits(arena, editor, args[2].json.array.items);
@@ -916,12 +909,17 @@ pub const Extensions = struct {
         self.needs_render = true;
     }
 
-    fn applyCommandEdit(self: *Extensions, arena: Allocator, editor: *Editor, range: Range, text: []const u8) !void {
+    fn applyCommandEdit(self: *Extensions, arena: Allocator, editor: *Editor) !void {
         const active = &(self.active orelse return);
+        const post_selections = try editor.getSelections();
+        defer editor.allocator.free(post_selections);
+        self.pending_type_selection = if (post_selections.len > 0) post_selections[0] else null;
         active.version += 1;
-        try self.sendModelChanged(arena, text, range.getStartPosition(), range.getEndPosition());
-        try self.sendSelection(arena, .keyboard);
-        _ = editor;
+        if (editor.takeLastContentChange()) |change| {
+            defer editor.allocator.free(change.text);
+            try self.sendModelChanged(arena, change.text, change.range.getStartPosition(), change.range.getEndPosition());
+        }
+        try self.sendSelection(arena, .command);
         self.needs_render = true;
     }
 

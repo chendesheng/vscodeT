@@ -1839,10 +1839,13 @@ pub const Editor = struct {
     }
 
     fn executeReplaceCommands(self: *Editor, commands: []const ?cursorCommon.ReplaceCommand) !void {
-        if (commands.len == 0) return;
-
         const before_selections = try self.cursorsRef().getSelections(self.allocator);
         defer self.allocator.free(before_selections);
+        return self.executeReplaceCommandsFor(before_selections, commands);
+    }
+
+    fn executeReplaceCommandsFor(self: *Editor, before_selections: []const Selection, commands: []const ?cursorCommon.ReplaceCommand) !void {
+        if (commands.len == 0) return;
 
         var operations = ArrayList(IdentifiedSingleEditOperation).init(self.allocator);
         defer operations.deinit();
@@ -1874,7 +1877,7 @@ pub const Editor = struct {
         };
 
         const after_selections = try self.model.pushEditOperations(
-            before_selections,
+            @constCast(before_selections),
             operations.items,
             computer.state(),
             null,
@@ -1898,8 +1901,14 @@ pub const Editor = struct {
     }
 
     fn executeTypeResult(self: *Editor, result: EditOperationResult) !void {
+        const selections = try self.cursorsRef().getSelections(self.allocator);
+        defer self.allocator.free(selections);
+        return self.executeTypeResultFor(result, selections);
+    }
+
+    fn executeTypeResultFor(self: *Editor, result: EditOperationResult, before_selections: []const Selection) !void {
         if (result.shouldPushStackElementBefore) self.model.pushStackElement();
-        try self.executeReplaceCommands(result.commands);
+        try self.executeReplaceCommandsFor(before_selections, result.commands);
         if (result.shouldPushStackElementAfter) self.model.pushStackElement();
         self.prev_edit_operation_type = result.type;
     }
@@ -1986,7 +1995,45 @@ pub const Editor = struct {
             false,
         )) orelse return;
         defer result.deinit(self.allocator);
-        try self.executeTypeResult(result);
+        try self.executeTypeResultFor(result, selections);
+        self.model.pushStackElement();
+    }
+
+    /// `editor.action.insertLineAfter`: run Enter at each cursor's line end.
+    pub fn insertLineAfter(self: *Editor) !void {
+        return self.insertLineAtEdge(false);
+    }
+
+    /// `editor.action.insertLineBefore`: run Enter at each cursor's line start.
+    pub fn insertLineBefore(self: *Editor) !void {
+        return self.insertLineAtEdge(true);
+    }
+
+    fn insertLineAtEdge(self: *Editor, before: bool) !void {
+        self.closeTypingGroup();
+        self.language_config_service.activate();
+        self.refreshAutoIndent();
+
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+        const targets = try self.allocator.alloc(Selection, selections.len);
+        defer self.allocator.free(targets);
+        for (selections, 0..) |selection, index| {
+            const line = if (before) selection.startLineNumber else selection.endLineNumber;
+            const column = if (before) 1 else self.model.getLineMaxColumn(line);
+            targets[index] = Selection.init(line, column, line, column);
+        }
+
+        var result = (try EnterOperation.getEdits(
+            self.allocator,
+            &self.cursor_config,
+            self.model,
+            targets,
+            "\n",
+            false,
+        )) orelse return;
+        defer result.deinit(self.allocator);
+        try self.executeTypeResultFor(result, selections);
         self.model.pushStackElement();
     }
 
@@ -3839,6 +3886,25 @@ test "Editor: extension-host newline typing honors JSON indentation" {
     try editor.setCursorPosition(Position.init(1, 2));
     // `default:type` from the extension host inserts "\n" through typeCharacter.
     try editor.typeCharacter("\n");
+
+    const line2 = try editor.model.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("    ", line2.items);
+    try std.testing.expectEqual(Position.init(2, 5), editor.modelCursorPosition());
+}
+
+test "Editor: insertLineAfter honors JSON indentation" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "{\n}", "test.json", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(1, 1));
+    try editor.insertLineAfter();
 
     const line2 = try editor.model.getLineContent(2);
     defer line2.deinit();
