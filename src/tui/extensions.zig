@@ -51,6 +51,23 @@ const ActiveDocument = struct {
     language_id: []u8,
 };
 
+/// Source of a cursor-selection change, using upstream's
+/// `ICursorSelectionChangedEvent.source` strings. The extension host maps
+/// `"mouse"`/`"keyboard"` to `TextEditorSelectionChangeKind`; VSCodeVim
+/// accepts a mouse change even though it did not make it itself, which is what
+/// keeps its own cursor in step with a click.
+pub const SelectionSource = enum {
+    keyboard,
+    mouse,
+
+    fn wireName(self: SelectionSource) []const u8 {
+        return switch (self) {
+            .keyboard => "keyboard",
+            .mouse => "mouse",
+        };
+    }
+};
+
 pub const Extensions = struct {
     allocator: Allocator,
     io: Io,
@@ -70,6 +87,14 @@ pub const Extensions = struct {
     pasting: bool = false,
     language_features_actor: ?MainThreadLanguageFeatures = null,
     diagnostics_actor: ?*MainThreadDiagnostics = null,
+    /// The selections the extension host already knows about. Upstream's
+    /// `MainThreadTextEditor` keeps the same mirror and sends a properties
+    /// delta only when the selection differs; here it also swallows the echo
+    /// of `$trySetSelections`, which the host applied itself.
+    last_selections: std.array_list.Managed(Selection),
+    /// Source reported with the next selection delta; the app sets it from the
+    /// input event being dispatched.
+    selection_source: SelectionSource = .keyboard,
 
     pub fn init(
         allocator: Allocator,
@@ -100,6 +125,7 @@ pub const Extensions = struct {
             .status_entries = std.StringHashMap(OwnedStatus).init(allocator),
             .config_arena = std.heap.ArenaAllocator.init(allocator),
             .config_values = std.StringHashMap(std.json.Value).init(allocator),
+            .last_selections = std.array_list.Managed(Selection).init(allocator),
         };
 
         const host_script = try std.fs.path.join(allocator, &.{ "host", "dist", "extensionHost.mjs" });
@@ -145,6 +171,7 @@ pub const Extensions = struct {
         self.status_entries.deinit();
         self.config_values.deinit();
         self.config_arena.deinit();
+        self.last_selections.deinit();
         self.host.deinit();
         self.description.deinit(self.allocator);
         self.allocator.free(self.data_path);
@@ -307,6 +334,7 @@ pub const Extensions = struct {
         _ = self.host.pump();
         if (self.diagnostics_actor) |actor| actor.flush() catch {};
         self.syncActiveDocument() catch {};
+        self.syncSelection() catch {};
         const result = self.needs_render;
         self.needs_render = false;
         return result;
@@ -314,6 +342,9 @@ pub const Extensions = struct {
 
     fn syncActiveDocument(self: *Extensions) !void {
         const tab = self.workbench.activeTab() orelse {
+            // Closing the last tab frees its editor. Drop the mirror before
+            // any handler or selection sync can dereference it.
+            if (self.active != null) try self.removeActiveDocument();
             return;
         };
         if (self.active) |active| {
@@ -376,6 +407,7 @@ pub const Extensions = struct {
         _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback);
 
         self.active = .{ .editor = tab.editor, .uri = uri, .language_id = language };
+        self.captureSelections(tab.editor);
         try self.syncTabs();
         self.needs_render = true;
     }
@@ -737,6 +769,9 @@ pub const Extensions = struct {
                     editor.setSelections(selections) catch {};
                     self.needs_render = true;
                 }
+                // The host applied this selection itself; remember it so the
+                // next pump does not echo it back as a user change.
+                self.captureSelections(editor);
             }
             return .{ .json = .{ .bool = true } };
         }
@@ -847,7 +882,7 @@ pub const Extensions = struct {
         const active = &(self.active orelse return);
         active.version += 1;
         try self.sendModelChanged(arena, text, start, start);
-        try self.sendSelection(arena);
+        try self.sendSelection(arena, .keyboard);
         self.needs_render = true;
     }
 
@@ -855,7 +890,7 @@ pub const Extensions = struct {
         const active = &(self.active orelse return);
         active.version += 1;
         try self.sendModelChanged(arena, text, range.getStartPosition(), range.getEndPosition());
-        try self.sendSelection(arena);
+        try self.sendSelection(arena, .keyboard);
         _ = editor;
         self.needs_render = true;
     }
@@ -889,7 +924,7 @@ pub const Extensions = struct {
             try self.sendModelChanged(arena, edit.text, edit.range.getStartPosition(), edit.range.getStartPosition());
             _ = index;
         }
-        try self.sendSelection(arena);
+        try self.sendSelection(arena, .keyboard);
         self.needs_render = true;
     }
 
@@ -924,12 +959,12 @@ pub const Extensions = struct {
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocuments), "$acceptModelChanged", &args, null, manager.noop_callback) catch {};
     }
 
-    fn sendSelection(self: *Extensions, arena: Allocator) !void {
+    fn sendSelection(self: *Extensions, arena: Allocator, source: SelectionSource) !void {
         const active = self.active orelse return;
         const selections = try self.selectionsJson(arena, active.editor);
         var event: std.json.ObjectMap = .empty;
         try event.put(arena, "selections", .{ .array = selections });
-        try event.put(arena, "source", .{ .string = "keyboard" });
+        try event.put(arena, "source", .{ .string = source.wireName() });
         var properties: std.json.ObjectMap = .empty;
         try properties.put(arena, "options", .null);
         try properties.put(arena, "selections", .{ .object = event });
@@ -939,6 +974,40 @@ pub const Extensions = struct {
             .{ .json = .{ .object = properties } },
         };
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditors), "$acceptEditorPropertiesChanged", &args, null, manager.noop_callback) catch {};
+        self.captureSelections(active.editor);
+    }
+
+    /// Records the selections the extension host now has, without a round
+    /// trip. Called after the host applies a selection and after every delta
+    /// this side sends, so only real user changes are reported.
+    fn captureSelections(self: *Extensions, editor: *Editor) void {
+        const selections = editor.getSelections() catch return;
+        defer editor.allocator.free(selections);
+        self.last_selections.clearRetainingCapacity();
+        self.last_selections.appendSlice(selections) catch {};
+    }
+
+    fn sameSelections(a: []const Selection, b: []const Selection) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |left, right| {
+            if (!Selection.equalsSelection(&left, &right)) return false;
+        }
+        return true;
+    }
+
+    /// Reports a caret or selection change the TUI applied itself (mouse
+    /// press/drag, arrow key, find, tab switch) to the extension host,
+    /// mirroring `MainThreadTextEditor`'s properties-changed delta. Without it
+    /// VSCodeVim keeps its own cursor and the next Vim key snaps the caret
+    /// back to where it was before the click.
+    fn syncSelection(self: *Extensions) !void {
+        const active = self.active orelse return;
+        const selections = try active.editor.getSelections();
+        defer active.editor.allocator.free(selections);
+        if (sameSelections(self.last_selections.items, selections)) return;
+        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_instance.deinit();
+        try self.sendSelection(arena_instance.allocator(), self.selection_source);
     }
 
     fn storeConfiguration(self: *Extensions, key: []const u8, value: std.json.Value) !void {
@@ -1167,6 +1236,25 @@ test "Extensions: VSCodeVim inserts text into the active TUI editor" {
     var deleted = try workbench.activeTab().?.editor.model.getLineContent(1);
     defer deleted.deinit();
     try std.testing.expectEqualStrings("hello", deleted.items);
+
+    // Regression: a pointer click moves the TUI caret without VSCodeVim
+    // seeing it. `pump` must report the selection change (source "mouse"),
+    // otherwise the next Vim key starts from its stale cursor and the caret
+    // jumps back to where it was before the click.
+    try workbench.activeTab().?.editor.setCursorPosition(Position.init(1, 4));
+    extension_host.selection_source = .mouse;
+    _ = extension_host.pump();
+    time_compat.sleepMillis(1000);
+    _ = extension_host.handleKey(&.{ .key = .right });
+    const arrow_until = time_compat.milliTimestamp() + 5_000;
+    while (time_compat.milliTimestamp() < arrow_until) {
+        _ = extension_host.pump();
+        if (workbench.activeTab().?.editor.modelCursorPosition().column == 5) break;
+        time_compat.sleepMillis(10);
+    }
+    const clicked = workbench.activeTab().?.editor.modelCursorPosition();
+    try std.testing.expectEqual(@as(usize, 1), clicked.lineNumber);
+    try std.testing.expectEqual(@as(usize, 5), clicked.column);
 }
 
 test "Extensions: language feature registration reaches the workbench registries" {

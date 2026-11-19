@@ -527,6 +527,16 @@ pub fn main(init: std.process.Init) !void {
         const consumed = decoded.consumed;
 
         for (events.items) |*item| {
+            if (extension_host) |ext| {
+                // The next pump reports a selection delta tagged with the
+                // source of this event. VSCodeVim accepts a pointer change
+                // unconditionally; a keyboard delta it caused itself is
+                // filtered by its internal-selection tracker.
+                ext.selection_source = switch (item.*) {
+                    .key => .keyboard,
+                    .mouse => .mouse,
+                };
+            }
             switch (item.*) {
                 .key => |*event| {
                     if (isCtrlQ(event.*)) {
@@ -602,6 +612,11 @@ pub fn main(init: std.process.Init) !void {
                     ) catch |err| {
                         current.editor.setMessage("mouse failed: {s}", .{@errorName(err)});
                     };
+                    // Deliver the click/drag caret change before the next key
+                    // reaches VSCodeVim, whose cursor follows the selection.
+                    if (extension_host) |ext| {
+                        if (ext.pump()) needs_render = true;
+                    }
                 },
             }
         }
