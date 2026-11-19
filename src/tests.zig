@@ -558,7 +558,7 @@ comptime {
     _ = @import("./vs/workbench/browser/commands.zig");
     _ = @import("./vs/workbench/services/search/common/fileIndex.zig");
     _ = @import("./vs/platform/quickinput/browser/quickInputList.zig");
-    _ = @import("./tui/quickAccess.zig");
+    _ = @import("./vs/workbench/browser/quickaccess.zig");
     _ = @import("./tui/extensions.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
