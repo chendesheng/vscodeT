@@ -6,13 +6,14 @@
 // to the command picker through `CommandPickSource`.
 //
 // The metadata keeps upstream ids/labels/categories where the action exists.
-// This file is TUI integration; the portable execution registry lives in
-// `src/vs/platform/commands/common/commands.zig`.
+// This is the terminal workbench's runnable-command table; the portable
+// execution registry lives in `src/vs/platform/commands/common/commands.zig`.
+// The ported `MenuRegistry`/`Action2` are the long-term owner of this metadata.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const platform_commands = @import("../vs/platform/commands/common/commands.zig");
-const commands_quick_access = @import("../vs/platform/quickinput/browser/commandsQuickAccess.zig");
+const platform_commands = @import("../../platform/commands/common/commands.zig");
+const commands_quick_access = @import("../../platform/quickinput/browser/commandsQuickAccess.zig");
 const CommandPick = commands_quick_access.CommandPick;
 const CommandPickSource = commands_quick_access.CommandPickSource;
 
