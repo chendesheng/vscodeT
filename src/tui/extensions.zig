@@ -98,6 +98,9 @@ pub const Extensions = struct {
 
         const host_script = try std.fs.path.join(allocator, &.{ "host", "dist", "extensionHost.mjs" });
         defer allocator.free(host_script);
+        // Fail before spawning node: without the bundle the host can never
+        // connect, and the manager would otherwise wait for its socket timeout.
+        std.Io.Dir.cwd().access(io, host_script, .{}) catch return error.ExtensionHostBundleMissing;
         const workspace_path = workbench.workspaceFolderPath() orelse ".";
         self.host = try manager.HostManager.start(allocator, .{
             .host_script = host_script,
@@ -160,9 +163,6 @@ pub const Extensions = struct {
         try self.host.sendInitData(init_data);
         try self.host.expectControl(1, 10_000);
 
-        var wait = WaitFlag{};
-        const callback = rpc.ReplyCallback{ .context = &wait, .callback = WaitFlag.callback };
-
         var workspace_args = std.array_list.Managed(rpc.Arg).init(arena);
         var workspace_data: std.json.ObjectMap = .empty;
         try workspace_data.put(arena, "id", .{ .string = "workspace" });
@@ -179,13 +179,22 @@ pub const Extensions = struct {
         try workspace_data.put(arena, "folders", .{ .array = folders });
         try workspace_args.append(.{ .json = .{ .object = workspace_data } });
         try workspace_args.append(.{ .json = .{ .bool = true } });
-        _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostWorkspace), "$initializeWorkspace", workspace_args.items, null, callback);
-        try self.host.waitUntil(&wait, done, 5_000);
+        try self.callAndWait(
+            proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostWorkspace),
+            "$initializeWorkspace",
+            workspace_args.items,
+            5_000,
+            error.InitializeWorkspaceRejected,
+        );
 
-        wait.done = false;
         var config_args = [_]rpc.Arg{.{ .json = try emptyConfig(arena) }};
-        _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostConfiguration), "$initializeConfiguration", &config_args, null, callback);
-        try self.host.waitUntil(&wait, done, 5_000);
+        try self.callAndWait(
+            proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostConfiguration),
+            "$initializeConfiguration",
+            &config_args,
+            5_000,
+            error.InitializeConfigurationRejected,
+        );
 
         var delta: std.json.ObjectMap = .empty;
         try delta.put(arena, "versionId", .{ .integer = 1 });
@@ -195,7 +204,13 @@ pub const Extensions = struct {
         try delta.put(arena, "myToRemove", .{ .array = std.json.Array.init(arena) });
         try delta.put(arena, "myToAdd", .{ .array = std.json.Array.init(arena) });
         var start_args = [_]rpc.Arg{.{ .json = .{ .object = delta } }};
-        _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService), "$startExtensionHost", &start_args, null, manager.noop_callback);
+        try self.callAndWait(
+            proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService),
+            "$startExtensionHost",
+            &start_args,
+            10_000,
+            error.StartExtensionHostRejected,
+        );
 
         const deadline = time_compat.milliTimestamp() + 10_000;
         while (!self.activated and time_compat.milliTimestamp() < deadline) {
@@ -203,6 +218,24 @@ pub const Extensions = struct {
             time_compat.sleepMillis(5);
         }
         try self.syncActiveDocument();
+    }
+
+    /// Calls a host method and waits for its reply. A rejected reply becomes
+    /// `rejected` instead of being ignored: the handshake calls are barriers on
+    /// the host side, so a rejected `$initializeConfiguration` used to leave the
+    /// host waiting forever while the editor carried on without an extension.
+    fn callAndWait(
+        self: *Extensions,
+        identifier: proxyIdentifier.ProxyIdentifier,
+        method: []const u8,
+        args: []const rpc.Arg,
+        timeout_ms: u32,
+        rejected: anyerror,
+    ) !void {
+        var wait = WaitFlag{};
+        _ = try self.host.call(identifier, method, args, null, .{ .context = &wait, .callback = WaitFlag.callback });
+        try self.host.waitUntil(&wait, done, timeout_ms);
+        if (wait.failed) return rejected;
     }
 
     /// Drains incoming extension messages. Returns true when the TUI should
@@ -941,10 +974,11 @@ pub const Extensions = struct {
 
 const WaitFlag = struct {
     done: bool = false,
+    failed: bool = false,
 
     fn callback(context: *anyopaque, reply: rpc.Reply) void {
         const self: *WaitFlag = @ptrCast(@alignCast(context));
-        _ = reply;
+        self.failed = reply == .err;
         self.done = true;
     }
 };
@@ -952,6 +986,22 @@ const WaitFlag = struct {
 fn done(context: *anyopaque) bool {
     const flag: *WaitFlag = @ptrCast(@alignCast(context));
     return flag.done;
+}
+
+test "WaitFlag records an accepted handshake reply" {
+    var wait = WaitFlag{};
+    WaitFlag.callback(@ptrCast(&wait), .empty);
+    try std.testing.expect(wait.done);
+    try std.testing.expect(!wait.failed);
+}
+
+test "WaitFlag records a rejected handshake reply" {
+    // A rejected reply is a real failure: the handshake calls are barriers on
+    // the host side, so treating them as success leaves the host waiting.
+    var wait = WaitFlag{};
+    WaitFlag.callback(@ptrCast(&wait), .{ .err = .{ .name = "Error", .message = "unknown method" } });
+    try std.testing.expect(wait.done);
+    try std.testing.expect(wait.failed);
 }
 
 fn emptyConfig(arena: Allocator) !std.json.Value {

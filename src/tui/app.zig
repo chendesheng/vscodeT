@@ -415,7 +415,11 @@ pub fn main(init: std.process.Init) !void {
         defer allocator.free(extension_data);
         std.Io.Dir.cwd().createDirPath(io, extension_data) catch {};
         extension_host = extensions.Extensions.init(allocator, io, workbench, path, extension_data) catch |err| blk: {
-            report(log_service, "extension host disabled: {s}", .{@errorName(err)});
+            if (err == error.ExtensionHostBundleMissing) {
+                report(log_service, "extension host disabled: host/dist/extensionHost.mjs is missing; run `zig build host` (details in README)", .{});
+            } else {
+                report(log_service, "extension host disabled: {s}", .{@errorName(err)});
+            }
             break :blk null;
         };
     }
