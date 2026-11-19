@@ -58,6 +58,7 @@ const GuidesTextModelPart = @import("../common/model/guidesTextModelPart.zig").G
 const computeIndentLevel = @import("../common/model/utils.zig").computeIndentLevel;
 const indent_guides = @import("./viewParts/indentGuides/indentGuides.zig");
 const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.zig");
+const mouse_target = @import("./controller/mouseTarget.zig");
 const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
 const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
@@ -694,92 +695,63 @@ pub const View = struct {
         return if (entry.view_line == view_line) entry else null;
     }
 
-    /// The mouse target for a cell, mirroring upstream's `onMouseMove` target
-    /// types. Hover needs to know whether the pointer is on text, past the end
-    /// of a line, on the gutter or on a widget.
+    /// The mouse target for a cell, classified by the ported
+    /// `MouseTargetFactory` subset.
     pub fn mouseTargetAt(self: *View, x: usize, y: usize) !editorBrowser.MouseTarget {
         try self.ensureBuilt();
-        const doc = self.surface.document();
-        const target = (try self.surface.elementFromPoint(x, y)) orelse doc.root orelse
-            return .{ .mouse_column = x + 1 };
+        return mouse_target.createMouseTarget(.{
+            .context = self,
+            .element_at = mouseElementAt,
+            .content_widget_contains = mouseContentWidgetContains,
+            .overlay_widget_contains = mouseOverlayWidgetContains,
+            .geometry = mouseGeometry,
+            .line_text_width = mouseLineTextWidth,
+            .position_at_view_point = mousePositionAtViewPoint,
+        }, x, y);
+    }
 
+    fn mouseElementAt(context: *anyopaque, x: usize, y: usize) ?*ui.Node {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.surface.elementFromPoint(x, y) catch null;
+    }
+
+    fn mouseContentWidgetContains(context: *anyopaque, x: usize, y: usize) bool {
+        const self: *View = @ptrCast(@alignCast(context));
         for (self.content_widgets.entries.items) |entry| {
-            if (entry.contains(x, y)) {
-                return .{ .element = target, .type = .content_widget, .mouse_column = x + 1 };
-            }
+            if (entry.contains(x, y)) return true;
         }
+        return false;
+    }
+
+    fn mouseOverlayWidgetContains(context: *anyopaque, x: usize, y: usize) bool {
+        const self: *View = @ptrCast(@alignCast(context));
         for (self.overlay_widgets.entries.items) |entry| {
-            if (entry.contains(x, y)) {
-                return .{ .element = target, .type = .overlay_widget, .mouse_column = x + 1 };
-            }
+            if (entry.contains(x, y)) return true;
         }
+        return false;
+    }
 
-        const text_height = self.editor.textHeight();
-        if (y >= text_height) {
-            return .{ .element = target, .type = .status, .mouse_column = x + 1 };
-        }
-
-        const gutter = self.editor.gutterWidth();
-        const top = self.editor.topViewLine();
-        const cols = doc.cols;
-        if (self.scrollbar_width > 0 and x >= cols -| self.scrollbar_width) {
-            const view_line = @min(top + y, self.editor.viewLineCount());
-            return .{
-                .element = target,
-                .type = .scrollbar,
-                .position = try self.editor.positionAtViewPoint(view_line, 0),
-                .mouse_column = x + 1,
-            };
-        }
-
-        const view_line = top + y;
-        if (x < gutter) {
-            return .{
-                .element = target,
-                .type = if (x + 1 == gutter and gutter >= 2)
-                    .gutter_line_decorations
-                else
-                    .gutter_line_numbers,
-                .position = try self.editor.positionAtViewPoint(@min(view_line, self.editor.viewLineCount()), 0),
-                .mouse_column = x + 1,
-            };
-        }
-
-        if (view_line > self.editor.viewLineCount()) {
-            return .{
-                .element = target,
-                .type = .content_empty,
-                .mouse_column = x + 1,
-                .detail = .{ .content_empty = .{ .is_after_lines = true } },
-            };
-        }
-
-        const position = try self.editor.positionAtViewPoint(view_line, x - gutter);
-        const range = Range.init(position.lineNumber, position.column, position.lineNumber, position.column);
-        const entry = self.lineEntryForViewLine(view_line) orelse {
-            return .{ .element = target, .type = .content_empty, .mouse_column = x + 1, .detail = .{ .content_empty = .{ .is_after_lines = false } } };
-        };
-        const offset = x - gutter;
-        if (offset < entry.text_width) {
-            return .{
-                .element = target,
-                .type = .content_text,
-                .position = position,
-                .range = range,
-                .mouse_column = x + 1,
-            };
-        }
+    fn mouseGeometry(context: *anyopaque) mouse_target.Geometry {
+        const self: *View = @ptrCast(@alignCast(context));
         return .{
-            .element = target,
-            .type = .content_empty,
-            .position = position,
-            .range = range,
-            .mouse_column = x + 1,
-            .detail = .{ .content_empty = .{
-                .is_after_lines = false,
-                .horizontal_distance_to_text = offset - entry.text_width,
-            } },
+            .cols = self.surface.document().cols,
+            .text_height = self.editor.textHeight(),
+            .gutter_width = self.editor.gutterWidth(),
+            .top_view_line = self.editor.topViewLine(),
+            .view_line_count = self.editor.viewLineCount(),
+            .scrollbar_width = self.scrollbar_width,
         };
+    }
+
+    fn mouseLineTextWidth(context: *anyopaque, view_line: usize) ?usize {
+        const self: *View = @ptrCast(@alignCast(context));
+        const entry = self.lineEntryForViewLine(view_line) orelse return null;
+        return entry.text_width;
+    }
+
+    fn mousePositionAtViewPoint(context: *anyopaque, view_line: usize, column: usize) !Position {
+        const self: *View = @ptrCast(@alignCast(context));
+        return self.editor.positionAtViewPoint(view_line, column);
     }
 
     /// The last gutter cell is the fold-control column. It only toggles when
