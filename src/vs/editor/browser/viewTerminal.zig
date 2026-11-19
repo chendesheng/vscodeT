@@ -57,6 +57,8 @@ const scrollbar_state = @import("../../base/browser/ui/scrollbar/scrollbarState.
 const GuidesTextModelPart = @import("../common/model/guidesTextModelPart.zig").GuidesTextModelPart;
 const computeIndentLevel = @import("../common/model/utils.zig").computeIndentLevel;
 const indent_guides = @import("./viewParts/indentGuides/indentGuides.zig");
+const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.zig");
+const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
 
 const gutter_color = [3]u8{ 110, 110, 110 };
 const continuation_color = [3]u8{ 90, 90, 90 };
@@ -217,7 +219,7 @@ pub const View = struct {
     surface: ui.Surface,
     /// Overlay widgets anchored to an editor corner, painted above the lines
     /// and the status row.
-    overlays: std.array_list.Managed(editorBrowser.IOverlayWidget),
+    overlay_widgets: ViewOverlayWidgets,
     /// Content widgets anchored to model positions, painted above the lines
     /// and below the overlays (the hover widget is one).
     content_widgets: std.array_list.Managed(editorBrowser.IContentWidget),
@@ -226,7 +228,6 @@ pub const View = struct {
     content_entries: std.array_list.Managed(ContentEntry),
     /// Overlay widget rectangles for the current frame; pointer events on an
     /// overlay must not reach the editor's hover logic.
-    overlay_entries: std.array_list.Managed(WidgetRect),
     /// The line element under the primary cursor, filled in while building.
     cursor_line: ?*ui.Node = null,
     /// Cells between the start of that line's content and the caret.
@@ -290,19 +291,6 @@ pub const View = struct {
         }
     };
 
-    const WidgetRect = struct {
-        node: *ui.Node,
-        left: usize,
-        top: usize,
-        width: usize,
-        height: usize,
-
-        fn contains(self: WidgetRect, x: usize, y: usize) bool {
-            return x >= self.left and x < self.left + self.width and
-                y >= self.top and y < self.top + self.height;
-        }
-    };
-
     const MousePress = struct {
         x: usize,
         y: usize,
@@ -321,19 +309,19 @@ pub const View = struct {
             .editor = editor,
             .guides = GuidesTextModelPart.init(editor.model),
             .surface = undefined,
-            .overlays = std.array_list.Managed(editorBrowser.IOverlayWidget).init(allocator),
+            .overlay_widgets = ViewOverlayWidgets.init(allocator),
             .content_widgets = std.array_list.Managed(editorBrowser.IContentWidget).init(allocator),
             .content_entries = std.array_list.Managed(ContentEntry).init(allocator),
-            .overlay_entries = std.array_list.Managed(WidgetRect).init(allocator),
+
             .line_entries = std.array_list.Managed(LineEntry).init(allocator),
             .terminal_view_host = undefined,
         };
         self.terminal_view_host = try TerminalViewHost.init(allocator, editor);
         errdefer self.terminal_view_host.deinit();
-        errdefer self.overlays.deinit();
+        errdefer self.overlay_widgets.deinit();
         errdefer self.content_widgets.deinit();
         errdefer self.content_entries.deinit();
-        errdefer self.overlay_entries.deinit();
+
         errdefer self.line_entries.deinit();
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
@@ -353,10 +341,9 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.terminal_view_host.deinit();
         self.line_entries.deinit();
-        self.overlay_entries.deinit();
         self.content_entries.deinit();
         self.content_widgets.deinit();
-        self.overlays.deinit();
+        self.overlay_widgets.deinit();
         self.surface.deinit();
         self.allocator.destroy(self);
     }
@@ -383,7 +370,7 @@ pub const View = struct {
     /// Registers an overlay widget. The caller owns the widget struct and must
     /// keep its context alive until it is removed or the view is destroyed.
     pub fn addOverlayWidget(self: *View, widget: editorBrowser.IOverlayWidget) !void {
-        try self.overlays.append(widget);
+        try self.overlay_widgets.add(widget);
         self.invalidate();
     }
 
@@ -496,10 +483,10 @@ pub const View = struct {
 
     pub fn removeOverlayWidget(self: *View, id: []const u8) !void {
         var index: usize = 0;
-        while (index < self.overlays.items.len) : (index += 1) {
-            const widget = self.overlays.items[index];
+        while (index < self.overlay_widgets.widgets.items.len) : (index += 1) {
+            const widget = self.overlay_widgets.widgets.items[index];
             if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
-                _ = self.overlays.orderedRemove(index);
+                _ = self.overlay_widgets.widgets.orderedRemove(index);
                 self.invalidate();
                 return;
             }
@@ -660,7 +647,7 @@ pub const View = struct {
         for (self.content_entries.items) |entry| {
             if (entry.contains(x, y)) return true;
         }
-        for (self.overlay_entries.items) |entry| {
+        for (self.overlay_widgets.entries.items) |entry| {
             if (entry.contains(x, y)) return true;
         }
         return false;
@@ -736,7 +723,7 @@ pub const View = struct {
                 return .{ .element = target, .type = .content_widget, .mouse_column = x + 1 };
             }
         }
-        for (self.overlay_entries.items) |entry| {
+        for (self.overlay_widgets.entries.items) |entry| {
             if (entry.contains(x, y)) {
                 return .{ .element = target, .type = .overlay_widget, .mouse_column = x + 1 };
             }
@@ -923,7 +910,7 @@ pub const View = struct {
     /// Whether no overlay or content widget owns the keyboard. Word
     /// occurrence highlighting follows the editor's text focus.
     pub fn hasEditorFocus(self: *const View) bool {
-        for (self.overlays.items) |overlay| {
+        for (self.overlay_widgets.widgets.items) |overlay| {
             if (overlay.is_focused(overlay.context)) return false;
         }
         for (self.content_widgets.items) |widget| {
@@ -969,7 +956,6 @@ pub const View = struct {
         self.cursor_offset = 0;
         self.line_entries.clearRetainingCapacity();
         self.content_entries.clearRetainingCapacity();
-        self.overlay_entries.clearRetainingCapacity();
 
         const cols = doc.cols;
         const rows = doc.rows;
@@ -1318,7 +1304,7 @@ pub const View = struct {
 
         try appendStatus(self, doc, root, rows);
         try self.buildScrollbar(doc, root, states, text_height, cols);
-        try self.buildOverlays(doc, root, cols, text_height);
+        try self.overlay_widgets.render(doc, root, cols, text_height);
         try self.buildContentWidgets(doc, root, cols, text_right, text_height, gutter, tab_size);
         self.needs_rebuild = false;
     }
@@ -1472,58 +1458,6 @@ pub const View = struct {
             @floatFromInt(editor.topViewLine() - 1),
             1,
         );
-    }
-
-    fn buildOverlays(
-        self: *View,
-        doc: *ui.Document,
-        root: *ui.Node,
-        cols: usize,
-        text_height: usize,
-    ) !void {
-        for (self.overlays.items) |widget| {
-            const width = @min(widget.width(widget.context, cols), cols);
-            const height = @min(widget.height(widget.context), text_height);
-            if (width == 0 or height == 0) continue;
-
-            const top: usize = switch (widget.get_position(widget.context)) {
-                .top_right_corner, .top_center => 0,
-                .bottom_right_corner => text_height -| height,
-            };
-            const left: usize = switch (widget.get_position(widget.context)) {
-                .top_right_corner, .bottom_right_corner => cols -| width,
-                .top_center => (cols -| width) / 2,
-            };
-
-            const container = try doc.createElement(.div);
-            container.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = @floatFromInt(left) },
-                .top = .{ .cells = @floatFromInt(top) },
-                .width = .{ .cells = @floatFromInt(width) },
-                .height = .{ .cells = @floatFromInt(height) },
-                .overflow = .hidden,
-            });
-
-            const content = try widget.build(widget.context, doc);
-            _ = try container.appendChild(content);
-            _ = try root.appendChild(container);
-            try self.overlay_entries.append(.{
-                .node = container,
-                .left = left,
-                .top = top,
-                .width = width,
-                .height = height,
-            });
-
-            // The widget subtree is connected now, so focus can be restored
-            // after the document rebuild.
-            if (widget.is_focused(widget.context)) {
-                if (widget.focus_node(widget.context)) |node| {
-                    _ = doc.focus(node);
-                }
-            }
-        }
     }
 
     /// Places content widgets at their model anchor. Upstream positions them
