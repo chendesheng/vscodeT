@@ -870,6 +870,14 @@ Library constraints:
   incomplete-list retries, suggest memory, inline completions,
   configuration/context keys, markdown rendering in the details pane and
   accessibility announcements.
+
+- **Diagnostics.** Marker decorations use the upstream `squiggly-*` class
+  names. Cells have no wavy underline or glyph margin, so the view paints the
+  range as an underline in the severity color (hint/unnecessary dimmed) and the
+  existing overview-ruler lane carries the marker color. The workbench
+  `Problems` status entry shows the active resource's error/warning counts. The
+  minimap metadata produced by the marker decorator is ignored.
+
 - Word-occurrence highlighting is the third decoration consumer:
   `src/vs/editor/contrib/wordHighlighter` tracks the caret/selection, waits
   `max(50 ms, editor.occurrencesHighlightDelay)`, asks the textual provider for

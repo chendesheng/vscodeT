@@ -120,11 +120,22 @@ pairs and off-side folding even when the built-in grammar was already bundled.
 
 JSON and JSONC editors use the bundled VS Code JSON language server when
 `host/dist/jsonServer.mjs` is present. Syntax diagnostics are pulled after
-edits and shown in the status bar as `JSON Problems`; `Ctrl-Space` completion
+edits and shown in the status bar's `Problems` entry; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
 bundled grammar and reports no diagnostics. Hover and formatting are forwarded to the same
 server, and the `json.schemas` setting is passed through so configured schemas
 drive validation, completion and hover.
+
+Extensions can also contribute language features through the ported
+language-feature bridge: hover, completion, definition, document symbols, code
+actions and document/range/on-type formatting register in
+`LanguageFeaturesService`, and diagnostics feed the marker service, which paints
+squiggly underlines, overview-ruler marks and the `Problems` count. Hover,
+completion, breadcrumb symbols and document formatting are wired to the
+terminal editor. Definition and code-action providers are transported but have
+no TUI command surface yet, and the remaining `MainThreadLanguageFeatures`
+methods stay unsupported. Provider calls are synchronous with a bounded timeout
+because the terminal editor has no asynchronous provider boundary.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally
 `~/.local/state/vscode-textbuffer/extensions/extension-host.log`) so it cannot

@@ -552,6 +552,12 @@ pub const TextModel = struct {
         return self._isTooLargeForSyncing;
     }
 
+    /// Port of `shouldSynchronizeModel` from
+    /// `src/vs/editor/common/model.ts`.
+    pub fn shouldSynchronizeModel(self: *const TextModel) bool {
+        return !self._isTooLargeForSyncing and !self.isForSimpleWidget;
+    }
+
     pub fn isTooLargeForTokenization(self: *const TextModel) bool {
         return self._isTooLargeForTokenization;
     }

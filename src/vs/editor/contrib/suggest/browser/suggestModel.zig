@@ -53,6 +53,8 @@ pub const SuggestModel = struct {
     allocator: Allocator,
     editor: *Editor,
     providers: []const completion.CompletionItemProvider,
+    registry: ?*@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(completion.CompletionItemProvider) = null,
+    active_providers: []const completion.CompletionItemProvider = &.{},
     arena: std.heap.ArenaAllocator,
     completion: ?CompletionModel = null,
     session: ?Session = null,
@@ -68,10 +70,21 @@ pub const SuggestModel = struct {
         editor: *Editor,
         providers: []const completion.CompletionItemProvider,
     ) SuggestModel {
+        return initWithRegistry(allocator, editor, providers, null);
+    }
+
+    pub fn initWithRegistry(
+        allocator: Allocator,
+        editor: *Editor,
+        providers: []const completion.CompletionItemProvider,
+        registry: ?*@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(completion.CompletionItemProvider),
+    ) SuggestModel {
         return .{
             .allocator = allocator,
             .editor = editor,
             .providers = providers,
+            .registry = registry,
+            .active_providers = providers,
             .arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
@@ -222,8 +235,8 @@ pub const SuggestModel = struct {
         const model = if (self.completion) |*value| value else return false;
         const item = model.selected() orelse return false;
         if (item.resolved) return false;
-        if (item.provider_index >= self.providers.len) return false;
-        const provider = self.providers[item.provider_index];
+        if (item.provider_index >= self.active_providers.len) return false;
+        const provider = self.active_providers[item.provider_index];
         const resolve = provider.resolve_completion_item orelse return false;
         var resolved = try resolve(
             provider.context,
@@ -424,13 +437,17 @@ pub const SuggestModel = struct {
 
         self.resetSession();
         const arena_allocator = self.arena.allocator();
+        self.active_providers = if (self.registry) |registry|
+            registry.ordered(arena_allocator, self.editor.model, false) catch self.providers
+        else
+            self.providers;
         var session = Session.init(self.allocator);
         errdefer {
             for (session.pending.items) |pending| pending.request.cancel(pending.request.context);
             session.deinit();
         }
 
-        for (self.providers, 0..) |provider, provider_index| {
+        for (self.active_providers, 0..) |provider, provider_index| {
             const context = completion.CompletionContext{
                 .trigger_kind = switch (trigger) {
                     .quick => .Invoke,
@@ -564,8 +581,17 @@ pub const SuggestModel = struct {
         _ = self.arena.reset(.retain_capacity);
     }
 
-    fn isProviderTriggerCharacter(self: *const SuggestModel, ch: u8) bool {
-        for (self.providers) |provider| {
+    fn isProviderTriggerCharacter(self: *SuggestModel, ch: u8) bool {
+        if (self.registry) |registry| {
+            const providers = registry.ordered(self.allocator, self.editor.model, false) catch return false;
+            defer self.allocator.free(providers);
+            return triggerCharIn(providers, ch);
+        }
+        return triggerCharIn(self.providers, ch);
+    }
+
+    fn triggerCharIn(providers: []const completion.CompletionItemProvider, ch: u8) bool {
+        for (providers) |provider| {
             for (provider.trigger_characters) |trigger| {
                 if (trigger.len == 1 and trigger[0] == ch) return true;
             }

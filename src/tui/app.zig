@@ -364,6 +364,7 @@ pub fn main(init: std.process.Init) !void {
     defer workbench.deinit();
     workbench.setCellBorders(border_probe.supported);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
+    workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
     workbench.setJsonLanguageClient(json_client);
 
     const user_settings_path = try defaultUserSettingsPath(allocator, init.environ_map);

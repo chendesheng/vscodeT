@@ -97,9 +97,18 @@ pub const Transport = struct {
     }
 };
 
+const CancelContext = struct {
+    protocol: *RpcProtocol,
+    id: u32,
+    fn onCancel(self: *@This()) void {
+        self.protocol.sendControl(.cancel, self.id);
+    }
+};
+
 const PendingReply = struct {
     callback: ReplyCallback,
     cancel_listener: ?@import("../../../../base/common/lifecycle.zig").IDisposable = null,
+    cancel_context: ?*CancelContext = null,
 };
 
 const CancelHandler = struct {
@@ -154,6 +163,7 @@ pub const RpcProtocol = struct {
         while (iterator.next()) |entry| {
             var pending = entry.value_ptr.*;
             if (pending.cancel_listener) |listener| listener.dispose();
+            if (pending.cancel_context) |context| self.allocator.destroy(context);
             pending.callback.call(.{ .err = canceledError() });
         }
         self.pending.clearRetainingCapacity();
@@ -188,25 +198,22 @@ pub const RpcProtocol = struct {
 
         const id = self.nextRequestId();
         var listener: ?@import("../../../../base/common/lifecycle.zig").IDisposable = null;
+        var cancel_context: ?*CancelContext = null;
         errdefer if (listener) |l| l.dispose();
+        errdefer if (cancel_context) |context| self.allocator.destroy(context);
 
         if (token) |tok| {
-            const Context = struct {
-                protocol: *RpcProtocol,
-                id: u32,
-                fn onCancel(self_ctx: *@This()) void {
-                    self_ctx.protocol.sendControl(.cancel, self_ctx.id);
-                }
-            };
-            const context = try self.allocator.create(Context);
+            const context = try self.allocator.create(CancelContext);
             context.* = .{ .protocol = self, .id = id };
-            listener = tok.onCancellationRequested(cancellation.CancellationListener.from(Context, context, Context.onCancel)) catch |err| {
+            cancel_context = context;
+            listener = tok.onCancellationRequested(cancellation.CancellationListener.from(CancelContext, context, CancelContext.onCancel)) catch |err| {
                 self.allocator.destroy(context);
+                cancel_context = null;
                 return err;
             };
         }
 
-        try self.pending.put(id, .{ .callback = callback, .cancel_listener = listener });
+        try self.pending.put(id, .{ .callback = callback, .cancel_listener = listener, .cancel_context = cancel_context });
 
         var message: std.array_list.Managed(u8) = .init(self.allocator);
         defer message.deinit();
@@ -223,6 +230,27 @@ pub const RpcProtocol = struct {
         self.onWillSendRequest();
         self.transport.send(message.items);
         return id;
+    }
+
+    /// Cancels a pending request and drops its callback. Late replies are
+    /// ignored by `receiveReply`.
+    pub fn cancel(self: *RpcProtocol, request_id: u32) void {
+        if (self.pending.fetchRemove(request_id)) |entry| {
+            if (entry.value.cancel_listener) |listener| listener.dispose();
+            if (entry.value.cancel_context) |context| self.allocator.destroy(context);
+        }
+        if (!self.disposed) self.sendControl(.cancel, request_id);
+    }
+
+    /// Sends a notification-shaped call. The upstream protocol still assigns
+    /// a request id and expects an empty reply; the callback is ignored.
+    pub fn notify(self: *RpcProtocol, identifier: proxyIdentifier.ProxyIdentifier, method: []const u8, args: []const Arg) !void {
+        _ = try self.call(identifier, method, args, null, .{
+            .context = undefined,
+            .callback = struct {
+                fn cb(_: *anyopaque, _: Reply) void {}
+            }.cb,
+        });
     }
 
     fn nextRequestId(self: *RpcProtocol) u32 {
@@ -495,6 +523,7 @@ pub const RpcProtocol = struct {
     fn receiveReply(self: *RpcProtocol, request_id: u32, reply: Reply) void {
         const entry = self.pending.fetchRemove(request_id) orelse return;
         if (entry.value.cancel_listener) |listener| listener.dispose();
+        if (entry.value.cancel_context) |context| self.allocator.destroy(context);
         entry.value.callback.call(reply);
     }
 
@@ -541,6 +570,32 @@ fn errorFromJson(value: std.json.Value) HandlerError {
     const message = if (object.get("message")) |item| if (item == .string) item.string else "" else "";
     const stack = if (object.get("stack")) |item| if (item == .string) item.string else "" else "";
     return .{ .name = name, .message = message, .stack = stack };
+}
+
+pub fn cloneJsonValue(allocator: Allocator, value: std.json.Value) !std.json.Value {
+    return switch (value) {
+        .null => .null,
+        .bool => |v| .{ .bool = v },
+        .integer => |v| .{ .integer = v },
+        .float => |v| .{ .float = v },
+        .number_string => |v| .{ .number_string = try allocator.dupe(u8, v) },
+        .string => |v| .{ .string = try allocator.dupe(u8, v) },
+        .array => |array| blk: {
+            const out = try allocator.alloc(std.json.Value, array.items.len);
+            for (array.items, 0..) |item, index| out[index] = try cloneJsonValue(allocator, item);
+            var result = std.json.Array.init(allocator);
+            try result.appendSlice(out);
+            break :blk .{ .array = result };
+        },
+        .object => |object| blk: {
+            var out: std.json.ObjectMap = .empty;
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                try out.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try cloneJsonValue(allocator, entry.value_ptr.*));
+            }
+            break :blk .{ .object = out };
+        },
+    };
 }
 
 fn writeU32(out: *std.array_list.Managed(u8), value: u32) !void {

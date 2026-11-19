@@ -148,21 +148,27 @@ const DecorationOwner = struct {
 };
 
 const CellFlag = struct {
-    const normal: u16 = 0;
-    const selected: u16 = 1 << 0;
-    const secondary_cursor: u16 = 1 << 1;
-    const find_match: u16 = 1 << 2;
-    const current_find_match: u16 = 1 << 3;
-    const find_scope: u16 = 1 << 4;
-    const bracket_match: u16 = 1 << 5;
-    const hover_highlight: u16 = 1 << 6;
-    const word_highlight_text: u16 = 1 << 7;
-    const word_highlight: u16 = 1 << 8;
-    const word_highlight_strong: u16 = 1 << 9;
-    const snippet_placeholder: u16 = 1 << 10;
-    const finish_snippet_placeholder: u16 = 1 << 11;
-    const value_set_replacement: u16 = 1 << 12;
-    const search_range_highlight: u16 = 1 << 13;
+    const normal: u32 = 0;
+    const selected: u32 = 1 << 0;
+    const secondary_cursor: u32 = 1 << 1;
+    const find_match: u32 = 1 << 2;
+    const current_find_match: u32 = 1 << 3;
+    const find_scope: u32 = 1 << 4;
+    const bracket_match: u32 = 1 << 5;
+    const hover_highlight: u32 = 1 << 6;
+    const word_highlight_text: u32 = 1 << 7;
+    const word_highlight: u32 = 1 << 8;
+    const word_highlight_strong: u32 = 1 << 9;
+    const snippet_placeholder: u32 = 1 << 10;
+    const finish_snippet_placeholder: u32 = 1 << 11;
+    const value_set_replacement: u32 = 1 << 12;
+    const search_range_highlight: u32 = 1 << 13;
+    const diagnostic_error: u32 = 1 << 14;
+    const diagnostic_warning: u32 = 1 << 15;
+    const diagnostic_info: u32 = 1 << 16;
+    const diagnostic_hint: u32 = 1 << 17;
+    const diagnostic_unnecessary: u32 = 1 << 18;
+    const diagnostic_deprecated: u32 = 1 << 19;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -185,6 +191,10 @@ const word_highlight_strong_background = [3]u8{ 8, 61, 91 };
 const snippet_placeholder_background = [3]u8{ 52, 58, 68 };
 const finish_snippet_placeholder_background = [3]u8{ 66, 56, 42 };
 const search_range_highlight_background = [3]u8{ 48, 54, 66 };
+const diagnostic_error_color = [3]u8{ 241, 76, 76 };
+const diagnostic_warning_color = [3]u8{ 204, 167, 0 };
+const diagnostic_info_color = [3]u8{ 55, 148, 255 };
+const diagnostic_hint_color = [3]u8{ 138, 138, 138 };
 
 /// Overview-ruler marker colors. Cells have no alpha, so the translucent
 /// upstream theme colors are composited over the dark editor background.
@@ -1159,7 +1169,7 @@ pub const View = struct {
 
             const indent_cells = data.minColumn - 1;
             const line_width = doc.measureText(rendered.bytes);
-            const flags = try self.allocator.alloc(u16, @max(line_width, 1));
+            const flags = try self.allocator.alloc(u32, @max(line_width, 1));
             defer self.allocator.free(flags);
             @memset(flags, CellFlag.normal);
 
@@ -1263,7 +1273,7 @@ pub const View = struct {
         start_visible_column: usize,
         indent_cells: usize,
         line_width: usize,
-        flags: []u16,
+        flags: []u32,
     ) !void {
         var inline_list = std.array_list.Managed(InlineDecoration).init(self.allocator);
         defer inline_list.deinit();
@@ -1772,7 +1782,7 @@ fn appendRuns(
     doc: *ui.Document,
     line: *ui.Node,
     rendered: line_renderer.RenderedLine,
-    flags: []const u16,
+    flags: []const u32,
 ) !void {
     var part_index: usize = 0;
     var byte_in_part: usize = 0;
@@ -1834,6 +1844,22 @@ fn appendRuns(
                 style.color = color(bracket_match_foreground);
                 style.underline = true;
             }
+            if (flag & CellFlag.diagnostic_error != 0) {
+                style.color = color(diagnostic_error_color);
+                style.underline = true;
+            } else if (flag & CellFlag.diagnostic_warning != 0) {
+                style.color = color(diagnostic_warning_color);
+                style.underline = true;
+            } else if (flag & CellFlag.diagnostic_info != 0) {
+                style.color = color(diagnostic_info_color);
+                style.underline = true;
+            } else if (flag & CellFlag.diagnostic_hint != 0) {
+                style.color = color(diagnostic_hint_color);
+                style.underline = true;
+            } else if ((flag & CellFlag.diagnostic_unnecessary != 0) or (flag & CellFlag.diagnostic_deprecated != 0)) {
+                style.dim = true;
+                style.underline = true;
+            }
             if (flag & CellFlag.secondary_cursor != 0) {
                 style.reverse = true;
                 style.background = color(secondary_cursor_background);
@@ -1871,7 +1897,7 @@ fn markSelections(
     start_visible_column: usize,
     indent_cells: usize,
     line_width: usize,
-    flags: []u16,
+    flags: []u32,
 ) void {
     for (states) |state| {
         const selection = state.viewState.selection;
@@ -1952,7 +1978,7 @@ fn appendModelInlineDecorations(
     }
 }
 
-fn decorationBit(class_name: []const u8) ?u16 {
+fn decorationBit(class_name: []const u8) ?u32 {
     if (std.mem.eql(u8, class_name, "findMatch") or std.mem.eql(u8, class_name, "findMatchInline")) return CellFlag.find_match;
     if (std.mem.eql(u8, class_name, "currentFindMatch") or std.mem.eql(u8, class_name, "currentFindMatchInline")) return CellFlag.current_find_match;
     if (std.mem.eql(u8, class_name, "findScope")) return CellFlag.find_scope;
@@ -1965,6 +1991,13 @@ fn decorationBit(class_name: []const u8) ?u16 {
     if (std.mem.eql(u8, class_name, "finish-snippet-placeholder")) return CellFlag.finish_snippet_placeholder;
     if (std.mem.eql(u8, class_name, "valueSetReplacement")) return CellFlag.value_set_replacement;
     if (std.mem.eql(u8, class_name, "rangeHighlight")) return CellFlag.search_range_highlight;
+    if (std.mem.eql(u8, class_name, "squiggly-error")) return CellFlag.diagnostic_error;
+    if (std.mem.eql(u8, class_name, "squiggly-warning")) return CellFlag.diagnostic_warning;
+    if (std.mem.eql(u8, class_name, "squiggly-info")) return CellFlag.diagnostic_info;
+    if (std.mem.eql(u8, class_name, "squiggly-hint")) return CellFlag.diagnostic_hint;
+    if (std.mem.eql(u8, class_name, "squiggly-unnecessary")) return CellFlag.diagnostic_unnecessary;
+    if (std.mem.eql(u8, class_name, "squiggly-inline-unnecessary")) return CellFlag.diagnostic_unnecessary;
+    if (std.mem.eql(u8, class_name, "squiggly-inline-deprecated")) return CellFlag.diagnostic_deprecated;
     return null;
 }
 

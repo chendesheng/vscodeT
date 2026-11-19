@@ -41,12 +41,22 @@ pub const SuggestController = struct {
         providers: []const completion.CompletionItemProvider,
         host: SuggestControllerHost,
     ) !*SuggestController {
+        return initWithRegistry(allocator, editor, providers, host, null);
+    }
+
+    pub fn initWithRegistry(
+        allocator: Allocator,
+        editor: *Editor,
+        providers: []const completion.CompletionItemProvider,
+        host: SuggestControllerHost,
+        registry: ?*@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(completion.CompletionItemProvider),
+    ) !*SuggestController {
         const self = try allocator.create(SuggestController);
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
             .editor = editor,
-            .model = SuggestModel.init(allocator, editor, providers),
+            .model = SuggestModel.initWithRegistry(allocator, editor, providers, registry),
             .widget = undefined,
             .overtyping_capturer = OvertypingCapturer.init(allocator),
             .host = host,

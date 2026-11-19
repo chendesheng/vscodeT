@@ -99,6 +99,9 @@ const outline_service_mod = @import("../vs/workbench/services/outline/browser/ou
 const OutlineService = outline_service_mod.OutlineService;
 const outline_mod = @import("../vs/workbench/services/outline/browser/outline.zig");
 const OutlineEditor = outline_mod.OutlineEditor;
+const IOutlineCreator = outline_mod.IOutlineCreator;
+const DocumentSymbolsOutline = @import("../vs/workbench/contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutline;
+const OutlineModel = @import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModel;
 const file_icon = @import("./fileIcon.zig");
 const quick_input_common = @import("../vs/platform/quickinput/common/quickInput.zig");
 const QuickPickItem = quick_input_common.QuickPickItem;
@@ -123,7 +126,14 @@ const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
 const Range = @import("../vs/editor/common/core/range.zig").Range;
+const LanguageFeaturesService = @import("../vs/editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const MarkerService = @import("../vs/platform/markers/common/markerService.zig").MarkerService;
+const MarkerDecorationsService = @import("../vs/editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
+const markerChangeEvent = @import("../vs/platform/markers/common/markerService.zig").MarkerChangeEvent;
+const markers_mod = @import("../vs/platform/markers/common/markers.zig");
+const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
+const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const EOL = @import("../vs/editor/common/core/misc/eolCounter.zig").EOL;
 const encoding_mod = @import("../vs/workbench/services/textfile/common/encoding.zig");
 const SearchOption = @import("./searchWidget.zig").Option;
@@ -229,6 +239,14 @@ pub const Workbench = struct {
     expanded_pane: ?*GroupPane = null,
     declarative: ?*const extensions_registry.Registry = null,
     json_client: ?*json_language.Client = null,
+    language_features: ?*LanguageFeaturesService = null,
+    marker_service: ?*MarkerService = null,
+    marker_decorations: ?*MarkerDecorationsService = null,
+    marker_listener: ?@import("../vs/base/common/event.zig").Emitter(markerChangeEvent).ListenerId = null,
+    word_completion_provider: ?*WordBasedCompletionProvider = null,
+    word_completion_registration: ?IDisposable = null,
+    outline_registration: ?IDisposable = null,
+    document_symbol_listener: ?@import("../vs/base/common/event.zig").Emitter(usize).ListenerId = null,
     focus: Focus = .editor,
     is_pasting: bool = false,
     quit_armed: bool = false,
@@ -282,6 +300,14 @@ pub const Workbench = struct {
         self.expanded_pane = null;
         self.declarative = null;
         self.json_client = null;
+        self.language_features = null;
+        self.marker_service = null;
+        self.marker_decorations = null;
+        self.marker_listener = null;
+        self.word_completion_provider = null;
+        self.word_completion_registration = null;
+        self.outline_registration = null;
+        self.document_symbol_listener = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -361,6 +387,14 @@ pub const Workbench = struct {
         self.expanded_pane = null;
         self.declarative = null;
         self.json_client = null;
+        self.language_features = null;
+        self.marker_service = null;
+        self.marker_decorations = null;
+        self.marker_listener = null;
+        self.word_completion_provider = null;
+        self.word_completion_registration = null;
+        self.outline_registration = null;
+        self.document_symbol_listener = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -456,6 +490,14 @@ pub const Workbench = struct {
         self.expanded_pane = null;
         self.declarative = null;
         self.json_client = null;
+        self.language_features = null;
+        self.marker_service = null;
+        self.marker_decorations = null;
+        self.marker_listener = null;
+        self.word_completion_provider = null;
+        self.word_completion_registration = null;
+        self.outline_registration = null;
+        self.document_symbol_listener = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -553,7 +595,7 @@ pub const Workbench = struct {
             .text = "Ctrl-Q quit",
         }, "workbench.hint", .right, .{ .number = 0 });
         self.json_status_accessor = try self.statusbar.addEntry(.{
-            .name = "JSON Problems",
+            .name = "Problems",
             .text = "",
         }, "workbench.jsonProblems", .left, .{ .number = 1 });
     }
@@ -737,6 +779,14 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
+        if (self.outline_registration) |registration| {
+            registration.dispose();
+            self.outline_registration = null;
+        }
+        if (self.document_symbol_listener) |listener| {
+            if (self.language_features) |features| features.document_symbol_provider.on_did_change.unlisten(listener);
+            self.document_symbol_listener = null;
+        }
         self.disposeBreadcrumbs();
         self.breadcrumbs_arena.deinit();
         self.breadcrumbs_service.deinit();
@@ -770,6 +820,18 @@ pub const Workbench = struct {
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
+        if (self.word_completion_registration) |registration| registration.dispose();
+        if (self.word_completion_provider) |provider| self.allocator.destroy(provider);
+        if (self.marker_decorations) |service| service.deinit();
+        if (self.marker_service) |service| {
+            if (self.marker_listener) |listener| service.on_marker_changed.unlisten(listener);
+            service.deinit();
+            self.allocator.destroy(service);
+        }
+        if (self.language_features) |service| {
+            service.deinit();
+            self.allocator.destroy(service);
+        }
         self.frame.deinit();
         self.allocator.destroy(self);
     }
@@ -1310,6 +1372,55 @@ pub const Workbench = struct {
     /// Opens a path through the editor-groups service. If the resource is
     /// already open in another group, the service reveals that group and the
     /// newly created input is discarded.
+    /// Creates the shared language-feature and marker services. Idempotent;
+    /// app startup calls it before the extension host and JSON client attach.
+    pub fn enableLanguageFeatures(self: *Workbench) !void {
+        if (self.language_features != null) return;
+        const features = try self.allocator.create(LanguageFeaturesService);
+        errdefer self.allocator.destroy(features);
+        features.* = LanguageFeaturesService.init(self.allocator);
+        errdefer features.deinit();
+        const marker_service = try self.allocator.create(MarkerService);
+        errdefer self.allocator.destroy(marker_service);
+        marker_service.* = MarkerService.init(self.allocator);
+        errdefer marker_service.deinit();
+        const marker_decorations = try MarkerDecorationsService.init(self.allocator, marker_service);
+        errdefer marker_decorations.deinit();
+
+        const word_provider = try self.allocator.create(WordBasedCompletionProvider);
+        errdefer self.allocator.destroy(word_provider);
+        word_provider.* = WordBasedCompletionProvider.init();
+
+        self.language_features = features;
+        self.marker_service = marker_service;
+        self.marker_decorations = marker_decorations;
+        self.word_completion_provider = word_provider;
+        self.word_completion_registration = try features.completion_provider.register(.{ .language = "*" }, word_provider.interface());
+        self.marker_listener = try marker_service.on_marker_changed.listen(self, onMarkerChanged);
+        self.document_symbol_listener = try features.document_symbol_provider.on_did_change.listen(self, onDocumentSymbolsChanged);
+        self.outline_registration = try self.outline_service.registerOutlineCreator(.{
+            .context = self,
+            .matches = outlineMatches,
+            .create_outline = outlineCreate,
+        });
+
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                tab.editor.attachLanguageServices(features, marker_service, marker_decorations);
+                tab.attachLanguageRegistry(features);
+            }
+        }
+        self.refreshStatus();
+    }
+
+    fn onMarkerChanged(_: markerChangeEvent, self: *Workbench) !void {
+        self.refreshStatus();
+    }
+
+    fn onDocumentSymbolsChanged(_: usize, self: *Workbench) !void {
+        self.outline_service.notifyOutlineChanged();
+    }
+
     /// Applies declarative language/grammar contributions to the open tabs and
     /// to tabs opened later.
     pub fn setDeclarativeExtensions(self: *Workbench, registry: *const extensions_registry.Registry) void {
@@ -1356,6 +1467,9 @@ pub const Workbench = struct {
             self.allocator.destroy(editor);
         }
         self.applyConfiguredLanguageAssociations(editor);
+        if (self.language_features) |features| {
+            editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
+        }
         const input = try FileEditorInput.init(self.allocator, editor);
         errdefer input.deinit();
 
@@ -1373,6 +1487,7 @@ pub const Workbench = struct {
             input.deinit();
             if (pane.tabForInput(opened.result.editor)) |tab| {
                 try pane.activateTab(tab);
+                if (self.language_features) |features| tab.attachLanguageRegistry(features);
                 try tab.ensureControllers();
                 tab.view.focusEditor();
             }
@@ -1385,6 +1500,7 @@ pub const Workbench = struct {
         try tab.view.setStatusBarVisible(false);
         try pane.addTab(tab);
         self.registerWorkingCopy(tab);
+        if (self.language_features) |features| tab.attachLanguageRegistry(features);
         try tab.ensureControllers();
         try self.history.add(path);
         self.pruneTabs(pane);
@@ -2390,17 +2506,45 @@ pub const Workbench = struct {
         }
         if (self.json_status_accessor) |accessor| {
             const tab = self.activeTab();
-            const errors = if (tab) |active| active.editor.json_error_count else 0;
-            const warnings = if (tab) |active| active.editor.json_warning_count else 0;
-            if (errors > 0 or warnings > 0) {
-                const text = std.fmt.bufPrint(&self.json_status_buf, "{d} error(s), {d} warning(s)", .{ errors, warnings }) catch "JSON problems";
-                accessor.update(.{
-                    .name = "JSON Problems",
-                    .text = text,
-                    .tooltip = if (tab) |active| active.editor.json_message else null,
-                });
+            if (self.marker_service) |marker_service| {
+                var arena = std.heap.ArenaAllocator.init(self.allocator);
+                defer arena.deinit();
+                var errors: usize = 0;
+                var warnings: usize = 0;
+                var tooltip: ?[]const u8 = null;
+                if (tab) |active| {
+                    const resource = markers_mod.Resource.fromUri(arena.allocator(), active.editor.model.uri()) catch null;
+                    if (resource) |value| {
+                        const list = marker_service.read(arena.allocator(), .{ .resource = value }) catch &.{};
+                        for (list) |marker| {
+                            switch (marker.severity) {
+                                markers_mod.MarkerSeverity.Error => errors += 1,
+                                markers_mod.MarkerSeverity.Warning => warnings += 1,
+                                else => {},
+                            }
+                            if (tooltip == null) tooltip = marker.message;
+                        }
+                    }
+                }
+                if (errors > 0 or warnings > 0) {
+                    const text = std.fmt.bufPrint(&self.json_status_buf, "{d} error(s), {d} warning(s)", .{ errors, warnings }) catch "Problems";
+                    accessor.update(.{ .name = "Problems", .text = text, .tooltip = tooltip });
+                } else {
+                    accessor.update(.{ .name = "Problems", .text = "" });
+                }
             } else {
-                accessor.update(.{ .name = "JSON Problems", .text = "" });
+                const errors = if (tab) |active| active.editor.json_error_count else 0;
+                const warnings = if (tab) |active| active.editor.json_warning_count else 0;
+                if (errors > 0 or warnings > 0) {
+                    const text = std.fmt.bufPrint(&self.json_status_buf, "{d} error(s), {d} warning(s)", .{ errors, warnings }) catch "JSON problems";
+                    accessor.update(.{
+                        .name = "JSON Problems",
+                        .text = text,
+                        .tooltip = if (tab) |active| active.editor.json_message else null,
+                    });
+                } else {
+                    accessor.update(.{ .name = "JSON Problems", .text = "" });
+                }
             }
         }
     }
@@ -2899,6 +3043,45 @@ pub const Workbench = struct {
         }
     }
 };
+
+fn outlineMatches(context: *anyopaque, editor: OutlineEditor) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const active: *Tab = @ptrCast(@alignCast(editor.context));
+    const resource = editor.resource orelse return false;
+    if (!std.mem.eql(u8, active.editor.path, resource)) return false;
+    const features = self.language_features orelse return false;
+    return features.document_symbol_provider.has(active.editor.model);
+}
+
+fn outlineCreate(context: *anyopaque, editor: OutlineEditor, target: outline_mod.OutlineTarget) !?*outline_mod.IOutline {
+    _ = target;
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab: *Tab = @ptrCast(@alignCast(editor.context));
+    const features = self.language_features orelse return null;
+    const providers = try features.document_symbol_provider.ordered(self.allocator, tab.editor.model, false);
+    defer self.allocator.free(providers);
+    if (providers.len == 0) return null;
+    const model = try OutlineModel.create(self.allocator, tab.editor.model, providers[0]);
+    const outline = try DocumentSymbolsOutline.create(self.allocator, model, .{
+        .context = tab,
+        .current_position = outlineCurrentPosition,
+        .reveal_range = outlineRevealRange,
+        .request_render = outlineRequestRender,
+    });
+    return outline.interfacePtr();
+}
+
+fn outlineCurrentPosition(context: *anyopaque) ?Position {
+    const tab: *Tab = @ptrCast(@alignCast(context));
+    return tab.editor.modelSelection().getStartPosition();
+}
+
+fn outlineRevealRange(context: *anyopaque, range: Range) !void {
+    const tab: *Tab = @ptrCast(@alignCast(context));
+    try tab.editor.setSelections(&.{Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn)});
+}
+
+fn outlineRequestRender(_: *anyopaque) void {}
 
 const BreadcrumbContext = struct {
     workbench: *Workbench,

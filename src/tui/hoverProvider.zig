@@ -28,6 +28,7 @@ pub const TuiHoverProvider = struct {
     contents: [1]IMarkdownString = undefined,
     json_client: ?*json_language.Client = null,
     json_uri: ?[]const u8 = null,
+    model: ?*TextModel = null,
 
     pub fn init(allocator: Allocator) TuiHoverProvider {
         return .{
@@ -49,6 +50,10 @@ pub const TuiHoverProvider = struct {
         self.json_uri = uri;
     }
 
+    pub fn setModel(self: *TuiHoverProvider, model: *TextModel) void {
+        self.model = model;
+    }
+
     pub fn provideHover(
         context: *anyopaque,
         model: *TextModel,
@@ -57,6 +62,9 @@ pub const TuiHoverProvider = struct {
         _: ?*const languages.HoverContext,
     ) anyerror!?Hover {
         const self: *TuiHoverProvider = @ptrCast(@alignCast(context));
+        if (self.model) |owned_model| {
+            if (model != owned_model) return null;
+        }
         _ = self.scratch.reset(.retain_capacity);
         const allocator = self.scratch.allocator();
 

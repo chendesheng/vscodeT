@@ -430,6 +430,153 @@ pub const SelectionRangeProvider = struct {
     ) anyerror![]const []const SelectionRange,
 };
 
+/// Port of the definition/location subset of
+/// `src/vs/editor/common/languages.ts`.
+pub const Location = struct {
+    /// Canonical resource key (`scheme://authority/path?query#fragment`).
+    /// The editor only needs identity here; the TUI has no go-to-definition
+    /// surface yet.
+    uri: []const u8,
+    range: Range,
+};
+
+pub const LocationLink = struct {
+    origin_selection_range: ?Range = null,
+    uri: []const u8,
+    range: Range,
+    target_selection_range: Range,
+};
+
+pub const DefinitionProvider = struct {
+    context: *anyopaque,
+    provide_definition: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        position: Position,
+        token: CancellationToken,
+    ) anyerror![]LocationLink,
+};
+
+/// Port of `DocumentSymbol` from `src/vs/editor/common/languages.ts`.
+/// Children own their fields through the allocator supplied to the provider.
+pub const DocumentSymbol = struct {
+    name: []const u8,
+    detail: []const u8 = "",
+    kind: u32,
+    tags: []const u32 = &.{},
+    container_name: ?[]const u8 = null,
+    range: Range,
+    selection_range: Range,
+    children: []const DocumentSymbol = &.{},
+};
+
+pub const DocumentSymbolProvider = struct {
+    context: *anyopaque,
+    display_name: []const u8 = "",
+    provide_document_symbols: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        token: CancellationToken,
+    ) anyerror![]const DocumentSymbol,
+};
+
+pub const TextEdit = struct {
+    range: Range,
+    text: []const u8,
+};
+
+pub const FormattingOptions = struct {
+    tab_size: u32,
+    insert_spaces: bool,
+};
+
+pub const DocumentFormattingEditProvider = struct {
+    context: *anyopaque,
+    extension_id: []const u8 = "",
+    display_name: []const u8 = "",
+    provide_document_formatting_edits: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        options: FormattingOptions,
+        token: CancellationToken,
+    ) anyerror![]const TextEdit,
+};
+
+pub const DocumentRangeFormattingEditProvider = struct {
+    context: *anyopaque,
+    extension_id: []const u8 = "",
+    display_name: []const u8 = "",
+    provide_document_range_formatting_edits: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        range: Range,
+        options: FormattingOptions,
+        token: CancellationToken,
+    ) anyerror![]const TextEdit,
+};
+
+pub const OnTypeFormattingEditProvider = struct {
+    context: *anyopaque,
+    extension_id: []const u8 = "",
+    auto_format_trigger_characters: []const []const u8 = &.{},
+    provide_on_type_formatting_edits: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        position: Position,
+        ch: []const u8,
+        options: FormattingOptions,
+        token: CancellationToken,
+    ) anyerror![]const TextEdit,
+};
+
+pub const Command = struct {
+    id: []const u8,
+    title: []const u8 = "",
+    arguments: ?std.json.Value = null,
+};
+
+/// Port of the code-action subset. Workspace edits are kept as the raw
+/// `IWorkspaceEditDto` JSON until a bulk-edit service is ported; the TUI has no
+/// code-action surface yet.
+pub const CodeAction = struct {
+    title: []const u8,
+    kind: ?[]const u8 = null,
+    is_preferred: bool = false,
+    disabled: ?[]const u8 = null,
+    command: ?Command = null,
+    edit_json: ?std.json.Value = null,
+};
+
+pub const CodeActionList = struct {
+    actions: []const CodeAction = &.{},
+};
+
+pub const CodeActionContext = struct {
+    only: ?[]const u8 = null,
+    trigger_kind: u8 = 1,
+    diagnostics: ?std.json.Value = null,
+};
+
+pub const CodeActionProvider = struct {
+    context: *anyopaque,
+    display_name: []const u8 = "",
+    extension_id: []const u8 = "",
+    provided_kinds: []const []const u8 = &.{},
+    provide_code_actions: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        range: Range,
+        action_context: CodeActionContext,
+        token: CancellationToken,
+    ) anyerror!CodeActionList,
+};
+
 test "IColorInformation: holds a range and a color" {
     const information = IColorInformation{
         .range = Range.init(1, 1, 1, 7),

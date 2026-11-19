@@ -61,6 +61,7 @@ pub const MarkdownHoverParticipant = struct {
     allocator: Allocator,
     model: *TextModel,
     providers: []const HoverProvider,
+    registry: ?*@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(HoverProvider) = null,
     hover_ordinal: i32 = 3,
 
     /// Payloads of the current computation (parts and copied markdown). Reset
@@ -71,10 +72,15 @@ pub const MarkdownHoverParticipant = struct {
     rendered: []const IRenderedHoverPart = &.{},
 
     pub fn init(allocator: Allocator, model: *TextModel, providers: []const HoverProvider) MarkdownHoverParticipant {
+        return initWithRegistry(allocator, model, providers, null);
+    }
+
+    pub fn initWithRegistry(allocator: Allocator, model: *TextModel, providers: []const HoverProvider, registry: ?*@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(HoverProvider)) MarkdownHoverParticipant {
         return .{
             .allocator = allocator,
             .model = model,
             .providers = providers,
+            .registry = registry,
             .parts_arena = std.heap.ArenaAllocator.init(allocator),
             .rendered_arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -200,13 +206,17 @@ pub const MarkdownHoverParticipant = struct {
         // filtered and re-rendered while a new computation is in flight, and
         // its part payloads must stay valid until the hover is hidden.
         if (anchor.getType() != .range) return &.{};
-        if (self.providers.len == 0) return &.{};
+        const providers = if (self.registry) |registry|
+            registry.ordered(self.parts_arena.allocator(), self.model, false) catch &.{}
+        else
+            self.providers;
+        if (providers.len == 0) return &.{};
 
         const anchor_range = anchor.getRange();
         const position = anchor_range.getStartPosition();
         const results = try getHover.getHoverProviderResults(
             self.parts_arena.allocator(),
-            self.providers,
+            providers,
             self.model,
             position,
             token,

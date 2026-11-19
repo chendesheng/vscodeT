@@ -24,6 +24,10 @@ const Range = @import("../vs/editor/common/core/range.zig").Range;
 const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
 const ui = @import("ui");
+const MainThreadLanguageFeatures = @import("../vs/workbench/api/browser/mainThreadLanguageFeatures.zig").MainThreadLanguageFeatures;
+const languageFeaturesHost = @import("../vs/workbench/api/browser/mainThreadLanguageFeatures.zig").HostProxy;
+const MainThreadDiagnostics = @import("../vs/workbench/api/browser/mainThreadDiagnostics.zig").MainThreadDiagnostics;
+const diagnosticsHost = @import("../vs/workbench/api/browser/mainThreadDiagnostics.zig").HostProxy;
 
 const EntryAccessor = statusbar_part.EntryAccessor;
 
@@ -64,6 +68,8 @@ pub const Extensions = struct {
     activated: bool = false,
     needs_render: bool = false,
     pasting: bool = false,
+    language_features_actor: ?MainThreadLanguageFeatures = null,
+    diagnostics_actor: ?*MainThreadDiagnostics = null,
 
     pub fn init(
         allocator: Allocator,
@@ -114,11 +120,19 @@ pub const Extensions = struct {
         errdefer self.host.deinit();
 
         self.registerActors();
+        self.initLanguageActors() catch |err| {
+            std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
+        };
         try self.boot();
         return self;
     }
 
     pub fn deinit(self: *Extensions) void {
+        if (self.diagnostics_actor) |actor| {
+            actor.deinit();
+            self.diagnostics_actor = null;
+        }
+        if (self.language_features_actor) |*actor| actor.deinit();
         if (self.active) |*active| {
             self.allocator.free(active.uri);
             self.allocator.free(active.language_id);
@@ -141,8 +155,56 @@ pub const Extensions = struct {
         var nid: u8 = 1;
         while (nid <= protocol.max_nid) : (nid += 1) {
             const entry = protocol.identifier(nid).?;
-            self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invoke });
+            if (nid == 26) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLanguageFeatures });
+            } else if (nid == 16) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDiagnostics });
+            } else {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invoke });
+            }
         }
+    }
+
+    fn initLanguageActors(self: *Extensions) !void {
+        const features = self.workbench.language_features orelse return;
+        const marker_service = self.workbench.marker_service orelse return;
+        self.language_features_actor = MainThreadLanguageFeatures.init(self.allocator, features, .{
+            .context = self,
+            .request = languageFeaturesRequest,
+            .notify = languageFeaturesNotify,
+        });
+        self.diagnostics_actor = try MainThreadDiagnostics.init(self.allocator, marker_service, .{
+            .context = self,
+            .notify = diagnosticsNotify,
+        });
+    }
+
+    fn languageFeaturesRequest(context: *anyopaque, allocator: Allocator, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, timeout_ms: u32) anyerror!std.json.Value {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        return self.host.requestSync(allocator, proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguageFeatures), method, args, token, timeout_ms);
+    }
+
+    fn languageFeaturesNotify(context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguageFeatures), method, args);
+    }
+
+    fn diagnosticsNotify(context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDiagnostics), method, args);
+    }
+
+    fn invokeLanguageFeatures(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.language_features_actor) |*actor| return actor.invoke(method, args, token, arena);
+        return .empty;
+    }
+
+    fn invokeDiagnostics(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.diagnostics_actor) |actor| return actor.invoke(method, args, arena);
+        return .empty;
     }
 
     fn boot(self: *Extensions) !void {
@@ -243,6 +305,7 @@ pub const Extensions = struct {
     pub fn pump(self: *Extensions) bool {
         self.needs_render = false;
         _ = self.host.pump();
+        if (self.diagnostics_actor) |actor| actor.flush() catch {};
         self.syncActiveDocument() catch {};
         const result = self.needs_render;
         self.needs_render = false;
@@ -1104,4 +1167,56 @@ test "Extensions: VSCodeVim inserts text into the active TUI editor" {
     var deleted = try workbench.activeTab().?.editor.model.getLineContent(1);
     defer deleted.deinit();
     try std.testing.expectEqualStrings("hello", deleted.items);
+}
+
+test "Extensions: language feature registration reaches the workbench registries" {
+    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    std.Io.Dir.cwd().access(time_compat.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(time_compat.io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = time_compat.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "fixture.json", .data = "{\n  \"a\": 1\n}\n" });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const relative_len = try tmp.dir.realPathFile(io, "fixture.json", &path_buffer);
+    const relative = path_buffer[0..relative_len];
+
+    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+
+    var extension_host = try Extensions.init(allocator, io, workbench, "host/test-fixtures/language-features", ".cache-ext/data-language-fixture");
+    defer extension_host.deinit();
+
+    const deadline = time_compat.milliTimestamp() + 10_000;
+    while (time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        if (extension_host.active != null) break;
+        time_compat.sleepMillis(10);
+    }
+    _ = extension_host.pump();
+
+    const features = workbench.language_features.?;
+    const model = workbench.activeTab().?.editor.model;
+    const hover_providers = try features.hover_provider.ordered(allocator, model, false);
+    defer allocator.free(hover_providers);
+    try std.testing.expect(hover_providers.len > 0);
+    const hover = try hover_providers[0].provide_hover(
+        hover_providers[0].context,
+        model,
+        Position.init(1, 1),
+        @import("../vs/base/common/cancellation.zig").CancellationToken.None,
+        null,
+    );
+    try std.testing.expect(hover != null);
+
+    const completion_providers = try features.completion_provider.ordered(allocator, model, false);
+    defer allocator.free(completion_providers);
+    try std.testing.expect(completion_providers.len > 0);
+
+    const symbol_providers = try features.document_symbol_provider.ordered(allocator, model, false);
+    defer allocator.free(symbol_providers);
+    try std.testing.expect(symbol_providers.len > 0);
 }

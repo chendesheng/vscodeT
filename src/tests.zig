@@ -553,6 +553,23 @@ comptime {
     _ = @import("./vs/platform/extensionManagement/test/node/extensionsScannerService.test.zig");
     _ = @import("./vs/workbench/services/extensions/common/extensionsRegistry.zig");
     _ = @import("./vs/workbench/services/language/common/jsonLanguageClient.zig");
+    _ = @import("./vs/base/common/stdUri.zig");
+    _ = @import("./vs/editor/common/languageSelector.zig");
+    _ = @import("./vs/editor/common/languageFeatureRegistry.zig");
+    _ = @import("./vs/editor/common/services/languageFeaturesService.zig");
+    _ = @import("./vs/editor/test/common/modes/languageSelector.test.zig");
+    _ = @import("./vs/editor/test/common/languageFeatureRegistry.test.zig");
+    _ = @import("./vs/platform/markers/common/markers.zig");
+    _ = @import("./vs/platform/markers/common/markerService.zig");
+    _ = @import("./vs/platform/markers/test/common/markerService.test.zig");
+    _ = @import("./vs/editor/common/services/markerDecorations.zig");
+    _ = @import("./vs/editor/common/services/markerDecorationsService.zig");
+    _ = @import("./vs/editor/test/common/services/markerDecorationsService.test.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadLanguageFeatures.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadDiagnostics.zig");
+    _ = @import("./vs/workbench/api/test/browser/mainThreadLanguageFeatures.test.zig");
+    _ = @import("./vs/editor/contrib/documentSymbols/browser/outlineModel.zig");
+    _ = @import("./vs/workbench/contrib/codeEditor/browser/outline/documentSymbolsOutline.zig");
 }
 comptime {
     _ = @import("./vs/platform/files/test/common/files.test.zig");

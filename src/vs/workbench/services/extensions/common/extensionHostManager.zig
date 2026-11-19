@@ -365,6 +365,78 @@ pub const HostManager = struct {
     pub fn setActor(self: *HostManager, identifier: proxyIdentifier.ProxyIdentifier, handler: rpcProtocol.ActorHandler) void {
         self.rpc.set(identifier, handler);
     }
+
+    /// Sends a request and pumps the host until the reply arrives or the
+    /// timeout expires. Provider calls have no asynchronous editor boundary in
+    /// the TUI, so this is the synchronous bridge; the result is allocated with
+    /// `allocator` (callers normally pass an arena).
+    pub fn requestSync(
+        self: *HostManager,
+        allocator: Allocator,
+        identifier: proxyIdentifier.ProxyIdentifier,
+        method: []const u8,
+        args: []const rpcProtocol.Arg,
+        token: ?@import("../../../../base/common/cancellation.zig").CancellationToken,
+        timeout_ms: u32,
+    ) !std.json.Value {
+        const slot = try allocator.create(SyncSlot);
+        slot.* = .{ .allocator = allocator, .arena = std.heap.ArenaAllocator.init(allocator) };
+        errdefer {
+            slot.arena.deinit();
+            allocator.destroy(slot);
+        }
+        const id = try self.rpc.call(identifier, method, args, token, .{ .context = slot, .callback = SyncSlot.callback });
+        const deadline = time_compat.milliTimestamp() + timeout_ms;
+        while (!slot.done) {
+            _ = self.pump();
+            if (self.hasEof()) {
+                self.rpc.cancel(id);
+                return ExtensionHostError.HostExited;
+            }
+            if (time_compat.milliTimestamp() > deadline) {
+                self.rpc.cancel(id);
+                return ExtensionHostError.HostTimeout;
+            }
+            self.io.sleep(.fromMilliseconds(1), .awake) catch {};
+        }
+        if (slot.failed) return error.RequestFailed;
+        const value = slot.value orelse std.json.Value.null;
+        const result = try rpcProtocol.cloneJsonValue(allocator, value);
+        slot.arena.deinit();
+        allocator.destroy(slot);
+        return result;
+    }
+
+    pub fn notify(
+        self: *HostManager,
+        identifier: proxyIdentifier.ProxyIdentifier,
+        method: []const u8,
+        args: []const rpcProtocol.Arg,
+    ) !void {
+        try self.rpc.notify(identifier, method, args);
+    }
+};
+
+const SyncSlot = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    done: bool = false,
+    failed: bool = false,
+    value: ?std.json.Value = null,
+
+    fn callback(context: *anyopaque, reply: rpcProtocol.Reply) void {
+        const self: *SyncSlot = @ptrCast(@alignCast(context));
+        self.done = true;
+        switch (reply) {
+            .json => |value| self.value = rpcProtocol.cloneJsonValue(self.arena.allocator(), value) catch {
+                self.failed = true;
+                return;
+            },
+            .empty => self.value = .null,
+            .buffer => self.failed = true,
+            .err => self.failed = true,
+        }
+    }
 };
 
 pub const noop_callback = rpcProtocol.ReplyCallback{

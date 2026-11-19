@@ -272,7 +272,7 @@ Stage numbers refer to §14.
 | `workbench/api/common/extHost.protocol.ts` | 4434 | **generated** `workbench/api/common/extHost.protocol.zig` + `extHost.protocol.manifest.zig` | generator assertions (§5.2) | S2 |
 | `workbench/api/browser/mainThread*.ts` | — | `workbench/api/browser/mainThread*.zig` (baseline in §7) | `workbench/api/test/browser/mainThread*.test.ts` | S5/S6 |
 | `workbench/services/language/common/languageService.ts` | 372 | `.../languageService.zig` (registration and `files.associations` ported) | no dedicated workbench test; add contribution/activation tests | S4 (port exists; activation hook remains) |
-| `editor/common/languageFeatureRegistry.ts` | 236 | `editor/common/languageFeatureRegistry.zig` | no direct test; add selector/scoring tests | S6 (missing; required by `MainThreadLanguageFeatures`) |
+| `editor/common/languageFeatureRegistry.ts` | 236 | `editor/common/languageFeatureRegistry.zig` (+ `languageSelector.zig`) | `editor/test/common/modes/languageSelector.test.ts`; registry tests added | S6 (ported) |
 | `workbench/services/actions/common/menusExtensionPoint.ts` | 1297 | `.../menusExtensionPoint.zig` (`commands`) | none direct | S4 |
 | `workbench/services/textMate/common/TMGrammars.ts` | 90 | `.../TMGrammars.zig` (`grammars`) | textMate suites | S6 |
 | `workbench/services/themes/common/themeExtensionPoints.ts` | 306 | `.../themeExtensionPoints.zig` (`themes`) | theme suites | S6 |
@@ -351,10 +351,10 @@ not grow a parallel copy inside the extension layer.
 | Workspace and untitled inputs | `workbench/services/workspaces/common/workspaceContextService.zig`, `workbench/services/untitled/common/untitledTextEditorInput.zig` | `$initializeWorkspace`, `$tryCreateDocument` |
 
 Still absent at this snapshot: `base/common/{marshalling,json}.zig`,
-`base/common/uriIpc.zig`, the semver subset,
-`editor/common/languageFeatureRegistry.zig`, everything under
-`workbench/services/extensions/`, `workbench/api/`, `platform/extensions/`,
-and `platform/extensionManagement/`. The context-key expression and scanner
+`base/common/uriIpc.zig`, the semver subset, everything under
+`workbench/services/extensions/` beyond the ported host manager/RPC,
+`workbench/api/` beyond the baseline language/diagnostics actors,
+`platform/extensions/`, and `platform/extensionManagement/`. The context-key expression and scanner
 are ported, but there is no scoped `ContextKeyService`; the TUI currently
 resolves against a flat set. Configuration is read-only and has no language
 overrides yet. Storage and working-copy backup/history are in-memory. These
@@ -1264,6 +1264,15 @@ visibleRanges })`, `$acceptEditorPositionData({ [id]: position })`, and
 into the documents-and-editors delta; the host expects the separate events.
 
 ## 10. Language features
+
+The baseline bridge is ported: `languageSelector.zig`,
+`languageFeatureRegistry.zig`, the eight registries in
+`languageFeaturesService.zig`, `platform/markers`, `markerDecorationsService`,
+`workbench/api/browser/mainThreadLanguageFeatures.zig` and
+`mainThreadDiagnostics.zig`. Hover/completion/outline/formatting are wired to
+the TUI, diagnostics render as squiggly underlines, overview-ruler marks and the
+`Problems` status count, and synchronous provider calls are bounded by a
+timeout. The remaining `MainThreadLanguageFeatures` methods still reject.
 
 `MainThreadLanguageFeatures` is handle-based: the host registers a provider
 and gets a numeric handle; later requests carry that handle. The baseline

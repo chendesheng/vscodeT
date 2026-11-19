@@ -32,6 +32,8 @@ const SuggestController = @import("../vs/editor/contrib/suggest/browser/suggestC
 const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
 const TuiHoverProvider = @import("./hoverProvider.zig").TuiHoverProvider;
 const completion = @import("../vs/editor/common/languages/completion.zig");
+const LanguageFeaturesService = @import("../vs/editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const IDisposable = @import("../vs/base/common/lifecycle.zig").IDisposable;
 
 pub const Tab = struct {
     allocator: Allocator,
@@ -128,6 +130,15 @@ pub const Tab = struct {
         return &self.input.base;
     }
 
+    /// Points the tab's registry-backed controllers at the workbench service.
+    /// Called when language features are enabled after tabs already exist.
+    pub fn attachLanguageRegistry(self: *Tab, features: *LanguageFeaturesService) void {
+        if (self.controllers) |controllers| {
+            controllers.hover_participant.registry = &features.hover_provider;
+            controllers.suggest.model.registry = &features.completion_provider;
+        }
+    }
+
     /// Lays the editor view out in the group pane. The height is the editor
     /// content height; the tab strip row is owned by the workbench.
     pub fn layoutCells(self: *Tab, width: usize, height: usize) void {
@@ -145,6 +156,17 @@ pub const Tab = struct {
         self.allocator.destroy(self);
     }
 };
+
+fn SuggestControllerHostForView(view: *View) @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestControllerHost {
+    return .{
+        .context = view,
+        .text_height = viewTextHeight,
+        .visible_row_of = viewVisibleRowOf,
+        .request_frame = viewRequestFrame,
+        .focus_editor = viewFocusEditor,
+        .has_editor_focus = viewHasEditorFocus,
+    };
+}
 
 /// The per-tab editor contributions. Mirrors the construction order in the
 /// single-editor app so the find/hover/word/suggest behavior is identical.
@@ -164,6 +186,7 @@ pub const Controllers = struct {
     word_provider: WordBasedCompletionProvider,
     completion_providers: [2]completion.CompletionItemProvider,
     completion_count: usize = 1,
+    hover_registration: ?IDisposable = null,
     suggest: *SuggestController,
 
     pub fn init(allocator: Allocator, editor: *Editor, view: *View) !*Controllers {
@@ -171,6 +194,7 @@ pub const Controllers = struct {
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
+        self.hover_registration = null;
 
         self.find_sink = .{ .model = editor.model, .owner = 1 };
         self.find = try FindController.init(allocator, editor, .{
@@ -185,10 +209,18 @@ pub const Controllers = struct {
 
         self.hover_provider = TuiHoverProvider.init(allocator);
         self.hover_provider.setJsonDocument(editor.json_client, editor.json_uri);
+        self.hover_provider.setModel(editor.model);
         errdefer self.hover_provider.deinit();
         self.hover_providers = .{self.hover_provider.interface()};
 
-        self.hover_participant = MarkdownHoverParticipant.init(allocator, editor.model, &self.hover_providers);
+        const features = editor.language_features;
+        if (features) |service| {
+            self.hover_registration = service.hover_provider.register(.{ .language = "*" }, self.hover_provider.interface()) catch null;
+        }
+        self.hover_participant = if (features) |service|
+            MarkdownHoverParticipant.initWithRegistry(allocator, editor.model, &self.hover_providers, &service.hover_provider)
+        else
+            MarkdownHoverParticipant.init(allocator, editor.model, &self.hover_providers);
         errdefer self.hover_participant.deinit();
         self.participants = .{self.hover_participant.interface()};
 
@@ -228,20 +260,18 @@ pub const Controllers = struct {
             self.completion_count = 2;
         }
 
-        self.suggest = try SuggestController.init(allocator, editor, self.completion_providers[0..self.completion_count], .{
-            .context = view,
-            .text_height = viewTextHeight,
-            .visible_row_of = viewVisibleRowOf,
-            .request_frame = viewRequestFrame,
-            .focus_editor = viewFocusEditor,
-            .has_editor_focus = viewHasEditorFocus,
-        });
+        const suggest_host = SuggestControllerHostForView(view);
+        self.suggest = if (features) |service|
+            try SuggestController.initWithRegistry(allocator, editor, &.{}, suggest_host, &service.completion_provider)
+        else
+            try SuggestController.init(allocator, editor, self.completion_providers[0..self.completion_count], suggest_host);
         errdefer self.suggest.deinit();
 
         return self;
     }
 
     pub fn deinit(self: *Controllers) void {
+        if (self.hover_registration) |registration| registration.dispose();
         self.suggest.deinit();
         self.word_highlighter.deinit();
         self.hover.deinit();

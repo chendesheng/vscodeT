@@ -92,6 +92,12 @@ const InPlaceReplaceCommand = @import("../vs/editor/contrib/inPlaceReplace/brows
 const model_module = @import("../vs/editor/common/model.zig");
 const ModelDecorationOptions = model_module.ModelDecorationOptions;
 const ModelDeltaDecoration = model_module.ModelDeltaDecoration;
+const LanguageFeaturesService = @import("../vs/editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const MarkerService = @import("../vs/platform/markers/common/markerService.zig").MarkerService;
+const MarkerDecorationsService = @import("../vs/editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
+const markers = @import("../vs/platform/markers/common/markers.zig");
+const std_uri = @import("../vs/base/common/stdUri.zig");
+const IDisposable = @import("../vs/base/common/lifecycle.zig").IDisposable;
 
 const MAX_STATUS: usize = 512;
 
@@ -222,6 +228,10 @@ pub const Editor = struct {
     json_error_count: usize = 0,
     json_warning_count: usize = 0,
     json_message: ?[]u8 = null,
+    language_features: ?*LanguageFeaturesService = null,
+    marker_service: ?*MarkerService = null,
+    marker_decorations: ?*MarkerDecorationsService = null,
+    json_completion_registration: ?IDisposable = null,
 
     pub fn create(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Editor {
         return createInternal(allocator, io, path, width, height, null, null);
@@ -525,6 +535,7 @@ pub const Editor = struct {
     pub fn setJsonLanguageClient(self: *Editor, client: ?*json_language.Client) void {
         self.json_client = client;
         self.attachJsonLanguage() catch |err| self.setMessage("JSON attach failed: {s}", .{@errorName(err)});
+        self.registerJsonCompletion();
     }
 
     pub fn pollJsonLanguage(self: *Editor) bool {
@@ -694,6 +705,61 @@ pub const Editor = struct {
         return .{ .items = result };
     }
 
+    /// Attaches the workbench's shared language services. Idempotent so both
+    /// pre-existing and newly opened tabs can be wired.
+    pub fn attachLanguageServices(
+        self: *Editor,
+        features: ?*LanguageFeaturesService,
+        marker_service: ?*MarkerService,
+        marker_decorations: ?*MarkerDecorationsService,
+    ) void {
+        self.language_features = features;
+        self.marker_service = marker_service;
+        self.marker_decorations = marker_decorations;
+        if (marker_decorations) |service| service.registerModel(self.model) catch {};
+        self.registerJsonCompletion();
+    }
+
+    fn registerJsonCompletion(self: *Editor) void {
+        if (self.json_completion_registration != null) return;
+        const features = self.language_features orelse return;
+        if (self.json_client == null) return;
+        self.json_completion_registration = features.completion_provider.register(.{ .list = &.{
+            .{ .filter = .{ .language = "json" } },
+            .{ .filter = .{ .language = "jsonc" } },
+        } }, .{
+            .context = self,
+            .provide_completion_items = jsonProvideCompletion,
+            .trigger_characters = &.{ "\"", ":" },
+        }) catch null;
+    }
+
+    pub fn formatDocument(self: *Editor) !void {
+        if (self.language_features) |features| {
+            const providers = try features.document_formatting_edit_provider.ordered(self.allocator, self.model, false);
+            defer self.allocator.free(providers);
+            for (providers) |provider| {
+                var arena = std.heap.ArenaAllocator.init(self.allocator);
+                defer arena.deinit();
+                const edits = provider.provide_document_formatting_edits(
+                    provider.context,
+                    arena.allocator(),
+                    self.model,
+                    .{ .tab_size = @intCast(self.cursor_config.tabSize), .insert_spaces = self.cursor_config.insertSpaces },
+                    CancellationToken.None,
+                ) catch continue;
+                if (edits.len == 0) continue;
+                const text_edits = try self.allocator.alloc(TextEdit, edits.len);
+                defer self.allocator.free(text_edits);
+                for (edits, 0..) |edit, index| text_edits[index] = .{ .range = edit.range, .text = edit.text };
+                try self.applyTextEdits(text_edits, &.{});
+                self.setMessage("Formatted document", .{});
+                return;
+            }
+        }
+        return self.formatJson();
+    }
+
     /// Applies declarative language contributions to an editor created before
     /// the extension scan completed.
     pub fn applyDeclarativeExtensions(self: *Editor, registry: *const extensions_registry.Registry) !void {
@@ -723,6 +789,16 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        if (self.json_completion_registration) |registration| registration.dispose();
+        if (self.marker_decorations) |service| service.unregisterModel(self.model);
+        if (self.marker_service) |service| {
+            const resource = markers.Resource.fromUri(self.allocator, self.model.uri()) catch null;
+            if (resource) |value| {
+                var owned = value;
+                defer owned.deinit(self.allocator);
+                service.changeOne("json", owned, &.{}, null) catch {};
+            }
+        }
         self.folding.deinit();
         if (self.cursors) |*cursors| cursors.deinit();
         if (self.cursor_context) |context| self.allocator.destroy(context);
@@ -2688,7 +2764,19 @@ fn createModel(
     const decoded = try encoding_mod.decode(allocator, raw, encoding);
     defer allocator.free(decoded);
     var fixed = Io.Reader.fixed(decoded);
-    return try TextModel.init(allocator, &fixed, language_id, options, null, undo_redo, language_service);
+    const absolute = if (std.fs.path.isAbsolute(path)) try allocator.dupe(u8, path) else try std.fs.path.resolve(allocator, &.{path});
+    defer allocator.free(absolute);
+    const associated = std.Uri{
+        .scheme = "file",
+        .user = null,
+        .password = null,
+        .host = .{ .raw = "" },
+        .port = null,
+        .path = .{ .raw = try allocator.dupe(u8, absolute) },
+        .query = null,
+        .fragment = null,
+    };
+    return try TextModel.init(allocator, &fixed, language_id, options, associated, undo_redo, language_service);
 }
 
 fn fileUri(allocator: Allocator, absolute_path: []const u8) ![]u8 {
@@ -3694,7 +3782,7 @@ fn editorOf(context: *anyopaque) *Editor {
 }
 
 fn cmdFormatDocument(context: *anyopaque) anyerror!void {
-    return editorOf(context).formatJson();
+    return editorOf(context).formatDocument();
 }
 fn cmdSave(context: *anyopaque) anyerror!void {
     return editorOf(context).save();
