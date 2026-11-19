@@ -91,6 +91,4 @@ fn common_now() i64 {
 comptime {
     _ = @import("./vs/platform/files/node/watcher/watcherStats.zig");
 }
-comptime {
-    _ = @import("./tui/settingsWatcher.zig");
-}
+comptime {}

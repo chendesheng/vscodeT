@@ -516,3 +516,145 @@ fn deinitFolderModels(
     }
     map.deinit();
 }
+
+// ---------------------------------------------------------------------------
+// Settings-file watcher
+//
+// Terminal host for the watcher wiring that upstream keeps in the browser
+// `ConfigurationService` (a file-service change event triggers
+// `reloadConfiguration`). The TUI has no `IFileService`, so the composition
+// root supplies the ported `UniversalWatcher` and polls it; this type owns the
+// watch-request set and the reload trigger.
+// ---------------------------------------------------------------------------
+
+const files = @import("../../../../platform/files/common/files.zig");
+const universal_mod = @import("../../../../platform/files/node/watcher/watcher.zig");
+const WatchRequest = @import("../../../../platform/files/common/watcher.zig").WatchRequest;
+const FileChange = files.FileChange;
+const UniversalWatcher = universal_mod.UniversalWatcher;
+
+pub const ReloadCallback = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque) void,
+};
+
+pub const SettingsWatcher = struct {
+    allocator: Allocator,
+    io: Io,
+    configuration_service: *ConfigurationService,
+    watcher: *UniversalWatcher,
+    on_reload: ?ReloadCallback = null,
+    reload_count: usize = 0,
+    last_reload_failed: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        io: Io,
+        configuration_service: *ConfigurationService,
+    ) !*SettingsWatcher {
+        const self = try allocator.create(SettingsWatcher);
+        errdefer allocator.destroy(self);
+
+        const watcher = try UniversalWatcher.init(allocator, io);
+        errdefer watcher.deinit();
+
+        self.* = .{
+            .allocator = allocator,
+            .io = io,
+            .configuration_service = configuration_service,
+            .watcher = watcher,
+        };
+        _ = try watcher.on_change.listen(self, onFileChanges);
+        try self.update();
+        return self;
+    }
+
+    pub fn deinit(self: *SettingsWatcher) void {
+        self.watcher.deinit();
+        self.allocator.destroy(self);
+    }
+
+    pub fn setOnReload(self: *SettingsWatcher, callback: ?ReloadCallback) void {
+        self.on_reload = callback;
+    }
+
+    pub fn update(self: *SettingsWatcher) !void {
+        const paths = try self.configuration_service.settingsFilePaths(self.allocator);
+        defer self.configuration_service.freeSettingsFilePaths(self.allocator, paths);
+
+        var requests = std.array_list.Managed(WatchRequest).init(self.allocator);
+        defer requests.deinit();
+        for (paths) |path| {
+            try requests.append(.{
+                .path = path,
+                .recursive = false,
+            });
+        }
+        try self.watcher.watch(requests.items);
+    }
+
+    pub fn poll(self: *SettingsWatcher, now_ms: i64) !bool {
+        return self.watcher.poll(now_ms);
+    }
+
+    pub fn waitHandle(self: *const SettingsWatcher) @import("../../../../platform/files/node/watcher/parcel/watcherLib/root.zig").WaitHandle {
+        return self.watcher.waitHandle();
+    }
+
+    pub fn nextTimeout(self: *const SettingsWatcher, now_ms: i64) ?u32 {
+        return self.watcher.nextTimeout(now_ms);
+    }
+
+    fn onFileChanges(changes: []const FileChange, self: *SettingsWatcher) !void {
+        if (changes.len == 0) return;
+        self.configuration_service.reload() catch {
+            self.last_reload_failed = true;
+            return;
+        };
+        self.last_reload_failed = false;
+        self.reload_count += 1;
+        if (self.on_reload) |callback| callback.callback(callback.context);
+    }
+};
+
+test "SettingsWatcher: reloads when a settings file changes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".vscode");
+
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &path_buffer);
+    const root = path_buffer[0..root_len];
+    const settings_path = try std.fs.path.join(allocator, &.{ root, ".vscode", "settings.json" });
+    defer allocator.free(settings_path);
+
+    var file = try tmp.dir.createFile(io, ".vscode/settings.json", .{});
+    try file.writeStreamingAll(io, "{\"editor.tabSize\": 2}");
+    file.close(io);
+
+    const context = try @import("../../workspaces/common/workspaceContextService.zig").WorkspaceContextService.initWithFolders(
+        allocator,
+        "test",
+        &.{root},
+    );
+    defer context.deinit();
+    const service = try ConfigurationService.init(allocator, io, context, .{});
+    defer service.deinit();
+
+    var watcher = try SettingsWatcher.init(allocator, io, service);
+    defer watcher.deinit();
+
+    var file_write = try tmp.dir.createFile(io, ".vscode/settings.json", .{ .truncate = true });
+    try file_write.writeStreamingAll(io, "{\"editor.tabSize\": 6}");
+    file_write.close(io);
+
+    const deadline = std.Io.Timestamp.now(io, .real).toMilliseconds() + 3000;
+    while (std.Io.Timestamp.now(io, .real).toMilliseconds() < deadline and watcher.reload_count == 0) {
+        _ = try watcher.poll(std.Io.Timestamp.now(io, .real).toMilliseconds());
+        io.sleep(.fromMilliseconds(10), .awake) catch {};
+    }
+    try std.testing.expect(watcher.reload_count > 0);
+    try std.testing.expectEqual(@as(i64, 6), service.getValue("editor.tabSize", .{ .resource = settings_path }).?.integer);
+}
