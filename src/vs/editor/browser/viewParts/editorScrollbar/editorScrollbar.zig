@@ -24,13 +24,66 @@ const overview_secondary_cursor_color = [3]u8{ 86, 70, 26 };
 pub const TerminalScrollbar = struct {
     allocator: Allocator,
     width: usize,
+    drag: ?DragState = null,
+
+    const DragState = struct {
+        start_row: usize,
+        initial_state: scrollbar_state.ScrollbarState,
+    };
 
     pub fn init(allocator: Allocator) TerminalScrollbar {
         return .{ .allocator = allocator, .width = 0 };
     }
 
     pub fn deinit(self: *TerminalScrollbar) void {
-        _ = self;
+        self.drag = null;
+    }
+
+    pub fn isDragging(self: *const TerminalScrollbar) bool {
+        return self.drag != null;
+    }
+
+    pub fn endDrag(self: *TerminalScrollbar) void {
+        self.drag = null;
+    }
+
+    /// Port of the scrollbar slider's pointer-down behavior. Starts a drag,
+    /// jumping to the clicked track position when the press is not on the
+    /// thumb.
+    pub fn beginDrag(
+        self: *TerminalScrollbar,
+        editor: *Editor,
+        x: usize,
+        y: usize,
+        cols: usize,
+        scrollbar_width: usize,
+        height: usize,
+    ) void {
+        if (height == 0) return;
+        var scroll_state = self.state(editor);
+        if (!scroll_state.isNeeded()) return;
+
+        const geometry = thumbGeometry(scroll_state, height);
+        const row = @min(y, height - 1);
+        const in_thumb = cols -| scrollbar_width <= x and
+            row >= geometry.top and
+            row < geometry.top + geometry.size;
+        if (!in_thumb) {
+            const desired = scroll_state.getDesiredScrollPositionFromOffset(@floatFromInt(row));
+            const applied = applyScrollPosition(editor, desired);
+            _ = scroll_state.setScrollPosition(@floatFromInt(applied));
+        }
+        self.drag = .{ .start_row = row, .initial_state = scroll_state };
+    }
+
+    pub fn dragTo(self: *TerminalScrollbar, editor: *Editor, y: usize, height: usize) bool {
+        const drag = self.drag orelse return false;
+        if (height == 0) return false;
+        const row = @min(y, height - 1);
+        const delta = @as(f64, @floatFromInt(row)) - @as(f64, @floatFromInt(drag.start_row));
+        const desired = drag.initial_state.getDesiredScrollPositionFromDelta(delta);
+        _ = applyScrollPosition(editor, desired);
+        return true;
     }
 
     /// Port of `EditorScrollbar`'s scroll-state ownership for the terminal.
@@ -250,6 +303,48 @@ fn thumbPartAt(halves: ThumbHalves, row: usize) ThumbPart {
     if (halves.top <= row_start and halves.end >= row_end) return .full;
     if (halves.top <= row_start) return .upper;
     return .lower;
+}
+
+const ThumbGeometry = struct {
+    top: usize,
+    size: usize,
+};
+
+fn thumbGeometry(state: scrollbar_state.ScrollbarState, track_height: usize) ThumbGeometry {
+    if (track_height == 0) return .{ .top = 0, .size = 0 };
+
+    const raw_size = @round(state.getSliderSize());
+    var size: usize = if (raw_size >= @as(f64, @floatFromInt(track_height)))
+        track_height
+    else if (raw_size <= 0)
+        1
+    else
+        @intFromFloat(raw_size);
+    if (size == 0) size = 1;
+    if (size > track_height) size = track_height;
+
+    const max_top = track_height - size;
+    const raw_top = @round(state.getSliderPosition());
+    const top: usize = if (raw_top <= 0)
+        0
+    else if (raw_top >= @as(f64, @floatFromInt(max_top)))
+        max_top
+    else
+        @intFromFloat(raw_top);
+
+    return .{ .top = top, .size = size };
+}
+
+fn applyScrollPosition(editor: *Editor, desired: f64) usize {
+    const max_scroll = editor.scrollHeight() -| editor.textHeight();
+    const clamped: usize = if (!(desired > 0))
+        0
+    else if (desired >= @as(f64, @floatFromInt(max_scroll)))
+        max_scroll
+    else
+        @min(@as(usize, @intFromFloat(@round(desired))), max_scroll);
+    _ = editor.setTopViewLine(clamped + 1);
+    return clamped;
 }
 
 fn color(rgb: [3]u8) ui.Color {

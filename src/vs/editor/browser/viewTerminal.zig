@@ -241,9 +241,6 @@ pub const View = struct {
     /// Width of the rightmost cells reserved for the combined overview ruler
     /// and scrollbar. The editor wraps around the same width.
     scrollbar_width: usize = 0,
-    /// The active thumb/track drag. The state is cloned at press time so the
-    /// pointer delta maps against the geometry that was under the pointer.
-    scrollbar_drag: ?ScrollbarDrag = null,
     /// The last left-button press, in cells, kept across document rebuilds so
     /// a release can synthesize a click without retaining node pointers.
     mouse_press: ?MousePress = null,
@@ -274,11 +271,6 @@ pub const View = struct {
     const MousePress = struct {
         x: usize,
         y: usize,
-    };
-
-    const ScrollbarDrag = struct {
-        start_row: usize,
-        initial_state: scrollbar_state.ScrollbarState,
     };
 
     pub fn init(allocator: std.mem.Allocator, editor: *Editor) !*View {
@@ -494,11 +486,18 @@ pub const View = struct {
                     self.drag_anchor = null;
                     self.drag_moved = false;
                     if (!event.default_prevented) {
-                        self.beginScrollbarDrag(event.x, event.y);
+                        self.terminal_view_host.viewRef().scrollbarPart().beginDrag(
+                            self.editor,
+                            event.x,
+                            event.y,
+                            self.surface.document().cols,
+                            self.scrollbar_width,
+                            self.editor.textHeight(),
+                        );
                     }
                     return false;
                 }
-                self.scrollbar_drag = null;
+                self.terminal_view_host.viewRef().scrollbarPart().endDrag();
                 if (event.button == .left and
                     !event.default_prevented and
                     try self.toggleFoldControl(event.x, event.y))
@@ -530,8 +529,12 @@ pub const View = struct {
                 }
             },
             .move => {
-                if (self.scrollbar_drag != null) {
-                    self.updateScrollbarDrag(event.y);
+                if (self.terminal_view_host.viewRef().scrollbarPart().isDragging()) {
+                    _ = self.terminal_view_host.viewRef().scrollbarPart().dragTo(
+                        self.editor,
+                        event.y,
+                        self.editor.textHeight(),
+                    );
                     return false;
                 }
                 if (event.button == .left) {
@@ -550,8 +553,8 @@ pub const View = struct {
                 }
             },
             .up => {
-                if (self.scrollbar_drag != null) {
-                    self.scrollbar_drag = null;
+                if (self.terminal_view_host.viewRef().scrollbarPart().isDragging()) {
+                    self.terminal_view_host.viewRef().scrollbarPart().endDrag();
                     return false;
                 }
                 if (event.button == .left) {
@@ -607,43 +610,6 @@ pub const View = struct {
             if (entry.contains(x, y)) return true;
         }
         return false;
-    }
-
-    fn beginScrollbarDrag(self: *View, x: usize, y: usize) void {
-        const editor = self.editor;
-        const height = editor.textHeight();
-        if (height == 0) return;
-        const row = @min(y, height - 1);
-
-        var state = self.terminal_view_host.viewRef().scrollbarPart().state(self.editor);
-        if (!state.isNeeded()) return;
-
-        const geometry = thumbGeometry(state, height);
-        const cols = self.surface.document().cols;
-        const in_thumb = x >= cols -| self.scrollbar_width and
-            row >= geometry.top and
-            row < geometry.top + geometry.size;
-
-        if (!in_thumb) {
-            const desired = state.getDesiredScrollPositionFromOffset(@floatFromInt(row));
-            const applied = applyScrollPosition(editor, desired);
-            _ = state.setScrollPosition(@floatFromInt(applied));
-        }
-
-        self.scrollbar_drag = .{
-            .start_row = row,
-            .initial_state = state,
-        };
-    }
-
-    fn updateScrollbarDrag(self: *View, y: usize) void {
-        const drag = self.scrollbar_drag orelse return;
-        const height = self.editor.textHeight();
-        if (height == 0) return;
-        const row = @min(y, height - 1);
-        const delta = @as(f64, @floatFromInt(row)) - @as(f64, @floatFromInt(drag.start_row));
-        const desired = drag.initial_state.getDesiredScrollPositionFromDelta(delta);
-        _ = applyScrollPosition(self.editor, desired);
     }
 
     fn lineViewLineAt(self: *const View, target: *ui.Node) ?usize {
@@ -745,7 +711,7 @@ pub const View = struct {
     /// Recreates the surface at the editor's current viewport size. The caller
     /// clears the screen because the new surface starts a fresh frame.
     pub fn resize(self: *View) !void {
-        self.scrollbar_drag = null;
+        self.terminal_view_host.viewRef().scrollbarPart().endDrag();
         const width = self.editor.screen_width;
         const height = self.editor.screen_height;
         if (self.surface.document().cols == width and self.surface.document().rows == height) {
@@ -1097,50 +1063,6 @@ pub const View = struct {
 /// text instead.
 fn overviewRulerWidth(editor: *const Editor) usize {
     return Editor.overviewRulerWidthFor(editor.screen_width, editor.gutterWidth());
-}
-
-const ThumbGeometry = struct {
-    top: usize,
-    size: usize,
-};
-
-fn thumbGeometry(state: scrollbar_state.ScrollbarState, track_height: usize) ThumbGeometry {
-    if (track_height == 0) return .{ .top = 0, .size = 0 };
-
-    const raw_size = @round(state.getSliderSize());
-    var size: usize = if (raw_size >= @as(f64, @floatFromInt(track_height)))
-        track_height
-    else if (raw_size <= 0)
-        1
-    else
-        @intFromFloat(raw_size);
-    if (size == 0) size = 1;
-    if (size > track_height) size = track_height;
-
-    const max_top = track_height - size;
-    const raw_top = @round(state.getSliderPosition());
-    const top: usize = if (raw_top <= 0)
-        0
-    else if (raw_top >= @as(f64, @floatFromInt(max_top)))
-        max_top
-    else
-        @intFromFloat(raw_top);
-
-    return .{ .top = top, .size = size };
-}
-
-/// Applies a scrollbar's zero-based scroll position to the editor and returns
-/// the clamped position.
-fn applyScrollPosition(editor: *Editor, desired: f64) usize {
-    const max_scroll = editor.scrollHeight() -| editor.textHeight();
-    const clamped: usize = if (!(desired > 0))
-        0
-    else if (desired >= @as(f64, @floatFromInt(max_scroll)))
-        max_scroll
-    else
-        @min(@as(usize, @intFromFloat(@round(desired))), max_scroll);
-    _ = editor.setTopViewLine(clamped + 1);
-    return clamped;
 }
 
 fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !void {
