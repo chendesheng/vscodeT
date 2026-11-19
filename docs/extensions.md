@@ -3,7 +3,7 @@
 Status: the S0/S2 foundation and a first S7 slice are working. `host/` boots
 the real Node host over a Unix socket, `rpcProtocol.zig` implements the wire
 codec, the generated `extHost.protocol.zig` table has all 171 identifiers,
-and `src/tui/extensions.zig` mirrors the active tab, routes text through
+and `src/vs/workbench/api/browser/extensionHostAdapter.zig` mirrors the active tab, routes text through
 `type`/`default:type`, applies edits and selections, publishes status bar
 entries, resolves the extensions folder through VS Code's `extensionsPath`
 (`--extensions-dir`, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, product home) and
@@ -284,7 +284,7 @@ Stage numbers refer to §14.
 | `workbench/api/common/configurationExtensionPoint.ts` | 583 | `.../configurationExtensionPoint.zig` | none direct; add schema tests | S4 |
 | `platform/keybinding/common/keybindingsRegistry.ts` | 301 | `.../keybindingsRegistry.zig` | `platform/keybinding/test/common/*` | S4 (ported; reuse the suite) |
 | `platform/contextkey/common/contextkey.ts`, `scanner.ts` | 2199 + 384 | `.../contextkey.zig`, `.../scanner.zig` | `platform/contextkey/test/common/*` | S4 (ported; flat context service only) |
-| `workbench/services/keybinding/browser/keybindingService.ts` | 1021 | `src/tui/keybindingService.zig` (terminal host over the ported registry/resolver; browser layout stays in `src/tui/`) | `.../test/browser/keybindingIO.test.ts` etc. | S4/S6 (host exists; extension rules remain) |
+| `workbench/services/keybinding/browser/keybindingService.ts` | 1021 | `src/vs/workbench/services/keybinding/browser/keybindingService.zig` (terminal host over the ported registry/resolver; browser layout stays in `src/tui/`) | `.../test/browser/keybindingIO.test.ts` etc. | S4/S6 (host exists; extension rules remain) |
 
 Several prerequisite rows are already implemented at HEAD `e98be57`
 (§3.3); the table remains the target layout, and the stage column names the
@@ -340,17 +340,17 @@ not grow a parallel copy inside the extension layer.
 |---|---|---|
 | URI and buffers | `base/common/uri.zig`, `base/common/buffer.zig` | URI components in arguments/init data, document text, `workspace.fs` |
 | Errors and cancellation | `base/common/errors.zig`, `base/common/cancellation.zig` | serialized RPC errors, request cancellation, canceled replies |
-| Language registry and configuration | `workbench/services/language/common/languageService.zig`, `editor/common/services/languageService.zig`, `editor/common/languages/languageConfigurationRegistry.zig`, `src/tui/languageConfiguration.zig` | `languages` contribution, `onLanguage:<id>`, `$acceptModelLanguageChanged`, comments/brackets/on-enter |
+| Language registry and configuration | `workbench/services/language/common/languageService.zig`, `editor/common/services/languageService.zig`, `editor/common/languages/languageConfigurationRegistry.zig`, `src/vs/editor/common/languages/languageConfigurationRegistry.zig` | `languages` contribution, `onLanguage:<id>`, `$acceptModelLanguageChanged`, comments/brackets/on-enter |
 | Configuration | `workbench/services/configuration/browser/configurationService.zig`, `platform/configuration/common/*` | `contributes.configuration`, `$initializeConfiguration`, `$acceptConfigurationChanged`, settings defaults |
-| Commands, actions, menus | `platform/commands/common/commands.zig`, `platform/actions/common/{actions,menuService}.zig`, `src/tui/commands.zig` | `contributes.commands`, `$executeCommand`, palette labels and enablement |
-| Keybindings and context keys | `platform/keybinding/common/*`, `platform/contextkey/common/{contextkey,scanner}.zig`, `src/tui/keybindingService.zig` | `contributes.keybindings`, `when` clauses, command dispatch |
+| Commands, actions, menus | `platform/commands/common/commands.zig`, `platform/actions/common/{actions,menuService}.zig`, `src/vs/workbench/browser/commands.zig` | `contributes.commands`, `$executeCommand`, palette labels and enablement |
+| Keybindings and context keys | `platform/keybinding/common/*`, `platform/contextkey/common/{contextkey,scanner}.zig`, `src/vs/workbench/services/keybinding/browser/keybindingService.zig` | `contributes.keybindings`, `when` clauses, command dispatch |
 | File system and text files | `platform/files/common/fileService.zig` (`DiskFileService`, `ProviderFileService`), `platform/files/node/diskFileSystemProvider.zig`, `workbench/services/textfile/common/{textFileService,textFileEditorModel,encoding}.zig` | `$tryOpenDocument`, `$trySaveDocument`, `workspace.fs`, encoding, save participants |
-| Working copies | `workbench/services/workingCopy/common/{workingCopy,workingCopyService,workingCopyEditorService,workingCopyBackupService,workingCopyHistoryService}.zig`, `src/tui/workingCopy.zig` | dirty/content/save deltas, editor lookup, restart backups |
+| Working copies | `workbench/services/workingCopy/common/{workingCopy,workingCopyService,workingCopyEditorService,workingCopyBackupService,workingCopyHistoryService}.zig`, `src/vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig` | dirty/content/save deltas, editor lookup, restart backups |
 | Editor groups | `workbench/services/editor/common/editorGroupsService.zig`, `workbench/browser/parts/editor/` | `$tryShowTextDocument`, `$tryShowEditor`, active editor, tab identity |
 | Status bar | `workbench/services/statusbar/browser/statusbar.zig`, `workbench/browser/parts/statusbar/` | `MainThreadStatusBar.$setEntry` / `$disposeEntry` |
-| Themes | `workbench/services/themes/browser/workbenchThemeService.zig`, `workbench/services/themes/common/colorThemeData.zig`, `src/tui/syntaxTheme.zig` | `contributes.themes`, token color resolution |
-| Quick input | `platform/quickinput/**`, `src/tui/quickInput.zig`, `src/tui/quickAccess.zig` | `MainThreadQuickOpen.$show` / `$input` |
-| Logging | `platform/log/common/{log,logService,bufferLog}.zig`, `src/tui/logger.zig` | `MainThreadConsole`, host stderr, launcher diagnostics |
+| Themes | `workbench/services/themes/browser/workbenchThemeService.zig`, `workbench/services/themes/common/colorThemeData.zig`, `src/vs/editor/standalone/browser/standaloneThemeService.zig` | `contributes.themes`, token color resolution |
+| Quick input | `platform/quickinput/**`, `src/vs/platform/quickinput/browser/quickInputList.zig`, `src/vs/workbench/browser/quickaccess.zig` | `MainThreadQuickOpen.$show` / `$input` |
+| Logging | `platform/log/common/{log,logService,bufferLog}.zig`, `src/vs/platform/log/common/fileLog.zig` | `MainThreadConsole`, host stderr, launcher diagnostics |
 | Storage | `platform/storage/common/storage.zig` (in-memory) | `MainThreadStorage` mementos |
 | Notifications and progress | `platform/notification/common/*`, `platform/progress/common/progress.zig` | `$showMessage`, `withProgress` |
 | Workspace and untitled inputs | `workbench/services/workspaces/common/workspaceContextService.zig`, `workbench/services/untitled/common/untitledTextEditorInput.zig` | `$initializeWorkspace`, `$tryCreateDocument` |
@@ -1175,7 +1175,7 @@ table row.
   the live dirty bit and save operation; `TextFileService`/`TextFileEditorModel`
   provide the ported load/save/encoding model (BOM detection and save
   participants) and `WorkingCopyService` tracks open copies through
-  `src/tui/workingCopy.zig`. Bridge `$acceptDirtyStateChanged` from the
+  `src/vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig`. Bridge `$acceptDirtyStateChanged` from the
   working-copy dirty event and `$acceptEncodingChanged` from the model/input
   encoding, and do not introduce a second host-side dirty bit. When the TUI
   editor is migrated onto `TextFileEditorModel`, take those events directly
@@ -1365,18 +1365,18 @@ other RPC request (§5.3); do not model it as an explicit JSON field.
 
 | Feature | Where |
 |---|---|
-| Command palette (`Ctrl+Shift+P`) | extend `src/tui/quickAccess.zig`; there is no separate `palette.zig` |
-| Quick pick / input box | extend `src/tui/quickInput.zig` (and `quickAccess.zig`) to back `MainThreadQuickOpen.$show`/`$input` |
-| Status bar | ported `src/vs/workbench/browser/parts/statusbar/{statusbarPart,statusbarModel,statusbarItem,statusbarActions}.zig` over `src/vs/workbench/services/statusbar/browser/statusbar.zig`; painted by `src/tui/workbench.zig` on the bottom row |
+| Command palette (`Ctrl+Shift+P`) | extend `src/vs/workbench/browser/quickaccess.zig`; there is no separate `palette.zig` |
+| Quick pick / input box | extend `src/vs/platform/quickinput/browser/quickInputList.zig` (and `quickAccess.zig`) to back `MainThreadQuickOpen.$show`/`$input` |
+| Status bar | ported `src/vs/workbench/browser/parts/statusbar/{statusbarPart,statusbarModel,statusbarItem,statusbarActions}.zig` over `src/vs/workbench/services/statusbar/browser/statusbar.zig`; painted by `src/vs/workbench/browser/workbench.zig` on the bottom row |
 | Diagnostics | markers stored on the model, painted as gutter marks + status count |
-| Contributed languages | ported `workbench/services/language/common/languageService.zig`; keep `src/tui/language.zig` only as the no-host fallback |
+| Contributed languages | ported `workbench/services/language/common/languageService.zig`; keep `src/vs/workbench/services/language/common/bundledLanguages.zig` only as the no-host fallback |
 | Contributed grammars | grammar registry feeding `textMateTokenizer.zig` |
 | Contributed themes | `workbench/services/themes/browser/workbenchThemeService.zig` + `ColorThemeData`; map foregrounds to the ANSI palette |
-| Contributed keybindings | `src/vs/platform/keybinding/common/keybindingsRegistry.zig`/`keybindingResolver.zig` + `src/tui/keybindingService.zig` and terminal key mapping |
+| Contributed keybindings | `src/vs/platform/keybinding/common/keybindingsRegistry.zig`/`keybindingResolver.zig` + `src/vs/workbench/services/keybinding/browser/keybindingService.zig` and terminal key mapping |
 | Configuration | `workbench/services/configuration/browser/configurationService.zig` defaults/user/workspace/folder reading, `getConfiguration()`, `$acceptConfigurationChanged` |
 | Documents | `WorkingCopyService`/`TextFileService`/`EditorGroupsService` open/change/close events pushed to the host as deltas (§9) |
 
-`src/tui/extensions.zig` is a thin adapter: it owns the host process and the
+`src/vs/workbench/api/browser/extensionHostAdapter.zig` is a thin adapter: it owns the host process and the
 TUI session, and delegates scan/registry/activation/contribution logic to the
 ported `src/vs/...` services. `app.zig` calls `pump()` once per main-loop
 iteration instead of adding a second event loop.
@@ -1409,8 +1409,8 @@ host. Feed `contributes.languages` through
 `registerLanguageContribution`/`registerExtensionPoint`, and register a
 contributed `configuration` path with
 `LanguageService.registerLanguageConfiguration` (the terminal
-`src/tui/languageConfiguration.zig` host wraps the ported
-`LanguageConfigurationRegistry`). `src/tui/language.zig` remains the
+`src/vs/editor/common/languages/languageConfigurationRegistry.zig` host wraps the ported
+`LanguageConfigurationRegistry`). `src/vs/workbench/services/language/common/bundledLanguages.zig` remains the
 bundled-language table and the hard-coded `commentRuleFor`/bracket fallback;
 it no longer owns path associations. Do not extend those fallback tables for
 contributed languages: parse `language-configuration.json` (JSONC) and use
@@ -1438,9 +1438,9 @@ to their target scope.
 The keybinding registry, resolver and context-key expression/scanner are
 already ported (`platform/keybinding/common/*`,
 `platform/contextkey/common/{contextkey,scanner}.zig`).
-`src/tui/keybindingService.zig` hosts workbench-global, editor-tab,
+`src/vs/workbench/services/keybinding/browser/keybindingService.zig` hosts workbench-global, editor-tab,
 status-bar, search and editor shortcuts through the abstract service, and
-`src/tui/keybindings.zig` keeps the older shortcut table for keys not yet
+`src/vs/workbench/services/keybinding/browser/keybindingService.zig` keeps the older shortcut table for keys not yet
 moved. The browser-specific resolver (`usLayoutResolvedKeybinding`) is not
 the terminal path: the TUI has decoded key events in `ui.input`. Implement
 terminal key normalisation (ctrl/alt/shift/meta, named keys, chords) and feed
@@ -1452,7 +1452,7 @@ against the flat terminal context. Start with single-chord bindings and the
 keys. Command execution is a round trip: `onCommand:<id>` → activate (if
 needed) → `$executeCommand`, with the result returned to the palette.
 Built-in TUI commands and contributed commands share `CommandRegistry`/
-`MenuRegistry`; `src/tui/commands.zig` remains the execution/palette table.
+`MenuRegistry`; `src/vs/workbench/browser/commands.zig` remains the execution/palette table.
 
 ### 11.4 Configuration, status bar, messages and diagnostics
 
@@ -1499,14 +1499,14 @@ The adapter is not greenfield; these are the exact seams that change:
 - `src/tui/app.zig` — main loop and `pollInputWithFd`/`pollInputWithHandle`
   call sites; add `pump()` before/after the poll and include the extension
   deadline in the timeout calculation.
-- `src/tui/workbench.zig` — owns `fileWatcherFd()`/`fileWatcherHandle()`,
+- `src/vs/workbench/browser/workbench.zig` — owns `fileWatcherFd()`/`fileWatcherHandle()`,
   the status-bar paint, the Quick Access overlay and the workbench command
   routing. The extension service hangs off the same `Workbench` session.
-- `src/tui/commands.zig` — the TUI command table. Contributed commands
+- `src/vs/workbench/browser/commands.zig` — the TUI command table. Contributed commands
   register into `platform/commands/common/commands.zig` and the
-  actions/`MenuRegistry` metadata layer, with `src/tui/commands.zig` as the
+  actions/`MenuRegistry` metadata layer, with `src/vs/workbench/browser/commands.zig` as the
   execution/palette table; `onCommand:<id>` fires before dispatch.
-- `src/tui/workingCopy.zig` and `workbench/services/workingCopy/` — the
+- `src/vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig` and `workbench/services/workingCopy/` — the
   `IWorkingCopy` adapter, dirty/content/save events, editor lookup and
   backup/history. Document deltas and restart snapshots start here.
 - `workbench/services/textfile/` — `TextFileService` and
@@ -1516,24 +1516,24 @@ The adapter is not greenfield; these are the exact seams that change:
   `workbench/browser/parts/editor/` — group/tab identity and reveal logic for
   `$tryShowTextDocument`.
 - `workbench/services/language/common/languageService.zig` and
-  `src/tui/languageConfiguration.zig` — language contribution registration,
+  `src/vs/editor/common/languages/languageConfigurationRegistry.zig` — language contribution registration,
   `files.associations`, and the language-configuration registry.
 - `workbench/services/configuration/browser/configurationService.zig` — the
   single source for defaults/user/workspace/folder values; register
   contributed defaults there and listen for change events.
-- `platform/log/common/logService.zig` and `src/tui/logger.zig` — host stderr
+- `platform/log/common/logService.zig` and `src/vs/platform/log/common/fileLog.zig` — host stderr
   and `MainThreadConsole` output; do not write around the log service.
 - `platform/storage/common/storage.zig` — in-memory storage for mementos and
   status/menu state; persistence remains an open gap (§16).
-- `src/tui/quickInput.zig`, `src/tui/quickAccess.zig` — the TUI views behind
+- `src/vs/platform/quickinput/browser/quickInputList.zig`, `src/vs/workbench/browser/quickaccess.zig` — the TUI views behind
   `MainThreadQuickOpen`. `$show`, `$setItems`, `$setError`, `$input`,
   `$createOrUpdate`, `$dispose` map to existing state transitions; do not
   create a second picker.
 - `src/vs/workbench/browser/parts/statusbar/` — the ported status-bar model
   and part. `MainThreadStatusBar.$setEntry` adds an entry to the model, not to
-  `src/tui/view.zig`.
+  `src/vs/editor/browser/viewTerminal.zig`.
 - `src/vs/editor/common/model/tokens/textMateTokenizer.zig` and
-  `src/tui/syntaxTheme.zig` — grammar and theme targets. A contributed
+  `src/vs/editor/standalone/browser/standaloneThemeService.zig` — grammar and theme targets. A contributed
   grammar registers a tokenizer for a language id; a contributed theme
   publishes colors; neither creates a new tokenizer path.
 - `src/vs/workbench/browser/parts/editor/` — the tab/group model used for
@@ -1560,13 +1560,13 @@ following slice is required before claiming VSCodeVim support:
 
 | Blocker | Baseline state | Required addition |
 |---|---|---|
-| Text input and `type` override | Ported in `src/tui/extensions.zig`: printable keys, coalesced text runs and Enter go through `$executeContributedCommand("type", …)`; `default:type` inserts into the TUI editor. `default:replacePreviousChar` is still a no-op. | Keep the IME replacement path and fire `onCommand:type` before dispatch when the contribution registry lands. |
+| Text input and `type` override | Ported in `src/vs/workbench/api/browser/extensionHostAdapter.zig`: printable keys, coalesced text runs and Enter go through `$executeContributedCommand("type", …)`; `default:type` inserts into the TUI editor. `default:replacePreviousChar` is still a no-op. | Keep the IME replacement path and fire `onCommand:type` before dispatch when the contribution registry lands. |
 | `window.tabGroups` | All TUI tabs are published in one active group; `:w`, `:bd`, `:bnext` and `gt` work. | Multiple groups, tab move operations, and preview updates; buffer numbers and split navigation. |
 | Configuration writes | `$updateConfigurationOption` is accepted but only acknowledged; the value is not stored or re-pushed. | `Configuration.update` for `Global` (and `Workspace` where the TUI persists settings), including language overrides and persistence. VSCodeVim uses it for `:set`, `editor.*` options, status-bar color customizations and `vim.vimrc.path`. |
 | Built-in command surface | `default:type`, `default:replacePreviousChar` (no-op), `_setContext`/`setContext`, `vscode.open`, `$tryOpenDocument`/`$trySaveDocument`, `$tryShowTextDocument`, `workbench.action.files.save`, `workbench.action.closeActiveEditor`, `nextEditorInGroup`/`previousEditorInGroup`, `splitEditorRight`/`Down`, `insertLineBefore`/`After`, `editor.action.revealDefinition` (F12/Ctrl-]), and `deleteLeft`/`deleteRight` (VSCodeVim's insert-mode Backspace/Delete) are wired. | The rest: `cursorMove`, `editorScroll`, `moveActiveEditor`, `joinAllGroups`, `closeOtherEditors`, snippets, formatting, hover/link, and snippet-placeholder navigation. |
 | Extension keybindings | The adapter maps VSCodeVim's printable, Escape, Backspace/Delete, arrows, Home/End, Page keys and Ctrl+letter commands directly. | Feed all 75 contributed rules into `KeybindingsRegistry.setExtensionKeybindings`, resolve against the terminal context, and ensure the TUI does not swallow keys before the extension rule. |
 | Debug breakpoints | Debug is deferred (§16); no `MainThreadDebugService`. | A breakpoint-only subset: `vscode.debug.breakpoints`, add/remove source and function breakpoints and the breakpoint change event. Without it the `:breakpoints` ex-commands fail; core editing still works. |
-| Editor events | §9.1 defines the push shapes. `src/tui/extensions.zig` pushes selection changes through `$acceptEditorPropertiesChanged` whenever the TUI moved the caret itself (click, drag, TUI-handled key, find, tab switch), tagged with the upstream `source` string (`"mouse"`/`"keyboard"`) and deduplicated against the last selection the host applied or received. That is what keeps VSCodeVim's cursor on the clicked position instead of snapping back on the next Vim key. `options` and `visibleRanges` are still sent as `null`. | Fire `onDidChangeActiveTextEditor`/`onDidChangeVisibleTextEditors` and push `options`/`visibleRanges` deltas; VSCodeVim reads mode and view state from those too. |
+| Editor events | §9.1 defines the push shapes. `src/vs/workbench/api/browser/extensionHostAdapter.zig` pushes selection changes through `$acceptEditorPropertiesChanged` whenever the TUI moved the caret itself (click, drag, TUI-handled key, find, tab switch), tagged with the upstream `source` string (`"mouse"`/`"keyboard"`) and deduplicated against the last selection the host applied or received. That is what keeps VSCodeVim's cursor on the clicked position instead of snapping back on the next Vim key. `options` and `visibleRanges` are still sent as `null`. | Fire `onDidChangeActiveTextEditor`/`onDidChangeVisibleTextEditors` and push `options`/`visibleRanges` deltas; VSCodeVim reads mode and view state from those too. |
 | Storage | In-memory mementos and working-copy history (§16). | Session support is enough to activate; persistence is needed for VSCodeVim history/registers across restarts. `globalStorageUri` plus local `workspace.fs` already covers its file-backed register storage. |
 
 `workspace.applyEdit` appears only in VSCodeVim's tests, not its runtime, so
@@ -1743,7 +1743,7 @@ editor tabs, languages/grammars/themes. Port
 ordering, release) before `MainThreadLanguageFeatures`; use the existing
 working-copy/text-file/editor-group services from §3.3.
 
-**S7 — end to end and docs.** `src/tui/extensions.zig` wiring, `app.zig`
+**S7 — end to end and docs.** `src/vs/workbench/api/browser/extensionHostAdapter.zig` wiring, `app.zig`
 pump, README scope and limitations, this document's status, and the
 `zig build test-e2e` target.
 
@@ -2017,7 +2017,7 @@ generic fallback.
   backups/history, and no disk memento backend, so state does not survive a
   process restart.
 - The console logger and URI-keyed logger registry; the terminal has one file
-  logger (`src/tui/logger.zig`) and no per-channel log resources.
+  logger (`src/vs/platform/log/common/fileLog.zig`) and no per-channel log resources.
 - Localization bundles (`nlsBaseUrl` is omitted) and manifest
   `package.nls.json` localization.
 - Full JSONC/schema validation; only the subset the TUI consumes is

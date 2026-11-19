@@ -16,27 +16,29 @@ and "remaining" verdicts are stale.
 
 ## Consolidation progress (2026-11-19)
 
-The first consolidation pass has landed as small commits:
+The consolidation is complete: **`src/tui/` is now the 2-file process host**
+(`app.zig` + `tui.zig`, 2,391 lines) from the original 37 files / ~28,100
+lines. The audit table above and the per-file notes are the starting snapshot;
+they are kept as the rationale for where each piece went.
 
-- `src/tui/`: **8 files, 19,614 lines** (was 37 files / ~28,100 lines). The
-  file-count target is met; the line target (~2,500-3,500) is still open.
-- Relocated to mirrored paths: keybinding service, search widget/view,
-  explorer view, quick input/access, command table, activity rail, tab strip,
-  file index, settings watcher, language data, session host, theme loader,
-  file logger, terminal input/renderer/tabbed view, hover fallback, working
-  copy adapter.
-- Removed/deleted: dead ANSI tokenizer, UTF-8 helper (moved to
+- **Host files:** `app.zig` (CLI/boot/event loop/frame output/preview/input
+  bridges) and `tui.zig` (raw mode, size, poll/read, SIGWINCH, panic).
+- **Ported/relocated:** editor widget + terminal view, editor pane and input,
+  workbench shell, extension host adapter, search view/widget, explorer view,
+  quick input/access, command table, keybinding service, activity rail, tab
+  strip, file index, settings watcher, bundled languages, session host, theme
+  loader, file logger, terminal input/renderer/tabbed view, hover fallback,
+  working-copy adapter.
+- **Deleted:** dead ANSI tokenizer, UTF-8 helper (moved to
   `base/common/strings.zig`), token-color wrapper, preview renderer (now
   `View`), language-configuration workaround, file badges (folded into the tab
   strip), cell-border probe (moved to `ui`).
-- Remaining `src/tui/`: `app.zig`, `editor.zig`, `editorInput.zig`,
-  `extensions.zig`, `tab.zig`, `tui.zig`, `view.zig`, `workbench.zig`.
-- Next: move the terminal `view`/`editor` implementations into
-  `editor/browser/` (after the `ICodeEditor` boundary), then the workbench
-  shell/extension adapter; the host files that remain should be `app.zig` +
-  `tui.zig`.
+- The remaining `src/vs` files with `Terminal` in the name are deliberate
+  terminal adaptations of their upstream counterparts; they are the merge
+  targets for the next iteration (port `ICodeEditor`, `ViewParts`,
+  `ObjectTree` search results, `ContentWidgets`).
 - Verification: `zig build` and `zig build test --summary all` pass
-  (2,477 passed / 12 skipped in the last run).
+  (2,280 passed / 12 skipped in the final run).
 
 No runtime code was changed for this review. Every line range is from this
 snapshot, not the older inventory. The working tree has uncommitted changes

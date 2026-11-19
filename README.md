@@ -114,7 +114,7 @@ The TUI logs through the ported service in
 `src/vs/platform/log/common/log.zig` and `logService.zig` (the upstream
 `AbstractLogger`/`AbstractMessageLogger`, `AdapterLogger`, `BufferLogger`,
 `MultiplexLogger`, `NullLogger`, `createUnexpectedErrorHandler` and
-`format`). `src/tui/logger.zig`
+`format`). `src/vs/platform/log/common/fileLog.zig`
 is the terminal host: it keeps one synchronous `main.log` and writes the same
 line format as upstream's `FileLogger`:
 
@@ -309,7 +309,7 @@ console API for raw mode, sizing and input polling.
 - Multi-file editing uses the ported workbench editor-group model
   (`src/vs/workbench/common/editor/editorGroupModel.zig`), the editor part,
   group view and pane layers (`src/vs/workbench/browser/parts/editor/`), a
-  terminal tab strip (`src/tui/tabBar.zig`) and a terminal breadcrumb bar
+  terminal tab strip (`src/vs/workbench/browser/parts/editor/multiEditorTabsControl.zig`) and a terminal breadcrumb bar
   (`src/vs/base/browser/ui/breadcrumbs/breadcrumbsWidget.zig`,
   `src/vs/workbench/browser/parts/editor/breadcrumbs{,Model,Control,Picker}.zig` with
   the outline service under `src/vs/workbench/services/outline/`). Each tab keeps
@@ -350,7 +350,7 @@ console API for raw mode, sizing and input polling.
   behind an ellipsis instead of a horizontal scrollbar. The editor-type dropdown,
   breadcrumb drag-and-drop, tab context menus/actions toolbar and the symbol-kind
   filters are not ported.
-- A terminal Explorer sidebar (`src/tui/explorerTreeSidebar.zig`) sits left of the editor
+- A terminal Explorer sidebar (`src/vs/workbench/contrib/files/browser/views/explorerView.zig`) sits left of the editor
   area over the ported `ExplorerModel`
   (`src/vs/workbench/contrib/files/common/explorerModel.zig`). It lists the
   workspace folders lazily, directories first, expands/collapses with
@@ -429,7 +429,7 @@ console API for raw mode, sizing and input polling.
   JS wrapper, prebuilds and Electron IPC watcher clients are not ported; the
   terminal embeds one in-process `UniversalWatcher`. The only wired consumer is
   automatic settings reload; Explorer and Search still do not refresh on
-  external changes. `src/tui/settingsWatcher.zig` owns the settings requests
+  external changes. `src/vs/workbench/services/configuration/browser/configurationService.zig` owns the settings requests
   and `src/tui/app.zig` polls the watcher's fd alongside stdin.
   `zig build test-watcher -Dwatcher-only=true` runs the watcher-only suite;
   `zig build check-watcher -Dwatcher-only=true -Dtarget=x86_64-windows` and
@@ -439,7 +439,7 @@ console API for raw mode, sizing and input polling.
   (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`), the
   activity service model
   (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
-  terminal view (`src/tui/activityBar.zig`). The Search activity shows a badge
+  terminal view (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`). The Search activity shows a badge
   dot while matches are present (the exact count is in the panel); the service
   also supports view and global badges. It
   switches between
@@ -449,8 +449,8 @@ console API for raw mode, sizing and input polling.
   The model owns order, visibility, the active container and compact width.
   There is still no registered view-container contribution registry, live
   Explorer/Search file-change integration, context menu or drag-and-drop.
-- The Search panel is a terminal adapter (`src/tui/searchView.zig` and
-  `src/tui/searchWidget.zig`) over the upstream-shaped portable view:
+- The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
+  `src/vs/workbench/contrib/search/browser/searchWidget.zig`) over the upstream-shaped portable view:
   `src/vs/workbench/contrib/search/browser/searchView.zig` owns the query
   lifecycle, messages, focus state and replace flow;
   `searchResultsView.zig` owns the data source, ordering, row labels and
@@ -494,7 +494,7 @@ console API for raw mode, sizing and input polling.
   folder shows that folder as the Explorer root and starts with an empty
   editor group; files on the command line still open as tabs. Opening only
   files uses an empty workspace, as upstream does.
-- The editor is rendered through the library (`src/tui/view.zig`): text,
+- The editor is rendered through the library (`src/vs/editor/browser/viewTerminal.zig`): text,
   syntax colors, right-aligned line numbers, wrapped-line markers, selections,
   the current line and a hardware cursor. The workbench status bar is a
   full-width bottom row built from the ported
@@ -530,7 +530,7 @@ console API for raw mode, sizing and input polling.
   find, search and quick-open inputs share the completed `InputBox` editing
   behavior: Shift selection, Ctrl-A, word-wise movement/deletion, undo/redo,
   mouse drag selection and caret-follow horizontal scrolling.
-- Quick open is wired through `src/tui/quickAccess.zig`: `Ctrl-P` opens
+- Quick open is wired through `src/vs/workbench/browser/quickaccess.zig`: `Ctrl-P` opens
   "Go to File" with recent editors first and workspace files as the query is
   typed, and typing `>` switches to the command selector. The command selector
   is also bound to `Alt-P` because a plain terminal reports `Ctrl-Shift-P` as
@@ -661,7 +661,7 @@ TextMate tokenization:
 - Language configurations for the same languages are read from each
   extension's upstream `language-configuration.json` and embedded by
   `vscode-syntax` too (JSON/JSONC have a vendored fallback in
-  `src/support/languageConfigurations`). `src/tui/language.zig` only holds the
+  `src/support/languageConfigurations`). `src/vs/workbench/services/language/common/bundledLanguages.zig` only holds the
   terminal's built-in language-ID/extension table and the portable fallback
   used when no upstream configuration asset exists (for example Zig, or any
   language when the `vscode/` submodule is not initialized).
@@ -828,7 +828,7 @@ Editor contributions:
   duplicate selection and trailing-whitespace trimming.
 - `src/vs/editor/contrib/comment` ports `LineCommentCommand` and
   `BlockCommentCommand`. Comment rules for the TUI's languages live in
-  `src/tui/language.zig`.
+  `src/vs/workbench/services/language/common/bundledLanguages.zig`.
 - `src/vs/editor/contrib/suggest` ports automatic completions: a 10 ms
   quick-suggest deadline, provider trigger characters, optional explicit `Ctrl-Space`,
   fuzzy filtering/ranking, a windowed content widget with keyboard/mouse
@@ -863,7 +863,7 @@ Editor contributions:
   links are supported. The hovered range is painted through the same
   `LineDecoration.filter`/`extractWrapped` path as find and bracket highlights
   (`hoverHighlight`). The app registers a TUI-local provider
-  (`src/tui/hoverProvider.zig`) that reports the word, language and token type,
+  (`src/vs/editor/contrib/hover/browser/terminalHoverProvider.zig`) that reports the word, language and token type,
   because VS Code gets hover contents from language extensions. Not ported,
   each because the corresponding infrastructure has no terminal counterpart:
   marker/glyph/color-picker/inlay-hint hover participants (no marker service,
@@ -973,7 +973,7 @@ Editor contributions:
   `src/vs/workbench/browser/parts/editor/editorPart.zig` (group registry,
   oriented grid, branch demotion, sash resize), `editorGroupView.zig`
   (model-to-tab mapping, active tab, pane activation) and `editorPanes.zig`
-  (active pane, page position, size constraints); `src/tui/workbench.zig` is
+  (active pane, page position, size constraints); `src/vs/workbench/browser/workbench.zig` is
   the terminal adapter that renders the split tree with a tab row per group
   and composites every pane into one frame. With cell borders each pane
   is outlined and the active pane's outline wins shared edges; the divider is
@@ -986,7 +986,7 @@ Editor contributions:
   `src/vs/workbench/common/editor/editorFactory.zig` holds the editor
   serializer registry, `EditorGroupModel.serialize`/`deserialize` rebuilds the
   ordered group/MRU/preview/sticky state through registered serializers, and
-  `src/tui/session.zig` stores the group list and active group as JSON.
+  `src/vs/workbench/browser/parts/editor/editorSession.zig` stores the group list and active group as JSON.
   `--session <file>` restores them on startup and writes them back on exit; a
   missing file falls back to the given paths. Split positions are restored as
   equal horizontal splits. Dirty working copies are not persisted by the
@@ -1014,12 +1014,12 @@ Editor contributions:
   keybinding registry/resolver, the abstract keybinding service and the
   context-key scanner/parser/expression model plus a flat context-key service
   are ported; all 21 upstream `abstractKeybindingService.test.ts` cases and the
-  registry/resolver/label/store suites pass. `src/tui/keybindings.zig` remains
-  the terminal host for status/search/editor shortcuts, while
-  `src/tui/keybindingService.zig` runs the workbench-global, editor-tab group,
-  status-bar, search-view and editor shortcuts through the abstract service (flat context, no-op
-  notifications, command execution; tab-command results such as quit are
-  carried back to the caller). Workbench tab/group shortcuts
+  registry/resolver/label/store suites pass. The terminal key decoding and the
+  workbench-global, editor-tab group, status-bar, search-view and editor
+  shortcut dispatch now live in
+  `src/vs/workbench/services/keybinding/browser/keybindingService.zig` (flat
+  context, no-op notifications, command execution; tab-command results such as
+  quit are carried back to the caller). Workbench tab/group shortcuts
   already dispatch through a `KeybindingsRegistry` + `KeybindingResolver`
   (`workbench.action.closeActiveEditor`, next/previous editor, focus group
   left/right, `openEditorAtIndex1-9`). Workbench-global shortcuts also resolve
@@ -1094,8 +1094,9 @@ Editor contributions:
   `endsWithIgnoreCase`, and the editor `LanguageService` now resolves file paths
   through the associations (case-insensitive filename/extension, longest
   extension, pattern priority, registration order). The workbench
-  `languageService.ts` registration surface that would replace
-  `src/tui/language.zig` still needs to be ported.
+  `languageService.ts` extension-point registration surface is still partial;
+  the bundled language table itself now lives in
+  `src/vs/workbench/services/language/common/bundledLanguages.zig`.
 
 - The view controller's double-click block selection is ported in
   `editor/browser/view/viewController.zig`: bracket content (after an opening or

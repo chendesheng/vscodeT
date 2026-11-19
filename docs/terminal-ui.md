@@ -7,7 +7,7 @@ Status: proposed design.
 This repository is a Zig 0.17 port of VS Code editor internals. The model,
 commands and contributions are ported; `src/tui/` contains the terminal
 frontend. The editor is now rendered through the standalone `ui` library
-(`src/tui/view.zig`); the read-only `--preview` mode shares the same renderer.
+(`src/vs/editor/browser/viewTerminal.zig`); the read-only `--preview` mode shares the same renderer.
 The next step is to port the browser-facing editor UI (`viewParts`, widgets,
 and the contributions in `src/vs/editor/contrib`) while keeping the code close
 to upstream.
@@ -93,7 +93,7 @@ terminal cells (ANSI)
    the ported view stack replaces it.
 
 10. **Editing is not regressed.** During the POC and the first view-stack
-   milestone, `src/tui/editor.zig` keeps the model/command/input path; only
+   milestone, `src/vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig` keeps the model/command/input path; only
    painting moves to the library/view stack.
 
 ## 3. Prior art
@@ -512,7 +512,7 @@ supported) and secondary cursors should be cell runs; this keeps IME viable.
 The host passes `measure_width: fn (u21) u2` so the renderer agrees with the
 editor's `CursorColumns.nextVisibleColumn` for CJK and emoji. Color depth and
 synchronized-output support are `Surface` options. Cell-border support is the
-one probed capability: `src/tui/cellBorders.zig` sends the DCS query followed
+one probed capability: `ui/cell_border.zig` sends the DCS query followed
 by DA1 and returns the answer, and the host calls `Surface.setCellBorders`.
 Mode 2027, DECRQSS and cell pixel size remain later additions. The POC assumes
 truecolor and a terminal that accepts synchronized output (both are ignored
@@ -771,9 +771,9 @@ Library constraints:
     port** for the POC: `RenderLineInput`-style input, token splitting, tab
     expansion, and a flat `RenderedLine` of parts
     `{ text, class_name, inline_style, metadata }` instead of HTML.
-  - `src/tui/theme.zig` / a small adapter resolves token metadata to
+  - `src/vs/editor/common/tokenizationRegistry.zig` / a small adapter resolves token metadata to
     `ui.Style` colors and attributes (using the existing token color palette).
-- `src/tui/view.zig` builds the editor view on the library:
+- `src/vs/editor/browser/viewTerminal.zig` builds the editor view on the library:
   - Uses the existing `Editor`, `ProjectedViewModelLines`, and `viewLineData`
     to iterate visible view lines.
   - Creates a gutter column (right-aligned line numbers) and a text column; one
@@ -805,7 +805,7 @@ Library constraints:
   Not ported: DOM context menus, extension management, window-focus/inactive
   backgrounds, auxiliary/scoped status bars, storage persistence of hidden
   entries and codicon rendering.
-- `src/tui/preview.zig` remains the read-only `--preview` variant, adding
+- `src/vs/editor/browser/viewTerminal.zig` remains the read-only `--preview` variant, adding
   Up/Down, PageUp/PageDown, Home/End and mouse-wheel scrolling.
 - Overlay widgets use the terminal adaptation of upstream `IOverlayWidget`
   in `src/vs/editor/browser/editorBrowser.zig`. A widget reports its size in
@@ -817,13 +817,13 @@ Library constraints:
   controller (`src/vs/platform/quickinput/browser/quickAccess.zig`) owns one
   persistent `QuickPick` model and selects a provider from
   `src/vs/platform/quickinput/common/quickAccess.zig`; the terminal view
-  (`src/tui/quickInput.zig`) renders the input row with a one-row `ui.Surface`
+  (`src/vs/platform/quickinput/browser/quickInputList.zig`) renders the input row with a one-row `ui.Surface`
   and paints the list rows directly into the workbench grid. The workbench
   composites it after every pane and the tab strip, and hides the hardware
   cursor while it is open. `Ctrl-P` opens Go to File, `>` switches to the
   command provider, and `Alt-P` opens the command provider directly because a
   terminal cannot distinguish `Ctrl-Shift-P`. The workspace file index is a
-  TUI adapter (`src/tui/fileIndex.zig`) that walks the workspace instead of
+  TUI adapter (`src/vs/workbench/services/search/common/fileIndex.zig`) that walks the workspace instead of
   calling the search process, but it honors `.gitignore`/`.ignore` through the
   same ported `IgnoreFile`. Icons, buttons, keybinding labels,
   virtualized lists, symbol/go-to-line/link providers and the browser
@@ -844,7 +844,7 @@ Library constraints:
   ranges, keeps collapse state and produces hidden model-line ranges;
   `ProjectedViewModelLines.setHiddenAreas` marks those projections invisible
   and updates the prefix sums, and the converter maps positions on hidden
-  lines to the preceding visible line. `src/tui/view.zig` paints the last
+  lines to the preceding visible line. `src/vs/editor/browser/viewTerminal.zig` paints the last
   gutter cell as `▾`/`▸` and makes it a `GUTTER_LINE_DECORATIONS` hit target;
   clicking it toggles the region. The first visible line of a collapsed region
   gets the upstream `…` suffix. The editor binds `Ctrl-Shift-[`/`]`,
@@ -1002,12 +1002,12 @@ Library constraints:
   projection/wrapping column.
 - The old `src/tui/screen.zig`/`render.zig` path is gone.
 - Multi-file editing keeps one `View` per tab and composites the active view's
-  cell grid below a one-row tab strip in `src/tui/workbench.zig`. The portable
+  cell grid below a one-row tab strip in `src/vs/workbench/browser/workbench.zig`. The portable
   editor-part layers live at their upstream paths:
   `src/vs/workbench/browser/parts/editor/editorPart.zig` owns the group
   registry, grid and sash resize; `editorGroupView.zig` maps model editors to
   tab views and drives the active pane; `editorPanes.zig` keeps the active pane
-  and page position. `src/tui/workbench.zig` keeps the terminal rendering and
+  and page position. `src/vs/workbench/browser/workbench.zig` keeps the terminal rendering and
   input adaptation. `EditorGroupModel` owns
   tab order/MRU/preview/pinned/sticky state, `FileEditorInput` exposes each
   editor's path/dirty/save state, and `Tab` keeps one persistent
@@ -1027,7 +1027,7 @@ Library constraints:
   `ExplorerModel` creates one root per workspace folder. The workbench starts
   with an empty editor group when only a folder is opened.
 - The Explorer sidebar is a terminal tree view
-  (`src/tui/explorerTreeSidebar.zig`) over `ExplorerModel`/`ExplorerItem` from
+  (`src/vs/workbench/contrib/files/browser/views/explorerView.zig`) over `ExplorerModel`/`ExplorerItem` from
   `src/vs/workbench/contrib/files/common/explorerModel.zig`: lazy directory
   resolution, directories-first ordering, expand/collapse, selection and
   scroll. A single-folder workspace uses the folder as the tree input, so its
@@ -1060,7 +1060,7 @@ Library constraints:
   (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`), the
   activity service model
   (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
-  terminal view (`src/tui/activityBar.zig`). The Search activity shows a badge
+  terminal view (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`). The Search activity shows a badge
   dot while matches are present (the exact count is in the panel); the service
   also supports view and global badges. It
   switches fixed Explorer,
@@ -1086,8 +1086,8 @@ Library constraints:
   request/execute); `searchResultsView.zig` owns the data source, ordering,
   row labels and accessibility labels; `searchCompare.zig` and
   `searchActions*.zig` port the comparers and action helpers.
-  `src/tui/searchWidget.zig` renders the input/replace/details rows on a
-  `ui.Surface`; `src/tui/searchView.zig` is the terminal adapter that owns
+  `src/vs/workbench/contrib/search/browser/searchWidget.zig` renders the input/replace/details rows on a
+  `ui.Surface`; `src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` is the terminal adapter that owns
   focus, mouse routing, flattened row painting and the replace/open callbacks.
   Completed match selections write a `rangeHighlight` model decoration through
   `View.setSearchHighlights`. Remaining gaps are the browser tree's
@@ -1133,10 +1133,10 @@ The engine is libghostty-vt, not a port of xterm.js:
 - `src/vs/platform/terminal/node/pty.zig` is the POSIX host: `forkpty`,
   non-blocking master fd, queued writes, resize ioctl and process-group
   signalling. The child only performs async-signal-safe calls after fork.
-- `src/tui/terminalView.zig` reads `RenderState` rows/cells, resolves palette
+- `src/vs/workbench/contrib/terminal/browser/terminalRenderer.zig` reads `RenderState` rows/cells, resolves palette
   and RGB colors, maps SGR attributes to `ui.cell.Attr`, and writes graphemes
   into the shared frame grid. Text is not rebuilt in a second cell buffer.
-- `src/tui/terminalInput.zig` maps decoded `ui` key/mouse events through the
+- `src/vs/workbench/contrib/terminal/browser/terminalInput.zig` maps decoded `ui` key/mouse events through the
   ghostty key/mouse/paste encoders. Bracketed paste is taken from the raw input
   bytes while the terminal has focus because the editor decoder intentionally
   turns pasted control bytes into key events.
@@ -1202,7 +1202,7 @@ approximated by the cursor position and block/inverse paint.
   mouse hit-testing, press-to-focus, wheel cancellation, and the terminal
   decoder (control keys, modifiers, paste, lone Escape, SGR mouse).
 - No view model or view-part architecture ports in this POC; the editor view
-  remains the collapsed `src/tui/view.zig`. Cursor, selection and a two-cell
+  remains the collapsed `src/vs/editor/browser/viewTerminal.zig`. Cursor, selection and a two-cell
   scrollbar/overview ruler are painted, but there is no generic scrollable
   viewport.
 
@@ -1217,7 +1217,7 @@ approximated by the cursor position and block/inverse paint.
 4. `viewLayer`, `viewPart`, `renderingContext`, `viewOverlays`,
    `viewLines`/`viewLine`, margin/lineNumbers/currentLineHighlight/selections/
    viewCursors; `TerminalView` orchestrator. The terminal editor view
-   (`src/tui/view.zig`) already covers gutter, tokens, selection, cursor and
+   (`src/vs/editor/browser/viewTerminal.zig`) already covers gutter, tokens, selection, cursor and
    status; the split into upstream-shaped view parts is still open.
 5. Generic scrollable viewport (`overflow: auto` boxes) and CSS-style
    `:hover`; cursor blink/timers; row damage bands and the `DECSTBM` +
