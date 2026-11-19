@@ -12,10 +12,10 @@ comptime {
     _ = @import("./vs/workbench/contrib/terminal/browser/terminalService.zig");
     _ = @import("./vs/workbench/contrib/terminal/common/terminal.zig");
     _ = @import("./vs/workbench/contrib/terminal/common/terminalConfiguration.zig");
-    _ = @import("./tui/terminalInput.zig");
-    _ = @import("./tui/terminalView.zig");
-    _ = @import("./tui/terminalView.test.zig");
-    _ = @import("./tui/terminalPanel.zig");
+    _ = @import("./vs/workbench/contrib/terminal/browser/terminalInput.zig");
+    _ = @import("./vs/workbench/contrib/terminal/browser/terminalRenderer.zig");
+    _ = @import("./vs/workbench/contrib/terminal/browser/terminalRenderer.test.zig");
+    _ = @import("./vs/workbench/contrib/terminal/browser/terminalTabbedView.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorDropTarget.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorPanes.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorGroupView.zig");

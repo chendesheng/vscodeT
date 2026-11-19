@@ -5,8 +5,8 @@
 
 const std = @import("std");
 const ui = @import("ui");
-const service_mod = @import("../vs/workbench/contrib/terminal/browser/terminalService.zig");
-const terminal_view = @import("./terminalView.zig");
+const service_mod = @import("./terminalService.zig");
+const terminal_view = @import("./terminalRenderer.zig");
 
 const TerminalService = service_mod.TerminalService;
 

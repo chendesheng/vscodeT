@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
-const emulator_mod = @import("../vs/workbench/contrib/terminal/browser/terminalEmulator.zig");
+const emulator_mod = @import("./terminalEmulator.zig");
 
 const TerminalEmulator = emulator_mod.TerminalEmulator;
 

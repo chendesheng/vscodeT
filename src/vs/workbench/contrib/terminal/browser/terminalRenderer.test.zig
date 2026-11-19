@@ -1,8 +1,8 @@
 // Tests for the terminal view's render-state-to-cell conversion.
 const std = @import("std");
 const ui = @import("ui");
-const emulator_mod = @import("../vs/workbench/contrib/terminal/browser/terminalEmulator.zig");
-const view = @import("./terminalView.zig");
+const emulator_mod = @import("./terminalEmulator.zig");
+const view = @import("./terminalRenderer.zig");
 
 test "terminalView: paints text and reports the cursor" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;

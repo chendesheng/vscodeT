@@ -145,9 +145,9 @@ const SearchOption = @import("./searchWidget.zig").Option;
 const terminal_service_mod = @import("../vs/workbench/contrib/terminal/browser/terminalService.zig");
 const terminal_configuration = @import("../vs/workbench/contrib/terminal/common/terminalConfiguration.zig");
 const terminal_common = @import("../vs/workbench/contrib/terminal/common/terminal.zig");
-const terminal_panel = @import("./terminalPanel.zig");
-const terminal_input_mod = @import("./terminalInput.zig");
-const terminal_view = @import("./terminalView.zig");
+const terminal_panel = @import("../vs/workbench/contrib/terminal/browser/terminalTabbedView.zig");
+const terminal_input_mod = @import("../vs/workbench/contrib/terminal/browser/terminalInput.zig");
+const terminal_view = @import("../vs/workbench/contrib/terminal/browser/terminalRenderer.zig");
 const TerminalService = terminal_service_mod.TerminalService;
 const TerminalSize = struct { cols: u16, rows: u16 };
 

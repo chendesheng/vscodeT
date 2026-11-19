@@ -13,7 +13,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 const ghostty = @import("ghostty-vt");
-const emulator_mod = @import("../vs/workbench/contrib/terminal/browser/terminalEmulator.zig");
+const emulator_mod = @import("./terminalEmulator.zig");
 
 pub const TerminalEmulator = emulator_mod.TerminalEmulator;
 pub const Input = ghostty.input;
