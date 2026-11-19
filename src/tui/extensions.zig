@@ -411,7 +411,10 @@ pub const Extensions = struct {
             },
             .char => |char| {
                 if (event.mods.ctrl and !event.mods.alt) {
-                    if (char == 's' or char == 'q') return false;
+                    // Ctrl-Space belongs to the editor suggest controller, not
+                    // to VSCodeVim's key handler; otherwise completion never
+                    // reaches the language provider.
+                    if (char == 's' or char == 'q' or char == ' ') return false;
                     var command_buffer: [32]u8 = undefined;
                     const command = std.fmt.bufPrint(&command_buffer, "extension.vim_ctrl+{c}", .{std.ascii.toLower(@intCast(char))}) catch return false;
                     self.executeCommand(command, &.{});
