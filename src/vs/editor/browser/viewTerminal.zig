@@ -60,8 +60,10 @@ const indent_guides = @import("./viewParts/indentGuides/indentGuides.zig");
 const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.zig");
 const mouse_target = @import("./controller/mouseTarget.zig");
 const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
+const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
 const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
+const TerminalScrollbar = editor_scrollbar_mod.TerminalScrollbar;
 const ContentWidgetEntry = content_widgets_mod.ContentWidgetEntry;
 
 const gutter_color = [3]u8{ 110, 110, 110 };
@@ -242,6 +244,7 @@ pub const View = struct {
     /// Width of the rightmost cells reserved for the combined overview ruler
     /// and scrollbar. The editor wraps around the same width.
     scrollbar_width: usize = 0,
+    scrollbar_part: TerminalScrollbar,
     /// The active thumb/track drag. The state is cloned at press time so the
     /// pointer delta maps against the geometry that was under the pointer.
     scrollbar_drag: ?ScrollbarDrag = null,
@@ -303,6 +306,7 @@ pub const View = struct {
 
             .line_entries = std.array_list.Managed(LineEntry).init(allocator),
             .terminal_view_host = undefined,
+            .scrollbar_part = TerminalScrollbar.init(allocator),
         };
         self.terminal_view_host = try TerminalViewHost.init(allocator, editor);
         errdefer self.terminal_view_host.deinit();
@@ -326,6 +330,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.scrollbar_part.deinit();
         self.terminal_view_host.deinit();
         self.line_entries.deinit();
         self.content_widgets.deinit();
@@ -645,7 +650,7 @@ pub const View = struct {
         if (height == 0) return;
         const row = @min(y, height - 1);
 
-        var state = self.scrollbarState();
+        var state = self.scrollbar_part.state(self.editor);
         if (!state.isNeeded()) return;
 
         const geometry = thumbGeometry(state, height);
@@ -1265,6 +1270,15 @@ pub const View = struct {
         self.needs_rebuild = false;
     }
 
+    /// Test/diagnostic access to the overview markers produced by the ported
+    /// scrollbar part.
+    fn appendOverviewMarkers(
+        self: *View,
+        markers: *std.array_list.Managed(decorationsOverviewRuler.Decoration),
+    ) !void {
+        try editor_scrollbar_mod.appendOverviewMarkers(markers, self.editor, self.allocator);
+    }
+
     fn buildScrollbar(
         self: *View,
         doc: *ui.Document,
@@ -1273,146 +1287,14 @@ pub const View = struct {
         text_height: usize,
         cols: usize,
     ) !void {
-        const column_width = self.scrollbar_width;
-        if (column_width < 1) return;
-        const left = cols -| column_width;
-        if (left >= cols) return;
-
-        var markers = std.array_list.Managed(decorationsOverviewRuler.Decoration).init(self.allocator);
-        defer markers.deinit();
-        try self.appendOverviewMarkers(&markers);
-
-        var cursors = std.array_list.Managed(decorationsOverviewRuler.Cursor).init(self.allocator);
-        defer cursors.deinit();
-        const multiple_cursors = states.len > 1;
-        for (states, 0..) |state, index| {
-            const cursor_color = if (multiple_cursors and index > 0)
-                overview_secondary_cursor_color
-            else
-                overview_cursor_color;
-            try cursors.append(.{
-                .line_number = state.viewState.position.lineNumber,
-                .color = cursor_color,
-                .lane = .full,
-            });
-        }
-        std.mem.sort(decorationsOverviewRuler.Cursor, cursors.items, {}, cursorLessThan);
-
-        const row_markers = try decorationsOverviewRuler.render(
-            self.allocator,
-            markers.items,
-            cursors.items,
-            .{
-                .line_height = 1,
-                .canvas_height = text_height,
-                .outer_height = self.editor.scrollHeight(),
-                .overview_ruler_lanes = 3,
-                .hide_cursor = false,
-                .min_decoration_height = 1,
-            },
-        );
-        defer self.allocator.free(row_markers);
-
-        // A single strip root owns both layers. Marker cells are appended
-        // first; thumb rows are overwritten by the thumb glyph in the same
-        // cells, so the thumb covers the marker without a second column.
-        const state = self.scrollbarState();
-        const thumb_needed = state.isNeeded();
-        const halves = if (thumb_needed)
-            thumbHalfGeometry(state, text_height)
-        else
-            ThumbHalves{ .top = 0, .end = 0 };
-
-        const column = try doc.createElement(.div);
-        column.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = @floatFromInt(left) },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(column_width) },
-            .height = .{ .cells = @floatFromInt(text_height) },
-            .overflow = .hidden,
-        });
-        _ = try root.appendChild(column);
-
-        var row: usize = 0;
-        while (row < text_height) : (row += 1) {
-            const thumb_part = thumbPartAt(halves, row);
-            const marker = if (row < row_markers.len) row_markers[row] else null;
-            if (thumb_part == .none and marker == null) continue;
-
-            // Flow (github.com/neurocyte/flow) renders its vertical
-            // scrollbar as a foreground glyph over the editor background.
-            // The scrollbar is right-aligned and 1.5 cells wide: the right
-            // half of the first cell plus the full second cell. Quadrant
-            // blocks give the thumb half-cell vertical precision at its top
-            // and bottom edges.
-            const marker_color = if (thumb_part != .none) scrollbar_thumb_color else marker.?.color;
-            const glyph_text: []const u8 = if (thumb_part != .none)
-                switch (thumb_part) {
-                    .none => unreachable,
-                    .full => "▐█", // right half first cell + full second cell
-                    .upper => "▝▀", // upper right quadrant + upper half block
-                    .lower => "▗▄", // lower right quadrant + lower half block
-                }
-            else
-                markerGlyph(marker.?.lane, marker.?.vertical);
-
-            const cell = try doc.createElement(.div);
-            cell.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = 0 },
-                .top = .{ .cells = @floatFromInt(row) },
-                .width = .{ .cells = @floatFromInt(column_width) },
-                .height = .{ .cells = 1 },
-                .white_space = .pre,
-                .color = color(marker_color),
-            });
-            const glyph = try doc.createText(glyph_text);
-            glyph.setStyle(.{ .color = color(marker_color) });
-            _ = try cell.appendChild(glyph);
-            _ = try column.appendChild(cell);
-        }
-    }
-
-    fn appendOverviewMarkers(
-        self: *View,
-        markers: *std.array_list.Managed(decorationsOverviewRuler.Decoration),
-    ) !void {
-        const editor = self.editor;
-        const model_decorations = try editor.model.getOverviewRulerDecorations(0, false);
-        defer self.allocator.free(model_decorations);
-
-        for (model_decorations) |decoration| {
-            const ruler = decoration.options.overviewRuler orelse continue;
-            const marker_color = ruler.color orelse continue;
-            const start = editor.viewPositionOfModelPosition(Position.init(
-                decoration.range.startLineNumber,
-                decoration.range.startColumn,
-            ));
-            const end = editor.viewPositionOfModelPosition(Position.init(
-                decoration.range.endLineNumber,
-                decoration.range.endColumn,
-            ));
-            try markers.append(.{
-                .start_line_number = start.lineNumber,
-                .end_line_number = @max(start.lineNumber, end.lineNumber),
-                .color = marker_color,
-                .lane = overviewRulerLaneFromModel(ruler.position),
-                .z_index = @intCast(decoration.options.zIndex orelse 0),
-            });
-        }
-    }
-
-    fn scrollbarState(self: *const View) scrollbar_state.ScrollbarState {
-        const editor = self.editor;
-        return scrollbar_state.ScrollbarState.initWithMinimumSliderSize(
-            0,
-            1,
-            0,
-            @floatFromInt(editor.textHeight()),
-            @floatFromInt(editor.scrollHeight()),
-            @floatFromInt(editor.topViewLine() - 1),
-            1,
+        try self.scrollbar_part.render(
+            doc,
+            root,
+            self.editor,
+            states,
+            text_height,
+            cols,
+            self.scrollbar_width,
         );
     }
 };
@@ -1424,75 +1306,10 @@ fn overviewRulerWidth(editor: *const Editor) usize {
     return Editor.overviewRulerWidthFor(editor.screen_width, editor.gutterWidth());
 }
 
-fn markerGlyph(lane: decorationsOverviewRuler.Lane, vertical: decorationsOverviewRuler.Vertical) []const u8 {
-    return switch (vertical) {
-        .full => switch (lane) {
-            .left => "▐ ", // right half of the first cell
-            .center => " ▌", // left half of the second cell
-            .right => " ▐", // right half of the second cell
-            .full => "▐█", // all 1.5 cells
-        },
-        .upper => switch (lane) {
-            .left => "▝ ", // upper right quadrant of the first cell
-            .center => " ▘", // upper left quadrant of the second cell
-            .right => " ▝", // upper right quadrant of the second cell
-            .full => "▝▀", // upper 1.5 cells
-        },
-        .lower => switch (lane) {
-            .left => "▗ ", // lower right quadrant of the first cell
-            .center => " ▖", // lower left quadrant of the second cell
-            .right => " ▗", // lower right quadrant of the second cell
-            .full => "▗▄", // lower 1.5 cells
-        },
-    };
-}
-
-fn cursorLessThan(_: void, a: decorationsOverviewRuler.Cursor, b: decorationsOverviewRuler.Cursor) bool {
-    return a.line_number < b.line_number;
-}
-
 const ThumbGeometry = struct {
     top: usize,
     size: usize,
 };
-
-const ThumbHalves = struct {
-    top: usize,
-    end: usize,
-};
-
-const ThumbPart = enum { none, upper, lower, full };
-
-fn thumbHalfGeometry(state: scrollbar_state.ScrollbarState, track_height: usize) ThumbHalves {
-    const total_halves = track_height * 2;
-    if (track_height == 0 or total_halves == 0) return .{ .top = 0, .end = 0 };
-
-    const raw_top = @round(state.getSliderPositionExact() * 2);
-    const raw_size = @round(state.getSliderSize() * 2);
-    const size: usize = if (raw_size <= 0)
-        1
-    else
-        @intFromFloat(raw_size);
-    const top: usize = if (raw_top <= 0)
-        0
-    else if (raw_top >= @as(f64, @floatFromInt(total_halves - 1)))
-        total_halves - 1
-    else
-        @intFromFloat(raw_top);
-    return .{
-        .top = top,
-        .end = @min(top + size, total_halves),
-    };
-}
-
-fn thumbPartAt(halves: ThumbHalves, row: usize) ThumbPart {
-    const row_start = row * 2;
-    const row_end = row_start + 2;
-    if (halves.end <= row_start or halves.top >= row_end) return .none;
-    if (halves.top <= row_start and halves.end >= row_end) return .full;
-    if (halves.top <= row_start) return .upper;
-    return .lower;
-}
 
 fn thumbGeometry(state: scrollbar_state.ScrollbarState, track_height: usize) ThumbGeometry {
     if (track_height == 0) return .{ .top = 0, .size = 0 };
