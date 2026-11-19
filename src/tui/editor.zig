@@ -22,6 +22,7 @@ const CoordinatesConverter = @import("../vs/editor/common/viewModel/viewModelLin
 const ViewLineData = @import("../vs/editor/common/viewModel.zig").ViewLineData;
 const WordBreak = @import("../vs/editor/common/modelLineProjectionData.zig").WordBreak;
 const WrappingIndent = @import("../vs/editor/common/config/editorOptions.zig").WrappingIndent;
+const EditorAutoIndentStrategy = @import("../vs/editor/common/config/editorOptions.zig").EditorAutoIndentStrategy;
 const cursorCommon = @import("../vs/editor/common/cursorCommon.zig");
 const CursorConfiguration = cursorCommon.CursorConfiguration;
 const CursorContext = @import("../vs/editor/common/cursor/cursorContext.zig").CursorContext;
@@ -36,6 +37,8 @@ const CursorMoveUnit = @import("../vs/editor/common/cursor/cursorMoveCommands.zi
 const CursorWordDirection = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").WordDirection;
 const DeleteOperations = @import("../vs/editor/common/cursor/cursorDeleteOperations.zig").DeleteOperations;
 const TypeWithoutInterceptorsOperation = @import("../vs/editor/common/cursor/cursorTypeEditOperations.zig").TypeWithoutInterceptorsOperation;
+const EnterOperation = @import("../vs/editor/common/cursor/cursorTypeEditOperations.zig").EnterOperation;
+const AutoIndentOperation = @import("../vs/editor/common/cursor/cursorTypeEditOperations.zig").AutoIndentOperation;
 const EditOperationResult = cursorCommon.EditOperationResult;
 
 const WordCharacterClassifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig").WordCharacterClassifier;
@@ -43,7 +46,6 @@ const DefaultWordSeparators = @import("../vs/editor/common/core/wordCharacterCla
 const InternalModelContentChangeEvent = @import("../vs/editor/common/textModelEvents.zig").InternalModelContentChangeEvent;
 const String = @import("../vs/base/common/strings.zig").String;
 const strings = @import("../vs/base/common/strings.zig");
-const eolToString = @import("../vs/editor/common/core/misc/eolCounter.zig").eolToString;
 const language = @import("./language.zig");
 const language_configuration = @import("../vs/editor/common/languages/languageConfiguration.zig");
 const encoding_mod = @import("../vs/workbench/services/textfile/common/encoding.zig");
@@ -126,6 +128,42 @@ const AfterEditComputer = struct {
     }
 
     fn state(self: *AfterEditComputer) CursorStateComputer {
+        return .{ .context = self, .compute = compute };
+    }
+};
+
+const ReplaceCursorTarget = struct {
+    present: bool = false,
+    line_offset: isize = 0,
+    column_offset: isize = 0,
+};
+
+/// Computes cursor selections for `executeReplaceCommands`. Commands carry an
+/// identifier, so each inverse edit operation lands on its own target even
+/// when the model reverses/sorts the operations. Offsets mirror upstream
+/// `ReplaceCommandWithOffsetCursorState`.
+const ReplaceCursorComputer = struct {
+    before: []const Selection,
+    targets: []const ReplaceCursorTarget,
+    scratch: []Selection,
+
+    fn compute(context: *anyopaque, inverse_operations: []ValidEditOperation) ?[]Selection {
+        const self: *ReplaceCursorComputer = @ptrCast(@alignCast(context));
+        @memcpy(self.scratch, self.before);
+        for (inverse_operations) |operation| {
+            const identifier = operation.identifier orelse continue;
+            if (identifier.major < 0) continue;
+            const index: usize = @intCast(identifier.major);
+            if (index >= self.targets.len or index >= self.scratch.len) continue;
+            const target = self.targets[index];
+            if (!target.present) continue;
+            const position = operation.range.getEndPosition().delta(target.line_offset, target.column_offset);
+            self.scratch[index] = Selection.init(position.lineNumber, position.column, position.lineNumber, position.column);
+        }
+        return self.scratch;
+    }
+
+    fn state(self: *ReplaceCursorComputer) CursorStateComputer {
         return .{ .context = self, .compute = compute };
     }
 };
@@ -307,6 +345,8 @@ pub const Editor = struct {
         errdefer declarative_arena.deinit();
 
         var language_config = language_configuration.empty();
+        var language_config_owned = true;
+        errdefer if (language_config_owned) language_config.deinit();
         var has_language_config = false;
         if (declarative) |registry| {
             if (registry.language(language_id)) |contribution| {
@@ -319,6 +359,14 @@ pub const Editor = struct {
                 if (registry.grammarForLanguage(language_id)) |grammar| {
                     registerDeclarativeGrammar(io, allocator, contribution.root, grammar);
                 }
+            }
+        }
+        if (!has_language_config) {
+            if (language.bundledLanguageConfiguration(language_id)) |data| {
+                if (language_config_point.loadText(declarative_arena.allocator(), data)) |config| {
+                    language_config = config;
+                    has_language_config = true;
+                } else |_| {}
             }
         }
         if (!has_language_config) {
@@ -337,6 +385,7 @@ pub const Editor = struct {
         }
         if (has_language_config) {
             try language_service.registerLanguageConfiguration(language_id, language_config);
+            language_config_owned = false;
         }
 
         const language_config_service = try allocator.create(language_configuration_service.Service);
@@ -383,6 +432,7 @@ pub const Editor = struct {
             .indentSize = resolved.indentSize,
             .insertSpaces = resolved.insertSpaces,
             .pageSize = @max(1, height - 1),
+            .languageConfigurationService = language_config_service.interface(),
         };
 
         editor.* = Editor{
@@ -459,6 +509,7 @@ pub const Editor = struct {
 
         editor.cursors = try CursorCollection.init(allocator, context);
         errdefer if (editor.cursors) |*cursors| cursors.deinit();
+        editor.refreshAutoIndent();
 
         const folding_controller = try folding.Controller.init(allocator, model, &editor.view_lines);
         errdefer folding_controller.deinit();
@@ -1106,19 +1157,28 @@ pub const Editor = struct {
 
         var config = language_configuration.empty();
         var has_config = false;
-        if (language.commentRuleFor(language_id)) |comments| {
-            config.comments = comments;
-            has_config = true;
+        if (language.bundledLanguageConfiguration(language_id)) |data| {
+            if (language_config_point.loadText(self.declarative_arena.allocator(), data)) |loaded| {
+                config = loaded;
+                has_config = true;
+            } else |_| {}
         }
-        if (language.bracketsFor(language_id)) |brackets| {
-            config.brackets = brackets;
-            has_config = true;
-        }
-        if (language.foldingRulesFor(language_id)) |rules| {
-            config.folding = rules;
-            has_config = true;
+        if (!has_config) {
+            if (language.commentRuleFor(language_id)) |comments| {
+                config.comments = comments;
+                has_config = true;
+            }
+            if (language.bracketsFor(language_id)) |brackets| {
+                config.brackets = brackets;
+                has_config = true;
+            }
+            if (language.foldingRulesFor(language_id)) |rules| {
+                config.folding = rules;
+                has_config = true;
+            }
         }
         if (has_config) try self.language_service.registerLanguageConfiguration(language_id, config);
+        self.refreshAutoIndent();
         if (self.language_service.getLanguageConfiguration(language_id)) |resolved_config| {
             self.character_pair = try CharacterPairSupport.init(resolved_config);
             if (self.character_pair) |*pair_support| {
@@ -1762,17 +1822,37 @@ pub const Editor = struct {
 
         var operations = ArrayList(IdentifiedSingleEditOperation).init(self.allocator);
         defer operations.deinit();
-        for (commands) |command| {
-            const cmd = command orelse continue;
+        var targets = ArrayList(ReplaceCursorTarget).init(self.allocator);
+        defer targets.deinit();
+        for (commands, 0..) |command, index| {
+            const cmd = command orelse {
+                try targets.append(.{});
+                continue;
+            };
             const text = if (cmd.text.len == 0) null else String.initBorrowed(cmd.text);
-            try operations.append(IdentifiedSingleEditOperation.init(cmd.range, text));
+            var operation = IdentifiedSingleEditOperation.init(cmd.range, text);
+            operation.identifier = .{ .major = @intCast(index), .minor = 0 };
+            try operations.append(operation);
+            try targets.append(.{
+                .present = true,
+                .line_offset = cmd.cursor_line_offset,
+                .column_offset = cmd.cursor_column_offset,
+            });
         }
         if (operations.items.len == 0) return;
+
+        const scratch = try self.allocator.alloc(Selection, before_selections.len);
+        defer self.allocator.free(scratch);
+        var computer = ReplaceCursorComputer{
+            .before = before_selections,
+            .targets = targets.items,
+            .scratch = scratch,
+        };
 
         const after_selections = try self.model.pushEditOperations(
             before_selections,
             operations.items,
-            self.after_edit.state(),
+            computer.state(),
             null,
         );
 
@@ -1811,9 +1891,25 @@ pub const Editor = struct {
 
     pub fn typeCharacter(self: *Editor, text: []const u8) !void {
         if (text.len == 0) return;
+        self.refreshAutoIndent();
 
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
+
+        self.language_config_service.activate();
+        var auto_indent_result = try AutoIndentOperation.getEdits(
+            self.allocator,
+            &self.cursor_config,
+            self.model,
+            selections,
+            text,
+            false,
+        );
+        if (auto_indent_result) |*result| {
+            defer result.deinit(self.allocator);
+            try self.executeTypeResult(result.*);
+            return;
+        }
 
         if (try auto_closing.shouldOvertypeClose(&self.cursor_config, self.model, selections, text)) {
             try self.moveRight(false);
@@ -1844,18 +1940,23 @@ pub const Editor = struct {
     }
 
     pub fn newline(self: *Editor) !void {
-        const eol = eolToString(self.model.getEOL());
-        const position = self.modelCursorPosition();
-        const line = try self.model.getLineContent(position.lineNumber);
-        defer line.deinit();
-        const first_non_ws = strings.firstNonWhitespaceIndex(line.items) orelse line.items.len;
-        const indent_end = @min(first_non_ws, position.column - 1);
-        var buffer = ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
-        try buffer.appendSlice(eol);
-        try buffer.appendSlice(line.items[0..indent_end]);
         self.closeTypingGroup();
-        try self.insertText(buffer.items);
+        self.language_config_service.activate();
+        self.refreshAutoIndent();
+
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+
+        var result = (try EnterOperation.getEdits(
+            self.allocator,
+            &self.cursor_config,
+            self.model,
+            selections,
+            "\n",
+            false,
+        )) orelse return;
+        defer result.deinit(self.allocator);
+        try self.executeTypeResult(result);
         self.model.pushStackElement();
     }
 
@@ -1916,6 +2017,20 @@ pub const Editor = struct {
         self.cursor_config.tabSize = options.tabSize;
         self.cursor_config.indentSize = options.indentSize;
         self.cursor_config.insertSpaces = options.insertSpaces;
+        self.refreshAutoIndent();
+    }
+
+    /// Full auto-indent needs language indentation rules. The build embeds the
+    /// upstream language configurations for the bundled VS Code languages, so
+    /// languages with `indentationRules` use the full strategy; languages
+    /// without a ported configuration (for example Zig) keep their previous
+    /// keep-indentation behavior instead of guessing at rules.
+    fn refreshAutoIndent(self: *Editor) void {
+        const has_rules = if (self.language_service.getLanguageConfiguration(self.languageId())) |config|
+            config.indentationRules != null
+        else
+            false;
+        self.cursor_config.autoIndent = if (has_rules) .Full else .Keep;
     }
 
     fn applyEditOperations(self: *Editor, operations: []const ISingleEditOperation) !void {
@@ -3556,9 +3671,8 @@ test "Editor: reindent lines uses language indentation rules" {
     const RegExp = @import("../support/regexp.zig").RegExp;
 
     const increase = try RegExp.init("\\{$", .{});
-    defer increase.deinit();
     const decrease = try RegExp.init("^\\s*\\}", .{});
-    defer decrease.deinit();
+    // The language service owns and frees both regexes on deinit.
 
     var editor = try Editor.createFromText(allocator, io, "if (a) {\nb\n}", "test.zig", 40, 8);
     defer {
@@ -3579,6 +3693,126 @@ test "Editor: reindent lines uses language indentation rules" {
     const line2 = try editor.model.getLineContent(2);
     defer line2.deinit();
     try std.testing.expectEqualStrings("    b", line2.items);
+}
+
+test "Editor: Enter honors increaseIndentPattern" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const RegExp = @import("../support/regexp.zig").RegExp;
+
+    const increase = try RegExp.init("^\\s*for\\b", .{});
+    const decrease = try RegExp.init("^\\s*end\\b", .{});
+
+    var editor = try Editor.createFromText(allocator, io, "for", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var config = language_configuration.empty();
+    config.indentationRules = .{
+        .decreaseIndentPattern = decrease,
+        .increaseIndentPattern = increase,
+        .indentNextLinePattern = null,
+        .unIndentedLinePattern = null,
+    };
+    try editor.language_service.registerLanguageConfiguration("zig", config);
+
+    try editor.setCursorPosition(Position.init(1, 4));
+    try editor.newline();
+
+    const line2 = try editor.model.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("    ", line2.items);
+    try std.testing.expectEqual(Position.init(2, 5), editor.modelCursorPosition());
+}
+
+test "Editor: JSON Enter indents inside braces" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "{\n}", "test.json", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(1, 2));
+    try editor.newline();
+
+    const line1 = try editor.model.getLineContent(1);
+    defer line1.deinit();
+    const line2 = try editor.model.getLineContent(2);
+    defer line2.deinit();
+    const line3 = try editor.model.getLineContent(3);
+    defer line3.deinit();
+    try std.testing.expectEqualStrings("{", line1.items);
+    try std.testing.expectEqualStrings("    ", line2.items);
+    try std.testing.expectEqualStrings("}", line3.items);
+    try std.testing.expectEqual(Position.init(2, 5), editor.modelCursorPosition());
+}
+
+test "Editor: JSON Enter ignores braces inside strings" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "\"a {\"", "test.json", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(1, 6));
+    try editor.newline();
+
+    const line2 = try editor.model.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("", line2.items);
+    try std.testing.expectEqual(Position.init(2, 1), editor.modelCursorPosition());
+}
+
+test "Editor: JSON Enter between braces indents and leaves the closing brace" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "{}", "test.json", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(1, 2));
+    try editor.newline();
+
+    const line1 = try editor.model.getLineContent(1);
+    defer line1.deinit();
+    const line2 = try editor.model.getLineContent(2);
+    defer line2.deinit();
+    const line3 = try editor.model.getLineContent(3);
+    defer line3.deinit();
+    try std.testing.expectEqualStrings("{", line1.items);
+    try std.testing.expectEqualStrings("    ", line2.items);
+    try std.testing.expectEqualStrings("}", line3.items);
+    try std.testing.expectEqual(Position.init(2, 5), editor.modelCursorPosition());
+}
+
+test "Editor: typing a JSON closing brace outdents the line" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var editor = try Editor.createFromText(allocator, io, "{\n    \n}", "test.json", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(2, 5));
+    try editor.typeCharacter("}");
+
+    const line2 = try editor.model.getLineContent(2);
+    defer line2.deinit();
+    try std.testing.expectEqualStrings("}", line2.items);
+    try std.testing.expectEqual(Position.init(2, 2), editor.modelCursorPosition());
 }
 
 test "Editor: add cursor below and edit both lines" {

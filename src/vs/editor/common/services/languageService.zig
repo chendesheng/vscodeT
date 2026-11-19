@@ -350,8 +350,12 @@ pub const LanguageService = struct {
         self.onDidRequestRichLanguageFeatures.fire(language_id) catch {};
     }
 
+    /// Registers a language configuration. The service takes ownership of the
+    /// compiled regexes in `configuration` and frees them on replacement or
+    /// `deinit`.
     pub fn registerLanguageConfiguration(self: *LanguageService, languageId: []const u8, configuration: LanguageConfiguration) !void {
         if (self._languageConfigurations.getEntry(languageId)) |entry| {
+            entry.value_ptr.deinit();
             entry.value_ptr.* = configuration;
             return;
         }
@@ -365,6 +369,8 @@ pub const LanguageService = struct {
     }
 
     pub fn deinit(self: *LanguageService) void {
+        var configIter = self._languageConfigurations.valueIterator();
+        while (configIter.next()) |configuration| configuration.deinit();
         var keyIter = self._languageConfigurations.keyIterator();
         while (keyIter.next()) |key| self._languageConfigurations.allocator.free(key.*);
         for (self.selections.items) |selection| {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const vscode_syntax = @import("vscode-syntax");
 const LanguageIdCodec = @import("../vs/editor/common/languages.zig").LanguageIdCodec;
 const LanguageService = @import("../vs/editor/common/services/languageService.zig").LanguageService;
 const language_configuration = @import("../vs/editor/common/languages/languageConfiguration.zig");
@@ -99,6 +100,16 @@ pub fn bracketsFor(language_id: []const u8) ?[]CharacterPair {
     return &standard_brackets;
 }
 
+/// The upstream `language-configuration.json` contributed by the VS Code
+/// extension that owns this language, embedded by the build from the pinned
+/// checkout (or a vendored copy when the checkout is absent). `language.zig`
+/// only holds the terminal's built-in language table; the language-specific
+/// comments, brackets, pairs, folding flag and indentation rules live in the
+/// ported extension assets.
+pub fn bundledLanguageConfiguration(language_id: []const u8) ?[]const u8 {
+    return vscode_syntax.languageConfigurationData(language_id);
+}
+
 /// Folding rules from the upstream language configurations. Region markers
 /// are regular expressions that upstream compiles per language; the TUI uses
 /// indentation folding, so only the off-side flag is carried here. Python and
@@ -116,6 +127,14 @@ test "comment rules for supported languages" {
     try std.testing.expect(commentRuleFor("html") != null);
     try std.testing.expect(commentRuleFor("plaintext") == null);
     try std.testing.expect(commentRuleFor("json") == null);
+}
+
+test "bundled language configurations are ported assets" {
+    const json = bundledLanguageConfiguration("json") orelse return error.MissingLanguageConfiguration;
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"indentationRules\"") != null);
+    try std.testing.expect(bundledLanguageConfiguration("jsonc") != null);
+    // Zig has no upstream extension configuration; it keeps the TUI fallback.
+    try std.testing.expect(bundledLanguageConfiguration("zig") == null);
 }
 
 test "language detection by path" {

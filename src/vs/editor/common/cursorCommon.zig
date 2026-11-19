@@ -9,6 +9,9 @@ const CursorColumns = @import("./core/cursorColumns.zig").CursorColumns;
 const editor_options = @import("./config/editorOptions.zig");
 const EditorAutoClosingStrategy = editor_options.EditorAutoClosingStrategy;
 const EditorAutoClosingEditStrategy = editor_options.EditorAutoClosingEditStrategy;
+const EditorAutoIndentStrategy = editor_options.EditorAutoIndentStrategy;
+const ILanguageConfigurationService = @import("./languages/languageConfigurationRegistry.zig").ILanguageConfigurationService;
+const normalizeIndentationFn = @import("./core/misc/indentation.zig").normalizeIndentation;
 const StandardAutoClosingPairConditional = @import("./languages/languageConfiguration.zig").StandardAutoClosingPairConditional;
 const DefaultWordSeparators = @import("./core/wordCharacterClassifier.zig").DefaultWordSeparators;
 
@@ -34,14 +37,32 @@ pub const EditOperationType = enum(u3) {
 };
 
 /// A replace edit command. This is the subset of upstream `ICommand` used by
-/// the delete operations.
+/// the delete and type operations.
+///
+/// `cursor_line_offset`/`cursor_column_offset` mirror upstream
+/// `ReplaceCommandWithOffsetCursorState`; they are applied to the end of the
+/// replaced range after the edit. `text_owned` lets commands such as
+/// `EnterOperation` return freshly allocated text that `deinit` can release.
 pub const ReplaceCommand = struct {
     range: Range,
     text: []const u8,
     insertsAutoWhitespace: bool = false,
+    cursor_line_offset: isize = 0,
+    cursor_column_offset: isize = 0,
+    text_owned: bool = false,
 
     pub fn init(range: Range, text: []const u8) ReplaceCommand {
         return .{ .range = range, .text = text };
+    }
+
+    pub fn initOwned(range: Range, text: []u8) ReplaceCommand {
+        return .{ .range = range, .text = text, .text_owned = true };
+    }
+
+    pub fn deinit(self: *const ReplaceCommand, allocator: Allocator) void {
+        if (self.text_owned) {
+            allocator.free(@constCast(self.text));
+        }
     }
 };
 
@@ -52,6 +73,9 @@ pub const EditOperationResult = struct {
     shouldPushStackElementAfter: bool,
 
     pub fn deinit(self: *EditOperationResult, allocator: Allocator) void {
+        for (self.commands) |*command| {
+            if (command.*) |*value| value.deinit(allocator);
+        }
         allocator.free(self.commands);
     }
 };
@@ -88,6 +112,8 @@ pub const CursorConfiguration = struct {
     useTabStops: bool = false,
     autoSurround: @import("./config/editorOptions.zig").EditorAutoSurroundStrategy = .never,
     overtype: bool = false,
+    autoIndent: EditorAutoIndentStrategy = .Full,
+    languageConfigurationService: ?ILanguageConfigurationService = null,
 
     autoClosingBrackets: EditorAutoClosingStrategy = .languageDefined,
     autoClosingQuotes: EditorAutoClosingStrategy = .languageDefined,
@@ -117,6 +143,11 @@ pub const CursorConfiguration = struct {
         const maxColumn = model.getLineMaxColumn(model.context, lineNumber);
         if (result > maxColumn) return maxColumn;
         return result;
+    }
+
+    /// Upstream `CursorConfiguration.normalizeIndentation`.
+    pub fn normalizeIndentation(self: *const CursorConfiguration, allocator: Allocator, text: []const u8) ![]const u8 {
+        return normalizeIndentationFn(allocator, text, self.indentSize, self.insertSpaces);
     }
 };
 

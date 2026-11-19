@@ -1889,6 +1889,15 @@ in validation, completion and hover. The server bundle is optional: without
 language features are attached. Code actions and workspace diagnostics remain
 unwired.
 
+Indentation is independent of the language server. It comes from the built-in
+`extensions/json/language-configuration.json` (bracket pairs and
+`indentationRules`), which the build embeds from the pinned VS Code checkout
+(or from the vendored `src/support/languageConfigurations/json.json` when the
+checkout is absent), so JSON and JSONC `Enter` auto-indent and closing-bracket
+outdent work even without the server. The language-configuration extension
+point compiles `indentationRules`; `wordPattern`, `onEnterRules` and folding
+markers remain deferred.
+
 ## 16. Deferred / explicit limitations
 
 - Electron transport, `PersistentProtocol`, socket reconnection.

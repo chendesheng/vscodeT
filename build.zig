@@ -148,6 +148,39 @@ fn fileExists(b: *std.Build, path: []const u8) bool {
     return true;
 }
 
+const VscodeLanguageConfiguration = struct {
+    language: []const u8,
+    /// Path in the pinned VS Code checkout.
+    path: []const u8,
+    /// Vendored copy for checkouts without `../vscode`.
+    fallback_path: []const u8 = "",
+};
+
+/// Language configurations from the VS Code extensions that contribute the
+/// bundled languages. Upstream keeps them next to each extension manifest;
+/// embedding them here lets the TUI consume the same comments, brackets,
+/// auto-closing pairs, folding flag and indentation rules as VS Code.
+const vscode_language_configurations = [_]VscodeLanguageConfiguration{
+    .{ .language = "json", .path = "../vscode/extensions/json/language-configuration.json", .fallback_path = "src/support/languageConfigurations/json.json" },
+    .{ .language = "jsonc", .path = "../vscode/extensions/json/language-configuration.json", .fallback_path = "src/support/languageConfigurations/json.json" },
+    .{ .language = "javascript", .path = "../vscode/extensions/javascript/javascript-language-configuration.json" },
+    .{ .language = "javascriptreact", .path = "../vscode/extensions/javascript/javascript-language-configuration.json" },
+    .{ .language = "typescript", .path = "../vscode/extensions/typescript-basics/language-configuration.json" },
+    .{ .language = "typescriptreact", .path = "../vscode/extensions/typescript-basics/language-configuration.json" },
+    .{ .language = "python", .path = "../vscode/extensions/python/language-configuration.json" },
+    .{ .language = "rust", .path = "../vscode/extensions/rust/language-configuration.json" },
+    .{ .language = "go", .path = "../vscode/extensions/go/language-configuration.json" },
+    .{ .language = "c", .path = "../vscode/extensions/cpp/language-configuration.json" },
+    .{ .language = "cpp", .path = "../vscode/extensions/cpp/language-configuration.json" },
+    .{ .language = "java", .path = "../vscode/extensions/java/language-configuration.json" },
+    .{ .language = "html", .path = "../vscode/extensions/html/language-configuration.json" },
+    .{ .language = "css", .path = "../vscode/extensions/css/language-configuration.json" },
+    .{ .language = "scss", .path = "../vscode/extensions/scss/language-configuration.json" },
+    .{ .language = "markdown", .path = "../vscode/extensions/markdown-basics/language-configuration.json" },
+    .{ .language = "yaml", .path = "../vscode/extensions/yaml/language-configuration.json" },
+    .{ .language = "shellscript", .path = "../vscode/extensions/shellscript/language-configuration.json" },
+};
+
 /// Builds a module containing the VS Code grammars and Dark+ theme files
 /// embedded from the upstream checkout. When the checkout is unavailable the
 /// package's own Dark+ theme is used and the package grammars stay in effect.
@@ -220,6 +253,40 @@ fn vscodeSyntaxAssets(
         \\pub fn dataForScope(scope: []const u8) ?[]const u8 {
         \\    inline for (grammars) |grammar| {
         \\        if (std.mem.eql(u8, grammar.scope, scope)) return grammar.data;
+        \\    }
+        \\    return null;
+        \\}
+        \\
+    ) catch @panic("OOM");
+
+    source.appendSlice(
+        \\pub const LanguageConfiguration = struct { language: []const u8, data: []const u8 };
+        \\pub const language_configurations = [_]LanguageConfiguration{
+        \\
+    ) catch @panic("OOM");
+    for (vscode_language_configurations) |configuration| {
+        var path: ?[]const u8 = null;
+        if (fileExists(b, configuration.path)) {
+            path = configuration.path;
+        } else if (configuration.fallback_path.len > 0 and fileExists(b, configuration.fallback_path)) {
+            path = configuration.fallback_path;
+        }
+        const source_path = path orelse continue;
+        const dest = std.fmt.allocPrint(b.allocator, "language-configurations/{s}.json", .{configuration.language}) catch @panic("OOM");
+        _ = files.addCopyFile(.{ .cwd_relative = source_path }, dest);
+        const line = std.fmt.allocPrint(
+            b.allocator,
+            "    .{{ .language = \"{s}\", .data = @embedFile(\"{s}\") }},\n",
+            .{ configuration.language, dest },
+        ) catch @panic("OOM");
+        source.appendSlice(line) catch @panic("OOM");
+    }
+    source.appendSlice(
+        \\};
+        \\
+        \\pub fn languageConfigurationData(language: []const u8) ?[]const u8 {
+        \\    inline for (language_configurations) |configuration| {
+        \\        if (std.mem.eql(u8, configuration.language, language)) return configuration.data;
         \\    }
         \\    return null;
         \\}

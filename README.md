@@ -124,7 +124,12 @@ edits and shown in the status bar's `Problems` entry; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
 bundled grammar and reports no diagnostics. Hover and formatting are forwarded to the same
 server, and the `json.schemas` setting is passed through so configured schemas
-drive validation, completion and hover.
+drive validation, completion and hover. Indentation does not come from the
+language server: `json-language-features` contributes only the client/server,
+while the indent rules live in the separate built-in `extensions/json`
+language configuration. The build embeds that upstream
+`language-configuration.json`, so JSON/JSONC `Enter` auto-indent and
+closing-bracket outdent also work without `host/dist/jsonServer.mjs`.
 
 Extensions can also contribute language features through the ported
 language-feature bridge: hover, completion, definition, document symbols, code
@@ -539,6 +544,13 @@ TextMate tokenization:
   fallback grammars in `src/support/grammars` (the current VS Code YAML
   grammar does not tokenize with this parser). The vendored Dark+ theme is the
   fallback when the checkout is absent.
+- Language configurations for the same languages are read from each
+  extension's upstream `language-configuration.json` and embedded by
+  `vscode-syntax` too (JSON/JSONC have a vendored fallback in
+  `src/support/languageConfigurations`). `src/tui/language.zig` only holds the
+  terminal's built-in language-ID/extension table and the portable fallback
+  used when no upstream configuration asset exists (for example Zig, or any
+  language in a checkout without `../vscode`).
 - Token colors come from VS Code's Dark+ theme
   (`theme-defaults/themes/dark_plus.json` and its `dark_vs.json` include).
   `TokenTheme` resolves the `tokenColors` rules (foreground and
@@ -677,7 +689,13 @@ TUI editor:
   over it, and Backspace removes an auto-inserted pair.
 - Indentation: `Tab`/`Shift-Tab` indent or outdent the selected lines;
   `Ctrl-]` indents lines; `Alt-R` reindents the selected line block and
-  `Alt-Shift-R` reindents the whole buffer.
+  `Alt-Shift-R` reindents the whole buffer. `Enter` goes through the ported
+  `autoIndent` path for languages whose upstream language configuration defines
+  `indentationRules` (JSON/JSONC, JavaScript/TypeScript, C/C++, Java, Rust, Go,
+  CSS/SCSS, HTML and YAML). Braces and brackets inside strings are ignored for
+  JSON, and typing a matching closing bracket outdents the line. Languages
+  without a ported upstream configuration (for example Zig) keep the caret's
+  current indentation.
 - Folding: the last gutter cell shows `▾` for an expanded region and `▸` when
   collapsed; clicking it toggles the region on that line. `Ctrl-Shift-[` /
   `Ctrl-Shift-]` fold/unfold at the caret, `Ctrl-K Ctrl-L` toggles,

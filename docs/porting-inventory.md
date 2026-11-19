@@ -604,8 +604,11 @@ command/file providers live under `vs/platform/quickinput` and
   `workbenchThemeService.ts` (80), `colorThemeData.ts` (54) and the color
   registry replace this. P5c should port the color/token theme service first,
   then replace the constants one widget at a time.
-- **Language.** `language.zig` hard-codes extension→language id, comment rules
-  and brackets; `languageConfiguration.zig` is a minimal
+- **Language.** `language.zig` hard-codes the terminal's built-in
+  extension→language id table and a fallback set of comment/bracket/folding
+  rules; the real per-language configurations are embedded from the upstream
+  extensions' `language-configuration.json` by `vscode-syntax` (JSON/JSONC
+  have a vendored fallback). `languageConfiguration.zig` is a minimal
   `ILanguageConfigurationService` selected through a module-global
   `active_service` (23). Upstream is `WorkbenchLanguageService` (223) and the
   language-configuration registry. The editor-side registry and language

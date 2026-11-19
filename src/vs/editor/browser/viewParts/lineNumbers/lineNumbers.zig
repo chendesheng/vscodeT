@@ -489,6 +489,7 @@ test "line numbers: absolute numbering, active line and final newline" {
     // Pin the host-dependent default so the assertion is stable.
     harness.options.set(.renderFinalNewline, .dimmed);
     harness.overlay.readConfig();
+    harness.overlay.prepareRender(&harness.rendering);
 
     try testing.expectEqualStrings("1", harness.overlay.renderedLine(1).?.text);
     try testing.expectEqualStrings("2", harness.overlay.renderedLine(2).?.text);

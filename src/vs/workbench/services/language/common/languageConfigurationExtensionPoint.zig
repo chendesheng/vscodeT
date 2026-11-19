@@ -2,9 +2,9 @@
 // `src/vs/workbench/services/language/common/languageConfigurationExtensionPoint.ts`.
 //
 // The TUI consumes comments, brackets, auto-closing/surrounding pairs,
-// colorized bracket pairs and the off-side folding flag. Regex-valued
-// settings (wordPattern, indentationRules, onEnterRules, folding markers) are
-// not compiled here; they remain deferred in docs/extensions.md.
+// colorized bracket pairs, the off-side folding flag and the compiled
+// indentation rules. `wordPattern`, `onEnterRules` and folding markers remain
+// deferred in docs/extensions.md.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const time_compat = @import("../../../../base/common/timeCompat.zig");
@@ -15,14 +15,22 @@ const CommentRule = language_configuration.CommentRule;
 const LineCommentConfig = language_configuration.LineCommentConfig;
 const CharacterPair = language_configuration.CharacterPair;
 const FoldingRules = language_configuration.FoldingRules;
+const IndentationRule = language_configuration.IndentationRule;
 const IAutoClosingPairConditional = language_configuration.IAutoClosingPairConditional;
 const IAutoClosingPair = language_configuration.IAutoClosingPair;
+const RegExp = @import("../../../../../support/regexp.zig").RegExp;
 
 /// Reads `root/relative_path` as JSONC and returns a configuration whose
 /// strings are owned by `arena`.
 pub fn load(arena: Allocator, root: []const u8, relative_path: []const u8) !LanguageConfiguration {
     const path = try std.fs.path.join(arena, &.{ root, relative_path });
     const text = try std.Io.Dir.cwd().readFileAlloc(time_compat.io, path, arena, .unlimited);
+    return loadText(arena, text);
+}
+
+/// Parses an already loaded language configuration (JSONC). This is the entry
+/// point for configurations embedded from VS Code extension assets.
+pub fn loadText(arena: Allocator, text: []const u8) !LanguageConfiguration {
     const sanitized = try configuration_models.stripJsonc(arena, text);
     const value = try std.json.parseFromSliceLeaky(std.json.Value, arena, sanitized, .{});
     if (value != .object) return error.InvalidLanguageConfiguration;
@@ -59,7 +67,25 @@ pub fn load(arena: Allocator, root: []const u8, relative_path: []const u8) !Lang
             };
         }
     }
+    if (object.get("indentationRules")) |rules| {
+        if (rules == .object) config.indentationRules = try parseIndentationRules(rules.object);
+    }
     return config;
+}
+
+fn parseIndentationRules(object: std.json.ObjectMap) !IndentationRule {
+    return .{
+        .decreaseIndentPattern = try parseRegExp(object, "decreaseIndentPattern"),
+        .increaseIndentPattern = try parseRegExp(object, "increaseIndentPattern"),
+        .indentNextLinePattern = try parseRegExp(object, "indentNextLinePattern"),
+        .unIndentedLinePattern = try parseRegExp(object, "unIndentedLinePattern"),
+    };
+}
+
+fn parseRegExp(object: std.json.ObjectMap, name: []const u8) !?RegExp {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return null;
+    return RegExp.init(value.string, .{}) catch null;
 }
 
 fn parseComments(arena: Allocator, object: std.json.ObjectMap) !CommentRule {
@@ -144,4 +170,33 @@ test "language configuration extension point reads markdown-basics" {
     try std.testing.expect(config.folding.?.offSide != null and config.folding.?.offSide.?);
     try std.testing.expect(config.autoClosingPairs != null);
     try std.testing.expect(config.autoClosingPairs.?.len >= 4);
+}
+
+test "language configuration extension point compiles json indentation rules" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var config = load(arena.allocator(), "../vscode/extensions/json", "language-configuration.json") catch return error.SkipZigTest;
+    defer config.deinit();
+
+    const rules = config.indentationRules orelse return error.MissingIndentationRules;
+    try std.testing.expect(rules.increaseIndentPattern != null);
+    try std.testing.expect(rules.decreaseIndentPattern != null);
+    try std.testing.expect(rules.increaseIndentPattern.?.isMatch("{"));
+    try std.testing.expect(rules.increaseIndentPattern.?.isMatch("  ["));
+    try std.testing.expect(rules.decreaseIndentPattern.?.isMatch("  },"));
+}
+
+test "language configuration extension point reads the vendored json fallback" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var config = load(arena.allocator(), "src/support/languageConfigurations", "json.json") catch return error.SkipZigTest;
+    defer config.deinit();
+
+    const rules = config.indentationRules orelse return error.MissingIndentationRules;
+    try std.testing.expect(rules.increaseIndentPattern != null);
+    try std.testing.expect(rules.decreaseIndentPattern != null);
+    try std.testing.expect(config.brackets != null);
+    try std.testing.expect(config.autoClosingPairs != null);
 }

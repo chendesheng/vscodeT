@@ -60,6 +60,37 @@ pub const LanguageConfiguration = struct {
     // __electricCharacterSupport: ?struct {
     //     docComment: ?IDocComment,
     // },
+
+    /// Frees the compiled regexes owned by a configuration. Plain slices
+    /// (comment tokens, bracket pairs) stay owned by whoever allocated them,
+    /// matching the upstream split between configuration data and its
+    /// language-configuration service.
+    pub fn deinit(self: *LanguageConfiguration) void {
+        if (self.wordPattern) |*pattern| pattern.deinit();
+        self.wordPattern = null;
+        if (self.indentationRules) |*rules| {
+            if (rules.decreaseIndentPattern) |*pattern| pattern.deinit();
+            if (rules.increaseIndentPattern) |*pattern| pattern.deinit();
+            if (rules.indentNextLinePattern) |*pattern| pattern.deinit();
+            if (rules.unIndentedLinePattern) |*pattern| pattern.deinit();
+            self.indentationRules = null;
+        }
+        if (self.onEnterRules) |rules| {
+            for (rules) |*rule| {
+                rule.beforeText.deinit();
+                if (rule.afterText) |*pattern| pattern.deinit();
+                if (rule.previousLineText) |*pattern| pattern.deinit();
+            }
+            self.onEnterRules = null;
+        }
+        if (self.folding) |*folding| {
+            if (folding.markers) |*markers| {
+                markers.start.deinit();
+                markers.end.deinit();
+            }
+            self.folding = null;
+        }
+    }
 };
 
 // Describes indentation rules for a language.
