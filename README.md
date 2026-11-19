@@ -74,7 +74,7 @@ a full `../vscode/out` build is not required.
 ```sh
 cd host && npm install && npm run build   # host/dist/extensionHost.mjs
 npm run build:json                        # optional: host/dist/jsonServer.mjs
-zig build run -- [--extension-path <extension-dir>] [<file>...]
+zig build run -- [--extensions-dir <dir>] [<file>...]
 zig build test-e2e                        # boots the host and edits through VSCodeVim
 ```
 
@@ -82,10 +82,13 @@ The JSON server bundle reuses the runtime dependencies of the pinned
 `../vscode/extensions/json-language-features/server`; install them there first
 with `npm install` if the bundle step cannot resolve `vscode-languageserver`.
 
-`--extension-path` points at an unpacked extension directory (for VSCodeVim,
-the directory containing its `package.json` and `out/extension.js`). Without
-the flag, `VSCODE_TEXTBUFFER_EXTENSION_PATH`, the test fixture, then
-`~/.vscode*/extensions/vscodevim.vim-*/extension` are tried. The TUI
+`--extensions-dir` is VS Code's extensions folder (the parent of
+`vscodevim.vim-*/`). Without it, discovery follows VS Code's `extensionsPath`:
+`--extensions-dir`, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, then
+`~/.vscode/extensions` for the Stable product. The folder is scanned the way
+`scanAllUserExtensions` does it: direct child directories with a `package.json`
+are read, dot-directories are skipped, and VSCodeVim is selected by its
+identifier. Other extensions are scanned but not activated yet. The TUI
 starts the pinned host, mirrors the active tab as a document/editor, routes
 printable keys through the `type` command, and applies the extension's edits
 and selections back to the editor. VSCodeVim 1.32.4 insert/normal/visual

@@ -5,8 +5,10 @@ the real Node host over a Unix socket, `rpcProtocol.zig` implements the wire
 codec, the generated `extHost.protocol.zig` table has all 171 identifiers,
 and `src/tui/extensions.zig` mirrors the active tab, routes text through
 `type`/`default:type`, applies edits and selections, publishes status bar
-entries, and discovers `vscodevim.vim-*` under the usual VS Code extension
-directories. Declarative scanning now loads the bundled `theme-defaults` and
+entries, resolves the extensions folder through VS Code's `extensionsPath`
+(`--extensions-dir`, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, product home) and
+scans it with the `scanAllUserExtensions` location scan to find VSCodeVim.
+Declarative scanning now loads the bundled `theme-defaults` and
 `markdown-basics` contributions: the theme files (including the
 `dark_plus.json` → `dark_vs.json` include chain), the markdown language and
 grammar, and its JSONC language configuration. `zig build test-e2e` activates VSCodeVim 1.32.4 and asserts insert

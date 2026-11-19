@@ -11,6 +11,8 @@ const Preview = @import("./preview.zig").Preview;
 const Workbench = @import("./workbench.zig").Workbench;
 const extensions = @import("./extensions.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
+const environment_service = @import("../vs/platform/environment/common/environmentService.zig");
+const extensions_scanner = @import("../vs/platform/extensionManagement/common/extensionsScannerService.zig");
 const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
 const session = @import("./session.zig");
 const SyntaxTheme = @import("./syntaxTheme.zig").SyntaxTheme;
@@ -56,12 +58,13 @@ fn infoLog(log_service: ?log_module.ILogger, comptime fmt: []const u8, args: any
 const Args = struct {
     preview: bool = false,
     session: ?[]const u8 = null,
-    extension_path: ?[]const u8 = null,
+    extensions_dir: ?[]const u8 = null,
 };
 
-/// Parses `--preview`, `--session <file>` and the remaining paths.
-/// `--preview` is only valid with exactly one path; `--session` restores the
-/// saved group when the file exists and otherwise opens the given paths.
+/// Parses `--preview`, `--session <file>`, `--extensions-dir <dir>` and the
+/// remaining paths. `--preview` is only valid with exactly one path;
+/// `--session` restores the saved group when the file exists and otherwise
+/// opens the given paths; `--extensions-dir` is VS Code's extensions folder.
 fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *ArrayList([]const u8)) !Args {
     var it = try std.process.Args.Iterator.initAllocator(args, allocator);
     defer it.deinit();
@@ -69,7 +72,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
 
     var parsed: Args = .{};
     errdefer if (parsed.session) |session_path| allocator.free(session_path);
-    errdefer if (parsed.extension_path) |path| allocator.free(path);
+    errdefer if (parsed.extensions_dir) |path| allocator.free(path);
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--preview")) {
             parsed.preview = true;
@@ -77,10 +80,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
             const value = it.next() orelse return error.MissingSessionPath;
             if (parsed.session) |old| allocator.free(old);
             parsed.session = try allocator.dupe(u8, value);
-        } else if (std.mem.eql(u8, arg, "--extension-path")) {
-            const value = it.next() orelse return error.MissingExtensionPath;
-            if (parsed.extension_path) |old| allocator.free(old);
-            parsed.extension_path = try allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, arg, "--extensions-dir")) {
+            const value = it.next() orelse return error.MissingExtensionsDir;
+            if (parsed.extensions_dir) |old| allocator.free(old);
+            parsed.extensions_dir = try allocator.dupe(u8, value);
         } else {
             const copy = try allocator.dupe(u8, arg);
             errdefer allocator.free(copy);
@@ -93,52 +96,44 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
     return parsed;
 }
 
-/// User settings live outside the workspace. `VSCODE_TEXTBUFFER_USER_SETTINGS`
-/// overrides the XDG/HOME default so tests and alternate profiles can point at
-/// a specific file; a missing file simply produces no user scope.
-/// Explicit `--extension-path`, the env override, the extracted test fixture,
-/// then the usual VS Code extension directories. Only VSCodeVim is discovered
-/// until the manifest scanner lands.
-fn defaultExtensionPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map) ?[]u8 {
-    if (environ.get("VSCODE_TEXTBUFFER_EXTENSION_PATH")) |value| {
-        return allocator.dupe(u8, value) catch null;
+/// Extension discovery follows VS Code: resolve `extensionsPath` from the
+/// `--extensions-dir` argument, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE` or the
+/// product's user folder, then perform upstream's `scanAllUserExtensions`
+/// location scan. The TUI extension host activates only VSCodeVim, so the
+/// scanned identifiers are filtered for it.
+fn findVimExtension(
+    allocator: std.mem.Allocator,
+    io: Io,
+    cli_extensions_dir: ?[]const u8,
+    environ: *const std.process.Environ.Map,
+    log_service: ?log_module.ILogger,
+) !?[]u8 {
+    // `IEnvironmentService.userHome` is `os.homedir()`; on Windows that is
+    // `USERPROFILE` rather than `HOME`.
+    const home = environ.get("HOME") orelse environ.get("USERPROFILE") orelse {
+        report(log_service, "extension discovery skipped: no home directory", .{});
+        return null;
+    };
+    const environment = environment_service.Environment{
+        .user_home = home,
+        .cli_extensions_dir = cli_extensions_dir,
+        .env_extensions = environ.get("VSCODE_EXTENSIONS"),
+        .env_portable = environ.get("VSCODE_PORTABLE"),
+    };
+    const extensions_path = try environment.extensionsPath(allocator);
+    defer allocator.free(extensions_path);
+
+    const scanned = try extensions_scanner.scanExtensionsFromLocation(allocator, io, extensions_path, .user);
+    defer {
+        for (scanned) |*extension| extension.deinit(allocator);
+        allocator.free(scanned);
     }
-    const fixture = ".cache-ext/vim/extension";
-    if (std.Io.Dir.cwd().access(time_compat.io, fixture, .{})) |_| {
-        return allocator.dupe(u8, fixture) catch null;
-    } else |_| {}
-    const home = environ.get("HOME") orelse return null;
-    const roots = [_][]const u8{ ".vscode/extensions", ".vscode-server/extensions", ".vscode-oss/extensions" };
-    for (roots) |relative| {
-        const root = std.fs.path.join(allocator, &.{ home, relative }) catch continue;
-        defer allocator.free(root);
-        var dir = std.Io.Dir.openDirAbsolute(time_compat.io, root, .{ .iterate = true }) catch continue;
-        defer dir.close(time_compat.io);
-        var iterator = dir.iterate();
-        while (iterator.next(time_compat.io) catch null) |entry| {
-            if (entry.kind != .directory) continue;
-            if (!std.mem.startsWith(u8, entry.name, "vscodevim.vim-")) continue;
-            // A `.vsix` extraction yields `<version>/extension`; VS Code's own
-            // installer unpacks the extension directly into `<version>`.
-            const nested = std.fs.path.join(allocator, &.{ root, entry.name, "extension" }) catch continue;
-            std.Io.Dir.accessAbsolute(time_compat.io, nested, .{}) catch {
-                allocator.free(nested);
-                const installed = std.fs.path.join(allocator, &.{ root, entry.name }) catch continue;
-                const manifest = std.fs.path.join(allocator, &.{ installed, "package.json" }) catch {
-                    allocator.free(installed);
-                    continue;
-                };
-                defer allocator.free(manifest);
-                std.Io.Dir.accessAbsolute(time_compat.io, manifest, .{}) catch {
-                    allocator.free(installed);
-                    continue;
-                };
-                return installed;
-            };
-            return nested;
-        }
-    }
-    return null;
+
+    const found = extensions_scanner.findExtension(scanned, "vscodevim.vim") orelse {
+        infoLog(log_service, "VSCodeVim not installed under {s}", .{extensions_path});
+        return null;
+    };
+    return try allocator.dupe(u8, found.location);
 }
 
 fn defaultExtensionDataPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map) ![]u8 {
@@ -228,13 +223,13 @@ pub fn main(init: std.process.Init) !void {
 
     const args = parseArgs(allocator, init.minimal.args, &paths) catch {
         std.debug.print(
-            "usage: zig <folder> [<file>...]\n       zig <file>...\n       zig --session <file> [<folder>] [<file>...]\n       zig --preview <file>\n       zig --extension-path <dir> [<file>...]\n",
+            "usage: zig <folder> [<file>...]\n       zig <file>...\n       zig --session <file> [<folder>] [<file>...]\n       zig --preview <file>\n       zig --extensions-dir <dir> [<file>...]\n",
             .{},
         );
         return;
     };
     defer if (args.session) |session_path| allocator.free(session_path);
-    defer if (args.extension_path) |path| allocator.free(path);
+    defer if (args.extensions_dir) |path| allocator.free(path);
     infoLog(log_service, "starting: preview={} session={s} paths={d}", .{
         args.preview,
         args.session orelse "-",
@@ -410,9 +405,12 @@ pub fn main(init: std.process.Init) !void {
 
     var extension_host: ?*extensions.Extensions = null;
     defer if (extension_host) |ext| ext.deinit();
-    const extension_path = if (args.extension_path) |path| path else defaultExtensionPath(allocator, init.environ_map);
+    const extension_path = findVimExtension(allocator, io, args.extensions_dir, init.environ_map, log_service) catch |err| blk: {
+        report(log_service, "extension discovery failed: {s}", .{@errorName(err)});
+        break :blk null;
+    };
     if (extension_path) |path| {
-        defer if (args.extension_path == null) allocator.free(path);
+        defer allocator.free(path);
         const extension_data = try defaultExtensionDataPath(allocator, init.environ_map);
         defer allocator.free(extension_data);
         std.Io.Dir.cwd().createDirPath(io, extension_data) catch {};
