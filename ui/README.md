@@ -37,6 +37,10 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   whole-cell translated content, a proportional scrollbar and wheel handling.
   There is no CSS `overflow: scroll`; list-style windowing and editor scrolling
   keep their own view-model state.
+- A reusable modal `Dialog` for confirmations: a warning icon, wrapped message
+  and detail, up to three focusable buttons, keyboard wrapping and mouse
+  press/release activation. It composites into a host `CellGrid` and dims the
+  cells behind it.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
 - Keyboard and mouse events and focus: per-node listeners with
   capture/target/bubble, `Document.activeElement`, `focus`/`blur` plus
@@ -428,6 +432,40 @@ pointer while keeping the viewport and arena capacity. Build a new root and
 call `setRoot`. To forward an already decoded event and inspect whether a
 listener consumed it, use `Document.dispatchEvent(&event)`; it resets
 `default_prevented` and `propagation_stopped` before dispatch.
+
+## Modal dialogs
+
+`ui.Dialog` is a host-composited modal confirmation. It is useful when a view
+already owns a `CellGrid` instead of a `Surface` and needs a blocking choice:
+
+```zig
+const dialog = try ui.Dialog.init(allocator, message, detail, &.{
+    "Save", "Don't Save", "Cancel",
+});
+defer dialog.deinit();
+
+// Per frame, after the host content:
+dialog.render(&frame.next);
+
+// Route every key/mouse event to the dialog while it is open.
+switch (dialog.handleKey(&key_event)) {
+    .none => {},
+    .activate => |index| resolve(index),
+    .cancel => resolve_cancel(),
+}
+if (dialog.handleMouse(&mouse_event)) |index| resolve(index);
+```
+
+The first button is the primary action and starts focused. Tab/Shift-Tab,
+Left/Right and Up/Down wrap the focus; Enter or Space activates it and Escape
+reports `.cancel`. A mouse press focuses a button and the matching release over
+the same button activates it; clicks elsewhere are swallowed. The dialog is
+centered and sized from the text, clamped to the grid. When the grid is too
+short for the stacked-button layout it puts the buttons on one row and drops
+the icon and blank separators. `render` sets `layout` and the `buttonRect`
+rectangles for hosts/tests that need the active geometry. Colors and the
+warning glyph are terminal defaults; the host supplies the text and labels, so
+the same widget serves VS Code-style save confirmations and other messages.
 
 ## Tests
 
