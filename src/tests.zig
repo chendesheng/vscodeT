@@ -78,7 +78,7 @@ comptime {
     _ = @import("./tui/tab.zig");
     _ = @import("./tui/workbench.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorSession.zig");
-    _ = @import("./tui/hoverProvider.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/terminalHoverProvider.zig");
     _ = @import("./vs/base/common/cache.zig");
     _ = @import("./vs/base/common/event.zig");
     _ = @import("./vs/editor/common/core/ranges/lineRange.zig");

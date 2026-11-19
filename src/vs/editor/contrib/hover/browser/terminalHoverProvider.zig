@@ -11,16 +11,16 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const Position = @import("../vs/editor/common/core/position.zig").Position;
-const Range = @import("../vs/editor/common/core/range.zig").Range;
-const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
-const languages = @import("../vs/editor/common/languages.zig");
+const Position = @import("../../../common/core/position.zig").Position;
+const Range = @import("../../../common/core/range.zig").Range;
+const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+const languages = @import("../../../common/languages.zig");
 const Hover = languages.Hover;
 const HoverProvider = languages.HoverProvider;
 const IMarkdownString = languages.IMarkdownString;
-const token_utils = @import("../vs/editor/common/tokens/lineTokens.zig");
-const CancellationToken = @import("../vs/base/common/cancellation.zig").CancellationToken;
-const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
+const token_utils = @import("../../../common/tokens/lineTokens.zig");
+const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+const json_language = @import("../../../../workbench/services/language/common/jsonLanguageClient.zig");
 
 pub const TuiHoverProvider = struct {
     allocator: Allocator,
@@ -111,7 +111,7 @@ pub const TuiHoverProvider = struct {
 
 test "tui hover provider: reports the word under the cursor" {
     const testing = std.testing;
-    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
 
     var ctx = try TestModel.init(testing.allocator, "const value = 42;", "zig");
     defer ctx.deinit();
@@ -133,7 +133,7 @@ test "tui hover provider: reports the word under the cursor" {
 }
 
 test "tui hover provider: forwards JSON hover from a local schema" {
-    std.Io.Dir.cwd().access(@import("../vs/base/common/timeCompat.zig").io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(@import("../../../../base/common/timeCompat.zig").io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
     const testing = std.testing;
     const allocator = testing.allocator;
     const client = try json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs");
@@ -141,7 +141,7 @@ test "tui hover provider: forwards JSON hover from a local schema" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(@import("../vs/base/common/timeCompat.zig").io, .{ .sub_path = "schema.json", .data =
+    try tmp.dir.writeFile(@import("../../../../base/common/timeCompat.zig").io, .{ .sub_path = "schema.json", .data =
         \\{
         \\  "type": "object",
         \\  "properties": {
@@ -150,7 +150,7 @@ test "tui hover provider: forwards JSON hover from a local schema" {
         \\}
     });
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_length = try tmp.dir.realPathFile(@import("../vs/base/common/timeCompat.zig").io, "schema.json", &path_buffer);
+    const path_length = try tmp.dir.realPathFile(@import("../../../../base/common/timeCompat.zig").io, "schema.json", &path_buffer);
     const schema_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{path_buffer[0..path_length]});
     defer allocator.free(schema_uri);
     const text = try std.fmt.allocPrint(allocator, "{{\n  \"$schema\": \"{s}\",\n  \"name\": \"demo\"\n}}\n", .{schema_uri});
@@ -161,7 +161,7 @@ test "tui hover provider: forwards JSON hover from a local schema" {
     defer doc_arena.deinit();
     try client.didOpen(doc_arena.allocator(), uri, "json", text);
 
-    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
     var ctx = try TestModel.init(allocator, text, "json");
     defer ctx.deinit();
 

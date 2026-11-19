@@ -34,7 +34,7 @@ const MarkdownHoverParticipant = @import("../vs/editor/contrib/hover/browser/mar
 const WordHighlighterContribution = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
 const SuggestController = @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestController;
 const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
-const TuiHoverProvider = @import("./hoverProvider.zig").TuiHoverProvider;
+const TuiHoverProvider = @import("../vs/editor/contrib/hover/browser/terminalHoverProvider.zig").TuiHoverProvider;
 const ArrayList = std.array_list.Managed;
 
 /// Mirrors the previous `std.debug.print` error reporting, now also written to
