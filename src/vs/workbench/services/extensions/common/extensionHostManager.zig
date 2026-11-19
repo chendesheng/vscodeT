@@ -37,7 +37,7 @@ fn processEnviron() std.process.Environ {
 /// every platform the manager builds for.
 pub fn currentProcessId() u32 {
     return switch (builtin.os.tag) {
-        .linux => std.os.linux.getpid(),
+        .linux => @intCast(std.os.linux.getpid()),
         .plan9 => std.os.plan9.getpid(),
         .windows => std.os.windows.GetCurrentProcessId(),
         else => @intCast(std.c.getpid()),
