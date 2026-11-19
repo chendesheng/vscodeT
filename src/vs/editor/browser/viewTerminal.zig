@@ -237,14 +237,10 @@ pub const View = struct {
     /// to keep pointer events out of the text.
     /// Overlay widget rectangles for the current frame; pointer events on an
     /// overlay must not reach the editor's hover logic.
-    /// The line element under the primary cursor, filled in while building.
-    cursor_line: ?*ui.Node = null,
-    /// Cells between the start of that line's content and the caret.
-    cursor_offset: usize = 0,
-    /// Text-row elements in view order, rebuilt with the document. A hit on
-    /// one of these maps to its view line; hits on the gutter, the status row
-    /// or overlays do not.
-    line_entries: std.array_list.Managed(LineEntry),
+    /// Primary-cursor row relative to the viewport, when it is on screen.
+    cursor_row: ?usize = null,
+    /// Absolute terminal column of the primary caret.
+    cursor_col: usize = 0,
     /// Width of the rightmost cells reserved for the combined overview ruler
     /// and scrollbar. The editor wraps around the same width.
     scrollbar_width: usize = 0,
@@ -283,14 +279,6 @@ pub const View = struct {
     /// renderer below consumes its rendered line records.
     terminal_view_host: *TerminalViewHost,
 
-    const LineEntry = struct {
-        node: *ui.Node,
-        view_line: usize,
-        /// Cells of rendered text on this view line, used by hit testing to
-        /// separate CONTENT_TEXT from CONTENT_EMPTY.
-        text_width: usize = 0,
-    };
-
     const MousePress = struct {
         x: usize,
         y: usize,
@@ -312,7 +300,6 @@ pub const View = struct {
             .overlay_widgets = ViewOverlayWidgets.init(allocator),
             .content_widgets = ViewContentWidgets.init(allocator),
 
-            .line_entries = std.array_list.Managed(LineEntry).init(allocator),
             .terminal_view_host = undefined,
             .scrollbar_part = TerminalScrollbar.init(allocator),
         };
@@ -321,7 +308,6 @@ pub const View = struct {
         errdefer self.overlay_widgets.deinit();
         errdefer self.content_widgets.deinit();
 
-        errdefer self.line_entries.deinit();
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
         self.surface = try ui.Surface.init(allocator, .{
@@ -340,7 +326,6 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.scrollbar_part.deinit();
         self.terminal_view_host.deinit();
-        self.line_entries.deinit();
         self.content_widgets.deinit();
         self.overlay_widgets.deinit();
         self.surface.deinit();
@@ -556,8 +541,8 @@ pub const View = struct {
                     self.drag_anchor = null;
                     self.drag_moved = false;
                     if (!event.default_prevented) {
-                        if (self.lineEntryAt(target)) |entry| {
-                            const position = try self.positionAtCell(entry.view_line, event.x);
+                        if (self.lineViewLineAt(target)) |view_line| {
+                            const position = try self.positionAtCell(view_line, event.x);
                             if (event.mods.shift) {
                                 const previous = self.editor.modelSelection();
                                 const anchor = previous.getSelectionStart();
@@ -579,8 +564,8 @@ pub const View = struct {
                 }
                 if (event.button == .left) {
                     if (self.drag_anchor) |anchor| {
-                        if (self.lineEntryAt(target)) |entry| {
-                            const position = try self.positionAtCell(entry.view_line, event.x);
+                        if (self.lineViewLineAt(target)) |view_line| {
+                            const position = try self.positionAtCell(view_line, event.x);
                             if (position.lineNumber != anchor.lineNumber or
                                 position.column != anchor.column)
                             {
@@ -689,23 +674,12 @@ pub const View = struct {
         _ = applyScrollPosition(self.editor, desired);
     }
 
-    fn lineEntryAt(self: *const View, target: *ui.Node) ?LineEntry {
+    fn lineViewLineAt(self: *const View, target: *ui.Node) ?usize {
         var node: ?*ui.Node = target;
         while (node) |current| : (node = current.parent) {
-            for (self.line_entries.items) |entry| {
-                if (entry.node == current) return entry;
-            }
+            if (self.terminal_view_host.viewLineNumberForNode(current)) |view_line| return view_line;
         }
         return null;
-    }
-
-    fn lineEntryForViewLine(self: *const View, view_line: usize) ?LineEntry {
-        const top = self.editor.topViewLine();
-        if (view_line < top) return null;
-        const index = view_line - top;
-        if (index >= self.line_entries.items.len) return null;
-        const entry = self.line_entries.items[index];
-        return if (entry.view_line == view_line) entry else null;
     }
 
     /// The mouse target for a cell, classified by the ported
@@ -758,8 +732,7 @@ pub const View = struct {
 
     fn mouseLineTextWidth(context: *anyopaque, view_line: usize) ?usize {
         const self: *View = @ptrCast(@alignCast(context));
-        const entry = self.lineEntryForViewLine(view_line) orelse return null;
-        return entry.text_width;
+        return self.terminal_view_host.getLineWidth(view_line);
     }
 
     fn mousePositionAtViewPoint(context: *anyopaque, view_line: usize, column: usize) !Position {
@@ -872,15 +845,12 @@ pub const View = struct {
         // A focused widget paints its own block caret; the hardware cursor
         // belongs to the editor.
         if (self.surface.document().active_element != null) return null;
-        const line = self.cursor_line orelse return null;
+        const row = self.cursor_row orelse return null;
         const rows = self.surface.document().rows;
         const cols = self.surface.document().cols;
-        const rect = line.asElement().rect;
-        const row = ui.cell.snap(rect.y);
         if (row >= rows) return null;
         const right = @min(cols, self.editor.textAreaRight());
-        const col = @min(ui.cell.snap(rect.x) + self.cursor_offset, right -| 1);
-        return .{ .row = row, .col = col };
+        return .{ .row = row, .col = @min(self.cursor_col, right -| 1) };
     }
 
     /// Whether no overlay or content widget owns the keyboard. Word
@@ -928,9 +898,8 @@ pub const View = struct {
 
         const doc = self.surface.document();
         doc.clear();
-        self.cursor_line = null;
-        self.cursor_offset = 0;
-        self.line_entries.clearRetainingCapacity();
+        self.cursor_row = null;
+        self.cursor_col = 0;
 
         const cols = doc.cols;
         const rows = doc.rows;
@@ -1082,6 +1051,28 @@ pub const View = struct {
         else
             states[0].viewState.position;
 
+        self.cursor_row = null;
+        if (cursor.lineNumber >= top and cursor.lineNumber < top + text_height and
+            cursor.lineNumber <= total)
+        {
+            const cursor_data = editor.viewLineData(cursor.lineNumber) catch null;
+            if (cursor_data) |data| {
+                const cursor_model_line = editor.modelLineNumber(cursor.lineNumber);
+                var content = editor.model.getLineContent(cursor_model_line) catch null;
+                if (content) |*owned| {
+                    defer owned.deinit();
+                    self.cursor_row = cursor.lineNumber - top;
+                    self.cursor_col = gutter + visibleOffset(
+                        owned.items,
+                        cursor.column,
+                        tab_size,
+                        data.startVisibleColumn,
+                        data.minColumn - 1,
+                    );
+                }
+            }
+        }
+
         try self.margin.render(
             doc,
             root,
@@ -1157,19 +1148,7 @@ pub const View = struct {
                 .guides = row_guides.items,
             }, lineStyleForPart);
 
-            if (is_cursor_line) {
-                self.cursor_line = line;
-                self.cursor_offset = visibleOffset(
-                    model_content.items,
-                    cursor.column,
-                    tab_size,
-                    data.startVisibleColumn,
-                    indent_cells,
-                );
-            }
-
             _ = try root.appendChild(line);
-            try self.line_entries.append(.{ .node = line, .view_line = view_line, .text_width = line_width });
         }
 
         try appendStatus(self, doc, root, rows);

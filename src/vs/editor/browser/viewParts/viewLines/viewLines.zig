@@ -8,6 +8,7 @@
 // sticky-scroll, GPU and line-width bookkeeping are browser/layout concerns and
 // are not ported here.
 const std = @import("std");
+const ui = @import("ui");
 const Allocator = std.mem.Allocator;
 
 const view_part = @import("../../view/viewPart.zig");
@@ -303,7 +304,7 @@ pub const ViewLines = struct {
     }
 
     /// The view-line object, used by the terminal host to paint its DOM.
-    pub fn getViewLine(self: *const ViewLines, line_number: usize) ?*const ViewLine {
+    pub fn getViewLine(self: *const ViewLines, line_number: usize) ?*ViewLine {
         if (self.visible_lines.getStartLineNumber() == 0 or
             line_number < self.visible_lines.getStartLineNumber() or
             line_number > self.visible_lines.getEndLineNumber())
@@ -311,6 +312,21 @@ pub const ViewLines = struct {
             return null;
         }
         return self.visible_lines.getVisibleLine(line_number);
+    }
+
+    /// Maps a terminal line element back to its view line.
+    pub fn viewLineNumberForNode(self: *const ViewLines, node: *const ui.Node) ?usize {
+        const start = self.visible_lines.getStartLineNumber();
+        const end = self.visible_lines.getEndLineNumber();
+        if (start == 0 or end < start) return null;
+        var line_number = start;
+        while (line_number <= end) : (line_number += 1) {
+            const line = self.visible_lines.getVisibleLine(line_number);
+            if (line.dom_node) |dom| {
+                if (@intFromPtr(dom) == @intFromPtr(node)) return line_number;
+            }
+        }
+        return null;
     }
 
     /// The rendered line record, used by the terminal host to paint the runs.

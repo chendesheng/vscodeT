@@ -35,6 +35,8 @@ pub const ViewLine = struct {
     options: ViewLineOptions,
     is_maybe_invalid: bool = true,
     rendered_view_line: ?RenderedViewLine = null,
+    /// The terminal element created by `paint`, when connected.
+    dom_node: ?*ui.Node = null,
     /// Width in terminal cells of the last rendered line.
     width: usize = 0,
 
@@ -217,9 +219,8 @@ pub const ViewLine = struct {
         return if (self.rendered_view_line) |*rendered| rendered else null;
     }
 
-    pub fn getDomNode(self: *const ViewLine) ?*anyopaque {
-        _ = self;
-        return null;
+    pub fn getDomNode(self: *const ViewLine) ?*ui.Node {
+        return self.dom_node;
     }
 
     /// Terminal `ViewLine` DOM construction: upstream creates a `div.view-line`
@@ -250,12 +251,13 @@ pub const ViewLine = struct {
     pub const PartStyleFn = *const fn (part: view_line_renderer.RenderedPart, flag: u32) ui.Style;
 
     pub fn paint(
-        self: *const ViewLine,
+        self: *ViewLine,
         doc: *ui.Document,
         options: PaintOptions,
         style_fn: PartStyleFn,
     ) !*ui.Node {
         const line = try doc.createElement(.div);
+        self.dom_node = line;
         line.setStyle(.{
             .position = .absolute,
             .left = .{ .cells = @floatFromInt(options.left_cells) },
