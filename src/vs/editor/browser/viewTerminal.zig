@@ -1145,7 +1145,7 @@ fn applyScrollPosition(editor: *Editor, desired: f64) usize {
 
 fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !void {
     if (rows == 0 or !view.status_bar_visible) return;
-    const editor = view.editor;
+    if (view.status_left_len == 0 and view.status_right_len == 0) return;
     const status_row: f64 = @floatFromInt(rows - 1);
 
     const bar = try doc.createElement(.div);
@@ -1181,26 +1181,8 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
         return;
     }
 
-    var status_buf: [1024]u8 = undefined;
-    const position = editor.modelCursorPosition();
-    const message = editor.message();
-    const status = std.fmt.bufPrint(
-        &status_buf,
-        " {s}{s}  Ln {d}, Col {d}  {s}  Ctrl-Q quit{s}{s}",
-        .{
-            editor.path,
-            if (editor.isDirty()) "*" else "",
-            position.lineNumber,
-            position.column,
-            editor.languageId(),
-            if (message.len > 0) "  " else "",
-            message,
-        },
-    ) catch status_buf[0..0];
-
-    const text = try doc.createText(status);
-    _ = try bar.appendChild(text);
-    _ = try root.appendChild(bar);
+    // The fallback `Ctrl-Q` row is gone: the workbench status bar owns status
+    // text. Standalone/preview callers must supply it through `setStatusText`.
 }
 
 /// Terminal paint adapter for one rendered part and its cell flags.
@@ -1399,6 +1381,7 @@ test "View: text, gutter and status" {
     const view = try View.init(allocator, editor);
     defer view.deinit();
 
+    view.setStatusText("test status", "");
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try view.render(&out.writer);
@@ -1415,7 +1398,7 @@ test "View: text, gutter and status" {
 
     const status = try rowText(view, allocator, 4);
     defer allocator.free(status);
-    try std.testing.expect(std.mem.indexOf(u8, status, "Ctrl-Q") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status, "test status") != null);
 
     const cursor = view.cursorCell().?;
     try std.testing.expectEqual(@as(usize, 0), cursor.row);
