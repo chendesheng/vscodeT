@@ -19,17 +19,17 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assets = @import("vscode-syntax");
-const tokenization = @import("../vs/editor/common/languages/supports/tokenization.zig");
+const tokenization = @import("../../common/languages/supports/tokenization.zig");
 const TokenTheme = tokenization.TokenTheme;
 const ITokenThemeRule = tokenization.ITokenThemeRule;
-const stripJsonc = @import("../vs/platform/configuration/common/configurationModels.zig").stripJsonc;
-const TokenizationRegistry = @import("../vs/editor/common/tokenizationRegistry.zig").TokenizationRegistry;
-const Color = @import("../vs/base/common/color.zig").Color;
-const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
-const theme_service_mod = @import("../vs/workbench/services/themes/browser/workbenchThemeService.zig");
-const color_theme_mod = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
-const theme_mod = @import("../vs/platform/theme/common/theme.zig");
-const time_compat = @import("../vs/base/common/timeCompat.zig");
+const stripJsonc = @import("../../../platform/configuration/common/configurationModels.zig").stripJsonc;
+const TokenizationRegistry = @import("../../common/tokenizationRegistry.zig").TokenizationRegistry;
+const Color = @import("../../../base/common/color.zig").Color;
+const color_utils = @import("../../../platform/theme/common/colorUtils.zig");
+const theme_service_mod = @import("../../../workbench/services/themes/browser/workbenchThemeService.zig");
+const color_theme_mod = @import("../../../workbench/services/themes/common/colorThemeData.zig");
+const theme_mod = @import("../../../platform/theme/common/theme.zig");
+const time_compat = @import("../../../base/common/timeCompat.zig");
 
 pub const SyntaxTheme = struct {
     theme: TokenTheme = undefined,
@@ -332,7 +332,7 @@ test "syntax theme: tokenization uses the dark+ rules" {
     try theme.init(std.testing.allocator);
     defer theme.deinit();
 
-    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
     var ctx = try TestModel.init(std.testing.allocator, "const x = 1; // hi", "zig");
     defer ctx.deinit();
     ctx.model.forceTokenization(1);
@@ -365,7 +365,7 @@ test "syntax theme: markdown inline code and bold use dark+ styles" {
     try theme.init(std.testing.allocator);
     defer theme.deinit();
 
-    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
     var inline_code = try TestModel.init(std.testing.allocator, "a `code` span", "markdown");
     defer inline_code.deinit();
     inline_code.model.forceTokenization(1);
@@ -419,8 +419,8 @@ test "syntax theme: markdown inline code and bold use dark+ styles" {
 }
 
 test "syntax theme: editor paints the dark+ colors" {
-    const Editor = @import("editor.zig").Editor;
-    const View = @import("view.zig").View;
+    const Editor = @import("../../../../tui/editor.zig").Editor;
+    const View = @import("../../../../tui/view.zig").View;
 
     var theme: SyntaxTheme = undefined;
     try theme.init(std.testing.allocator);
@@ -451,7 +451,7 @@ test "syntax theme: every supported language highlights inside a fence" {
     try theme.init(std.testing.allocator);
     defer theme.deinit();
 
-    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
     const default_foreground = theme.theme._match("").getForeground();
     const cases = [_]struct { fence: []const u8, body: []const u8 }{
         .{ .fence = "zig", .body = "const x = 1;" },
@@ -498,7 +498,7 @@ test "syntax theme: markdown list continuation keeps inline code" {
     try theme.init(std.testing.allocator);
     defer theme.deinit();
 
-    const TestModel = @import("../vs/editor/test/common/port/testSupport.zig").TestModel;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
     const text =
         "- Multi-file editing uses the ported workbench editor-group model\n" ++
         "  (`src/vs/workbench/common/editor/editorGroupModel.zig`) with a terminal tab\n" ++
@@ -543,7 +543,7 @@ test "syntax theme loads through the workbench theme service" {
 }
 
 test "declarative theme-defaults loads a token theme" {
-    const registry_mod = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
+    const registry_mod = @import("../../../workbench/services/extensions/common/extensionsRegistry.zig");
     const allocator = std.testing.allocator;
     var registry = registry_mod.scan(allocator, &.{"vscode/extensions/theme-defaults"}) catch return error.SkipZigTest;
     defer registry.deinit();
