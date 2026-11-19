@@ -106,7 +106,7 @@ pub const Extensions = struct {
             .workspace_name = "workspace",
             .data_path = data,
             .app_root = ".",
-            .parent_pid = @intCast(std.os.linux.getpid()),
+            .parent_pid = @intCast(manager.currentProcessId()),
         });
         errdefer self.host.deinit();
 
@@ -155,7 +155,7 @@ pub const Extensions = struct {
             .workspace_name = "workspace",
             .data_path = self.data_path,
             .app_root = ".",
-            .parent_pid = @intCast(std.os.linux.getpid()),
+            .parent_pid = @intCast(manager.currentProcessId()),
         });
         try self.host.sendInitData(init_data);
         try self.host.expectControl(1, 10_000);

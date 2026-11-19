@@ -253,7 +253,7 @@ test "VSCodeVim activates in the pinned extension host" {
         .workspace_name = "workspace",
         .data_path = data_path,
         .app_root = repo_root,
-        .parent_pid = @intCast(std.os.linux.getpid()),
+        .parent_pid = @intCast(manager.currentProcessId()),
     });
     defer host.deinit();
 
@@ -275,7 +275,7 @@ test "VSCodeVim activates in the pinned extension host" {
         .workspace_name = "workspace",
         .data_path = data_path,
         .app_root = repo_root,
-        .parent_pid = @intCast(std.os.linux.getpid()),
+        .parent_pid = @intCast(manager.currentProcessId()),
     });
     try host.sendInitData(init_data);
     try host.expectControl(1, 10_000);

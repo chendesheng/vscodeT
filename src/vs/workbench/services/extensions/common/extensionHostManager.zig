@@ -9,12 +9,40 @@
 // The reader thread only copies complete frames into a queue. `pump()` runs on
 // the TUI thread and is the only place that dispatches RPC messages.
 const std = @import("std");
+const builtin = @import("builtin");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 const Allocator = std.mem.Allocator;
 const rpcProtocol = @import("rpcProtocol.zig");
 const proxyIdentifier = @import("proxyIdentifier.zig");
 
 pub const max_frame_size: usize = 64 * 1024 * 1024;
+
+/// The manager creates its own `Io` for the host transport, and that `Io` must
+/// carry the process environment: `std.process.spawn` resolves `node` against
+/// the `Io`'s environment, not the calling process's, so an empty one makes
+/// every bare executable name fail with `FileNotFound`.
+fn processEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        else => if (builtin.link_libc)
+            .{ .block = .{ .slice = @ptrCast(@as([:null]?[*:0]u8, std.mem.span(std.c.environ))) } }
+        else
+            .empty,
+    };
+}
+
+/// `std.os.linux.getpid` type-checks on every target but issues a Linux
+/// syscall, which traps with SIGSYS on other kernels. The extension host is
+/// Unix-only today, but the process id is also used by the socket name on
+/// every platform the manager builds for.
+pub fn currentProcessId() u32 {
+    return switch (builtin.os.tag) {
+        .linux => std.os.linux.getpid(),
+        .plan9 => std.os.plan9.getpid(),
+        .windows => std.os.windows.GetCurrentProcessId(),
+        else => @intCast(std.c.getpid()),
+    };
+}
 
 pub const ExtensionHostError = error{
     HostExited,
@@ -111,11 +139,11 @@ pub const HostManager = struct {
             .io_state = undefined,
             .io = undefined,
         };
-        self.io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
+        self.io_state = std.Io.Threaded.init(std.heap.page_allocator, .{ .environ = processEnviron() });
         self.io = self.io_state.io();
 
         self.socket_path = try std.fmt.allocPrint(allocator, "/tmp/zig-vscode-ext-{d}-{d}.sock", .{
-            std.os.linux.getpid(),
+            currentProcessId(),
             time_compat.milliTimestamp(),
         });
         errdefer allocator.free(self.socket_path);
@@ -202,7 +230,12 @@ pub const HostManager = struct {
         var chunk: [16 * 1024]u8 = undefined;
         while (true) {
             var iovec = [_][]u8{&chunk};
-            const count = self.stream.read(self.io, &iovec) catch break;
+            // `Stream.read` destructures the `net_read` result as a tuple in
+            // this Zig std snapshot, which no longer type-checks; the
+            // control-data variant returns the `ReadResult` struct directly.
+            var control: [0]u8 = undefined;
+            const result = self.stream.readWithControl(self.io, &iovec, &control) catch break;
+            const count = result.data_len;
             if (count == 0) break;
             buffer.appendSlice(chunk[0..count]) catch break;
             while (buffer.items.len >= 4) {
