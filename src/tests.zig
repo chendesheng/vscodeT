@@ -549,6 +549,7 @@ comptime {
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
     _ = @import("./vs/workbench/services/extensions/common/extensionsRegistry.zig");
+    _ = @import("./vs/workbench/services/language/common/jsonLanguageClient.zig");
 }
 comptime {
     _ = @import("./vs/platform/files/test/common/files.test.zig");

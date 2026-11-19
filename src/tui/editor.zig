@@ -64,9 +64,12 @@ const BracketMatchingController = bracket_matching.BracketMatchingController;
 const folding = @import("../vs/editor/contrib/folding/browser/folding.zig");
 const FoldingRules = @import("../vs/editor/common/languages/languageConfiguration.zig").FoldingRules;
 const language_configuration_service = @import("./languageConfiguration.zig");
+const completion = @import("../vs/editor/common/languages/completion.zig");
+const CancellationToken = @import("../vs/base/common/cancellation.zig").CancellationToken;
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
 const language_config_point = @import("../vs/workbench/services/language/common/languageConfigurationExtensionPoint.zig");
 const text_mate_tokenizer = @import("../vs/editor/common/model/tokens/textMateTokenizer.zig");
+const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
 const languagesAssociations = @import("../vs/editor/common/services/languagesAssociations.zig");
 const input = @import("ui").input;
@@ -212,6 +215,13 @@ pub const Editor = struct {
     find_start_fn: ?*const fn (context: *anyopaque, replace: bool) anyerror!void = null,
     declarative: ?*const extensions_registry.Registry = null,
     declarative_arena: std.heap.ArenaAllocator,
+    json_client: ?*json_language.Client = null,
+    json_uri: ?[]u8 = null,
+    json_version: u32 = 0,
+    json_attached: bool = false,
+    json_error_count: usize = 0,
+    json_warning_count: usize = 0,
+    json_message: ?[]u8 = null,
 
     pub fn create(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Editor {
         return createInternal(allocator, io, path, width, height, null, null);
@@ -226,6 +236,21 @@ pub const Editor = struct {
         declarative: ?*const extensions_registry.Registry,
     ) !*Editor {
         return createInternal(allocator, io, path, width, height, null, declarative);
+    }
+
+    pub fn createWithExtensions(
+        allocator: Allocator,
+        io: Io,
+        path: []const u8,
+        width: usize,
+        height: usize,
+        declarative: ?*const extensions_registry.Registry,
+        json_client: ?*json_language.Client,
+    ) !*Editor {
+        const editor = try createInternal(allocator, io, path, width, height, null, declarative);
+        editor.json_client = json_client;
+        editor.attachJsonLanguage() catch {};
+        return editor;
     }
 
     pub fn createFromText(allocator: Allocator, io: Io, text: []const u8, path: []const u8, width: usize, height: usize) !*Editor {
@@ -403,6 +428,7 @@ pub const Editor = struct {
             .find_start_fn = null,
             .declarative = declarative,
             .declarative_arena = declarative_arena,
+            .json_client = null,
         };
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
         if (editor.character_pair) |*pair_support| {
@@ -494,6 +520,141 @@ pub const Editor = struct {
         return true;
     }
 
+    /// Attaches a shared JSON language server to this editor and opens its
+    /// document. Only JSON/JSONC editors are attached.
+    pub fn setJsonLanguageClient(self: *Editor, client: ?*json_language.Client) void {
+        self.json_client = client;
+        self.attachJsonLanguage() catch |err| self.setMessage("JSON attach failed: {s}", .{@errorName(err)});
+    }
+
+    pub fn pollJsonLanguage(self: *Editor) bool {
+        if (self.json_client == null) return false;
+        if (!self.json_attached) {
+            self.attachJsonLanguage() catch |err| {
+                self.setMessage("JSON attach failed: {s}", .{@errorName(err)});
+                return true;
+            };
+            return true;
+        }
+        const version = self.model.getVersionId();
+        if (version == self.json_version) return false;
+        self.syncJsonDocument() catch return false;
+        return true;
+    }
+
+    fn attachJsonLanguage(self: *Editor) !void {
+        const client = self.json_client orelse return;
+        const language_id = self.languageId();
+        if (!std.mem.eql(u8, language_id, "json") and !std.mem.eql(u8, language_id, "jsonc")) return;
+        if (self.json_uri != null) return;
+        const absolute = if (std.fs.path.isAbsolute(self.path))
+            try self.allocator.dupe(u8, self.path)
+        else
+            try std.fs.path.resolve(self.allocator, &.{self.path});
+        defer self.allocator.free(absolute);
+        const uri = try fileUri(self.allocator, absolute);
+        errdefer self.allocator.free(uri);
+        const text = try self.model.getValue(.LF, false);
+        defer text.deinit();
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        try client.didOpen(arena.allocator(), uri, language_id, text.items);
+        self.json_uri = uri;
+        self.json_attached = true;
+        self.json_version = self.model.getVersionId();
+        try self.pullJsonDiagnostics();
+    }
+
+    fn syncJsonDocument(self: *Editor) !void {
+        const client = self.json_client orelse return;
+        const uri = self.json_uri orelse return;
+        const text = try self.model.getValue(.LF, false);
+        defer text.deinit();
+        const version = self.model.getVersionId();
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        try client.didChange(arena.allocator(), uri, version, text.items);
+        self.json_version = version;
+        try self.pullJsonDiagnostics();
+    }
+
+    fn pullJsonDiagnostics(self: *Editor) !void {
+        const client = self.json_client orelse return;
+        const uri = self.json_uri orelse return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const diagnostics = try client.pullDiagnostics(arena.allocator(), uri);
+        self.json_error_count = 0;
+        self.json_warning_count = 0;
+        var first_message: ?[]const u8 = null;
+        for (diagnostics) |diagnostic| {
+            if (diagnostic.severity <= 2) {
+                self.json_error_count += 1;
+                if (first_message == null) first_message = diagnostic.message;
+            } else {
+                self.json_warning_count += 1;
+                if (first_message == null) first_message = diagnostic.message;
+            }
+        }
+        if (self.json_message) |old_message| {
+            self.allocator.free(old_message);
+            self.json_message = null;
+        }
+        if (first_message) |diagnostic_message| {
+            self.json_message = try self.allocator.dupe(u8, diagnostic_message);
+            self.setMessage("JSON {d} error(s), {d} warning(s): {s}", .{
+                self.json_error_count,
+                self.json_warning_count,
+                self.json_message.?,
+            });
+        } else if (std.mem.startsWith(u8, self.message(), "JSON ")) {
+            self.clearMessage();
+        }
+    }
+
+    pub fn jsonProvideCompletion(
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        position: Position,
+        trigger: completion.CompletionContext,
+        token: CancellationToken,
+    ) anyerror!completion.CompletionList {
+        _ = model;
+        _ = trigger;
+        _ = token;
+        const self: *Editor = @ptrCast(@alignCast(context));
+        return self.jsonCompletion(allocator, position);
+    }
+
+    pub fn jsonCompletion(
+        self: *Editor,
+        allocator: Allocator,
+        position: Position,
+    ) !completion.CompletionList {
+        const client = self.json_client orelse return .{};
+        const uri = self.json_uri orelse return .{};
+        if (self.model.getVersionId() != self.json_version) {
+            self.syncJsonDocument() catch {};
+        }
+        const items = try client.completion(
+            allocator,
+            uri,
+            if (position.lineNumber > 0) @intCast(position.lineNumber - 1) else 0,
+            if (position.column > 0) @intCast(position.column - 1) else 0,
+        );
+        if (items.len == 0) return .{};
+        const result = try allocator.alloc(completion.CompletionItem, items.len);
+        for (items, 0..) |item, index| {
+            result[index] = .{
+                .label = item.label,
+                .insert_text = item.insert_text orelse item.label,
+                .kind = .Text,
+            };
+        }
+        return .{ .items = result };
+    }
+
     /// Applies declarative language contributions to an editor created before
     /// the extension scan completed.
     pub fn applyDeclarativeExtensions(self: *Editor, registry: *const extensions_registry.Registry) !void {
@@ -532,6 +693,8 @@ pub const Editor = struct {
         self.language_config_service.deinit();
         self.allocator.destroy(self.language_config_service);
         self.declarative_arena.deinit();
+        if (self.json_uri) |uri| self.allocator.free(uri);
+        if (self.json_message) |json_message| self.allocator.free(json_message);
         if (self.multicursor_session) |*session| session.deinit();
         self.word_separators.deinit();
         self.view_lines.deinit();
@@ -2489,6 +2652,22 @@ fn createModel(
     return try TextModel.init(allocator, &fixed, language_id, options, null, undo_redo, language_service);
 }
 
+fn fileUri(allocator: Allocator, absolute_path: []const u8) ![]u8 {
+    var output = std.array_list.Managed(u8).init(allocator);
+    errdefer output.deinit();
+    try output.appendSlice("file://");
+    for (absolute_path) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '/' or byte == '-' or byte == '_' or byte == '.' or byte == '~') {
+            try output.append(byte);
+        } else {
+            var escaped: [3]u8 = undefined;
+            const encoded = try std.fmt.bufPrint(&escaped, "%{X:0>2}", .{byte});
+            try output.appendSlice(encoded);
+        }
+    }
+    return output.toOwnedSlice();
+}
+
 fn registerDeclarativeGrammar(io: Io, allocator: Allocator, root: []const u8, grammar: extensions_registry.Grammar) void {
     const path = std.fs.path.join(allocator, &.{ root, grammar.path }) catch return;
     defer allocator.free(path);
@@ -3804,4 +3983,26 @@ test "declarative markdown-basics configuration reaches the editor" {
     try std.testing.expect(config.folding != null);
     try std.testing.expect(config.folding.?.offSide orelse false);
     try std.testing.expect(config.brackets != null and config.brackets.?.len >= 3);
+}
+
+test "Editor: JSON language features populate diagnostics and completion" {
+    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const client = try json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs");
+    defer client.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "broken.json", .data = "{\n  \"a\": 1\n" });
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const length = try tmp.dir.realPathFile(time_compat.io, "broken.json", &buffer);
+
+    const editor = try Editor.createWithExtensions(allocator, time_compat.io, buffer[0..length], 40, 8, null, client);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expectEqualStrings("json", editor.languageId());
+    try std.testing.expect(editor.json_error_count > 0);
+    try std.testing.expect(std.mem.startsWith(u8, editor.message(), "JSON "));
 }

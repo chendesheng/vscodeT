@@ -162,7 +162,8 @@ pub const Controllers = struct {
     hover: *ContentHoverController,
     word_highlighter: *WordHighlighterContribution,
     word_provider: WordBasedCompletionProvider,
-    completion_providers: [1]completion.CompletionItemProvider,
+    completion_providers: [2]completion.CompletionItemProvider,
+    completion_count: usize = 1,
     suggest: *SuggestController,
 
     pub fn init(allocator: Allocator, editor: *Editor, view: *View) !*Controllers {
@@ -215,9 +216,18 @@ pub const Controllers = struct {
         errdefer self.word_highlighter.deinit();
 
         self.word_provider = WordBasedCompletionProvider.init();
-        self.completion_providers = .{self.word_provider.interface()};
+        self.completion_providers[0] = self.word_provider.interface();
+        self.completion_count = 1;
+        if (editor.json_client != null) {
+            self.completion_providers[1] = .{
+                .context = editor,
+                .provide_completion_items = Editor.jsonProvideCompletion,
+                .trigger_characters = &.{ "\"", ":" },
+            };
+            self.completion_count = 2;
+        }
 
-        self.suggest = try SuggestController.init(allocator, editor, &self.completion_providers, .{
+        self.suggest = try SuggestController.init(allocator, editor, self.completion_providers[0..self.completion_count], .{
             .context = view,
             .text_height = viewTextHeight,
             .visible_row_of = viewVisibleRowOf,

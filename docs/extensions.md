@@ -1844,6 +1844,23 @@ Constraints:
   `../vscode/extensions/package.json` is the extensions workspace manifest;
   scan the child directories only.
 
+### 15.6 JSON/JSONC language features
+
+`json-language-features` is a code extension, not a declarative one, so it is
+not activated through the extension host. Instead the pinned server is bundled
+separately with `host/build-json-server.js` and driven by
+`src/vs/workbench/services/language/common/jsonLanguageClient.zig`, a small
+synchronous LSP client. The client initializes with pull-diagnostics
+capabilities, opens JSON/JSONC documents, sends full-text changes, pulls
+syntax diagnostics, and forwards completion requests.
+
+The TUI polls only the active editor, publishes a `JSON Problems` status-bar
+entry, and registers the server completion provider on JSON/JSONC tabs. The
+server bundle is optional: without `host/dist/jsonServer.mjs` the editor keeps
+the bundled grammar and no JSON language features are attached. Hover,
+formatting, code actions, schema settings and workspace diagnostics remain
+unwired.
+
 ## 16. Deferred / explicit limitations
 
 - Electron transport, `PersistentProtocol`, socket reconnection.

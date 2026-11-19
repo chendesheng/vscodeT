@@ -118,6 +118,7 @@ const group_mod = @import("../vs/workbench/common/editor/editorGroupModel.zig");
 const editor_groups = @import("../vs/workbench/services/editor/common/editorGroupsService.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
+const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
 const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
@@ -192,6 +193,8 @@ pub const Workbench = struct {
     activity_service: ActivityService,
     editor_status: ?*EditorStatus = null,
     status_hint_accessor: ?EntryAccessor = null,
+    json_status_accessor: ?EntryAccessor = null,
+    json_status_buf: [96]u8 = undefined,
     search_badge_buf: [32]u8 = undefined,
     search_badge_count: usize = 0,
     workspace: *WorkspaceContextService,
@@ -225,6 +228,7 @@ pub const Workbench = struct {
     last_tab_click: ?TabClick = null,
     expanded_pane: ?*GroupPane = null,
     declarative: ?*const extensions_registry.Registry = null,
+    json_client: ?*json_language.Client = null,
     focus: Focus = .editor,
     is_pasting: bool = false,
     quit_armed: bool = false,
@@ -277,6 +281,7 @@ pub const Workbench = struct {
         self.last_tab_click = null;
         self.expanded_pane = null;
         self.declarative = null;
+        self.json_client = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -355,6 +360,7 @@ pub const Workbench = struct {
         self.last_tab_click = null;
         self.expanded_pane = null;
         self.declarative = null;
+        self.json_client = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -449,6 +455,7 @@ pub const Workbench = struct {
         self.last_tab_click = null;
         self.expanded_pane = null;
         self.declarative = null;
+        self.json_client = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -545,6 +552,10 @@ pub const Workbench = struct {
             .name = "Quit hint",
             .text = "Ctrl-Q quit",
         }, "workbench.hint", .right, .{ .number = 0 });
+        self.json_status_accessor = try self.statusbar.addEntry(.{
+            .name = "JSON Problems",
+            .text = "",
+        }, "workbench.jsonProblems", .left, .{ .number = 1 });
     }
 
     fn deinitShellModels(self: *Workbench) void {
@@ -1308,6 +1319,22 @@ pub const Workbench = struct {
         }
     }
 
+    pub fn setJsonLanguageClient(self: *Workbench, client: ?*json_language.Client) void {
+        self.json_client = client;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                tab.editor.setJsonLanguageClient(client);
+            }
+        }
+    }
+
+    /// Polls JSON diagnostics for the active editor. Returns true when the
+    /// editor status changed and the frame should be repainted.
+    pub fn pollJsonLanguage(self: *Workbench) bool {
+        const tab = self.activeTab() orelse return false;
+        return tab.editor.pollJsonLanguage();
+    }
+
     pub fn openPath(self: *Workbench, path: []const u8) !void {
         return self.openPathWithOptions(path, .{});
     }
@@ -1317,7 +1344,7 @@ pub const Workbench = struct {
     }
 
     pub fn openPathWithOptions(self: *Workbench, path: []const u8, options: OpenOptions) !void {
-        const editor = try Editor.createWithDeclarative(self.allocator, self.io, path, self.cols, self.editorContentHeight(), self.declarative);
+        const editor = try Editor.createWithExtensions(self.allocator, self.io, path, self.cols, self.editorContentHeight(), self.declarative, self.json_client);
         errdefer {
             editor.deinit();
             self.allocator.destroy(editor);
@@ -2354,6 +2381,21 @@ pub const Workbench = struct {
         const target = if (self.activeTab()) |tab| tab.editor.statusTarget() else null;
         if (self.editor_status) |status| {
             status.update(target) catch {};
+        }
+        if (self.json_status_accessor) |accessor| {
+            const tab = self.activeTab();
+            const errors = if (tab) |active| active.editor.json_error_count else 0;
+            const warnings = if (tab) |active| active.editor.json_warning_count else 0;
+            if (errors > 0 or warnings > 0) {
+                const text = std.fmt.bufPrint(&self.json_status_buf, "{d} error(s), {d} warning(s)", .{ errors, warnings }) catch "JSON problems";
+                accessor.update(.{
+                    .name = "JSON Problems",
+                    .text = text,
+                    .tooltip = if (tab) |active| active.editor.json_message else null,
+                });
+            } else {
+                accessor.update(.{ .name = "JSON Problems", .text = "" });
+            }
         }
     }
 

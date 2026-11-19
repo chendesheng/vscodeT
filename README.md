@@ -64,9 +64,14 @@ a full `../vscode/out` build is not required.
 
 ```sh
 cd host && npm install && npm run build   # host/dist/extensionHost.mjs
+npm run build:json                        # optional: host/dist/jsonServer.mjs
 zig build run -- [--extension-path <extension-dir>] [<file>...]
 zig build test-e2e                        # boots the host and edits through VSCodeVim
 ```
+
+The JSON server bundle reuses the runtime dependencies of the pinned
+`../vscode/extensions/json-language-features/server`; install them there first
+with `npm install` if the bundle step cannot resolve `vscode-languageserver`.
 
 `--extension-path` points at an unpacked extension directory (for VSCodeVim,
 the directory containing its `package.json` and `out/extension.js`). Without
@@ -84,6 +89,13 @@ and `../vscode/extensions/markdown-basics`: their themes, languages, grammars
 and language configurations are loaded at startup. The markdown language
 therefore gets its upstream `<!-- -->` comment rule, bracket pairs, auto-closing
 pairs and off-side folding even when the built-in grammar was already bundled.
+
+JSON and JSONC editors use the bundled VS Code JSON language server when
+`host/dist/jsonServer.mjs` is present. Syntax diagnostics are pulled after
+edits and shown in the status bar as `JSON Problems`; `Ctrl-Space` completion
+comes from the same server. Without the server bundle the editor keeps the
+bundled grammar and reports no diagnostics. Hover/formatting/schema
+configuration are not wired yet.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally
 `~/.local/state/vscode-textbuffer/extensions/extension-host.log`) so it cannot

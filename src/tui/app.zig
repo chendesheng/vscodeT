@@ -11,6 +11,7 @@ const Preview = @import("./preview.zig").Preview;
 const Workbench = @import("./workbench.zig").Workbench;
 const extensions = @import("./extensions.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
+const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
 const session = @import("./session.zig");
 const SyntaxTheme = @import("./syntaxTheme.zig").SyntaxTheme;
 const FileEditorSerializer = @import("./editorInput.zig").FileEditorSerializer;
@@ -174,6 +175,15 @@ pub fn main(init: std.process.Init) !void {
     }) catch null;
     defer if (declarative) |*registry| registry.deinit();
 
+    var json_client: ?*json_language.Client = null;
+    if (std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{})) |_| {
+        json_client = json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs") catch |err| blk: {
+            infoLog(log_service, "JSON language server unavailable: {s}", .{@errorName(err)});
+            break :blk null;
+        };
+    } else |_| {}
+    defer if (json_client) |client| client.deinit();
+
     var syntax_theme: SyntaxTheme = undefined;
     if (declarative) |*registry| {
         if (registry.theme("Dark+")) |theme| {
@@ -245,7 +255,7 @@ pub fn main(init: std.process.Init) !void {
     var size = try tui.getTerminalSize();
 
     if (args.preview) {
-        var editor = try Editor.createWithDeclarative(allocator, io, paths.items[0], size.width, size.height, if (declarative) |*registry| registry else null);
+        var editor = try Editor.createWithExtensions(allocator, io, paths.items[0], size.width, size.height, if (declarative) |*registry| registry else null, json_client);
         defer {
             editor.deinit();
             allocator.destroy(editor);
@@ -347,6 +357,7 @@ pub fn main(init: std.process.Init) !void {
     defer workbench.deinit();
     workbench.setCellBorders(border_probe.supported);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
+    workbench.setJsonLanguageClient(json_client);
 
     const user_settings_path = try defaultUserSettingsPath(allocator, init.environ_map);
     defer if (user_settings_path) |path| allocator.free(path);
@@ -416,6 +427,7 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.pollBreadcrumbs()) needs_render = true;
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
         if (workbench.pollSearch(now_ms)) needs_render = true;
+        if (workbench.pollJsonLanguage()) needs_render = true;
         if (extension_host) |ext| {
             if (ext.pump()) needs_render = true;
         }
