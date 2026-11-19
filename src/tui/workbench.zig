@@ -123,6 +123,7 @@ const editor_groups = @import("../vs/workbench/services/editor/common/editorGrou
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
 const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
+const configuration_extension_point = @import("../vs/workbench/api/common/configurationExtensionPoint.zig");
 const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
@@ -1840,6 +1841,30 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| tab.editor.applyDeclarativeExtensions(registry) catch {};
         }
+    }
+
+    /// Ensures the workspace configuration service exists. Extension
+    /// contributions are registered before the host starts, so this can run
+    /// before the first settings path/workspace folder is installed.
+    pub fn ensureConfigurationReady(self: *Workbench) void {
+        self.ensureConfiguration() catch {};
+    }
+
+    /// Registers `contributes.configuration` defaults from one extension
+    /// manifest and reloads the effective configuration.
+    pub fn registerExtensionConfiguration(self: *Workbench, manifest: std.json.Value, extension_id: []const u8) void {
+        self.ensureConfigurationReady();
+        const config = self.configuration orelse return;
+        configuration_extension_point.registerManifest(config.registry, manifest, extension_id) catch return;
+        config.reload() catch {};
+    }
+
+    /// Effective configuration data for the extension host's
+    /// `$initializeConfiguration` payload.
+    pub fn configurationData(self: *Workbench, arena: Allocator) !std.json.Value {
+        self.ensureConfigurationReady();
+        const config = self.configuration orelse return .null;
+        return config.getConfigurationData(arena);
     }
 
     /// Raw `json.schemas` setting used by the JSON language server.

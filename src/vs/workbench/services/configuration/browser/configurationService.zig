@@ -126,6 +126,31 @@ pub const ConfigurationService = struct {
         try self.load();
     }
 
+    /// Serializes the effective configuration scopes for the extension host's
+    /// `$initializeConfiguration`/`$acceptConfigurationChanged` payload,
+    /// mirroring `IConfigurationData` (`getConfigurationData` upstream).
+    pub fn getConfigurationData(self: *ConfigurationService, arena: Allocator) !Value {
+        var root: std.json.ObjectMap = .empty;
+        try root.put(arena, "defaults", try modelJson(arena, &self.defaults));
+        try root.put(arena, "policy", try emptyModelJson(arena));
+        try root.put(arena, "application", try emptyModelJson(arena));
+        try root.put(arena, "userLocal", try modelJson(arena, &self.user));
+        try root.put(arena, "userRemote", try emptyModelJson(arena));
+        try root.put(arena, "workspace", try modelJson(arena, &self.workspace_model));
+
+        var folders = std.json.Array.init(arena);
+        for (self.workspace.getWorkspace().folders.items) |folder| {
+            const model = self.folder_consolidated.get(folder.resource) orelse continue;
+            var pair = std.json.Array.init(arena);
+            try pair.append(try fileUriJson(arena, folder.resource));
+            try pair.append(try modelJson(arena, model));
+            try folders.append(.{ .array = pair });
+        }
+        try root.put(arena, "folders", .{ .array = folders });
+        try root.put(arena, "configurationScopes", .{ .array = std.json.Array.init(arena) });
+        return .{ .object = root };
+    }
+
     /// Updates workspace trust and reloads the effective configuration.
     pub fn updateWorkspaceTrust(self: *ConfigurationService, trusted: bool) !void {
         if (self.trusted == trusted) return;
@@ -422,6 +447,49 @@ pub const ConfigurationService = struct {
         }) catch {};
     }
 };
+
+fn emptyModelJson(arena: Allocator) !Value {
+    var object: std.json.ObjectMap = .empty;
+    try object.put(arena, "contents", .{ .object = .empty });
+    try object.put(arena, "keys", .{ .array = std.json.Array.init(arena) });
+    try object.put(arena, "overrides", .{ .array = std.json.Array.init(arena) });
+    return .{ .object = object };
+}
+
+fn modelJson(arena: Allocator, model: *const ConfigurationModel) !Value {
+    var object: std.json.ObjectMap = .empty;
+    try object.put(arena, "contents", try configuration.cloneValue(arena, model.contents));
+
+    var keys = std.json.Array.init(arena);
+    for (model.getKeys()) |key| try keys.append(.{ .string = try arena.dupe(u8, key) });
+    try object.put(arena, "keys", .{ .array = keys });
+
+    var overrides = std.json.Array.init(arena);
+    for (model.overrides) |override| {
+        var entry: std.json.ObjectMap = .empty;
+        var identifiers = std.json.Array.init(arena);
+        for (override.identifiers) |identifier| try identifiers.append(.{ .string = try arena.dupe(u8, identifier) });
+        try entry.put(arena, "identifiers", .{ .array = identifiers });
+        var override_keys = std.json.Array.init(arena);
+        for (override.keys) |key| try override_keys.append(.{ .string = try arena.dupe(u8, key) });
+        try entry.put(arena, "keys", .{ .array = override_keys });
+        try entry.put(arena, "contents", try configuration.cloneValue(arena, override.contents));
+        try overrides.append(.{ .object = entry });
+    }
+    try object.put(arena, "overrides", .{ .array = overrides });
+    return .{ .object = object };
+}
+
+fn fileUriJson(arena: Allocator, path: []const u8) !Value {
+    var object: std.json.ObjectMap = .empty;
+    try object.put(arena, "$mid", .{ .integer = 1 });
+    try object.put(arena, "scheme", .{ .string = "file" });
+    try object.put(arena, "authority", .{ .string = "" });
+    try object.put(arena, "path", .{ .string = try arena.dupe(u8, path) });
+    try object.put(arena, "query", .{ .string = "" });
+    try object.put(arena, "fragment", .{ .string = "" });
+    return .{ .object = object };
+}
 
 fn appendUnique(list: *std.array_list.Managed([]const u8), key: []const u8) !void {
     for (list.items) |existing| {

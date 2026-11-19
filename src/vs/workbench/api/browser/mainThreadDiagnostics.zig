@@ -13,6 +13,8 @@ const proxyIdentifier = @import("../../services/extensions/common/proxyIdentifie
 const cancellation = @import("../../../base/common/cancellation.zig");
 const CancellationToken = cancellation.CancellationToken;
 const std_uri = @import("../../../base/common/stdUri.zig");
+const TextModel = @import("../../../editor/common/model/textModel.zig").TextModel;
+const position_converter = @import("../common/positionConverter.zig");
 const markers = @import("../../../platform/markers/common/markers.zig");
 const marker_service_mod = @import("../../../platform/markers/common/markerService.zig");
 const MarkerService = marker_service_mod.MarkerService;
@@ -21,6 +23,13 @@ const MarkerChangeEvent = marker_service_mod.MarkerChangeEvent;
 pub const HostProxy = struct {
     context: *anyopaque,
     notify: *const fn (context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void,
+};
+
+/// Maps a marker resource back to its open text model so the host's UTF-16
+/// columns can be converted to the editor's UTF-8 columns.
+pub const DocumentProvider = struct {
+    context: *anyopaque,
+    model_for: *const fn (context: *anyopaque, resource: markers.Resource) ?*TextModel,
 };
 
 const Pending = struct {
@@ -33,10 +42,11 @@ pub const MainThreadDiagnostics = struct {
     proxy: HostProxy,
     active_owners: std.StringHashMap(void),
     pending: std.array_list.Managed(Pending),
+    document_provider: ?DocumentProvider = null,
     listener: ?@import("../../../base/common/event.zig").Emitter(MarkerChangeEvent).ListenerId = null,
     ext_host_id: []const u8 = "extHost1",
 
-    pub fn init(allocator: Allocator, marker_service: *MarkerService, proxy: HostProxy) !*MainThreadDiagnostics {
+    pub fn init(allocator: Allocator, marker_service: *MarkerService, proxy: HostProxy, document_provider: ?DocumentProvider) !*MainThreadDiagnostics {
         const self = try allocator.create(MainThreadDiagnostics);
         self.* = .{
             .allocator = allocator,
@@ -44,6 +54,7 @@ pub const MainThreadDiagnostics = struct {
             .proxy = proxy,
             .active_owners = std.StringHashMap(void).init(allocator),
             .pending = std.array_list.Managed(Pending).init(allocator),
+            .document_provider = document_provider,
         };
         self.listener = try marker_service.on_marker_changed.listen(self, onMarkerChanged);
         return self;
@@ -63,7 +74,7 @@ pub const MainThreadDiagnostics = struct {
         if (std.mem.eql(u8, method, "$clear")) {
             if (args.len > 0 and args[0] == .json and args[0].json == .string) {
                 try self.marker_service.changeAll(args[0].json.string, &.{});
-                _ = self.active_owners.remove(args[0].json.string);
+                if (self.active_owners.fetchRemove(args[0].json.string)) |entry| self.allocator.free(entry.key);
             }
             return .empty;
         }
@@ -97,14 +108,17 @@ pub const MainThreadDiagnostics = struct {
             if (marker_values == .null or marker_values != .array) {
                 try self.marker_service.changeOne(owner, resource, &.{}, .{ .is_truncated = is_truncated });
             } else {
+                const model = if (self.document_provider) |provider| provider.model_for(provider.context, resource) else null;
                 var data = std.array_list.Managed(markers.MarkerData).init(arena);
                 for (marker_values.array.items) |value| {
                     if (value != .object) continue;
-                    try data.append(try markerDataFromJson(value.object, arena, self.ext_host_id));
+                    try data.append(try markerDataFromJson(value.object, arena, self.ext_host_id, model));
                 }
                 try self.marker_service.changeOne(owner, resource, data.items, .{ .is_truncated = is_truncated });
             }
-            try self.active_owners.put(owner, {});
+            if (self.active_owners.getKey(owner) == null) {
+                try self.active_owners.put(try self.allocator.dupe(u8, owner), {});
+            }
         }
         return .empty;
     }
@@ -191,6 +205,8 @@ pub const MainThreadDiagnostics = struct {
                 self.marker_service.changeOne(owner, resource, data.items, null) catch {};
             }
         }
+        var key_iterator = self.active_owners.keyIterator();
+        while (key_iterator.next()) |key_ptr| self.allocator.free(key_ptr.*);
         self.active_owners.clearRetainingCapacity();
     }
 
@@ -218,14 +234,18 @@ fn markerDataFromMarker(marker: *const markers.Marker) markers.MarkerData {
     };
 }
 
-fn markerDataFromJson(object: std.json.ObjectMap, arena: Allocator, ext_host_id: []const u8) !markers.MarkerData {
+fn markerDataFromJson(object: std.json.ObjectMap, arena: Allocator, ext_host_id: []const u8, model: ?*TextModel) !markers.MarkerData {
+    const start_line: u32 = if (intValue(object.get("startLineNumber"))) |value| @intCast(value) else 1;
+    const start_column: u32 = if (intValue(object.get("startColumn"))) |value| @intCast(value) else 1;
+    const end_line: u32 = if (intValue(object.get("endLineNumber"))) |value| @intCast(value) else 1;
+    const end_column: u32 = if (intValue(object.get("endColumn"))) |value| @intCast(value) else 1;
     var result: markers.MarkerData = .{
         .message = try stringField(arena, object, "message"),
         .severity = if (intValue(object.get("severity"))) |value| @intCast(value) else markers.MarkerSeverity.Error,
-        .start_line_number = if (intValue(object.get("startLineNumber"))) |value| @intCast(value) else 1,
-        .start_column = if (intValue(object.get("startColumn"))) |value| @intCast(value) else 1,
-        .end_line_number = if (intValue(object.get("endLineNumber"))) |value| @intCast(value) else 1,
-        .end_column = if (intValue(object.get("endColumn"))) |value| @intCast(value) else 1,
+        .start_line_number = start_line,
+        .start_column = if (model) |value| columnForModel(value, start_line, start_column) else start_column,
+        .end_line_number = end_line,
+        .end_column = if (model) |value| columnForModel(value, end_line, end_column) else end_column,
         .model_version_id = if (intValue(object.get("modelVersionId"))) |value| @intCast(value) else null,
         .origin = try optionalStringField(arena, object, "origin"),
         .source = try optionalStringField(arena, object, "source"),
@@ -258,6 +278,13 @@ fn markerDataFromJson(object: std.json.ObjectMap, arena: Allocator, ext_host_id:
         }
     }
     return result;
+}
+
+fn columnForModel(model: *TextModel, line_number: u32, offset: u32) u32 {
+    if (line_number < 1 or line_number > model.getLineCount()) return offset;
+    var line = model.getLineContent(line_number) catch return offset;
+    defer line.deinit();
+    return @intCast(position_converter.columnForUtf16Offset(line.items, offset));
 }
 
 fn markerToJson(arena: Allocator, marker: *const markers.Marker) !std.json.Value {

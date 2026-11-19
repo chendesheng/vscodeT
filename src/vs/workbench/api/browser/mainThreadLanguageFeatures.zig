@@ -27,6 +27,7 @@ const languages = @import("../../../editor/common/languages.zig");
 const completion = @import("../../../editor/common/languages/completion.zig");
 const selector_mod = @import("../../../editor/common/languageSelector.zig");
 const std_uri = @import("../../../base/common/stdUri.zig");
+const position_converter = @import("../common/positionConverter.zig");
 const features_mod = @import("../../../editor/common/services/languageFeaturesService.zig");
 
 pub const ProviderError = error{
@@ -316,7 +317,7 @@ pub const MainThreadLanguageFeatures = struct {
         var args = std.array_list.Managed(rpc.Arg).init(scratch);
         try args.append(.{ .json = .{ .integer = state.registration.handle } });
         try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
-        try args.append(.{ .json = try positionJson(scratch, position) });
+        try args.append(.{ .json = try positionJson(scratch, model, position) });
         try args.append(.{ .json = .{ .object = .empty } });
         const reply = self.call(scratch, "$provideHover", args.items, token, timeout_hover_ms) catch return null;
         if (reply != .object) return null;
@@ -338,7 +339,7 @@ pub const MainThreadLanguageFeatures = struct {
         for (contents.items, 0..) |item, index| owned[index] = .{ .value = try scratch.dupe(u8, item.value) };
         return .{
             .contents = owned,
-            .range = if (object.get("range")) |range| rangeFromJson(range) else null,
+            .range = if (object.get("range")) |range| rangeFromJson(model, range) else null,
         };
     }
 
@@ -351,7 +352,7 @@ pub const MainThreadLanguageFeatures = struct {
         var args = std.array_list.Managed(rpc.Arg).init(scratch);
         try args.append(.{ .json = .{ .integer = state.registration.handle } });
         try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
-        try args.append(.{ .json = try positionJson(scratch, position) });
+        try args.append(.{ .json = try positionJson(scratch, model, position) });
         var context_json: std.json.ObjectMap = .empty;
         try context_json.put(scratch, "triggerKind", .{ .integer = @backingInt(trigger.trigger_kind) });
         if (trigger.trigger_character) |character| try context_json.put(scratch, "triggerCharacter", .{ .string = try scratch.dupe(u8, character) });
@@ -374,7 +375,7 @@ pub const MainThreadLanguageFeatures = struct {
         var items = std.array_list.Managed(completion.CompletionItem).init(allocator);
         for (items_value.array.items) |item_value| {
             if (item_value != .object) continue;
-            try items.append(try parseCompletionItem(allocator, item_value.object, default_range));
+            try items.append(try parseCompletionItem(allocator, item_value.object, default_range, model));
         }
         const owned = try items.toOwnedSlice();
         return .{
@@ -392,7 +393,7 @@ pub const MainThreadLanguageFeatures = struct {
         var args = std.array_list.Managed(rpc.Arg).init(scratch);
         try args.append(.{ .json = .{ .integer = state.registration.handle } });
         try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
-        try args.append(.{ .json = try positionJson(scratch, position) });
+        try args.append(.{ .json = try positionJson(scratch, model, position) });
         const reply = self.call(scratch, "$provideDefinition", args.items, token, timeout_default_ms) catch return &.{};
         if (reply != .array) return &.{};
         var result = std.array_list.Managed(languages.LocationLink).init(allocator);
@@ -401,12 +402,12 @@ pub const MainThreadLanguageFeatures = struct {
             const object = item.object;
             const uri_value = object.get("uri") orelse continue;
             const range_value = object.get("range") orelse continue;
-            const range = rangeFromJson(range_value) orelse continue;
+            const range = rangeFromJson(model, range_value) orelse continue;
             try result.append(.{
-                .origin_selection_range = if (object.get("originSelectionRange")) |value| rangeFromJson(value) else null,
+                .origin_selection_range = if (object.get("originSelectionRange")) |value| rangeFromJson(model, value) else null,
                 .uri = try resourceKeyFromComponentsJson(allocator, uri_value),
                 .range = range,
-                .target_selection_range = if (object.get("targetSelectionRange")) |value| rangeFromJson(value) orelse range else range,
+                .target_selection_range = if (object.get("targetSelectionRange")) |value| rangeFromJson(model, value) orelse range else range,
             });
         }
         return result.toOwnedSlice();
@@ -426,7 +427,7 @@ pub const MainThreadLanguageFeatures = struct {
         var result = std.array_list.Managed(languages.DocumentSymbol).init(allocator);
         for (reply.array.items) |item| {
             if (item != .object) continue;
-            try result.append(try parseDocumentSymbol(allocator, item.object));
+            try result.append(try parseDocumentSymbol(allocator, item.object, model));
         }
         return result.toOwnedSlice();
     }
@@ -440,7 +441,7 @@ pub const MainThreadLanguageFeatures = struct {
         var args = std.array_list.Managed(rpc.Arg).init(scratch);
         try args.append(.{ .json = .{ .integer = state.registration.handle } });
         try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
-        try args.append(.{ .json = try rangeJson(scratch, range) });
+        try args.append(.{ .json = try rangeJson(scratch, model, range) });
         var context_json: std.json.ObjectMap = .empty;
         if (action_context.only) |only| try context_json.put(scratch, "only", .{ .string = try scratch.dupe(u8, only) });
         try context_json.put(scratch, "trigger", .{ .integer = action_context.trigger_kind });
@@ -498,9 +499,9 @@ pub const MainThreadLanguageFeatures = struct {
         try args.append(.{ .json = .{ .integer = registration.handle } });
         try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
         const method = if (on_type != null) "$provideOnTypeFormattingEdits" else if (range != null) "$provideDocumentRangeFormattingEdits" else "$provideDocumentFormattingEdits";
-        if (range) |value| try args.append(.{ .json = try rangeJson(scratch, value) });
+        if (range) |value| try args.append(.{ .json = try rangeJson(scratch, model, value) });
         if (on_type) |value| {
-            try args.append(.{ .json = try positionJson(scratch, value.position) });
+            try args.append(.{ .json = try positionJson(scratch, model, value.position) });
             try args.append(.{ .json = .{ .string = try scratch.dupe(u8, value.ch) } });
         }
         var options_json: std.json.ObjectMap = .empty;
@@ -517,7 +518,7 @@ pub const MainThreadLanguageFeatures = struct {
             const text_value = object.get("text") orelse continue;
             if (text_value != .string) continue;
             try result.append(.{
-                .range = rangeFromJson(range_value) orelse continue,
+                .range = rangeFromJson(model, range_value) orelse continue,
                 .text = try allocator.dupe(u8, text_value.string),
             });
         }
@@ -602,31 +603,49 @@ fn metadataKinds(value: ?std.json.Value) ?std.json.Value {
     return item.object.get("providedKinds");
 }
 
-fn positionJson(arena: Allocator, position: Position) !std.json.Value {
+fn positionJson(arena: Allocator, model: *TextModel, position: Position) !std.json.Value {
     var object: std.json.ObjectMap = .empty;
     try object.put(arena, "lineNumber", .{ .integer = @intCast(position.lineNumber) });
-    try object.put(arena, "column", .{ .integer = @intCast(position.column) });
+    try object.put(arena, "column", .{ .integer = @intCast(utf16ColumnForModel(model, position.lineNumber, position.column)) });
     return .{ .object = object };
 }
 
-fn rangeJson(arena: Allocator, range: Range) !std.json.Value {
+fn rangeJson(arena: Allocator, model: *TextModel, range: Range) !std.json.Value {
     var object: std.json.ObjectMap = .empty;
     try object.put(arena, "startLineNumber", .{ .integer = @intCast(range.startLineNumber) });
-    try object.put(arena, "startColumn", .{ .integer = @intCast(range.startColumn) });
+    try object.put(arena, "startColumn", .{ .integer = @intCast(utf16ColumnForModel(model, range.startLineNumber, range.startColumn)) });
     try object.put(arena, "endLineNumber", .{ .integer = @intCast(range.endLineNumber) });
-    try object.put(arena, "endColumn", .{ .integer = @intCast(range.endColumn) });
+    try object.put(arena, "endColumn", .{ .integer = @intCast(utf16ColumnForModel(model, range.endLineNumber, range.endColumn)) });
     return .{ .object = object };
 }
 
-fn rangeFromJson(value: std.json.Value) ?Range {
+fn rangeFromJson(model: *TextModel, value: std.json.Value) ?Range {
     if (value != .object) return null;
     const object = value.object;
+    const start_line = intField(object, "startLineNumber") orelse return null;
+    const start_column = intField(object, "startColumn") orelse return null;
+    const end_line = intField(object, "endLineNumber") orelse return null;
+    const end_column = intField(object, "endColumn") orelse return null;
     return Range.init(
-        intField(object, "startLineNumber") orelse return null,
-        intField(object, "startColumn") orelse return null,
-        intField(object, "endLineNumber") orelse return null,
-        intField(object, "endColumn") orelse return null,
+        start_line,
+        columnForModel(model, start_line, start_column),
+        end_line,
+        columnForModel(model, end_line, end_column),
     );
+}
+
+fn utf16ColumnForModel(model: *TextModel, line_number: usize, column: usize) usize {
+    if (line_number < 1 or line_number > model.getLineCount()) return column;
+    var line = model.getLineContent(line_number) catch return column;
+    defer line.deinit();
+    return position_converter.utf16OffsetForColumn(line.items, column);
+}
+
+fn columnForModel(model: *TextModel, line_number: usize, offset: usize) usize {
+    if (line_number < 1 or line_number > model.getLineCount()) return offset;
+    var line = model.getLineContent(line_number) catch return offset;
+    defer line.deinit();
+    return position_converter.columnForUtf16Offset(line.items, offset);
 }
 
 fn intField(object: std.json.ObjectMap, name: []const u8) ?usize {
@@ -657,7 +676,7 @@ fn appendHoverContents(result: *std.array_list.Managed(languages.IMarkdownString
     }
 }
 
-fn parseCompletionItem(allocator: Allocator, object: std.json.ObjectMap, default_range: ?std.json.Value) !completion.CompletionItem {
+fn parseCompletionItem(allocator: Allocator, object: std.json.ObjectMap, default_range: ?std.json.Value, model: *TextModel) !completion.CompletionItem {
     const label_value = object.get("a") orelse std.json.Value{ .string = "" };
     var label: []const u8 = "";
     var detail: ?[]const u8 = null;
@@ -683,7 +702,7 @@ fn parseCompletionItem(allocator: Allocator, object: std.json.ObjectMap, default
                 const text_value = edit.object.get("text") orelse continue;
                 if (text_value != .string) continue;
                 try additional.append(.{
-                    .range = rangeFromJson(range_value) orelse continue,
+                    .range = rangeFromJson(model, range_value) orelse continue,
                     .new_text = try allocator.dupe(u8, text_value.string),
                 });
             }
@@ -710,7 +729,7 @@ fn parseCompletionItem(allocator: Allocator, object: std.json.ObjectMap, default
         }
     }
 
-    const range = if (object.get("j")) |value| completionRange(value) orelse defaultCompletionRange(default_range) else defaultCompletionRange(default_range);
+    const range = if (object.get("j")) |value| completionRange(value, model) orelse defaultCompletionRange(default_range, model) else defaultCompletionRange(default_range, model);
     return .{
         .label = label,
         .kind = kind,
@@ -738,27 +757,27 @@ fn documentationText(allocator: Allocator, value: ?std.json.Value) !?[]const u8 
     return null;
 }
 
-fn completionRange(value: std.json.Value) ?Range {
+fn completionRange(value: std.json.Value, model: *TextModel) ?Range {
     if (value != .object) return null;
-    if (value.object.get("replace")) |replace| return rangeFromJson(replace);
-    return rangeFromJson(value);
+    if (value.object.get("replace")) |replace| return rangeFromJson(model, replace);
+    return rangeFromJson(model, value);
 }
 
-fn defaultCompletionRange(value: ?std.json.Value) ?Range {
+fn defaultCompletionRange(value: ?std.json.Value, model: *TextModel) ?Range {
     if (value) |item| {
         if (item != .object) return null;
-        if (item.object.get("replace")) |replace| return rangeFromJson(replace);
-        if (item.object.get("insert")) |insert| return rangeFromJson(insert);
+        if (item.object.get("replace")) |replace| return rangeFromJson(model, replace);
+        if (item.object.get("insert")) |insert| return rangeFromJson(model, insert);
     }
     return null;
 }
 
-fn parseDocumentSymbol(allocator: Allocator, object: std.json.ObjectMap) !languages.DocumentSymbol {
+fn parseDocumentSymbol(allocator: Allocator, object: std.json.ObjectMap, model: *TextModel) !languages.DocumentSymbol {
     var children = std.array_list.Managed(languages.DocumentSymbol).init(allocator);
     if (object.get("children")) |value| {
         if (value == .array) {
             for (value.array.items) |child| {
-                if (child == .object) try children.append(try parseDocumentSymbol(allocator, child.object));
+                if (child == .object) try children.append(try parseDocumentSymbol(allocator, child.object, model));
             }
         }
     }
@@ -774,8 +793,8 @@ fn parseDocumentSymbol(allocator: Allocator, object: std.json.ObjectMap) !langua
         .kind = if (object.get("kind")) |value| if (value == .integer) @intCast(value.integer) else 0 else 0,
         .tags = try tags.toOwnedSlice(),
         .container_name = try optionalJsonString(allocator, object.get("containerName")),
-        .range = if (object.get("range")) |value| rangeFromJson(value) orelse Range.init(1, 1, 1, 1) else Range.init(1, 1, 1, 1),
-        .selection_range = if (object.get("selectionRange")) |value| rangeFromJson(value) orelse Range.init(1, 1, 1, 1) else Range.init(1, 1, 1, 1),
+        .range = if (object.get("range")) |value| rangeFromJson(model, value) orelse Range.init(1, 1, 1, 1) else Range.init(1, 1, 1, 1),
+        .selection_range = if (object.get("selectionRange")) |value| rangeFromJson(model, value) orelse Range.init(1, 1, 1, 1) else Range.init(1, 1, 1, 1),
         .children = try children.toOwnedSlice(),
     };
 }

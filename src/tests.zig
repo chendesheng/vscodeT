@@ -567,6 +567,7 @@ comptime {
     _ = @import("./tui/extensions.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
+    _ = @import("./vs/workbench/services/extensions/common/extensionService.zig");
     _ = @import("./vs/platform/environment/common/environmentService.zig");
     _ = @import("./vs/platform/extensionManagement/common/extensionManagementUtil.zig");
     _ = @import("./vs/platform/extensionManagement/test/node/extensionsScannerService.test.zig");
@@ -586,6 +587,17 @@ comptime {
     _ = @import("./vs/editor/test/common/services/markerDecorationsService.test.zig");
     _ = @import("./vs/workbench/api/browser/mainThreadLanguageFeatures.zig");
     _ = @import("./vs/workbench/api/browser/mainThreadDiagnostics.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadStorage.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadStatusBar.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadCommands.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadConfiguration.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadEditorTabs.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadWindow.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadExtensionService.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadDocuments.zig");
+    _ = @import("./vs/workbench/api/browser/mainThreadTextEditors.zig");
+    _ = @import("./vs/workbench/api/common/configurationExtensionPoint.zig");
+    _ = @import("./vs/workbench/api/common/positionConverter.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadLanguageFeatures.test.zig");
     _ = @import("./vs/editor/contrib/documentSymbols/browser/outlineModel.zig");
     _ = @import("./vs/workbench/contrib/codeEditor/browser/outline/documentSymbolsOutline.zig");

@@ -28,7 +28,7 @@ test "mainThreadDiagnostics: changeMany stores markers and forwards changes" {
     const actor = try MainThreadDiagnostics.init(allocator, &marker_service, .{
         .context = &fake,
         .notify = Fake.notify,
-    });
+    }, null);
     defer actor.deinit();
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -64,7 +64,7 @@ test "mainThreadDiagnostics: clear removes owner markers on dispose" {
     const actor = try MainThreadDiagnostics.init(allocator, &marker_service, .{
         .context = &fake,
         .notify = Fake.notify,
-    });
+    }, null);
     defer actor.deinit();
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();

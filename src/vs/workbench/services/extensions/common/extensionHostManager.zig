@@ -14,6 +14,7 @@ const time_compat = @import("../../../../base/common/timeCompat.zig");
 const Allocator = std.mem.Allocator;
 const rpcProtocol = @import("rpcProtocol.zig");
 const proxyIdentifier = @import("proxyIdentifier.zig");
+const protocol = @import("../../../api/common/extHost.protocol.zig");
 
 pub const max_frame_size: usize = 64 * 1024 * 1024;
 
@@ -60,6 +61,10 @@ pub const ExtensionDescription = struct {
     manifest: std.json.Value,
     identifier: []const u8,
     activation_events: []const []const u8,
+    /// A system/builtin extension (`isBuiltin` in `IExtensionDescription`).
+    is_builtin: bool = false,
+    /// An extension loaded from a development/unpacked location.
+    is_under_development: bool = false,
 
     pub fn deinit(self: *ExtensionDescription, allocator: Allocator) void {
         for (self.activation_events) |event| allocator.free(event);
@@ -74,7 +79,7 @@ pub const Options = struct {
     node_path: []const u8 = "node",
     /// host/dist/extensionHost.mjs
     host_script: []const u8,
-    extension: *const ExtensionDescription,
+    extensions: []const *const ExtensionDescription,
     workspace_path: ?[]const u8 = null,
     workspace_name: []const u8 = "workspace",
     data_path: []const u8,
@@ -148,9 +153,11 @@ pub const HostManager = struct {
         });
         errdefer allocator.free(self.socket_path);
 
-        const extension_storage = try std.fs.path.join(allocator, &.{ options.data_path, "globalStorage", options.extension.identifier });
-        defer allocator.free(extension_storage);
-        std.Io.Dir.cwd().createDirPath(self.io, extension_storage) catch {};
+        for (options.extensions) |extension| {
+            const extension_storage = try std.fs.path.join(allocator, &.{ options.data_path, "globalStorage", extension.identifier });
+            defer allocator.free(extension_storage);
+            std.Io.Dir.cwd().createDirPath(self.io, extension_storage) catch {};
+        }
 
         const address = std.Io.net.UnixAddress.init(self.socket_path) catch return ExtensionHostError.SocketSetupFailed;
         self.server = address.listen(self.io, .{}) catch return ExtensionHostError.SocketSetupFailed;
@@ -415,6 +422,24 @@ pub const HostManager = struct {
     ) !void {
         try self.rpc.notify(identifier, method, args);
     }
+
+    /// Activates extensions registered for `activation_event` in the host.
+    /// Upstream awaits the returned promise; the terminal workbench fires it
+    /// and lets the host queue the activation, exactly like a workbench that
+    /// does not block the UI on extension activation.
+    pub fn activateByEvent(self: *HostManager, activation_event: []const u8, activation_kind: u32) !void {
+        var args = [_]rpcProtocol.Arg{
+            .{ .json = .{ .string = activation_event } },
+            .{ .json = .{ .integer = @intCast(activation_kind) } },
+        };
+        _ = try self.rpc.call(
+            proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService),
+            "$activateByEvent",
+            &args,
+            null,
+            noop_callback,
+        );
+    }
 };
 
 const SyncSlot = struct {
@@ -461,7 +486,6 @@ pub fn buildInitData(
     arena: Allocator,
     options: Options,
 ) !std.json.Value {
-    const extension = options.extension;
     var root: std.json.ObjectMap = .empty;
     try root.put(arena, "version", .{ .string = "1.147.0" });
     try root.put(arena, "quality", .{ .string = "stable" });
@@ -471,12 +495,14 @@ pub fn buildInitData(
     try environment.put(arena, "isExtensionDevelopmentDebug", .{ .bool = false });
     try environment.put(arena, "appName", .{ .string = "zig-editor" });
     try environment.put(arena, "appHost", .{ .string = "node" });
-    try environment.put(arena, "appRoot", try fileUri(arena, options.app_root));
+    // Init-data URIs must be absolute: the host resolves storage/log paths to
+    // file URIs and a relative directory becomes a path below `/`.
+    try environment.put(arena, "appRoot", try fileUri(arena, try std.fs.path.resolve(arena, &.{options.app_root})));
     try environment.put(arena, "appLanguage", .{ .string = "en" });
     try environment.put(arena, "isExtensionTelemetryLoggingOnly", .{ .bool = false });
     try environment.put(arena, "appUriScheme", .{ .string = "zig-editor" });
-    try environment.put(arena, "globalStorageHome", try fileUri(arena, try std.fs.path.join(arena, &.{ options.data_path, "globalStorage" })));
-    try environment.put(arena, "workspaceStorageHome", try fileUri(arena, try std.fs.path.join(arena, &.{ options.data_path, "workspaceStorage" })));
+    try environment.put(arena, "globalStorageHome", try fileUri(arena, try std.fs.path.resolve(arena, &.{ options.data_path, "globalStorage" })));
+    try environment.put(arena, "workspaceStorageHome", try fileUri(arena, try std.fs.path.resolve(arena, &.{ options.data_path, "workspaceStorage" })));
     try environment.put(arena, "useHostProxy", .{ .bool = false });
     try environment.put(arena, "skipWorkspaceStorageLock", .{ .bool = true });
     try root.put(arena, "environment", .{ .object = environment });
@@ -500,38 +526,42 @@ pub fn buildInitData(
         try root.put(arena, "workspace", .null);
     }
 
-    var description = switch (extension.manifest) {
-        .object => |object| object,
-        else => return error.InvalidManifest,
-    };
-    try description.put(arena, "id", .{ .string = try arena.dupe(u8, extension.identifier) });
-    var identifier: std.json.ObjectMap = .empty;
-    try identifier.put(arena, "value", .{ .string = try arena.dupe(u8, extension.identifier) });
-    try identifier.put(arena, "_lower", .{ .string = try std.ascii.allocLowerString(arena, extension.identifier) });
-    try description.put(arena, "identifier", .{ .object = identifier });
-    try description.put(arena, "extensionLocation", try fileUri(arena, extension.path));
-    try description.put(arena, "isBuiltin", .{ .bool = false });
-    try description.put(arena, "isUserBuiltin", .{ .bool = false });
-    try description.put(arena, "isUnderDevelopment", .{ .bool = true });
-    try description.put(arena, "targetPlatform", .{ .string = "undefined" });
-    try description.put(arena, "preRelease", .{ .bool = false });
-
-    var activation_events = std.json.Array.init(arena);
-    for (extension.activation_events) |event| {
-        try activation_events.append(.{ .string = try arena.dupe(u8, event) });
-    }
-    try description.put(arena, "activationEvents", .{ .array = activation_events });
-
     var extensions: std.json.ObjectMap = .empty;
     try extensions.put(arena, "versionId", .{ .integer = 1 });
     var all_extensions: std.json.Array = .init(arena);
-    try all_extensions.append(.{ .object = description });
-    try extensions.put(arena, "allExtensions", .{ .array = all_extensions });
     var activation_map: std.json.ObjectMap = .empty;
-    try activation_map.put(arena, try arena.dupe(u8, extension.identifier), .{ .array = activation_events });
-    try extensions.put(arena, "activationEvents", .{ .object = activation_map });
     var my_extensions = std.json.Array.init(arena);
-    try my_extensions.append(.{ .object = identifier });
+
+    for (options.extensions) |extension| {
+        var description = switch (extension.manifest) {
+            .object => |object| object,
+            else => return error.InvalidManifest,
+        };
+        try description.put(arena, "id", .{ .string = try arena.dupe(u8, extension.identifier) });
+        var identifier: std.json.ObjectMap = .empty;
+        try identifier.put(arena, "value", .{ .string = try arena.dupe(u8, extension.identifier) });
+        try identifier.put(arena, "_lower", .{ .string = try std.ascii.allocLowerString(arena, extension.identifier) });
+        try description.put(arena, "identifier", .{ .object = identifier });
+        try description.put(arena, "extensionLocation", try fileUri(arena, extension.path));
+        try description.put(arena, "isBuiltin", .{ .bool = extension.is_builtin });
+        try description.put(arena, "isUserBuiltin", .{ .bool = false });
+        try description.put(arena, "isUnderDevelopment", .{ .bool = extension.is_under_development });
+        try description.put(arena, "targetPlatform", .{ .string = "undefined" });
+        try description.put(arena, "preRelease", .{ .bool = false });
+
+        var activation_events = std.json.Array.init(arena);
+        for (extension.activation_events) |event| {
+            try activation_events.append(.{ .string = try arena.dupe(u8, event) });
+        }
+        try description.put(arena, "activationEvents", .{ .array = activation_events });
+
+        try all_extensions.append(.{ .object = description });
+        try activation_map.put(arena, try arena.dupe(u8, extension.identifier), .{ .array = activation_events });
+        try my_extensions.append(.{ .object = identifier });
+    }
+
+    try extensions.put(arena, "allExtensions", .{ .array = all_extensions });
+    try extensions.put(arena, "activationEvents", .{ .object = activation_map });
     try extensions.put(arena, "myExtensions", .{ .array = my_extensions });
     try root.put(arena, "extensions", .{ .object = extensions });
 
@@ -542,7 +572,7 @@ pub fn buildInitData(
     try root.put(arena, "telemetryInfo", .{ .object = telemetry });
     try root.put(arena, "logLevel", .{ .integer = 1 });
     try root.put(arena, "loggers", .{ .array = std.json.Array.init(arena) });
-    try root.put(arena, "logsLocation", try fileUri(arena, try std.fs.path.join(arena, &.{ options.data_path, "logs" })));
+    try root.put(arena, "logsLocation", try fileUri(arena, try std.fs.path.resolve(arena, &.{ options.data_path, "logs" })));
     try root.put(arena, "autoStart", .{ .bool = false });
 
     var remote: std.json.ObjectMap = .empty;

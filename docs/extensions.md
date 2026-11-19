@@ -13,7 +13,11 @@ Declarative scanning now loads the bundled `theme-defaults` and
 `dark_plus.json` → `dark_vs.json` include chain), the markdown language and
 grammar, and its JSONC language configuration. `zig build test-e2e` activates VSCodeVim 1.32.4 and asserts insert
 mode, a normal-mode `x`, and the resulting TUI editor text. Declarative
-scanning now loads `theme-defaults` and `markdown-basics`. The remaining
+scanning now loads `theme-defaults` and `markdown-basics`. VS Code's real
+`typescript-language-features` extension is provisioned as a built-in runtime
+asset (`host/build-typescript-extension.js`) and loaded into the same host as
+VSCodeVim; TS/JS diagnostics, completion, hover, formatting and document
+symbols are wired through the ported language-feature bridge (§15.7). The remaining
 `MainThread*` actors, the general contribution scanner, configuration writes,
 `tabGroups`, extension keybindings and the built-in command set are still
 incomplete. The prerequisite workbench services are ported (§3.3).
@@ -1908,6 +1912,80 @@ outdent work even without the server. The language-configuration extension
 point compiles `indentationRules`; `wordPattern`, `onEnterRules` and folding
 markers remain deferred.
 
+### 15.7 TypeScript/JavaScript extension
+
+The built-in `typescript-language-features` extension is not reimplemented.
+`host/build-typescript-extension.js` copies VS Code's shipped extension bundle
+and its TypeScript SDK (`extensions/node_modules/typescript`) into
+`host/dist/extensions`; `VSCODE_APP_PATH`/`TYPESCRIPT_SDK` select another
+installation. `extensionHostManager.buildInitData` now emits all loadable
+extensions (the TypeScript builtin plus the user VSCodeVim instance) in one
+payload, with per-extension `isBuiltin` and activation events. The workbench
+sends `$activateByEvent("onLanguage:<id>")` after the document delta is queued;
+`extensions.zig` deduplicates those events in the portable
+`services/extensions/common/extensionService.zig`.
+
+The extension's `contributes.configuration` defaults are registered before the
+host starts (`workbench/api/common/configurationExtensionPoint.zig`), and the
+effective user/workspace/folder configuration data is serialized by
+`ConfigurationService.getConfigurationData` for `$initializeConfiguration`.
+This is what makes settings such as `js/ts.format.enabled` evaluate like VS
+Code in the extension.
+
+The full workbench position boundary is UTF-16 based. The terminal editor uses
+UTF-8 byte columns, so `workbench/api/common/positionConverter.zig` converts
+language-feature positions/ranges, diagnostics markers, document content
+changes, selections and edits at the RPC edge. Emoji/accented text is covered
+by the converter tests and the TypeScript e2e test.
+
+Terminal surfaces use the existing registries: diagnostics feed
+`MainThreadDiagnostics`/`MarkerService`, hover and completion use
+`MainThreadLanguageFeatures`, formatting uses the document and range formatter
+registries (`getRealAndSyntheticDocumentFormattersOrdered` semantics), and
+document symbols feed breadcrumbs/outline. Other provider registrations from
+the extension are accepted and retained for `$unregister`, but their providers
+are not invoked because the terminal has no renderer for semantic tokens,
+inlay hints, code lens, links, colors, call/type hierarchy, linked editing or
+inline completions. Definition and code-action providers are transported but
+still have no TUI command surface. Provider calls remain synchronous with the
+existing bounded timeouts; the first tsserver request may return empty while a
+project loads.
+
+The e2e test opens a temp `.ts` file with the extension and asserts
+diagnostics, completion, hover, formatting and an accented-prefix diagnostic
+range, and that VSCodeVim + TypeScript load in one host. The provisioning step
+is optional: without `host/dist/extensions/typescript-language-features` the
+host still runs VSCodeVim and TS/JS tabs keep the bundled grammar/indent
+behavior.
+
+The storage, status-bar, command and configuration actors are now ported as
+`mainThreadStorage.zig`, `mainThreadStatusBar.zig`, `mainThreadCommands.zig`
+and `mainThreadConfiguration.zig`. Storage uses the in-memory storage service,
+status entries go through the ported status-bar service, command
+registration/activation and `$getCommands` are tracked in the actor while the
+terminal command switch stays in the adapter, and configuration writes are
+kept in a session-memory overlay that is pushed back with
+`$acceptConfigurationChanged`.
+
+Document/editor wire shaping lives in
+`mainThreadDocumentsAndEditors.zig`: the document/editor delta, removed
+document delta, `$acceptEditorTabModel`, `$acceptModelChanged` event and
+`$acceptEditorPropertiesChanged` payloads (including UTF-16 selection
+conversion) are built there. The document and text-editor request handlers are
+ported as `mainThreadDocuments.zig` (`$tryOpenDocument`, `$tryCreateDocument`,
+`$trySaveDocument`) and `mainThreadTextEditors.zig` (`$trySetSelections`,
+`$tryApplyEdits`, `$tryShowTextDocument`, reveal, decoration-type registration
+and the accepted no-op methods). The editor-tab actor
+(`mainThreadEditorTabs.zig`) owns the tab-model signature and emits
+`$acceptEditorTabModel` only when tabs change, while forwarding move/close to
+the adapter. `mainThreadWindow.zig` provides the always-focused initial state,
+local `$openUri` and identity `$asExternalUri`; `mainThreadExtensionService.zig`
+handles activation bookkeeping and browser-URI identity. The adapter supplies
+editor snapshots and applies converted selections/edits, and still owns the
+active-editor mirror and terminal command switch. The logger/output/progress/
+file-system actors and the `$getTools`/`$ensureActivation` stubs remain in the
+generic fallback.
+
 ## 16. Deferred / explicit limitations
 
 - Electron transport, `PersistentProtocol`, socket reconnection.
@@ -1918,7 +1996,9 @@ markers remain deferred.
   GitHub, file decoration providers.
 - Semantic tokens, inlay hints, code lens, document links/colors, folding,
   selection ranges, call/type hierarchy, inline completions, paste/drop
-  edits: the host exposes them, calls reject.
+  edits: the real TypeScript extension registers them, but the terminal has no
+  renderer; provider calls are never made. Definition/code-action providers are
+  registered but have no TUI command surface.
 - VSCodeVim 1.32.4 is not supported by the baseline: it needs text-input
   `type`/`default:type` dispatch, full `window.tabGroups`, configuration
   writes, extra built-in commands, extension keybinding routing and a
@@ -1930,8 +2010,8 @@ markers remain deferred.
   flat context are ported, so contributed `when` clauses that need scoped keys
   cannot be resolved yet.
 - Configuration writes (`updateValue`), language overrides and
-  `ConfigurationTarget`; `$updateConfigurationOption` /
-  `$removeConfigurationOption` must reject until those exist.
+  `ConfigurationTarget`; extension updates are accepted in memory but are not
+  persisted to settings files.
 - Persistent storage: `InMemoryStorageService`, in-memory working-copy
   backups/history, and no disk memento backend, so state does not survive a
   process restart.

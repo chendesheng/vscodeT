@@ -9,3 +9,4 @@ zig-pkg/
 .cache-ext/
 host/node_modules/
 host/dist/
+.zig-tmp/

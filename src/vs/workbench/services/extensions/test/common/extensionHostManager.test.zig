@@ -248,7 +248,7 @@ test "VSCodeVim activates in the pinned extension host" {
 
     const host = try manager.HostManager.start(allocator, .{
         .host_script = host_script,
-        .extension = &description,
+        .extensions = &.{&description},
         .workspace_path = workspace,
         .workspace_name = "workspace",
         .data_path = data_path,
@@ -270,7 +270,7 @@ test "VSCodeVim activates in the pinned extension host" {
     defer arena_instance.deinit();
     const init_data = try manager.buildInitData(arena_instance.allocator(), .{
         .host_script = host_script,
-        .extension = &description,
+        .extensions = &.{&description},
         .workspace_path = workspace,
         .workspace_name = "workspace",
         .data_path = data_path,

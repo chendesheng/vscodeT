@@ -7,7 +7,8 @@
     "build": "node build.js",
     "test": "node test-host.cjs",
     "build:json": "node build-json-server.js",
-    "test:json": "node test-json-server.cjs"
+    "test:json": "node test-json-server.cjs",
+    "build:typescript-extension": "node build-typescript-extension.js"
   },
   "dependencies": {
     "@vscode/proxy-agent": "^0.46.0",

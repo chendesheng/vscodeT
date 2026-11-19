@@ -795,15 +795,66 @@ pub const Editor = struct {
 
     pub fn formatDocument(self: *Editor) !void {
         if (self.language_features) |features| {
+            // Port of `getRealAndSyntheticDocumentFormattersOrdered` from
+            // `editor/contrib/format/browser/format.ts`: range formatters that
+            // are not shadowed by a document formatter from the same extension
+            // format the full model range. The TypeScript extension registers
+            // only a range formatter.
+            var seen = std.array_list.Managed([]const u8).init(self.allocator);
+            defer seen.deinit();
             const providers = try features.document_formatting_edit_provider.ordered(self.allocator, self.model, false);
             defer self.allocator.free(providers);
             for (providers) |provider| {
+                if (provider.extension_id.len > 0) {
+                    var already_seen = false;
+                    for (seen.items) |extension_id| {
+                        if (std.mem.eql(u8, extension_id, provider.extension_id)) {
+                            already_seen = true;
+                            break;
+                        }
+                    }
+                    if (!already_seen) try seen.append(provider.extension_id);
+                }
                 var arena = std.heap.ArenaAllocator.init(self.allocator);
                 defer arena.deinit();
                 const edits = provider.provide_document_formatting_edits(
                     provider.context,
                     arena.allocator(),
                     self.model,
+                    .{ .tab_size = @intCast(self.cursor_config.tabSize), .insert_spaces = self.cursor_config.insertSpaces },
+                    CancellationToken.None,
+                ) catch continue;
+                if (edits.len == 0) continue;
+                const text_edits = try self.allocator.alloc(TextEdit, edits.len);
+                defer self.allocator.free(text_edits);
+                for (edits, 0..) |edit, index| text_edits[index] = .{ .range = edit.range, .text = edit.text };
+                try self.applyTextEdits(text_edits, &.{});
+                self.setMessage("Formatted document", .{});
+                return;
+            }
+            const range_providers = try features.document_range_formatting_edit_provider.ordered(self.allocator, self.model, false);
+            defer self.allocator.free(range_providers);
+            const line_count = self.model.getLineCount();
+            const full_range = Range.init(1, 1, line_count, self.model.getLineMaxColumn(line_count));
+            for (range_providers) |provider| {
+                if (provider.extension_id.len > 0) {
+                    var already_seen = false;
+                    for (seen.items) |extension_id| {
+                        if (std.mem.eql(u8, extension_id, provider.extension_id)) {
+                            already_seen = true;
+                            break;
+                        }
+                    }
+                    if (already_seen) continue;
+                    try seen.append(provider.extension_id);
+                }
+                var arena = std.heap.ArenaAllocator.init(self.allocator);
+                defer arena.deinit();
+                const edits = provider.provide_document_range_formatting_edits(
+                    provider.context,
+                    arena.allocator(),
+                    self.model,
+                    full_range,
                     .{ .tab_size = @intCast(self.cursor_config.tabSize), .insert_spaces = self.cursor_config.insertSpaces },
                     CancellationToken.None,
                 ) catch continue;

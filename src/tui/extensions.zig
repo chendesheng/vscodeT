@@ -9,6 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const manager = @import("../vs/workbench/services/extensions/common/extensionHostManager.zig");
+const extension_service = @import("../vs/workbench/services/extensions/common/extensionService.zig");
 const rpc = @import("../vs/workbench/services/extensions/common/rpcProtocol.zig");
 const proxyIdentifier = @import("../vs/workbench/services/extensions/common/proxyIdentifier.zig");
 const protocol = @import("../vs/workbench/api/common/extHost.protocol.zig");
@@ -27,21 +28,23 @@ const ui = @import("ui");
 const MainThreadLanguageFeatures = @import("../vs/workbench/api/browser/mainThreadLanguageFeatures.zig").MainThreadLanguageFeatures;
 const languageFeaturesHost = @import("../vs/workbench/api/browser/mainThreadLanguageFeatures.zig").HostProxy;
 const MainThreadDiagnostics = @import("../vs/workbench/api/browser/mainThreadDiagnostics.zig").MainThreadDiagnostics;
+const MainThreadStorage = @import("../vs/workbench/api/browser/mainThreadStorage.zig").MainThreadStorage;
+const MainThreadStatusBar = @import("../vs/workbench/api/browser/mainThreadStatusBar.zig").MainThreadStatusBar;
+const MainThreadCommands = @import("../vs/workbench/api/browser/mainThreadCommands.zig").MainThreadCommands;
+const MainThreadConfiguration = @import("../vs/workbench/api/browser/mainThreadConfiguration.zig").MainThreadConfiguration;
+const documents_and_editors = @import("../vs/workbench/api/browser/mainThreadDocumentsAndEditors.zig");
+const MainThreadDocuments = @import("../vs/workbench/api/browser/mainThreadDocuments.zig").MainThreadDocuments;
+const MainThreadTextEditors = @import("../vs/workbench/api/browser/mainThreadTextEditors.zig").MainThreadTextEditors;
+const EditSpec = @import("../vs/workbench/api/browser/mainThreadTextEditors.zig").EditSpec;
+const MainThreadEditorTabs = @import("../vs/workbench/api/browser/mainThreadEditorTabs.zig").MainThreadEditorTabs;
+const MainThreadWindow = @import("../vs/workbench/api/browser/mainThreadWindow.zig").MainThreadWindow;
+const MainThreadExtensionService = @import("../vs/workbench/api/browser/mainThreadExtensionService.zig").MainThreadExtensionService;
 const diagnosticsHost = @import("../vs/workbench/api/browser/mainThreadDiagnostics.zig").HostProxy;
+const markers_mod = @import("../vs/platform/markers/common/markers.zig");
+const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
+const position_converter = @import("../vs/workbench/api/common/positionConverter.zig");
 
 const EntryAccessor = statusbar_part.EntryAccessor;
-
-const OwnedStatus = struct {
-    text: []u8,
-    name: []u8,
-    accessor: EntryAccessor,
-
-    fn deinit(self: *OwnedStatus, allocator: Allocator) void {
-        self.accessor.dispose();
-        allocator.free(self.text);
-        allocator.free(self.name);
-    }
-};
 
 const ActiveDocument = struct {
     editor: *Editor,
@@ -75,7 +78,11 @@ pub const Extensions = struct {
     io: Io,
     workbench: *Workbench,
     host: *manager.HostManager,
-    description: manager.ExtensionDescription,
+    /// Loadable extensions: the user extension (usually VSCodeVim) first, then
+    /// any built-in extensions. The host receives all of them in one init-data
+    /// payload; activation events select which one runs.
+    descriptions: []manager.ExtensionDescription,
+    extension_ptrs: []const *const manager.ExtensionDescription,
     data_path: []u8,
     active: ?ActiveDocument = null,
     /// Cursor produced by the last host-driven type. VSCodeVim computes its
@@ -85,15 +92,21 @@ pub const Extensions = struct {
     vim_active: bool = false,
     vim_mode_insert: bool = false,
     decoration_count: usize = 0,
-    status_entries: std.StringHashMap(OwnedStatus),
-    config_arena: std.heap.ArenaAllocator,
-    config_values: std.StringHashMap(std.json.Value),
-    tab_signature: u64 = 0,
     activated: bool = false,
+    activation_tracker: extension_service.ActivationTracker,
     needs_render: bool = false,
     pasting: bool = false,
     language_features_actor: ?MainThreadLanguageFeatures = null,
     diagnostics_actor: ?*MainThreadDiagnostics = null,
+    storage_actor: ?MainThreadStorage = null,
+    statusbar_actor: ?MainThreadStatusBar = null,
+    commands_actor: ?MainThreadCommands = null,
+    configuration_actor: ?MainThreadConfiguration = null,
+    documents_actor: ?MainThreadDocuments = null,
+    text_editors_actor: ?MainThreadTextEditors = null,
+    editor_tabs_actor: ?MainThreadEditorTabs = null,
+    window_actor: ?MainThreadWindow = null,
+    extension_service_actor: ?MainThreadExtensionService = null,
     /// The selections the extension host already knows about. Upstream's
     /// `MainThreadTextEditor` keeps the same mirror and sends a properties
     /// delta only when the selection differs; here it also swallows the echo
@@ -103,22 +116,32 @@ pub const Extensions = struct {
     /// input event being dispatched.
     selection_source: SelectionSource = .keyboard,
 
+    pub const ExtensionPath = extension_service.ExtensionPath;
+
     pub fn init(
         allocator: Allocator,
         io: Io,
         workbench: *Workbench,
-        extension_path: []const u8,
+        extension_paths: []const ExtensionPath,
         data_path: []const u8,
     ) !*Extensions {
         const self = try allocator.create(Extensions);
         errdefer allocator.destroy(self);
-        const absolute_extension_path = try std.Io.Dir.cwd().realPathFileAlloc(io, extension_path, allocator);
-        defer allocator.free(absolute_extension_path);
-        const description = try manager.readExtensionDescription(allocator, absolute_extension_path);
+
+        const owned_descriptions = try extension_service.readExtensions(allocator, io, extension_paths);
         errdefer {
-            var copy = description;
-            copy.deinit(allocator);
+            for (owned_descriptions) |*description| description.deinit(allocator);
+            allocator.free(owned_descriptions);
         }
+        const extension_ptrs = try allocator.alloc(*const manager.ExtensionDescription, owned_descriptions.len);
+        errdefer allocator.free(extension_ptrs);
+        for (owned_descriptions, 0..) |*description, index| {
+            extension_ptrs[index] = description;
+            // Extension settings are part of the workbench configuration that
+            // the host receives during `$initializeConfiguration`.
+            workbench.registerExtensionConfiguration(description.manifest, description.identifier);
+        }
+
         const data = try allocator.dupe(u8, data_path);
         errdefer allocator.free(data);
 
@@ -127,11 +150,10 @@ pub const Extensions = struct {
             .io = io,
             .workbench = workbench,
             .host = undefined,
-            .description = description,
+            .descriptions = owned_descriptions,
+            .extension_ptrs = extension_ptrs,
             .data_path = data,
-            .status_entries = std.StringHashMap(OwnedStatus).init(allocator),
-            .config_arena = std.heap.ArenaAllocator.init(allocator),
-            .config_values = std.StringHashMap(std.json.Value).init(allocator),
+            .activation_tracker = extension_service.ActivationTracker.init(allocator),
             .last_selections = std.array_list.Managed(Selection).init(allocator),
         };
 
@@ -143,7 +165,7 @@ pub const Extensions = struct {
         const workspace_path = workbench.workspaceFolderPath() orelse ".";
         self.host = try manager.HostManager.start(allocator, .{
             .host_script = host_script,
-            .extension = &self.description,
+            .extensions = self.extension_ptrs,
             .workspace_path = workspace_path,
             .workspace_name = "workspace",
             .data_path = data,
@@ -152,6 +174,46 @@ pub const Extensions = struct {
         });
         errdefer self.host.deinit();
 
+        self.storage_actor = try MainThreadStorage.init(allocator);
+        self.statusbar_actor = try MainThreadStatusBar.init(allocator, &workbench.statusbar, .{
+            .context = workbench,
+            .callback = refreshWorkbenchStatus,
+        });
+        self.commands_actor = try MainThreadCommands.init(allocator, self.host, .{
+            .context = self,
+            .execute = executeHostCommand,
+        });
+        self.configuration_actor = MainThreadConfiguration.init(
+            allocator,
+            .{ .context = self, .data = configurationDataHost },
+            .{ .context = self, .notify = configurationNotifyHost },
+        );
+        self.documents_actor = .{ .host = .{
+            .context = self,
+            .open = documentsOpenHost,
+            .create = documentsCreateHost,
+            .save = documentsSaveHost,
+        } };
+        self.text_editors_actor = MainThreadTextEditors.init(allocator, .{
+            .context = self,
+            .set_selections = textEditorSetSelectionsHost,
+            .apply_edits = textEditorApplyEditsHost,
+            .show_document = textEditorShowDocumentHost,
+            .reveal = textEditorRevealHost,
+        });
+        self.editor_tabs_actor = MainThreadEditorTabs.init(allocator, .{
+            .context = self,
+            .notify = editorTabsNotifyHost,
+            .move_tab = editorTabsMoveHost,
+            .close_tab = editorTabsCloseTabHost,
+            .close_group = editorTabsCloseGroupHost,
+        });
+        self.window_actor = .{ .host = .{ .context = self, .open_uri = windowOpenUriHost } };
+        self.extension_service_actor = .{ .host = .{
+            .context = self,
+            .on_did_activate = extensionServiceActivatedHost,
+            .as_browser_uri = extensionServiceBrowserUriHost,
+        } };
         self.registerActors();
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
@@ -166,21 +228,21 @@ pub const Extensions = struct {
             self.diagnostics_actor = null;
         }
         if (self.language_features_actor) |*actor| actor.deinit();
+        if (self.storage_actor) |*actor| actor.deinit();
+        if (self.statusbar_actor) |*actor| actor.deinit();
+        if (self.commands_actor) |*actor| actor.deinit();
+        if (self.configuration_actor) |*actor| actor.deinit();
+        if (self.editor_tabs_actor) |*actor| actor.deinit();
         if (self.active) |*active| {
             self.allocator.free(active.uri);
             self.allocator.free(active.language_id);
         }
-        var iterator = self.status_entries.iterator();
-        while (iterator.next()) |entry| {
-            entry.value_ptr.deinit(self.allocator);
-            self.allocator.free(entry.key_ptr.*);
-        }
-        self.status_entries.deinit();
-        self.config_values.deinit();
-        self.config_arena.deinit();
+        self.activation_tracker.deinit();
         self.last_selections.deinit();
         self.host.deinit();
-        self.description.deinit(self.allocator);
+        for (self.descriptions) |*description| description.deinit(self.allocator);
+        self.allocator.free(self.descriptions);
+        self.allocator.free(self.extension_ptrs);
         self.allocator.free(self.data_path);
         self.allocator.destroy(self);
     }
@@ -193,6 +255,24 @@ pub const Extensions = struct {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLanguageFeatures });
             } else if (nid == 16) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDiagnostics });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadStorage)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeStorage });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadStatusBar)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeStatusBar });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadCommands)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeCommands });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadConfiguration)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeConfiguration });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadDocuments)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDocuments });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadTextEditors)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeTextEditors });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadEditorTabs)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeEditorTabs });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadWindow)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeWindow });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadExtensionService)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeExtensionService });
             } else {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invoke });
             }
@@ -210,7 +290,7 @@ pub const Extensions = struct {
         self.diagnostics_actor = try MainThreadDiagnostics.init(self.allocator, marker_service, .{
             .context = self,
             .notify = diagnosticsNotify,
-        });
+        }, .{ .context = self, .model_for = diagnosticsModelFor });
     }
 
     fn languageFeaturesRequest(context: *anyopaque, allocator: Allocator, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, timeout_ms: u32) anyerror!std.json.Value {
@@ -228,6 +308,26 @@ pub const Extensions = struct {
         try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDiagnostics), method, args);
     }
 
+    fn refreshWorkbenchStatus(context: *anyopaque) void {
+        const workbench: *Workbench = @ptrCast(@alignCast(context));
+        workbench.refreshStatus();
+    }
+
+    fn diagnosticsModelFor(context: *anyopaque, resource: markers_mod.Resource) ?*TextModel {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        for (self.workbench.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                var candidate = markers_mod.Resource.fromUri(self.allocator, tab.editor.model.uri()) catch continue;
+                defer candidate.deinit(self.allocator);
+                if (!std.mem.eql(u8, candidate.scheme, resource.scheme)) continue;
+                if (!std.mem.eql(u8, candidate.authority, resource.authority)) continue;
+                if (!std.mem.eql(u8, candidate.path, resource.path)) continue;
+                return tab.editor.model;
+            }
+        }
+        return null;
+    }
+
     fn invokeLanguageFeatures(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.language_features_actor) |*actor| return actor.invoke(method, args, token, arena);
@@ -241,6 +341,204 @@ pub const Extensions = struct {
         return .empty;
     }
 
+    fn invokeStorage(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.storage_actor) |*actor| return actor.invoke(method, args, arena);
+        return .empty;
+    }
+
+    fn invokeStatusBar(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.statusbar_actor) |*actor| return actor.invoke(method, args, arena);
+        return .empty;
+    }
+
+    fn invokeCommands(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.commands_actor) |*actor| return actor.invoke(method, args, arena);
+        return .empty;
+    }
+
+    fn invokeConfiguration(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.configuration_actor) |*actor| return actor.invoke(method, args, arena);
+        return .empty;
+    }
+
+    fn invokeDocuments(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.documents_actor) |*actor| return actor.invoke(method, args, arena);
+        return .empty;
+    }
+
+    fn invokeTextEditors(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.text_editors_actor) |*actor| return actor.invoke(method, args, arena);
+        return .empty;
+    }
+
+    fn invokeEditorTabs(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.editor_tabs_actor) |*actor| return actor.invoke(method, args, arena);
+        return .empty;
+    }
+
+    fn invokeWindow(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.window_actor) |*actor| return actor.invoke(method, args, arena);
+        return .empty;
+    }
+
+    fn invokeExtensionService(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        _ = token;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.extension_service_actor) |*actor| return actor.invoke(method, args, arena);
+        return .empty;
+    }
+
+    fn windowOpenUriHost(context: *anyopaque, uri: std.json.Value) anyerror!bool {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const path = uriPath(uri) orelse return false;
+        self.workbench.openPath(path) catch return false;
+        self.needs_render = true;
+        return true;
+    }
+
+    fn extensionServiceActivatedHost(context: *anyopaque) void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        self.activated = true;
+    }
+
+    fn extensionServiceBrowserUriHost(_: *anyopaque, uri: std.json.Value) std.json.Value {
+        return uri;
+    }
+
+    fn editorTabsNotifyHost(context: *anyopaque, model: std.json.Value) anyerror!void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        var args = [_]rpc.Arg{.{ .json = model }};
+        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditorTabs), "$acceptEditorTabModel", &args, null, manager.noop_callback) catch {};
+    }
+
+    fn editorTabsMoveHost(_: *anyopaque, _: []const u8, _: usize) anyerror!void {}
+
+    fn editorTabsCloseTabHost(context: *anyopaque, tab_id: []const u8) anyerror!bool {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const closed = self.workbench.closePath(tab_id) catch false;
+        self.needs_render = true;
+        return closed;
+    }
+
+    fn editorTabsCloseGroupHost(context: *anyopaque, group_id: i64) anyerror!bool {
+        _ = group_id;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        while (self.workbench.tabCount() > 0) {
+            if (!(self.workbench.closeActive() catch false)) break;
+        }
+        self.needs_render = true;
+        return true;
+    }
+
+    fn documentsOpenHost(context: *anyopaque, uri: std.json.Value, options: std.json.Value, arena: Allocator) anyerror!std.json.Value {
+        _ = options;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const path = uriPath(uri) orelse return .null;
+        self.workbench.openPath(path) catch {};
+        self.needs_render = true;
+        return manager.fileUri(arena, path);
+    }
+
+    fn documentsCreateHost(context: *anyopaque, options: std.json.Value, arena: Allocator) anyerror!std.json.Value {
+        _ = options;
+        _ = context;
+        return manager.fileUri(arena, "/tmp/untitled");
+    }
+
+    fn documentsSaveHost(context: *anyopaque, uri: std.json.Value) anyerror!bool {
+        _ = uri;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const active = self.active orelse return false;
+        active.editor.save() catch return false;
+        self.needs_render = true;
+        return true;
+    }
+
+    fn textEditorSetSelectionsHost(context: *anyopaque, selections: []Selection) anyerror!void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const editor = if (self.active) |active| active.editor else return;
+        for (selections) |*selection| {
+            selection.startColumn = columnFromUtf16ForModel(editor.model, selection.startLineNumber, selection.startColumn);
+            selection.endColumn = columnFromUtf16ForModel(editor.model, selection.endLineNumber, selection.endColumn);
+        }
+        if (selections.len > 0) {
+            if (self.pending_type_selection) |pending| {
+                if (sameSelection(pending, selections[0])) {
+                    self.pending_type_selection = null;
+                } else if (isStaleAutoIndentSelection(editor, pending, selections[0])) {
+                    var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
+                    defer arena_instance.deinit();
+                    self.sendSelection(arena_instance.allocator(), .command) catch {};
+                    return;
+                } else {
+                    self.pending_type_selection = null;
+                }
+            }
+            editor.setSelections(selections) catch {};
+            self.needs_render = true;
+        }
+        self.captureSelections(editor);
+    }
+
+    fn textEditorApplyEditsHost(context: *anyopaque, version: u32, edits: []const EditSpec) anyerror!void {
+        _ = version;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const editor = if (self.active) |active| active.editor else return;
+        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_instance.deinit();
+        try self.applyEditSpecs(arena_instance.allocator(), editor, edits);
+    }
+
+    fn textEditorShowDocumentHost(context: *anyopaque, uri: std.json.Value, options: std.json.Value) anyerror!?[]const u8 {
+        _ = options;
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const path = uriPath(uri) orelse return null;
+        self.workbench.openPath(path) catch {};
+        self.needs_render = true;
+        return "1";
+    }
+
+    fn textEditorRevealHost(context: *anyopaque) anyerror!void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        if (self.active) |active| active.editor.ensureCursorVisible();
+        self.needs_render = true;
+    }
+
+    fn configurationDataHost(context: *anyopaque, arena: Allocator) anyerror!std.json.Value {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        return self.workbench.configurationData(arena);
+    }
+
+    fn configurationNotifyHost(context: *anyopaque, arena: Allocator, data: std.json.Value, changed_key: []const u8) anyerror!void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        var change: std.json.ObjectMap = .empty;
+        var keys = std.json.Array.init(arena);
+        try keys.append(.{ .string = try arena.dupe(u8, changed_key) });
+        try change.put(arena, "keys", .{ .array = keys });
+        try change.put(arena, "overrides", .{ .array = std.json.Array.init(arena) });
+        var args = [_]rpc.Arg{
+            .{ .json = data },
+            .{ .json = .{ .object = change } },
+        };
+        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostConfiguration), "$acceptConfigurationChanged", &args, null, manager.noop_callback) catch {};
+    }
+
     fn boot(self: *Extensions) !void {
         try self.host.expectControl(2, 10_000);
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
@@ -249,7 +547,7 @@ pub const Extensions = struct {
         const workspace = self.workbench.workspaceFolderPath() orelse ".";
         const init_data = try manager.buildInitData(arena, .{
             .host_script = "",
-            .extension = &self.description,
+            .extensions = self.extension_ptrs,
             .workspace_path = workspace,
             .workspace_name = "workspace",
             .data_path = self.data_path,
@@ -283,7 +581,8 @@ pub const Extensions = struct {
             error.InitializeWorkspaceRejected,
         );
 
-        var config_args = [_]rpc.Arg{.{ .json = try emptyConfig(arena) }};
+        const configuration_data = try self.workbench.configurationData(arena);
+        var config_args = [_]rpc.Arg{.{ .json = if (configuration_data == .null) try emptyConfig(arena) else configuration_data }};
         try self.callAndWait(
             proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostConfiguration),
             "$initializeConfiguration",
@@ -308,12 +607,23 @@ pub const Extensions = struct {
             error.StartExtensionHostRejected,
         );
 
-        const deadline = time_compat.milliTimestamp() + 10_000;
-        while (!self.activated and time_compat.milliTimestamp() < deadline) {
-            _ = self.host.pump();
-            time_compat.sleepMillis(5);
+        // VSCodeVim activates on `onStartupFinished`; wait for that before the
+        // first document delta so its listeners see the initial model. Other
+        // extensions (TypeScript) activate on `onLanguage` below, after the
+        // document delta has been queued.
+        var wait_for_startup_extension = false;
+        for (self.descriptions) |description| {
+            if (std.mem.eql(u8, description.identifier, "vscodevim.vim")) wait_for_startup_extension = true;
+        }
+        if (wait_for_startup_extension) {
+            const deadline = time_compat.milliTimestamp() + 10_000;
+            while (!self.activated and time_compat.milliTimestamp() < deadline) {
+                _ = self.host.pump();
+                time_compat.sleepMillis(5);
+            }
         }
         try self.syncActiveDocument();
+        self.activateActiveLanguage();
     }
 
     /// Calls a host method and waits for its reply. A rejected reply becomes
@@ -334,6 +644,15 @@ pub const Extensions = struct {
         if (wait.failed) return rejected;
     }
 
+    /// Fires `onLanguage:<id>` once per language, after the document delta has
+    /// been queued. Upstream's workbench language service does the same; the
+    /// terminal has a per-editor language service, so the extension bridge
+    /// derives the event from the active document.
+    fn activateActiveLanguage(self: *Extensions) void {
+        const tab = self.workbench.activeTab() orelse return;
+        self.activation_tracker.activateLanguage(self.host, tab.editor.languageId());
+    }
+
     /// Drains incoming extension messages. Returns true when the TUI should
     /// repaint (an edit, selection, or status entry changed).
     pub fn pump(self: *Extensions) bool {
@@ -341,6 +660,7 @@ pub const Extensions = struct {
         _ = self.host.pump();
         if (self.diagnostics_actor) |actor| actor.flush() catch {};
         self.syncActiveDocument() catch {};
+        self.activateActiveLanguage();
         self.syncSelection() catch {};
         const result = self.needs_render;
         self.needs_render = false;
@@ -366,51 +686,27 @@ pub const Extensions = struct {
         const uri = try self.allocator.dupe(u8, uri_path);
         errdefer self.allocator.free(uri);
         const language = try self.allocator.dupe(u8, tab.editor.languageId());
+        errdefer self.allocator.free(language);
 
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
-        var docs = std.json.Array.init(arena);
-        var document: std.json.ObjectMap = .empty;
-        try document.put(arena, "uri", try manager.fileUri(arena, uri_path));
-        try document.put(arena, "versionId", .{ .integer = 1 });
-        var lines = std.json.Array.init(arena);
-        const line_count = tab.editor.model.getLineCount();
-        var line_number: usize = 1;
-        while (line_number <= line_count) : (line_number += 1) {
-            var line = try tab.editor.model.getLineContent(line_number);
-            defer line.deinit();
-            try lines.append(.{ .string = try arena.dupe(u8, line.items) });
-        }
-        try document.put(arena, "lines", .{ .array = lines });
-        try document.put(arena, "EOL", .{ .string = "\n" });
-        try document.put(arena, "languageId", .{ .string = language });
-        try document.put(arena, "isDirty", .{ .bool = tab.editor.dirty_state });
-        try document.put(arena, "encoding", .{ .string = "utf8" });
-        try docs.append(.{ .object = document });
-
-        var editors = std.json.Array.init(arena);
-        var editor: std.json.ObjectMap = .empty;
-        try editor.put(arena, "id", .{ .string = "1" });
-        try editor.put(arena, "documentUri", try manager.fileUri(arena, uri_path));
-        var options: std.json.ObjectMap = .empty;
-        try options.put(arena, "tabSize", .{ .integer = @intCast(tab.editor.cursor_config.tabSize) });
-        try options.put(arena, "indentSize", .{ .integer = @intCast(tab.editor.cursor_config.indentSize) });
-        try options.put(arena, "originalIndentSize", .{ .string = "tabSize" });
-        try options.put(arena, "insertSpaces", .{ .bool = tab.editor.cursor_config.insertSpaces });
-        try options.put(arena, "cursorStyle", .{ .integer = 1 });
-        try options.put(arena, "lineNumbers", .{ .integer = 1 });
-        try editor.put(arena, "options", .{ .object = options });
-        try editor.put(arena, "selections", .{ .array = try self.selectionsJson(arena, tab.editor) });
-        try editor.put(arena, "visibleRanges", .{ .array = try self.visibleRangesJson(arena, tab.editor) });
-        try editor.put(arena, "editorPosition", .{ .integer = 1 });
-        try editors.append(.{ .object = editor });
-
-        var delta: std.json.ObjectMap = .empty;
-        try delta.put(arena, "addedDocuments", .{ .array = docs });
-        try delta.put(arena, "addedEditors", .{ .array = editors });
-        try delta.put(arena, "newActiveEditor", .{ .string = "1" });
-        var args = [_]rpc.Arg{.{ .json = .{ .object = delta } }};
+        const selections = try tab.editor.getSelections();
+        defer tab.editor.allocator.free(selections);
+        const delta = try documents_and_editors.addDocumentDelta(
+            arena,
+            tab.editor.model,
+            uri_path,
+            language,
+            tab.editor.dirty_state,
+            .{
+                .tab_size = tab.editor.cursor_config.tabSize,
+                .indent_size = tab.editor.cursor_config.indentSize,
+                .insert_spaces = tab.editor.cursor_config.insertSpaces,
+            },
+            selections,
+        );
+        var args = [_]rpc.Arg{.{ .json = delta }};
         _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback);
 
         self.active = .{ .editor = tab.editor, .uri = uri, .language_id = language };
@@ -421,50 +717,21 @@ pub const Extensions = struct {
 
     fn syncTabs(self: *Extensions) !void {
         const active_tab = self.workbench.activeTab() orelse return;
-        var signature: u64 = 0;
-        for (self.workbench.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                signature = signature *% 1099511628211;
-                signature ^= std.hash.Wyhash.hash(0, tab.editor.path);
-                if (tab.editor.dirty_state) signature ^= 0x9e3779b97f4a7c15;
-            }
-        }
-        if (signature == self.tab_signature) return;
-        self.tab_signature = signature;
-
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
-        var tabs = std.json.Array.init(arena);
+        var specs = std.array_list.Managed(documents_and_editors.TabSpec).init(arena);
         for (self.workbench.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
-                const is_active = tab == active_tab;
-                var tab_object: std.json.ObjectMap = .empty;
-                try tab_object.put(arena, "id", .{ .string = try arena.dupe(u8, tab.editor.path) });
-                try tab_object.put(arena, "label", .{ .string = try arena.dupe(u8, std.fs.path.basename(tab.editor.path)) });
-                var input: std.json.ObjectMap = .empty;
-                try input.put(arena, "kind", .{ .integer = 1 });
-                try input.put(arena, "uri", try manager.fileUri(arena, tab.editor.path));
-                try tab_object.put(arena, "input", .{ .object = input });
-                if (is_active) try tab_object.put(arena, "editorId", .{ .string = "1" });
-                try tab_object.put(arena, "isActive", .{ .bool = is_active });
-                try tab_object.put(arena, "isPinned", .{ .bool = true });
-                try tab_object.put(arena, "isPreview", .{ .bool = false });
-                try tab_object.put(arena, "isDirty", .{ .bool = tab.editor.dirty_state });
-                try tabs.append(.{ .object = tab_object });
+                try specs.append(.{
+                    .path = tab.editor.path,
+                    .label = std.fs.path.basename(tab.editor.path),
+                    .is_active = tab == active_tab,
+                    .is_dirty = tab.editor.dirty_state,
+                });
             }
         }
-        if (tabs.items.len == 0) return;
-
-        var group: std.json.ObjectMap = .empty;
-        try group.put(arena, "isActive", .{ .bool = true });
-        try group.put(arena, "viewColumn", .{ .integer = 1 });
-        try group.put(arena, "tabs", .{ .array = tabs });
-        try group.put(arena, "groupId", .{ .integer = 1 });
-        var groups = std.json.Array.init(arena);
-        try groups.append(.{ .object = group });
-        var args = [_]rpc.Arg{.{ .json = .{ .array = groups } }};
-        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditorTabs), "$acceptEditorTabModel", &args, null, manager.noop_callback) catch {};
+        if (self.editor_tabs_actor) |*actor| try actor.sync(arena, active_tab.editor.path, specs.items);
     }
 
     fn removeActiveDocument(self: *Extensions) !void {
@@ -472,48 +739,13 @@ pub const Extensions = struct {
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
-        var delta: std.json.ObjectMap = .empty;
-        var removed_docs = std.json.Array.init(arena);
-        try removed_docs.append(try manager.fileUri(arena, active.uri));
-        var removed_editors = std.json.Array.init(arena);
-        try removed_editors.append(.{ .string = "1" });
-        try delta.put(arena, "removedDocuments", .{ .array = removed_docs });
-        try delta.put(arena, "removedEditors", .{ .array = removed_editors });
-        var args = [_]rpc.Arg{.{ .json = .{ .object = delta } }};
+        const delta = try documents_and_editors.removedDocumentDelta(arena, active.uri);
+        var args = [_]rpc.Arg{.{ .json = delta }};
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback) catch {};
         self.allocator.free(active.uri);
         self.allocator.free(active.language_id);
         self.active = null;
         self.needs_render = true;
-    }
-
-    fn selectionsJson(self: *Extensions, arena: Allocator, editor: *Editor) !std.json.Array {
-        _ = self;
-        const selections = try editor.getSelections();
-        defer editor.allocator.free(selections);
-        var array = std.json.Array.init(arena);
-        for (selections) |selection| {
-            var item: std.json.ObjectMap = .empty;
-            try item.put(arena, "selectionStartLineNumber", .{ .integer = @intCast(selection.startLineNumber) });
-            try item.put(arena, "selectionStartColumn", .{ .integer = @intCast(selection.startColumn) });
-            try item.put(arena, "positionLineNumber", .{ .integer = @intCast(selection.endLineNumber) });
-            try item.put(arena, "positionColumn", .{ .integer = @intCast(selection.endColumn) });
-            try array.append(.{ .object = item });
-        }
-        return array;
-    }
-
-    fn visibleRangesJson(self: *Extensions, arena: Allocator, editor: *Editor) !std.json.Array {
-        _ = self;
-        var array = std.json.Array.init(arena);
-        const line_count = editor.model.getLineCount();
-        var item: std.json.ObjectMap = .empty;
-        try item.put(arena, "startLineNumber", .{ .integer = 1 });
-        try item.put(arena, "startColumn", .{ .integer = 1 });
-        try item.put(arena, "endLineNumber", .{ .integer = @intCast(line_count) });
-        try item.put(arena, "endColumn", .{ .integer = 1 });
-        try array.append(.{ .object = item });
-        return array;
     }
 
     pub fn handleKey(self: *Extensions, event: *const ui.KeyEvent) bool {
@@ -668,252 +900,13 @@ pub const Extensions = struct {
 
     fn invoke(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../vs/base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
-        const self: *Extensions = @ptrCast(@alignCast(context));
-        if (std.mem.eql(u8, method, "$getInitialState")) {
-            var state: std.json.ObjectMap = .empty;
-            try state.put(arena, "isFocused", .{ .bool = true });
-            try state.put(arena, "isActive", .{ .bool = true });
-            return .{ .json = .{ .object = state } };
-        }
+        _ = args;
+        _ = context;
         if (std.mem.eql(u8, method, "$getTools")) {
             return .{ .json = .{ .array = std.json.Array.init(arena) } };
         }
         if (std.mem.eql(u8, method, "$ensureActivation")) {
             return .{ .json = .{ .bool = true } };
-        }
-        if (std.mem.eql(u8, method, "$onDidActivateExtension")) {
-            self.activated = true;
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$registerTextEditorDecorationType")) {
-            self.decoration_count += 1;
-            var buffer: [32]u8 = undefined;
-            const key = try std.fmt.bufPrint(&buffer, "decoration-{d}", .{self.decoration_count});
-            return .{ .json = .{ .string = try arena.dupe(u8, key) } };
-        }
-        if (std.mem.eql(u8, method, "$executeCommand")) {
-            const command = if (args.len > 0 and args[0] == .json and args[0].json == .string) args[0].json.string else "";
-            if (std.mem.eql(u8, command, "default:type")) {
-                const editor = if (self.active) |active| active.editor else return .empty;
-                if (args.len > 1 and args[1] == .json and args[1].json == .array and args[1].json.array.items.len > 0) {
-                    const first = args[1].json.array.items[0];
-                    if (first == .object) {
-                        if (first.object.get("text")) |value| {
-                            if (value == .string) try self.applyType(arena, editor, value.string);
-                        }
-                    }
-                }
-                return .empty;
-            }
-            // VSCodeVim's insert-mode Backspace/Delete actions do not edit the
-            // document themselves: they delegate to the editor's core
-            // `deleteLeft`/`deleteRight` command. Without this branch the key
-            // is swallowed and nothing happens.
-            if (std.mem.eql(u8, command, "deleteLeft") or std.mem.eql(u8, command, "deleteRight")) {
-                const editor = if (self.active) |active| active.editor else return .empty;
-                _ = try runEditorCommand(editor, command);
-                try self.applyCommandEdit(arena, editor);
-                return .empty;
-            }
-            if (std.mem.eql(u8, command, "editor.action.insertLineAfter") or std.mem.eql(u8, command, "editor.action.insertLineBefore")) {
-                const editor = if (self.active) |active| active.editor else return .empty;
-                if (std.mem.eql(u8, command, "editor.action.insertLineAfter")) {
-                    try editor.insertLineAfter();
-                } else {
-                    try editor.insertLineBefore();
-                }
-                try self.applyCommandEdit(arena, editor);
-                return .empty;
-            }
-            if (std.mem.eql(u8, command, "workbench.action.splitEditorRight") or std.mem.eql(u8, command, "workbench.action.splitEditorDown")) {
-                const direction: SplitDirection = if (std.mem.eql(u8, command, "workbench.action.splitEditorRight")) .horizontal else .vertical;
-                self.workbench.splitActive(direction) catch {};
-                self.needs_render = true;
-                return .empty;
-            }
-            if (std.mem.eql(u8, command, "workbench.action.closeActiveEditor")) {
-                _ = self.workbench.closeActive() catch false;
-                self.needs_render = true;
-                return .empty;
-            }
-            if (std.mem.eql(u8, command, "workbench.action.files.save")) {
-                if (self.active) |active| active.editor.save() catch {};
-                self.needs_render = true;
-                return .empty;
-            }
-            if (std.mem.eql(u8, command, "workbench.action.nextEditorInGroup")) {
-                self.workbench.switchTab(1) catch {};
-                self.needs_render = true;
-                return .empty;
-            }
-            if (std.mem.eql(u8, command, "workbench.action.previousEditorInGroup")) {
-                self.workbench.switchTab(-1) catch {};
-                self.needs_render = true;
-                return .empty;
-            }
-            if (std.mem.eql(u8, command, "vscode.open")) {
-                const editor = if (self.active) |active| active.editor else return .empty;
-                _ = editor;
-                if (args.len > 1 and args[1] == .json and args[1].json == .array and args[1].json.array.items.len > 0) {
-                    const first = args[1].json.array.items[0];
-                    if (first == .object) {
-                        if (first.object.get("path")) |path| {
-                            if (path == .string) {
-                                self.workbench.openPath(path.string) catch {};
-                                self.needs_render = true;
-                            }
-                        }
-                    }
-                }
-                return .empty;
-            }
-            if (std.mem.eql(u8, command, "_setContext") or std.mem.eql(u8, command, "setContext")) {
-                if (args.len > 1 and args[1] == .json and args[1].json == .array and args[1].json.array.items.len >= 2) {
-                    const key_value = args[1].json.array.items[0];
-                    if (key_value == .string) {
-                        if (std.mem.eql(u8, key_value.string, "vim.active")) {
-                            if (args[1].json.array.items[1] == .bool) {
-                                self.vim_active = args[1].json.array.items[1].bool;
-                                if (!self.vim_active) self.vim_mode_insert = false;
-                            }
-                        } else if (std.mem.eql(u8, key_value.string, "vim.mode")) {
-                            const mode = args[1].json.array.items[1];
-                            self.vim_mode_insert = mode == .string and
-                                (std.mem.eql(u8, mode.string, "Insert") or std.mem.eql(u8, mode.string, "Replace"));
-                        }
-                    }
-                }
-                return .empty;
-            }
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$trySetSelections")) {
-            const editor = if (self.active) |active| active.editor else return .empty;
-            if (args.len > 1 and args[1] == .json and args[1].json == .array) {
-                const selection_list = args[1].json.array.items;
-                var selections = try self.allocator.alloc(Selection, selection_list.len);
-                defer self.allocator.free(selections);
-                for (selection_list, 0..) |value, index| {
-                    selections[index] = selectionFromJson(value) orelse .init(1, 1, 1, 1);
-                }
-                if (selections.len > 0) {
-                    if (self.pending_type_selection) |pending| {
-                        if (sameSelection(pending, selections[0])) {
-                            self.pending_type_selection = null;
-                        } else if (isStaleAutoIndentSelection(editor, pending, selections[0])) {
-                            var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
-                            defer arena_instance.deinit();
-                            self.sendSelection(arena_instance.allocator(), .command) catch {};
-                            return .{ .json = .{ .bool = true } };
-                        } else {
-                            self.pending_type_selection = null;
-                        }
-                    }
-                    editor.setSelections(selections) catch {};
-                    self.needs_render = true;
-                }
-                // The host applied this selection itself; remember it so the
-                // next pump does not echo it back as a user change.
-                self.captureSelections(editor);
-            }
-            return .{ .json = .{ .bool = true } };
-        }
-        if (std.mem.eql(u8, method, "$tryApplyEdits")) {
-            self.pending_type_selection = null;
-            const editor = if (self.active) |active| active.editor else return .empty;
-            if (args.len > 2 and args[2] == .json and args[2].json == .array) {
-                try self.applyEdits(arena, editor, args[2].json.array.items);
-            }
-            return .{ .json = .{ .bool = true } };
-        }
-        if (std.mem.eql(u8, method, "$trySetOptions")) {
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$trySetDecorations") or std.mem.eql(u8, method, "$trySetDecorationsFast")) {
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$tryRevealRange")) {
-            const editor = if (self.active) |active| active.editor else return .empty;
-            editor.ensureCursorVisible();
-            self.needs_render = true;
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$tryShowTextDocument")) {
-            if (args.len > 0 and args[0] == .json and args[0].json == .object) {
-                if (args[0].json.object.get("path")) |path| {
-                    if (path == .string) {
-                        self.workbench.openPath(path.string) catch {};
-                        self.needs_render = true;
-                    }
-                }
-            }
-            return .{ .json = .{ .string = "1" } };
-        }
-        if (std.mem.eql(u8, method, "$trySaveDocument")) {
-            const active = if (self.active) |value| value else return .{ .json = .{ .bool = false } };
-            active.editor.save() catch return .{ .json = .{ .bool = false } };
-            self.needs_render = true;
-            return .{ .json = .{ .bool = true } };
-        }
-        if (std.mem.eql(u8, method, "$tryOpenDocument")) {
-            if (args.len > 0 and args[0] == .json and args[0].json == .object) {
-                if (args[0].json.object.get("path")) |path| {
-                    if (path == .string) {
-                        self.workbench.openPath(path.string) catch {};
-                        self.needs_render = true;
-                        return .{ .json = try manager.fileUri(arena, path.string) };
-                    }
-                }
-            }
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$tryCreateDocument")) {
-            return .{ .json = try manager.fileUri(arena, "/tmp/untitled") };
-        }
-        if (std.mem.eql(u8, method, "$moveTab")) {
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$closeTab")) {
-            var closed = false;
-            if (args.len > 0 and args[0] == .json and args[0].json == .array) {
-                for (args[0].json.array.items) |value| {
-                    if (value == .string) closed = (self.workbench.closePath(value.string) catch false) or closed;
-                }
-            }
-            if (!closed) _ = self.workbench.closeActive() catch false;
-            self.tab_signature = 0;
-            self.needs_render = true;
-            return .{ .json = .{ .bool = true } };
-        }
-        if (std.mem.eql(u8, method, "$closeGroup")) {
-            while (self.workbench.tabCount() > 0) {
-                if (!(self.workbench.closeActive() catch false)) break;
-            }
-            self.needs_render = true;
-            return .{ .json = .{ .bool = true } };
-        }
-        if (std.mem.eql(u8, method, "$updateConfigurationOption")) {
-            if (args.len > 2 and args[1] == .json and args[1].json == .string) {
-                try self.storeConfiguration(args[1].json.string, args[2].json);
-            }
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$removeConfigurationOption")) {
-            if (args.len > 1 and args[1] == .json and args[1].json == .string) {
-                _ = self.config_values.remove(args[1].json.string);
-            }
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$setEntry")) {
-            try self.setStatusEntry(arena, args);
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$disposeEntry")) {
-            if (args.len > 0 and args[0] == .json and args[0].json == .string) self.removeStatusEntry(args[0].json.string);
-            return .empty;
-        }
-        if (std.mem.eql(u8, method, "$initializeExtensionStorage")) {
-            return .empty;
         }
         return .empty;
     }
@@ -954,34 +947,30 @@ pub const Extensions = struct {
         self.needs_render = true;
     }
 
-    fn applyEdits(self: *Extensions, arena: Allocator, editor: *Editor, edits: []const std.json.Value) !void {
+    fn applyEditSpecs(self: *Extensions, arena: Allocator, editor: *Editor, edits: []const EditSpec) !void {
         var text_edits = std.array_list.Managed(TextEdit).init(self.allocator);
         defer {
             for (text_edits.items) |edit| self.allocator.free(edit.text);
             text_edits.deinit();
         }
-        var starts = std.array_list.Managed(Position).init(self.allocator);
-        defer starts.deinit();
-        for (edits) |value| {
-            if (value != .object) continue;
-            const object = value.object;
-            const text_value = object.get("text") orelse std.json.Value.null;
-            const range_value = object.get("range") orelse continue;
-            if (range_value != .object) continue;
-            const range = rangeFromJson(range_value) orelse continue;
-            const text = if (text_value == .string) text_value.string else "";
-            const copied = try self.allocator.dupe(u8, text);
+        for (edits) |edit| {
+            if (edit.text.len == 0 and edit.start_line == edit.end_line and edit.start_column == edit.end_column) continue;
+            const range = Range.init(
+                edit.start_line,
+                columnFromUtf16ForModel(editor.model, edit.start_line, edit.start_column),
+                edit.end_line,
+                columnFromUtf16ForModel(editor.model, edit.end_line, edit.end_column),
+            );
+            const copied = try self.allocator.dupe(u8, edit.text);
             errdefer self.allocator.free(copied);
             try text_edits.append(.{ .range = range, .text = copied });
-            try starts.append(range.getStartPosition());
         }
         if (text_edits.items.len == 0) return;
         try editor.applyTextEdits(text_edits.items, &.{});
         const active = &(self.active orelse return);
         active.version += 1;
-        for (text_edits.items, 0..) |edit, index| {
+        for (text_edits.items) |edit| {
             try self.sendModelChanged(arena, edit.text, edit.range.getStartPosition(), edit.range.getStartPosition());
-            _ = index;
         }
         try self.sendSelection(arena, .keyboard);
         self.needs_render = true;
@@ -989,30 +978,19 @@ pub const Extensions = struct {
 
     fn sendModelChanged(self: *Extensions, arena: Allocator, text: []const u8, start: Position, end: Position) !void {
         const active = self.active orelse return;
-        var changes = std.json.Array.init(arena);
-        var change: std.json.ObjectMap = .empty;
-        try change.put(arena, "rangeOffset", .{ .integer = 0 });
-        try change.put(arena, "rangeLength", .{ .integer = 0 });
-        try change.put(arena, "text", .{ .string = try arena.dupe(u8, text) });
-        var range: std.json.ObjectMap = .empty;
-        try range.put(arena, "startLineNumber", .{ .integer = @intCast(start.lineNumber) });
-        try range.put(arena, "startColumn", .{ .integer = @intCast(start.column) });
-        try range.put(arena, "endLineNumber", .{ .integer = @intCast(end.lineNumber) });
-        try range.put(arena, "endColumn", .{ .integer = @intCast(end.column) });
-        try change.put(arena, "range", .{ .object = range });
-        try changes.append(.{ .object = change });
-        var event: std.json.ObjectMap = .empty;
-        try event.put(arena, "changes", .{ .array = changes });
-        try event.put(arena, "eol", .{ .string = "\n" });
-        try event.put(arena, "versionId", .{ .integer = @intCast(active.version) });
-        try event.put(arena, "isUndoing", .{ .bool = false });
-        try event.put(arena, "isRedoing", .{ .bool = false });
-        try event.put(arena, "isFlush", .{ .bool = false });
-        try event.put(arena, "isEolChange", .{ .bool = false });
-        try event.put(arena, "detailedReason", .null);
+        const event = try documents_and_editors.modelChangedEvent(
+            arena,
+            active.editor.model,
+            .{
+                .text = text,
+                .start = .{ .line = start.lineNumber, .column = start.column },
+                .end = .{ .line = end.lineNumber, .column = end.column },
+            },
+            active.version,
+        );
         var args = [_]rpc.Arg{
             .{ .json = try manager.fileUri(arena, active.uri) },
-            .{ .json = .{ .object = event } },
+            .{ .json = event },
             .{ .json = .{ .bool = false } },
         };
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocuments), "$acceptModelChanged", &args, null, manager.noop_callback) catch {};
@@ -1020,17 +998,13 @@ pub const Extensions = struct {
 
     fn sendSelection(self: *Extensions, arena: Allocator, source: SelectionSource) !void {
         const active = self.active orelse return;
-        const selections = try self.selectionsJson(arena, active.editor);
-        var event: std.json.ObjectMap = .empty;
-        try event.put(arena, "selections", .{ .array = selections });
-        try event.put(arena, "source", .{ .string = source.wireName() });
-        var properties: std.json.ObjectMap = .empty;
-        try properties.put(arena, "options", .null);
-        try properties.put(arena, "selections", .{ .object = event });
-        try properties.put(arena, "visibleRanges", .null);
+        const selections = try active.editor.getSelections();
+        defer active.editor.allocator.free(selections);
+        const value = try documents_and_editors.editorPropertiesChanged(arena, "1", active.editor.model, selections, source.wireName());
+        if (value != .array or value.array.items.len < 2) return;
         var args = [_]rpc.Arg{
-            .{ .json = .{ .string = "1" } },
-            .{ .json = .{ .object = properties } },
+            .{ .json = value.array.items[0] },
+            .{ .json = value.array.items[1] },
         };
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditors), "$acceptEditorPropertiesChanged", &args, null, manager.noop_callback) catch {};
         self.captureSelections(active.editor);
@@ -1092,100 +1066,94 @@ pub const Extensions = struct {
         defer arena_instance.deinit();
         try self.sendSelection(arena_instance.allocator(), self.selection_source);
     }
-
-    fn storeConfiguration(self: *Extensions, key: []const u8, value: std.json.Value) !void {
-        const arena = self.config_arena.allocator();
-        if (self.config_values.getPtr(key)) |slot| {
-            slot.* = try configuration.cloneValue(arena, value);
-        } else {
-            const owned_key = try arena.dupe(u8, key);
-            try self.config_values.put(owned_key, try configuration.cloneValue(arena, value));
-        }
-        try self.pushConfiguration();
-    }
-
-    fn pushConfiguration(self: *Extensions) !void {
-        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena_instance.deinit();
-        const arena = arena_instance.allocator();
-        var root: std.json.ObjectMap = .empty;
-        for ([_][]const u8{ "defaults", "policy", "application", "userRemote", "workspace" }) |name| {
-            var model: std.json.ObjectMap = .empty;
-            try model.put(arena, "contents", .{ .object = .empty });
-            try model.put(arena, "keys", .{ .array = std.json.Array.init(arena) });
-            try model.put(arena, "overrides", .{ .array = std.json.Array.init(arena) });
-            try root.put(arena, name, .{ .object = model });
-        }
-        var user_local: std.json.ObjectMap = .empty;
-        var contents: std.json.ObjectMap = .empty;
-        var keys = std.json.Array.init(arena);
-        var iterator = self.config_values.iterator();
-        while (iterator.next()) |entry| {
-            try contents.put(arena, try arena.dupe(u8, entry.key_ptr.*), try configuration.cloneValue(arena, entry.value_ptr.*));
-            try keys.append(.{ .string = try arena.dupe(u8, entry.key_ptr.*) });
-        }
-        try user_local.put(arena, "contents", .{ .object = contents });
-        try user_local.put(arena, "keys", .{ .array = keys });
-        try user_local.put(arena, "overrides", .{ .array = std.json.Array.init(arena) });
-        try root.put(arena, "userLocal", .{ .object = user_local });
-        try root.put(arena, "folders", .{ .array = std.json.Array.init(arena) });
-        try root.put(arena, "configurationScopes", .{ .array = std.json.Array.init(arena) });
-
-        var change: std.json.ObjectMap = .empty;
-        try change.put(arena, "keys", .{ .array = keys });
-        try change.put(arena, "overrides", .{ .array = std.json.Array.init(arena) });
-        var args = [_]rpc.Arg{
-            .{ .json = .{ .object = root } },
-            .{ .json = .{ .object = change } },
-        };
-        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostConfiguration), "$acceptConfigurationChanged", &args, null, manager.noop_callback) catch {};
-    }
-
-    fn setStatusEntry(self: *Extensions, arena: Allocator, args: []const rpc.Arg) !void {
-        if (args.len < 5) return;
-        if (args[0] != .json or args[0].json != .string) return;
-        const id = args[0].json.string;
-        const name = if (args[3] == .json and args[3].json == .string) args[3].json.string else id;
-        const text = if (args[4] == .json and args[4].json == .string) args[4].json.string else "";
-        _ = arena;
-        if (self.status_entries.getPtr(id)) |existing| {
-            self.allocator.free(existing.text);
-            self.allocator.free(existing.name);
-            existing.text = try self.allocator.dupe(u8, text);
-            existing.name = try self.allocator.dupe(u8, name);
-            existing.accessor.update(.{
-                .name = existing.name,
-                .text = existing.text,
-                .extension_id = self.description.identifier,
-            });
-        } else {
-            const owned_text = try self.allocator.dupe(u8, text);
-            errdefer self.allocator.free(owned_text);
-            const owned_name = try self.allocator.dupe(u8, name);
-            errdefer self.allocator.free(owned_name);
-            const owned_id = try self.allocator.dupe(u8, id);
-            errdefer self.allocator.free(owned_id);
-            const accessor = try self.workbench.statusbar.addEntry(.{
-                .name = owned_name,
-                .text = owned_text,
-                .extension_id = self.description.identifier,
-            }, owned_id, .left, .{ .number = 0 });
-            try self.status_entries.put(owned_id, .{ .text = owned_text, .name = owned_name, .accessor = accessor });
-        }
-        self.workbench.refreshStatus();
-        self.needs_render = true;
-    }
-
-    fn removeStatusEntry(self: *Extensions, id: []const u8) void {
-        if (self.status_entries.fetchRemove(id)) |entry| {
-            var owned = entry.value;
-            owned.deinit(self.allocator);
-            self.allocator.free(entry.key);
-            self.workbench.refreshStatus();
-            self.needs_render = true;
-        }
-    }
 };
+
+fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: std.json.Value, arena: Allocator) anyerror!?std.json.Value {
+    const self: *Extensions = @ptrCast(@alignCast(context));
+    const args: []const std.json.Value = if (command_args == .array) command_args.array.items else &.{};
+    if (std.mem.eql(u8, command, "default:type")) {
+        const editor = if (self.active) |active| active.editor else return null;
+        if (args.len > 0 and args[0] == .object) {
+            if (args[0].object.get("text")) |value| {
+                if (value == .string) try self.applyType(arena, editor, value.string);
+            }
+        }
+        return null;
+    }
+    // VSCodeVim's insert-mode Backspace/Delete actions do not edit the
+    // document themselves: they delegate to the editor's core
+    // `deleteLeft`/`deleteRight` command.
+    if (std.mem.eql(u8, command, "deleteLeft") or std.mem.eql(u8, command, "deleteRight")) {
+        const editor = if (self.active) |active| active.editor else return null;
+        _ = try runEditorCommand(editor, command);
+        try self.applyCommandEdit(arena, editor);
+        return null;
+    }
+    if (std.mem.eql(u8, command, "editor.action.insertLineAfter") or std.mem.eql(u8, command, "editor.action.insertLineBefore")) {
+        const editor = if (self.active) |active| active.editor else return null;
+        if (std.mem.eql(u8, command, "editor.action.insertLineAfter")) {
+            try editor.insertLineAfter();
+        } else {
+            try editor.insertLineBefore();
+        }
+        try self.applyCommandEdit(arena, editor);
+        return null;
+    }
+    if (std.mem.eql(u8, command, "workbench.action.splitEditorRight") or std.mem.eql(u8, command, "workbench.action.splitEditorDown")) {
+        const direction: SplitDirection = if (std.mem.eql(u8, command, "workbench.action.splitEditorRight")) .horizontal else .vertical;
+        self.workbench.splitActive(direction) catch {};
+        self.needs_render = true;
+        return null;
+    }
+    if (std.mem.eql(u8, command, "workbench.action.closeActiveEditor")) {
+        _ = self.workbench.closeActive() catch false;
+        self.needs_render = true;
+        return null;
+    }
+    if (std.mem.eql(u8, command, "workbench.action.files.save")) {
+        if (self.active) |active| active.editor.save() catch {};
+        self.needs_render = true;
+        return null;
+    }
+    if (std.mem.eql(u8, command, "workbench.action.nextEditorInGroup")) {
+        self.workbench.switchTab(1) catch {};
+        self.needs_render = true;
+        return null;
+    }
+    if (std.mem.eql(u8, command, "workbench.action.previousEditorInGroup")) {
+        self.workbench.switchTab(-1) catch {};
+        self.needs_render = true;
+        return null;
+    }
+    if (std.mem.eql(u8, command, "vscode.open")) {
+        if (args.len > 0 and args[0] == .object) {
+            if (args[0].object.get("path")) |path| {
+                if (path == .string) {
+                    self.workbench.openPath(path.string) catch {};
+                    self.needs_render = true;
+                }
+            }
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, command, "_setContext") or std.mem.eql(u8, command, "setContext")) {
+        if (args.len >= 2 and args[0] == .string) {
+            const key_value = args[0];
+            if (std.mem.eql(u8, key_value.string, "vim.active")) {
+                if (args[1] == .bool) {
+                    self.vim_active = args[1].bool;
+                    if (!self.vim_active) self.vim_mode_insert = false;
+                }
+            } else if (std.mem.eql(u8, key_value.string, "vim.mode")) {
+                const mode = args[1];
+                self.vim_mode_insert = mode == .string and
+                    (std.mem.eql(u8, mode.string, "Insert") or std.mem.eql(u8, mode.string, "Replace"));
+            }
+        }
+        return null;
+    }
+    return null;
+}
 
 /// Applies a core editor command the extension host delegates back to the
 /// TUI. VSCodeVim's insert-mode Backspace and Delete actions are wrappers
@@ -1246,6 +1214,27 @@ fn emptyConfig(arena: Allocator) !std.json.Value {
     try root.put(arena, "folders", .{ .array = std.json.Array.init(arena) });
     try root.put(arena, "configurationScopes", .{ .array = std.json.Array.init(arena) });
     return .{ .object = root };
+}
+
+fn uriPath(value: std.json.Value) ?[]const u8 {
+    if (value != .object) return null;
+    const path = value.object.get("path") orelse return null;
+    if (path != .string) return null;
+    return path.string;
+}
+
+fn utf16ColumnForModel(model: *TextModel, line_number: usize, column: usize) usize {
+    if (line_number < 1 or line_number > model.getLineCount()) return column;
+    var line = model.getLineContent(line_number) catch return column;
+    defer line.deinit();
+    return position_converter.utf16OffsetForColumn(line.items, column);
+}
+
+fn columnFromUtf16ForModel(model: *TextModel, line_number: usize, offset: usize) usize {
+    if (line_number < 1 or line_number > model.getLineCount()) return offset;
+    var line = model.getLineContent(line_number) catch return offset;
+    defer line.deinit();
+    return position_converter.columnForUtf16Offset(line.items, offset);
 }
 
 fn selectionFromJson(value: std.json.Value) ?Selection {
@@ -1321,7 +1310,7 @@ test "Extensions: VSCodeVim inserts text into the active TUI editor" {
     var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
     defer workbench.deinit();
 
-    var extension_host = try Extensions.init(allocator, io, workbench, ".cache-ext/vim/extension", ".cache-ext/data-tui-test");
+    var extension_host = try Extensions.init(allocator, io, workbench, &.{.{ .path = ".cache-ext/vim/extension", .is_under_development = true }}, ".cache-ext/data-tui-test");
     defer extension_host.deinit();
 
     const deadline = time_compat.milliTimestamp() + 10_000;
@@ -1376,8 +1365,13 @@ test "Extensions: VSCodeVim inserts text into the active TUI editor" {
     }
 
     _ = extension_host.handleKey(&.{ .key = .escape });
+    const mode_deadline = time_compat.milliTimestamp() + 3_000;
+    while (extension_host.vim_mode_insert and time_compat.milliTimestamp() < mode_deadline) {
+        _ = extension_host.pump();
+        time_compat.sleepMillis(10);
+    }
     _ = extension_host.pump();
-    time_compat.sleepMillis(300);
+    time_compat.sleepMillis(100);
     _ = extension_host.handleKey(&.{ .key = .{ .char = 'x' } });
     const delete_until = time_compat.milliTimestamp() + 5_000;
     while (time_compat.milliTimestamp() < delete_until) {
@@ -1429,7 +1423,7 @@ test "Extensions: language feature registration reaches the workbench registries
     defer workbench.deinit();
     try workbench.enableLanguageFeatures();
 
-    var extension_host = try Extensions.init(allocator, io, workbench, "host/test-fixtures/language-features", ".cache-ext/data-language-fixture");
+    var extension_host = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture");
     defer extension_host.deinit();
 
     const deadline = time_compat.milliTimestamp() + 10_000;
@@ -1461,4 +1455,219 @@ test "Extensions: language feature registration reaches the workbench registries
     const symbol_providers = try features.document_symbol_provider.ordered(allocator, model, false);
     defer allocator.free(symbol_providers);
     try std.testing.expect(symbol_providers.len > 0);
+}
+
+test "Extensions: real TypeScript extension drives the language features" {
+    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "sample.ts", .data =
+        \\const  value:number = "text";
+        \\const other=value.toFixed( );
+        \\const é = 1; const x: number = "s";
+        \\
+    });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_length = try tmp.dir.realPathFile(io, "sample.ts", &path_buffer);
+
+    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+    var extension_host = try Extensions.init(
+        allocator,
+        io,
+        workbench,
+        &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
+        ".cache-ext/data-ts-test",
+    );
+    defer extension_host.deinit();
+
+    const marker_service = workbench.marker_service.?;
+    const features = workbench.language_features.?;
+    const tab = workbench.activeTab().?;
+    const model = tab.editor.model;
+    var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
+    defer resource.deinit(allocator);
+    const token = @import("../vs/base/common/cancellation.zig").CancellationToken.None;
+
+    const deadline = time_compat.milliTimestamp() + 60_000;
+
+    // Diagnostics: the extension's tsserver client publishes semantic errors
+    // through its diagnostic collection.
+    var found_diagnostic = false;
+    var verified_utf16 = false;
+    while ((!found_diagnostic or !verified_utf16) and time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const list = marker_service.read(arena.allocator(), .{ .resource = resource }) catch &.{};
+        for (list) |marker| {
+            if (std.mem.indexOf(u8, marker.message, "not assignable") == null) continue;
+            found_diagnostic = true;
+            if (marker.start_line_number == 3) {
+                var line = try model.getLineContent(3);
+                defer line.deinit();
+                if (marker.start_column == 21 and marker.end_column == 22 and line.items.len >= 21 and line.items[20] == 'x') {
+                    verified_utf16 = true;
+                }
+            }
+        }
+        if (!found_diagnostic or !verified_utf16) time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(found_diagnostic);
+    try std.testing.expect(verified_utf16);
+
+    // Completion: tsserver suggests `toFixed` after `value.`.
+    var found_completion = false;
+    while (!found_completion and time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        const providers = try features.completion_provider.ordered(allocator, model, false);
+        defer allocator.free(providers);
+        for (providers) |provider| {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const list = provider.provide_completion_items(
+                provider.context,
+                arena.allocator(),
+                model,
+                Position.init(2, 19),
+                .{},
+                token,
+            ) catch continue;
+            for (list.items) |item| {
+                if (std.mem.indexOf(u8, item.label, "toFixed") != null) {
+                    found_completion = true;
+                    break;
+                }
+            }
+            if (found_completion) break;
+        }
+        if (!found_completion) time_compat.sleepMillis(200);
+    }
+    try std.testing.expect(found_completion);
+
+    // Hover: quick info for `value` carries tsserver's display string.
+    var found_hover = false;
+    while (!found_hover and time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        const providers = try features.hover_provider.ordered(allocator, model, false);
+        defer allocator.free(providers);
+        for (providers) |provider| {
+            const hover = provider.provide_hover(provider.context, model, Position.init(2, 14), token, null) catch continue;
+            if (hover) |value| {
+                for (value.contents) |content| {
+                    if (std.mem.indexOf(u8, content.value, "number") != null) {
+                        found_hover = true;
+                        break;
+                    }
+                }
+            }
+            if (found_hover) break;
+        }
+        if (!found_hover) time_compat.sleepMillis(200);
+    }
+    try std.testing.expect(found_hover);
+
+    // Document symbols: the extension's provider feeds the breadcrumb/outline
+    // registries with UTF-16-converted ranges.
+    var found_symbol = false;
+    while (!found_symbol and time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        const providers = try features.document_symbol_provider.ordered(allocator, model, false);
+        defer allocator.free(providers);
+        for (providers) |provider| {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const symbols = provider.provide_document_symbols(
+                provider.context,
+                arena.allocator(),
+                model,
+                token,
+            ) catch continue;
+            for (symbols) |symbol| {
+                if (std.mem.eql(u8, symbol.name, "value") or std.mem.eql(u8, symbol.name, "other")) {
+                    found_symbol = true;
+                    break;
+                }
+            }
+            if (found_symbol) break;
+        }
+        if (!found_symbol) time_compat.sleepMillis(200);
+    }
+    try std.testing.expect(found_symbol);
+
+    // Formatting: the extension's document formatting provider replaces the
+    // unformatted text through the regular editor command path.
+    var formatted = false;
+    while (!formatted and time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        tab.editor.formatDocument() catch {};
+        var text = try model.getValue(.LF, false);
+        defer text.deinit();
+        formatted = std.mem.indexOf(u8, text.items, "const value: number") != null;
+        if (!formatted) time_compat.sleepMillis(200);
+    }
+    try std.testing.expect(formatted);
+}
+
+test "Extensions: TypeScript and VSCodeVim share one host" {
+    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "both.ts", .data = "const value: number = \"text\";\n" });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_length = try tmp.dir.realPathFile(io, "both.ts", &path_buffer);
+
+    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_length]}, 80, 24);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+    var extension_host = try Extensions.init(
+        allocator,
+        io,
+        workbench,
+        &.{
+            .{ .path = ".cache-ext/vim/extension", .is_under_development = true },
+            .{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true },
+        },
+        ".cache-ext/data-ts-vim-test",
+    );
+    defer extension_host.deinit();
+    try std.testing.expectEqual(@as(usize, 2), extension_host.descriptions.len);
+
+    const marker_service = workbench.marker_service.?;
+    const model = workbench.activeTab().?.editor.model;
+    var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
+    defer resource.deinit(allocator);
+
+    // The TypeScript extension in the same host also publishes diagnostics.
+    var found = false;
+    const diagnostics_deadline = time_compat.milliTimestamp() + 30_000;
+    while (time_compat.milliTimestamp() < diagnostics_deadline) {
+        _ = extension_host.pump();
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const list = marker_service.read(arena.allocator(), .{ .resource = resource }) catch &.{};
+        for (list) |marker| {
+            if (std.mem.indexOf(u8, marker.message, "not assignable") != null) {
+                found = true;
+                break;
+            }
+        }
+        if (found) break;
+        time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(found);
 }

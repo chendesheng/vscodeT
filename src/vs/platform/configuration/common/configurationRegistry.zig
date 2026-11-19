@@ -513,10 +513,31 @@ pub const ConfigurationRegistry = struct {
     }
 
     /// Produces the merged default model. The caller owns the returned model.
+    ///
+    /// Registered configuration properties contribute their `default` values
+    /// too: upstream's default configuration is the merged property defaults,
+    /// not only the JSON fragments registered with `registerDefaultsJson`.
     pub fn buildDefaultModel(self: *const ConfigurationRegistry, allocator: Allocator) !ConfigurationModel {
         var models = std.array_list.Managed(*const ConfigurationModel).init(allocator);
         defer models.deinit();
         for (self.defaults.items) |model| try models.append(model);
+
+        var property_model: ?ConfigurationModel = null;
+        defer if (property_model) |*model| model.deinit();
+        if (self.properties.count() > 0) {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const scratch = arena.allocator();
+            var contents: std.json.Value = .{ .object = .empty };
+            var keys = std.array_list.Managed([]const u8).init(scratch);
+            var iterator = self.properties.iterator();
+            while (iterator.next()) |entry| {
+                try configuration.addToValueTree(scratch, &contents, entry.key_ptr.*, entry.value_ptr.default);
+                try keys.append(entry.key_ptr.*);
+            }
+            property_model = try ConfigurationModel.init(allocator, contents, keys.items);
+            try models.append(&property_model.?);
+        }
         return ConfigurationModel.merge(allocator, models.items);
     }
 };
@@ -573,6 +594,8 @@ fn cloneValue(arena: Allocator, value: std.json.Value) !std.json.Value {
             for (array.items) |item| try result.append(try cloneValue(arena, item));
             break :blk .{ .array = result };
         },
+        .string => |text| .{ .string = try arena.dupe(u8, text) },
+        .number_string => |text| .{ .number_string = try arena.dupe(u8, text) },
         else => value,
     };
 }

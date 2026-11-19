@@ -100,8 +100,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
 /// Extension discovery follows VS Code: resolve `extensionsPath` from the
 /// `--extensions-dir` argument, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE` or the
 /// product's user folder, then perform upstream's `scanAllUserExtensions`
-/// location scan. The TUI extension host activates only VSCodeVim, so the
-/// scanned identifiers are filtered for it.
+/// location scan. The user extension host loads VSCodeVim; the built-in
+/// TypeScript extension is provisioned separately under `host/dist/extensions`.
 fn findVimExtension(
     allocator: std.mem.Allocator,
     io: Io,
@@ -407,16 +407,27 @@ pub fn main(init: std.process.Init) !void {
 
     var extension_host: ?*extensions.Extensions = null;
     defer if (extension_host) |ext| ext.deinit();
+    var extension_paths = std.array_list.Managed(extensions.Extensions.ExtensionPath).init(allocator);
+    defer extension_paths.deinit();
     const extension_path = findVimExtension(allocator, io, args.extensions_dir, init.environ_map, log_service) catch |err| blk: {
         report(log_service, "extension discovery failed: {s}", .{@errorName(err)});
         break :blk null;
     };
     if (extension_path) |path| {
         defer allocator.free(path);
+        try extension_paths.append(.{ .path = path, .is_under_development = true });
+    }
+    const typescript_extension_path = "host/dist/extensions/typescript-language-features";
+    if (std.Io.Dir.cwd().access(io, typescript_extension_path, .{})) |_| {
+        try extension_paths.append(.{ .path = typescript_extension_path, .is_builtin = true });
+    } else |err| {
+        if (err != error.FileNotFound) infoLog(log_service, "TypeScript extension unavailable: {s}", .{@errorName(err)});
+    }
+    if (extension_paths.items.len > 0) {
         const extension_data = try defaultExtensionDataPath(allocator, init.environ_map);
         defer allocator.free(extension_data);
         std.Io.Dir.cwd().createDirPath(io, extension_data) catch {};
-        extension_host = extensions.Extensions.init(allocator, io, workbench, path, extension_data) catch |err| blk: {
+        extension_host = extensions.Extensions.init(allocator, io, workbench, extension_paths.items, extension_data) catch |err| blk: {
             if (err == error.ExtensionHostBundleMissing) {
                 report(log_service, "extension host disabled: host/dist/extensionHost.mjs is missing; run `zig build host` (details in README)", .{});
             } else {
@@ -424,6 +435,8 @@ pub fn main(init: std.process.Init) !void {
             }
             break :blk null;
         };
+    } else {
+        infoLog(log_service, "extension host disabled: no VSCodeVim or TypeScript extension found", .{});
     }
 
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);

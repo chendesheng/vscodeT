@@ -133,6 +133,12 @@ step. If the host bundle is missing at startup, the app reports
 `extension host disabled: host/dist/extensionHost.mjs is missing` in the main
 log instead of waiting for the host socket to time out.
 
+`npm run build:typescript-extension` (in `host/`) is the optional step that
+provisions VS Code's real `typescript-language-features` extension and
+its TypeScript SDK under `host/dist/extensions`. It uses an installed VS Code by
+default; set `VSCODE_APP_PATH` to choose one, or `TYPESCRIPT_SDK` to override
+the SDK. The extension is a runtime asset, not vendored source.
+
 The JSON server bundle reuses the runtime dependencies of the pinned
 `../vscode/extensions/json-language-features/server`; install them there first
 with `npm install` if the bundle step cannot resolve `vscode-languageserver`.
@@ -142,9 +148,10 @@ with `npm install` if the bundle step cannot resolve `vscode-languageserver`.
 `--extensions-dir`, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, then
 `~/.vscode/extensions` for the Stable product. The folder is scanned the way
 `scanAllUserExtensions` does it: direct child directories with a `package.json`
-are read, dot-directories are skipped, and VSCodeVim is selected by its
-identifier. Other extensions are scanned but not activated yet. The TUI
-starts the pinned host, mirrors the active tab as a document/editor, routes
+are read and dot-directories are skipped. VSCodeVim is selected by its
+identifier and, when provisioned, VS Code's built-in
+`typescript-language-features` extension joins it in the same pinned host. The
+TUI starts the host, mirrors the active tab as a document/editor, routes
 printable keys through the `type` command, and applies the extension's edits
 and selections back to the editor. A host `default:type` newline goes through
 the same Enter/auto-indent path as the TUI key handler, and the bridge mirrors
@@ -172,6 +179,24 @@ while the indent rules live in the separate built-in `extensions/json`
 language configuration. The build embeds that upstream
 `language-configuration.json`, so JSON/JSONC `Enter` auto-indent and
 closing-bracket outdent also work without `host/dist/jsonServer.mjs`.
+
+TypeScript and JavaScript editors use VS Code's real
+`typescript-language-features` extension when `host/dist/extensions` has been
+provisioned. The extension is activated by `onLanguage:<id>` after the document
+delta is queued; its own tsserver client provides semantic/syntax diagnostics
+(shown as squiggly underlines, overview marks and the `Problems` count),
+`Ctrl-Space` completion, hover, `Alt-F` document formatting and breadcrumb
+document symbols. Without the extension bundle, TS/JS tabs keep the bundled
+grammar and indentation behavior. The extension host receives the extension's
+`contributes.configuration` defaults, so settings such as
+`js/ts.format.enabled` resolve like VS Code. Position-bearing RPCs (diagnostics,
+completion/hover ranges, formatting edits, document changes and selections) are
+converted between the host's UTF-16 code units and the editor's UTF-8 byte
+columns. Semantic tokens, inlay hints, code lens, links, colors, call
+hierarchy and inline completions are registered by the extension but have no
+terminal renderer; definition and code-action providers still have no TUI
+command surface. Configuration writes are accepted in memory and are not
+persisted.
 
 Extensions can also contribute language features through the ported
 language-feature bridge: hover, completion, definition, document symbols, code
@@ -274,10 +299,9 @@ console API for raw mode, sizing and input polling.
   the segments follow the upstream focus/selection rules. Clicking a folder or
   file opens the terminal quick pick with the directory's children, and clicking
   a symbol reveals it. Symbol segments are supplied by the ported
-  `IOutlineService`/`IOutline` plumbing; **no built-in document-symbol provider is
-  shipped yet**, so JavaScript and other files show only the file path until a
-  provider is registered (for example by the future extension host). A fake
-  provider is used in the tests. `Ctrl+Shift+.` focuses/selects the last segment
+  `IOutlineService`/`IOutline` plumbing. The real TypeScript extension registers
+  a document-symbol provider for TS/JS files; other languages still show only the
+  file path until an extension provider is registered. `Ctrl+Shift+.` focuses/selects the last segment
   and `Ctrl+Shift+;` focuses it; Left/Right navigate, Enter/Down opens the picker,
   Space reveals and Escape returns to the editor. Terminal substitutions: the
   browser chevron/codicon is `>`, the file icon theme is the language badge, the
