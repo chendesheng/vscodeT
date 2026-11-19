@@ -27,10 +27,23 @@ pub const ICommentsConfiguration = struct {
 };
 
 pub const ILanguageConfigurationService = struct {
-    onDidChange: *const fn (LanguageConfigurationServiceChangeEvent) void,
-    // @param priority Use a higher number for higher priority
-    register: *const fn (languageId: []const u8, configuration: LanguageConfiguration, priority: ?usize) void,
-    getLanguageConfiguration: *const fn (languageId: []const u8) ResolvedLanguageConfiguration,
+    context: *anyopaque,
+    on_did_change_fn: *const fn (context: *anyopaque, event: LanguageConfigurationServiceChangeEvent) void,
+    register_fn: *const fn (context: *anyopaque, languageId: []const u8, configuration: LanguageConfiguration, priority: ?usize) void,
+    get_language_configuration_fn: *const fn (context: *anyopaque, languageId: []const u8) ResolvedLanguageConfiguration,
+
+    pub fn onDidChange(self: ILanguageConfigurationService, event: LanguageConfigurationServiceChangeEvent) void {
+        self.on_did_change_fn(self.context, event);
+    }
+
+    /// @param priority Use a higher number for higher priority.
+    pub fn register(self: ILanguageConfigurationService, languageId: []const u8, configuration: LanguageConfiguration, priority: ?usize) void {
+        self.register_fn(self.context, languageId, configuration, priority);
+    }
+
+    pub fn getLanguageConfiguration(self: ILanguageConfigurationService, languageId: []const u8) ResolvedLanguageConfiguration {
+        return self.get_language_configuration_fn(self.context, languageId);
+    }
 };
 
 pub const LanguageConfigurationServiceChangeEvent = struct {
@@ -400,3 +413,68 @@ pub const LanguageConfigurationRegistry = struct {
 };
 
 //#endregion
+
+/// Upstream `LanguageConfigurationService`, the concrete
+/// `ILanguageConfigurationService` implementation. It wraps the registry and
+/// promotes configurations registered on the editor `LanguageService` on first
+/// lookup, modelling upstream's lazy configuration registration.
+pub const LanguageConfigurationService = struct {
+    allocator: Allocator,
+    language_service: *@import("../services/languageService.zig").LanguageService,
+    registry: LanguageConfigurationRegistry,
+
+    pub fn init(allocator: Allocator, language_service: *@import("../services/languageService.zig").LanguageService) !LanguageConfigurationService {
+        return .{
+            .allocator = allocator,
+            .language_service = language_service,
+            .registry = try LanguageConfigurationRegistry.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *LanguageConfigurationService) void {
+        self.registry.deinit();
+    }
+
+    pub fn interface(self: *LanguageConfigurationService) ILanguageConfigurationService {
+        return .{
+            .context = self,
+            .on_did_change_fn = onDidChange,
+            .register_fn = register,
+            .get_language_configuration_fn = getLanguageConfiguration,
+        };
+    }
+
+    fn get(self: *LanguageConfigurationService, language_id: []const u8) ResolvedLanguageConfiguration {
+        if (self.registry.getLanguageConfiguration(language_id)) |resolved| {
+            return resolved.*;
+        }
+
+        if (self.language_service.getLanguageConfiguration(language_id)) |config| {
+            var registration = self.registry.register(language_id, config, 0) catch
+                return self.plaintext();
+            registration.disposed = true;
+            if (self.registry.getLanguageConfiguration(language_id)) |resolved| {
+                return resolved.*;
+            }
+        }
+        return self.plaintext();
+    }
+
+    fn plaintext(self: *LanguageConfigurationService) ResolvedLanguageConfiguration {
+        const resolved = self.registry.getLanguageConfiguration("plaintext") orelse unreachable;
+        return resolved.*;
+    }
+};
+
+fn onDidChange(_: *anyopaque, _: LanguageConfigurationServiceChangeEvent) void {}
+
+fn register(context: *anyopaque, language_id: []const u8, configuration: LanguageConfiguration, priority: ?usize) void {
+    const self: *LanguageConfigurationService = @ptrCast(@alignCast(context));
+    var registration = self.registry.register(language_id, configuration, if (priority) |value| @intCast(value) else 0) catch return;
+    registration.disposed = true;
+}
+
+fn getLanguageConfiguration(context: *anyopaque, language_id: []const u8) ResolvedLanguageConfiguration {
+    const self: *LanguageConfigurationService = @ptrCast(@alignCast(context));
+    return self.get(language_id);
+}

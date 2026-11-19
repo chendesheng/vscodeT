@@ -700,19 +700,20 @@ const TestLanguage = struct {
     var lines: []const []const u8 = &.{};
 };
 
-fn testGetLanguageConfiguration(_: []const u8) ResolvedLanguageConfiguration {
+fn testGetLanguageConfiguration(_: *anyopaque, _: []const u8) ResolvedLanguageConfiguration {
     return TestLanguage.configuration;
 }
 
-fn testOnDidChange(_: LanguageConfigurationServiceChangeEvent) void {}
+fn testOnDidChange(_: *anyopaque, _: LanguageConfigurationServiceChangeEvent) void {}
 
-fn testRegister(_: []const u8, _: LanguageConfiguration, _: ?usize) void {}
+fn testRegister(_: *anyopaque, _: []const u8, _: LanguageConfiguration, _: ?usize) void {}
 
 fn testService() ILanguageConfigurationService {
     return .{
-        .onDidChange = testOnDidChange,
-        .register = testRegister,
-        .getLanguageConfiguration = testGetLanguageConfiguration,
+        .context = undefined,
+        .on_did_change_fn = testOnDidChange,
+        .register_fn = testRegister,
+        .get_language_configuration_fn = testGetLanguageConfiguration,
     };
 }
 

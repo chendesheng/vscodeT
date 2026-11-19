@@ -30,18 +30,19 @@ const editor_common = @import("../../../../common/editorCommon.zig");
 
 var test_configuration: ResolvedLanguageConfiguration = undefined;
 
-fn testGetLanguageConfiguration(_: []const u8) ResolvedLanguageConfiguration {
+fn testGetLanguageConfiguration(_: *anyopaque, _: []const u8) ResolvedLanguageConfiguration {
     return test_configuration;
 }
 
-fn testOnDidChange(_: LanguageConfigurationServiceChangeEvent) void {}
-fn testRegister(_: []const u8, _: language_configuration.LanguageConfiguration, _: ?usize) void {}
+fn testOnDidChange(_: *anyopaque, _: LanguageConfigurationServiceChangeEvent) void {}
+fn testRegister(_: *anyopaque, _: []const u8, _: language_configuration.LanguageConfiguration, _: ?usize) void {}
 
 fn testService() ILanguageConfigurationService {
     return .{
-        .onDidChange = testOnDidChange,
-        .register = testRegister,
-        .getLanguageConfiguration = testGetLanguageConfiguration,
+        .context = undefined,
+        .on_did_change_fn = testOnDidChange,
+        .register_fn = testRegister,
+        .get_language_configuration_fn = testGetLanguageConfiguration,
     };
 }
 

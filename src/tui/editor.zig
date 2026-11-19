@@ -65,7 +65,8 @@ const bracket_matching = @import("../vs/editor/contrib/bracketMatching/browser/b
 const BracketMatchingController = bracket_matching.BracketMatchingController;
 const folding = @import("../vs/editor/contrib/folding/browser/folding.zig");
 const FoldingRules = @import("../vs/editor/common/languages/languageConfiguration.zig").FoldingRules;
-const language_configuration_service = @import("./languageConfiguration.zig");
+const language_configuration_registry = @import("../vs/editor/common/languages/languageConfigurationRegistry.zig");
+const LanguageConfigurationService = language_configuration_registry.LanguageConfigurationService;
 const completion = @import("../vs/editor/common/languages/completion.zig");
 const CancellationToken = @import("../vs/base/common/cancellation.zig").CancellationToken;
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
@@ -220,7 +221,7 @@ pub const Editor = struct {
     folding_dirty: bool,
     smart_select: smart_select.SmartSelectController,
     in_place_replace_deadline: ?i64,
-    language_config_service: *language_configuration_service.Service,
+    language_config_service: *LanguageConfigurationService,
     character_pair: ?CharacterPairSupport,
     multicursor_session: ?multicursor.SearchSession,
     after_edit: AfterEditComputer,
@@ -398,9 +399,9 @@ pub const Editor = struct {
             language_config_owned = false;
         }
 
-        const language_config_service = try allocator.create(language_configuration_service.Service);
+        const language_config_service = try allocator.create(LanguageConfigurationService);
         errdefer allocator.destroy(language_config_service);
-        language_config_service.* = try language_configuration_service.Service.init(allocator, language_service);
+        language_config_service.* = try LanguageConfigurationService.init(allocator, language_service);
         errdefer language_config_service.deinit();
 
         const undo_redo = try allocator.create(UndoRedoService);
@@ -1985,7 +1986,6 @@ pub const Editor = struct {
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
 
-        self.language_config_service.activate();
         var auto_indent_result = try AutoIndentOperation.getEdits(
             self.allocator,
             &self.cursor_config,
@@ -2030,7 +2030,6 @@ pub const Editor = struct {
 
     pub fn newline(self: *Editor) !void {
         self.closeTypingGroup();
-        self.language_config_service.activate();
         self.refreshAutoIndent();
 
         const selections = try self.getSelectionsCopy();
@@ -2061,7 +2060,6 @@ pub const Editor = struct {
 
     fn insertLineAtEdge(self: *Editor, before: bool) !void {
         self.closeTypingGroup();
-        self.language_config_service.activate();
         self.refreshAutoIndent();
 
         const selections = try self.getSelectionsCopy();
@@ -2198,7 +2196,6 @@ pub const Editor = struct {
         const interfaces = try self.allocator.alloc(?ICommand, selections.len);
         defer self.allocator.free(interfaces);
 
-        self.language_config_service.activate();
         for (selections, 0..) |selection, i| {
             commands[i] = ShiftCommand.init(self.allocator, selection, opts, self.language_config_service.interface());
             interfaces[i] = commands[i].interface();
@@ -2220,7 +2217,6 @@ pub const Editor = struct {
         var arena_state = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_state.deinit();
 
-        self.language_config_service.activate();
         var edits = try indentation_commands.reindentLines(
             arena_state.allocator(),
             self.model,
@@ -2241,7 +2237,6 @@ pub const Editor = struct {
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
 
-        self.language_config_service.activate();
         var edits = try indentation_commands.reindentSelectedLines(
             arena_state.allocator(),
             self.model,
