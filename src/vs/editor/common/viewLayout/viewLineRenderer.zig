@@ -19,6 +19,10 @@ const IViewLineTokens = tokens_mod.IViewLineTokens;
 const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const RenderWhitespace = @import("../config/editorOptions.zig").RenderWhitespace;
 const OffsetRange = @import("../core/ranges/offsetRange.zig").OffsetRange;
+const line_decorations_mod = @import("./lineDecorations.zig");
+const LineDecoration = line_decorations_mod.LineDecoration;
+const DecorationSegment = line_decorations_mod.DecorationSegment;
+const LineDecorationsNormalizer = line_decorations_mod.LineDecorationsNormalizer;
 
 pub const RenderedPart = struct {
     text: []const u8,
@@ -27,14 +31,22 @@ pub const RenderedPart = struct {
     italic: bool = false,
     underline: bool = false,
     strikethrough: bool = false,
+    /// Normalized inline-decoration classes covering this part, if any. The
+    /// slice is owned by the `RenderedLine` that produced the part.
+    decoration_class: ?[]const u8 = null,
 };
 
 pub const RenderedLine = struct {
     /// Tabs-expanded UTF-8. Parts borrow slices from this buffer.
     bytes: []u8,
     parts: []RenderedPart,
+    /// Normalized decoration segments; `RenderedPart.decoration_class` borrows
+    /// their owned class-name strings.
+    segments: []DecorationSegment = &.{},
 
     pub fn deinit(self: RenderedLine, allocator: Allocator) void {
+        for (self.segments) |*segment| segment.deinit(allocator);
+        allocator.free(self.segments);
         allocator.free(self.bytes);
         allocator.free(self.parts);
     }
@@ -49,6 +61,9 @@ pub const Input = struct {
     /// Absolute byte ranges (within `content`) of the current selections.
     selection_ranges: []const OffsetRange = &.{},
     render_control_characters: bool = false,
+    /// Inline decorations in model columns for this line. The renderer sorts
+    /// and normalizes them; the caller keeps ownership.
+    line_decorations: []const LineDecoration = &.{},
 };
 
 const WhitespaceContext = struct {
@@ -65,6 +80,7 @@ const PartRange = struct {
     start: usize,
     end: usize,
     metadata: TokenMetadata,
+    decoration_class: ?[]const u8 = null,
 };
 
 /// Expands tabs in `content` for a terminal with `tab_size` columns.
@@ -177,6 +193,21 @@ pub fn renderLine(allocator: Allocator, input: Input) !RenderedLine {
     var ranges: std.ArrayList(PartRange) = .empty;
     errdefer ranges.deinit(allocator);
 
+    // Upstream `_applyInlineDecorations` sorts and normalizes the line
+    // decorations before merging them into the token parts.
+    var segments: []DecorationSegment = &.{};
+    errdefer {
+        for (segments) |*segment| segment.deinit(allocator);
+        allocator.free(segments);
+    }
+    if (input.line_decorations.len > 0) {
+        const sorted = try allocator.dupe(LineDecoration, input.line_decorations);
+        defer allocator.free(sorted);
+        std.mem.sort(LineDecoration, sorted, {}, LineDecoration.lessThan);
+        var normalized = try LineDecorationsNormalizer.normalize(allocator, input.content, sorted);
+        segments = try normalized.toOwnedSlice();
+    }
+
     var column = input.start_visible_column;
     var whitespace_offset: usize = 0;
     var whitespace = WhitespaceContext{
@@ -191,36 +222,54 @@ pub fn renderLine(allocator: Allocator, input: Input) !RenderedLine {
     const token_count = input.tokens.getCount();
 
     if (token_count == 0) {
-        const start = bytes.items.len;
-        try appendExpanded(&bytes, allocator, input.content, input.tab_size, &column, &whitespace);
-        try ranges.append(allocator, .{
-            .start = start,
-            .end = bytes.items.len,
-            .metadata = TokenMetadata.default,
-        });
+        try appendSpan(
+            &bytes,
+            &ranges,
+            allocator,
+            input.content,
+            0,
+            input.content.len,
+            TokenMetadata.default,
+            segments,
+            input.tab_size,
+            &column,
+            &whitespace,
+        );
     } else {
         var offset: usize = 0;
         var index: usize = 0;
         while (index < token_count) : (index += 1) {
             const end = @min(input.tokens.getEndOffset(index), input.content.len);
             if (end <= offset) continue;
-            const start = bytes.items.len;
-            try appendExpanded(&bytes, allocator, input.content[offset..end], input.tab_size, &column, &whitespace);
-            try ranges.append(allocator, .{
-                .start = start,
-                .end = bytes.items.len,
-                .metadata = input.tokens.getMetadata(index),
-            });
+            try appendSpan(
+                &bytes,
+                &ranges,
+                allocator,
+                input.content,
+                offset,
+                end,
+                input.tokens.getMetadata(index),
+                segments,
+                input.tab_size,
+                &column,
+                &whitespace,
+            );
             offset = end;
         }
         if (offset < input.content.len) {
-            const start = bytes.items.len;
-            try appendExpanded(&bytes, allocator, input.content[offset..], input.tab_size, &column, &whitespace);
-            try ranges.append(allocator, .{
-                .start = start,
-                .end = bytes.items.len,
-                .metadata = TokenMetadata.default,
-            });
+            try appendSpan(
+                &bytes,
+                &ranges,
+                allocator,
+                input.content,
+                offset,
+                input.content.len,
+                TokenMetadata.default,
+                segments,
+                input.tab_size,
+                &column,
+                &whitespace,
+            );
         }
     }
 
@@ -238,11 +287,63 @@ pub fn renderLine(allocator: Allocator, input: Input) !RenderedLine {
             .italic = metadata.fontStyle.italic,
             .underline = metadata.fontStyle.underline,
             .strikethrough = metadata.fontStyle.strikethrough,
+            .decoration_class = range.decoration_class,
         };
     }
     ranges.deinit(allocator);
 
-    return .{ .bytes = owned_bytes, .parts = parts };
+    return .{ .bytes = owned_bytes, .parts = parts, .segments = segments };
+}
+
+/// Appends one content span, split at normalized decoration boundaries, as
+/// rendered parts. This is the run-based counterpart of upstream
+/// `_applyInlineDecorations`: each output part carries the merged class names
+/// of the decorations active over its content range.
+fn appendSpan(
+    bytes: *std.ArrayList(u8),
+    ranges: *std.ArrayList(PartRange),
+    allocator: Allocator,
+    content: []const u8,
+    span_start: usize,
+    span_end: usize,
+    metadata: TokenMetadata,
+    segments: []const DecorationSegment,
+    tab_size: usize,
+    column: *usize,
+    whitespace: *WhitespaceContext,
+) !void {
+    var position = span_start;
+    var segment_index: usize = 0;
+    while (position < span_end) {
+        while (segment_index < segments.len and segments[segment_index].endOffset + 1 <= position) {
+            segment_index += 1;
+        }
+
+        var piece_end = span_end;
+        var decoration_class: ?[]const u8 = null;
+        if (segment_index < segments.len) {
+            const segment = segments[segment_index];
+            if (segment.startOffset <= position) {
+                piece_end = @min(span_end, segment.endOffset + 1);
+                decoration_class = segment.className;
+                if (piece_end == segment.endOffset + 1 and piece_end < span_end) {
+                    segment_index += 1;
+                }
+            } else if (segment.startOffset < piece_end) {
+                piece_end = segment.startOffset;
+            }
+        }
+
+        const output_start = bytes.items.len;
+        try appendExpanded(bytes, allocator, content[position..piece_end], tab_size, column, whitespace);
+        try ranges.append(allocator, .{
+            .start = output_start,
+            .end = bytes.items.len,
+            .metadata = metadata,
+            .decoration_class = decoration_class,
+        });
+        position = piece_end;
+    }
 }
 
 test "expandTabs: tab stops are relative to the visible column" {
@@ -350,4 +451,43 @@ test "renderLine: control characters become Unicode control pictures" {
     });
     defer rendered.deinit(allocator);
     try std.testing.expectEqualStrings("a\u{2401}b", rendered.bytes);
+}
+
+test "renderLine: inline decorations split parts and merge classes" {
+    const allocator = std.testing.allocator;
+    const languages = @import("../languages.zig");
+    const line_tokens = @import("../tokens/lineTokens.zig");
+    const inline_mod = @import("../viewModel/inlineDecorations.zig");
+    const Range = @import("../core/range.zig").Range;
+
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var owned = std.array_list.Managed(u8).init(allocator);
+    errdefer owned.deinit();
+    try owned.appendSlice("abcabc");
+    var tokens = try line_tokens.LineTokens.createEmpty(allocator, owned, &codec);
+    defer tokens.deinit();
+
+    const inline_decorations = [_]inline_mod.InlineDecoration{
+        inline_mod.InlineDecoration.init(Range.init(1, 1, 1, 4), "c1", .Regular),
+        inline_mod.InlineDecoration.init(Range.init(1, 3, 1, 4), "c2", .Regular),
+    };
+    const line_decorations = try LineDecoration.filter(allocator, &inline_decorations, 1, 1, 500);
+    defer allocator.free(line_decorations);
+
+    const rendered = try renderLine(allocator, .{
+        .content = "abcabc",
+        .tokens = line_tokens.IViewLineTokens.init(&tokens),
+        .tab_size = 4,
+        .line_decorations = line_decorations,
+    });
+    defer rendered.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), rendered.parts.len);
+    try std.testing.expectEqualStrings("ab", rendered.parts[0].text);
+    try std.testing.expectEqualStrings("c1", rendered.parts[0].decoration_class.?);
+    try std.testing.expectEqualStrings("c", rendered.parts[1].text);
+    try std.testing.expectEqualStrings("c1 c2", rendered.parts[1].decoration_class.?);
+    try std.testing.expectEqualStrings("abc", rendered.parts[2].text);
+    try std.testing.expect(rendered.parts[2].decoration_class == null);
 }
