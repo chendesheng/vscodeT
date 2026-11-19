@@ -104,7 +104,8 @@ JSON and JSONC editors use the bundled VS Code JSON language server when
 edits and shown in the status bar as `JSON Problems`; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
 bundled grammar and reports no diagnostics. Hover and formatting are forwarded to the same
-server; schema settings (including `json.schemas`) are not wired yet.
+server, and the `json.schemas` setting is passed through so configured schemas
+drive validation, completion and hover.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally
 `~/.local/state/vscode-textbuffer/extensions/extension-host.log`) so it cannot

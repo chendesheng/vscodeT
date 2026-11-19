@@ -374,6 +374,13 @@ pub fn main(init: std.process.Init) !void {
     const user_settings_path = try defaultUserSettingsPath(allocator, init.environ_map);
     defer if (user_settings_path) |path| allocator.free(path);
     try workbench.setUserSettingsPath(user_settings_path);
+    if (json_client) |client| {
+        if (workbench.jsonSchemasValue()) |schemas| {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            client.configure(arena.allocator(), schemas.*) catch {};
+        }
+    }
 
     if (args.session) |session_path| {
         defer {

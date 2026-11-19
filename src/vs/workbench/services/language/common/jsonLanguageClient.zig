@@ -105,17 +105,24 @@ pub const Client = struct {
         if (result != .object or result.object.get("capabilities") == null) return Error.InvalidMessage;
         self.notify(arena.allocator(), "initialized", .{ .object = .empty }) catch {};
 
-        var settings: std.json.ObjectMap = .empty;
-        var json_settings: std.json.ObjectMap = .empty;
-        var validate: std.json.ObjectMap = .empty;
-        try validate.put(arena.allocator(), "enable", .{ .bool = true });
-        try json_settings.put(arena.allocator(), "validate", .{ .object = validate });
-        try settings.put(arena.allocator(), "json", .{ .object = json_settings });
-        var settings_root: std.json.ObjectMap = .empty;
-        try settings_root.put(arena.allocator(), "settings", .{ .object = settings });
-        self.notify(arena.allocator(), "workspace/didChangeConfiguration", .{ .object = settings_root }) catch {};
+        try self.configure(arena.allocator(), null);
         self.initialized = true;
         return self;
+    }
+
+    /// Sends the settings the JSON server consumes. `schemas` is the raw
+    /// `json.schemas` setting value, borrowed only for this call.
+    pub fn configure(self: *Client, arena: Allocator, schemas: ?std.json.Value) !void {
+        var json_settings: std.json.ObjectMap = .empty;
+        var validate: std.json.ObjectMap = .empty;
+        try validate.put(arena, "enable", .{ .bool = true });
+        try json_settings.put(arena, "validate", .{ .object = validate });
+        if (schemas) |value| try json_settings.put(arena, "schemas", value);
+        var settings: std.json.ObjectMap = .empty;
+        try settings.put(arena, "json", .{ .object = json_settings });
+        var settings_root: std.json.ObjectMap = .empty;
+        try settings_root.put(arena, "settings", .{ .object = settings });
+        try self.notify(arena, "workspace/didChangeConfiguration", .{ .object = settings_root });
     }
 
     pub fn deinit(self: *Client) void {
@@ -456,4 +463,43 @@ test "JSON language client hover uses a local schema" {
     const hover = try client.hover(scratch, document_uri, 2, 4);
     try std.testing.expect(hover != null);
     try std.testing.expect(std.mem.indexOf(u8, hover.?.text, "The name field") != null);
+}
+
+test "JSON language client applies json.schemas associations" {
+    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const client = try Client.start(allocator, "node", "host/dist/jsonServer.mjs");
+    defer client.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(time_compat.io, .{ .sub_path = "schema.json", .data =
+        \\{
+        \\  "type": "object",
+        \\  "properties": { "name": { "type": "string" } },
+        \\  "required": ["name"]
+        \\}
+    });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_length = try tmp.dir.realPathFile(time_compat.io, "schema.json", &path_buffer);
+    const schema_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{path_buffer[0..path_length]});
+    defer allocator.free(schema_uri);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var schema_entry: std.json.ObjectMap = .empty;
+    var file_match = std.json.Array.init(scratch);
+    try file_match.append(.{ .string = "*.json" });
+    try schema_entry.put(scratch, "fileMatch", .{ .array = file_match });
+    try schema_entry.put(scratch, "url", .{ .string = schema_uri });
+    var schemas = std.json.Array.init(scratch);
+    try schemas.append(.{ .object = schema_entry });
+    try client.configure(scratch, .{ .array = schemas });
+
+    const uri = "file:///tmp/schema-validation.json";
+    try client.didOpen(scratch, uri, "json", "{\n  \"name\": 1\n}\n");
+    const diagnostics = try client.pullDiagnostics(scratch, uri);
+    try std.testing.expect(diagnostics.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, diagnostics[0].message, "string") != null);
 }

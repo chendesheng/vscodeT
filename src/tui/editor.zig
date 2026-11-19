@@ -3899,7 +3899,16 @@ fn cmdStartFindReplace(context: *anyopaque) anyerror!void {
 
 const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.files.save", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyS) } },
-    .{ .id = "editor.action.formatDocument", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.Shift | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyF) } },
+    .{
+        .id = "editor.action.formatDocument",
+        .weight = 100,
+        .bindings = .{
+            .primary = key_codes.KeyMod.Shift | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyF),
+            // Terminals usually cannot report Shift alongside Alt for letters;
+            // ESC F arrives as Alt+F and is VS Code's format shortcut in practice.
+            .secondary = &.{key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyF)},
+        },
+    },
     .{ .id = "undo", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyZ) } },
     .{ .id = "redo", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyY) } },
     .{ .id = "editor.action.selectAll", .weight = 100, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyA) } },
@@ -4073,4 +4082,17 @@ test "Editor: formats JSON through the language server" {
     defer value.deinit();
     try std.testing.expect(std.mem.indexOf(u8, value.items, "\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, value.items, ": 1") != null);
+}
+
+test "Editor: Alt+F dispatches formatDocument" {
+    const allocator = std.testing.allocator;
+    const io = @import("../vs/base/common/timeCompat.zig").io;
+    const editor = try Editor.createFromText(allocator, io, "{}", "test.json", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const event = input.KeyEvent{ .key = .{ .char = 'F' }, .mods = .{ .alt = true } };
+    try std.testing.expect(try editor.dispatchShortcut(event));
+    try std.testing.expectEqualStrings("No JSON language server", editor.message());
 }

@@ -1319,6 +1319,12 @@ pub const Workbench = struct {
         }
     }
 
+    /// Raw `json.schemas` setting used by the JSON language server.
+    pub fn jsonSchemasValue(self: *Workbench) ?*const std.json.Value {
+        const config = self.configuration orelse return null;
+        return config.getValue("json.schemas", .{});
+    }
+
     pub fn setJsonLanguageClient(self: *Workbench, client: ?*json_language.Client) void {
         self.json_client = client;
         for (self.part.group_views.items) |pane| {
