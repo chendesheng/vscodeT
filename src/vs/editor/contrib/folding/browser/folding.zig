@@ -3,7 +3,7 @@
 //
 // The browser controller owns decorations, mouse handling, view state and the
 // language feature provider. This port keeps the range computation, collapse
-// actions and hidden-area projection that the TUI needs; `src/tui/editor.zig`
+// actions and hidden-area projection that the TUI needs; `codeEditorWidgetTerminal.zig`
 // supplies the language folding rules and applies the resulting hidden ranges
 // to its own view model.
 const std = @import("std");

@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Editor = @import("../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const variables = @import("../../snippet/browser/snippetVariables.zig");
 
 const max_selection_length: usize = 51200;

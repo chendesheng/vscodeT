@@ -12,28 +12,28 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const ui = @import("ui");
-const Editor = @import("./editor.zig").Editor;
-const View = @import("./view.zig").View;
-const FileEditorInput = @import("./editorInput.zig").FileEditorInput;
-const EditorInput = @import("../vs/workbench/common/editor/editorInput.zig").EditorInput;
-const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
-const word_character_classifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig");
-const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
-const Position = @import("../vs/editor/common/core/position.zig").Position;
-const Range = @import("../vs/editor/common/core/range.zig").Range;
-const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
-const time_compat = @import("../vs/base/common/timeCompat.zig");
-const languages = @import("../vs/editor/common/languages.zig");
-const hoverTypes = @import("../vs/editor/contrib/hover/browser/hoverTypes.zig");
-const ContentHoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
-const MarkdownHoverParticipant = @import("../vs/editor/contrib/hover/browser/markdownHoverParticipant.zig").MarkdownHoverParticipant;
-const WordHighlighterContribution = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
-const SuggestController = @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestController;
-const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
-const TuiHoverProvider = @import("../vs/editor/contrib/hover/browser/terminalHoverProvider.zig").TuiHoverProvider;
-const completion = @import("../vs/editor/common/languages/completion.zig");
-const LanguageFeaturesService = @import("../vs/editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
-const IDisposable = @import("../vs/base/common/lifecycle.zig").IDisposable;
+const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const View = @import("../../../../editor/browser/viewTerminal.zig").View;
+const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
+const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
+const FindController = @import("../../../../editor/contrib/find/browser/findController.zig").FindController;
+const word_character_classifier = @import("../../../../editor/common/core/wordCharacterClassifier.zig");
+const editorBrowser = @import("../../../../editor/browser/editorBrowser.zig");
+const Position = @import("../../../../editor/common/core/position.zig").Position;
+const Range = @import("../../../../editor/common/core/range.zig").Range;
+const Selection = @import("../../../../editor/common/core/selection.zig").Selection;
+const time_compat = @import("../../../../base/common/timeCompat.zig");
+const languages = @import("../../../../editor/common/languages.zig");
+const hoverTypes = @import("../../../../editor/contrib/hover/browser/hoverTypes.zig");
+const ContentHoverController = @import("../../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+const MarkdownHoverParticipant = @import("../../../../editor/contrib/hover/browser/markdownHoverParticipant.zig").MarkdownHoverParticipant;
+const WordHighlighterContribution = @import("../../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+const SuggestController = @import("../../../../editor/contrib/suggest/browser/suggestController.zig").SuggestController;
+const WordBasedCompletionProvider = @import("../../../../editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
+const TuiHoverProvider = @import("../../../../editor/contrib/hover/browser/terminalHoverProvider.zig").TuiHoverProvider;
+const completion = @import("../../../../editor/common/languages/completion.zig");
+const LanguageFeaturesService = @import("../../../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 
 pub const Tab = struct {
     allocator: Allocator,
@@ -52,7 +52,7 @@ pub const Tab = struct {
         path: []const u8,
         width: usize,
         height: usize,
-        declarative: ?*const @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig").Registry,
+        declarative: ?*const @import("../../../services/extensions/common/extensionsRegistry.zig").Registry,
     ) !*Tab {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
@@ -157,7 +157,7 @@ pub const Tab = struct {
     }
 };
 
-fn SuggestControllerHostForView(view: *View) @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestControllerHost {
+fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib/suggest/browser/suggestController.zig").SuggestControllerHost {
     return .{
         .context = view,
         .text_height = viewTextHeight,

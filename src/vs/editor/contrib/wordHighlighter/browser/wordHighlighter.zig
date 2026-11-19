@@ -35,7 +35,7 @@ const editor_languages = @import("../../../common/languages.zig");
 const DocumentHighlight = editor_languages.DocumentHighlight;
 const ui = @import("ui");
 
-const Editor = @import("../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const TextualDocumentHighlightProvider = @import("./textualHighlightProvider.zig").TextualDocumentHighlightProvider;
 const highlightDecorations = @import("./highlightDecorations.zig");
 

@@ -13,7 +13,7 @@ const editorBrowser = @import("../../../browser/editorBrowser.zig");
 const FindReplaceState = @import("./findState.zig").FindReplaceState;
 const FindModel = @import("./findModel.zig").FindModel;
 const FindWidget = @import("./findWidget.zig").FindWidget;
-const Editor = @import("../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 /// The decoration sink. The controller does not depend on the TUI view type;
 /// the app can point it at a model-decoration sink.

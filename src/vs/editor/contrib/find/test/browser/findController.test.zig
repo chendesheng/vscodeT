@@ -9,8 +9,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
-const Editor = @import("../../../../../../tui/editor.zig").Editor;
-const View = @import("../../../../../../tui/view.zig").View;
+const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const View = @import("../../../../browser/viewTerminal.zig").View;
 const editorBrowser = @import("../../../../browser/editorBrowser.zig");
 const FindController = @import("../../browser/findController.zig").FindController;
 

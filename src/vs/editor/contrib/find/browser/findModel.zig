@@ -34,7 +34,7 @@ const ReplaceAllCommand = @import("./replaceAllCommand.zig").ReplaceAllCommand;
 const replace_pattern = @import("./replacePattern.zig");
 const ReplacePattern = replace_pattern.ReplacePattern;
 
-const Editor = @import("../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 pub const MATCHES_LIMIT = find_state.MATCHES_LIMIT;
 const UNLIMITED: usize = 2_147_483_647;

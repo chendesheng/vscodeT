@@ -10,14 +10,14 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Emitter = @import("../vs/base/common/event.zig").Emitter;
-const editor_input = @import("../vs/workbench/common/editor/editorInput.zig");
+const Emitter = @import("../../../../../base/common/event.zig").Emitter;
+const editor_input = @import("../../../../common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
 const GroupIdentifier = editor_input.GroupIdentifier;
 const SaveResult = editor_input.SaveResult;
-const editor_factory = @import("../vs/workbench/common/editor/editorFactory.zig");
+const editor_factory = @import("../../../../common/editor/editorFactory.zig");
 const IEditorSerializer = editor_factory.IEditorSerializer;
-const Editor = @import("./editor.zig").Editor;
+const Editor = @import("../../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 pub const FileEditorInput = struct {
     allocator: Allocator,
@@ -173,7 +173,7 @@ test "FileEditorInput exposes path and dirty state" {
 test "FileEditorInput drives the editor group model" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const group_mod = @import("../vs/workbench/common/editor/editorGroupModel.zig");
+    const group_mod = @import("../../../../common/editor/editorGroupModel.zig");
 
     var group = try group_mod.EditorGroupModel.init(allocator, .{});
     defer group.deinit();

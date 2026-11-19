@@ -8,7 +8,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const Editor = @import("../../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Position = @import("../../../../common/core/position.zig").Position;
 const Range = @import("../../../../common/core/range.zig").Range;
 const FindReplaceState = @import("../../browser/findState.zig").FindReplaceState;

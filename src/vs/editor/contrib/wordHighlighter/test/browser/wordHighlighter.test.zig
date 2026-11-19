@@ -14,7 +14,7 @@ const editorBrowser = @import("../../../../browser/editorBrowser.zig");
 const wordCharacterClassifier = @import("../../../../common/core/wordCharacterClassifier.zig");
 const WordHighlighterContribution = @import("../../browser/wordHighlighter.zig").WordHighlighterContribution;
 const WordHighlighterHost = @import("../../browser/wordHighlighter.zig").WordHighlighterHost;
-const Editor = @import("../../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 const Capture = struct {
     allocator: std.mem.Allocator,

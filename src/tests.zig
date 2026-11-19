@@ -62,7 +62,7 @@ comptime {
     _ = @import("./vs/workbench/services/search/test/common/queryBuilder.test.zig");
     _ = @import("./vs/workbench/contrib/search/browser/searchWidget.zig");
     _ = @import("./vs/workbench/contrib/search/browser/searchViewTerminal.zig");
-    _ = @import("./tui/editorInput.zig");
+    _ = @import("./vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig");
     _ = @import("./vs/workbench/browser/parts/editor/multiEditorTabsControl.zig");
     _ = @import("./vs/base/test/browser/ui/breadcrumbs/breadcrumbsWidget.test.zig");
     _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbModel.test.zig");
@@ -75,7 +75,7 @@ comptime {
     _ = @import("./vs/workbench/browser/parts/editor/breadcrumbsControl.zig");
     _ = @import("./vs/workbench/services/outline/browser/outlineService.zig");
     _ = @import("./vs/workbench/contrib/files/browser/views/explorerView.zig");
-    _ = @import("./tui/tab.zig");
+    _ = @import("./vs/workbench/browser/parts/editor/editorPane.zig");
     _ = @import("./tui/workbench.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorSession.zig");
     _ = @import("./vs/editor/contrib/hover/browser/terminalHoverProvider.zig");
@@ -224,8 +224,8 @@ comptime {
     _ = @import("./vs/editor/common/viewModelEventDispatcher.zig");
     _ = @import("./vs/editor/test/common/viewModel/viewModelTests.zig");
     _ = @import("./tui/app.zig");
-    _ = @import("./tui/editor.zig");
-    _ = @import("./tui/view.zig");
+    _ = @import("./vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
+    _ = @import("./vs/editor/browser/viewTerminal.zig");
     _ = @import("./vs/workbench/services/language/common/bundledLanguages.zig");
     _ = @import("./vs/editor/common/core/wordHelper.zig");
     _ = @import("./vs/editor/common/tokens/contiguousMultilineTokens.zig");

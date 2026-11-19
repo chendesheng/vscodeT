@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
-const Editor = @import("../../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Position = @import("../../../../common/core/position.zig").Position;
 const SuggestController = @import("../../browser/suggestController.zig").SuggestController;
 const WordBasedCompletionProvider = @import("../../browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
@@ -126,7 +126,7 @@ test "SuggestController: widget renders below the caret and filters" {
     try editor.setCursorPosition(Position.init(2, 1));
     try editor.insertText("al");
 
-    const View = @import("../../../../../../tui/view.zig").View;
+    const View = @import("../../../../browser/viewTerminal.zig").View;
     const view = try View.init(allocator, editor);
     defer view.deinit();
 
@@ -433,7 +433,7 @@ test "SuggestController: resolved documentation appears in the details pane" {
     }
     try editor.setCursorPosition(Position.init(2, 2));
 
-    const View = @import("../../../../../../tui/view.zig").View;
+    const View = @import("../../../../browser/viewTerminal.zig").View;
     const view = try View.init(allocator, editor);
     defer view.deinit();
 

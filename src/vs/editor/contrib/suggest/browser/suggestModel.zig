@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const editor_mod = @import("../../../../../tui/editor.zig");
+const editor_mod = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
 const Editor = editor_mod.Editor;
 const TextEdit = editor_mod.TextEdit;
 const Position = @import("../../../common/core/position.zig").Position;

@@ -40,7 +40,7 @@ pub const IndentationStatus = struct {
     insert_spaces: bool = true,
 };
 
-/// The portable editor surface used by the status controller. `src/tui/editor.zig`
+/// The portable editor surface used by the status controller. `codeEditorWidgetTerminal.zig`
 /// implements this adapter; the controller never imports the terminal editor.
 pub const IEditorStatusTarget = struct {
     context: *anyopaque,

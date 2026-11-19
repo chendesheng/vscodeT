@@ -2,7 +2,7 @@
 // `src/vs/editor/contrib/suggest/test/browser/suggestOvertypingCapturer.test.ts`.
 
 const std = @import("std");
-const Editor = @import("../../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Range = @import("../../../../common/core/range.zig").Range;
 const Selection = @import("../../../../common/core/selection.zig").Selection;
 const OvertypingCapturer = @import("../../browser/suggestOvertypingCapturer.zig").OvertypingCapturer;

@@ -8,7 +8,7 @@ const SingleCursorState = cursorCommon.SingleCursorState;
 const TextModelCursorSimpleModel = @import("../../../../common/cursor/textModelCursorSimpleModel.zig").TextModelCursorSimpleModel;
 const expandLineSelection = @import("../../../../contrib/lineSelection/browser/lineSelection.zig").expandLineSelection;
 const TestModel = @import("../../../../test/common/port/testSupport.zig").TestModel;
-const Editor = @import("../../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Io = std.Io;
 
 fn cursorAt(line: usize, column: usize) CursorState {

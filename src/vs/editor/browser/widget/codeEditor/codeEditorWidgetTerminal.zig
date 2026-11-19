@@ -2,105 +2,105 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
-const Emitter = @import("../vs/base/common/event.zig").Emitter;
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
-const Position = @import("../vs/editor/common/core/position.zig").Position;
-const Range = @import("../vs/editor/common/core/range.zig").Range;
-const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
-const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
-const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
-const TextModelCreationOptions = @import("../vs/editor/common/model.zig").TextModelCreationOptions;
-const PositionAffinity = @import("../vs/editor/common/model.zig").PositionAffinity;
-const IdentifiedSingleEditOperation = @import("../vs/editor/common/model.zig").IdentifiedSingleEditOperation;
-const ValidEditOperation = @import("../vs/editor/common/model.zig").ValidEditOperation;
-const CursorStateComputer = @import("../vs/editor/common/model/editStack.zig").CursorStateComputer;
-const UndoRedoService = @import("../vs/platform/undoRedo/common/undoRedoService.zig").UndoRedoService;
-const LanguageService = @import("../vs/editor/common/services/languageService.zig").LanguageService;
-const LanguageIdCodec = @import("../vs/editor/common/languages.zig").LanguageIdCodec;
-const ProjectedViewModelLines = @import("../vs/editor/common/viewModel/viewModelLines.zig").ProjectedViewModelLines;
-const CoordinatesConverter = @import("../vs/editor/common/viewModel/viewModelLines.zig").CoordinatesConverter;
-const ViewLineData = @import("../vs/editor/common/viewModel.zig").ViewLineData;
-const WordBreak = @import("../vs/editor/common/modelLineProjectionData.zig").WordBreak;
-const WrappingIndent = @import("../vs/editor/common/config/editorOptions.zig").WrappingIndent;
-const EditorAutoIndentStrategy = @import("../vs/editor/common/config/editorOptions.zig").EditorAutoIndentStrategy;
-const cursorCommon = @import("../vs/editor/common/cursorCommon.zig");
+const Position = @import("../../../common/core/position.zig").Position;
+const Range = @import("../../../common/core/range.zig").Range;
+const Selection = @import("../../../common/core/selection.zig").Selection;
+const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
+const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+const TextModelCreationOptions = @import("../../../common/model.zig").TextModelCreationOptions;
+const PositionAffinity = @import("../../../common/model.zig").PositionAffinity;
+const IdentifiedSingleEditOperation = @import("../../../common/model.zig").IdentifiedSingleEditOperation;
+const ValidEditOperation = @import("../../../common/model.zig").ValidEditOperation;
+const CursorStateComputer = @import("../../../common/model/editStack.zig").CursorStateComputer;
+const UndoRedoService = @import("../../../../platform/undoRedo/common/undoRedoService.zig").UndoRedoService;
+const LanguageService = @import("../../../common/services/languageService.zig").LanguageService;
+const LanguageIdCodec = @import("../../../common/languages.zig").LanguageIdCodec;
+const ProjectedViewModelLines = @import("../../../common/viewModel/viewModelLines.zig").ProjectedViewModelLines;
+const CoordinatesConverter = @import("../../../common/viewModel/viewModelLines.zig").CoordinatesConverter;
+const ViewLineData = @import("../../../common/viewModel.zig").ViewLineData;
+const WordBreak = @import("../../../common/modelLineProjectionData.zig").WordBreak;
+const WrappingIndent = @import("../../../common/config/editorOptions.zig").WrappingIndent;
+const EditorAutoIndentStrategy = @import("../../../common/config/editorOptions.zig").EditorAutoIndentStrategy;
+const cursorCommon = @import("../../../common/cursorCommon.zig");
 const CursorConfiguration = cursorCommon.CursorConfiguration;
-const CursorContext = @import("../vs/editor/common/cursor/cursorContext.zig").CursorContext;
+const CursorContext = @import("../../../common/cursor/cursorContext.zig").CursorContext;
 const CursorState = cursorCommon.CursorState;
 const PartialCursorState = cursorCommon.PartialCursorState;
 const EditOperationType = cursorCommon.EditOperationType;
-const CursorCollection = @import("../vs/editor/common/cursor/cursorCollection.zig").CursorCollection;
-const TextModelCursorSimpleModel = @import("../vs/editor/common/cursor/textModelCursorSimpleModel.zig").TextModelCursorSimpleModel;
-const CursorMoveCommands = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").CursorMoveCommands;
-const CursorMoveDirection = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").Direction;
-const CursorMoveUnit = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").Unit;
-const CursorWordDirection = @import("../vs/editor/common/cursor/cursorMoveCommands.zig").WordDirection;
-const DeleteOperations = @import("../vs/editor/common/cursor/cursorDeleteOperations.zig").DeleteOperations;
-const TypeWithoutInterceptorsOperation = @import("../vs/editor/common/cursor/cursorTypeEditOperations.zig").TypeWithoutInterceptorsOperation;
-const EnterOperation = @import("../vs/editor/common/cursor/cursorTypeEditOperations.zig").EnterOperation;
-const AutoIndentOperation = @import("../vs/editor/common/cursor/cursorTypeEditOperations.zig").AutoIndentOperation;
+const CursorCollection = @import("../../../common/cursor/cursorCollection.zig").CursorCollection;
+const TextModelCursorSimpleModel = @import("../../../common/cursor/textModelCursorSimpleModel.zig").TextModelCursorSimpleModel;
+const CursorMoveCommands = @import("../../../common/cursor/cursorMoveCommands.zig").CursorMoveCommands;
+const CursorMoveDirection = @import("../../../common/cursor/cursorMoveCommands.zig").Direction;
+const CursorMoveUnit = @import("../../../common/cursor/cursorMoveCommands.zig").Unit;
+const CursorWordDirection = @import("../../../common/cursor/cursorMoveCommands.zig").WordDirection;
+const DeleteOperations = @import("../../../common/cursor/cursorDeleteOperations.zig").DeleteOperations;
+const TypeWithoutInterceptorsOperation = @import("../../../common/cursor/cursorTypeEditOperations.zig").TypeWithoutInterceptorsOperation;
+const EnterOperation = @import("../../../common/cursor/cursorTypeEditOperations.zig").EnterOperation;
+const AutoIndentOperation = @import("../../../common/cursor/cursorTypeEditOperations.zig").AutoIndentOperation;
 const EditOperationResult = cursorCommon.EditOperationResult;
 
-const WordCharacterClassifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig").WordCharacterClassifier;
-const DefaultWordSeparators = @import("../vs/editor/common/core/wordCharacterClassifier.zig").DefaultWordSeparators;
-const InternalModelContentChangeEvent = @import("../vs/editor/common/textModelEvents.zig").InternalModelContentChangeEvent;
-const String = @import("../vs/base/common/strings.zig").String;
-const strings = @import("../vs/base/common/strings.zig");
-const language = @import("../vs/workbench/services/language/common/bundledLanguages.zig");
-const language_configuration = @import("../vs/editor/common/languages/languageConfiguration.zig");
-const encoding_mod = @import("../vs/workbench/services/textfile/common/encoding.zig");
-const EOL = @import("../vs/editor/common/core/misc/eolCounter.zig").EOL;
-const editor_status = @import("../vs/workbench/browser/parts/editor/editorStatus.zig");
-const editor_common = @import("../vs/editor/common/editorCommon.zig");
+const WordCharacterClassifier = @import("../../../common/core/wordCharacterClassifier.zig").WordCharacterClassifier;
+const DefaultWordSeparators = @import("../../../common/core/wordCharacterClassifier.zig").DefaultWordSeparators;
+const InternalModelContentChangeEvent = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
+const String = @import("../../../../base/common/strings.zig").String;
+const strings = @import("../../../../base/common/strings.zig");
+const language = @import("../../../../workbench/services/language/common/bundledLanguages.zig");
+const language_configuration = @import("../../../common/languages/languageConfiguration.zig");
+const encoding_mod = @import("../../../../workbench/services/textfile/common/encoding.zig");
+const EOL = @import("../../../common/core/misc/eolCounter.zig").EOL;
+const editor_status = @import("../../../../workbench/browser/parts/editor/editorStatus.zig");
+const editor_common = @import("../../../common/editorCommon.zig");
 const ICommand = editor_common.ICommand;
-const command_runner = @import("../vs/editor/common/commands/commandRunner.zig");
-const ReplaceCommandCommand = @import("../vs/editor/common/commands/replaceCommand.zig").ReplaceCommand;
-const lines_ops = @import("../vs/editor/contrib/linesOperations/browser/linesOperations.zig");
-const line_selection = @import("../vs/editor/contrib/lineSelection/browser/lineSelection.zig");
-const LineCommentCommand = @import("../vs/editor/contrib/comment/browser/lineCommentCommand.zig").LineCommentCommand;
-const CommentType = @import("../vs/editor/contrib/comment/browser/lineCommentCommand.zig").Type;
-const BlockCommentCommand = @import("../vs/editor/contrib/comment/browser/blockCommentCommand.zig").BlockCommentCommand;
-const InsertFinalNewLineCommand = @import("../vs/editor/contrib/insertFinalNewLine/browser/insertFinalNewLineCommand.zig").InsertFinalNewLineCommand;
-const bracket_matching = @import("../vs/editor/contrib/bracketMatching/browser/bracketMatching.zig");
+const command_runner = @import("../../../common/commands/commandRunner.zig");
+const ReplaceCommandCommand = @import("../../../common/commands/replaceCommand.zig").ReplaceCommand;
+const lines_ops = @import("../../../contrib/linesOperations/browser/linesOperations.zig");
+const line_selection = @import("../../../contrib/lineSelection/browser/lineSelection.zig");
+const LineCommentCommand = @import("../../../contrib/comment/browser/lineCommentCommand.zig").LineCommentCommand;
+const CommentType = @import("../../../contrib/comment/browser/lineCommentCommand.zig").Type;
+const BlockCommentCommand = @import("../../../contrib/comment/browser/blockCommentCommand.zig").BlockCommentCommand;
+const InsertFinalNewLineCommand = @import("../../../contrib/insertFinalNewLine/browser/insertFinalNewLineCommand.zig").InsertFinalNewLineCommand;
+const bracket_matching = @import("../../../contrib/bracketMatching/browser/bracketMatching.zig");
 const BracketMatchingController = bracket_matching.BracketMatchingController;
-const folding = @import("../vs/editor/contrib/folding/browser/folding.zig");
-const FoldingRules = @import("../vs/editor/common/languages/languageConfiguration.zig").FoldingRules;
-const language_configuration_registry = @import("../vs/editor/common/languages/languageConfigurationRegistry.zig");
+const folding = @import("../../../contrib/folding/browser/folding.zig");
+const FoldingRules = @import("../../../common/languages/languageConfiguration.zig").FoldingRules;
+const language_configuration_registry = @import("../../../common/languages/languageConfigurationRegistry.zig");
 const LanguageConfigurationService = language_configuration_registry.LanguageConfigurationService;
-const completion = @import("../vs/editor/common/languages/completion.zig");
-const CancellationToken = @import("../vs/base/common/cancellation.zig").CancellationToken;
-const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
-const language_config_point = @import("../vs/workbench/services/language/common/languageConfigurationExtensionPoint.zig");
-const text_mate_tokenizer = @import("../vs/editor/common/model/tokens/textMateTokenizer.zig");
-const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
-const time_compat = @import("../vs/base/common/timeCompat.zig");
-const languagesAssociations = @import("../vs/editor/common/services/languagesAssociations.zig");
+const completion = @import("../../../common/languages/completion.zig");
+const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+const extensions_registry = @import("../../../../workbench/services/extensions/common/extensionsRegistry.zig");
+const language_config_point = @import("../../../../workbench/services/language/common/languageConfigurationExtensionPoint.zig");
+const text_mate_tokenizer = @import("../../../common/model/tokens/textMateTokenizer.zig");
+const json_language = @import("../../../../workbench/services/language/common/jsonLanguageClient.zig");
+const time_compat = @import("../../../../base/common/timeCompat.zig");
+const languagesAssociations = @import("../../../common/services/languagesAssociations.zig");
 const input = @import("ui").input;
-const keybinding_service = @import("../vs/workbench/services/keybinding/browser/keybindingService.zig");
-const key_codes = @import("../vs/base/common/keyCodes.zig");
-const keybinding_registry = @import("../vs/platform/keybinding/common/keybindingsRegistry.zig");
-const CommandRegistry = @import("../vs/platform/commands/common/commands.zig").CommandRegistry;
-const ShiftCommand = @import("../vs/editor/common/commands/shiftCommand.zig").ShiftCommand;
-const IShiftCommandOpts = @import("../vs/editor/common/commands/shiftCommand.zig").IShiftCommandOpts;
-const indentation_commands = @import("../vs/editor/contrib/indentation/browser/indentation.zig");
+const keybinding_service = @import("../../../../workbench/services/keybinding/browser/keybindingService.zig");
+const key_codes = @import("../../../../base/common/keyCodes.zig");
+const keybinding_registry = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
+const CommandRegistry = @import("../../../../platform/commands/common/commands.zig").CommandRegistry;
+const ShiftCommand = @import("../../../common/commands/shiftCommand.zig").ShiftCommand;
+const IShiftCommandOpts = @import("../../../common/commands/shiftCommand.zig").IShiftCommandOpts;
+const indentation_commands = @import("../../../contrib/indentation/browser/indentation.zig");
 const IndentationToSpacesCommand = indentation_commands.IndentationToSpacesCommand;
 const IndentationToTabsCommand = indentation_commands.IndentationToTabsCommand;
-const ISingleEditOperation = @import("../vs/editor/common/core/editOperation.zig").ISingleEditOperation;
-const multicursor = @import("../vs/editor/contrib/multicursor/browser/multicursor.zig");
-const auto_closing = @import("../vs/editor/common/cursor/autoClosing.zig");
-const CharacterPairSupport = @import("../vs/editor/common/languages/supports/characterPair.zig");
-const smart_select = @import("../vs/editor/contrib/smartSelect/browser/smartSelect.zig");
-const in_place_replace = @import("../vs/editor/contrib/inPlaceReplace/browser/inPlaceReplace.zig");
-const InPlaceReplaceCommand = @import("../vs/editor/contrib/inPlaceReplace/browser/inPlaceReplaceCommand.zig").InPlaceReplaceCommand;
-const model_module = @import("../vs/editor/common/model.zig");
+const ISingleEditOperation = @import("../../../common/core/editOperation.zig").ISingleEditOperation;
+const multicursor = @import("../../../contrib/multicursor/browser/multicursor.zig");
+const auto_closing = @import("../../../common/cursor/autoClosing.zig");
+const CharacterPairSupport = @import("../../../common/languages/supports/characterPair.zig");
+const smart_select = @import("../../../contrib/smartSelect/browser/smartSelect.zig");
+const in_place_replace = @import("../../../contrib/inPlaceReplace/browser/inPlaceReplace.zig");
+const InPlaceReplaceCommand = @import("../../../contrib/inPlaceReplace/browser/inPlaceReplaceCommand.zig").InPlaceReplaceCommand;
+const model_module = @import("../../../common/model.zig");
 const ModelDecorationOptions = model_module.ModelDecorationOptions;
 const ModelDeltaDecoration = model_module.ModelDeltaDecoration;
-const LanguageFeaturesService = @import("../vs/editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
-const MarkerService = @import("../vs/platform/markers/common/markerService.zig").MarkerService;
-const MarkerDecorationsService = @import("../vs/editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
-const markers = @import("../vs/platform/markers/common/markers.zig");
-const std_uri = @import("../vs/base/common/stdUri.zig");
-const IDisposable = @import("../vs/base/common/lifecycle.zig").IDisposable;
+const LanguageFeaturesService = @import("../../../common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const MarkerService = @import("../../../../platform/markers/common/markerService.zig").MarkerService;
+const MarkerDecorationsService = @import("../../../common/services/markerDecorationsService.zig").MarkerDecorationsService;
+const markers = @import("../../../../platform/markers/common/markers.zig");
+const std_uri = @import("../../../../base/common/stdUri.zig");
+const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 
 const MAX_STATUS: usize = 512;
 
@@ -3019,7 +3019,7 @@ fn registerDeclarativeGrammar(io: Io, allocator: Allocator, root: []const u8, gr
 test "Editor: create, edit, undo, and render" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const View = @import("./view.zig").View;
+    const View = @import("../../viewTerminal.zig").View;
 
     var editor = try Editor.createFromText(allocator, io, "hello world\nsecond line", "test.txt", 24, 6);
     defer {
@@ -3273,7 +3273,7 @@ test "Editor: missing file opens empty and save creates it" {
 test "Editor: tokenized Zig lines render through the wrapped view" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const View = @import("./view.zig").View;
+    const View = @import("../../viewTerminal.zig").View;
 
     var editor = try Editor.createFromText(allocator, io, "// hi\nconst x = 1;\n", "test.zig", 40, 8);
     defer {
@@ -3297,7 +3297,7 @@ test "Editor: tokenized Zig lines render through the wrapped view" {
 test "Editor: syntax stays visible after inserting blank lines" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const View = @import("./view.zig").View;
+    const View = @import("../../viewTerminal.zig").View;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -3348,7 +3348,7 @@ test "Editor: discarding future and removed undo elements releases their memory"
 test "Editor: random edits release token storage" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const source = @embedFile("../../src/vs/base/common/arrays.zig");
+    const source = @embedFile("../../../../base/common/arrays.zig");
 
     var editor = try Editor.createFromText(allocator, io, source, "test.zig", 100, 30);
     defer {
@@ -3376,7 +3376,7 @@ test "Editor: random edits release token storage" {
 test "Editor: typing a function keeps following comments highlighted" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const View = @import("./view.zig").View;
+    const View = @import("../../viewTerminal.zig").View;
 
     var editor = try Editor.createFromText(
         allocator,
@@ -3827,7 +3827,7 @@ test "Editor: folding hides a region and unfolds it again" {
 test "Editor: reindent lines uses language indentation rules" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const RegExp = @import("../support/regexp.zig").RegExp;
+    const RegExp = @import("../../../../../support/regexp.zig").RegExp;
 
     const increase = try RegExp.init("\\{$", .{});
     const decrease = try RegExp.init("^\\s*\\}", .{});
@@ -3857,7 +3857,7 @@ test "Editor: reindent lines uses language indentation rules" {
 test "Editor: Enter honors increaseIndentPattern" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const RegExp = @import("../support/regexp.zig").RegExp;
+    const RegExp = @import("../../../../../support/regexp.zig").RegExp;
 
     const increase = try RegExp.init("^\\s*for\\b", .{});
     const decrease = try RegExp.init("^\\s*end\\b", .{});
@@ -4505,7 +4505,7 @@ const shortcut_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
 // second model.
 // ---------------------------------------------------------------------------
 
-const working_copy = @import("../vs/workbench/services/workingCopy/common/workingCopy.zig");
+const working_copy = @import("../../../../workbench/services/workingCopy/common/workingCopy.zig");
 const IWorkingCopy = working_copy.IWorkingCopy;
 const WorkingCopyListener = working_copy.WorkingCopyListener;
 
@@ -4682,7 +4682,7 @@ test "Editor: formats JSON through the language server" {
 
 test "Editor: Alt+F dispatches formatDocument" {
     const allocator = std.testing.allocator;
-    const io = @import("../vs/base/common/timeCompat.zig").io;
+    const io = @import("../../../../base/common/timeCompat.zig").io;
     const editor = try Editor.createFromText(allocator, io, "{}", "test.json", 40, 8);
     defer {
         editor.deinit();

@@ -20,7 +20,7 @@ const command_runner = @import("../../../../common/commands/commandRunner.zig");
 
 const in_place_replace = @import("../../../../contrib/inPlaceReplace/browser/inPlaceReplace.zig");
 const InPlaceReplaceCommand = @import("../../../../contrib/inPlaceReplace/browser/inPlaceReplaceCommand.zig").InPlaceReplaceCommand;
-const Editor = @import("../../../../../../tui/editor.zig").Editor;
+const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 const language_id = "inPlaceReplaceTestLanguage";
 
