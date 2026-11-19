@@ -679,7 +679,7 @@ pub const TextModel = struct {
         const fullModelValue = self.getValueLengthInRange(fullModelRange, eol);
 
         if (preserveBOM) {
-            return self._buffer.getBOM().length + fullModelValue;
+            return self._buffer.getBOM().len + fullModelValue;
         }
 
         return fullModelValue;
@@ -1065,10 +1065,30 @@ pub const TextModel = struct {
     }
 
     fn _validateEditOperation(self: *TextModel, rawOperation: *IdentifiedSingleEditOperation) ValidAnnotatedEditOperation {
+        const validatedRange = self.validateRange(rawOperation.range);
+
+        var opText = if (rawOperation.text) |*text| text.move() else null;
+        if (opText) |*text| {
+            // Normalize edit when replacement text ends with lone CR and the
+            // range ends right before a CRLF in the buffer.
+            const endsWithLoneCR = text.len() > 0 and text.items()[text.len() - 1] == '\r';
+            const removeTrailingCR = self.getEOL() == .CRLF and endsWithLoneCR and validatedRange.endColumn == self.getLineMaxColumn(validatedRange.endLineNumber);
+            if (removeTrailingCR) {
+                switch (text.*) {
+                    .owned => |*list| {
+                        _ = list.pop();
+                    },
+                    .borrowed => |str| {
+                        text.* = String.initBorrowed(str[0 .. str.len - 1]);
+                    },
+                }
+            }
+        }
+
         return ValidAnnotatedEditOperation{
             .identifier = rawOperation.identifier,
-            .range = self.validateRange(rawOperation.range),
-            .text = if (rawOperation.text) |*text| text.move() else null,
+            .range = validatedRange,
+            .text = opText,
             .forceMoveMarkers = rawOperation.forceMoveMarkers,
             .isAutoWhitespaceEdit = rawOperation.isAutoWhitespaceEdit orelse false,
             ._isTracked = rawOperation._isTracked orelse false,
@@ -1464,7 +1484,7 @@ pub const TextModel = struct {
                         try rawContentChanges.append(.{
                             .lineChanged = ModelRawLineChanged.init(
                                 editLineNumber,
-                                try self.getLineContent(editLineNumber),
+                                try self.getLineContent(currentEditLineNumber),
                                 decorationsInCurrentLine,
                             ),
                         });
