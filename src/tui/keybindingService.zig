@@ -22,7 +22,6 @@ const us_module = @import("../vs/platform/keybinding/common/usLayoutResolvedKeyb
 const notification_mod = @import("../vs/platform/notification/common/notification.zig");
 const abstract_mod = @import("../vs/platform/keybinding/common/abstractKeybindingService.zig");
 const keybinding_mod = @import("../vs/platform/keybinding/common/keybinding.zig");
-const tui_keybindings = @import("./keybindings.zig");
 
 const ResolvedKeybindingItem = item_module.ResolvedKeybindingItem;
 const USLayoutResolvedKeybinding = us_module.USLayoutResolvedKeybinding;
@@ -195,6 +194,67 @@ pub const KeybindingService = struct {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Terminal key decoding
+//
+// `ui.input.KeyEvent` is the terminal's keyboard event; the workbench
+// keybinding service consumes the VS Code shape. The mapping lives here so the
+// service and its host adapter have one owner. There is no browser analogue:
+// upstream gets `StandardKeyboardEvent` from a DOM `KeyboardEvent`.
+// ---------------------------------------------------------------------------
+
+pub fn keyCodeFor(event: input.KeyEvent) ?key_codes.KeyCode {
+    return switch (event.key) {
+        .enter => .Enter,
+        .tab, .backtab => .Tab,
+        .escape => .Escape,
+        .backspace => .Backspace,
+        .delete => .Delete,
+        .insert => .Insert,
+        .left => .LeftArrow,
+        .right => .RightArrow,
+        .up => .UpArrow,
+        .down => .DownArrow,
+        .home => .Home,
+        .end => .End,
+        .page_up => .PageUp,
+        .page_down => .PageDown,
+        .f12 => .F12,
+        .char => |codepoint| charKeyCode(codepoint),
+        .text, .paste_start, .paste_end => null,
+    };
+}
+
+fn charKeyCode(codepoint: u21) ?key_codes.KeyCode {
+    if (codepoint > 127) return null;
+    const character: u8 = @intCast(codepoint);
+
+    if (character >= 'a' and character <= 'z') {
+        return @fromBackingInt(@intCast(@backingInt(key_codes.KeyCode.KeyA) + (character - 'a')));
+    }
+    if (character >= 'A' and character <= 'Z') {
+        return @fromBackingInt(@intCast(@backingInt(key_codes.KeyCode.KeyA) + (character - 'A')));
+    }
+    if (character >= '0' and character <= '9') {
+        return @fromBackingInt(@intCast(@backingInt(key_codes.KeyCode.Digit0) + (character - '0')));
+    }
+    return switch (character) {
+        ' ' => .Space,
+        ';' => .Semicolon,
+        '=' => .Equal,
+        ',' => .Comma,
+        '-' => .Minus,
+        '.' => .Period,
+        '/' => .Slash,
+        '`' => .Backquote,
+        '[' => .BracketLeft,
+        '\\' => .Backslash,
+        ']' => .BracketRight,
+        '\'' => .Quote,
+        else => null,
+    };
+}
+
 fn notificationService(service: *KeybindingService) notification_mod.INotificationService {
     return .{
         .context = &service.noop_notification,
@@ -222,7 +282,7 @@ fn noopStatus(context: *anyopaque, _: notification_mod.NotificationMessage, _: ?
 fn noopClose(_: *anyopaque) void {}
 
 fn toKeyboardEvent(event: input.KeyEvent) ?keybinding_mod.IKeyboardEvent {
-    const key_code = tui_keybindings.keyCodeFor(event) orelse return null;
+    const key_code = keyCodeFor(event) orelse return null;
     const uppercase = switch (event.key) {
         .char => |codepoint| codepoint >= 'A' and codepoint <= 'Z',
         else => false,
