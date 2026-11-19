@@ -36,6 +36,7 @@ pub fn build(b: *std.Build) void {
         const ui = ui_dep.module("ui");
         const markdown = markdownModule(b, target, optimize);
         const vscode_syntax = vscodeSyntaxAssets(b, target, optimize);
+        const ghostty_vt = ghosttyVtModule(b);
 
         // We will also create a module for our other entry point, 'main.zig'.
         const exe = b.addExecutable(.{
@@ -52,8 +53,10 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("ui", ui);
         exe.root_module.addImport("markdown", markdown);
         exe.root_module.addImport("vscode-syntax", vscode_syntax);
+        exe.root_module.addImport("ghostty-vt", ghostty_vt);
         addOnigLibraryPath(b, exe.root_module, onig_paths);
         exe.root_module.linkSystemLibrary("onig", .{});
+        linkPtyLibraries(exe.root_module, target);
 
         // This declares intent for the executable to be installed into the
         // standard location when the user invokes the "install" step (the default
@@ -71,7 +74,7 @@ pub fn build(b: *std.Build) void {
         const run_step = b.step("run", "Run the app");
         run_step.dependOn(&run_cmd.step);
 
-        setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax, onig_paths);
+        setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax, ghostty_vt, onig_paths);
     }
 
     setupWatcherTests(b, target, optimize);
@@ -88,6 +91,20 @@ fn setupExtensionHost(b: *std.Build, vscode_source: ?[]const u8) void {
     host_build.setCwd(b.path("host"));
     if (vscode_source) |path| host_build.setEnvironmentVariable("VSCODE_SOURCE_PATH", path);
     host_step.dependOn(&host_build.step);
+}
+
+fn linkPtyLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    // glibc keeps forkpty in libutil; macOS exposes it through libSystem and
+    // musl includes it in libc.
+    if (target.result.os.tag == .linux and target.result.abi == .gnu) {
+        module.linkSystemLibrary("util", .{});
+    }
+}
+
+fn ghosttyVtModule(b: *std.Build) *std.Build.Module {
+    const dep = b.lazyDependency("ghostty", .{}) orelse
+        @panic("libghostty-vt dependency was not resolved");
+    return dep.module("ghostty-vt");
 }
 
 /// Builds the markdown module from the pinned CommonMark + GFM package.
@@ -421,7 +438,7 @@ fn setupWatcherTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: 
     check_watcher_step.dependOn(&watcher_tests.step);
 }
 
-fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, vscode_textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module, onig_paths: OnigPaths) void {
+fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, vscode_textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module, ghostty_vt: *std.Build.Module, onig_paths: OnigPaths) void {
     const test_step = b.step("test", "Run all tests");
 
     const tests = b.addTest(.{
@@ -437,11 +454,30 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     tests.root_module.addImport("ui", ui);
     tests.root_module.addImport("markdown", markdown);
     tests.root_module.addImport("vscode-syntax", vscode_syntax);
+    tests.root_module.addImport("ghostty-vt", ghostty_vt);
     addOnigLibraryPath(b, tests.root_module, onig_paths);
     tests.root_module.linkSystemLibrary("onig", .{});
+    linkPtyLibraries(tests.root_module, target);
 
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
+
+    // Terminal-only test root: keeps the integrated-terminal tests runnable
+    // without compiling the whole editor. `zig build test` covers them too.
+    const terminal_tests = b.addTest(.{
+        .name = "terminal_tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/terminal_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    terminal_tests.root_module.addImport("ui", ui);
+    terminal_tests.root_module.addImport("ghostty-vt", ghostty_vt);
+    linkPtyLibraries(terminal_tests.root_module, target);
+    const run_terminal_tests = b.addRunArtifact(terminal_tests);
+    const terminal_test_step = b.step("test-terminal", "Run integrated-terminal tests");
+    terminal_test_step.dependOn(&run_terminal_tests.step);
 
     // The extension-host interop test needs Node, the esbuild bundle in
     // host/dist and the extracted VSCodeVim fixture. Keep it out of the

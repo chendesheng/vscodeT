@@ -77,6 +77,10 @@
         //    // actually used.
         //    .lazy = false,
         //},
+        .ghostty = .{
+            .url = "https://release.files.ghostty.org/libghostty-vt/1.0.1/libghostty-vt-1.0.1.tar.gz",
+            .hash = "ghostty-1.4.1-dev-5UdBC7mPUgFIzAVXNJOixiryPYogwYwnmN0zZWud4iSr",
+        },
     },
 
     // Specifies the set of files and directories that are included in this package.
