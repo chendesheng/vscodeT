@@ -1,5 +1,5 @@
 // Bundles the pinned VS Code JSON language server into host/dist so the TUI
-// can launch it without a full `../vscode` extension compile.
+// can launch it without a full `vscode/` extension compile.
 import * as esbuild from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,7 +9,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
 const vscodeRoot = process.env.VSCODE_SOURCE_PATH
 	? path.resolve(process.env.VSCODE_SOURCE_PATH)
-	: path.resolve(repoRoot, '..', 'vscode');
+	: path.resolve(repoRoot, 'vscode');
 const entry = path.join(vscodeRoot, 'extensions/json-language-features/server/src/node/jsonServerMain.ts');
 
 const jsToTs = {

@@ -1,13 +1,19 @@
 # AGENTS.md — porting rules for vscode-textbuffer
 
 This repository is a Zig 0.17 port of VS Code editor internals. The upstream
-checkout is expected at `../vscode`. Upstream source paths therefore start with:
+checkout is expected at `vscode/`. Upstream source paths therefore start with:
 
 ```
-../vscode/src/vs/editor/...
+vscode/src/vs/editor/...
 ```
 
 Do not edit upstream files. Port behavior into this repository instead.
+
+`vscode/` is a shallow git submodule pinned to VS Code 1.147.0 at commit
+`e31c2e52f563620846caab877103f630ea361b9c`. Initialize it with
+`git submodule update --init --depth 1`. Do not bump the pin in an unrelated
+change: the generated extension-host protocol table and the port inventory are
+tied to that commit.
 
 ## Source layout
 
@@ -189,7 +195,7 @@ state that in the comment and keep the behavioral contract intact.
   temporary Zig caches outside the repository are also disposable. Rebuild
   after clearing.
 - Delete only build caches. Never delete source files, `zig-pkg/`, docs, or
-  anything under `../vscode`, and verify the resolved path before removing a
+  anything under `vscode/`, and verify the resolved path before removing a
   directory.
 
 ## Interfaces

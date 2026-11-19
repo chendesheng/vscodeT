@@ -17,29 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - name: Check out VS Code syntax and theme assets
-        run: |
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/microsoft/vscode.git ../vscode
-          git -C ../vscode fetch --depth 1 origin e31c2e52f563620846caab877103f630ea361b9c
-          git -C ../vscode sparse-checkout set \
-            extensions/json/syntaxes \
-            extensions/javascript/syntaxes \
-            extensions/typescript-basics/syntaxes \
-            extensions/python/syntaxes \
-            extensions/rust/syntaxes \
-            extensions/go/syntaxes \
-            extensions/cpp/syntaxes \
-            extensions/java/syntaxes \
-            extensions/html/syntaxes \
-            extensions/css/syntaxes \
-            extensions/scss/syntaxes \
-            extensions/markdown-basics/syntaxes \
-            extensions/shellscript/syntaxes \
-            extensions/theme-defaults/themes
-          git -C ../vscode checkout --detach FETCH_HEAD
       - name: Install oniguruma
         run: |
           sudo apt-get update
@@ -54,29 +37,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - name: Check out VS Code syntax and theme assets
-        run: |
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/microsoft/vscode.git ../vscode
-          git -C ../vscode fetch --depth 1 origin e31c2e52f563620846caab877103f630ea361b9c
-          git -C ../vscode sparse-checkout set \
-            extensions/json/syntaxes \
-            extensions/javascript/syntaxes \
-            extensions/typescript-basics/syntaxes \
-            extensions/python/syntaxes \
-            extensions/rust/syntaxes \
-            extensions/go/syntaxes \
-            extensions/cpp/syntaxes \
-            extensions/java/syntaxes \
-            extensions/html/syntaxes \
-            extensions/css/syntaxes \
-            extensions/scss/syntaxes \
-            extensions/markdown-basics/syntaxes \
-            extensions/shellscript/syntaxes \
-            extensions/theme-defaults/themes
-          git -C ../vscode checkout --detach FETCH_HEAD
       - name: Install oniguruma
         run: brew install oniguruma
       - name: Build
@@ -89,16 +55,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - name: Check out VS Code syntax and theme assets
-        shell: pwsh
-        run: |
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/microsoft/vscode.git ../vscode
-          git -C ../vscode fetch --depth 1 origin e31c2e52f563620846caab877103f630ea361b9c
-          git -C ../vscode sparse-checkout set extensions/json/syntaxes extensions/javascript/syntaxes extensions/typescript-basics/syntaxes extensions/python/syntaxes extensions/rust/syntaxes extensions/go/syntaxes extensions/cpp/syntaxes extensions/java/syntaxes extensions/html/syntaxes extensions/css/syntaxes extensions/scss/syntaxes extensions/markdown-basics/syntaxes extensions/shellscript/syntaxes extensions/theme-defaults/themes
-          git -C ../vscode checkout --detach FETCH_HEAD
       - name: Install oniguruma
         shell: pwsh
         run: |

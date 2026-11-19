@@ -1,5 +1,5 @@
 // TUI adaptation of the JSON client/server contract from
-// `../vscode/extensions/json-language-features/client/src/jsonClient.ts`.
+// `vscode/extensions/json-language-features/client/src/jsonClient.ts`.
 //
 // Minimal synchronous LSP client for the bundled VS Code JSON language
 // server. It is deliberately not a general language-client implementation:

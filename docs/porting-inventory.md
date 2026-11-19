@@ -9,7 +9,8 @@ persistence, ICU collation, browser-only tab/tooltip/view DOM cases). The file
 table (§7) and the UI/view code map (§7.1) are current at the snapshot HEAD.
 
 - Local snapshot: `src/tui/` at HEAD `cd69afb` (28 files, 19,012 lines).
-- Upstream: VS Code **1.147.0**, `../vscode` at commit `e31c2e52`.
+- Upstream: VS Code **1.147.0**, `vscode/` (shallow submodule) at commit
+  `e31c2e52`.
 - Date: 2026-11-16.
 - Scope: the existing 28 files in `src/tui/`. This is not a feature wishlist;
   it answers which terminal-side code is actually portable VS Code logic,
@@ -19,7 +20,7 @@ Sections 1–7 are the original audit and plan: their “remaining” notes desc
 the starting snapshot, not the current tree (see §0, the current snapshot and
 the end status). Line numbers for `src/tui/...` refer to this working-tree
 snapshot. Upstream `.ts` paths are relative to
-`../vscode/src/vs/` unless they start with `src/`. Zig paths ending in `.zig`
+`vscode/src/vs/` unless they start with `src/`. Zig paths ending in `.zig`
 are local; when written without a `src/` prefix (`vs/...`, `platform/...`,
 `editor/...`, `base/...`, `workbench/...`), the prefix is relative to `src/`.
 
@@ -1262,7 +1263,7 @@ browser-only view/tab DOM parts).
   need a focused harness? The existing TUI view tests are the model for
   adaptations.
 - How often should the upstream pin be refreshed? The inventory should be
-  re-run when `../vscode` changes materially.
+  re-run when `vscode/` changes materially.
 
 ## 13. Appendix A: upstream test map
 

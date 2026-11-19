@@ -160,7 +160,7 @@ test "language configuration extension point reads markdown-basics" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const config = load(arena.allocator(), "../vscode/extensions/markdown-basics", "language-configuration.json") catch return error.SkipZigTest;
+    const config = load(arena.allocator(), "vscode/extensions/markdown-basics", "language-configuration.json") catch return error.SkipZigTest;
     try std.testing.expect(config.comments != null);
     try std.testing.expect(config.comments.?.blockComment != null);
     try std.testing.expectEqualStrings("<!--", config.comments.?.blockComment.?[0]);
@@ -176,7 +176,7 @@ test "language configuration extension point compiles json indentation rules" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var config = load(arena.allocator(), "../vscode/extensions/json", "language-configuration.json") catch return error.SkipZigTest;
+    var config = load(arena.allocator(), "vscode/extensions/json", "language-configuration.json") catch return error.SkipZigTest;
     defer config.deinit();
 
     const rules = config.indentationRules orelse return error.MissingIndentationRules;

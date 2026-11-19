@@ -6,8 +6,8 @@
 // Only the module graph reachable from the launcher is bundled, so the whole
 // workbench is not compiled.
 //
-// The launcher imports the upstream sources through the `../../vscode/` prefix.
-// `VSCODE_SOURCE_PATH` (or `../vscode` by default) selects the tree those
+// The launcher imports the upstream sources through the `../vscode/` prefix.
+// `VSCODE_SOURCE_PATH` (or `vscode/` by default) selects the tree those
 // imports resolve to, so a checkout that is not the pinned version never ends
 // up in the bundle. The actor table the Zig workbench uses is generated from
 // the same tree (`host/generateProtocol.js`); mixing versions makes every RPC
@@ -24,12 +24,12 @@ const repoRoot = path.resolve(here, '..');
 const pinnedVersion = '1.147.0';
 const vscodeRoot = process.env.VSCODE_SOURCE_PATH
 	? path.resolve(process.env.VSCODE_SOURCE_PATH)
-	: path.resolve(repoRoot, '..', 'vscode');
+	: path.resolve(repoRoot, 'vscode');
 
 const vscodeManifestPath = path.join(vscodeRoot, 'package.json');
 if (!fs.existsSync(vscodeManifestPath)) {
 	console.error(`VS Code sources not found at ${vscodeRoot}`);
-	console.error('set VSCODE_SOURCE_PATH to the pinned checkout, or place it at ../vscode');
+	console.error('set VSCODE_SOURCE_PATH to the pinned checkout, or initialize the vscode/ submodule');
 	process.exit(1);
 }
 const vscodeVersion = JSON.parse(fs.readFileSync(vscodeManifestPath, 'utf8')).version;
@@ -40,14 +40,14 @@ if (vscodeVersion !== pinnedVersion) {
 	process.exit(1);
 }
 
-const LAUNCHER_PREFIX = '../../vscode/';
+const LAUNCHER_PREFIX = '../vscode/';
 
-// Resolves the launcher's `../../vscode/...` imports against `vscodeRoot`
+// Resolves the launcher's `../vscode/...` imports against `vscodeRoot`
 // instead of the launcher's own directory.
 const pinnedVscode = {
 	name: 'pinned-vscode-source',
 	setup(build) {
-		build.onResolve({ filter: /^\.\.\/\.\.\/vscode\// }, args => {
+		build.onResolve({ filter: /^\.\.\/vscode\// }, args => {
 			if (!args.path.startsWith(LAUNCHER_PREFIX)) {
 				return undefined;
 			}

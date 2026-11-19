@@ -138,26 +138,26 @@ const VscodeGrammar = struct {
 /// languages ship in. Languages without a working VS Code grammar (zig, toml,
 /// yaml) keep the pinned package's grammar.
 const vscode_grammars = [_]VscodeGrammar{
-    .{ .language = "json", .scope = "source.json", .path = "../vscode/extensions/json/syntaxes/JSON.tmLanguage.json" },
-    .{ .language = "jsonc", .scope = "source.json.comments", .path = "../vscode/extensions/json/syntaxes/JSONC.tmLanguage.json" },
-    .{ .language = "javascript", .scope = "source.js", .path = "../vscode/extensions/javascript/syntaxes/JavaScript.tmLanguage.json" },
-    .{ .language = "javascriptreact", .scope = "source.js.jsx", .path = "../vscode/extensions/javascript/syntaxes/JavaScriptReact.tmLanguage.json" },
-    .{ .language = "typescript", .scope = "source.ts", .path = "../vscode/extensions/typescript-basics/syntaxes/TypeScript.tmLanguage.json" },
-    .{ .language = "typescriptreact", .scope = "source.tsx", .path = "../vscode/extensions/typescript-basics/syntaxes/TypeScriptReact.tmLanguage.json" },
-    .{ .language = "python", .scope = "source.python", .path = "../vscode/extensions/python/syntaxes/MagicPython.tmLanguage.json" },
-    .{ .language = "rust", .scope = "source.rust", .path = "../vscode/extensions/rust/syntaxes/rust.tmLanguage.json" },
-    .{ .language = "go", .scope = "source.go", .path = "../vscode/extensions/go/syntaxes/go.tmLanguage.json" },
-    .{ .language = "c", .scope = "source.c", .path = "../vscode/extensions/cpp/syntaxes/c.tmLanguage.json" },
-    .{ .language = "cpp", .scope = "source.cpp", .path = "../vscode/extensions/cpp/syntaxes/cpp.tmLanguage.json" },
-    .{ .language = "", .scope = "source.cpp.embedded.macro", .path = "../vscode/extensions/cpp/syntaxes/cpp.embedded.macro.tmLanguage.json" },
-    .{ .language = "java", .scope = "source.java", .path = "../vscode/extensions/java/syntaxes/java.tmLanguage.json" },
-    .{ .language = "html", .scope = "text.html.basic", .path = "../vscode/extensions/html/syntaxes/html.tmLanguage.json" },
-    .{ .language = "", .scope = "text.html.derivative", .path = "../vscode/extensions/html/syntaxes/html-derivative.tmLanguage.json" },
-    .{ .language = "css", .scope = "source.css", .path = "../vscode/extensions/css/syntaxes/css.tmLanguage.json" },
-    .{ .language = "scss", .scope = "source.css.scss", .path = "../vscode/extensions/scss/syntaxes/scss.tmLanguage.json" },
-    .{ .language = "markdown", .scope = "text.html.markdown", .path = "../vscode/extensions/markdown-basics/syntaxes/markdown.tmLanguage.json" },
-    .{ .language = "shellscript", .scope = "source.shell", .path = "../vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
-    .{ .language = "bash", .scope = "source.shell", .path = "../vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
+    .{ .language = "json", .scope = "source.json", .path = "vscode/extensions/json/syntaxes/JSON.tmLanguage.json" },
+    .{ .language = "jsonc", .scope = "source.json.comments", .path = "vscode/extensions/json/syntaxes/JSONC.tmLanguage.json" },
+    .{ .language = "javascript", .scope = "source.js", .path = "vscode/extensions/javascript/syntaxes/JavaScript.tmLanguage.json" },
+    .{ .language = "javascriptreact", .scope = "source.js.jsx", .path = "vscode/extensions/javascript/syntaxes/JavaScriptReact.tmLanguage.json" },
+    .{ .language = "typescript", .scope = "source.ts", .path = "vscode/extensions/typescript-basics/syntaxes/TypeScript.tmLanguage.json" },
+    .{ .language = "typescriptreact", .scope = "source.tsx", .path = "vscode/extensions/typescript-basics/syntaxes/TypeScriptReact.tmLanguage.json" },
+    .{ .language = "python", .scope = "source.python", .path = "vscode/extensions/python/syntaxes/MagicPython.tmLanguage.json" },
+    .{ .language = "rust", .scope = "source.rust", .path = "vscode/extensions/rust/syntaxes/rust.tmLanguage.json" },
+    .{ .language = "go", .scope = "source.go", .path = "vscode/extensions/go/syntaxes/go.tmLanguage.json" },
+    .{ .language = "c", .scope = "source.c", .path = "vscode/extensions/cpp/syntaxes/c.tmLanguage.json" },
+    .{ .language = "cpp", .scope = "source.cpp", .path = "vscode/extensions/cpp/syntaxes/cpp.tmLanguage.json" },
+    .{ .language = "", .scope = "source.cpp.embedded.macro", .path = "vscode/extensions/cpp/syntaxes/cpp.embedded.macro.tmLanguage.json" },
+    .{ .language = "java", .scope = "source.java", .path = "vscode/extensions/java/syntaxes/java.tmLanguage.json" },
+    .{ .language = "html", .scope = "text.html.basic", .path = "vscode/extensions/html/syntaxes/html.tmLanguage.json" },
+    .{ .language = "", .scope = "text.html.derivative", .path = "vscode/extensions/html/syntaxes/html-derivative.tmLanguage.json" },
+    .{ .language = "css", .scope = "source.css", .path = "vscode/extensions/css/syntaxes/css.tmLanguage.json" },
+    .{ .language = "scss", .scope = "source.css.scss", .path = "vscode/extensions/scss/syntaxes/scss.tmLanguage.json" },
+    .{ .language = "markdown", .scope = "text.html.markdown", .path = "vscode/extensions/markdown-basics/syntaxes/markdown.tmLanguage.json" },
+    .{ .language = "shellscript", .scope = "source.shell", .path = "vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
+    .{ .language = "bash", .scope = "source.shell", .path = "vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
 };
 
 fn fileExists(b: *std.Build, path: []const u8) bool {
@@ -169,7 +169,7 @@ const VscodeLanguageConfiguration = struct {
     language: []const u8,
     /// Path in the pinned VS Code checkout.
     path: []const u8,
-    /// Vendored copy for checkouts without `../vscode`.
+    /// Vendored copy for checkouts without `vscode`.
     fallback_path: []const u8 = "",
 };
 
@@ -178,24 +178,24 @@ const VscodeLanguageConfiguration = struct {
 /// embedding them here lets the TUI consume the same comments, brackets,
 /// auto-closing pairs, folding flag and indentation rules as VS Code.
 const vscode_language_configurations = [_]VscodeLanguageConfiguration{
-    .{ .language = "json", .path = "../vscode/extensions/json/language-configuration.json", .fallback_path = "src/support/languageConfigurations/json.json" },
-    .{ .language = "jsonc", .path = "../vscode/extensions/json/language-configuration.json", .fallback_path = "src/support/languageConfigurations/json.json" },
-    .{ .language = "javascript", .path = "../vscode/extensions/javascript/javascript-language-configuration.json" },
-    .{ .language = "javascriptreact", .path = "../vscode/extensions/javascript/javascript-language-configuration.json" },
-    .{ .language = "typescript", .path = "../vscode/extensions/typescript-basics/language-configuration.json" },
-    .{ .language = "typescriptreact", .path = "../vscode/extensions/typescript-basics/language-configuration.json" },
-    .{ .language = "python", .path = "../vscode/extensions/python/language-configuration.json" },
-    .{ .language = "rust", .path = "../vscode/extensions/rust/language-configuration.json" },
-    .{ .language = "go", .path = "../vscode/extensions/go/language-configuration.json" },
-    .{ .language = "c", .path = "../vscode/extensions/cpp/language-configuration.json" },
-    .{ .language = "cpp", .path = "../vscode/extensions/cpp/language-configuration.json" },
-    .{ .language = "java", .path = "../vscode/extensions/java/language-configuration.json" },
-    .{ .language = "html", .path = "../vscode/extensions/html/language-configuration.json" },
-    .{ .language = "css", .path = "../vscode/extensions/css/language-configuration.json" },
-    .{ .language = "scss", .path = "../vscode/extensions/scss/language-configuration.json" },
-    .{ .language = "markdown", .path = "../vscode/extensions/markdown-basics/language-configuration.json" },
-    .{ .language = "yaml", .path = "../vscode/extensions/yaml/language-configuration.json" },
-    .{ .language = "shellscript", .path = "../vscode/extensions/shellscript/language-configuration.json" },
+    .{ .language = "json", .path = "vscode/extensions/json/language-configuration.json", .fallback_path = "src/support/languageConfigurations/json.json" },
+    .{ .language = "jsonc", .path = "vscode/extensions/json/language-configuration.json", .fallback_path = "src/support/languageConfigurations/json.json" },
+    .{ .language = "javascript", .path = "vscode/extensions/javascript/javascript-language-configuration.json" },
+    .{ .language = "javascriptreact", .path = "vscode/extensions/javascript/javascript-language-configuration.json" },
+    .{ .language = "typescript", .path = "vscode/extensions/typescript-basics/language-configuration.json" },
+    .{ .language = "typescriptreact", .path = "vscode/extensions/typescript-basics/language-configuration.json" },
+    .{ .language = "python", .path = "vscode/extensions/python/language-configuration.json" },
+    .{ .language = "rust", .path = "vscode/extensions/rust/language-configuration.json" },
+    .{ .language = "go", .path = "vscode/extensions/go/language-configuration.json" },
+    .{ .language = "c", .path = "vscode/extensions/cpp/language-configuration.json" },
+    .{ .language = "cpp", .path = "vscode/extensions/cpp/language-configuration.json" },
+    .{ .language = "java", .path = "vscode/extensions/java/language-configuration.json" },
+    .{ .language = "html", .path = "vscode/extensions/html/language-configuration.json" },
+    .{ .language = "css", .path = "vscode/extensions/css/language-configuration.json" },
+    .{ .language = "scss", .path = "vscode/extensions/scss/language-configuration.json" },
+    .{ .language = "markdown", .path = "vscode/extensions/markdown-basics/language-configuration.json" },
+    .{ .language = "yaml", .path = "vscode/extensions/yaml/language-configuration.json" },
+    .{ .language = "shellscript", .path = "vscode/extensions/shellscript/language-configuration.json" },
 };
 
 /// Builds a module containing the VS Code grammars and Dark+ theme files
@@ -310,8 +310,8 @@ fn vscodeSyntaxAssets(
         \\
     ) catch @panic("OOM");
 
-    const dark_plus_path = "../vscode/extensions/theme-defaults/themes/dark_plus.json";
-    const dark_vs_path = "../vscode/extensions/theme-defaults/themes/dark_vs.json";
+    const dark_plus_path = "vscode/extensions/theme-defaults/themes/dark_plus.json";
+    const dark_vs_path = "vscode/extensions/theme-defaults/themes/dark_vs.json";
     if (fileExists(b, dark_plus_path) and fileExists(b, dark_vs_path)) {
         _ = files.addCopyFile(.{ .cwd_relative = dark_plus_path }, "themes/dark_plus.json");
         _ = files.addCopyFile(.{ .cwd_relative = dark_vs_path }, "themes/dark_vs.json");

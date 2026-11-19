@@ -118,7 +118,7 @@ const Contributions = struct {
 /// extensions, like upstream's location scan: its direct child directories
 /// with a `package.json` are scanned in location order. Missing roots and
 /// invalid manifests are skipped: a bundled fixture may be absent in a
-/// checkout without `../vscode`.
+/// checkout without `vscode`.
 pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -157,7 +157,7 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
 
 /// Scans one extension directory. Returns false when the directory does not
 /// contain a usable extension manifest, so the caller can treat it as a
-/// container of extensions instead (`../vscode/extensions/package.json` is a
+/// container of extensions instead (`vscode/extensions/package.json` is a
 /// build manifest, not an extension).
 fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const u8, contributions: Contributions) !bool {
     const manifest_path = try std.fs.path.join(allocator, &.{ absolute, "package.json" });
@@ -332,8 +332,8 @@ fn hasEngines(object: std.json.ObjectMap) bool {
 test "declarative scanner reads markdown-basics and theme-defaults" {
     const allocator = std.testing.allocator;
     var registry = try scan(allocator, &.{
-        "../vscode/extensions/markdown-basics",
-        "../vscode/extensions/theme-defaults",
+        "vscode/extensions/markdown-basics",
+        "vscode/extensions/theme-defaults",
     });
     defer registry.deinit();
     if (registry.languages.len == 0) return error.SkipZigTest;
@@ -353,7 +353,7 @@ test "declarative scanner reads markdown-basics and theme-defaults" {
 
 test "declarative scanner reads a directory of bundled extensions" {
     const allocator = std.testing.allocator;
-    var registry = try scan(allocator, &.{"../vscode/extensions"});
+    var registry = try scan(allocator, &.{"vscode/extensions"});
     defer registry.deinit();
     if (registry.extensions.len == 0) return error.SkipZigTest;
 

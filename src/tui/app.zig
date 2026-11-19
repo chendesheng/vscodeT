@@ -178,8 +178,8 @@ pub fn main(init: std.process.Init) !void {
     defer infoLog(log_service, "exit", .{});
 
     var declarative: ?extensions_registry.Registry = extensions_registry.scan(allocator, &.{
-        "../vscode/extensions/theme-defaults",
-        "../vscode/extensions/markdown-basics",
+        "vscode/extensions/theme-defaults",
+        "vscode/extensions/markdown-basics",
     }) catch null;
     defer if (declarative) |*registry| registry.deinit();
 

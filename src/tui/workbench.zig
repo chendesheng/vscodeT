@@ -4561,7 +4561,7 @@ fn frameText(allocator: Allocator, frame: *const ui.Frame) ![]u8 {
 
 test "Workbench: declarative markdown configuration applies to open tabs" {
     const allocator = std.testing.allocator;
-    var registry = extensions_registry.scan(allocator, &.{"../vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
+    var registry = extensions_registry.scan(allocator, &.{"vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
     defer registry.deinit();
     if (registry.language("markdown") == null) return error.SkipZigTest;
 

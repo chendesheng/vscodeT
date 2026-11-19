@@ -22,7 +22,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
 const vscodeRoot = process.env.VSCODE_SOURCE_PATH
 	? path.resolve(process.env.VSCODE_SOURCE_PATH)
-	: path.resolve(repoRoot, '..', 'vscode');
+	: path.resolve(repoRoot, 'vscode');
 const outRoot = path.join(here, 'dist', 'extensions');
 const extensionName = 'typescript-language-features';
 const outExtension = path.join(outRoot, extensionName);

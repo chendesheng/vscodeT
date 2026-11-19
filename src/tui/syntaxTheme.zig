@@ -545,7 +545,7 @@ test "syntax theme loads through the workbench theme service" {
 test "declarative theme-defaults loads a token theme" {
     const registry_mod = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
     const allocator = std.testing.allocator;
-    var registry = registry_mod.scan(allocator, &.{"../vscode/extensions/theme-defaults"}) catch return error.SkipZigTest;
+    var registry = registry_mod.scan(allocator, &.{"vscode/extensions/theme-defaults"}) catch return error.SkipZigTest;
     defer registry.deinit();
     const theme = registry.theme("Dark+") orelse return error.SkipZigTest;
 

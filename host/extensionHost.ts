@@ -11,12 +11,12 @@
 
 import * as fs from 'node:fs';
 import * as net from 'node:net';
-import { ExtensionHostMain } from '../../vscode/src/vs/workbench/api/common/extensionHostMain.js';
-import type { IMessagePassingProtocol } from '../../vscode/src/vs/base/parts/ipc/common/ipc.js';
-import type { IExtensionHostInitData } from '../../vscode/src/vs/workbench/services/extensions/common/extensionHostProtocol.js';
-import { Promises } from '../../vscode/src/vs/base/node/pfs.js';
-import '../../vscode/src/vs/workbench/api/common/extHost.common.services.js';
-import '../../vscode/src/vs/workbench/api/node/extHost.node.services.js';
+import { ExtensionHostMain } from '../vscode/src/vs/workbench/api/common/extensionHostMain.js';
+import type { IMessagePassingProtocol } from '../vscode/src/vs/base/parts/ipc/common/ipc.js';
+import type { IExtensionHostInitData } from '../vscode/src/vs/workbench/services/extensions/common/extensionHostProtocol.js';
+import { Promises } from '../vscode/src/vs/base/node/pfs.js';
+import '../vscode/src/vs/workbench/api/common/extHost.common.services.js';
+import '../vscode/src/vs/workbench/api/node/extHost.node.services.js';
 const PIPE_IN_FD = Number(process.env.VSCODE_EXTENSION_HOST_IN_FD ?? 3);
 const PIPE_OUT_FD = Number(process.env.VSCODE_EXTENSION_HOST_OUT_FD ?? 4);
 const MAX_FRAME = 64 * 1024 * 1024;

@@ -4543,7 +4543,7 @@ test "editor applies configured files.associations" {
 
 test "declarative markdown-basics configuration reaches the editor" {
     const allocator = std.testing.allocator;
-    var registry = extensions_registry.scan(allocator, &.{"../vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
+    var registry = extensions_registry.scan(allocator, &.{"vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
     defer registry.deinit();
     if (registry.language("markdown") == null) return error.SkipZigTest;
 

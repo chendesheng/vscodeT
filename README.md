@@ -18,6 +18,34 @@ zig build test   # run the editor and ui library tests
 zig build test-watcher -Dwatcher-only=true   # run the file-watcher tests without the TUI
 ```
 
+## Upstream VS Code checkout
+
+The upstream tree is embedded as the `vscode/` git submodule, pinned to VS Code
+**1.147.0** at commit `e31c2e52f563620846caab877103f630ea361b9c`. That is the
+exact tree the port inventory, generated extension-host RPC table and line
+counts were taken from. The `1.147.0` release tag points at a different commit
+(`8a14f0cc`), so pin the commit, not the tag.
+
+The submodule is shallow (`.gitmodules` sets `shallow = true`), so cloning
+fetches only the pinned revision, not VS Code's history:
+
+```sh
+git clone --recurse-submodules --shallow-submodules <repo-url>
+# or, in an existing checkout:
+git submodule update --init --depth 1
+```
+
+Without an initialized submodule, `zig build` still works with the vendored
+grammar and theme fallbacks in `src/support/`; the upstream syntax/theme assets,
+language configurations and the Node extension host need `vscode/`.
+`-Dvscode-source=<dir>` / `VSCODE_SOURCE_PATH` can point the host bundle at
+another checkout, but it must be the same 1.147.0 tree.
+
+Bumping the pin is not a routine dependency update: the generated protocol
+table and the ported line counts are tied to this commit. Move the submodule
+checkout, rerun `node host/generateProtocol.js`, and update this section,
+`AGENTS.md` and the pin in `docs/` in the same change.
+
 Notes for the Zig 0.17 port:
 
 - `@cImport` was removed in Zig 0.17, so `oniguruma.h` is translated by the
@@ -118,15 +146,15 @@ fails at runtime.
 
 ```sh
 cd host && npm ci                          # esbuild, @vscode/ripgrep, @vscode/spdlog
-cd .. && zig build host -Dvscode-source=/path/to/vscode-1.147.0
+cd .. && zig build host                    # bundles from the pinned vscode/ submodule
 zig build run -- [--extensions-dir <dir>] [<file>...]
 zig build test-e2e                        # boots the host and edits through VSCodeVim
 ```
 
 `-Dvscode-source` becomes `VSCODE_SOURCE_PATH` for `host/build.js` and defaults
-to `../vscode`, which must be the pinned checkout. `zig build` itself never
-runs Node; `zig build host` is the explicit step that produces
-`host/dist/extensionHost.mjs`.
+to `vscode/`, the embedded pinned checkout. Pass it only to bundle a different
+1.147.0 tree. `zig build` itself never runs Node; `zig build host` is the
+explicit step that produces `host/dist/extensionHost.mjs`.
 
 `npm run build:json` (in `host/`) is the optional `host/dist/jsonServer.mjs`
 step. If the host bundle is missing at startup, the app reports
@@ -140,7 +168,7 @@ default; set `VSCODE_APP_PATH` to choose one, or `TYPESCRIPT_SDK` to override
 the SDK. The extension is a runtime asset, not vendored source.
 
 The JSON server bundle reuses the runtime dependencies of the pinned
-`../vscode/extensions/json-language-features/server`; install them there first
+`vscode/extensions/json-language-features/server`; install them there first
 with `npm install` if the bundle step cannot resolve `vscode-languageserver`.
 
 `--extensions-dir` is VS Code's extensions folder (the parent of
@@ -161,8 +189,8 @@ editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
 `o`/`O` (with the editor's language auto-indent), insert-mode `Tab`/`Shift-Tab` (editor indentation, not VSCodeVim's normal-mode tab command), insert-mode `Backspace`/`Delete` (the core `deleteLeft`/`deleteRight` commands VSCodeVim delegates to), `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
 the status bar shows its mode entry.
 
-Declarative built-ins are scanned from `../vscode/extensions/theme-defaults`
-and `../vscode/extensions/markdown-basics`: their themes, languages, grammars
+Declarative built-ins are scanned from `vscode/extensions/theme-defaults`
+and `vscode/extensions/markdown-basics`: their themes, languages, grammars
 and language configurations are loaded at startup. The markdown language
 therefore gets its upstream `<!-- -->` comment rule, bracket pairs, auto-closing
 pairs and off-side folding even when the built-in grammar was already bundled.
@@ -228,10 +256,10 @@ remaining work.
 GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`
 suite on Linux (inotify), macOS (kqueue) and Windows (`ReadDirectoryChangesW`),
 and cross-compiles the watcher-only test root for `x86_64-windows` and
-`aarch64-macos` on Linux. The Linux and macOS jobs check out the pinned
-upstream VS Code grammar and theme assets into `../vscode`, so the
-tokenizer/theme tests run against the real assets instead of the fallback
-theme. The Windows job installs oniguruma with vcpkg and passes
+`aarch64-macos` on Linux. The Linux, macOS and Windows jobs initialize the
+shallow `vscode/` submodule at the pinned commit, so the tokenizer, theme and
+extension-asset tests run against the real upstream tree instead of the
+fallbacks. The Windows job installs oniguruma with vcpkg and passes
 `-Donig-include`/`-Donig-lib` to the build; the terminal layer uses the Windows
 console API for raw mode, sizing and input polling.
 
@@ -612,18 +640,18 @@ TextMate tokenization:
   `typescript`, `python`, `rust`, `go`, `c`, `cpp`, `java`, `html`, `css`,
   `scss`, `markdown`, `yaml`, `toml`, and `shellscript`/`bash`.
 - Languages that ship a grammar in the upstream checkout use VS Code's
-  originals, embedded from `../vscode/extensions/*/syntaxes/*.tmLanguage.json`
+  originals, embedded from `vscode/extensions/*/syntaxes/*.tmLanguage.json`
   at build time (`vscode-syntax`). `zig`, `toml` and `yaml` use vendored
   fallback grammars in `src/support/grammars` (the current VS Code YAML
   grammar does not tokenize with this parser). The vendored Dark+ theme is the
-  fallback when the checkout is absent.
+  fallback when the `vscode/` submodule is not initialized.
 - Language configurations for the same languages are read from each
   extension's upstream `language-configuration.json` and embedded by
   `vscode-syntax` too (JSON/JSONC have a vendored fallback in
   `src/support/languageConfigurations`). `src/tui/language.zig` only holds the
   terminal's built-in language-ID/extension table and the portable fallback
   used when no upstream configuration asset exists (for example Zig, or any
-  language in a checkout without `../vscode`).
+  language when the `vscode/` submodule is not initialized).
 - Token colors come from VS Code's Dark+ theme
   (`theme-defaults/themes/dark_plus.json` and its `dark_vs.json` include).
   `TokenTheme` resolves the `tokenColors` rules (foreground and

@@ -22,13 +22,14 @@ symbols are wired through the ported language-feature bridge (§15.7). The remai
 `tabGroups`, extension keybindings and the built-in command set are still
 incomplete. The prerequisite workbench services are ported (§3.3).
 
-Upstream reference: `../vscode` at **1.147.0**, commit
-`e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
+Upstream reference: `vscode/`, the shallow git submodule, at **1.147.0**,
+commit `e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
 inventory, init-data shape and line counts below were taken from that tree.
-They are version-specific: upgrading the host invalidates the generated
-protocol table, so the host version is pinned and checked at startup (see
-§2.5 and §6.4). This document replaces an earlier draft that referenced
-1.108.0.
+The `1.147.0` release tag is a different commit (`8a14f0cc`); keep the
+submodule at `e31c2e52`. They are version-specific: upgrading the host
+invalidates the generated protocol table, so the host version is pinned and
+checked at startup (see §2.5 and §6.4). This document replaces an earlier draft
+that referenced 1.108.0.
 
 Local snapshot: HEAD `e98be57`. The services the extension system consumes
 (language, configuration, files, working copies, editor groups, status bar,
@@ -37,9 +38,9 @@ scanner, contribution, or `MainThread*` module exists yet.
 
 How to read paths and numbers in this document:
 
-- An upstream path without a prefix is relative to `../vscode/src/vs/`, so
+- An upstream path without a prefix is relative to `vscode/src/vs/`, so
   `api/node/extensionHostProcess.ts` means
-  `../vscode/src/vs/workbench/api/node/extensionHostProcess.ts`.
+  `vscode/src/vs/workbench/api/node/extensionHostProcess.ts`.
 - A Zig path without a prefix is relative to this repository's `src/`.
 - `.ts` becomes `.zig` one-for-one, including the otherwise unusual names
   (`extHost.protocol.ts` → `extHost.protocol.zig`; the extra dot is
@@ -92,7 +93,7 @@ contribution points, TUI wiring) to Zig.**
    bootstrap; it is replaced by `host/extensionHost.js`.
 
 2. **Pin the host, do not vendor it.** The host code is loaded from a VS Code
-   build that the user provides: `../vscode` compiled once, or any checkout
+   build that the user provides: `vscode/` compiled once, or any checkout
    pointed at by `--vscode-host-path` / `VSCODE_HOST_PATH`. The repository
    does not copy VS Code sources or build output into git. It does keep the
    *generated* protocol table and method manifest, because those are part of
@@ -208,7 +209,7 @@ version-mismatch failure to "extensions disabled for an unrelated reason".
 The editor still starts; the status/log line names the rejected host path and
 the expected/got versions.
 
-A source checkout (`../vscode`) has `version` from `package.json` but may not
+A source checkout (`vscode/`) has `version` from `package.json` but may not
 define `product.commit`. In that case only the version check and the host's
 own `initData.commit` check (when its `product.commit` is defined) apply.
 Node's floor is `.nvmrc` 24.22.1; check it at startup and fail closed before
@@ -250,7 +251,7 @@ that must come with each file. "Generated" files are produced from the pinned
 tree by a development-time script and committed; they are not edited by hand.
 Stage numbers refer to §14.
 
-| Upstream (relative to `../vscode/src/vs/`) | Lines | Zig (relative to `src/vs/`) | Upstream test | Stage |
+| Upstream (relative to `vscode/src/vs/`) | Lines | Zig (relative to `src/vs/`) | Upstream test | Stage |
 |---|---|---|---|---|
 | `base/common/buffer.ts` | 582 | `base/common/buffer.zig` | `base/test/common/buffer.test.ts` (649) | S1 |
 | `base/common/uri.ts` | 765 | `base/common/uri.zig` | `base/test/common/uri.test.ts` (727) | S1 |
@@ -683,8 +684,8 @@ files.
 
 The launcher is bundled, not run from an `out/` build: `host/build.js` asks
 esbuild for the module graph reachable from `host/extensionHost.ts` and writes
-`host/dist/extensionHost.mjs`. The launcher's `../../vscode/` imports resolve
-against `VSCODE_SOURCE_PATH` (default `../vscode`), so the bundle is always
+`host/dist/extensionHost.mjs`. The launcher's `../vscode/` imports resolve
+against `VSCODE_SOURCE_PATH` (default `vscode/`), so the bundle is always
 built from the tree the RPC table was generated from. `zig build host`
 wraps that step and accepts `-Dvscode-source=<dir>`; `zig build` itself stays
 free of Node and npm. The bundle needs `@vscode/ripgrep` and `@vscode/spdlog`
@@ -983,7 +984,7 @@ consumed by the editor yet. Full `extensionValidator`, profile scanning and
 NLS resolution remain deferred.
 
 Scan roots may be an extension directory or a directory of extensions (for
-example `../vscode/extensions`): a root without a valid extension manifest is
+example `vscode/extensions`): a root without a valid extension manifest is
 scanned one level deep, keeping direct child directories that contain a
 `package.json` in path order. Bundled extensions, the user extensions directory
 (`~/.local/share/zig-editor/extensions/<publisher>.<name>-<version>/`), and
@@ -1028,7 +1029,7 @@ on the host even if the TUI can display it.
   `std.json` rejects comments and trailing commas. Port the JSONC
   scanner/parser behavior from `base/common/json.ts`: line/block comments,
   trailing commas, string escapes, and parse errors with byte offsets. Test
-  it against the bundled extensions in `../vscode/extensions`.
+  it against the bundled extensions in `vscode/extensions`.
 - `extensionValidator` needs `semver.valid`; the scanner's profile dedup uses
   `semver.gt`/`eq`. Port a small semver subset (parse, valid, compare,
   prerelease) unless the scanner drops profile dedup entirely, in which case
@@ -1791,7 +1792,7 @@ case list, taken from the upstream tests and the protocol rules above:
   `cancellation.test.ts`**: complete ports, not subsets. `json.test.ts` is
   ported for the scanner/parser surface (comments, trailing commas, escapes,
   duplicate keys, errors with byte offsets) and is exercised against the
-  bundled `../vscode/extensions` manifests; the JSON edit/format visitor
+  bundled `vscode/extensions` manifests; the JSON edit/format visitor
   suites are out of scope per §16. URI tests include `joinPath`, `$mid`,
   revival and the URI transformer.
 - **`extensionValidator.test.ts`**: every manifest-shape error, semver
@@ -1829,19 +1830,19 @@ commit.
 
 ### 15.2 Bundled extension fixtures
 
-The pinned `../vscode/extensions` tree is a real fixture corpus: at 1.147.0 it
+The pinned `vscode/extensions` tree is a real fixture corpus: at 1.147.0 it
 has 95 extension manifests, 61 declarative and 34 with `main`/`browser` code.
 Do not vendor it; consume it when the checkout is present, as `build.zig`
 already does for grammars and the Dark+ theme. Use this first set:
 
 | Fixture | Path | Covers |
 |---|---|---|
-| `theme-defaults` | `../vscode/extensions/theme-defaults` | theme and icon-theme contribution points, JSONC comments, the `dark_plus` → `dark_vs` include chain, `package.nls.json` |
-| `markdown-basics` | `../vscode/extensions/markdown-basics` | `languages` with a commented `language-configuration.json`, grammar, snippets, NLS manifest |
-| `vscode-smoketest-ext-host` | `../vscode/test/smoke/extensions/vscode-smoketest-ext-host` | plain-JS extension, `onStartupFinished`, command registration, activation PID marker; `deactivate()` writes a marker set up by a command |
-| `search-result` | `../vscode/extensions/search-result` | `onLanguage:search-result` activation, language + grammar contribution, document symbols/completion/definition/decorations; its document-link registration is deferred (§10), and the `void` RPC degrades to no links |
-| `notebook-renderers` | `../vscode/extensions/notebook-renderers` | declarative extension whose only contribution is unsupported `notebookRenderer`; the scanner must keep it and ignore the point |
-| `copilot` | `../vscode/extensions/copilot` | large real-world manifest with many unsupported contribution points; scanner stress test, not an activation target |
+| `theme-defaults` | `vscode/extensions/theme-defaults` | theme and icon-theme contribution points, JSONC comments, the `dark_plus` → `dark_vs` include chain, `package.nls.json` |
+| `markdown-basics` | `vscode/extensions/markdown-basics` | `languages` with a commented `language-configuration.json`, grammar, snippets, NLS manifest |
+| `vscode-smoketest-ext-host` | `vscode/test/smoke/extensions/vscode-smoketest-ext-host` | plain-JS extension, `onStartupFinished`, command registration, activation PID marker; `deactivate()` writes a marker set up by a command |
+| `search-result` | `vscode/extensions/search-result` | `onLanguage:search-result` activation, language + grammar contribution, document symbols/completion/definition/decorations; its document-link registration is deferred (§10), and the `void` RPC degrades to no links |
+| `notebook-renderers` | `vscode/extensions/notebook-renderers` | declarative extension whose only contribution is unsupported `notebookRenderer`; the scanner must keep it and ignore the point |
+| `copilot` | `vscode/extensions/copilot` | large real-world manifest with many unsupported contribution points; scanner stress test, not an activation target |
 
 `theme-defaults` and `markdown-basics` are the first S3/S4/S6 fixtures: both scan
 without a host, and both contain the JSONC (comments, includes) the parser and
@@ -1858,7 +1859,7 @@ test.
 
 Constraints:
 
-- **Code extensions need the upstream build.** `../vscode/out` and
+- **Code extensions need the upstream build.** `vscode/out` and
   `extensions/*/out` are absent in the checkout. Run
   `pnpm install --frozen-lockfile && pnpm run compile` (gulp `compile`,
   which includes `compile-extensions`) before activating
@@ -1871,7 +1872,7 @@ Constraints:
   temporary manifest with `isBuiltin: false` for that. Loading a bundled
   extension through `--extension-development-path` also flips it out of the
   builtin path, so its old `0.10.x` engine may be rejected.
-- **Keep the default test suite hermetic.** Gate `../vscode/extensions` scans
+- **Keep the default test suite hermetic.** Gate `vscode/extensions` scans
   on the checkout existing, or put them under `zig build test-e2e`, like the
   existing grammar/theme fallback in `build.zig`. A missing checkout must skip
   the fixture, not fail the unit suite.
@@ -1879,7 +1880,7 @@ Constraints:
   provider during activation, which is deferred in §10; it will exercise the
   unsupported-feature path, not a clean activation.
 - **The extensions root is not an extension.**
-  `../vscode/extensions/package.json` is the extensions workspace manifest;
+  `vscode/extensions/package.json` is the extensions workspace manifest;
   scan the child directories only.
 
 ### 15.6 JSON/JSONC language features
@@ -2035,7 +2036,7 @@ generic fallback.
    Node version at startup and fail closed with a clear message rather than
    discovering it during `pnpm run compile`.
 2. **Host discovery.** Proposed order: `--vscode-host-path`,
-   `VSCODE_HOST_PATH`, `../vscode/out`, then a downloaded release. Every hit
+   `VSCODE_HOST_PATH`, `vscode/out`, then a downloaded release. Every hit
    is validated against the pinned version and commit; a mismatch is an
    error, not a fallback to the next candidate.
 3. **Storage persistence.** `MainThreadStorage` is required: mementos always
