@@ -17,9 +17,9 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const log = @import("../vs/platform/log/common/log.zig");
-const LogService = @import("../vs/platform/log/common/logService.zig").LogService;
-const time_compat = @import("../vs/base/common/timeCompat.zig");
+const log = @import("./log.zig");
+const LogService = @import("./logService.zig").LogService;
+const time_compat = @import("../../../base/common/timeCompat.zig");
 
 pub const FileLogger = struct {
     allocator: Allocator,

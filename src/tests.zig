@@ -539,7 +539,7 @@ comptime {
     _ = @import("./vs/platform/log/common/logService.zig");
     _ = @import("./vs/platform/log/test/common/log.test.zig");
     _ = @import("./vs/platform/log/common/bufferLog.zig");
-    _ = @import("./tui/logger.zig");
+    _ = @import("./vs/platform/log/common/fileLog.zig");
     _ = @import("./vs/workbench/services/keybinding/browser/keybindingService.zig");
     _ = @import("./vs/platform/quickinput/common/quickInput.zig");
     _ = @import("./vs/platform/quickinput/browser/quickInput.zig");

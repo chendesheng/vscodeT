@@ -15,7 +15,7 @@
 // - Not ported in this file:
 //   - `ConsoleLogger`/`ConsoleMainLogger`: the TUI owns the terminal (alternate
 //     screen and raw mode), so there is no console to write to during a
-//     session; `src/tui/logger.zig` writes to the main log file instead.
+//     session; `fileLog.zig` writes to the main log file instead.
 //   - `registerDevConsoleLogForwarder`: no development console layer.
 //   - `AbstractLoggerService`/`ILoggerService`: they key loggers by `URI` and
 //     feed the log-output picker, which the TUI does not have. `LogService` is
