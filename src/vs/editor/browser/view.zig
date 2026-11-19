@@ -17,6 +17,8 @@ const view_events = @import("../common/viewEvents.zig");
 const viewport_data = @import("../common/viewLayout/viewLinesViewportData.zig");
 const StringBuilder = @import("../common/core/stringBuilder.zig").StringBuilder;
 const view_lines_mod = @import("./viewParts/viewLines/viewLines.zig");
+const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
+const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.zig");
 const view_event_handler = @import("../common/viewEventHandler.zig");
 const ViewEventHandler = view_event_handler.ViewEventHandler;
 const ViewEvent = view_events.ViewEvent;
@@ -30,6 +32,10 @@ const DynamicViewOverlay = dynamic_overlay_mod.DynamicViewOverlay;
 const ViewContext = view_context_mod.ViewContext;
 const ViewportData = viewport_data.ViewportData;
 const ViewLines = view_lines_mod.ViewLines;
+const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
+const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
+const IContentWidget = @import("./editorBrowser.zig").IContentWidget;
+const IOverlayWidget = @import("./editorBrowser.zig").IOverlayWidget;
 
 /// Terminal `View`: owns the view lines, view parts and dynamic overlays, and
 /// fans view events out to them.
@@ -37,6 +43,8 @@ pub const View = struct {
     allocator: Allocator,
     context: *ViewContext,
     view_lines: ViewLines,
+    content_widgets: ViewContentWidgets,
+    overlay_widgets: ViewOverlayWidgets,
     view_parts: std.array_list.Managed(*ViewPart),
     content_overlays: std.array_list.Managed(*DynamicViewOverlay),
     is_focused: bool = false,
@@ -48,6 +56,8 @@ pub const View = struct {
             .allocator = allocator,
             .context = context,
             .view_lines = undefined,
+            .content_widgets = ViewContentWidgets.init(allocator),
+            .overlay_widgets = ViewOverlayWidgets.init(allocator),
             .view_parts = std.array_list.Managed(*ViewPart).init(allocator),
             .content_overlays = std.array_list.Managed(*DynamicViewOverlay).init(allocator),
         };
@@ -59,6 +69,8 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.context.removeEventHandler(&self.handler);
         self.view_lines.deinit();
+        self.content_widgets.deinit();
+        self.overlay_widgets.deinit();
         self.view_parts.deinit();
         self.content_overlays.deinit();
     }
@@ -77,6 +89,39 @@ pub const View = struct {
 
     pub fn viewLinesConst(self: *const View) *const ViewLines {
         return &self.view_lines;
+    }
+    /// Port of `View.addContentWidget`/`removeContentWidget`.
+    pub fn addContentWidget(self: *View, widget: IContentWidget) !void {
+        try self.content_widgets.add(widget);
+    }
+
+    pub fn removeContentWidget(self: *View, id: []const u8) bool {
+        return self.content_widgets.remove(id);
+    }
+
+    /// Port of `View.addOverlayWidget`/`removeOverlayWidget`.
+    pub fn addOverlayWidget(self: *View, widget: IOverlayWidget) !void {
+        try self.overlay_widgets.add(widget);
+    }
+
+    pub fn removeOverlayWidget(self: *View, id: []const u8) bool {
+        return self.overlay_widgets.remove(id);
+    }
+
+    pub fn contentWidgets(self: *View) *ViewContentWidgets {
+        return &self.content_widgets;
+    }
+
+    pub fn contentWidgetsConst(self: *const View) *const ViewContentWidgets {
+        return &self.content_widgets;
+    }
+
+    pub fn overlayWidgets(self: *View) *ViewOverlayWidgets {
+        return &self.overlay_widgets;
+    }
+
+    pub fn overlayWidgetsConst(self: *const View) *const ViewOverlayWidgets {
+        return &self.overlay_widgets;
     }
 
     /// Port of upstream `View._getViewPartsToRender`: the view parts that

@@ -349,6 +349,14 @@ pub const TerminalViewHost = struct {
         return self.view.viewLinesConst().getMaxLineWidth();
     }
 
+    pub fn viewRef(self: *TerminalViewHost) *View {
+        return &self.view;
+    }
+
+    pub fn viewConst(self: *const TerminalViewHost) *const View {
+        return &self.view;
+    }
+
     pub fn getLineNumber(self: *const TerminalViewHost, view_line: usize) ?*const RenderedLineNumber {
         return self.line_numbers.renderedLine(view_line);
     }

@@ -229,10 +229,8 @@ pub const View = struct {
     surface: ui.Surface,
     /// Overlay widgets anchored to an editor corner, painted above the lines
     /// and the status row.
-    overlay_widgets: ViewOverlayWidgets,
     /// Content widgets anchored to model positions, painted above the lines
     /// and below the overlays (the hover widget is one).
-    content_widgets: ViewContentWidgets,
     /// Content widget containers for the current frame, used to hit-test and
     /// to keep pointer events out of the text.
     /// Overlay widget rectangles for the current frame; pointer events on an
@@ -297,16 +295,12 @@ pub const View = struct {
             .editor = editor,
             .guides = GuidesTextModelPart.init(editor.model),
             .surface = undefined,
-            .overlay_widgets = ViewOverlayWidgets.init(allocator),
-            .content_widgets = ViewContentWidgets.init(allocator),
 
             .terminal_view_host = undefined,
             .scrollbar_part = TerminalScrollbar.init(allocator),
         };
         self.terminal_view_host = try TerminalViewHost.init(allocator, editor);
         errdefer self.terminal_view_host.deinit();
-        errdefer self.overlay_widgets.deinit();
-        errdefer self.content_widgets.deinit();
 
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
@@ -326,8 +320,6 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.scrollbar_part.deinit();
         self.terminal_view_host.deinit();
-        self.content_widgets.deinit();
-        self.overlay_widgets.deinit();
         self.surface.deinit();
         self.allocator.destroy(self);
     }
@@ -354,13 +346,13 @@ pub const View = struct {
     /// Registers an overlay widget. The caller owns the widget struct and must
     /// keep its context alive until it is removed or the view is destroyed.
     pub fn addOverlayWidget(self: *View, widget: editorBrowser.IOverlayWidget) !void {
-        try self.overlay_widgets.add(widget);
+        try self.terminal_view_host.viewRef().addOverlayWidget(widget);
         self.invalidate();
     }
 
     /// Registers a content widget anchored to a model position.
     pub fn addContentWidget(self: *View, widget: editorBrowser.IContentWidget) !void {
-        try self.content_widgets.add(widget);
+        try self.terminal_view_host.viewRef().addContentWidget(widget);
         self.invalidate();
     }
 
@@ -466,26 +458,14 @@ pub const View = struct {
     }
 
     pub fn removeOverlayWidget(self: *View, id: []const u8) !void {
-        var index: usize = 0;
-        while (index < self.overlay_widgets.widgets.items.len) : (index += 1) {
-            const widget = self.overlay_widgets.widgets.items[index];
-            if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
-                _ = self.overlay_widgets.widgets.orderedRemove(index);
-                self.invalidate();
-                return;
-            }
+        if (self.terminal_view_host.viewRef().removeOverlayWidget(id)) {
+            self.invalidate();
         }
     }
 
     pub fn removeContentWidget(self: *View, id: []const u8) !void {
-        var index: usize = 0;
-        while (index < self.content_widgets.widgets.items.len) : (index += 1) {
-            const widget = self.content_widgets.widgets.items[index];
-            if (std.mem.eql(u8, widget.get_id(widget.context), id)) {
-                _ = self.content_widgets.widgets.orderedRemove(index);
-                self.invalidate();
-                return;
-            }
+        if (self.terminal_view_host.viewRef().removeContentWidget(id)) {
+            self.invalidate();
         }
     }
 
@@ -628,10 +608,10 @@ pub const View = struct {
     }
 
     fn pointInWidget(self: *const View, x: usize, y: usize) bool {
-        for (self.content_widgets.entries.items) |entry| {
+        for (self.terminal_view_host.viewRef().contentWidgets().entries.items) |entry| {
             if (entry.contains(x, y)) return true;
         }
-        for (self.overlay_widgets.entries.items) |entry| {
+        for (self.terminal_view_host.viewRef().overlayWidgets().entries.items) |entry| {
             if (entry.contains(x, y)) return true;
         }
         return false;
@@ -704,7 +684,7 @@ pub const View = struct {
 
     fn mouseContentWidgetContains(context: *anyopaque, x: usize, y: usize) bool {
         const self: *View = @ptrCast(@alignCast(context));
-        for (self.content_widgets.entries.items) |entry| {
+        for (self.terminal_view_host.viewRef().contentWidgets().entries.items) |entry| {
             if (entry.contains(x, y)) return true;
         }
         return false;
@@ -712,7 +692,7 @@ pub const View = struct {
 
     fn mouseOverlayWidgetContains(context: *anyopaque, x: usize, y: usize) bool {
         const self: *View = @ptrCast(@alignCast(context));
-        for (self.overlay_widgets.entries.items) |entry| {
+        for (self.terminal_view_host.viewRef().overlayWidgets().entries.items) |entry| {
             if (entry.contains(x, y)) return true;
         }
         return false;
@@ -856,10 +836,10 @@ pub const View = struct {
     /// Whether no overlay or content widget owns the keyboard. Word
     /// occurrence highlighting follows the editor's text focus.
     pub fn hasEditorFocus(self: *const View) bool {
-        for (self.overlay_widgets.widgets.items) |overlay| {
+        for (self.terminal_view_host.viewRef().overlayWidgets().widgets.items) |overlay| {
             if (overlay.is_focused(overlay.context)) return false;
         }
-        for (self.content_widgets.widgets.items) |widget| {
+        for (self.terminal_view_host.viewRef().contentWidgets().widgets.items) |widget| {
             if (widget.is_focused(widget.context)) return false;
         }
         return true;
@@ -1153,8 +1133,8 @@ pub const View = struct {
 
         try appendStatus(self, doc, root, rows);
         try self.buildScrollbar(doc, root, states, text_height, cols);
-        try self.overlay_widgets.render(doc, root, cols, text_height);
-        try self.content_widgets.render(doc, root, editor, cols, text_right, text_height, gutter, tab_size);
+        try self.terminal_view_host.viewRef().overlayWidgets().render(doc, root, cols, text_height);
+        try self.terminal_view_host.viewRef().contentWidgets().render(doc, root, editor, cols, text_right, text_height, gutter, tab_size);
         self.needs_rebuild = false;
     }
 
@@ -1853,8 +1833,8 @@ test "View: content widget anchors to a model position" {
     defer out.deinit();
     try view.render(&out.writer);
 
-    try std.testing.expectEqual(@as(usize, 1), view.content_widgets.entries.items.len);
-    const entry = view.content_widgets.entries.items[0];
+    try std.testing.expectEqual(@as(usize, 1), view.terminal_view_host.viewRef().contentWidgets().entries.items.len);
+    const entry = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
     // Gutter is 3 cells wide, and column 3 starts at cell 2 of the text.
     try std.testing.expectEqual(@as(usize, 5), entry.left);
     try std.testing.expectEqual(@as(usize, 1), entry.top);
@@ -1894,10 +1874,10 @@ test "View: content widget anchors on a wrapped line" {
     defer out.deinit();
     try view.render(&out.writer);
 
-    try std.testing.expectEqual(@as(usize, 2), view.content_widgets.entries.items[0].top);
+    try std.testing.expectEqual(@as(usize, 2), view.terminal_view_host.viewRef().contentWidgets().entries.items[0].top);
     // Column 18 is the third cell of the wrapped segment, which starts at the
     // left edge of the text area.
-    try std.testing.expectEqual(@as(usize, 5), view.content_widgets.entries.items[0].left);
+    try std.testing.expectEqual(@as(usize, 5), view.terminal_view_host.viewRef().contentWidgets().entries.items[0].left);
 }
 
 test "View: content widget flips above and clamps to the text area" {
@@ -1926,12 +1906,12 @@ test "View: content widget flips above and clamps to the text area" {
 
     // Row 1 is the anchor; two rows below do not fit the three-row text area,
     // so the widget is clamped to its last two rows.
-    try std.testing.expectEqual(@as(usize, 1), view.content_widgets.entries.items[0].top);
+    try std.testing.expectEqual(@as(usize, 1), view.terminal_view_host.viewRef().contentWidgets().entries.items[0].top);
 
     below.preference = .above;
     try view.refresh();
     try view.render(&out.writer);
-    try std.testing.expectEqual(@as(usize, 0), view.content_widgets.entries.items[0].top);
+    try std.testing.expectEqual(@as(usize, 0), view.terminal_view_host.viewRef().contentWidgets().entries.items[0].top);
 }
 
 test "View: word highlight decorations paint text and strong colors" {

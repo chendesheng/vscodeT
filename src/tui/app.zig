@@ -1518,7 +1518,7 @@ test "app: hovering a word shows the rendered markdown hover" {
     defer out.deinit();
     try view.render(&out.writer);
 
-    const box = view.content_widgets.entries.items[0];
+    const box = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
     const grid = view.surface.grid();
     try std.testing.expectEqual(@as(u32, '┌'), grid.cluster[grid.index(box.left, box.top)]);
     try std.testing.expectEqual(@as(u32, '┘'), grid.cluster[grid.index(box.left + box.width - 1, box.top + box.height - 1)]);
@@ -1560,7 +1560,7 @@ test "app: hovering a word shows the rendered markdown hover" {
     try view.refresh();
     try view.render(&out.writer);
 
-    const entry = view.content_widgets.entries.items[0];
+    const entry = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
     var down = ui.MouseEvent{
         .kind = .down,
         .x = entry.left + 2,
@@ -1663,7 +1663,7 @@ test "app: hover renders a GFM table and task list" {
     defer out.deinit();
     try view.render(&out.writer);
 
-    const box = view.content_widgets.entries.items[0];
+    const box = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
     const grid = view.surface.grid();
     try std.testing.expectEqual(@as(u32, '┌'), grid.cluster[grid.index(box.left, box.top)]);
     try std.testing.expectEqual(@as(u32, '┘'), grid.cluster[grid.index(box.left + box.width - 1, box.top + box.height - 1)]);
@@ -1768,7 +1768,7 @@ test "app: long hover content scrolls without moving the editor" {
     try std.testing.expect(widget.show_scrollbar);
 
     const top_before = editor.topViewLine();
-    const entry = view.content_widgets.entries.items[0];
+    const entry = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
     var wheel = ui.MouseEvent{
         .kind = .wheel,
         .x = entry.left + 3,
