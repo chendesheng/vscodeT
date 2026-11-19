@@ -1117,6 +1117,46 @@ Library constraints:
   - the browser Settings editor/view; the activity-bar Settings container
     remains a placeholder.
 
+### 8.1 Integrated terminal panel
+
+The bottom panel is a second consumer of the cell renderer. It is one tab-strip
+row plus a grid; the workbench splits the rows above the status bar between the
+editor part and the panel. The panel is hidden when it has no terminals, so the
+editor keeps the full height.
+
+The engine is libghostty-vt, not a port of xterm.js:
+
+- `src/vs/workbench/contrib/terminal/browser/terminalEmulator.zig` owns the
+  ghostty `Terminal`, one persistent `TerminalStream` (parser state survives
+  read boundaries), the render state and the effect callbacks. The ghostty Zig
+  API is treated as an unstable implementation detail behind this file.
+- `src/vs/platform/terminal/node/pty.zig` is the POSIX host: `forkpty`,
+  non-blocking master fd, queued writes, resize ioctl and process-group
+  signalling. The child only performs async-signal-safe calls after fork.
+- `src/tui/terminalView.zig` reads `RenderState` rows/cells, resolves palette
+  and RGB colors, maps SGR attributes to `ui.cell.Attr`, and writes graphemes
+  into the shared frame grid. Text is not rebuilt in a second cell buffer.
+- `src/tui/terminalInput.zig` maps decoded `ui` key/mouse events through the
+  ghostty key/mouse/paste encoders. Bracketed paste is taken from the raw input
+  bytes while the terminal has focus because the editor decoder intentionally
+  turns pasted control bytes into key events.
+- The panel always paints the terminal into `Frame.next`; the existing frame
+  diff still limits ANSI output to changed cells. Synchronized output (mode
+  2026) holds are captured at the start of the hold and released by the engine.
+
+`ui.CellGrid` now has a grapheme plane next to the first-codepoint plane. A
+shared intern table (like the border table) stores the UTF-8 cluster and makes
+frame diffs compare ids; `putCodepoint` keeps the old single-glyph path. This is
+what lets prompt emoji, combining marks and ZWJ sequences survive the terminal
+pipeline.
+
+Phase-1 limitations are explicit: no selection/copy (no system clipboard in the
+TUI; planned OSC 52 bridge), find, links, shell-integration decorations,
+profile picker, split panes, panel sash drag, Windows ConPTY, terminal editors,
+persistent/remote sessions, kitty images, ligatures, WebGL or runtime theme
+switching. Cursor shape is the outer terminal's; bar/underline settings are
+approximated by the cursor position and block/inverse paint.
+
 ## 9. POC acceptance
 
 - `zig build` and `zig build test --summary all` pass with no leaks.
@@ -1259,7 +1299,7 @@ map, is tracked in the [TUI porting inventory](porting-inventory.md).
   `absolute`.
 - Text flow covers UAX #14 line breaking, the `white-space` family,
   `word-break`/`overflow-wrap`, hanging spaces and non-atomic inline
-  fragmentation. It has no bidi reordering, grapheme-cluster segmentation, CSS
+  fragmentation. It has no bidi reordering, grapheme-cluster segmentation for DOM text, CSS
   `line-height`/`text-indent`/`vertical-align`, `<br>` elements, or font-aware
   shaping; forced breaks come from newlines under preserving white-space
   modes.

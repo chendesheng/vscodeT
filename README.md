@@ -32,6 +32,45 @@ Notes for the Zig 0.17 port:
   deprecated-but-supported `std.array_list.Managed` shim as an intermediate
   step; moving to unmanaged lists is the main remaining modernization.
 
+## Integrated terminal
+
+The TUI has a bottom terminal panel backed by a real POSIX pty and the
+[libghostty-vt](https://libghostty.tip.ghostty.org/vt/) terminal engine
+(pinned in `build.zig.zon`). It is the terminal counterpart of VS Code's
+xterm.js instance: VS Code's portable profile/environment/title/service code is
+ported under `src/vs/{platform,workbench}/.../terminal/`, the pty replaces
+node-pty, and libghostty-vt replaces xterm.js. No upstream files are modified.
+
+| Action | Shortcut |
+| --- | --- |
+| Toggle terminal panel | `Alt+Shift+T` (also "Terminal: Toggle Terminal" in the command palette) |
+| New terminal | `Alt+Shift+N` |
+| Kill active terminal | `Alt+Shift+W` |
+| Previous / next terminal tab | `Ctrl+PageUp` / `Ctrl+PageDown` while the terminal has focus |
+| Resize panel | `Alt+Shift+Up` / `Alt+Shift+Down` (mouse drag is a follow-up) |
+
+The panel handles interactive programs (alternate screen, colors, cursor
+addressing), UTF-8 and grapheme clusters, scrollback, resize (pty `TIOCSWINSZ`),
+mouse reporting, focus reporting and bracketed paste. `Ctrl+Q` remains the TUI
+quit shortcut even while the terminal is focused.
+
+Known phase-1 limits:
+
+- POSIX only. Windows reports the terminal as unsupported; ConPTY is a
+  follow-up.
+- One pane per group (tabs, no split terminals) and no terminal editors.
+- No terminal selection/copy, find, link opening, shell-integration
+  decorations or runtime theme switching. The TUI has no system clipboard;
+  copy is planned as an OSC 52 bridge to the outer terminal.
+- Kitty images, WebGL/ligature/unicode addons, persistent/remote terminals and
+  accessibility mode are not ported.
+- The terminal cursor uses the outer terminal's cursor shape; bar/underline
+  cursor settings are approximated.
+
+The full rationale and the phased scope are in
+[`docs/terminal-ui.md`](docs/terminal-ui.md). `zig build test-terminal` runs the
+terminal-specific tests without compiling the editor.
+
 ## Logging
 
 The TUI logs through the ported service in

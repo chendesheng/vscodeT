@@ -259,6 +259,35 @@ that make the later phases tractable.
 | Editor widget contracts | `vs/editor/browser/editorBrowser.zig` (149 lines), `editorExtensions.zig` (117 lines) | Partial contracts; no widget/controller implementation |
 | View plumbing (P4 start) | `vs/editor/browser/view/renderingContext.zig`, `IViewLayout` subset in `vs/editor/common/viewModel.zig` | `RestrictedRenderingContext`/`RenderingContext`, visible ranges/horizontal positions ported; `ViewPart`/`ViewLayer`/`ViewOverlays` and the `view.zig` split remain |
 
+## 6.4 Integrated terminal
+
+The terminal is a workbench contribution, not an editor contribution. The
+browser/JS engine is substituted rather than ported: libghostty-vt supplies the
+VT parser, terminal state, render state and input encoders, and a POSIX
+`forkpty` host replaces node-pty. VS Code's portable terminal model is ported
+under the mirrored paths.
+
+| Zig file | Upstream source(s) | Ported content | Status | Tests |
+| --- | --- | --- | --- | --- |
+| `platform/terminal/common/terminal.zig` | `platform/terminal/common/terminal.ts` | profiles, shell launch/process state, setting IDs subset | `portable-embedded` | inline |
+| `platform/terminal/common/terminalEnvironment.zig` | `platform/terminal/common/terminalEnvironment.ts` | path escaping, tilde collapse, cwd sanitize | `ported` | `test/common/terminalEnvironment.test.zig` |
+| `platform/terminal/common/terminalProfiles.zig` | `platform/terminal/common/terminalProfiles.ts` | args matching, shell name/type | `ported` | `test/common/terminalProfiles.test.zig` (inline) |
+| `platform/terminal/node/terminalProfiles.zig` | `platform/terminal/node/terminalProfiles.ts` | `/etc/shells` discovery, default profile, macOS login args | `ported` | `test/node/terminalProfiles.test.zig` |
+| `platform/terminal/node/pty.zig` | `platform/terminal/node/ptyService.ts`, node-pty | POSIX pty host, non-blocking I/O queue, resize, signals, reaping | `terminal-only` | inline (`test-terminal`) |
+| `workbench/contrib/terminal/common/terminal.zig` | `workbench/contrib/terminal/common/terminal.ts` | command IDs, skip-shell subset | `ported` | inline |
+| `workbench/contrib/terminal/common/terminalConfiguration.zig` | `workbench/contrib/terminal/common/terminalConfiguration.ts` | settings defaults and read subset | `ported` | inline |
+| `workbench/contrib/terminal/browser/terminalEmulator.zig` | `browser/xterm/xtermTerminal.ts` | xterm replacement over libghostty-vt: parser, render state, effects, key/mouse/paste encoders | `tui-adapter` | inline |
+| `workbench/contrib/terminal/browser/terminalInstance.zig` | `browser/terminalInstance.ts` | lifecycle/title/cwd/exit state, `TerminalLabelComputer` | `mixed` | inline label test |
+| `workbench/contrib/terminal/browser/terminalGroup.zig` | `browser/terminalGroup.ts` | ordered tabs and active index (no SplitView) | `portable-embedded` | none |
+| `workbench/contrib/terminal/browser/terminalService.zig` | `browser/terminalService.ts`, `terminalGroupService.ts` | one panel group, create/kill/activate, pty env/cwd, resize/poll | `mixed` | inline cwd test |
+| `tui/terminalInput.zig` | none (xterm DOM input) | key/mouse/focus/paste encoding, raw bracketed-paste scan | `terminal-only` | inline |
+| `tui/terminalView.zig` | `browser/xterm` renderer via xterm.js | render-state-to-cell paint, cursor cell | `terminal-only` | `terminalView.test.zig` |
+| `tui/terminalPanel.zig` | `browser/terminalTabbedView.ts`, `terminalTabsList.ts` | tab strip/actions/hit testing over the cell grid | `tui-adapter` | inline |
+
+Selection/copy, find, links, shell integration, split panes, profiles picker,
+persistent/remote sessions, terminal editors and Windows ConPTY are follow-ups;
+they are not represented as generic "unportable" exclusions.
+
 ## 7. File-by-file inventory
 
 The table covers all 28 files. Phase values refer to §9; “—” means the file is
