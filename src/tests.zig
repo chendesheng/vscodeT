@@ -74,7 +74,7 @@ comptime {
     _ = @import("./vs/workbench/browser/parts/editor/breadcrumbsModel.zig");
     _ = @import("./vs/workbench/browser/parts/editor/breadcrumbsControl.zig");
     _ = @import("./vs/workbench/services/outline/browser/outlineService.zig");
-    _ = @import("./tui/explorerTreeSidebar.zig");
+    _ = @import("./vs/workbench/contrib/files/browser/views/explorerView.zig");
     _ = @import("./tui/tab.zig");
     _ = @import("./tui/workbench.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorSession.zig");
