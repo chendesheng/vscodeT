@@ -16,6 +16,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const watcher_only = b.option(bool, "watcher-only", "Build only the file-watcher tests") orelse false;
+    const vscode_source = b.option([]const u8, "vscode-source", "Pinned VS Code checkout used to bundle the Node extension host");
     const onig_paths = OnigPaths{
         .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h"),
         .lib_dir = b.option([]const u8, "onig-lib", "Directory containing the oniguruma library"),
@@ -74,6 +75,19 @@ pub fn build(b: *std.Build) void {
     }
 
     setupWatcherTests(b, target, optimize);
+    setupExtensionHost(b, vscode_source);
+}
+
+/// The Node extension host is a runtime asset, not a Zig artifact: bundling it
+/// needs Node and the `host/` npm dependencies. Keep it behind an explicit step
+/// so `zig build` stays hermetic, and let `-Dvscode-source` point the bundle at
+/// the pinned VS Code checkout that the generated RPC table came from.
+fn setupExtensionHost(b: *std.Build, vscode_source: ?[]const u8) void {
+    const host_step = b.step("host", "Bundle the Node extension host (host/dist/extensionHost.mjs)");
+    const host_build = b.addSystemCommand(&.{ "node", "build.js" });
+    host_build.setCwd(b.path("host"));
+    if (vscode_source) |path| host_build.setEnvironmentVariable("VSCODE_SOURCE_PATH", path);
+    host_step.dependOn(&host_build.step);
 }
 
 /// Builds the markdown module from the pinned CommonMark + GFM package.
