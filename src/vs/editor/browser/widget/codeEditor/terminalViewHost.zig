@@ -19,6 +19,8 @@ const view_model_decorations = @import("../../../common/viewModel/viewModelDecor
 const line_numbers_mod = @import("../../viewParts/lineNumbers/lineNumbers.zig");
 const selections_mod = @import("../../viewParts/selections/selections.zig");
 const current_line_mod = @import("../../viewParts/currentLineHighlight/currentLineHighlight.zig");
+const view_cursors_mod = @import("../../viewParts/viewCursors/viewCursors.zig");
+const restricted_context = @import("../../view/renderingContext.zig");
 const rendering_context = @import("../../view/renderingContext.zig");
 const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
 const editor_configuration = @import("../../../common/config/editorConfiguration.zig");
@@ -43,6 +45,9 @@ const SelectionsOverlay = selections_mod.SelectionsOverlay;
 const LineSelectionRender = selections_mod.LineSelectionRender;
 const CurrentLineHighlightOverlay = current_line_mod.CurrentLineHighlightOverlay;
 const LineHighlightRenderData = current_line_mod.LineHighlightRenderData;
+const ViewCursors = view_cursors_mod.ViewCursors;
+const ViewCursorRenderData = @import("../../viewParts/viewCursors/viewCursor.zig").ViewCursorRenderData;
+const RestrictedRenderingContext = restricted_context.RestrictedRenderingContext;
 const InlineDecoration = @import("../../../common/viewModel/inlineDecorations.zig").InlineDecoration;
 const IViewModelLines = view_model_decorations.IViewModelLines;
 const ViewContext = view_context.ViewContext;
@@ -145,6 +150,7 @@ pub const TerminalViewHost = struct {
     line_numbers: LineNumbersOverlay,
     selections_overlay: SelectionsOverlay,
     current_line: CurrentLineHighlightOverlay,
+    view_cursors: ViewCursors,
     lines_adapter: LinesAdapter,
     offsets: std.ArrayListUnmanaged(f64) = .empty,
     selections: []Selection = &.{},
@@ -166,6 +172,7 @@ pub const TerminalViewHost = struct {
             .line_numbers = undefined,
             .selections_overlay = undefined,
             .current_line = undefined,
+            .view_cursors = undefined,
             .lines_adapter = undefined,
         };
 
@@ -193,10 +200,12 @@ pub const TerminalViewHost = struct {
         self.line_numbers.init(allocator, &self.context);
         self.selections_overlay.init(allocator, &self.context);
         self.current_line.initContent(allocator, &self.context);
+        self.view_cursors.init(allocator, &self.context);
         return self;
     }
 
     pub fn deinit(self: *TerminalViewHost) void {
+        self.view_cursors.deinit();
         self.current_line.deinit();
         self.selections_overlay.deinit();
         self.line_numbers.deinit();
@@ -245,6 +254,15 @@ pub const TerminalViewHost = struct {
         self.line_numbers.prepareRender(&rendering);
         self.selections_overlay.prepareRender(&rendering);
         self.current_line.prepareRender(&rendering);
+
+        _ = self.view_cursors.base.handler.onCursorStateChanged(&view_events.ViewCursorStateChangedEvent{
+            .selections = self.selections,
+            .modelSelections = self.selections,
+            .reason = .NotSet,
+        });
+        self.view_cursors.prepareRender(&rendering);
+        var restricted = RestrictedRenderingContext.init(self.context.view_layout, &viewport);
+        self.view_cursors.render(&restricted);
     }
 
     pub fn getRenderedLine(self: *const TerminalViewHost, line_number: usize) ?*const @import("../../viewParts/viewLines/viewLine.zig").ViewLine.RenderedViewLine {
@@ -265,6 +283,10 @@ pub const TerminalViewHost = struct {
 
     pub fn getCurrentLineHighlight(self: *const TerminalViewHost, view_line: usize) ?*const LineHighlightRenderData {
         return self.current_line.renderedLine(view_line);
+    }
+
+    pub fn getCursorRenderData(self: *const TerminalViewHost) []const ViewCursorRenderData {
+        return self.view_cursors.getLastRenderData();
     }
 
     fn modelInterface(self: *TerminalViewHost) IViewModel {
@@ -423,4 +445,9 @@ test "terminal view host renders lines through the ported ViewLines" {
     const highlight = host.getCurrentLineHighlight(1).?;
     try std.testing.expect(highlight.highlight);
     try std.testing.expect(highlight.in_content);
+
+    // The cursor overlay reports the primary cursor in view coordinates.
+    const cursors = host.getCursorRenderData();
+    try std.testing.expect(cursors.len > 0);
+    try std.testing.expectEqual(@as(usize, 1), cursors[0].position.lineNumber);
 }

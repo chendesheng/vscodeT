@@ -1115,7 +1115,11 @@ pub const View = struct {
 
         const states = try editor.viewCursorStates();
         defer editor.allocator.free(states);
-        const cursor = states[0].viewState.position;
+        const cursor_render_data = self.terminal_view_host.getCursorRenderData();
+        const cursor = if (cursor_render_data.len > 0)
+            cursor_render_data[0].position
+        else
+            states[0].viewState.position;
 
         var row: usize = 0;
         while (row < text_height) : (row += 1) {
