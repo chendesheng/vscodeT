@@ -1172,21 +1172,10 @@ pub const View = struct {
                 highlight.highlight and highlight.in_content
             else
                 view_line == cursor.lineNumber;
-            const line = try doc.createElement(.div);
-            line.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = @floatFromInt(gutter) },
-                .top = .{ .cells = row_cells },
-                .width = .{ .cells = @floatFromInt(text_width) },
-                .height = .{ .cells = 1 },
-                .white_space = .pre,
-                .overflow = .hidden,
-                .background = if (is_cursor_line) color(current_line_background) else null,
-            });
-
             const data = try editor.viewLineData(view_line);
             const rendered_line = self.terminal_view_host.getRenderedLine(view_line) orelse continue;
             const rendered = rendered_line.rendered;
+            const painted_line = self.terminal_view_host.getViewLine(view_line) orelse continue;
 
             const model_content = try editor.model.getLineContent(model_line);
             defer model_content.deinit();
@@ -1217,7 +1206,14 @@ pub const View = struct {
                 indent_cells,
                 flags,
             );
-            try appendRuns(doc, line, rendered, flags);
+            const line = try painted_line.paint(doc, .{
+                .left_cells = gutter,
+                .top_cells = row,
+                .width_cells = text_width,
+                .background = if (is_cursor_line) color(current_line_background) else null,
+                .flags = flags,
+                .decoration_bits_fn = decorationBits,
+            }, lineStyleForPart);
 
             // A collapsed region ends its first line with the upstream
             // `inline-folded` ellipsis. It is painted after the text and is not
@@ -1424,119 +1420,70 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
     _ = try root.appendChild(bar);
 }
 
-fn appendRuns(
-    doc: *ui.Document,
-    line: *ui.Node,
-    rendered: line_renderer.RenderedLine,
-    flags: []u32,
-) !void {
-    var part_index: usize = 0;
-    var byte_in_part: usize = 0;
-    var cell: usize = 0;
-    var absolute: usize = 0;
+/// Terminal paint adapter for one rendered part and its cell flags.
+fn lineStyleForPart(part: line_renderer.RenderedPart, flag: u32) ui.Style {
+    var style = tokenStyle(part);
+    applyFlagStyle(&style, flag);
+    return style;
+}
 
-    var run_start: usize = 0;
-    var run_style: ?ui.Style = null;
-
-    while (part_index < rendered.parts.len) {
-        const part = rendered.parts[part_index];
-        if (byte_in_part >= part.text.len) {
-            part_index += 1;
-            byte_in_part = 0;
-            continue;
-        }
-
-        const decoded = ui.dom.decodeAt(part.text, byte_in_part);
-        if (decoded.len == 0) break;
-        const width = measureCodepoint(decoded.cp);
-
-        var style = tokenStyle(part);
-        if (part.decoration_class) |classes| {
-            const decoration_flags = decorationBits(classes);
-            if (decoration_flags != 0 and cell < flags.len) flags[cell] |= decoration_flags;
-        }
-        if (cell < flags.len) {
-            const flag = flags[cell];
-            if (flag & CellFlag.search_range_highlight != 0) {
-                style.background = color(search_range_highlight_background);
-            }
-            if (flag & CellFlag.word_highlight_text != 0) {
-                style.background = color(word_highlight_background);
-            } else if (flag & CellFlag.word_highlight != 0) {
-                style.background = color(word_highlight_background);
-            } else if (flag & CellFlag.word_highlight_strong != 0) {
-                style.background = color(word_highlight_strong_background);
-            }
-            if (flag & CellFlag.hover_highlight != 0) {
-                style.background = color(hover_highlight_background);
-            }
-            if (flag & CellFlag.bracket_match != 0) {
-                style.background = color(bracket_match_background);
-                style.color = color(bracket_match_foreground);
-                style.underline = true;
-            }
-            if (flag & CellFlag.current_find_match != 0) {
-                style.background = color(current_find_match_background);
-                style.color = color(current_find_match_foreground);
-            } else if (flag & CellFlag.find_match != 0) {
-                style.background = color(find_match_background);
-            } else if (flag & CellFlag.find_scope != 0) {
-                style.background = color(find_scope_background);
-            }
-            if (flag & CellFlag.snippet_placeholder != 0) {
-                style.background = color(snippet_placeholder_background);
-            } else if (flag & CellFlag.finish_snippet_placeholder != 0) {
-                style.background = color(finish_snippet_placeholder_background);
-            }
-            if (flag & CellFlag.value_set_replacement != 0) {
-                // The browser draws a 2 px bracket-match outline; a cell has no
-                // outline, so use the same foreground color as an underline.
-                style.color = color(bracket_match_foreground);
-                style.underline = true;
-            }
-            if (flag & CellFlag.diagnostic_error != 0) {
-                style.color = color(diagnostic_error_color);
-                style.underline = true;
-            } else if (flag & CellFlag.diagnostic_warning != 0) {
-                style.color = color(diagnostic_warning_color);
-                style.underline = true;
-            } else if (flag & CellFlag.diagnostic_info != 0) {
-                style.color = color(diagnostic_info_color);
-                style.underline = true;
-            } else if (flag & CellFlag.diagnostic_hint != 0) {
-                style.color = color(diagnostic_hint_color);
-                style.underline = true;
-            } else if ((flag & CellFlag.diagnostic_unnecessary != 0) or (flag & CellFlag.diagnostic_deprecated != 0)) {
-                style.dim = true;
-                style.underline = true;
-            }
-            if (flag & CellFlag.secondary_cursor != 0) {
-                style.reverse = true;
-                style.background = color(secondary_cursor_background);
-            }
-            if (flag & CellFlag.selected != 0) style.reverse = true;
-        }
-
-        if (run_style == null or !styleEql(run_style.?, style)) {
-            if (run_style != null and absolute > run_start) {
-                const node = try doc.createText(rendered.bytes[run_start..absolute]);
-                node.setStyle(run_style.?);
-                _ = try line.appendChild(node);
-            }
-            run_start = absolute;
-            run_style = style;
-        }
-
-        absolute += decoded.len;
-        byte_in_part += decoded.len;
-        cell += width;
+fn applyFlagStyle(style: *ui.Style, flag: u32) void {
+    if (flag & CellFlag.search_range_highlight != 0) {
+        style.background = color(search_range_highlight_background);
     }
-
-    if (run_style != null and absolute > run_start) {
-        const node = try doc.createText(rendered.bytes[run_start..absolute]);
-        node.setStyle(run_style.?);
-        _ = try line.appendChild(node);
+    if (flag & CellFlag.word_highlight_text != 0) {
+        style.background = color(word_highlight_background);
+    } else if (flag & CellFlag.word_highlight != 0) {
+        style.background = color(word_highlight_background);
+    } else if (flag & CellFlag.word_highlight_strong != 0) {
+        style.background = color(word_highlight_strong_background);
     }
+    if (flag & CellFlag.hover_highlight != 0) {
+        style.background = color(hover_highlight_background);
+    }
+    if (flag & CellFlag.bracket_match != 0) {
+        style.background = color(bracket_match_background);
+        style.color = color(bracket_match_foreground);
+        style.underline = true;
+    }
+    if (flag & CellFlag.current_find_match != 0) {
+        style.background = color(current_find_match_background);
+        style.color = color(current_find_match_foreground);
+    } else if (flag & CellFlag.find_match != 0) {
+        style.background = color(find_match_background);
+    } else if (flag & CellFlag.find_scope != 0) {
+        style.background = color(find_scope_background);
+    }
+    if (flag & CellFlag.snippet_placeholder != 0) {
+        style.background = color(snippet_placeholder_background);
+    } else if (flag & CellFlag.finish_snippet_placeholder != 0) {
+        style.background = color(finish_snippet_placeholder_background);
+    }
+    if (flag & CellFlag.value_set_replacement != 0) {
+        style.color = color(bracket_match_foreground);
+        style.underline = true;
+    }
+    if (flag & CellFlag.diagnostic_error != 0) {
+        style.color = color(diagnostic_error_color);
+        style.underline = true;
+    } else if (flag & CellFlag.diagnostic_warning != 0) {
+        style.color = color(diagnostic_warning_color);
+        style.underline = true;
+    } else if (flag & CellFlag.diagnostic_info != 0) {
+        style.color = color(diagnostic_info_color);
+        style.underline = true;
+    } else if (flag & CellFlag.diagnostic_hint != 0) {
+        style.color = color(diagnostic_hint_color);
+        style.underline = true;
+    } else if ((flag & CellFlag.diagnostic_unnecessary != 0) or (flag & CellFlag.diagnostic_deprecated != 0)) {
+        style.dim = true;
+        style.underline = true;
+    }
+    if (flag & CellFlag.secondary_cursor != 0) {
+        style.reverse = true;
+        style.background = color(secondary_cursor_background);
+    }
+    if (flag & CellFlag.selected != 0) style.reverse = true;
 }
 
 fn markSecondaryCursors(
@@ -1600,10 +1547,6 @@ fn colorForToken(foreground: u9) ?[3]u8 {
         12 => .{ 156, 220, 254 },
         else => null,
     };
-}
-
-fn styleEql(a: ui.Style, b: ui.Style) bool {
-    return std.meta.eql(a, b);
 }
 
 /// Parses the normalizer's merged class-name string (`"c1 c2"`) into cell

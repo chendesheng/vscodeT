@@ -10,6 +10,7 @@
 // paints decoration cells separately.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const ui = @import("ui");
 
 const view_line_options = @import("./viewLineOptions.zig");
 const view_line_renderer = @import("../../../common/viewLayout/viewLineRenderer.zig");
@@ -221,6 +222,96 @@ pub const ViewLine = struct {
         return null;
     }
 
+    /// Terminal `ViewLine` DOM construction: upstream creates a `div.view-line`
+    /// with one span per styled run. The terminal equivalent creates one `ui`
+    /// element and text nodes for each run. `style_fn` is the paint-boundary
+    /// adapter from token/decoration data to terminal cell attributes.
+    pub const PaintOptions = struct {
+        left_cells: usize,
+        top_cells: usize,
+        width_cells: usize,
+        height_cells: usize = 1,
+        background: ?ui.Color = null,
+        flags: []u32,
+        decoration_bits_fn: ?*const fn (classes: []const u8) u32 = null,
+    };
+
+    pub const PartStyleFn = *const fn (part: view_line_renderer.RenderedPart, flag: u32) ui.Style;
+
+    pub fn paint(
+        self: *const ViewLine,
+        doc: *ui.Document,
+        options: PaintOptions,
+        style_fn: PartStyleFn,
+    ) !*ui.Node {
+        const line = try doc.createElement(.div);
+        line.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = @floatFromInt(options.left_cells) },
+            .top = .{ .cells = @floatFromInt(options.top_cells) },
+            .width = .{ .cells = @floatFromInt(options.width_cells) },
+            .height = .{ .cells = @floatFromInt(options.height_cells) },
+            .white_space = .pre,
+            .overflow = .hidden,
+            .background = options.background,
+        });
+
+        const rendered = self.rendered_view_line orelse return line;
+        var part_index: usize = 0;
+        var byte_in_part: usize = 0;
+        var cell: usize = 0;
+        var absolute: usize = 0;
+
+        var run_start: usize = 0;
+        var run_style: ?ui.Style = null;
+
+        while (part_index < rendered.rendered.parts.len) {
+            const part = rendered.rendered.parts[part_index];
+            if (byte_in_part >= part.text.len) {
+                part_index += 1;
+                byte_in_part = 0;
+                continue;
+            }
+
+            const decoded = ui.dom.decodeAt(part.text, byte_in_part);
+            if (decoded.len == 0) break;
+            const width = measureCellWidth(decoded.cp);
+
+            var flag: u32 = if (cell < options.flags.len) options.flags[cell] else 0;
+            if (part.decoration_class) |classes| {
+                if (options.decoration_bits_fn) |bits_fn| {
+                    const bits = bits_fn(classes);
+                    if (bits != 0) {
+                        flag |= bits;
+                        if (cell < options.flags.len) options.flags[cell] |= bits;
+                    }
+                }
+            }
+            const style = style_fn(part, flag);
+
+            if (run_style == null or !std.meta.eql(run_style.?, style)) {
+                if (run_style != null and absolute > run_start) {
+                    const node = try doc.createText(rendered.rendered.bytes[run_start..absolute]);
+                    node.setStyle(run_style.?);
+                    _ = try line.appendChild(node);
+                }
+                run_start = absolute;
+                run_style = style;
+            }
+
+            absolute += decoded.len;
+            byte_in_part += decoded.len;
+            cell += width;
+        }
+
+        if (run_style != null and absolute > run_start) {
+            const node = try doc.createText(rendered.rendered.bytes[run_start..absolute]);
+            node.setStyle(run_style.?);
+            _ = try line.appendChild(node);
+        }
+        return line;
+    }
+
     pub fn getWidth(self: *const ViewLine) usize {
         return self.width;
     }
@@ -279,6 +370,13 @@ pub const ViewLine = struct {
         return column;
     }
 };
+
+/// Terminal cell width of a codepoint, matching the editor's visible columns.
+fn measureCellWidth(cp: u21) u2 {
+    const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
+    const next = CursorColumns.nextVisibleColumn(cp, 0, 1);
+    return @intCast(@min(next, 2));
+}
 
 // ---------------------------------------------------------------------------
 // Tests

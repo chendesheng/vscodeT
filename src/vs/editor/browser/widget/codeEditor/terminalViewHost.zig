@@ -333,6 +333,10 @@ pub const TerminalViewHost = struct {
         return self.view.viewLinesConst().getRenderedViewLine(line_number);
     }
 
+    pub fn getViewLine(self: *const TerminalViewHost, line_number: usize) ?*const @import("../../viewParts/viewLines/viewLine.zig").ViewLine {
+        return self.view.viewLinesConst().getViewLine(line_number);
+    }
+
     pub fn getMaxLineWidth(self: *const TerminalViewHost) f64 {
         return self.view.viewLinesConst().getMaxLineWidth();
     }
