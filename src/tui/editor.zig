@@ -2787,6 +2787,9 @@ pub const Editor = struct {
             if (decoded.len == 0) null else String.initBorrowed(decoded),
         )};
         _ = try self.model.applyEdits(&operations, false);
+        // Replacing the whole buffer starts a new edit history, like VS Code's
+        // `_setValueFromTextBuffer` calling `_commandManager.clear()`.
+        self.model.clearUndoRedo();
         self.saved_version = self.model.getAlternativeVersionId();
         self.clearConflict();
         self.refreshDirtyState();
