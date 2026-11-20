@@ -256,6 +256,24 @@ test "textmate tokenizer: zig grammar produces scopes" {
     try std.testing.expectEqual(StandardTokenType.Comment, result.tokens[result.tokens.len - 1].metadata.tokenType);
 }
 
+test "textmate tokenizer: markdown fallback grammar tokenizes headings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const support = (try create(allocator, "markdown")) orelse return error.NoSupport;
+    defer support.dispose();
+    const textmate: *TextMateSupport = @ptrCast(@alignCast(support.context));
+    const result = try textmate.grammar.tokenizeLine("# Heading", null, 0);
+
+    var saw_heading = false;
+    for (result.tokens) |token| {
+        for (token.scopes) |scope| {
+            if (std.mem.eql(u8, scope, "markup.heading.markdown")) saw_heading = true;
+        }
+    }
+    try std.testing.expect(saw_heading);
+}
+
 pub fn ensureTokenizer(languageId: []const u8) void {
     const registry_instance = &@import("../../tokenizationRegistry.zig").TokenizationRegistry.instance;
     if (registry_instance.get(languageId) != null) return;
@@ -395,6 +413,7 @@ fn metadataForScope(metadata_: TokenMetadata, scope: []const u8) TokenMetadata {
 }
 
 test "textmate tokenizer: state survives lines" {
+    if (vscode_syntax.dataForScope("source.c") == null) return error.SkipZigTest;
     const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
     var ctx = try TestModel.init(std.testing.allocator, "/* comment\nstill */ int x = 1;", "c");
     defer ctx.deinit();

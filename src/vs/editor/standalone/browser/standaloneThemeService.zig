@@ -447,6 +447,9 @@ test "syntax theme: editor paints the dark+ colors" {
 }
 
 test "syntax theme: every supported language highlights inside a fence" {
+    // The sweep needs the full VS Code grammar set; without the `vscode/`
+    // submodule only the vendored fallback grammars are embedded.
+    if (assets.dataForScope("source.json") == null) return error.SkipZigTest;
     var theme: SyntaxTheme = undefined;
     try theme.init(std.testing.allocator);
     defer theme.deinit();
