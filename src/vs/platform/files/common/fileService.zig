@@ -394,9 +394,19 @@ pub const ProviderFileService = struct {
     const ParsedResource = struct { scheme: []const u8, path: []const u8 };
 
     fn parseResource(resource: []const u8) ?ParsedResource {
-        const separator = std.mem.indexOf(u8, resource, ":/") orelse return null;
+        // A resource is `scheme:path`. Do not require `/` after the colon:
+        // on Windows a native path is `file:C:\...`, and the disk provider
+        // consumes that path unchanged.
+        const separator = std.mem.indexOfScalar(u8, resource, ':') orelse return null;
         if (separator == 0) return null;
-        return .{ .scheme = resource[0..separator], .path = resource[separator + 1 ..] };
+        var path = resource[separator + 1 ..];
+        // URI-style resources may repeat the leading slash (`inmemory://x`).
+        // Keep exactly one: Windows path helpers read `//x` as a UNC server
+        // with no share and report an empty basename.
+        var leading: usize = 0;
+        while (leading < path.len and path[leading] == '/') leading += 1;
+        if (leading > 1) path = path[leading - 1 ..];
+        return .{ .scheme = resource[0..separator], .path = path };
     }
 
     fn providerFor(self: *ProviderFileService, resource: []const u8) ?struct { parsed: ParsedResource, provider: files.IFileSystemProvider } {
@@ -631,3 +641,16 @@ pub const ProviderFileService = struct {
         service.on_did_files_change.fire(event) catch {};
     }
 };
+
+test "ProviderFileService parses schemes and normalizes leading URI slashes" {
+    const uri = ProviderFileService.parseResource("inmemory://folder/file.txt").?;
+    try std.testing.expectEqualStrings("inmemory", uri.scheme);
+    try std.testing.expectEqualStrings("/folder/file.txt", uri.path);
+
+    // A Windows disk resource keeps its native path unchanged.
+    const disk = ProviderFileService.parseResource("file:C:\\temp\\file.txt").?;
+    try std.testing.expectEqualStrings("file", disk.scheme);
+    try std.testing.expectEqualStrings("C:\\temp\\file.txt", disk.path);
+
+    try std.testing.expect(ProviderFileService.parseResource("no-scheme") == null);
+}

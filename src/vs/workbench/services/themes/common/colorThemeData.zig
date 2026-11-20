@@ -632,8 +632,15 @@ pub const ColorThemeData = struct {
 
         if (object.get("include")) |include| {
             if (include == .string) {
+                // Theme locations are resource paths, not native paths:
+                // joining with `std.fs.path.join` would introduce `\` on
+                // Windows and no longer match the reader's `/`-separated
+                // locations.
                 const directory = std.fs.path.dirname(location) orelse ".";
-                const include_location = try std.fs.path.join(allocator, &.{ directory, include.string });
+                const include_location = if (std.mem.eql(u8, directory, "."))
+                    try allocator.dupe(u8, include.string)
+                else
+                    try std.fmt.allocPrint(allocator, "{s}/{s}", .{ directory, include.string });
                 try self.loadJsonTheme(reader, include_location, token_colors, semantic_inputs, depth + 1);
             }
         }

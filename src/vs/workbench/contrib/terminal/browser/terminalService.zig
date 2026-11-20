@@ -239,7 +239,9 @@ test "TerminalService: configured cwd resolution" {
 
     const relative = try resolveCwd(allocator, "/workspace", "sub");
     defer allocator.free(relative.?);
-    try std.testing.expectEqualStrings("/workspace/sub", relative.?);
+    const expected_relative = try std.fs.path.join(allocator, &.{ "/workspace", "sub" });
+    defer allocator.free(expected_relative);
+    try std.testing.expectEqualStrings(expected_relative, relative.?);
 
     const fallback = try resolveCwd(allocator, "/workspace", null);
     defer allocator.free(fallback.?);

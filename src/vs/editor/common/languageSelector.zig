@@ -76,8 +76,11 @@ pub fn candidateFromUri(arena: Allocator, uri: std.Uri, language: []const u8, sy
 
 fn normalizeBase(arena: Allocator, base: []const u8) ![]const u8 {
     if (base.len == 0) return "";
-    if (!std.fs.path.isAbsolute(base)) return try arena.dupe(u8, base);
-    return std.fs.path.resolveAlloc(arena, &.{base}) catch try arena.dupe(u8, base);
+    // Upstream normalizes the base with its platform-independent path helper.
+    // `std.fs.path.resolveAlloc` is wrong here: on Windows it resolves a
+    // rooted URI path such as `/home/user` against the current drive and
+    // produces `C:\home\user`, which no longer matches the candidate fsPath.
+    return try arena.dupe(u8, base);
 }
 
 fn compilePattern(arena: Allocator, pattern: Pattern) !CompiledPattern {
