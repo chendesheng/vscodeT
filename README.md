@@ -494,12 +494,66 @@ console API for raw mode, sizing and input polling.
   dot while matches are present (the exact count is in the panel); the service
   also supports view and global badges. It
   switches between
-  Explorer, Search and Settings containers; Explorer is wired to the file tree
-  and Search to the workspace text-search panel, while Settings remains a
-  placeholder. `Alt-1..3` switches containers while the side panel has focus.
+  Explorer, Search, Source Control and Settings containers; Explorer is wired
+  to the file tree, Search to the workspace text-search panel, and Source
+  Control to the git SCM view, while Settings remains a placeholder.
+  `Alt-1..4` switches containers while the side panel has focus.
   The model owns order, visibility, the active container and compact width.
   There is still no registered view-container contribution registry, live
   Explorer/Search file-change integration, context menu or drag-and-drop.
+- Source Control is a read-only Git/SCM port. `src/tui/gitCli.zig` implements
+  the ported `IGitExtensionDelegate` over the Git command line (argv, never a
+  shell; explicit cwd; bounded stdout/stderr; per-command deadline), and
+  `src/vs/workbench/contrib/git/{common,browser}/gitService.zig` keep the
+  upstream repository state/ref/diff/commit contract. The terminal provider
+  (`src/tui/gitScmProvider.zig`) exposes the upstream `Merge Changes`,
+  `Staged Changes` and `Changes` groups (untracked files mixed into `Changes`,
+  matching `git.untrackedChanges=mixed`), v2 status letters, rename/delete and
+  unmerged entries, and registers primary (`working ↔ index`) and secondary
+  (`index ↔ HEAD`) quick-diff providers. The SCM sidebar
+  (`src/tui/scmView.zig`) shows `SOURCE CONTROL`, a repository/branch row,
+  group counts and relative-path resource rows. `Up`/`Down` select, `Enter` or
+  a click opens the change, `r` refreshes and `Escape` returns to the editor.
+  The branch/count status entry (`⎇ branch ↑n ↓m (count)`) opens the SCM view,
+  and the activity badge follows `scm.countBadge` (`all`/`focused`/`off`).
+  There is no extension-host SCM actor, so `vscode.git` is replaced by the CLI
+  delegate. Not ported: staging, committing, discarding, the SCM input box,
+  multi-repository selection, history and artifacts.
+- Quick diff is applied as `TextModel` decorations with the upstream
+  `dirty-diff-*` classes: whole-line added/modified/deleted ranges, the
+  one-cell gutter marker (`+`/`~`/`-`, primary/secondary/pattern variants
+  dimmed) and overview-ruler entries. `src/tui/quickDiffController.zig`
+  attaches a `QuickDiffModel`/`QuickDiffDecorator` per file editor, skips diff
+  tabs, recomputes on model version change (200 ms debounce driven by the main
+  loop) and on git status changes, and honors `scm.diffDecorations`,
+  `scm.diffDecorationsIgnoreTrimWhitespace` (including `inherit`) and
+  `scm.diffDecorationsGutterPattern`. `Alt-Down`/`Alt-Up` navigate changes
+  (TUI-specific because a normal terminal cannot deliver F5/F7).
+- The diff editor view (`src/vs/editor/browser/widget/diffEditor/` plus
+  `src/vs/workbench/browser/parts/editor/textDiffEditor.zig`) opens a read-only
+  side-by-side comparison from a changed SCM resource. Both sides are
+  **aligned display snapshots**: `diffEditorViewZones.zig` pads changed blocks
+  with `diff-filler` rows so the two panes have equal line counts and scroll in
+  lockstep; `diffEditorDecorations.zig` paints `line-insert`/`line-delete`,
+  `char-insert`/`char-delete` and the fillers; the center gutter shows
+  `│`/`+`/`~`/`-` and highlights the current block; dragging it resizes the
+  panes. Diffs cover `HEAD ↔ working tree`, `HEAD ↔ index` and
+  `index ↔ working tree` (untracked = empty ↔ working, deleted = working side
+  empty); title labels name both refs. `Alt-Down`/`Alt-Up` navigate,
+  `workbench.action.compareEditor.swapSides` swaps panes and
+  `refreshDiff` re-snapshots. Binary, invalid-UTF-8 and oversized files are
+  skipped with an empty side; a missing git binary, `git.enabled=false` or a
+  non-repository leaves the editor untouched. Diff tabs are read-only: save,
+  revert, reload and external-change handling are inert, they are not working
+  copies, history entries or session-serialized, and closing them returns to
+  the untouched file tab. Terminal limitations: no inline diff mode, hidden
+  unchanged regions, moved-block lines, quick-diff peek, multi-diff editor,
+  accessible diff viewer, or editing either side; the original pane is not
+  keyboard-focusable; the combined two-lane overview ruler is per-side; the
+  gutter width/pattern/minimap settings are reduced to one marker cell and a
+  dimmed pattern; panes narrower than 50 cells fall back to a modified-only
+  view without the gutter or original pane; and only one repository per
+  workspace folder is shown.
 - The Search panel is a terminal adapter (`src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` and
   `src/vs/workbench/contrib/search/browser/searchWidget.zig`) over the upstream-shaped portable view:
   `src/vs/workbench/contrib/search/browser/searchView.zig` owns the query

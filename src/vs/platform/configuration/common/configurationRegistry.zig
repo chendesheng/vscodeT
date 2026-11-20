@@ -635,6 +635,36 @@ pub const tui_defaults_json =
     \\  },
     \\  "explorer": {
     \\    "excludeGitIgnore": true
+    \\  },
+    \\  "git": {
+    \\    "enabled": true,
+    \\    "path": null,
+    \\    "countBadge": "all"
+    \\  },
+    \\  "scm": {
+    \\    "diffDecorations": "all",
+    \\    "diffDecorationsGutterWidth": 3,
+    \\    "diffDecorationsGutterVisibility": "always",
+    \\    "diffDecorationsGutterPattern": {
+    \\      "added": false,
+    \\      "modified": true
+    \\    },
+    \\    "diffDecorationsIgnoreTrimWhitespace": false,
+    \\    "countBadge": "all"
+    \\  },
+    \\  "diffEditor": {
+    \\    "ignoreTrimWhitespace": true,
+    \\    "renderSideBySide": true,
+    \\    "renderIndicators": true,
+    \\    "renderOverviewRuler": true,
+    \\    "enableSplitViewResizing": true,
+    \\    "splitViewDefaultRatio": 0.5,
+    \\    "maxComputationTime": 5000,
+    \\    "maxFileSize": 50,
+    \\    "diffAlgorithm": "advanced",
+    \\    "experimental": {
+    \\      "showMoves": false
+    \\    }
     \\  }
     \\}
 ;
@@ -667,6 +697,13 @@ test "ConfigurationRegistry: terminal defaults hide VCS metadata and ignore file
     const exclude = model.getValue("files.exclude").?;
     try std.testing.expect(exclude.object.get("**/.git").?.bool);
     try std.testing.expect(exclude.object.get("**/.DS_Store").?.bool);
+    try std.testing.expect(model.getValue("git.enabled").?.bool);
+    try std.testing.expectEqualStrings("all", model.getValue("scm.diffDecorations").?.string);
+    try std.testing.expectEqual(@as(i64, 3), model.getValue("scm.diffDecorationsGutterWidth").?.integer);
+    try std.testing.expect(model.getValue("scm.diffDecorationsGutterPattern").?.object.get("modified").?.bool);
+    try std.testing.expect(model.getValue("diffEditor.ignoreTrimWhitespace").?.bool);
+    try std.testing.expectEqual(@as(i64, 50), model.getValue("diffEditor.maxFileSize").?.integer);
+    try std.testing.expectEqualStrings("advanced", model.getValue("diffEditor.diffAlgorithm").?.string);
 }
 
 pub const ExtensionSource = struct {

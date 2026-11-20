@@ -1931,12 +1931,16 @@ pub const TextModel = struct {
             if (oldDecorationIndex < oldDecorationsLen) {
                 // (1) get ourselves an old node
                 var decorationId: u64 = undefined;
+                // Upstream skips ids that no longer resolve (a node may have
+                // been removed through another accessor) but stops at the
+                // first id that does resolve, so the node can be reused for
+                // the paired new decoration.
                 while (true) {
                     decorationId = oldDecorationsIds[oldDecorationIndex];
                     oldDecorationIndex += 1;
                     node = self._decorations.get(decorationId);
 
-                    if (node != null and oldDecorationIndex < oldDecorationsLen) {
+                    if (node == null and oldDecorationIndex < oldDecorationsLen) {
                         continue;
                     } else {
                         break;

@@ -145,12 +145,26 @@ const terminal_common = @import("../contrib/terminal/common/terminal.zig");
 const terminal_panel = @import("../contrib/terminal/browser/terminalTabbedView.zig");
 const terminal_input_mod = @import("../contrib/terminal/browser/terminalInput.zig");
 const terminal_view = @import("../contrib/terminal/browser/terminalRenderer.zig");
+const diff_widget_mod = @import("../../editor/browser/widget/diffEditor/diffEditorWidget.zig");
+const git_cli_mod = @import("../../../tui/gitCli.zig");
+const git_service_mod = @import("../contrib/git/browser/gitService.zig");
+const git_common_mod = @import("../contrib/git/common/gitService.zig");
+const scm_service_mod = @import("../contrib/scm/common/scmService.zig");
+const scm_common = @import("../contrib/scm/common/scm.zig");
+const quick_diff_service_mod = @import("../contrib/scm/common/quickDiffService.zig");
+const quick_diff_controller_mod = @import("../../../tui/quickDiffController.zig");
+const git_scm_provider_mod = @import("../../../tui/gitScmProvider.zig");
+const scm_view_mod = @import("../../../tui/scmView.zig");
+const text_diff_editor_mod = @import("./parts/editor/textDiffEditor.zig");
+const storage_mod = @import("../../platform/storage/common/storage.zig");
 const TerminalService = terminal_service_mod.TerminalService;
 const TerminalSize = struct { cols: u16, rows: u16 };
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
 pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal };
+pub const DiffRef = enum { head, index, working, empty };
+const DiffWidgetOptions = diff_widget_mod.Options;
 
 /// Pane chrome for the terminal editor part. The active pane's outline uses
 /// the focused border colour and priority 1, so it wins a shared edge in a
@@ -280,6 +294,23 @@ pub const Workbench = struct {
     terminal_input: terminal_input_mod.Encoder = .{},
     terminal_size: ?TerminalSize = null,
     suppress_global_command: bool = false,
+    git_cli: ?*git_cli_mod.GitCli = null,
+    git_delegate: ?*git_common_mod.IGitExtensionDelegate = null,
+    git_service: ?*git_service_mod.GitService = null,
+    scm_service: ?*scm_service_mod.SCMService = null,
+    quick_diff_storage: ?*storage_mod.InMemoryStorageService = null,
+    quick_diff_service: ?*quick_diff_service_mod.QuickDiffService = null,
+    quick_diff_controller: ?*quick_diff_controller_mod.Controller = null,
+    scm_view: ?*scm_view_mod.ScmView = null,
+    git_scm_provider: ?*git_scm_provider_mod.GitScmProvider = null,
+    git_root: ?[]u8 = null,
+    scm_interface: ?*scm_common.ISCMService = null,
+    git_status_accessor: ?EntryAccessor = null,
+    git_status_buf: [96]u8 = undefined,
+    git_badge_buf: [32]u8 = undefined,
+    git_badge_count: usize = 0,
+    next_git_refresh: i64 = 0,
+    git_status_dirty: bool = true,
     /// Set when the quit confirmation commits to closing the window.
     quit_requested: bool = false,
     /// The modal save confirmation, if one is open.
@@ -309,6 +340,21 @@ pub const Workbench = struct {
         self.terminal_input = .{};
         self.terminal_size = null;
         self.suppress_global_command = false;
+        self.git_cli = null;
+        self.git_delegate = null;
+        self.git_service = null;
+        self.scm_service = null;
+        self.scm_interface = null;
+        self.quick_diff_storage = null;
+        self.quick_diff_service = null;
+        self.quick_diff_controller = null;
+        self.scm_view = null;
+        self.git_scm_provider = null;
+        self.git_root = null;
+        self.git_status_accessor = null;
+        self.git_badge_count = 0;
+        self.next_git_refresh = 0;
+        self.git_status_dirty = true;
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
@@ -402,6 +448,21 @@ pub const Workbench = struct {
         self.terminal_input = .{};
         self.terminal_size = null;
         self.suppress_global_command = false;
+        self.git_cli = null;
+        self.git_delegate = null;
+        self.git_service = null;
+        self.scm_service = null;
+        self.scm_interface = null;
+        self.quick_diff_storage = null;
+        self.quick_diff_service = null;
+        self.quick_diff_controller = null;
+        self.scm_view = null;
+        self.git_scm_provider = null;
+        self.git_root = null;
+        self.git_status_accessor = null;
+        self.git_badge_count = 0;
+        self.next_git_refresh = 0;
+        self.git_status_dirty = true;
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
@@ -475,7 +536,7 @@ pub const Workbench = struct {
             if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
             const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
             const tab = try Tab.initFromInput(allocator, file_input);
-            try tab.view.setStatusBarVisible(false);
+            if (tab.file_input != null) try tab.view.setStatusBarVisible(false);
             try pane.addTab(tab);
             self.registerWorkingCopy(tab);
             try self.history.add(file_input.editor.path);
@@ -511,6 +572,21 @@ pub const Workbench = struct {
         self.terminal_input = .{};
         self.terminal_size = null;
         self.suppress_global_command = false;
+        self.git_cli = null;
+        self.git_delegate = null;
+        self.git_service = null;
+        self.scm_service = null;
+        self.scm_interface = null;
+        self.quick_diff_storage = null;
+        self.quick_diff_service = null;
+        self.quick_diff_controller = null;
+        self.scm_view = null;
+        self.git_scm_provider = null;
+        self.git_root = null;
+        self.git_status_accessor = null;
+        self.git_badge_count = 0;
+        self.next_git_refresh = 0;
+        self.git_status_dirty = true;
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
@@ -579,7 +655,7 @@ pub const Workbench = struct {
                 if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
                 const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
                 const tab = try Tab.initFromInput(allocator, file_input);
-                try tab.view.setStatusBarVisible(false);
+                if (tab.file_input != null) try tab.view.setStatusBarVisible(false);
                 try pane.addTab(tab);
                 self.registerWorkingCopy(tab);
                 try self.history.add(file_input.editor.path);
@@ -638,7 +714,8 @@ pub const Workbench = struct {
 
         try self.sidebar_part.pane.addComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
         try self.sidebar_part.pane.addComposite(.{ .id = "search", .name = "Search", .order = 2 });
-        try self.sidebar_part.pane.addComposite(.{ .id = "settings", .name = "Settings", .order = 3 });
+        try self.sidebar_part.pane.addComposite(.{ .id = "scm", .name = "Source Control", .order = 3 });
+        try self.sidebar_part.pane.addComposite(.{ .id = "settings", .name = "Settings", .order = 4 });
         try self.sidebar_part.setWidth(28);
 
         try self.initStatusHint();
@@ -722,6 +799,14 @@ pub const Workbench = struct {
             .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
+            .{ .id = "workbench.view.scm", .label = "View: Show Source Control", .category = "View", .context = self, .run = commandViewScm },
+            .{ .id = "git.refresh", .label = "Refresh", .category = "Source Control", .context = self, .run = commandGitRefresh },
+            .{ .id = "git.openChange", .label = "Open Change", .category = "Source Control", .context = self, .run = commandGitOpenChange },
+            .{ .id = "git.openFile", .label = "Open File", .category = "Source Control", .context = self, .run = commandGitOpenFile },
+            .{ .id = "workbench.action.compareEditor.nextChange", .label = "Go to Next Change", .category = "Diff", .context = self, .run = commandDiffNext },
+            .{ .id = "workbench.action.compareEditor.previousChange", .label = "Go to Previous Change", .category = "Diff", .context = self, .run = commandDiffPrevious },
+            .{ .id = "workbench.action.compareEditor.swapSides", .label = "Swap Sides", .category = "Diff", .context = self, .run = commandDiffSwap },
+            .{ .id = "workbench.action.compareEditor.refreshDiff", .label = "Refresh Diff", .category = "Diff", .context = self, .run = commandDiffRefresh },
             .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
             .{ .id = "workbench.action.focusStatusBar", .label = "Focus Status Bar", .category = "View", .context = self, .run = commandFocusStatusBar },
             .{ .id = "workbench.action.terminal.toggleTerminal", .label = "Toggle Terminal", .category = "Terminal", .context = self, .run = commandToggleTerminal },
@@ -907,6 +992,7 @@ pub const Workbench = struct {
         // Dispose the service (and unregister editor listeners) before tab
         // inputs/emitters are destroyed.
         self.service.deinit();
+        self.deinitGit();
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.destroySearch();
         if (self.settings_watcher) |watcher| watcher.deinit();
@@ -1041,6 +1127,16 @@ pub const Workbench = struct {
         return self.activity_bar_part.activeIndex() orelse 0;
     }
 
+    /// Shows the activity container with `id` (for example `workbench.view.scm`).
+    pub fn showActivityById(self: *Workbench, id: []const u8) !bool {
+        for (self.activity_bar_part.activities.items, 0..) |activity, index| {
+            if (!std.mem.eql(u8, activity.id, id)) continue;
+            try self.showActivity(index);
+            return true;
+        }
+        return false;
+    }
+
     /// Open-editor query for the Explorer filter. A file is visible when it is
     /// open, and a folder is visible when an open file is below it.
     fn isPathOpen(context: *anyopaque, resource: []const u8) bool {
@@ -1151,6 +1247,14 @@ pub const Workbench = struct {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.applyConfiguredLanguageAssociationsToAllEditors();
         self.applyBreadcrumbsSettings();
+        if (self.quick_diff_controller) |controller| {
+            controller.setIgnoreTrimWhitespace(self.resolvedIgnoreTrimWhitespace());
+            controller.setConfig(.{
+                .decorations = self.resolvedDiffDecorations(),
+                .gutter_pattern = .{ .added = true, .modified = true },
+            });
+        }
+        if (self.git_scm_provider != null) self.refreshGitStatus();
     }
 
     /// Applies `files.associations` from the current configuration to `editor`.
@@ -1201,8 +1305,10 @@ pub const Workbench = struct {
     pub fn handleFileChanges(self: *Workbench, changes: []const @import("../../platform/files/common/files.zig").FileChange) void {
         for (changes) |change| {
             if (change.type != .UPDATED) continue;
+            self.git_status_dirty = true;
             for (self.part.group_views.items) |pane| {
                 for (pane.tabs.items) |tab| {
+                    if (tab.isDiff()) continue;
                     if (!std.mem.eql(u8, tab.editor.path, change.resource)) continue;
                     if (tab.editor.isDirty()) {
                         tab.editor.markConflict();
@@ -1297,8 +1403,9 @@ pub const Workbench = struct {
 
     fn revealActiveEditor(self: *Workbench) void {
         const tab = self.activeTab() orelse return;
-        if (!self.autoRevealEnabled(tab.input.editor.path)) return;
-        if (self.sidebar) |sidebar| sidebar.revealPath(tab.input.editor.path) catch {};
+        if (tab.isDiff()) return;
+        if (!self.autoRevealEnabled(tab.editor.path)) return;
+        if (self.sidebar) |sidebar| sidebar.revealPath(tab.editor.path) catch {};
     }
 
     /// Test/standalone helper: set a single-folder workspace and open the
@@ -1423,7 +1530,7 @@ pub const Workbench = struct {
                 _ = self.statusbar.main_part.focusNextEntry();
             }
         }
-        if (self.activeTab()) |tab| tab.view.focusEditor();
+        if (self.activeTab()) |tab| tab.focusEditor();
         if (self.search_view) |view| view.blur();
     }
 
@@ -1936,6 +2043,616 @@ pub const Workbench = struct {
         return tab.editor.bracketGuidesTimeout(now_ms);
     }
 
+    // --- begin git / source control
+
+    fn deinitGit(self: *Workbench) void {
+        // Detach quick diff while the tab editors and their models still exist:
+        // the decorator removes model decorations on detach.
+        if (self.quick_diff_controller) |controller| {
+            controller.deinit();
+            self.allocator.destroy(controller);
+            self.quick_diff_controller = null;
+        }
+        if (self.scm_view) |view| {
+            view.deinit();
+            self.allocator.destroy(view);
+            self.scm_view = null;
+        }
+        if (self.scm_interface) |interface| {
+            self.allocator.destroy(interface);
+            self.scm_interface = null;
+        }
+        if (self.quick_diff_service) |service| {
+            service.deinit();
+            self.allocator.destroy(service);
+            self.quick_diff_service = null;
+        }
+        if (self.scm_service) |service| {
+            service.deinit();
+            self.allocator.destroy(service);
+            self.scm_service = null;
+        }
+        if (self.git_scm_provider) |provider| {
+            provider.destroy();
+            self.git_scm_provider = null;
+        }
+        if (self.git_service) |service| {
+            service.deinit();
+            self.allocator.destroy(service);
+            self.git_service = null;
+        }
+        if (self.git_delegate) |delegate| {
+            self.allocator.destroy(delegate);
+            self.git_delegate = null;
+        }
+        if (self.git_cli) |cli| {
+            cli.deinit();
+            self.git_cli = null;
+        }
+        if (self.quick_diff_storage) |storage| {
+            storage.deinit();
+            self.allocator.destroy(storage);
+            self.quick_diff_storage = null;
+        }
+        if (self.git_root) |root| self.allocator.free(root);
+        self.git_root = null;
+    }
+
+    /// Creates the git CLI/service, the SCM provider/view and the quick-diff
+    /// controller for the workspace folder. A missing git binary, a disabled
+    /// `git.enabled` or a non-repository leaves the editor untouched.
+    pub fn initGit(self: *Workbench) !void {
+        if (self.git_cli != null) return;
+        const root_value = self.workspaceFolderPath() orelse return;
+        if (self.configuration) |configuration| {
+            if (!configuration.getBool("git.enabled", true)) return;
+        }
+
+        var options = git_cli_mod.Options{
+            .git_path = null,
+            .enabled = true,
+            .timeout_ms = 5000,
+            .io = self.io,
+            .on_disabled = gitDisabled,
+            .on_disabled_context = self,
+        };
+        if (self.configuration) |configuration| {
+            if (configuration.getValue("git.path", .{})) |value| {
+                switch (value.*) {
+                    .string => |text| options.git_path = text,
+                    else => {},
+                }
+            }
+            if (configuration.getValue("diffEditor.maxFileSize", .{})) |value| {
+                const megabytes: f64 = switch (value.*) {
+                    .integer => |number| @floatFromInt(number),
+                    .float => |number| number,
+                    else => 50,
+                };
+                if (megabytes > 0 and megabytes < 1024) {
+                    options.max_file_size_kb = @intFromFloat(megabytes * 1024);
+                }
+            }
+        }
+
+        const cli = git_cli_mod.GitCli.init(self.allocator, options) catch return;
+        self.git_cli = cli;
+        errdefer self.deinitGit();
+        if (cli.isDisabled()) return;
+
+        const opened = cli.openRepository(root_value) catch null;
+        if (opened == null) return;
+        const concrete = cli.repositoryForRoot(root_value) orelse return;
+
+        const service = try self.allocator.create(git_service_mod.GitService);
+        service.* = git_service_mod.GitService.init(self.allocator);
+        self.git_service = service;
+
+        const delegate = try self.allocator.create(git_common_mod.IGitExtensionDelegate);
+        delegate.* = cli.interface();
+        self.git_delegate = delegate;
+        _ = service.setDelegate(delegate) catch {};
+
+        const root = try self.allocator.dupe(u8, root_value);
+        self.git_root = root;
+
+        const scm_service = try self.allocator.create(scm_service_mod.SCMService);
+        scm_service.* = scm_service_mod.SCMService.init(self.allocator);
+        self.scm_service = scm_service;
+
+        const provider = try git_scm_provider_mod.GitScmProvider.create(
+            self.allocator,
+            cli,
+            concrete,
+            root,
+            .{
+                .context = self,
+                .open_change = providerOpenChange,
+            },
+        );
+        self.git_scm_provider = provider;
+        _ = try scm_service.registerSCMProvider(provider.interface());
+
+        const storage = try self.allocator.create(storage_mod.InMemoryStorageService);
+        storage.* = storage_mod.InMemoryStorageService.init(self.allocator);
+        self.quick_diff_storage = storage;
+        const quick_service = try self.allocator.create(quick_diff_service_mod.QuickDiffService);
+        quick_service.* = quick_diff_service_mod.QuickDiffService.init(self.allocator, storage);
+        self.quick_diff_service = quick_service;
+        for (provider.quickDiffProviders()) |quick| {
+            _ = quick_service.addQuickDiffProvider(quick) catch {};
+        }
+
+        const controller = try self.allocator.create(quick_diff_controller_mod.Controller);
+        controller.* = quick_diff_controller_mod.Controller.init(self.allocator, quick_service);
+        self.quick_diff_controller = controller;
+        if (self.configuration != null) {
+            controller.setIgnoreTrimWhitespace(self.resolvedIgnoreTrimWhitespace());
+            controller.setConfig(.{
+                .decorations = self.resolvedDiffDecorations(),
+                .gutter_pattern = .{ .added = true, .modified = true },
+            });
+        }
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.file_input == null) continue;
+                controller.attach(tab.editor, tab.editor.path) catch {};
+            }
+        }
+
+        const scm_view = try self.allocator.create(scm_view_mod.ScmView);
+        const scm_interface = scm_service.interface();
+        // The view only reads the service through the interface; keep a stable
+        // copy because `interface()` returns by value.
+        const service_copy = try self.allocator.create(scm_common.ISCMService);
+        service_copy.* = scm_interface;
+        self.scm_interface = service_copy;
+        scm_view.* = scm_view_mod.ScmView.init(self.allocator, service_copy, .{
+            .context = self,
+            .open_change = scmViewOpen,
+            .refresh = scmRefresh,
+            .focus_editor = scmFocusEditor,
+        });
+        self.scm_view = scm_view;
+        scm_view.refresh();
+
+        self.git_status_accessor = try self.statusbar.addEntry(.{
+            .name = "Source Control",
+            .text = "",
+            .command = .{ .id = "workbench.view.scm" },
+        }, "workbench.scm.branch", .left, .{ .number = 100 });
+        self.next_git_refresh = time_compat.milliTimestamp();
+        self.syncGitStatus();
+        self.syncGitActivity();
+        self.refreshStatus();
+    }
+
+    fn resolvedIgnoreTrimWhitespace(self: *Workbench) bool {
+        const configuration = self.configuration orelse return true;
+        if (configuration.getValue("scm.diffDecorationsIgnoreTrimWhitespace", .{})) |value| {
+            switch (value.*) {
+                .bool => |enabled| return enabled,
+                .string => |text| {
+                    if (std.mem.eql(u8, text, "inherit")) {
+                        return configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
+                    }
+                    return std.mem.eql(u8, text, "true");
+                },
+                else => {},
+            }
+        }
+        return configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
+    }
+
+    fn resolvedDiffDecorations(self: *Workbench) quick_diff_controller_mod.DecorationsMode {
+        const configuration = self.configuration orelse return .all;
+        if (configuration.getValue("scm.diffDecorations", .{})) |value| {
+            switch (value.*) {
+                .string => |text| {
+                    if (std.mem.eql(u8, text, "none")) return .none;
+                    if (std.mem.eql(u8, text, "gutter")) return .gutter;
+                    if (std.mem.eql(u8, text, "overview")) return .overview;
+                    if (std.mem.eql(u8, text, "minimap")) return .minimap;
+                },
+                else => {},
+            }
+        }
+        return .all;
+    }
+
+    fn diffEditorOptions(self: *Workbench) DiffWidgetOptions {
+        var options = DiffWidgetOptions{};
+        options.ignore_trim_whitespace = self.resolvedIgnoreTrimWhitespace();
+        if (self.configuration) |configuration| {
+            options.render_side_by_side = configuration.getBool("diffEditor.renderSideBySide", true);
+            options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
+            options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
+            options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);
+            if (configuration.getValue("diffEditor.maxComputationTime", .{})) |value| {
+                switch (value.*) {
+                    .integer => |number| options.max_computation_time_ms = number,
+                    else => {},
+                }
+            }
+            if (configuration.getValue("diffEditor.splitViewDefaultRatio", .{})) |value| {
+                switch (value.*) {
+                    .float => |number| options.split_view_default_ratio = number,
+                    .integer => |number| options.split_view_default_ratio = @floatFromInt(number),
+                    else => {},
+                }
+            }
+            if (configuration.getValue("diffEditor.experimental.showMoves", .{})) |value| {
+                switch (value.*) {
+                    .bool => |enabled| options.show_moves = enabled,
+                    else => {},
+                }
+            }
+            if (configuration.getValue("diffEditor.diffAlgorithm", .{})) |value| {
+                switch (value.*) {
+                    .string => |name| options.diff_algorithm = diffAlgorithmFromName(name),
+                    else => {},
+                }
+            }
+        }
+        return options;
+    }
+
+    /// Polls quick diff and the debounced SCM status refresh. Returns true when
+    /// the frame should be repainted.
+    pub fn pollGit(self: *Workbench, now_ms: i64) bool {
+        var changed = false;
+        if (self.quick_diff_controller) |controller| {
+            if (controller.poll(now_ms)) changed = true;
+        }
+        if (self.git_scm_provider == null) return changed;
+        const scm_visible = self.sidebarShown() and std.mem.eql(
+            u8,
+            self.activity_bar_part.active_id orelse "",
+            "scm",
+        );
+        if (now_ms >= self.next_git_refresh and (self.git_status_dirty or scm_visible)) {
+            self.git_status_dirty = false;
+            self.next_git_refresh = now_ms + 5000;
+            self.refreshGitStatus();
+            changed = true;
+        }
+        return changed;
+    }
+
+    pub fn gitWantsTick(self: *const Workbench) bool {
+        return self.git_scm_provider != null;
+    }
+
+    /// Re-reads git status, the SCM rows, the quick-diff baselines, the
+    /// branch/status entry and the activity badge.
+    pub fn refreshGitStatus(self: *Workbench) void {
+        const provider = self.git_scm_provider orelse return;
+        provider.refresh() catch {};
+        if (self.scm_view) |view| view.refresh();
+        if (self.quick_diff_controller) |controller| _ = controller.refreshAll();
+        self.syncGitStatus();
+        self.syncGitActivity();
+    }
+
+    fn syncGitStatus(self: *Workbench) void {
+        const accessor = self.git_status_accessor orelse return;
+        const provider = self.git_scm_provider orelse {
+            accessor.update(.{ .name = "Source Control", .text = "" });
+            return;
+        };
+        const state = provider.repository.stateRef();
+        var branch: []const u8 = "";
+        if (state.head) |head| {
+            if (head.ref.name) |name| branch = name;
+        }
+        var ahead: usize = 0;
+        var behind: usize = 0;
+        if (state.head) |head| {
+            ahead = head.ahead orelse 0;
+            behind = head.behind orelse 0;
+        }
+        const text = if (branch.len > 0)
+            std.fmt.bufPrint(&self.git_status_buf, "\u{2387} {s} \u{2191}{d} \u{2193}{d} ({d})", .{
+                branch,
+                ahead,
+                behind,
+                provider.count(),
+            }) catch "Git"
+        else
+            std.fmt.bufPrint(&self.git_status_buf, "\u{2387} (detached) ({d})", .{provider.count()}) catch "Git";
+        accessor.update(.{ .name = "Source Control", .text = text, .tooltip = "workbench.view.scm" });
+    }
+
+    fn syncGitActivity(self: *Workbench) void {
+        const provider = self.git_scm_provider orelse return;
+        var badge_mode: []const u8 = "all";
+        if (self.configuration) |configuration| {
+            if (configuration.getValue("scm.countBadge", .{})) |value| {
+                switch (value.*) {
+                    .string => |text| badge_mode = text,
+                    else => {},
+                }
+            }
+        }
+        const scm_visible = self.sidebarShown() and std.mem.eql(
+            u8,
+            self.activity_bar_part.active_id orelse "",
+            "scm",
+        );
+        const count = if (std.mem.eql(u8, badge_mode, "off") or
+            (std.mem.eql(u8, badge_mode, "focused") and !scm_visible))
+            0
+        else
+            provider.count();
+        if (self.git_badge_count == count) return;
+        self.git_badge_count = count;
+        if (count == 0) {
+            self.activity_service.removeActivity("scm", "scm.changes");
+            return;
+        }
+        const text = std.fmt.bufPrint(&self.git_badge_buf, "{d}", .{count}) catch "?";
+        self.activity_service.setViewContainerActivity("scm", .{
+            .id = "scm.changes",
+            .badge = .{ .description = text },
+        }) catch {};
+    }
+
+    /// Opens a diff between two refs of `path`. `working` uses the open buffer
+    /// (including unsaved edits) when the file is open, otherwise the file on
+    /// disk. `empty` produces the untracked/deleted side.
+    pub fn openDiff(
+        self: *Workbench,
+        path: []const u8,
+        left_ref: DiffRef,
+        right_ref: DiffRef,
+    ) !void {
+        const provider = self.git_scm_provider orelse return error.NoRepository;
+        const root = self.git_root orelse return error.NoRepository;
+        _ = provider;
+        const relative = relativeToRoot(path, root) orelse return error.OutsideRepository;
+        const git = self.git_cli orelse return error.NoGit;
+
+        const left_label = diffRefLabel(left_ref);
+        const right_label = diffRefLabel(right_ref);
+
+        if (self.findDiffTab(path, left_label, right_label)) |tab| {
+            const pane = self.activePane();
+            const dims = if (pane) |value| editorDimensions(self, value) else Dimensions{ .width = self.cols, .height = self.editorRows() };
+            const text = try self.resolveDiffTexts(git, path, relative, left_ref, right_ref);
+            defer self.allocator.free(text.original);
+            defer self.allocator.free(text.modified);
+            try tab.diff.?.replace(text.original, text.modified, dims.width, dims.height, self.diffEditorOptions());
+            tab.syncDiffViews();
+            if (pane) |value| {
+                try value.activateTab(tab);
+                tab.layoutCells(dims.width, dims.height);
+            }
+            tab.focusEditor();
+            self.refreshStatus();
+            return;
+        }
+
+        const text = try self.resolveDiffTexts(git, path, relative, left_ref, right_ref);
+        defer self.allocator.free(text.original);
+        defer self.allocator.free(text.modified);
+        if (text.original.len == 0 and text.modified.len == 0) {
+            const file_exists = if (std.Io.Dir.cwd().access(self.io, path, .{})) |_| true else |_| false;
+            if (file_exists) {
+                if (self.status_hint_accessor) |hint| {
+                    hint.update(.{ .name = "Source Control", .text = "Diff skipped: binary or too large" });
+                }
+                return error.DiffUnavailable;
+            }
+        }
+
+        const pane = self.activePane();
+        const dims = if (pane) |value| editorDimensions(self, value) else Dimensions{ .width = self.cols, .height = self.editorRows() };
+
+        const view = try text_diff_editor_mod.DiffView.create(
+            self.allocator,
+            self.io,
+            .{
+                .original_path = path,
+                .modified_path = path,
+                .original_text = text.original,
+                .modified_text = text.modified,
+                .original_label = left_label,
+                .modified_label = right_label,
+            },
+            dims.width,
+            dims.height,
+            self.diffEditorOptions(),
+        );
+        var view_owned = true;
+        errdefer if (view_owned) view.destroy();
+
+        const opened = try self.service.openEditor(
+            view.input(),
+            null,
+            .{ .open = .{ .pinned = true, .active = true } },
+        );
+        const group_pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (!opened.result.is_new) {
+            view.destroy();
+            if (group_pane.tabForInput(view.input()) == null) {
+                // The matching tab owns its own view; activate it.
+                for (group_pane.tabs.items) |candidate| {
+                    if (candidate.diff != null and candidate.input.matches(.{ .input = view.input() })) {
+                        try group_pane.activateTab(candidate);
+                        self.focusEditor();
+                        return;
+                    }
+                }
+            }
+            return;
+        }
+
+        const tab = try Tab.initDiff(self.allocator, view);
+        // The tab owns the view from here on; its deinit frees the editors and
+        // inputs. Defuse the view errdefer so an addTab failure does not free
+        // the same widget twice.
+        view_owned = false;
+        errdefer tab.deinit();
+        try group_pane.addTab(tab);
+        try group_pane.activateTab(tab);
+        tab.layoutCells(dims.width, dims.height);
+        tab.focusEditor();
+        self.focusEditor();
+        self.refreshStatus();
+    }
+
+    const ResolvedDiffTexts = struct {
+        original: []u8,
+        modified: []u8,
+    };
+
+    fn resolveDiffTexts(
+        self: *Workbench,
+        git: *git_cli_mod.GitCli,
+        path: []const u8,
+        relative: []const u8,
+        left_ref: DiffRef,
+        right_ref: DiffRef,
+    ) !ResolvedDiffTexts {
+        const original = try self.diffTextFor(git, path, relative, left_ref);
+        errdefer self.allocator.free(original);
+        const modified = try self.diffTextFor(git, path, relative, right_ref);
+        return .{ .original = original, .modified = modified };
+    }
+
+    fn diffTextFor(
+        self: *Workbench,
+        git: *git_cli_mod.GitCli,
+        path: []const u8,
+        relative: []const u8,
+        ref: DiffRef,
+    ) ![]u8 {
+        if (ref == .empty) return self.allocator.dupe(u8, "");
+        if (ref == .working) {
+            if (self.findOpenInput(path)) |input| {
+                var value = try input.editor.model.getValue(.TextDefined, true);
+                return value.toOwnedSlice();
+            }
+        }
+        const kind: git_cli_mod.RefKind = switch (ref) {
+            .head => .head,
+            .index => .index,
+            .working => .working,
+            .empty => unreachable,
+        };
+        const root = self.git_root orelse return self.allocator.dupe(u8, "");
+        if (try git.readRef(root, relative, kind)) |content| return content;
+        return self.allocator.dupe(u8, "");
+    }
+
+    fn findDiffTab(self: *Workbench, path: []const u8, left_label: []const u8, right_label: []const u8) ?*Tab {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const diff = tab.diff orelse continue;
+                if (diff.matches(path, left_label, right_label)) return tab;
+            }
+        }
+        return null;
+    }
+
+    fn openScmChange(self: *Workbench, provider: *git_scm_provider_mod.GitScmProvider, resource: *git_scm_provider_mod.GitScmResource) !void {
+        _ = provider;
+        switch (resource.kind) {
+            .merge => try self.openPath(resource.absolute_path),
+            .untracked => try self.openDiff(resource.absolute_path, .empty, .working),
+            .index => try self.openDiff(resource.absolute_path, .head, .index),
+            .working => {
+                // If the path is staged as well, compare index->working; an
+                // unstaged path compares HEAD->working.
+                const staged = self.git_scm_provider.?.repository.stateRef().index_changes;
+                var is_staged = false;
+                for (staged) |change| {
+                    if (std.mem.eql(u8, change.path, resource.relative_path)) {
+                        is_staged = true;
+                        break;
+                    }
+                }
+                if (is_staged) {
+                    try self.openDiff(resource.absolute_path, .index, .working);
+                } else {
+                    try self.openDiff(resource.absolute_path, .head, .working);
+                }
+            },
+        }
+    }
+
+    /// Reports a hard git disable once through the status hint entry. The
+    /// editor stays usable; the SCM view shows its welcome/placeholder text.
+    fn gitDisabled(context: ?*anyopaque, reason: []const u8) void {
+        const raw_context = context orelse return;
+        const self: *Workbench = @ptrCast(@alignCast(raw_context));
+        if (self.status_hint_accessor) |hint| {
+            const text = std.fmt.bufPrint(&self.git_status_buf, "Source Control disabled: {s}", .{reason}) catch "Source Control disabled";
+            hint.update(.{ .name = "Source Control", .text = text });
+        }
+    }
+
+    fn providerOpenChange(context: *anyopaque, provider: *git_scm_provider_mod.GitScmProvider, resource: *git_scm_provider_mod.GitScmResource) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return self.openScmChange(provider, resource);
+    }
+
+    fn scmOpenChange(context: *anyopaque, resource: *scm_common.ISCMResource) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const provider = self.git_scm_provider orelse return;
+        const git_resource = @as(*git_scm_provider_mod.GitScmResource, @ptrCast(@alignCast(resource.context)));
+        return self.openScmChange(provider, git_resource);
+    }
+
+    fn scmViewOpen(context: *anyopaque, resource: *scm_common.ISCMResource) anyerror!void {
+        return scmOpenChange(context, resource);
+    }
+
+    fn scmRefresh(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.git_status_dirty = true;
+        self.refreshGitStatus();
+    }
+
+    fn scmFocusEditor(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.focusEditor();
+    }
+
+    fn diffRefLabel(ref: DiffRef) []const u8 {
+        return switch (ref) {
+            .head => "HEAD",
+            .index => "Index",
+            .working => "Working Tree",
+            .empty => "Empty",
+        };
+    }
+
+    fn diffAlgorithmFromName(name: []const u8) diff_widget_mod.DiffAlgorithmName {
+        return diff_widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced;
+    }
+
+    fn relativeToRoot(path: []const u8, root: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trimEnd(u8, root, "/\\");
+        if (trimmed.len == 0) return null;
+        if (path.len <= trimmed.len + 1) return null;
+        if (!std.mem.startsWith(u8, path, trimmed)) return null;
+        if (path[trimmed.len] != '/' and path[trimmed.len] != '\\') return null;
+        return path[trimmed.len + 1 ..];
+    }
+
+    const Dimensions = struct { width: usize, height: usize };
+
+    fn editorDimensions(self: *Workbench, pane: *GroupPane) Dimensions {
+        _ = self;
+        return .{
+            .width = @max(ui.cell.snap(pane.rect.w), 1),
+            .height = @max(ui.cell.snap(pane.rect.h) -| pane.chromeHeight(), 1),
+        };
+    }
+
+    // --- end git / source control
+
     pub fn openPath(self: *Workbench, path: []const u8) !void {
         return self.openPathWithOptions(path, .{});
     }
@@ -1950,9 +2667,10 @@ pub const Workbench = struct {
     fn findOpenInput(self: *Workbench, path: []const u8) ?*FileEditorInput {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
-                if (!std.mem.eql(u8, tab.editor.path, path)) continue;
-                if (!pane.group.model.contains(.{ .input = &tab.input.base }, .{})) continue;
-                return tab.input;
+                const file_input = tab.file_input orelse continue;
+                if (!std.mem.eql(u8, file_input.editor.path, path)) continue;
+                if (!pane.group.model.contains(.{ .input = &file_input.base }, .{})) continue;
+                return file_input;
             }
         }
         return null;
@@ -1972,7 +2690,7 @@ pub const Workbench = struct {
             try pane.activateTab(tab);
             if (self.language_features) |features| tab.attachLanguageRegistry(features);
             try tab.ensureControllers();
-            tab.view.focusEditor();
+            tab.focusEditor();
         }
         try self.history.add(path);
         self.pruneTabs(pane);
@@ -2010,7 +2728,7 @@ pub const Workbench = struct {
                 try pane.activateTab(tab);
                 if (self.language_features) |features| tab.attachLanguageRegistry(features);
                 try tab.ensureControllers();
-                tab.view.focusEditor();
+                tab.focusEditor();
             }
             try self.history.add(path);
             self.pruneTabs(pane);
@@ -2021,6 +2739,7 @@ pub const Workbench = struct {
         try tab.view.setStatusBarVisible(false);
         try pane.addTab(tab);
         self.registerWorkingCopy(tab);
+        if (self.quick_diff_controller) |controller| controller.attach(tab.editor, tab.editor.path) catch {};
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
         try tab.ensureControllers();
         try self.history.add(path);
@@ -2093,11 +2812,12 @@ pub const Workbench = struct {
         while (index > 0) {
             index -= 1;
             const tab = pane.tabs.items[index];
-            if (pane.group.model.contains(.{ .input = &tab.input.base }, .{})) continue;
+            if (pane.group.model.contains(.{ .input = tab.input }, .{})) continue;
             if (pane.activeTab() == tab) removed_active = true;
             _ = pane.removeTab(tab);
             if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
             self.unregisterWorkingCopy(tab);
+            if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
             tab.deinit();
         }
         if (removed_active) pane.syncActivePane();
@@ -2107,8 +2827,8 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 if (!tab.editor.isDirty()) continue;
-                if (pane.group.model.isPinned(.{ .editor = &tab.input.base })) continue;
-                _ = pane.group.model.pin(&tab.input.base) catch {};
+                if (pane.group.model.isPinned(.{ .editor = tab.input })) continue;
+                _ = pane.group.model.pin(tab.input) catch {};
             }
         }
     }
@@ -2124,10 +2844,10 @@ pub const Workbench = struct {
         try pane.activateTab(tab);
         try tab.ensureControllers();
         self.focusEditor();
-        tab.view.focusEditor();
+        tab.focusEditor();
         tab.onEditorChanged(@import("../../base/common/timeCompat.zig").milliTimestamp());
         try tab.refresh();
-        try self.history.add(tab.input.editor.path);
+        try self.history.add(tab.editor.path);
         self.revealActiveEditor();
     }
 
@@ -2191,10 +2911,10 @@ pub const Workbench = struct {
 
         const new_pane = try self.part.splitGroup(source, direction, false);
 
-        _ = try source.group.model.closeEditor(&tab.input.base, .MOVE, false);
+        _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
         _ = source.removeTab(tab);
         source.syncActivePane();
-        _ = try new_pane.group.model.openEditor(&tab.input.base, .{ .pinned = true, .active = true });
+        _ = try new_pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
         try new_pane.addTab(tab);
 
         self.layoutAll();
@@ -2230,7 +2950,7 @@ pub const Workbench = struct {
     /// Saving is synchronous in the terminal editor, so `isSaving()` is always
     /// false and needs no separate check.
     fn shouldConfirmClose(self: *Workbench, pane: *GroupPane, tab: *Tab) bool {
-        if (tab.input.base.close_handler) |handler| {
+        if (tab.input.close_handler) |handler| {
             return handler.show_confirm(handler.context);
         }
         if (!tab.editor.isDirty()) return false;
@@ -2240,7 +2960,7 @@ pub const Workbench = struct {
     fn isOpenedInAnotherGroup(self: *const Workbench, pane: *GroupPane, tab: *Tab) bool {
         for (self.part.group_views.items) |candidate| {
             if (candidate == pane) continue;
-            if (candidate.group.model.contains(.{ .input = &tab.input.base }, .{})) return true;
+            if (candidate.group.model.contains(.{ .input = tab.input }, .{})) return true;
         }
         return false;
     }
@@ -2251,7 +2971,7 @@ pub const Workbench = struct {
     fn openSaveConfirm(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
         if (self.dialog != null) return;
 
-        var prompt = (try dialogs.saveConfirmPrompt(self.allocator, &.{tab.input.base.getName()})) orelse return;
+        var prompt = (try dialogs.saveConfirmPrompt(self.allocator, &.{tab.input.getName()})) orelse return;
         errdefer prompt.deinit();
         const dialog = try ui.Dialog.init(
             self.allocator,
@@ -2269,7 +2989,7 @@ pub const Workbench = struct {
         try pane.activateTab(tab);
         try tab.ensureControllers();
         self.focusEditor();
-        tab.view.focusEditor();
+        tab.focusEditor();
 
         prompt.deinit();
         self.dialog = dialog;
@@ -2286,7 +3006,7 @@ pub const Workbench = struct {
         defer names.deinit();
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
-                if (tab.editor.isDirty()) try names.append(tab.input.base.getName());
+                if (tab.editor.isDirty()) try names.append(tab.input.getName());
             }
         }
         if (names.items.len == 0) return;
@@ -2375,7 +3095,7 @@ pub const Workbench = struct {
                 close.tab.editor.save() catch |err| {
                     close.tab.editor.setMessage(
                         "Unable to save {s}: {s}",
-                        .{ close.tab.input.base.getName(), @errorName(err) },
+                        .{ close.tab.input.getName(), @errorName(err) },
                     );
                     self.focusEditorAfterDialog(close.tab);
                     return;
@@ -2421,7 +3141,7 @@ pub const Workbench = struct {
                         tab.editor.save() catch |err| {
                             tab.editor.setMessage(
                                 "Unable to save {s}: {s}",
-                                .{ tab.input.base.getName(), @errorName(err) },
+                                .{ tab.input.getName(), @errorName(err) },
                             );
                             save_failure = .{ .pane = pane, .tab = tab };
                             break;
@@ -2470,21 +3190,22 @@ pub const Workbench = struct {
 
     fn focusEditorAfterDialog(self: *Workbench, tab: *Tab) void {
         self.focusEditor();
-        tab.view.focusEditor();
+        tab.focusEditor();
     }
 
     fn focusActiveEditor(self: *Workbench) void {
         self.focusEditor();
-        if (self.activeTab()) |tab| tab.view.focusEditor();
+        if (self.activeTab()) |tab| tab.focusEditor();
     }
 
     fn performCloseTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
-        _ = try pane.group.model.closeEditor(&tab.input.base, .UNKNOWN, true);
+        _ = try pane.group.model.closeEditor(tab.input, .UNKNOWN, true);
         _ = pane.removeTab(tab);
         pane.syncActivePane();
         if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
         if (self.hovered_tab == tab) self.hovered_tab = null;
         self.unregisterWorkingCopy(tab);
+        if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
         tab.deinit();
 
         if (self.tabCount() == 0) return;
@@ -2610,6 +3331,16 @@ pub const Workbench = struct {
 
         if (event.mods.alt and !event.mods.ctrl and !event.mods.shift) {
             switch (event.key) {
+                .down => {
+                    if (self.activeTab()) |tab| {
+                        if (tab.nextDiffChange()) return .handled;
+                    }
+                },
+                .up => {
+                    if (self.activeTab()) |tab| {
+                        if (tab.previousDiffChange()) return .handled;
+                    }
+                },
                 .char => |ch| {
                     if (ch == '\\') {
                         try self.splitActive(.horizontal);
@@ -2809,14 +3540,14 @@ pub const Workbench = struct {
     }
 
     fn moveTabToPane(self: *Workbench, source: *GroupPane, dest: *GroupPane, tab: *Tab) !void {
-        _ = try source.group.model.closeEditor(&tab.input.base, .MOVE, false);
+        _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
         _ = source.removeTab(tab);
         source.syncActivePane();
-        _ = try dest.group.model.openEditor(&tab.input.base, .{ .pinned = true, .active = true });
+        _ = try dest.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
         try dest.addTab(tab);
         self.service.activateGroup(dest.group);
         try tab.ensureControllers();
-        tab.view.focusEditor();
+        tab.focusEditor();
         self.focus = .editor;
     }
 
@@ -2825,7 +3556,7 @@ pub const Workbench = struct {
             if (source == target) return;
             // The target group may already show this input; moving would
             // create a second Tab for one model.
-            if (target.tabForInput(&tab.input.base) != null) return;
+            if (target.tabForInput(tab.input) != null) return;
             try self.moveTabToPane(source, target, tab);
             self.collapseEmptyPane(source);
             self.layoutAll();
@@ -3056,7 +3787,7 @@ pub const Workbench = struct {
 
         if (event.key == .escape) {
             self.focusEditor();
-            if (self.activeTab()) |tab| tab.view.focusEditor();
+            if (self.activeTab()) |tab| tab.focusEditor();
             return true;
         }
 
@@ -3073,13 +3804,19 @@ pub const Workbench = struct {
         }
 
         const active_id = self.activity_bar_part.active_id orelse "";
+        if (std.mem.eql(u8, active_id, "scm")) {
+            if (self.scm_view) |view| {
+                _ = view.handleKey(@constCast(event)) catch {};
+            }
+            return true;
+        }
         if (std.mem.eql(u8, active_id, "search")) {
             if (self.search_view) |view| {
                 switch (view.handleKey(event)) {
                     .handled => return true,
                     .focus_editor => {
                         self.focusEditor();
-                        if (self.activeTab()) |tab| tab.view.focusEditor();
+                        if (self.activeTab()) |tab| tab.focusEditor();
                         return true;
                     },
                     .unhandled => return true,
@@ -3121,6 +3858,10 @@ pub const Workbench = struct {
         if (event.x > self.activityBarWidth() + self.sidebarWidth()) return false;
         if (event.kind == .down) self.focus = .sidebar;
         const active_id = self.activity_bar_part.active_id orelse "";
+        if (std.mem.eql(u8, active_id, "scm")) {
+            if (self.scm_view) |view| _ = view.handleMouse(@constCast(event), self.sidebarRect()) catch false;
+            return true;
+        }
         if (std.mem.eql(u8, active_id, "search")) {
             if (self.search_view) |view| _ = view.handleMouse(event);
             return true;
@@ -3240,10 +3981,10 @@ pub const Workbench = struct {
                         self.last_tab_click = null;
                         // Upstream: double click pins a preview tab; a pinned
                         // tab toggles the group size (default: expand).
-                        if (pane.group.model.isPinned(.{ .editor = &previous.tab.input.base })) {
+                        if (pane.group.model.isPinned(.{ .editor = previous.tab.input })) {
                             self.toggleExpandGroup(pane);
                         } else {
-                            _ = pane.group.model.pin(&previous.tab.input.base) catch {};
+                            _ = pane.group.model.pin(previous.tab.input) catch {};
                         }
                         self.focusEditor();
                         self.breadcrumbs_dirty = true;
@@ -3413,6 +4154,12 @@ pub const Workbench = struct {
                 if (self.search_view) |view| {
                     try view.render(&self.frame.next, self.sidebarRect());
                 }
+            } else if (std.mem.eql(u8, active_id, "scm")) {
+                if (self.scm_view) |view| {
+                    try view.render(&self.frame.next, self.sidebarRect(), focused);
+                } else {
+                    self.renderPlaceholder(self.sidebarRect(), focused);
+                }
             } else {
                 self.renderPlaceholder(self.sidebarRect(), focused);
             }
@@ -3495,12 +4242,12 @@ pub const Workbench = struct {
         defer self.allocator.free(infos);
         for (ordered.items, 0..) |tab, index| {
             infos[index] = .{
-                .label = tab.input.base.getName(),
+                .label = tab.input.getName(),
                 .language = tab.editor.languageId(),
-                .dirty = tab.input.base.isDirty(),
-                .pinned = pane.group.model.isPinned(.{ .editor = &tab.input.base }),
-                .sticky = pane.group.model.isSticky(.{ .editor = &tab.input.base }),
-                .closeable = !tab.input.base.hasCapability(editor_mod.EditorInputCapabilities.CannotClose),
+                .dirty = tab.input.isDirty(),
+                .pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
+                .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
+                .closeable = !tab.input.hasCapability(editor_mod.EditorInputCapabilities.CannotClose),
             };
         }
 
@@ -3531,15 +4278,7 @@ pub const Workbench = struct {
             try self.renderBreadcrumbs(pane, x, y + editor_group_view.title_height, width, active_group);
         }
         if (pane.activeTab()) |active| {
-            try active.view.paint();
-            try ui.CellGrid.blit(
-                &self.frame.next,
-                active.view.grid(),
-                x,
-                y + chrome,
-                width,
-                height -| chrome,
-            );
+            try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
         }
     }
 
@@ -3554,8 +4293,10 @@ pub const Workbench = struct {
             .fg = ui.cell.packColor(.{ .r = 190, .g = 190, .b = 190 }),
             .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }),
         };
-        const header = if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) " SEARCH " else " SETTINGS ";
-        const title = "Settings view is not ported yet";
+        const active_id = self.activity_bar_part.active_id orelse "";
+        const is_scm = std.mem.eql(u8, active_id, "scm");
+        const header = if (std.mem.eql(u8, active_id, "search")) " SEARCH " else if (is_scm) " SOURCE CONTROL " else " SETTINGS ";
+        const title = if (is_scm) "Source Control is unavailable (no Git repository)" else "Settings view is not ported yet";
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
         const header_style = ui.cell.PaintStyle{
             .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
@@ -3865,7 +4606,7 @@ pub const Workbench = struct {
         if (self.focus != .editor) return null;
         const pane = self.activePane() orelse return null;
         const active = pane.activeTab() orelse return null;
-        const cell = active.view.cursorCell() orelse return null;
+        const cell = active.cursorCell() orelse return null;
         const row = ui.cell.snap(pane.rect.y) + pane.chromeHeight() + cell.row;
         const col = ui.cell.snap(pane.rect.x) + cell.col;
         if (row >= self.editorRows() or col >= self.cols) return null;
@@ -4043,7 +4784,7 @@ fn breadcrumbRequestRender(context: *anyopaque) void {
 fn breadcrumbFocusEditor(context: *anyopaque) void {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
     self.workbench.focusEditor();
-    if (self.workbench.activeTab()) |tab| tab.view.focusEditor();
+    if (self.workbench.activeTab()) |tab| tab.focusEditor();
 }
 
 fn onBreadcrumbPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
@@ -4099,13 +4840,78 @@ fn commandShowCommands(context: *anyopaque) anyerror!void {
     return self.quick_access.showCommandPicker();
 }
 
+fn commandViewScm(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (!try self.showActivityById("scm")) return;
+    self.focusSidebar();
+    if (self.scm_view) |view| view.refresh();
+}
+
+fn commandGitRefresh(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.refreshGitStatus();
+}
+
+fn commandGitOpenChange(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const view = self.scm_view orelse return;
+    const resource = view.selectedResource() orelse return;
+    const provider = self.git_scm_provider orelse return;
+    const git_resource: *git_scm_provider_mod.GitScmResource = @ptrCast(@alignCast(resource.context));
+    try self.openScmChange(provider, git_resource);
+}
+
+fn commandGitOpenFile(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return;
+    const diff = tab.diff orelse return;
+    try self.openPath(diff.model.modified_path);
+}
+
+fn commandDiffNext(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.activeTab()) |tab| _ = tab.nextDiffChange();
+    self.refreshStatus();
+}
+
+fn commandDiffPrevious(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.activeTab()) |tab| _ = tab.previousDiffChange();
+    self.refreshStatus();
+}
+
+fn commandDiffSwap(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.activeTab()) |tab| tab.swapDiffSides();
+}
+
+fn commandDiffRefresh(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return;
+    const diff = tab.diff orelse return;
+    const left = diffRefFromLabel(diff.model.original_label);
+    const right = diffRefFromLabel(diff.model.modified_label);
+    try self.openDiff(diff.model.modified_path, left, right);
+}
+
+fn diffRefFromLabel(label: []const u8) DiffRef {
+    if (std.mem.eql(u8, label, "HEAD")) return .head;
+    if (std.mem.eql(u8, label, "Index")) return .index;
+    if (std.mem.eql(u8, label, "Working Tree")) return .working;
+    return .empty;
+}
+
 fn commandSave(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
+    if (tab.isDiff()) return;
     try tab.editor.save();
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.git_status_dirty = true;
 }
 
 fn commandRevert(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
+    if (tab.isDiff()) return;
     try tab.editor.reloadFromDisk();
 }
 
@@ -4385,7 +5191,7 @@ fn searchOpenMatch(context: *anyopaque, path: []const u8, range: ?Range) anyerro
     self.focus = .editor;
     if (self.activeTab()) |tab| {
         if (range) |value| try tab.editor.setSelection(value);
-        tab.view.focusEditor();
+        tab.focusEditor();
     }
     if (range) |value| searchHighlightRange(context, path, value) else searchHighlightRange(context, path, null);
 }
@@ -4509,7 +5315,7 @@ fn searchSaveFile(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
-            if (pathsEqual(tab.editor.path, path)) {
+            if (!tab.isDiff() and pathsEqual(tab.editor.path, path)) {
                 try tab.editor.save();
                 return;
             }
@@ -4739,7 +5545,7 @@ test "Workbench: opens two files, switches tabs and closes them" {
 
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
-    try std.testing.expectEqualStrings("b.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("b.txt", workbench.activeTab().?.input.getName());
 
     try workbench.activeTab().?.ensureControllers();
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -4750,14 +5556,14 @@ test "Workbench: opens two files, switches tabs and closes them" {
     try std.testing.expectEqual(@as(usize, 2), workbench.cursorCell().?.row);
 
     try workbench.activateIndex(0);
-    try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.getName());
     try workbench.switchTab(1);
-    try std.testing.expectEqualStrings("b.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("b.txt", workbench.activeTab().?.input.getName());
 
     const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
     try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
-    try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 }
@@ -4823,7 +5629,7 @@ test "Workbench: split moves the active tab into a second group" {
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
-    try std.testing.expectEqualStrings("split_b.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("split_b.txt", workbench.activeTab().?.input.getName());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -5082,11 +5888,11 @@ test "Workbench: openPath reveals an already-open file in another group" {
     try workbench.splitActive(.horizontal);
 
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
-    try std.testing.expectEqualStrings("reveal_b.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("reveal_b.txt", workbench.activeTab().?.input.getName());
 
     try workbench.openPath(path_a);
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
-    try std.testing.expectEqualStrings("reveal_a.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("reveal_a.txt", workbench.activeTab().?.input.getName());
 }
 
 test "Workbench: serialize and restore a group" {
@@ -5116,7 +5922,7 @@ test "Workbench: serialize and restore a group" {
     defer restored.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), restored.tabCount());
-    try std.testing.expectEqualStrings("restore_b.txt", restored.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("restore_b.txt", restored.activeTab().?.input.getName());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -5155,7 +5961,7 @@ test "Workbench: serialize and restore multiple groups" {
 
     try std.testing.expectEqual(@as(usize, 2), restored.groupCount());
     try std.testing.expectEqual(@as(usize, 2), restored.tabCount());
-    try std.testing.expectEqualStrings("part_b.txt", restored.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("part_b.txt", restored.activeTab().?.input.getName());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -5196,7 +6002,7 @@ test "Workbench: sidebar renders and opens a file" {
     const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 2 };
     try std.testing.expect(workbench.handleSidebarMouse(&click));
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
-    try std.testing.expectEqualStrings("side_open.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("side_open.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqual(Focus.editor, workbench.focus);
 
     const ctrl_b = ui.KeyEvent{ .key = .{ .char = 'b' }, .mods = .{ .ctrl = true } };
@@ -5350,9 +6156,16 @@ test "Workbench: activity bar switches view containers" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "SEARCH") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "No results") != null or std.mem.indexOf(u8, out.written(), "Search") != null);
 
-    const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 3 };
-    try std.testing.expect(workbench.handleSidebarMouse(&settings_click));
+    const scm_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 3 };
+    try std.testing.expect(workbench.handleSidebarMouse(&scm_click));
     try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "SOURCE CONTROL") != null);
+
+    const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
+    try std.testing.expect(workbench.handleSidebarMouse(&settings_click));
+    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
 
     out.clearRetainingCapacity();
     try workbench.render(&out.writer);
@@ -5394,7 +6207,7 @@ test "Workbench: opens a folder workspace with no initial tabs" {
     const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 1 };
     try std.testing.expect(workbench.handleSidebarMouse(&click));
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
-    try std.testing.expectEqualStrings("folder_file.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("folder_file.txt", workbench.activeTab().?.input.getName());
 }
 
 test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
@@ -5431,7 +6244,7 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     _ = try workbench.handleQuickAccessKey(&enter);
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
-    try std.testing.expectEqualStrings("alpha.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("alpha.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqual(@as(usize, 1), workbench.history.getHistory().len);
 
     // Alt-P opens the command palette directly; "split" runs the split command.
@@ -5527,7 +6340,7 @@ test "Workbench: switching tabs reveals the active file" {
     try std.testing.expectEqualStrings("b.txt", workbench.sidebar.?.selectedNode().?.name);
 
     try workbench.switchTab(-1);
-    try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.base.getName());
+    try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqualStrings("a.txt", workbench.sidebar.?.selectedNode().?.name);
 }
 
@@ -6653,7 +7466,7 @@ test "Workbench: preview replacement and dirty pin" {
     defer workbench.deinit();
     try workbench.openPreviewPath(path_a);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
-    try std.testing.expect(!workbench.activePane().?.group.model.isPinned(.{ .editor = &workbench.activeTab().?.input.base }));
+    try std.testing.expect(!workbench.activePane().?.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
 
     try workbench.openPreviewPath(path_b);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
@@ -6662,7 +7475,7 @@ test "Workbench: preview replacement and dirty pin" {
     try workbench.activeTab().?.ensureControllers();
     try workbench.activeTab().?.editor.insertText("x");
     workbench.refreshStatus();
-    try std.testing.expect(workbench.activePane().?.group.model.isPinned(.{ .editor = &workbench.activeTab().?.input.base }));
+    try std.testing.expect(workbench.activePane().?.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
 
     try workbench.openPreviewPath(path_a);
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
@@ -6722,7 +7535,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     const y = ui.cell.snap(pane.rect.y);
     var first = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&first));
-    try std.testing.expect(!pane.group.model.isPinned(.{ .editor = &workbench.activeTab().?.input.base }));
+    try std.testing.expect(!pane.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
     // A real terminal also delivers the release between the two presses.
     var up = ui.MouseEvent{ .kind = .up, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&up));
@@ -6730,7 +7543,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     workbench.last_tab_click.?.at_ms -= 700;
     var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&second));
-    try std.testing.expect(pane.group.model.isPinned(.{ .editor = &workbench.activeTab().?.input.base }));
+    try std.testing.expect(pane.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
     try std.testing.expect(workbench.expanded_pane == null);
 
     // The UI repaints the now-pinned label without italics.
@@ -6791,5 +7604,149 @@ test "Workbench: double click still pins after a jittery drag starts" {
     var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(!workbench.handleTabDragMouse(&second));
     try std.testing.expect(workbench.handleTabMouse(&second));
-    try std.testing.expect(pane.group.model.isPinned(.{ .editor = &workbench.activeTab().?.input.base }));
+    try std.testing.expect(pane.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
+}
+
+test "Workbench: git scm integration, diff tabs and read-only snapshots" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    _ = try runGitTest(allocator, root, &.{ "symbolic-ref", "HEAD", "refs/heads/main" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "one\ntwo\nthree\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "published.txt", .data = "published\n" });
+    if (!try runGitTest(allocator, root, &.{ "add", "a.txt", "published.txt" })) return error.SkipZigTest;
+    if (!try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" })) return error.SkipZigTest;
+
+    // Working-tree modification (two change blocks), staged addition and
+    // untracked file.
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "one\nTWO\nthree\nFOUR\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "staged.txt", .data = "staged\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "untracked.txt", .data = "untracked\n" });
+    if (!try runGitTest(allocator, root, &.{ "add", "staged.txt" })) return error.SkipZigTest;
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/a.txt", .{root});
+    defer allocator.free(path);
+    const staged_path = try std.fmt.allocPrint(allocator, "{s}/staged.txt", .{root});
+    defer allocator.free(staged_path);
+    const untracked_path = try std.fmt.allocPrint(allocator, "{s}/untracked.txt", .{root});
+    defer allocator.free(untracked_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 30);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.initGit();
+
+    try std.testing.expect(workbench.git_scm_provider != null);
+    try std.testing.expect(workbench.scm_view != null);
+    try std.testing.expect(workbench.quick_diff_controller != null);
+    const initial_tabs = workbench.tabCount();
+    const provider = workbench.git_scm_provider.?;
+    try std.testing.expect(provider.count() >= 3);
+    try std.testing.expect(workbench.scm_view.?.resourceCount() >= 3);
+
+    // The branch/status entry and activity badge follow the repository.
+    try std.testing.expect(workbench.git_status_accessor != null);
+    try std.testing.expectEqual(@as(usize, provider.count()), workbench.git_badge_count);
+
+    // HEAD <-> working tree diff for the modified file.
+    try workbench.openDiff(path, .head, .working);
+    var tab = workbench.activeTab() orelse return error.TestExpectedTab;
+    try std.testing.expect(tab.isDiff());
+    try std.testing.expectEqual(@as(usize, 2), tab.diff.?.widget.changeCount());
+    try std.testing.expect(tab.editor.isReadOnly());
+
+    // The diff tab composites both panes, the center gutter and its title.
+    var diff_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer diff_frame.deinit();
+    try workbench.render(&diff_frame.writer);
+    try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "HEAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "Working Tree") != null);
+    try std.testing.expect(workbench.cursorCell() != null);
+
+    // Navigation keys are TUI-specific (Alt-Up/Alt-Down).
+    const before_change = tab.diff.?.widget.current_change;
+    const next_key = ui.KeyEvent{ .key = .down, .mods = .{ .alt = true } };
+    const result = try workbench.handleTabKey(&next_key);
+    try std.testing.expectEqual(TabKeyResult.handled, result);
+    try std.testing.expect(tab.diff.?.widget.current_change != before_change);
+    const previous_key = ui.KeyEvent{ .key = .up, .mods = .{ .alt = true } };
+    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&previous_key));
+    try std.testing.expectEqual(before_change, tab.diff.?.widget.current_change);
+
+    // Save/revert are inert for a diff tab (the read-only snapshot editor
+    // rejects the low-level save as well).
+    try std.testing.expectError(error.ReadOnly, tab.editor.save());
+
+    // Staged and untracked diffs open with distinct titles/keys.
+    try workbench.openDiff(staged_path, .head, .index);
+    const staged_tab = workbench.activeTab().?;
+    try std.testing.expect(staged_tab.isDiff());
+    try std.testing.expect(std.mem.indexOf(u8, staged_tab.input.getName(), "HEAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, staged_tab.input.getName(), "Index") != null);
+
+    // Index <-> working tree diff for a file that was staged and then edited.
+    try tmp.dir.writeFile(io, .{ .sub_path = "staged.txt", .data = "staged\nmore\n" });
+    try workbench.openDiff(staged_path, .index, .working);
+    const index_working_tab = workbench.activeTab().?;
+    try std.testing.expect(index_working_tab.isDiff());
+    try std.testing.expect(std.mem.indexOf(u8, index_working_tab.input.getName(), "Index") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index_working_tab.input.getName(), "Working Tree") != null);
+
+    try workbench.openDiff(untracked_path, .empty, .working);
+    const untracked_tab = workbench.activeTab().?;
+    try std.testing.expect(untracked_tab.isDiff());
+    try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
+
+    // A second open of the same ref pair refreshes the existing tab.
+    try workbench.openDiff(path, .head, .working);
+    try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
+
+    // Session save has no serializer for diff tabs and skips them.
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    var file_serializer = workbench.createFileSerializer();
+    try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.interface());
+    var serialized = try workbench.serializePart(allocator, &registry);
+    defer serialized.deinit(allocator);
+    var serialized_editors: usize = 0;
+    for (serialized.groups) |group_data| serialized_editors += group_data.editors.len;
+    // Only the normal file tab is serialized; the three diff inputs have no
+    // serializer and are skipped.
+    try std.testing.expectEqual(initial_tabs, serialized_editors);
+
+    // Quick-diff decorations can be disabled and detach the gutter cell.
+    try workbench.openPath(path);
+    const file_tab = workbench.activeTab().?;
+    try std.testing.expect(!file_tab.isDiff());
+    workbench.quick_diff_controller.?.setConfig(.{ .decorations = .none });
+    try std.testing.expectEqual(@as(usize, 0), file_tab.editor.lineDecorationsWidth());
+    workbench.quick_diff_controller.?.setConfig(.{ .decorations = .all });
+    try std.testing.expectEqual(@as(usize, 1), file_tab.editor.lineDecorationsWidth());
+}
+
+fn runGitTest(allocator: Allocator, root: []const u8, args: []const []const u8) !bool {
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    defer argv.deinit();
+    try argv.append("git");
+    try argv.append("-C");
+    try argv.append(root);
+    try argv.appendSlice(args);
+    const result = std.process.run(allocator, std.testing.io, .{
+        .argv = argv.items,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(20_000), .clock = .awake } },
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    return result.term == .exited and result.term.exited == 0;
 }

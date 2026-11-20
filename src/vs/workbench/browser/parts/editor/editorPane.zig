@@ -14,8 +14,10 @@ const Io = std.Io;
 const ui = @import("ui");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const View = @import("../../../../../tui/editorView.zig").View;
+const Cell = @import("../../../../../tui/editorView.zig").Cell;
 const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
+const DiffView = @import("./textDiffEditor.zig").DiffView;
 const FindController = @import("../../../../editor/contrib/find/browser/findController.zig").FindController;
 const word_character_classifier = @import("../../../../editor/common/core/wordCharacterClassifier.zig");
 const editorBrowser = @import("../../../../editor/browser/editorBrowser.zig");
@@ -37,10 +39,16 @@ const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable
 
 pub const Tab = struct {
     allocator: Allocator,
+    /// Modified/first editor. For a diff tab this is the modified pane.
     editor: *Editor,
+    /// Modified/first view. For a diff tab this is the modified pane.
     view: *View,
-    input: *FileEditorInput,
+    /// File input for a normal tab; null for a diff tab.
+    file_input: ?*FileEditorInput,
+    /// The group-model input (a `FileEditorInput` or a `DiffEditorInput`).
+    input: *EditorInput,
     controllers: ?*Controllers = null,
+    diff: ?*DiffView = null,
 
     pub fn init(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Tab {
         return initWithDeclarative(allocator, io, path, width, height, null);
@@ -73,7 +81,8 @@ pub const Tab = struct {
             .allocator = allocator,
             .editor = editor,
             .view = view,
-            .input = input,
+            .file_input = input,
+            .input = &input.base,
         };
         return self;
     }
@@ -91,7 +100,23 @@ pub const Tab = struct {
             .allocator = allocator,
             .editor = input.editor,
             .view = view,
-            .input = input,
+            .file_input = input,
+            .input = &input.base,
+        };
+        return self;
+    }
+
+    /// Builds a diff tab around an already created `DiffView`.
+    pub fn initDiff(allocator: Allocator, diff: *DiffView) !*Tab {
+        const self = try allocator.create(Tab);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .allocator = allocator,
+            .editor = diff.widget.modified_editor,
+            .view = diff.widget.modified_view,
+            .file_input = null,
+            .input = diff.input(),
+            .diff = diff,
         };
         return self;
     }
@@ -99,7 +124,7 @@ pub const Tab = struct {
     /// Creates the editor contributions on first activation. The tab must have
     /// been attached to a view before any key/mouse event is routed to it.
     pub fn ensureControllers(self: *Tab) !void {
-        if (self.controllers != null) return;
+        if (self.controllers != null or self.diff != null) return;
 
         const controllers = try Controllers.init(self.allocator, self.editor, self.view);
         errdefer controllers.deinit();
@@ -113,6 +138,7 @@ pub const Tab = struct {
     }
 
     pub fn onEditorChanged(self: *Tab, now_ms: i64) void {
+        if (self.diff != null) return;
         if (self.controllers) |controllers| {
             controllers.find.onEditorChanged();
             controllers.word_highlighter.onEditorChanged(now_ms);
@@ -121,13 +147,81 @@ pub const Tab = struct {
     }
 
     pub fn refresh(self: *Tab) !void {
+        if (self.diff) |diff| {
+            diff.widget.original_view.refresh() catch {};
+            diff.widget.modified_view.refresh() catch {};
+            return;
+        }
         try self.view.refresh();
+    }
+
+    pub fn isDiff(self: *const Tab) bool {
+        return self.diff != null;
+    }
+
+    /// Refreshes the cached modified editor/view after a `DiffView` replaced
+    /// its widget (a `Refresh Diff` or a re-open of the same ref pair).
+    pub fn syncDiffViews(self: *Tab) void {
+        const diff = self.diff orelse return;
+        self.editor = diff.widget.modified_editor;
+        self.view = diff.widget.modified_view;
+    }
+
+    /// Paints the tab into `frame`. A file tab paints its single view; a diff
+    /// tab paints both panes plus the center gutter.
+    pub fn paint(self: *Tab, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
+        if (self.diff) |diff| {
+            try diff.paint(frame, x, y, w, h);
+            return;
+        }
+        try self.view.paint();
+        try ui.CellGrid.blit(&frame.next, self.view.grid(), x, y, w, h);
+    }
+
+    pub fn cursorCell(self: *Tab) ?Cell {
+        if (self.diff) |diff| {
+            const cell = diff.cursorCell() orelse return null;
+            return .{ .row = cell.row, .col = cell.col };
+        }
+        return self.view.cursorCell();
+    }
+
+    pub fn focusEditor(self: *Tab) void {
+        if (self.diff) |diff| {
+            diff.focus();
+            return;
+        }
+        self.view.focusEditor();
+    }
+
+    pub fn nextDiffChange(self: *Tab) bool {
+        const diff = self.diff orelse return false;
+        return diff.nextChange();
+    }
+
+    pub fn previousDiffChange(self: *Tab) bool {
+        const diff = self.diff orelse return false;
+        return diff.previousChange();
+    }
+
+    pub fn swapDiffSides(self: *Tab) void {
+        if (self.diff) |diff| diff.swapSides();
+    }
+
+    pub fn handleDiffMouse(self: *Tab, event: *ui.MouseEvent) !bool {
+        const diff = self.diff orelse return false;
+        return diff.handleMouse(event);
+    }
+
+    pub fn handleDiffKey(self: *Tab, event: *ui.KeyEvent) bool {
+        const diff = self.diff orelse return false;
+        return diff.handleKey(event);
     }
 
     /// The tab's entry in the ported `EditorGroupModel`; the group view maps
     /// model editors to tab views through this accessor.
     pub fn editorInput(self: *Tab) *EditorInput {
-        return &self.input.base;
+        return self.input;
     }
 
     /// Points the tab's registry-backed controllers at the workbench service.
@@ -142,6 +236,10 @@ pub const Tab = struct {
     /// Lays the editor view out in the group pane. The height is the editor
     /// content height; the tab strip row is owned by the workbench.
     pub fn layoutCells(self: *Tab, width: usize, height: usize) void {
+        if (self.diff) |diff| {
+            diff.layout(@max(width, 1), @max(height, 1));
+            return;
+        }
         self.editor.setViewport(@max(width, 1), @max(height, 1));
         self.view.resize() catch {};
     }
@@ -151,8 +249,14 @@ pub const Tab = struct {
             controllers.deinit();
             self.controllers = null;
         }
+        if (self.diff) |diff| {
+            self.diff = null;
+            diff.destroy();
+            self.allocator.destroy(self);
+            return;
+        }
         self.view.deinit();
-        self.input.deinit();
+        if (self.file_input) |input| input.deinit();
         self.allocator.destroy(self);
     }
 };

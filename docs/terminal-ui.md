@@ -1157,6 +1157,65 @@ persistent/remote sessions, kitty images, ligatures, WebGL or runtime theme
 switching. Cursor shape is the outer terminal's; bar/underline settings are
 approximated by the cursor position and block/inverse paint.
 
+### 8.2 Source Control, quick diff and diff editor
+
+The terminal workbench ports the read-only Git/SCM pipeline without the
+extension host. `src/tui/gitCli.zig` is the `IGitExtensionDelegate` host: it
+runs Git with argv (never a shell), an explicit working directory, bounded
+stdout/stderr and a deadline, parses `status --porcelain=v2 -z --branch -uall`
+into the ported `GitRepositoryState`, and serves `HEAD`/index/working blobs from
+a status-invalidated cache. `src/vs/workbench/contrib/git/` keeps the upstream
+service/repository contract (one delegate, state getter plus change event
+instead of observables), `src/vs/workbench/contrib/scm/common/` ports the SCM
+service/provider/resource subset and the quick-diff service, and
+`src/tui/gitScmProvider.zig` maps the repository state to the upstream
+`Merge Changes`/`Staged Changes`/`Changes` groups and to the primary/secondary
+quick-diff providers.
+
+Terminal substitutions and their reasons:
+
+- **No-alpha decoration colors.** Upstream quick-diff and diff-editor colors are
+  translucent CSS backgrounds. Cells have no alpha, so the gutter, whole-line
+  and inline colors are pre-composited over the dark editor background
+  (`quickDiff.zig`, `diffEditorDecorations.zig`, `src/tui/editorView.zig`).
+  `scm.diffDecorationsGutterPattern` is represented by dimming; the pattern,
+  minimap and gutter-width settings cannot be represented as cells.
+- **Gutter marker cell.** `Margin` paints `line numbers | fold | quick diff`;
+  the editor reserves `line_decorations_width` (0 or 1) after the fold cell and
+  exposes `foldCellColumn()`/`quickDiffCellColumn()` so hit testing and the fold
+  toggle stay correct. The marker glyph is `+`/`~`/`-`.
+- **Whole-line decoration data.** The ported `DecorationsOverlay` produces
+  per-visible-line class lists instead of positioned `<div>`s; the terminal maps
+  `line-insert`/`line-delete`/`diff-filler` to row backgrounds and
+  `char-insert`/`char-delete` to inline cell styles.
+- **Line-number override.** A diff snapshot editor sets `line_number_map`
+  (1-based display row -> real line, `null` for filler rows). The margin renders
+  a blank number for fillers, and the status-bar selection reports the display
+  line, matching upstream's view-model line numbers.
+- **Aligned snapshot rows instead of view zones.** The terminal editor has no
+  view-zone API, so `diffEditorViewZones.zig` pre-aligns both sides into display
+  line arrays. Changed blocks have height `max(originalLen, modifiedLen)`, the
+  shorter side is padded with blank filler rows (leading fillers for top-of-file
+  insert/delete), and both panes have equal line counts, so they scroll in
+  lockstep. The two snapshot editors are read-only; editing a side in place is
+  out of scope.
+- **Per-side overview ruler.** The upstream combined two-lane ruler needs two
+  graphics lanes; each snapshot pane uses its own decorated overview-ruler
+  entries through the existing terminal scrollbar part.
+- **Decoration generation events.** Quick-diff/diff decorations change without
+  a content edit. `TerminalViewHost.renderRange` dispatches
+  `ViewDecorationsChanged` when `Editor.decorationGeneration()` changes, so the
+  line-decorations and whole-line overlays re-prepare instead of staying stale.
+- **Synchronous recompute.** `IObservable`/`autorun` and the 200 ms
+  `ThrottledDelayer` are replaced by `triggerDiff(now)`/`poll(now)` from the
+  main loop; the diff provider is synchronous and the app poll timeout is
+  shortened while git is active.
+
+Limitations are documented in `README.md`: read-only snapshots, no staging or
+commit, no inline diff/hidden-unchanged/moved blocks/peek/multi-diff/accessible
+viewer, single repository view, no diff-tab session restore, and the original
+pane is not keyboard-focusable.
+
 ## 9. POC acceptance
 
 - `zig build` and `zig build test --summary all` pass with no leaks.

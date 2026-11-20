@@ -418,6 +418,7 @@ pub fn main(init: std.process.Init) !void {
         try workbench.setWorkspaceFolders(folders.items);
     }
     try workbench.initSidebarFromWorkspace();
+    workbench.initGit() catch {};
     if (workbench.activeTab()) |active| {
         try active.ensureControllers();
     } else {
@@ -486,31 +487,33 @@ pub fn main(init: std.process.Init) !void {
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
         if (workbench.pollSearch(now_ms)) needs_render = true;
         if (workbench.pollJsonLanguage()) needs_render = true;
+        if (workbench.pollGit(now_ms)) needs_render = true;
         if (extension_host) |ext| {
             if (ext.pump()) needs_render = true;
         }
         var timeout: i32 = 250;
         if (workbench.activeTab()) |active| {
             try active.ensureControllers();
-            const controllers = active.controllers.?;
+            if (active.controllers) |controllers| {
+                if (active.editor.inPlaceReplaceTick(now_ms)) needs_render = true;
+                if (controllers.hover.onTick(now_ms)) needs_render = true;
+                if (controllers.word_highlighter.onTick(now_ms)) needs_render = true;
+                if (try controllers.suggest.onTick(now_ms)) needs_render = true;
 
-            if (active.editor.inPlaceReplaceTick(now_ms)) needs_render = true;
-            if (controllers.hover.onTick(now_ms)) needs_render = true;
-            if (controllers.word_highlighter.onTick(now_ms)) needs_render = true;
-            if (try controllers.suggest.onTick(now_ms)) needs_render = true;
-
-            timeout = controllers.hover.pollTimeout(now_ms, 250);
-            if (active.editor.inPlaceReplacePollTimeout(now_ms)) |replace_timeout| {
-                timeout = @min(timeout, @as(i32, @intCast(@min(replace_timeout, 250))));
-            }
-            if (controllers.word_highlighter.pollTimeout(now_ms)) |word_timeout| {
-                timeout = @min(timeout, @as(i32, @intCast(@min(word_timeout, 250))));
-            }
-            if (controllers.suggest.pollTimeout(now_ms)) |suggest_timeout| {
-                timeout = @min(timeout, @as(i32, @intCast(@min(suggest_timeout, 250))));
+                timeout = controllers.hover.pollTimeout(now_ms, 250);
+                if (active.editor.inPlaceReplacePollTimeout(now_ms)) |replace_timeout| {
+                    timeout = @min(timeout, @as(i32, @intCast(@min(replace_timeout, 250))));
+                }
+                if (controllers.word_highlighter.pollTimeout(now_ms)) |word_timeout| {
+                    timeout = @min(timeout, @as(i32, @intCast(@min(word_timeout, 250))));
+                }
+                if (controllers.suggest.pollTimeout(now_ms)) |suggest_timeout| {
+                    timeout = @min(timeout, @as(i32, @intCast(@min(suggest_timeout, 250))));
+                }
             }
             if (needs_render) timeout = 0;
         }
+        if (workbench.gitWantsTick()) timeout = @min(timeout, 200);
         if (workbench.quickAccessWantsTick()) timeout = 0;
         if (workbench.searchWantsTick()) timeout = 0;
         if (workbench.fileWatcherTimeout(now_ms)) |watcher_timeout| {
@@ -590,7 +593,7 @@ pub fn main(init: std.process.Init) !void {
                 if (workbench.activeTab()) |current| {
                     current.onEditorChanged(now_ms);
                     workbench.onSearchEditorChanged();
-                    try current.view.refresh();
+                    try current.refresh();
                 }
                 workbench.refreshStatus();
                 try workbench.render(out);
@@ -683,9 +686,13 @@ pub fn main(init: std.process.Init) !void {
                     }
 
                     const current = workbench.activeTab() orelse continue;
+                    if (current.isDiff()) {
+                        if (current.handleDiffKey(event)) needs_render = true;
+                        continue;
+                    }
                     try current.ensureControllers();
 
-                    const tab_controllers = current.controllers.?;
+                    const tab_controllers = current.controllers orelse continue;
                     if (try handleKeyEvent(
                         current.view,
                         tab_controllers.hover,
@@ -715,6 +722,11 @@ pub fn main(init: std.process.Init) !void {
                     const current = workbench.activeTab() orelse continue;
                     if (event.kind == .down) {
                         workbench.focusEditor();
+                    }
+                    if (current.isDiff()) {
+                        _ = current.handleDiffMouse(&adjusted) catch false;
+                        if (event.kind == .down) needs_render = true;
+                        continue;
                     }
                     const tab_controllers = current.controllers orelse blk: {
                         try current.ensureControllers();

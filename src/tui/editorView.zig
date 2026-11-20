@@ -181,6 +181,8 @@ const CellFlag = struct {
     const diagnostic_hint: u32 = 1 << 17;
     const diagnostic_unnecessary: u32 = 1 << 18;
     const diagnostic_deprecated: u32 = 1 << 19;
+    const char_insert: u32 = 1 << 20;
+    const char_delete: u32 = 1 << 21;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -207,6 +209,17 @@ const diagnostic_error_color = [3]u8{ 241, 76, 76 };
 const diagnostic_warning_color = [3]u8{ 204, 167, 0 };
 const diagnostic_info_color = [3]u8{ 55, 148, 255 };
 const diagnostic_hint_color = [3]u8{ 138, 138, 138 };
+
+/// Diff editor backgrounds. Upstream `diffEditor.insertedLineBackground`
+/// (rgba(155,185,85,.2)), `removedLineBackground` (rgba(255,0,0,.2)),
+/// `insertedTextBackground` (#9ccc2c33) and `removedTextBackground` (#ff000033)
+/// are translucent; cells have no alpha, so these are composited over the dark
+/// editor background.
+const diff_insert_line_background = [3]u8{ 55, 61, 41 };
+const diff_delete_line_background = [3]u8{ 75, 24, 24 };
+const diff_filler_background = [3]u8{ 40, 42, 44 };
+const diff_insert_char_background = [3]u8{ 74, 84, 45 };
+const diff_delete_char_background = [3]u8{ 92, 30, 30 };
 
 /// Overview-ruler marker colors. Cells have no alpha, so the translucent
 /// upstream theme colors are composited over the dark editor background.
@@ -681,8 +694,7 @@ pub const View = struct {
     /// The last gutter cell is the fold-control column. It only toggles when
     /// the view line is the first output line of a model line with a region.
     fn foldControlAt(self: *const View, x: usize, y: usize) ?usize {
-        const gutter = self.editor.gutterWidth();
-        if (gutter < 2 or x + 1 != gutter) return null;
+        if (self.editor.gutterWidth() < 2 or x != self.editor.foldCellColumn()) return null;
         if (y >= self.editor.textHeight()) return null;
         const view_line = self.editor.topViewLine() + y;
         if (view_line > self.editor.viewLineCount()) return null;
@@ -1014,6 +1026,23 @@ pub const View = struct {
         for (guide_specs.items) |spec| {
             try paint_guides.append(.{ .row = spec.row, .column = spec.col, .color = spec.color });
         }
+
+        // Whole-line diff/quick-diff backgrounds are cell colors because the
+        // terminal has no CSS. The ported `DecorationsOverlay` supplies the
+        // class list per visible view line.
+        const line_backgrounds = try self.allocator.alloc(?ui.Color, text_height);
+        defer self.allocator.free(line_backgrounds);
+        @memset(line_backgrounds, null);
+        if (top <= total) {
+            const end_view_line = @min(total, top + text_height -| 1);
+            var view_line = top;
+            while (view_line <= end_view_line) : (view_line += 1) {
+                if (lineBackground(self.terminal_view_host.decorationsForLine(view_line))) |rgb| {
+                    line_backgrounds[view_line - top] = color(rgb);
+                }
+            }
+        }
+
         try self.terminal_view_host.paintViewport(.{
             .doc = doc,
             .root = root,
@@ -1028,6 +1057,7 @@ pub const View = struct {
             .states = states,
             .style_fn = lineStyleForPart,
             .decoration_bits_fn = decorationBits,
+            .line_backgrounds = line_backgrounds,
             .selected_flag = CellFlag.selected,
             .secondary_cursor_flag = CellFlag.secondary_cursor,
             .background_color = color(current_line_background),
@@ -1046,6 +1076,7 @@ pub const View = struct {
             .tab_size = tab_size,
             .scrollbar_width = self.scrollbar_width,
             .line_numbers = &self.terminal_view_host.line_numbers,
+            .line_decorations = &self.terminal_view_host.line_decorations,
             .folding = self.terminal_view_host.foldingDecorations(),
         });
         try appendStatus(self, doc, root, rows);
@@ -1170,6 +1201,11 @@ fn applyFlagStyle(style: *ui.Style, flag: u32) void {
         style.dim = true;
         style.underline = true;
     }
+    if (flag & CellFlag.char_insert != 0) {
+        style.background = color(diff_insert_char_background);
+    } else if (flag & CellFlag.char_delete != 0) {
+        style.background = color(diff_delete_char_background);
+    }
     if (flag & CellFlag.secondary_cursor != 0) {
         style.reverse = true;
         style.background = color(secondary_cursor_background);
@@ -1221,6 +1257,26 @@ fn colorForToken(foreground: u9) ?[3]u8 {
     };
 }
 
+/// Maps a whole-line decoration class list to a terminal row background.
+/// Later classes win, matching the ascending zIndex/class sort of the ported
+/// `DecorationsOverlay`.
+fn lineBackground(decorations: []const @import("../vs/editor/browser/viewParts/decorations/decorations.zig").LineDecoration) ?[3]u8 {
+    var result: ?[3]u8 = null;
+    for (decorations) |decoration| {
+        var iterator = std.mem.tokenizeScalar(u8, decoration.class_name, ' ');
+        while (iterator.next()) |class_name| {
+            if (std.mem.eql(u8, class_name, "line-insert")) {
+                result = diff_insert_line_background;
+            } else if (std.mem.eql(u8, class_name, "line-delete")) {
+                result = diff_delete_line_background;
+            } else if (std.mem.eql(u8, class_name, "diff-filler")) {
+                result = diff_filler_background;
+            }
+        }
+    }
+    return result;
+}
+
 /// Parses the normalizer's merged class-name string (`"c1 c2"`) into cell
 /// flags. Unknown classes are ignored; they have no terminal paint rule.
 fn decorationBits(classes: []const u8) u32 {
@@ -1245,6 +1301,8 @@ fn decorationBit(class_name: []const u8) ?u32 {
     if (std.mem.eql(u8, class_name, "finish-snippet-placeholder")) return CellFlag.finish_snippet_placeholder;
     if (std.mem.eql(u8, class_name, "valueSetReplacement")) return CellFlag.value_set_replacement;
     if (std.mem.eql(u8, class_name, "rangeHighlight")) return CellFlag.search_range_highlight;
+    if (std.mem.eql(u8, class_name, "char-insert")) return CellFlag.char_insert;
+    if (std.mem.eql(u8, class_name, "char-delete")) return CellFlag.char_delete;
     if (std.mem.eql(u8, class_name, "squiggly-error")) return CellFlag.diagnostic_error;
     if (std.mem.eql(u8, class_name, "squiggly-warning")) return CellFlag.diagnostic_warning;
     if (std.mem.eql(u8, class_name, "squiggly-info")) return CellFlag.diagnostic_info;
@@ -2840,4 +2898,156 @@ test "View: init, paint and invalidate batch rebuilds" {
     try view.paint();
     try std.testing.expectEqual(@as(usize, 2), view.rebuildCount());
     try std.testing.expect(!view.needsRebuild());
+}
+
+test "View: diff line backgrounds and filler rows composite over the dark theme" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var insert_options = ModelDecorationOptions.init("line-insert", .AlwaysGrowsWhenTypingAtEdges);
+    insert_options.className = "line-insert";
+    insert_options.isWholeLine = true;
+    var filler_options = ModelDecorationOptions.init("diff-filler", .AlwaysGrowsWhenTypingAtEdges);
+    filler_options.className = "diff-filler";
+    filler_options.isWholeLine = true;
+    const deltas = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(1, 1, 1, 1), .options = &insert_options },
+        .{ .range = Range.init(2, 1, 2, 1), .options = &filler_options },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 60);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(diff_insert_line_background)),
+        grid.bg[grid.index(gutter, 0)],
+    );
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(diff_filler_background)),
+        grid.bg[grid.index(gutter, 1)],
+    );
+    // The third row keeps the plain editor background (no value).
+    try std.testing.expectEqual(@as(u32, 0), grid.bg[grid.index(gutter, 2)]);
+}
+
+test "View: char-insert and char-delete inline classes paint cell backgrounds" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abcd\nsecond", "test.txt", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var options = ModelDecorationOptions.init("char-insert", .AlwaysGrowsWhenTypingAtEdges);
+    options.className = "char-insert";
+    options.inlineClassName = "char-insert";
+    const deltas = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(1, 2, 1, 3), .options = &options },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 61);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(diff_insert_char_background)),
+        grid.bg[grid.index(gutter + 1, 0)],
+    );
+    // The neighbouring character keeps the plain background (the current line
+    // itself carries the cursor-line highlight).
+    try std.testing.expectEqual(@as(u32, 0), grid.bg[grid.index(gutter, 1)]);
+}
+
+test "View: quick-diff gutter marker" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.setLineDecorationsWidth(1);
+
+    var options = ModelDecorationOptions.init("dirty-diff-added", .AlwaysGrowsWhenTypingAtEdges);
+    options.linesDecorationsClassName = "dirty-diff-glyph dirty-diff-added primary";
+    options.isWholeLine = true;
+    const deltas = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(2, 1, 2, 1), .options = &options },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 62);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(usize, 4), editor.gutterWidth());
+    try std.testing.expectEqual(@as(usize, 2), editor.foldCellColumn());
+    try std.testing.expectEqual(@as(usize, 3), editor.quickDiffCellColumn());
+    const row0 = try rowText(view, allocator, 0);
+    defer allocator.free(row0);
+    const row1 = try rowText(view, allocator, 1);
+    defer allocator.free(row1);
+    try std.testing.expect(std.mem.indexOf(u8, row0, "+") == null);
+    try std.testing.expectEqual(@as(u32, '+'), grid.cluster[grid.index(editor.quickDiffCellColumn(), 1)]);
+    // The number and fold cells still line up before the marker cell.
+    try std.testing.expect(std.mem.indexOf(u8, row1, "2") != null);
+}
+
+test "View: fold control sits before the quick-diff cell" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "class A {\n  void f() {\n    x();\n  }\n}",
+        "test.zig",
+        40,
+        8,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.setLineDecorationsWidth(1);
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    editor.refreshFoldingIfDirty();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, '▾'), grid.cluster[grid.index(editor.foldCellColumn(), 0)]);
+    var down = testMouse(.down, editor.foldCellColumn(), 0);
+    try std.testing.expect(try view.dispatchMouse(&down));
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+
+    // Clicking the quick-diff marker cell does not toggle the fold.
+    var marker_click = testMouse(.down, editor.quickDiffCellColumn(), 0);
+    _ = try view.dispatchMouse(&marker_click);
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
 }

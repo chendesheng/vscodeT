@@ -207,7 +207,9 @@ pub const PieceTreeTextBuffer = struct {
     }
 
     pub fn getLinesContent(self: *const PieceTreeTextBuffer) !ArrayList(ArrayList(u8)) {
-        return self._pieceTree.getLinesContent();
+        // `PieceTreeBase.getLinesContent` only walks the tree but is declared
+        // mutable; keep the public buffer API const like upstream.
+        return @constCast(&self._pieceTree).getLinesContent();
     }
 
     pub fn getLineContent(self: *PieceTreeTextBuffer, lineNumber: usize) !ArrayList(u8) {

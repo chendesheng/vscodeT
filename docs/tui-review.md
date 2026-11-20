@@ -16,6 +16,13 @@ and "remaining" verdicts are stale.
 
 ## Consolidation progress (2026-11-19)
 
+- Git/SCM/quick diff/diff editor: added the read-only Git service + CLI
+  delegate, SCM service/provider/view, quick-diff model/decorator/controller,
+  aligned diff view model/widget/decorations and the terminal diff tab. The
+  remaining gap is the documented read-only scope (no staging/commit,
+  inline/hidden-region/moved-block/peek/multi-diff, editable or serialized diff
+  tabs) and the single-repository terminal simplification.
+
 The consolidation is complete: **`src/tui/` is now the 2-file process host**
 (`app.zig` + `tui.zig`, 2,391 lines) from the original 37 files / ~28,100
 lines. The audit table above and the per-file notes are the starting snapshot;

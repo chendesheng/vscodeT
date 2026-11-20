@@ -304,6 +304,12 @@ pub const LineDecorationsNormalizer = struct {
             startColumn = adjustColumnBack(lineContent, startColumn);
             endColumn = adjustColumnBack(lineContent, endColumn);
 
+            // A decoration that ends at column 1 is empty on this line (a
+            // multi-line decoration clipped to its final line, or an empty
+            // decoration). Upstream's numeric offsets tolerate this; the usize
+            // port must skip it instead of underflowing on `endColumn - 2`.
+            if (startColumn == 0 or endColumn <= 1) continue;
+
             const currentStartOffset = startColumn - 1;
             const currentEndOffset = endColumn - 2;
 

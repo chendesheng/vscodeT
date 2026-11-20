@@ -72,6 +72,42 @@ with the documented omissions listed at the end of this document.
   `src/vs/workbench/contrib/search/browser/`; `src/tui/searchView.zig` is the
   terminal adapter over them.
 
+**Git / SCM / quick diff / diff editor (post-P2):**
+- `src/vs/workbench/contrib/git/{common,browser}/gitService.zig` port the
+  service/repository/delegate types and the one-delegate, state-plus-event
+  service shape. Resources are local paths rather than URIs and synchronous
+  calls replace Promises.
+- `src/tui/gitCli.zig` is the terminal delegate: `rev-parse` discovery,
+  `status --porcelain=v2 -z --branch -uall` parsing (branch headers,
+  ordinary/rename/unmerged/untracked records, spaces/UTF-8, malformed input,
+  10k cap), `HEAD`/index/working blob reads with binary/size skips, a
+  status-invalidated blob cache, bounded output and a deadline.
+- `src/vs/workbench/contrib/scm/common/{scm,scmService,quickDiff,quickDiffService}.zig`
+  port the SCM service/provider/resource subset and the quick-diff
+  providers/visibility/selector/root ordering. Observables become plain
+  fields/events; the hidden-provider set uses the in-memory storage service.
+- `src/vs/workbench/contrib/scm/browser/{quickDiffModel,quickDiffDecorator}.zig`
+  port the per-provider originals, the 200 ms recompute trigger, the
+  primary/secondary overlap split, and the `dirty-diff-*` whole-line/gutter/
+  overview decorations.
+- `src/tui/gitScmProvider.zig` exposes the upstream `Merge Changes`,
+  `Staged Changes` and `Changes` groups, v2 status letters and the
+  working/index and index/HEAD quick-diff providers. `src/tui/scmView.zig` is
+  the terminal `SOURCE CONTROL` view; `src/tui/quickDiffController.zig` attaches
+  quick diff to file editors.
+- `src/vs/editor/browser/widget/diffEditor/` ports the view model,
+  aligned snapshot rows, decorations, widget/gutter/widget orchestration,
+  options and document-diff provider. `src/vs/workbench/browser/parts/editor/textDiffEditor.zig`
+  owns the snapshot inputs and `DiffView`; `Workbench.openDiff` resolves
+  HEAD/index/working texts, opens/refreshes the tab and skips it in
+  save/revert/session/working-copy paths.
+- Documented gaps: read-only snapshots, no staging/commit/discard, inline diff,
+  hide-unchanged regions, moved blocks, peek/multi-diff/accessible viewer,
+  editable diff sides or diff-tab session restore; one repository per
+  workspace folder; the original pane is not keyboard-focusable; gutter
+  width/pattern/minimap and the combined two-lane overview ruler reduce to
+  terminal cells. See `README.md` and `docs/terminal-ui.md` §8.2.
+
 **P5f (log service):**
 - `src/vs/platform/log/common/log.zig` ports `LogLevel`, `canLog`, `log`,
   `format`, `AbstractLogger`, `AbstractMessageLogger`, `AdapterLogger`,

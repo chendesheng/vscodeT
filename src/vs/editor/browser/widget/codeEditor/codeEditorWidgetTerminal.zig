@@ -256,6 +256,17 @@ pub const Editor = struct {
     /// this fallback row for its editor panes.
     status_row: bool,
     gutter_width: usize,
+    /// Extra gutter cells after the fold cell used by quick-diff markers.
+    /// `0` hides the marker column; `1` is the terminal representation of the
+    /// upstream `scm.diffDecorationsGutterWidth` gutter.
+    line_decorations_width: usize,
+    /// Optional display line numbers for a read-only snapshot editor. Indexed by
+    /// 1-based view line; `null` entries render a blank (filler) number. The
+    /// slice is borrowed and owned by the caller (the diff widget).
+    line_number_map: ?[]const ?usize,
+    /// Read-only snapshot editors still support navigation, selection and find,
+    /// but every text mutation and save is rejected with `error.ReadOnly`.
+    read_only: bool,
     /// Rightmost columns reserved by the view for the overview ruler and
     /// scrollbar. Zero for the read-only preview and for editors used without
     /// the TUI view.
@@ -492,7 +503,7 @@ pub const Editor = struct {
         });
 
         const resolved = model.getOptions();
-        const gutter = gutterWidthFor(model.getLineCount());
+        const gutter = gutterWidthFor(model.getLineCount(), 0);
         const initial_scrollbar = if (options.reserve_scrollbar)
             overviewRulerWidthFor(width, gutter)
         else
@@ -567,6 +578,9 @@ pub const Editor = struct {
             .screen_height = @max(height, 1),
             .status_row = true,
             .gutter_width = gutter,
+            .line_decorations_width = 0,
+            .line_number_map = null,
+            .read_only = false,
             .scrollbar_width = initial_scrollbar,
             .top_view_line = 1,
             .status = undefined,
@@ -774,6 +788,7 @@ pub const Editor = struct {
     }
 
     pub fn formatJson(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         const client = self.json_client orelse {
             self.setMessage("No JSON language server", .{});
             return;
@@ -885,6 +900,7 @@ pub const Editor = struct {
     }
 
     pub fn formatDocument(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         if (self.language_features) |features| {
             // Port of `getRealAndSyntheticDocumentFormattersOrdered` from
             // `editor/contrib/format/browser/format.ts`: range formatters that
@@ -1134,6 +1150,61 @@ pub const Editor = struct {
 
     pub fn gutterWidth(self: *const Editor) usize {
         return self.gutter_width;
+    }
+
+    /// Extra gutter cells reserved for the quick-diff marker column.
+    pub fn lineDecorationsWidth(self: *const Editor) usize {
+        return self.line_decorations_width;
+    }
+
+    /// Enables the quick-diff marker cell after the fold cell. The terminal
+    /// maps the upstream `scm.diffDecorationsGutterWidth` to one cell.
+    pub fn setLineDecorationsWidth(self: *Editor, width: usize) void {
+        const clamped = @min(width, 3);
+        if (clamped == self.line_decorations_width) return;
+        self.line_decorations_width = clamped;
+        self.refreshLayout() catch {};
+        self.ensureCursorVisible();
+    }
+
+    /// Column of the folding control cell in the gutter.
+    pub fn foldCellColumn(self: *const Editor) usize {
+        return self.gutter_width -| 1 -| self.line_decorations_width;
+    }
+
+    /// Column of the quick-diff marker cell in the gutter.
+    pub fn quickDiffCellColumn(self: *const Editor) usize {
+        return self.gutter_width -| 1;
+    }
+
+    /// Sets the borrowed display line-number map used by diff snapshot editors.
+    pub fn setLineNumberMap(self: *Editor, map: ?[]const ?usize) void {
+        self.line_number_map = map;
+    }
+
+    pub fn clearLineNumberMap(self: *Editor) void {
+        self.line_number_map = null;
+    }
+
+    /// The number rendered in the gutter for a view line: the snapshot map
+    /// value when one is set, otherwise the model line. `null` means a filler
+    /// row with a blank number.
+    pub fn displayLineNumber(self: *Editor, view_line: usize) ?usize {
+        if (view_line == 0) return null;
+        if (self.line_number_map) |map| {
+            if (view_line > map.len) return null;
+            return map[view_line - 1];
+        }
+        if (view_line > self.viewLineCount()) return null;
+        return self.modelLineNumber(view_line);
+    }
+
+    pub fn setReadOnly(self: *Editor, read_only: bool) void {
+        self.read_only = read_only;
+    }
+
+    pub fn isReadOnly(self: *const Editor) bool {
+        return self.read_only;
     }
 
     /// Width of the visible text columns after the gutter and the view's
@@ -1526,8 +1597,15 @@ pub const Editor = struct {
             CursorColumns.toStatusbarColumn(value.items, position.column, self.tabSize())
         else
             position.column;
+        // Diff snapshot editors report the display line (the gutter number),
+        // not the model line; filler rows have no line of their own.
+        var display_line = position.lineNumber;
+        const view_position = self.viewPositionOfModelPosition(position);
+        if (self.displayLineNumber(view_position.lineNumber)) |value| {
+            display_line = value;
+        }
         return .{
-            .line = position.lineNumber,
+            .line = display_line,
             .column = column,
             .selections = 1,
             .characters = characters,
@@ -1590,11 +1668,13 @@ pub const Editor = struct {
         display_only: bool,
     ) void {
         const self: *Editor = @ptrCast(@alignCast(context));
+        if (self.read_only) return;
         self.changeIndentation(tab_size, insert_spaces, display_only);
     }
 
     fn statusDetectIndentation(context: *anyopaque) void {
         const self: *Editor = @ptrCast(@alignCast(context));
+        if (self.read_only) return;
         self.detectIndentation();
     }
 
@@ -1610,6 +1690,7 @@ pub const Editor = struct {
 
     fn statusSetEOL(context: *anyopaque, eol: EOL) !void {
         const self: *Editor = @ptrCast(@alignCast(context));
+        if (self.read_only) return error.ReadOnly;
         if (self.model.getEOL() == eol) return;
         self.model.pushStackElement();
         try self.model.pushEOL(eol);
@@ -1712,7 +1793,7 @@ pub const Editor = struct {
     }
 
     fn refreshLayout(self: *Editor) !void {
-        const new_gutter = gutterWidthFor(self.model.getLineCount());
+        const new_gutter = gutterWidthFor(self.model.getLineCount(), self.line_decorations_width);
         const available = self.screen_width -| new_gutter;
         const text_width = @max(@as(usize, 1), available -| self.scrollbar_width);
         self.gutter_width = new_gutter;
@@ -2192,6 +2273,7 @@ pub const Editor = struct {
     }
 
     pub fn insertText(self: *Editor, text: []const u8) !void {
+        if (self.read_only) return error.ReadOnly;
         if (text.len == 0) return;
         const selections = try self.cursorsRef().getSelections(self.allocator);
         defer self.allocator.free(selections);
@@ -2201,6 +2283,7 @@ pub const Editor = struct {
     }
 
     pub fn typeCharacter(self: *Editor, text: []const u8) !void {
+        if (self.read_only) return error.ReadOnly;
         if (text.len == 0) return;
         // `default:type` from the extension host sends a newline as text rather
         // than going through the key handler; keep Enter's auto-indent for it.
@@ -2257,6 +2340,7 @@ pub const Editor = struct {
     }
 
     pub fn newline(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         self.refreshAutoIndent();
 
@@ -2278,11 +2362,13 @@ pub const Editor = struct {
 
     /// `editor.action.insertLineAfter`: run Enter at each cursor's line end.
     pub fn insertLineAfter(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         return self.insertLineAtEdge(false);
     }
 
     /// `editor.action.insertLineBefore`: run Enter at each cursor's line start.
     pub fn insertLineBefore(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         return self.insertLineAtEdge(true);
     }
 
@@ -2315,6 +2401,7 @@ pub const Editor = struct {
     }
 
     pub fn insertTab(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         if (!self.modelSelection().isEmpty()) {
             try self.indentLines();
             return;
@@ -2336,6 +2423,7 @@ pub const Editor = struct {
     }
 
     pub fn outdent(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         if (!self.modelSelection().isEmpty()) {
             try self.outdentLines();
             return;
@@ -2434,14 +2522,17 @@ pub const Editor = struct {
     }
 
     pub fn indentLines(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         try self.indentLinesImpl(false);
     }
 
     pub fn outdentLines(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         try self.indentLinesImpl(true);
     }
 
     pub fn reindentLines(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         var arena_state = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_state.deinit();
@@ -2459,6 +2550,7 @@ pub const Editor = struct {
     }
 
     pub fn reindentSelectedLines(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         var arena_state = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_state.deinit();
@@ -2480,6 +2572,7 @@ pub const Editor = struct {
     }
 
     pub fn indentationToSpaces(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         const selection = self.modelSelection();
         var command = IndentationToSpacesCommand.init(self.allocator, selection, self.cursor_config.tabSize);
@@ -2495,6 +2588,7 @@ pub const Editor = struct {
     }
 
     pub fn indentationToTabs(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         const selection = self.modelSelection();
         var command = IndentationToTabsCommand.init(self.allocator, selection, self.cursor_config.tabSize);
@@ -2510,18 +2604,21 @@ pub const Editor = struct {
     }
 
     pub fn detectIndentation(self: *Editor) void {
+        if (self.read_only) return;
         indentation_commands.detectIndentation(self.model);
         self.refreshCursorOptions();
         self.ensureCursorVisible();
     }
 
     pub fn changeIndentation(self: *Editor, tab_size: usize, insert_spaces: bool, display_size_only: bool) void {
+        if (self.read_only) return;
         indentation_commands.changeIndentation(self.model, tab_size, insert_spaces, display_size_only);
         self.refreshCursorOptions();
         self.ensureCursorVisible();
     }
 
     pub fn deleteLeft(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         if (try auto_closing.autoClosingDeleteRange(&self.cursor_config, self.model, self.modelSelection())) |range| {
             self.closeTypingGroup();
             const command = cursorCommon.ReplaceCommand.init(range, "");
@@ -2546,6 +2643,7 @@ pub const Editor = struct {
     }
 
     pub fn deleteRight(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         const selections = try self.cursorsRef().getSelections(self.allocator);
         defer self.allocator.free(selections);
         var result = try DeleteOperations.deleteRight(
@@ -2562,6 +2660,7 @@ pub const Editor = struct {
     }
 
     pub fn undo(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         self.model.pushStackElement();
         self.pending_selection_count = 0;
         self.model.undo() catch |err| {
@@ -2572,6 +2671,7 @@ pub const Editor = struct {
     }
 
     pub fn redo(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         self.model.pushStackElement();
         self.pending_selection_count = 0;
         self.model.redo() catch |err| {
@@ -2635,6 +2735,7 @@ pub const Editor = struct {
     }
 
     pub fn moveLines(self: *Editor, down: bool) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
@@ -2643,6 +2744,7 @@ pub const Editor = struct {
     }
 
     pub fn copyLines(self: *Editor, down: bool) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
@@ -2651,6 +2753,7 @@ pub const Editor = struct {
     }
 
     pub fn sortLines(self: *Editor, descending: bool) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
@@ -2659,6 +2762,7 @@ pub const Editor = struct {
     }
 
     pub fn duplicateSelection(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
@@ -2667,6 +2771,7 @@ pub const Editor = struct {
     }
 
     pub fn trimTrailingWhitespace(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         const selections = try self.getSelectionsCopy();
         defer self.allocator.free(selections);
@@ -2708,6 +2813,7 @@ pub const Editor = struct {
     /// Replaces one range through the command runner (no auto-closing or
     /// typing interceptors). The cursor lands at the end of the replaced text.
     pub fn replaceRange(self: *Editor, range: Range, text: []const u8) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         var command = ReplaceCommandCommand.init(range, text, false);
         try self.executeCommands(&[_]?ICommand{command.interface()});
@@ -2717,6 +2823,7 @@ pub const Editor = struct {
     /// position. Used by completion acceptance for additional text edits and
     /// multi-cursor inserts.
     pub fn applyTextEdits(self: *Editor, edits: []const TextEdit, cursors: []const Position) !void {
+        if (self.read_only) return error.ReadOnly;
         if (edits.len == 0) {
             if (cursors.len > 0) {
                 const selections = try self.allocator.alloc(Selection, cursors.len);
@@ -2749,6 +2856,7 @@ pub const Editor = struct {
     /// mirroring the `textChange.newPosition` values the upstream snippet
     /// session receives from `executeEdits`.
     pub fn applyTextEditsWithPositions(self: *Editor, edits: []const TextEdit) ![]AppliedTextEdit {
+        if (self.read_only) return error.ReadOnly;
         const result = try self.allocator.alloc(AppliedTextEdit, edits.len);
         errdefer self.allocator.free(result);
         if (edits.len == 0) return result;
@@ -2808,6 +2916,7 @@ pub const Editor = struct {
 
     /// Runs a command against the model and applies its cursor state.
     pub fn executeCommand(self: *Editor, command: ICommand) !void {
+        if (self.read_only) return error.ReadOnly;
         self.closeTypingGroup();
         try self.executeCommands(&[_]?ICommand{command});
     }
@@ -2985,6 +3094,7 @@ pub const Editor = struct {
     }
 
     pub fn toggleLineComment(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         const rule = language.commentRuleFor(self.model.getLanguageId()) orelse {
             self.setMessage("No comment configuration for {s}", .{self.model.getLanguageId()});
             return;
@@ -3021,6 +3131,7 @@ pub const Editor = struct {
     }
 
     pub fn toggleBlockComment(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         const rule = language.commentRuleFor(self.model.getLanguageId()) orelse {
             self.setMessage("No comment configuration for {s}", .{self.model.getLanguageId()});
             return;
@@ -3048,6 +3159,7 @@ pub const Editor = struct {
     }
 
     pub fn insertFinalNewLine(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         const selection = self.modelSelection();
         self.closeTypingGroup();
 
@@ -3059,6 +3171,7 @@ pub const Editor = struct {
     /// The cursor moves to the start; the reload itself is not undoable in the
     /// terminal editor because no working-copy model tracks the old state.
     pub fn reloadFromDisk(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         const bytes = try Io.Dir.cwd().readFileAlloc(self.io, self.path, self.allocator, .unlimited);
         defer self.allocator.free(bytes);
         const encoding = if (encoding_mod.detectBOM(bytes)) |bom| bom.encoding else .utf8;
@@ -3137,6 +3250,7 @@ pub const Editor = struct {
     }
 
     pub fn save(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
         const value = try self.model.getValue(.TextDefined, true);
         defer value.deinit();
 
@@ -3179,11 +3293,11 @@ pub const Editor = struct {
     }
 };
 
-fn gutterWidthFor(line_count: usize) usize {
+fn gutterWidthFor(line_count: usize, line_decorations_width: usize) usize {
     var digits: usize = 1;
     var n = line_count;
     while (n >= 10) : (n /= 10) digits += 1;
-    return @max(@as(usize, 3), digits + 1);
+    return @max(@as(usize, 3), digits + 1) + line_decorations_width;
 }
 
 fn resolvedLanguageConfigurationForBrackets(
@@ -5103,4 +5217,60 @@ test "Editor: fallback bracket matching (colorization disabled)" {
     }
     stringed.ensureTokensVisible();
     try std.testing.expect(stringed.model.bracketPairs().matchBracket(Position.init(1, 12), null) == null);
+}
+
+test "Editor: read-only guards, line-number map and gutter width" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try std.testing.expect(!editor.isReadOnly());
+    editor.setReadOnly(true);
+    try std.testing.expect(editor.isReadOnly());
+    try std.testing.expectError(error.ReadOnly, editor.insertText("x"));
+    try std.testing.expectError(error.ReadOnly, editor.typeCharacter("x"));
+    try std.testing.expectError(error.ReadOnly, editor.newline());
+    try std.testing.expectError(error.ReadOnly, editor.deleteLeft());
+    try std.testing.expectError(error.ReadOnly, editor.deleteRight());
+    try std.testing.expectError(error.ReadOnly, editor.undo());
+    try std.testing.expectError(error.ReadOnly, editor.redo());
+    try std.testing.expectError(error.ReadOnly, editor.insertTab());
+    try std.testing.expectError(error.ReadOnly, editor.indentLines());
+    try std.testing.expectError(error.ReadOnly, editor.outdentLines());
+    try std.testing.expectError(error.ReadOnly, editor.toggleLineComment());
+    try std.testing.expectError(error.ReadOnly, editor.formatDocument());
+    try std.testing.expectError(error.ReadOnly, editor.save());
+    var value = try editor.model.getValue(.TextDefined, true);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("one\ntwo", value.items);
+
+    // Navigation and selection still work on a read-only snapshot.
+    try editor.moveDown(false);
+    try editor.selectAll();
+
+    editor.setReadOnly(false);
+    const map = [_]?usize{ 10, null };
+    editor.setLineNumberMap(&map);
+    try std.testing.expectEqual(@as(?usize, 10), editor.displayLineNumber(1));
+    try std.testing.expectEqual(@as(?usize, null), editor.displayLineNumber(2));
+    editor.clearLineNumberMap();
+    try std.testing.expectEqual(@as(?usize, 2), editor.displayLineNumber(2));
+
+    // The status selection follows the display line map.
+    editor.setLineNumberMap(&map);
+    editor.setCursorPosition(.{ .lineNumber = 1, .column = 1 }) catch {};
+    const target = editor.statusTarget();
+    const status = target.selection(target.context);
+    try std.testing.expectEqual(@as(usize, 10), status.line);
+    editor.clearLineNumberMap();
+
+    try std.testing.expectEqual(@as(usize, 3), editor.gutterWidth());
+    editor.setLineDecorationsWidth(1);
+    try std.testing.expectEqual(@as(usize, 4), editor.gutterWidth());
+    try std.testing.expectEqual(@as(usize, 2), editor.foldCellColumn());
+    try std.testing.expectEqual(@as(usize, 3), editor.quickDiffCellColumn());
 }

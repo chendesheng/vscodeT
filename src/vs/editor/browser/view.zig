@@ -28,6 +28,7 @@ const Position = @import("../common/core/position.zig").Position;
 const ui = @import("ui");
 const Editor = @import("./widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const LineNumbersOverlay = @import("./viewParts/lineNumbers/lineNumbers.zig").LineNumbersOverlay;
+const LinesDecorationsOverlay = @import("./viewParts/linesDecorations/linesDecorations.zig").LinesDecorationsOverlay;
 const FoldingDecorationProvider = @import("../contrib/folding/browser/foldingDecorations.zig").FoldingDecorationProvider;
 const CursorState = @import("../common/cursorCommon.zig").CursorState;
 const PositionAffinity = @import("../common/model.zig").PositionAffinity;
@@ -165,6 +166,7 @@ pub const View = struct {
         tab_size: usize,
         scrollbar_width: usize,
         line_numbers: *const LineNumbersOverlay,
+        line_decorations: *const LinesDecorationsOverlay,
         folding: *const FoldingDecorationProvider,
     };
 
@@ -174,6 +176,7 @@ pub const View = struct {
             options.root,
             options.editor,
             options.line_numbers,
+            options.line_decorations,
             options.folding,
             options.gutter,
             options.text_height,

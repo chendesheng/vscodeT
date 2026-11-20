@@ -92,3 +92,178 @@ test "nullDocumentDiff" {
     try std.testing.expectEqual(@as(?LinesDiffValidity, null), nullDocumentDiff.validity);
     try std.testing.expectEqual(@as(?DiffFallbackReason, null), nullDocumentDiff.fallback);
 }
+
+// ---------------------------------------------------------------------------
+// Concrete line-based provider
+// ---------------------------------------------------------------------------
+
+const lines_diff_computers = @import("linesDiffComputers.zig");
+
+pub const DiffAlgorithmName = lines_diff_computers.DiffAlgorithmName;
+
+/// Frees the owned changes/moves of a computed diff. `nullDocumentDiff` and
+/// other empty results use static empty slices and need no cleanup.
+pub fn deinitDiff(allocator: Allocator, diff: *IDocumentDiff) void {
+    for (@constCast(diff.changes)) |*change| change.deinit(allocator);
+    if (diff.changes.len > 0) allocator.free(diff.changes);
+    for (@constCast(diff.moves)) |*moved| moved.deinit(allocator);
+    if (diff.moves.len > 0) allocator.free(diff.moves);
+    diff.changes = &empty_changes;
+    diff.moves = &empty_moves;
+}
+
+fn linesEqual(original: []const []const u8, modified: []const []const u8) bool {
+    if (original.len != modified.len) return false;
+    for (original, modified) |a, b| {
+        if (!std.mem.eql(u8, a, b)) return false;
+    }
+    return true;
+}
+
+/// Terminal `IDocumentDiffProvider` over line arrays. It backs the diff editor
+/// model and quick diff. The external/wasm algorithms fall back to the built-in
+/// advanced computer, which is the browser worker fallback in upstream.
+pub const LineDiffProvider = struct {
+    algorithm: DiffAlgorithmName = .advanced,
+    /// Set when a requested package algorithm was unavailable; exposed for
+    /// diagnostics and tests.
+    fell_back: bool = false,
+
+    pub fn init(algorithm: DiffAlgorithmName) LineDiffProvider {
+        return .{
+            .algorithm = algorithm,
+            .fell_back = algorithm.isPackage(),
+        };
+    }
+
+    /// Computes the diff between two arrays of lines. The caller owns the
+    /// returned changes/moves and must call `deinitDiff`.
+    pub fn computeDiffFromLines(
+        self: *LineDiffProvider,
+        allocator: Allocator,
+        original: []const []const u8,
+        modified: []const []const u8,
+        options: IDocumentDiffProviderOptions,
+    ) !IDocumentDiff {
+        if (linesEqual(original, modified)) {
+            return IDocumentDiff{
+                .identical = true,
+                .quitEarly = false,
+                .changes = &empty_changes,
+                .moves = &empty_moves,
+            };
+        }
+
+        const computer = lines_diff_computers.getBuiltin(self.algorithm) orelse blk: {
+            self.fell_back = true;
+            break :blk lines_diff_computers.getBuiltin(.advanced).?;
+        };
+        const result = try computer.computeDiff(allocator, original, modified, .{
+            .ignoreTrimWhitespace = options.ignoreTrimWhitespace,
+            .maxComputationTimeMs = options.maxComputationTimeMs,
+            .computeMoves = options.computeMoves,
+            .extendToSubwords = options.extendToSubwords,
+        });
+        // Transfer ownership of the change/move slices to the caller; do not
+        // call `result.deinit`.
+        const changes = result.changes;
+        const moves = result.moves;
+        return .{
+            .identical = false,
+            .quitEarly = result.hit_timeout,
+            .changes = changes,
+            .moves = moves,
+        };
+    }
+
+    /// `IDocumentDiffProvider` adapter over two text models.
+    pub fn interface(self: *LineDiffProvider) IDocumentDiffProvider {
+        return .{
+            .context = self,
+            .compute_diff = computeDiffThunk,
+        };
+    }
+
+    fn computeDiffThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        original: *const TextModel,
+        modified: *const TextModel,
+        options: IDocumentDiffProviderOptions,
+        _: CancellationToken,
+    ) anyerror!IDocumentDiff {
+        const self: *LineDiffProvider = @ptrCast(@alignCast(context));
+
+        var original_lines = try original.getLinesContent();
+        defer {
+            for (original_lines.items) |*line| line.deinit();
+            original_lines.deinit();
+        }
+        var modified_lines = try modified.getLinesContent();
+        defer {
+            for (modified_lines.items) |*line| line.deinit();
+            modified_lines.deinit();
+        }
+
+        const original_views = try allocator.alloc([]const u8, original_lines.items.len);
+        defer allocator.free(original_views);
+        for (original_lines.items, 0..) |line, index| original_views[index] = line.items;
+
+        const modified_views = try allocator.alloc([]const u8, modified_lines.items.len);
+        defer allocator.free(modified_views);
+        for (modified_lines.items, 0..) |line, index| modified_views[index] = line.items;
+
+        return self.computeDiffFromLines(allocator, original_views, modified_views, options);
+    }
+};
+
+test "LineDiffProvider: identical, insert, delete and modify" {
+    const allocator = std.testing.allocator;
+    var provider = LineDiffProvider.init(.advanced);
+    const options = IDocumentDiffProviderOptions{
+        .ignoreTrimWhitespace = false,
+        .maxComputationTimeMs = 0,
+        .computeMoves = false,
+    };
+
+    var identical = try provider.computeDiffFromLines(allocator, &.{ "a", "b" }, &.{ "a", "b" }, options);
+    defer deinitDiff(allocator, &identical);
+    try std.testing.expect(identical.identical);
+    try std.testing.expectEqual(@as(usize, 0), identical.changes.len);
+
+    var added = try provider.computeDiffFromLines(allocator, &.{ "a", "b" }, &.{ "a", "x", "b" }, options);
+    defer deinitDiff(allocator, &added);
+    try std.testing.expect(!added.identical);
+    try std.testing.expectEqual(@as(usize, 1), added.changes.len);
+    // A pure insertion has an empty original range and one modified line.
+    try std.testing.expectEqual(@as(usize, 0), added.changes[0].original.length());
+    try std.testing.expectEqual(@as(usize, 1), added.changes[0].modified.length());
+
+    var modified = try provider.computeDiffFromLines(allocator, &.{ "a", "b", "c" }, &.{ "a", "B", "c" }, options);
+    defer deinitDiff(allocator, &modified);
+    try std.testing.expectEqual(@as(usize, 1), modified.changes.len);
+    try std.testing.expect(modified.changes[0].inner_changes != null);
+}
+
+test "LineDiffProvider: package algorithms fall back to advanced" {
+    const allocator = std.testing.allocator;
+    var provider = LineDiffProvider.init(.advanced_external);
+    try std.testing.expect(provider.fell_back);
+    var diff = try provider.computeDiffFromLines(allocator, &.{"a"}, &.{ "a", "b" }, .{
+        .ignoreTrimWhitespace = false,
+        .maxComputationTimeMs = 0,
+        .computeMoves = false,
+    });
+    defer deinitDiff(allocator, &diff);
+    try std.testing.expectEqual(@as(usize, 1), diff.changes.len);
+
+    var legacy = LineDiffProvider.init(.legacy);
+    try std.testing.expect(!legacy.fell_back);
+    var legacy_diff = try legacy.computeDiffFromLines(allocator, &.{"a"}, &.{"b"}, .{
+        .ignoreTrimWhitespace = false,
+        .maxComputationTimeMs = 0,
+        .computeMoves = false,
+    });
+    defer deinitDiff(allocator, &legacy_diff);
+    try std.testing.expectEqual(@as(usize, 1), legacy_diff.changes.len);
+}

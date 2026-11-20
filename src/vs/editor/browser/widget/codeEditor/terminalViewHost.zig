@@ -25,6 +25,8 @@ const selections_mod = @import("../../viewParts/selections/selections.zig");
 const current_line_mod = @import("../../viewParts/currentLineHighlight/currentLineHighlight.zig");
 const view_cursors_mod = @import("../../viewParts/viewCursors/viewCursors.zig");
 const folding_decorations_mod = @import("../../../contrib/folding/browser/foldingDecorations.zig");
+const lines_decorations_mod = @import("../../viewParts/linesDecorations/linesDecorations.zig");
+const decorations_overlay_mod = @import("../../viewParts/decorations/decorations.zig");
 const restricted_context = @import("../../view/renderingContext.zig");
 const rendering_context = @import("../../view/renderingContext.zig");
 const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
@@ -55,6 +57,8 @@ const CurrentLineHighlightOverlay = current_line_mod.CurrentLineHighlightOverlay
 const LineHighlightRenderData = current_line_mod.LineHighlightRenderData;
 const ViewCursors = view_cursors_mod.ViewCursors;
 const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvider;
+const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
+const DecorationsOverlay = decorations_overlay_mod.DecorationsOverlay;
 const CursorState = @import("../../../common/cursorCommon.zig").CursorState;
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const ViewLine = @import("../../viewParts/viewLines/viewLine.zig").ViewLine;
@@ -161,6 +165,8 @@ pub const TerminalViewHost = struct {
     scratch_text: StringBuilder,
     decorations: *ViewModelDecorations,
     line_numbers: LineNumbersOverlay,
+    line_decorations: LinesDecorationsOverlay,
+    decorations_overlay: DecorationsOverlay,
     selections_overlay: SelectionsOverlay,
     current_line: CurrentLineHighlightOverlay,
     view_cursors: ViewCursors,
@@ -192,6 +198,8 @@ pub const TerminalViewHost = struct {
             .scratch_text = undefined,
             .decorations = undefined,
             .line_numbers = undefined,
+            .line_decorations = undefined,
+            .decorations_overlay = undefined,
             .selections_overlay = undefined,
             .current_line = undefined,
             .view_cursors = undefined,
@@ -221,6 +229,8 @@ pub const TerminalViewHost = struct {
         self.view.init(allocator, &self.context);
         self.scratch_text = try StringBuilder.init(allocator, 256);
         self.line_numbers.init(allocator, &self.context);
+        self.line_decorations.init(allocator, &self.context);
+        self.decorations_overlay.init(allocator, &self.context);
         self.selections_overlay.init(allocator, &self.context);
         self.current_line.initContent(allocator, &self.context);
         self.view_cursors.init(allocator, &self.context);
@@ -228,6 +238,8 @@ pub const TerminalViewHost = struct {
         // The ported `View` coordinates the render pass. Register the overlays
         // as content overlays exactly like upstream `ContentViewOverlays`.
         try self.view.addContentOverlay(&self.line_numbers.base);
+        try self.view.addContentOverlay(&self.line_decorations.base);
+        try self.view.addContentOverlay(&self.decorations_overlay.base);
         try self.view.addContentOverlay(&self.selections_overlay.base);
         try self.view.addContentOverlay(&self.current_line.base);
         return self;
@@ -239,6 +251,8 @@ pub const TerminalViewHost = struct {
         self.view_cursors.deinit();
         self.current_line.deinit();
         self.selections_overlay.deinit();
+        self.decorations_overlay.deinit();
+        self.line_decorations.deinit();
         self.line_numbers.deinit();
         self.decorations.destroy();
         self.lines_adapter.deinit();
@@ -272,6 +286,16 @@ pub const TerminalViewHost = struct {
         if (self.first_frame or decoration_generation != self.last_decoration_generation) {
             self.decorations.onModelDecorationsChanged();
             self.view.getViewLines().invalidateDecorations();
+            // Both decoration overlays re-prepare on this event. The model
+            // decoration generation changes without a content edit when quick
+            // diff or diff decorations are applied, so the content-based
+            // `ViewFlushed` dispatch is not enough.
+            self.dispatch(.{ .ViewDecorationsChanged = .{
+                .affectsMinimap = false,
+                .affectsOverviewRuler = false,
+                .affectsGlyphMargin = false,
+                .affectsLineNumber = true,
+            } });
             self.last_decoration_generation = decoration_generation;
         }
         const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
@@ -380,6 +404,9 @@ pub const TerminalViewHost = struct {
         states: []const CursorState,
         style_fn: ViewLine.PartStyleFn,
         decoration_bits_fn: ?*const fn (classes: []const u8) u32,
+        /// Per-visible-row whole-line backgrounds, indexed by `view_line - top`.
+        /// A decoration background wins over the current-line highlight.
+        line_backgrounds: []const ?ui.Color = &.{},
         selected_flag: u32,
         secondary_cursor_flag: u32,
         background_color: ui.Color,
@@ -474,9 +501,14 @@ pub const TerminalViewHost = struct {
         else
             view_line == args.cursor.lineNumber;
 
+        const decoration_background = if (row < args.line_backgrounds.len)
+            args.line_backgrounds[row]
+        else
+            null;
+
         return .{
             .flags = flags,
-            .background = if (is_cursor_line) args.background_color else null,
+            .background = decoration_background orelse (if (is_cursor_line) args.background_color else null),
             .folded_ellipsis = output_index == 0 and line_width < args.text_width and
                 self.foldingShowsEllipsis(model_line),
             .folded_ellipsis_style = args.ellipsis_style,
@@ -529,6 +561,18 @@ pub const TerminalViewHost = struct {
 
     pub fn getLineNumber(self: *const TerminalViewHost, view_line: usize) ?*const RenderedLineNumber {
         return self.line_numbers.renderedLine(view_line);
+    }
+
+    /// The line-decoration classes for a view line, from the ported
+    /// `LinesDecorationsOverlay`.
+    pub fn lineDecorations(self: *const TerminalViewHost, view_line: usize) ?*const @import("../../viewParts/glyphMargin/glyphMargin.zig").VisibleLineDecorationsToRender {
+        return self.line_decorations.renderedLine(view_line);
+    }
+
+    /// The whole-line/range decoration classes for a view line, from the ported
+    /// `DecorationsOverlay`.
+    pub fn decorationsForLine(self: *const TerminalViewHost, view_line: usize) []const decorations_overlay_mod.LineDecoration {
+        return self.decorations_overlay.renderedLine(view_line);
     }
 
     pub fn getSelectionRanges(self: *const TerminalViewHost, view_line: usize) ?*const LineSelectionRender {
@@ -691,9 +735,20 @@ pub const TerminalViewHost = struct {
         const data = host(context).editor.viewLineData(line_number) catch return false;
         return data.continuesWithWrappedLine;
     }
-    fn getDecorationsInViewport(context: *anyopaque, _: Range, allocator: Allocator) anyerror![]view_model.ViewModelDecoration {
-        _ = host(context);
-        return allocator.alloc(view_model.ViewModelDecoration, 0);
+    fn getDecorationsInViewport(context: *anyopaque, visible_range: Range, allocator: Allocator) anyerror![]view_model.ViewModelDecoration {
+        const self = host(context);
+        const converter = self.editor.converter.interface();
+        const model_range = converter.convertViewRangeToModelRange(converter.context, visible_range);
+        const decorations = try self.editor.model.getDecorationsInRange(model_range, 0, false, false, false);
+        defer self.editor.allocator.free(decorations);
+        const result = try allocator.alloc(view_model.ViewModelDecoration, decorations.len);
+        for (decorations, 0..) |decoration, index| {
+            result[index] = .{
+                .range = converter.convertModelRangeToViewRange(converter.context, decoration.range, .None),
+                .options = decoration.options,
+            };
+        }
+        return result;
     }
 };
 
@@ -755,4 +810,63 @@ test "terminal view host updates the current-line overlay on cursor moves" {
     try host.renderRange(1, 2);
     try std.testing.expect(!host.getCurrentLineHighlight(1).?.highlight);
     try std.testing.expect(host.getCurrentLineHighlight(2).?.highlight);
+}
+
+test "terminal view host dispatches ViewDecorationsChanged when the model generation changes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.zig", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+
+    const Counter = struct {
+        decorations: usize = 0,
+        fn onDecorations(ctx: *anyopaque, _: *const @import("../../../common/viewEvents.zig").ViewDecorationsChangedEvent) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.decorations += 1;
+            return false;
+        }
+    };
+    var counter = Counter{};
+    var handler = @import("../../../common/viewEventHandler.zig").ViewEventHandler.init(&counter, .{
+        .onDecorationsChanged = Counter.onDecorations,
+    });
+    try host.view_handlers.append(allocator, &handler);
+
+    try host.renderRange(1, 2);
+    // The first frame dispatches for the initial decoration generation.
+    const before = counter.decorations;
+    try std.testing.expect(before >= 1);
+
+    var options = @import("../../../common/model.zig").ModelDecorationOptions.init("line-insert", .AlwaysGrowsWhenTypingAtEdges);
+    options.className = "line-insert";
+    options.linesDecorationsClassName = "dirty-diff-glyph dirty-diff-added primary";
+    options.isWholeLine = true;
+    const delta = [_]@import("../../../common/model.zig").ModelDeltaDecoration{.{
+        .range = Range.init(1, 1, 1, 1),
+        .options = &options,
+    }};
+    const ids = try editor.model.deltaDecorations(&.{}, &delta, 70);
+    defer std.testing.allocator.free(ids);
+
+    try host.renderRange(1, 2);
+    try std.testing.expect(counter.decorations > before);
+
+    // Both decoration overlays are registered and expose the prepared data.
+    var found_line_decorations = false;
+    var found_whole_line = false;
+    for (host.view.content_overlays.items) |overlay| {
+        if (overlay == &host.line_decorations.base) found_line_decorations = true;
+        if (overlay == &host.decorations_overlay.base) found_whole_line = true;
+    }
+    try std.testing.expect(found_line_decorations);
+    try std.testing.expect(found_whole_line);
+    try std.testing.expect(host.lineDecorations(1) != null);
+    try std.testing.expectEqual(@as(usize, 1), host.decorationsForLine(1).len);
+    try std.testing.expectEqualStrings("line-insert", host.decorationsForLine(1)[0].class_name);
 }
