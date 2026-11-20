@@ -246,18 +246,20 @@ pub const ViewModel = struct {
 
         // The terminal view dispatches a conservative full flush/token change;
         // parts re-render the small viewport window.
-        self.event_dispatcher.emit(.{ .ViewFlushed = .{} });
-        self.event_dispatcher.emit(.{ .ViewLineMappingChanged = .{} });
-        self.event_dispatcher.emit(.{ .ViewLinesChanged = .{
+        const collector = self.event_dispatcher.beginEmitViewEvents();
+        collector.emitViewEvent(.{ .ViewFlushed = .{} }) catch {};
+        collector.emitViewEvent(.{ .ViewLineMappingChanged = .{} }) catch {};
+        collector.emitViewEvent(.{ .ViewLinesChanged = .{
             .fromLineNumber = 1,
             .count = self.lines.getViewLineCount(),
-        } });
-        self.event_dispatcher.emit(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
-        const token_ranges = [_]view_events.ViewTokensChangedRange{.{
+        } }) catch {};
+        collector.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) }) catch {};
+        var token_ranges = [_]view_events.ViewTokensChangedRange{.{
             .fromLineNumber = 1,
             .toLineNumber = self.lines.getViewLineCount(),
         }};
-        self.event_dispatcher.emit(.{ .ViewTokensChanged = .{ .ranges = &token_ranges } });
+        collector.emitViewEvent(.{ .ViewTokensChanged = .{ .ranges = &token_ranges } }) catch {};
+        self.event_dispatcher.endEmitViewEvents();
     }
 
     /// Recomputes the glyph-margin lanes from model decorations that carry
@@ -293,11 +295,11 @@ pub const ViewModel = struct {
     }
 
     pub fn addViewEventHandler(self: *ViewModel, handler: *ViewEventHandler) void {
-        self.event_dispatcher.addEventHandler(handler);
+        self.event_dispatcher.addViewEventHandler(handler);
     }
 
     pub fn removeViewEventHandler(self: *ViewModel, handler: *ViewEventHandler) void {
-        self.event_dispatcher.removeEventHandler(handler);
+        self.event_dispatcher.removeViewEventHandler(handler);
     }
 
     fn addViewEventHandlerFn(context: *anyopaque, handler: *anyopaque) void {
@@ -329,7 +331,7 @@ pub const ViewModel = struct {
             try model_selections.append(Selection.init(start.lineNumber, start.column, end.lineNumber, end.column));
         }
 
-        self.event_dispatcher.emit(.{ .ViewCursorStateChanged = .{
+        self.event_dispatcher.emitSingleViewEvent(.{ .ViewCursorStateChanged = .{
             .selections = self.selections.items,
             .modelSelections = model_selections.items,
             .reason = .Explicit,
@@ -342,7 +344,7 @@ pub const ViewModel = struct {
 
     pub fn setFocus(self: *ViewModel, focused: bool) void {
         self.focus = focused;
-        self.event_dispatcher.emit(.{ .ViewFocusChanged = .{ .isFocused = focused } });
+        self.event_dispatcher.emitSingleViewEvent(.{ .ViewFocusChanged = .{ .isFocused = focused } });
     }
 
     pub fn hasFocus(self: *const ViewModel) bool {

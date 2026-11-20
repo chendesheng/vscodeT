@@ -144,6 +144,16 @@ state that in the comment and keep the behavioral contract intact.
    is TUI-specific, say so.
 9. Update `README.md` when adding a contribution, changing supported behavior,
    or leaving a notable feature unported.
+10. **Port upstream event and state flows faithfully.** Do not invent a
+    parallel mechanism (a revision counter, snapshot poll, dirty flag, or
+    similar) when upstream already has an event or callback for the same
+    transition. Port the upstream trigger, event, handler and ordering, using
+    the existing ported contracts such as `ViewModelEventDispatcher` and
+    `ViewEventHandler`. For example, `ViewModelImpl.setHiddenAreas` emits
+    `ViewFlushedEvent`, `ViewLineMappingChangedEvent` and
+    `ViewDecorationsChangedEvent`; the port must emit those events rather than
+    detect the change later by comparing state. A terminal/browser adapter may
+    replace the plumbing, but not the event flow itself.
 
 ## View and rendering ports
 

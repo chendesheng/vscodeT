@@ -1918,12 +1918,20 @@ test "View: gutter fold control collapses and expands a region" {
     const row1 = try rowText(view, allocator, 1);
     defer allocator.free(row1);
     try std.testing.expect(std.mem.indexOf(u8, row1, "5") != null);
+    // The reused rendered line must follow the new view-line mapping: row 2
+    // is now model line 5, not the hidden `void f()` line.
+    try std.testing.expect(std.mem.indexOf(u8, row1, "void f") == null);
+    try std.testing.expect(std.mem.indexOf(u8, row1, "}") != null);
 
     var up = testMouse(.up, gutter - 1, 0);
     _ = try view.dispatchMouse(&up);
     var down_again = testMouse(.down, gutter - 1, 0);
     try std.testing.expect(try view.dispatchMouse(&down_again));
     try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
+    try view.render(&out.writer);
+    const unfolded_row1 = try rowText(view, allocator, 1);
+    defer allocator.free(unfolded_row1);
+    try std.testing.expect(std.mem.indexOf(u8, unfolded_row1, "void f") != null);
 }
 
 test "View: folding keeps a scrolled viewport at the same model line" {

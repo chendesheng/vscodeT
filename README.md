@@ -1324,9 +1324,12 @@ Editor contributions:
   secondary-cursor removal and post-edit validity; typing/command
   orchestration stays in the TUI editor.
 
-- `ViewModelEventDispatcher` is ported (handler registry, direct delivery and a
-  re-entrant event queue) and the terminal `ViewModel` now dispatches through
-  it for content/cursor/focus events.
+- `ViewModelEventDispatcher` is ported in full: handler registry, event
+  collector batching (`beginEmitViewEvents`/`endEmitViewEvents`),
+  `emitSingleViewEvent`, the re-entrant view-event queue, the outgoing-event
+  emitter, and merge/no-op handling for every upstream
+  `OutgoingViewModelEvent` kind. The terminal `ViewModel` and editor dispatch
+  their content/cursor/focus/scroll/decoration events through it.
 
 - A terminal `CursorsController` subset is ported
   (`common/cursor/cursor.zig`): selection/position access, set selections and

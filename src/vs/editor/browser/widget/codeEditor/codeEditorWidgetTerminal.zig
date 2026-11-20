@@ -18,6 +18,9 @@ const UndoRedoService = @import("../../../../platform/undoRedo/common/undoRedoSe
 const LanguageService = @import("../../../common/services/languageService.zig").LanguageService;
 const LanguageIdCodec = @import("../../../common/languages.zig").LanguageIdCodec;
 const ProjectedViewModelLines = @import("../../../common/viewModel/viewModelLines.zig").ProjectedViewModelLines;
+const ViewModelEventDispatcher = @import("../../../common/viewModelEventDispatcher.zig").ViewModelEventDispatcher;
+const ViewEventHandler = @import("../../../common/viewEventHandler.zig").ViewEventHandler;
+const view_events = @import("../../../common/viewEvents.zig");
 const CoordinatesConverter = @import("../../../common/viewModel/viewModelLines.zig").CoordinatesConverter;
 const ViewLineData = @import("../../../common/viewModel.zig").ViewLineData;
 const WordBreak = @import("../../../common/modelLineProjectionData.zig").WordBreak;
@@ -27,6 +30,7 @@ const cursorCommon = @import("../../../common/cursorCommon.zig");
 const CursorConfiguration = cursorCommon.CursorConfiguration;
 const CursorContext = @import("../../../common/cursor/cursorContext.zig").CursorContext;
 const CursorState = cursorCommon.CursorState;
+const CursorChangeReason = @import("../../../common/cursorEvents.zig").CursorChangeReason;
 const PartialCursorState = cursorCommon.PartialCursorState;
 const EditOperationType = cursorCommon.EditOperationType;
 const CursorCollection = @import("../../../common/cursor/cursorCollection.zig").CursorCollection;
@@ -209,6 +213,12 @@ pub const Editor = struct {
     /// language service stores slices into this arena.
     associations_arena: std.heap.ArenaAllocator,
     view_lines: ProjectedViewModelLines,
+    /// Upstream `ViewModelImpl` owns the view-event dispatcher and emits the
+    /// events for line-mapping changes, content flushes and decorations. The
+    /// terminal editor applies hidden areas and edits directly, so it owns the
+    /// same dispatcher here and the terminal view registers its handlers with
+    /// it.
+    view_event_dispatcher: ViewModelEventDispatcher,
     converter: CoordinatesConverter,
     cursor_config: CursorConfiguration,
     cursor_context: ?*CursorContext,
@@ -272,6 +282,11 @@ pub const Editor = struct {
     /// the TUI view.
     scrollbar_width: usize,
     top_view_line: usize,
+    /// Selection slices owned by the last `ViewCursorStateChanged` event.
+    /// Upstream's arrays stay alive until the next event; view parts retain
+    /// these slices for their next render pass.
+    cursor_event_view_selections: []Selection = &.{},
+    cursor_event_model_selections: []Selection = &.{},
     status: [MAX_STATUS]u8,
     status_len: usize,
     prev_edit_operation_type: EditOperationType,
@@ -547,6 +562,7 @@ pub const Editor = struct {
             .language_service = language_service,
             .associations_arena = std.heap.ArenaAllocator.init(allocator),
             .view_lines = view_lines,
+            .view_event_dispatcher = ViewModelEventDispatcher.init(allocator),
             .converter = undefined,
             .cursor_config = cursor_config,
             .cursor_context = null,
@@ -598,6 +614,7 @@ pub const Editor = struct {
             .declarative_arena = declarative_arena,
             .json_client = null,
         };
+        errdefer editor.view_event_dispatcher.deinit();
         editor.folding_delayer = async_mod.ThrottledDelayer.init(editor, foldingDue, folding_debounce_min_ms);
         editor.bracket_guides_delayer = async_mod.ThrottledDelayer.init(editor, bracketGuidesDue, bracket_guides_debounce_ms);
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
@@ -1029,6 +1046,9 @@ pub const Editor = struct {
         if (self.json_message) |json_message| self.allocator.free(json_message);
         if (self.multicursor_session) |*session| session.deinit();
         self.word_separators.deinit();
+        if (self.cursor_event_view_selections.len > 0) self.allocator.free(self.cursor_event_view_selections);
+        if (self.cursor_event_model_selections.len > 0) self.allocator.free(self.cursor_event_model_selections);
+        self.view_event_dispatcher.deinit();
         self.view_lines.deinit();
         if (self.attached_view) |view| {
             self.model.onBeforeDetached(view) catch {};
@@ -1059,6 +1079,25 @@ pub const Editor = struct {
 
     fn decorationChangedCallback(_: @import("../../../common/textModelEvents.zig").ModelDecorationsChangedEvent, editor: *Editor) anyerror!void {
         editor.decoration_generation +%= 1;
+        editor.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
+    }
+
+    fn emitModelContentChangedEvents(self: *Editor) void {
+        // Port of the conservative event set emitted by
+        // `ViewModelImpl.onModelContentChanged` for content changes.
+        const line_count = self.view_lines.getViewLineCount();
+        self.emitViewEvent(.{ .ViewFlushed = .{} });
+        self.emitViewEvent(.{ .ViewLineMappingChanged = .{} });
+        self.emitViewEvent(.{ .ViewLinesChanged = .{
+            .fromLineNumber = 1,
+            .count = line_count,
+        } });
+        self.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
+        var token_ranges = [_]view_events.ViewTokensChangedRange{.{
+            .fromLineNumber = 1,
+            .toLineNumber = line_count,
+        }};
+        self.emitViewEvent(.{ .ViewTokensChanged = .{ .ranges = &token_ranges } });
     }
 
     fn onModelContentChanged(self: *Editor, event: InternalModelContentChangeEvent) void {
@@ -1095,6 +1134,7 @@ pub const Editor = struct {
         self.refreshDirtyState();
         self.triggerFoldingUpdate(time_compat.milliTimestamp());
         self.triggerBracketGuidesUpdate(time_compat.milliTimestamp());
+        self.emitModelContentChangedEvents();
         for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
     }
 
@@ -1304,8 +1344,16 @@ pub const Editor = struct {
         defer self.allocator.free(selections);
         const adjusted = self.folding.adjustSelections(selections);
         const changed = try self.view_lines.setHiddenAreas(self.folding.hiddenRanges());
+        if (changed) {
+            // Port of the event emission in `ViewModelImpl.setHiddenAreas`.
+            // `ViewLines.onFlushed` drops its rendered-line window and
+            // `onLineMappingChanged` resets the decoration resolver.
+            self.emitViewEvent(.{ .ViewFlushed = .{} });
+            self.emitViewEvent(.{ .ViewLineMappingChanged = .{} });
+            self.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
+        }
         if (changed or adjusted) {
-            try self.cursorsRef().setSelections(self.allocator, selections);
+            try self.updateSelections(selections);
         }
         if (changed) {
             const top_position = self.viewPositionOfModelPosition(Position.init(top_model_line, 1));
@@ -1388,6 +1436,18 @@ pub const Editor = struct {
 
     pub fn foldingTimeout(self: *const Editor, now_ms: i64) ?u32 {
         return self.folding_delayer.nextTimeout(now_ms);
+    }
+
+    pub fn addViewEventHandler(self: *Editor, handler: *ViewEventHandler) void {
+        self.view_event_dispatcher.addViewEventHandler(handler);
+    }
+
+    pub fn removeViewEventHandler(self: *Editor, handler: *ViewEventHandler) void {
+        self.view_event_dispatcher.removeViewEventHandler(handler);
+    }
+
+    pub fn emitViewEvent(self: *Editor, event: view_events.ViewEvent) void {
+        self.view_event_dispatcher.emitSingleViewEvent(event);
     }
 
     pub fn refreshFoldingIfDirty(self: *Editor) void {
@@ -1774,10 +1834,12 @@ pub const Editor = struct {
     }
 
     pub fn setViewport(self: *Editor, width: usize, height: usize) void {
+        const old_top = self.top_view_line;
         self.screen_width = @max(width, 1);
         self.screen_height = @max(height, 1);
         self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
         self.ensureCursorVisible();
+        if (self.top_view_line == old_top) self.emitScrollChanged(false);
     }
 
     /// Reserves rightmost text columns for the view's scrollbar/overview ruler.
@@ -1788,8 +1850,10 @@ pub const Editor = struct {
         const clamped = @min(width, available -| 1);
         if (clamped == self.scrollbar_width) return;
         self.scrollbar_width = clamped;
+        const old_top = self.top_view_line;
         self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
         self.ensureCursorVisible();
+        if (self.top_view_line == old_top) self.emitScrollChanged(false);
     }
 
     fn refreshLayout(self: *Editor) !void {
@@ -1800,6 +1864,9 @@ pub const Editor = struct {
         self.cursor_config.pageSize = self.textHeight();
 
         if (try self.view_lines.setWrappingColumn(text_width)) {
+            self.emitViewEvent(.{ .ViewFlushed = .{} });
+            self.emitViewEvent(.{ .ViewLineMappingChanged = .{} });
+            self.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
             try self.resetCursorViewState();
         }
     }
@@ -1807,10 +1874,33 @@ pub const Editor = struct {
     fn resetCursorViewState(self: *Editor) !void {
         const selections = try self.cursorsRef().getSelections(self.allocator);
         defer self.allocator.free(selections);
-        try self.cursorsRef().setSelections(self.allocator, selections);
+        try self.updateSelections(selections);
+    }
+
+    /// Emits the current cursor and scroll state for a view that has just
+    /// attached. Upstream normally delivers these through the events raised
+    /// while the view model applies its initial state; the terminal view is
+    /// created after the editor, so the first frame asks for them explicitly.
+    pub fn emitCurrentViewState(self: *Editor) void {
+        self.emitCursorStateChangedForce(.NotSet);
+        self.emitScrollChanged(true);
+    }
+
+    fn emitScrollChanged(self: *Editor, scroll_top_changed: bool) void {
+        self.emitViewEvent(.{ .ViewScrollChanged = .{
+            .scrollWidth = 0,
+            .scrollLeft = 0,
+            .scrollHeight = @floatFromInt(self.scrollHeight()),
+            .scrollTop = @floatFromInt(self.top_view_line -| 1),
+            .scrollWidthChanged = false,
+            .scrollLeftChanged = false,
+            .scrollHeightChanged = true,
+            .scrollTopChanged = scroll_top_changed,
+        } });
     }
 
     pub fn ensureCursorVisible(self: *Editor) void {
+        const old_top = self.top_view_line;
         const position = self.viewCursorPosition();
         const height = self.textHeight();
         if (position.lineNumber < self.top_view_line) {
@@ -1821,6 +1911,7 @@ pub const Editor = struct {
         const max_top = self.maxTopViewLine();
         if (self.top_view_line < 1) self.top_view_line = 1;
         if (self.top_view_line > max_top) self.top_view_line = max_top;
+        if (self.top_view_line != old_top) self.emitScrollChanged(true);
     }
 
     fn maxTopViewLine(self: *Editor) usize {
@@ -1839,6 +1930,7 @@ pub const Editor = struct {
         const next = std.math.clamp(current + delta, 1, max);
         if (next == self.top_view_line) return false;
         self.top_view_line = @intCast(next);
+        self.emitScrollChanged(true);
         return true;
     }
 
@@ -1848,6 +1940,7 @@ pub const Editor = struct {
         const next = std.math.clamp(line, 1, self.maxTopViewLine());
         if (next == self.top_view_line) return false;
         self.top_view_line = next;
+        self.emitScrollChanged(true);
         return true;
     }
 
@@ -1901,6 +1994,7 @@ pub const Editor = struct {
 
     pub fn removeSecondaryCursors(self: *Editor) !void {
         try self.cursorsRef().killSecondaryCursors();
+        self.emitCursorStateChanged(.NotSet);
         self.ensureCursorVisible();
     }
 
@@ -1929,6 +2023,7 @@ pub const Editor = struct {
         defer self.allocator.free(states);
         try self.cursorsRef().setStates(states);
         try self.cursorsRef().normalize();
+        self.emitCursorStateChanged(.NotSet);
         self.ensureCursorVisible();
     }
 
@@ -1939,6 +2034,7 @@ pub const Editor = struct {
         defer self.allocator.free(states);
         try self.cursorsRef().setStates(states);
         try self.cursorsRef().normalize();
+        self.emitCursorStateChanged(.NotSet);
         self.ensureCursorVisible();
     }
 
@@ -1948,7 +2044,7 @@ pub const Editor = struct {
         defer self.allocator.free(selections);
         const result = try session.addSelectionToNext(self.model, selections) orelse return;
         defer self.allocator.free(result);
-        try self.cursorsRef().setSelections(self.allocator, result);
+        try self.updateSelections(result);
         self.ensureCursorVisible();
     }
 
@@ -1961,7 +2057,7 @@ pub const Editor = struct {
 
         const result = try session.selectAll(self.model) orelse return;
         defer self.allocator.free(result);
-        try self.cursorsRef().setSelections(self.allocator, result);
+        try self.updateSelections(result);
         self.ensureCursorVisible();
     }
 
@@ -1973,6 +2069,7 @@ pub const Editor = struct {
         defer self.allocator.free(states);
         try self.cursorsRef().setStates(states);
         try self.cursorsRef().normalize();
+        self.emitCursorStateChanged(.NotSet);
         self.ensureCursorVisible();
     }
 
@@ -2179,7 +2276,7 @@ pub const Editor = struct {
         self.closeTypingGroup();
         const range = self.model.getFullModelRange();
         const selection = Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn);
-        try self.cursorsRef().setSelections(self.allocator, &[_]Selection{selection});
+        try self.updateSelections(&[_]Selection{selection});
         self.ensureCursorVisible();
     }
 
@@ -2187,6 +2284,7 @@ pub const Editor = struct {
         const cursor = self.cursorsRef().getPrimaryCursor();
         const partial = CursorMoveCommands.cancelSelection(cursor);
         try self.cursorsRef().setStates(&[_]PartialCursorState{partial});
+        self.emitCursorStateChanged(.NotSet);
         self.ensureCursorVisible();
     }
 
@@ -2238,9 +2336,9 @@ pub const Editor = struct {
         try self.afterEdit();
 
         if (after_selections) |selections| {
-            try self.cursorsRef().setSelections(self.allocator, selections);
+            try self.updateSelections(selections);
         } else {
-            try self.cursorsRef().setSelections(self.allocator, before_selections);
+            try self.updateSelections(before_selections);
         }
         self.ensureCursorVisible();
     }
@@ -2490,7 +2588,7 @@ pub const Editor = struct {
 
         _ = try self.model.pushEditOperations(before, identified.items, null, null);
         try self.afterEdit();
-        try self.cursorsRef().setSelections(self.allocator, before);
+        try self.updateSelections(before);
         self.ensureCursorVisible();
     }
 
@@ -2687,13 +2785,63 @@ pub const Editor = struct {
             try self.view_lines.rebuildAll();
         }
         if (self.pending_selection_count > 0) {
-            try self.cursorsRef().setSelections(self.allocator, self.pending_selection[0..self.pending_selection_count]);
+            try self.updateSelections(self.pending_selection[0..self.pending_selection_count]);
             self.pending_selection_count = 0;
         } else {
             try self.resetCursorViewState();
         }
         try self.refreshLayout();
         self.ensureCursorVisible();
+    }
+
+    /// Applies a cursor selection and emits upstream's view event when the
+    /// state actually changed. `CursorCollection` has no event surface of its
+    /// own; the editor is the terminal replacement for `CursorsController`,
+    /// which emits `ViewCursorStateChangedEvent` after `setStates`.
+    fn updateSelections(self: *Editor, selections: []const Selection) !void {
+        try self.cursorsRef().setSelections(self.allocator, selections);
+        self.emitCursorStateChanged(.NotSet);
+    }
+
+    fn selectionsEqual(a: []const Selection, b: []const Selection) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |*left, *right| {
+            if (!Selection.equalsSelection(left, right)) return false;
+        }
+        return true;
+    }
+
+    fn emitCursorStateChanged(self: *Editor, reason: CursorChangeReason) void {
+        self.emitCursorStateChangedIfNeeded(reason, false);
+    }
+
+    fn emitCursorStateChangedForce(self: *Editor, reason: CursorChangeReason) void {
+        self.emitCursorStateChangedIfNeeded(reason, true);
+    }
+
+    fn emitCursorStateChangedIfNeeded(self: *Editor, reason: CursorChangeReason, force: bool) void {
+        const view = self.getViewSelections() catch return;
+        const model = self.getModelSelections() catch {
+            self.allocator.free(view);
+            return;
+        };
+        if (!force and
+            selectionsEqual(self.cursor_event_view_selections, view) and
+            selectionsEqual(self.cursor_event_model_selections, model))
+        {
+            self.allocator.free(view);
+            self.allocator.free(model);
+            return;
+        }
+        if (self.cursor_event_view_selections.len > 0) self.allocator.free(self.cursor_event_view_selections);
+        if (self.cursor_event_model_selections.len > 0) self.allocator.free(self.cursor_event_model_selections);
+        self.cursor_event_view_selections = view;
+        self.cursor_event_model_selections = model;
+        self.emitViewEvent(.{ .ViewCursorStateChanged = .{
+            .selections = view,
+            .modelSelections = model,
+            .reason = reason,
+        } });
     }
 
     pub fn getModelSelections(self: *Editor) ![]Selection {
@@ -2721,7 +2869,7 @@ pub const Editor = struct {
         defer self.allocator.free(selections);
 
         try self.afterEdit();
-        try self.cursorsRef().setSelections(self.allocator, selections);
+        try self.updateSelections(selections);
         self.ensureCursorVisible();
         self.model.pushStackElement();
     }
@@ -2781,7 +2929,7 @@ pub const Editor = struct {
 
     pub fn setCursorPosition(self: *Editor, position: Position) !void {
         self.closeTypingGroup();
-        try self.cursorsRef().setSelections(self.allocator, &[_]Selection{Selection.init(position.lineNumber, position.column, position.lineNumber, position.column)});
+        try self.updateSelections(&[_]Selection{Selection.init(position.lineNumber, position.column, position.lineNumber, position.column)});
         self.ensureCursorVisible();
     }
 
@@ -2789,7 +2937,7 @@ pub const Editor = struct {
     /// selection on a match.
     pub fn setSelection(self: *Editor, range: Range) !void {
         self.closeTypingGroup();
-        try self.cursorsRef().setSelections(self.allocator, &[_]Selection{
+        try self.updateSelections(&[_]Selection{
             Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn),
         });
         self.ensureCursorVisible();
@@ -2797,14 +2945,14 @@ pub const Editor = struct {
 
     pub fn setSelections(self: *Editor, selections: []const Selection) !void {
         self.closeTypingGroup();
-        try self.cursorsRef().setSelections(self.allocator, selections);
+        try self.updateSelections(selections);
         self.ensureCursorVisible();
     }
 
     /// Updates the selection during a mouse drag. The press already closed the
     /// typing group, so motion must not start a new undo stop per report.
     pub fn updateDragSelection(self: *Editor, anchor: Position, position: Position) !void {
-        try self.cursorsRef().setSelections(self.allocator, &[_]Selection{
+        try self.updateSelections(&[_]Selection{
             Selection.init(anchor.lineNumber, anchor.column, position.lineNumber, position.column),
         });
         self.ensureCursorVisible();
@@ -2831,7 +2979,7 @@ pub const Editor = struct {
                 for (cursors, 0..) |position, index| {
                     selections[index] = Selection.init(position.lineNumber, position.column, position.lineNumber, position.column);
                 }
-                try self.cursorsRef().setSelections(self.allocator, selections);
+                try self.updateSelections(selections);
                 self.ensureCursorVisible();
             }
             return;
@@ -2846,7 +2994,7 @@ pub const Editor = struct {
             for (cursors, 0..) |position, index| {
                 selections[index] = Selection.init(position.lineNumber, position.column, position.lineNumber, position.column);
             }
-            try self.cursorsRef().setSelections(self.allocator, selections);
+            try self.updateSelections(selections);
         }
         self.ensureCursorVisible();
     }
@@ -2938,6 +3086,7 @@ pub const Editor = struct {
         defer self.allocator.free(states);
 
         try self.cursorsRef().setStates(states);
+        self.emitCursorStateChanged(.NotSet);
         self.ensureCursorVisible();
     }
 
@@ -2949,7 +3098,7 @@ pub const Editor = struct {
 
         const updated = (try self.smart_select.run(self.model, selections, forward)) orelse return;
         defer self.allocator.free(updated);
-        try self.cursorsRef().setSelections(self.allocator, updated);
+        try self.updateSelections(updated);
         self.ensureCursorVisible();
     }
 
@@ -3064,7 +3213,7 @@ pub const Editor = struct {
     pub fn jumpToBracket(self: *Editor) !void {
         const selection = self.modelSelection();
         const target = self.bracket_matching.jumpToBracket(selection) orelse return;
-        try self.cursorsRef().setSelections(self.allocator, &[_]Selection{target});
+        try self.updateSelections(&[_]Selection{target});
         self.ensureCursorVisible();
     }
 
@@ -3075,7 +3224,7 @@ pub const Editor = struct {
         const selected = try self.bracket_matching.selectToBracket(selections, select_brackets) orelse return;
         defer self.allocator.free(selected);
 
-        try self.cursorsRef().setSelections(self.allocator, selected);
+        try self.updateSelections(selected);
         self.ensureCursorVisible();
     }
 
@@ -3090,6 +3239,7 @@ pub const Editor = struct {
         };
         try self.executeReplaceCommands(&commands);
         try self.cursorsRef().killSecondaryCursors();
+        self.emitCursorStateChanged(.NotSet);
         self.model.pushStackElement();
     }
 

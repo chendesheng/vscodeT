@@ -366,6 +366,34 @@ pub const ModelLineHeightChanged = struct {
     }
 };
 
+// An event describing a change in fonts.
+// @internal
+pub const ModelFontChanged = struct {
+    // Editor owner ID
+    ownerId: usize,
+    // The line that has changed.
+    lineNumber: usize,
+
+    pub fn init(ownerId: usize, lineNumber: usize) ModelFontChanged {
+        return ModelFontChanged{
+            .ownerId = ownerId,
+            .lineNumber = lineNumber,
+        };
+    }
+};
+
+// An event describing a change in fonts.
+// @internal
+pub const ModelFontChangedEvent = struct {
+    changes: []ModelFontChanged,
+
+    pub fn init(changes: []ModelFontChanged) ModelFontChangedEvent {
+        return ModelFontChangedEvent{
+            .changes = changes,
+        };
+    }
+};
+
 // An event describing a change of a line height.
 // @internal
 pub const ModelLineHeightChangedEvent = struct {

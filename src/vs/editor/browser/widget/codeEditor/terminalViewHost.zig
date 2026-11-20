@@ -174,12 +174,9 @@ pub const TerminalViewHost = struct {
     offsets: std.ArrayListUnmanaged(f64) = .empty,
     selections: []Selection = &.{},
     max_line_width: f64 = 0,
-    view_handlers: std.ArrayListUnmanaged(*ViewEventHandler) = .empty,
-    last_version: u32 = 0,
-    last_selection_hash: u64 = 0,
-    last_decoration_generation: usize = 0,
-    last_start_line: usize = 0,
-    last_end_line: usize = 0,
+    /// Resets the view-model decoration resolver when the line mapping or the
+    /// model decorations change.
+    view_model_handler: ViewEventHandler = .{},
     first_frame: bool = true,
     folding_decorations: FoldingDecorationProvider = .{},
 
@@ -242,10 +239,17 @@ pub const TerminalViewHost = struct {
         try self.view.addContentOverlay(&self.decorations_overlay.base);
         try self.view.addContentOverlay(&self.selections_overlay.base);
         try self.view.addContentOverlay(&self.current_line.base);
+
+        self.view_model_handler = ViewEventHandler.init(self, .{
+            .onLineMappingChanged = onEditorLineMappingChanged,
+            .onDecorationsChanged = onEditorDecorationsChanged,
+        });
+        editor.addViewEventHandler(&self.view_model_handler);
         return self;
     }
 
     pub fn deinit(self: *TerminalViewHost) void {
+        self.editor.removeViewEventHandler(&self.view_model_handler);
         self.view.deinit();
         self.scratch_text.deinit();
         self.view_cursors.deinit();
@@ -258,7 +262,6 @@ pub const TerminalViewHost = struct {
         self.lines_adapter.deinit();
         self.offsets.deinit(self.allocator);
         if (self.selections.len > 0) self.allocator.free(self.selections);
-        self.view_handlers.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -282,21 +285,15 @@ pub const TerminalViewHost = struct {
             .completelyVisibleEndLineNumber = end_line,
             .lineHeight = 1,
         };
-        const decoration_generation = self.editor.decorationGeneration();
-        if (self.first_frame or decoration_generation != self.last_decoration_generation) {
+        if (self.first_frame) {
             self.decorations.onModelDecorationsChanged();
             self.view.getViewLines().invalidateDecorations();
-            // Both decoration overlays re-prepare on this event. The model
-            // decoration generation changes without a content edit when quick
-            // diff or diff decorations are applied, so the content-based
-            // `ViewFlushed` dispatch is not enough.
             self.dispatch(.{ .ViewDecorationsChanged = .{
                 .affectsMinimap = false,
                 .affectsOverviewRuler = false,
                 .affectsGlyphMargin = false,
                 .affectsLineNumber = true,
             } });
-            self.last_decoration_generation = decoration_generation;
         }
         const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
         // ViewLine owns copies of its render input, so scrolling can retain
@@ -307,39 +304,11 @@ pub const TerminalViewHost = struct {
 
         self.selections_overlay.setSelections(self.selections);
 
-        // Dispatch the view events that upstream's event handler would have
-        // sent from the model/view model. The terminal editor has no event
-        // bus yet, so the host compares the rendered snapshots instead.
-        const version = self.editor.model.getVersionId();
-        const selection_hash = selectionHash(self.selections);
-        const range_changed = start_line != self.last_start_line or end_line != self.last_end_line;
-        if (self.first_frame or version != self.last_version) {
-            self.dispatch(.{ .ViewFlushed = .{} });
-            self.dispatch(.{ .ViewZonesChanged = .{} });
-        }
-        if (self.first_frame or selection_hash != self.last_selection_hash) {
-            self.dispatch(.{ .ViewCursorStateChanged = .{
-                .selections = self.selections,
-                .modelSelections = self.selections,
-                .reason = .NotSet,
-            } });
-        }
-        if (self.first_frame or range_changed) {
-            self.dispatch(.{ .ViewScrollChanged = .{
-                .scrollWidth = 0,
-                .scrollLeft = 0,
-                .scrollHeight = @floatFromInt(self.editor.scrollHeight()),
-                .scrollTop = @floatFromInt(self.editor.topViewLine() -| 1),
-                .scrollWidthChanged = false,
-                .scrollLeftChanged = false,
-                .scrollHeightChanged = true,
-                .scrollTopChanged = range_changed or self.first_frame,
-            } });
-        }
-        self.last_version = version;
-        self.last_selection_hash = selection_hash;
-        self.last_start_line = start_line;
-        self.last_end_line = end_line;
+        // Content, line-mapping, decoration, cursor and scroll events come
+        // from the editor's view-model dispatcher. The first frame still needs
+        // the current cursor/scroll state because those events predate the
+        // view's handler registration.
+        if (self.first_frame) self.editor.emitCurrentViewState();
         self.first_frame = false;
 
         // The ported `View` owns the render pass: it prepares content
@@ -659,35 +628,30 @@ pub const TerminalViewHost = struct {
 
     fn addViewEventHandler(context: *anyopaque, handler: *anyopaque) void {
         const self = host(context);
-        self.view_handlers.append(self.allocator, @ptrCast(@alignCast(handler))) catch {};
+        self.editor.addViewEventHandler(@ptrCast(@alignCast(handler)));
     }
 
     fn removeViewEventHandler(context: *anyopaque, handler: *anyopaque) void {
         const self = host(context);
-        const target: *ViewEventHandler = @ptrCast(@alignCast(handler));
-        for (self.view_handlers.items, 0..) |candidate, index| {
-            if (candidate == target) {
-                _ = self.view_handlers.orderedRemove(index);
-                return;
-            }
-        }
+        self.editor.removeViewEventHandler(@ptrCast(@alignCast(handler)));
     }
 
     fn dispatch(self: *TerminalViewHost, event: ViewEvent) void {
-        var events = [_]ViewEvent{event};
-        for (self.view_handlers.items) |handler| handler.handleEvents(&events);
+        self.editor.emitViewEvent(event);
     }
 
-    fn selectionHash(selections: []const Selection) u64 {
-        var hash = std.hash.Wyhash.init(0);
-        for (selections) |selection| {
-            hash.update(std.mem.asBytes(&selection.startLineNumber));
-            hash.update(std.mem.asBytes(&selection.startColumn));
-            hash.update(std.mem.asBytes(&selection.endLineNumber));
-            hash.update(std.mem.asBytes(&selection.endColumn));
-        }
-        return hash.final();
+    fn onEditorLineMappingChanged(context: *anyopaque, _: *const view_events.ViewLineMappingChangedEvent) bool {
+        const self = host(context);
+        self.decorations.onLineMappingChanged();
+        return false;
     }
+
+    fn onEditorDecorationsChanged(context: *anyopaque, _: *const view_events.ViewDecorationsChangedEvent) bool {
+        const self = host(context);
+        self.decorations.onModelDecorationsChanged();
+        return false;
+    }
+
     fn getLineMinColumn(context: *anyopaque, line_number: usize) usize {
         return host(context).editor.view_lines.getLineMinColumn(line_number);
     }
@@ -812,6 +776,52 @@ test "terminal view host updates the current-line overlay on cursor moves" {
     try std.testing.expect(host.getCurrentLineHighlight(2).?.highlight);
 }
 
+test "terminal view host receives cursor and scroll events from the editor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.zig", 40, 2);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+
+    const Counter = struct {
+        cursors: usize = 0,
+        scrolls: usize = 0,
+
+        fn onCursor(context: *anyopaque, _: *const view_events.ViewCursorStateChangedEvent) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.cursors += 1;
+            return false;
+        }
+        fn onScroll(context: *anyopaque, _: *const view_events.ViewScrollChangedEvent) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.scrolls += 1;
+            return false;
+        }
+    };
+    var counter = Counter{};
+    var handler = ViewEventHandler.init(&counter, .{
+        .onCursorStateChanged = Counter.onCursor,
+        .onScrollChanged = Counter.onScroll,
+    });
+    editor.addViewEventHandler(&handler);
+    defer editor.removeViewEventHandler(&handler);
+
+    try host.renderRange(1, 2);
+    counter.cursors = 0;
+    counter.scrolls = 0;
+
+    try editor.moveDown(false);
+    try std.testing.expect(counter.cursors > 0);
+
+    counter.scrolls = 0;
+    try std.testing.expect(editor.scrollViewLines(1));
+    try std.testing.expect(counter.scrolls > 0);
+}
+
 test "terminal view host dispatches ViewDecorationsChanged when the model generation changes" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -836,7 +846,8 @@ test "terminal view host dispatches ViewDecorationsChanged when the model genera
     var handler = @import("../../../common/viewEventHandler.zig").ViewEventHandler.init(&counter, .{
         .onDecorationsChanged = Counter.onDecorations,
     });
-    try host.view_handlers.append(allocator, &handler);
+    editor.addViewEventHandler(&handler);
+    defer editor.removeViewEventHandler(&handler);
 
     try host.renderRange(1, 2);
     // The first frame dispatches for the initial decoration generation.
