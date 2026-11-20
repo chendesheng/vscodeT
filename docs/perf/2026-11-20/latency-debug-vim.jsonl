@@ -1,0 +1,97 @@
+{"ev": "first_frame", "t": 0.955402}
+{"ev": "ready", "t": 9.434297, "first_frame": 0.9554019998759031, "settle": 8.225421708077192, "frames": 174}
+{"ev": "key", "op": "normal.j", "t": 9.434538, "cursor": [3, 38]}
+{"ev": "frame", "t": 9.553838, "cursor": [3, 38], "n": 19}
+{"ev": "frame", "t": 9.606564, "cursor": [4, 38], "n": 102}
+{"ev": "op", "op": "normal.j", "t_send": 9.434538, "before": [3, 38], "after": [4, 38], "first_frame_ms": 119.3, "effect_ms": 172.03, "effect_kind": "cursor", "last_frame_ms": 172.03, "frames": 2}
+{"ev": "key", "op": "normal.j", "t": 9.950176, "cursor": [4, 38]}
+{"ev": "frame", "t": 10.032478, "cursor": [4, 38], "n": 19}
+{"ev": "frame", "t": 10.084661, "cursor": [5, 38], "n": 75}
+{"ev": "op", "op": "normal.j", "t_send": 9.950176, "before": [4, 38], "after": [5, 38], "first_frame_ms": 82.3, "effect_ms": 134.48, "effect_kind": "cursor", "last_frame_ms": 134.48, "frames": 2}
+{"ev": "key", "op": "normal.j", "t": 10.463965, "cursor": [5, 38]}
+{"ev": "frame", "t": 10.541229, "cursor": [5, 38], "n": 19}
+{"ev": "frame", "t": 10.593253, "cursor": [6, 38], "n": 75}
+{"ev": "op", "op": "normal.j", "t_send": 10.463965, "before": [5, 38], "after": [6, 38], "first_frame_ms": 77.26, "effect_ms": 129.29, "effect_kind": "cursor", "last_frame_ms": 129.29, "frames": 2}
+{"ev": "key", "op": "normal.k", "t": 10.97582, "cursor": [6, 38]}
+{"ev": "frame", "t": 11.063539, "cursor": [6, 38], "n": 19}
+{"ev": "frame", "t": 11.116769, "cursor": [5, 38], "n": 75}
+{"ev": "op", "op": "normal.k", "t_send": 10.97582, "before": [6, 38], "after": [5, 38], "first_frame_ms": 87.72, "effect_ms": 140.95, "effect_kind": "cursor", "last_frame_ms": 140.95, "frames": 2}
+{"ev": "key", "op": "normal.w", "t": 11.480006, "cursor": [5, 38]}
+{"ev": "frame", "t": 11.557703, "cursor": [5, 38], "n": 19}
+{"ev": "frame", "t": 11.60657, "cursor": [5, 42], "n": 231}
+{"ev": "frame", "t": 11.668329, "cursor": [5, 42], "n": 996}
+{"ev": "op", "op": "normal.w", "t_send": 11.480006, "before": [5, 38], "after": [5, 42], "first_frame_ms": 77.7, "effect_ms": 126.56, "effect_kind": "cursor", "last_frame_ms": 188.32, "frames": 3}
+{"ev": "key", "op": "normal.b", "t": 11.994582, "cursor": [5, 42]}
+{"ev": "frame", "t": 12.088999, "cursor": [5, 42], "n": 19}
+{"ev": "frame", "t": 12.153337, "cursor": [5, 38], "n": 76}
+{"ev": "op", "op": "normal.b", "t_send": 11.994582, "before": [5, 42], "after": [5, 38], "first_frame_ms": 94.42, "effect_ms": 158.76, "effect_kind": "cursor", "last_frame_ms": 158.76, "frames": 2}
+{"ev": "key", "op": "normal.ctrl-d", "t": 12.510461, "cursor": [5, 38]}
+{"ev": "frame", "t": 12.600301, "cursor": [5, 38], "n": 19}
+{"ev": "frame", "t": 12.709047, "cursor": [43, 50], "n": 792}
+{"ev": "frame", "t": 12.81872, "cursor": [43, 50], "n": 869}
+{"ev": "op", "op": "normal.ctrl-d", "t_send": 12.510461, "before": [5, 38], "after": [43, 50], "first_frame_ms": 89.84, "effect_ms": 198.59, "effect_kind": "cursor", "last_frame_ms": 308.26, "frames": 3}
+{"ev": "key", "op": "normal.ctrl-u", "t": 13.125826, "cursor": [43, 50]}
+{"ev": "frame", "t": 13.246145, "cursor": [43, 50], "n": 20}
+{"ev": "frame", "t": 13.330969, "cursor": [3, 38], "n": 483}
+{"ev": "op", "op": "normal.ctrl-u", "t_send": 13.125826, "before": [43, 50], "after": [3, 38], "first_frame_ms": 120.32, "effect_ms": 205.14, "effect_kind": "cursor", "last_frame_ms": 205.14, "frames": 2}
+{"ev": "key", "op": "normal.G", "t": 13.744365, "cursor": [3, 38]}
+{"ev": "frame", "t": 13.837014, "cursor": [3, 38], "n": 19}
+{"ev": "frame", "t": 13.96072, "cursor": [43, 38], "n": 1014}
+{"ev": "op", "op": "normal.G", "t_send": 13.744365, "before": [3, 38], "after": [43, 38], "first_frame_ms": 92.65, "effect_ms": 216.35, "effect_kind": "cursor", "last_frame_ms": 216.35, "frames": 2}
+{"ev": "key", "op": "normal.gg", "t": 14.405745, "cursor": [43, 38]}
+{"ev": "frame", "t": 14.531049, "cursor": [43, 38], "n": 20}
+{"ev": "frame", "t": 14.627942, "cursor": [43, 38], "n": 238}
+{"ev": "frame", "t": 14.706129, "cursor": [3, 38], "n": 885}
+{"ev": "op", "op": "normal.gg", "t_send": 14.405745, "before": [43, 38], "after": [3, 38], "first_frame_ms": 125.3, "effect_ms": 222.2, "effect_kind": "content", "last_frame_ms": 300.38, "frames": 3}
+{"ev": "key", "op": "normal.i", "t": 15.076449, "cursor": [3, 38]}
+{"ev": "frame", "t": 15.162336, "cursor": [3, 38], "n": 19}
+{"ev": "frame", "t": 15.2124, "cursor": [3, 38], "n": 231}
+{"ev": "op", "op": "normal.i", "t_send": 15.076449, "before": [3, 38], "after": [3, 38], "first_frame_ms": 85.89, "effect_ms": 135.95, "effect_kind": "content", "last_frame_ms": 135.95, "frames": 2}
+{"ev": "key", "op": "insert.h", "t": 15.839699, "cursor": [3, 38]}
+{"ev": "frame", "t": 15.923707, "cursor": [3, 38], "n": 19}
+{"ev": "frame", "t": 16.003542, "cursor": [3, 39], "n": 579}
+{"ev": "frame", "t": 16.244024, "cursor": [3, 39], "n": 13}
+{"ev": "op", "op": "insert.h", "t_send": 15.839699, "before": [3, 38], "after": [3, 39], "first_frame_ms": 84.01, "effect_ms": 163.84, "effect_kind": "cursor", "last_frame_ms": 404.32, "frames": 3}
+{"ev": "key", "op": "insert.e", "t": 16.400715, "cursor": [3, 39]}
+{"ev": "frame", "t": 16.466591, "cursor": [3, 39], "n": 19}
+{"ev": "frame", "t": 16.540694, "cursor": [3, 40], "n": 745}
+{"ev": "frame", "t": 16.582555, "cursor": [3, 40], "n": 13}
+{"ev": "frame", "t": 16.779562, "cursor": [3, 40], "n": 13}
+{"ev": "op", "op": "insert.e", "t_send": 16.400715, "before": [3, 39], "after": [3, 40], "first_frame_ms": 65.88, "effect_ms": 139.98, "effect_kind": "cursor", "last_frame_ms": 378.85, "frames": 4}
+{"ev": "key", "op": "insert.l", "t": 16.968701, "cursor": [3, 40]}
+{"ev": "frame", "t": 17.214657, "cursor": [3, 40], "n": 13}
+{"ev": "frame", "t": 17.25969, "cursor": [3, 40], "n": 19}
+{"ev": "frame", "t": 17.337456, "cursor": [3, 41], "n": 745}
+{"ev": "op", "op": "insert.l", "t_send": 16.968701, "before": [3, 40], "after": [3, 41], "first_frame_ms": 245.96, "effect_ms": 368.76, "effect_kind": "cursor", "last_frame_ms": 368.76, "frames": 3}
+{"ev": "key", "op": "insert.l", "t": 17.534953, "cursor": [3, 41]}
+{"ev": "frame", "t": 17.581698, "cursor": [3, 41], "n": 13}
+{"ev": "frame", "t": 17.621784, "cursor": [3, 41], "n": 19}
+{"ev": "frame", "t": 17.69532, "cursor": [3, 42], "n": 745}
+{"ev": "frame", "t": 17.737252, "cursor": [3, 42], "n": 13}
+{"ev": "frame", "t": 17.935946, "cursor": [3, 42], "n": 13}
+{"ev": "op", "op": "insert.l", "t_send": 17.534953, "before": [3, 41], "after": [3, 42], "first_frame_ms": 46.75, "effect_ms": 160.37, "effect_kind": "cursor", "last_frame_ms": 400.99, "frames": 5}
+{"ev": "key", "op": "insert.o", "t": 18.107129, "cursor": [3, 42]}
+{"ev": "frame", "t": 18.172365, "cursor": [3, 42], "n": 19}
+{"ev": "frame", "t": 18.246464, "cursor": [3, 43], "n": 745}
+{"ev": "frame", "t": 18.2883, "cursor": [3, 43], "n": 13}
+{"ev": "frame", "t": 18.48782, "cursor": [3, 43], "n": 13}
+{"ev": "op", "op": "insert.o", "t_send": 18.107129, "before": [3, 42], "after": [3, 43], "first_frame_ms": 65.24, "effect_ms": 139.33, "effect_kind": "cursor", "last_frame_ms": 380.69, "frames": 4}
+{"ev": "key", "op": "normal.escape", "t": 18.675029, "cursor": [3, 43]}
+{"ev": "frame", "t": 18.939817, "cursor": [3, 43], "n": 13}
+{"ev": "frame", "t": 18.985222, "cursor": [3, 43], "n": 19}
+{"ev": "frame", "t": 19.03619, "cursor": [3, 42], "n": 231}
+{"ev": "frame", "t": 19.095784, "cursor": [3, 42], "n": 543}
+{"ev": "op", "op": "normal.escape", "t_send": 18.675029, "before": [3, 43], "after": [3, 42], "first_frame_ms": 264.79, "effect_ms": 361.16, "effect_kind": "cursor", "last_frame_ms": 420.75, "frames": 4}
+{"ev": "key", "op": "normal.u", "t": 19.337825, "cursor": [3, 42]}
+{"ev": "frame", "t": 19.423474, "cursor": [3, 42], "n": 19}
+{"ev": "frame", "t": 19.503359, "cursor": [3, 38], "n": 706}
+{"ev": "frame", "t": 19.747913, "cursor": [3, 38], "n": 13}
+{"ev": "op", "op": "normal.u", "t_send": 19.337825, "before": [3, 42], "after": [3, 38], "first_frame_ms": 85.65, "effect_ms": 165.53, "effect_kind": "cursor", "last_frame_ms": 410.09, "frames": 3}
+{"ev": "key", "op": "normal.ctrl-r", "t": 20.208407, "cursor": [3, 38]}
+{"ev": "frame", "t": 20.208547, "cursor": [3, 38], "n": 13}
+{"ev": "frame", "t": 20.25553, "cursor": [3, 38], "n": 19}
+{"ev": "frame", "t": 20.336041, "cursor": [3, 38], "n": 745}
+{"ev": "frame", "t": 20.575833, "cursor": [3, 38], "n": 13}
+{"ev": "frame", "t": 21.017634, "cursor": [3, 38], "n": 13}
+{"ev": "op", "op": "normal.ctrl-r", "t_send": 20.208407, "before": [3, 38], "after": [3, 38], "first_frame_ms": 0.14, "effect_ms": 127.63, "effect_kind": "content", "last_frame_ms": 809.23, "frames": 5}
+{"ev": "summary", "mode": "vim", "file": "/tmp/vscodet-perf/ws/1000.zig", "first_frame": 0.9554019998759031, "settle": 21.017633957788348, "ops": [{"op": "normal.j", "t_send": 9.434538, "before": [3, 38], "after": [4, 38], "first_frame_ms": 119.3, "effect_ms": 172.03, "effect_kind": "cursor", "last_frame_ms": 172.03, "frames": 2}, {"op": "normal.j", "t_send": 9.950176, "before": [4, 38], "after": [5, 38], "first_frame_ms": 82.3, "effect_ms": 134.48, "effect_kind": "cursor", "last_frame_ms": 134.48, "frames": 2}, {"op": "normal.j", "t_send": 10.463965, "before": [5, 38], "after": [6, 38], "first_frame_ms": 77.26, "effect_ms": 129.29, "effect_kind": "cursor", "last_frame_ms": 129.29, "frames": 2}, {"op": "normal.k", "t_send": 10.97582, "before": [6, 38], "after": [5, 38], "first_frame_ms": 87.72, "effect_ms": 140.95, "effect_kind": "cursor", "last_frame_ms": 140.95, "frames": 2}, {"op": "normal.w", "t_send": 11.480006, "before": [5, 38], "after": [5, 42], "first_frame_ms": 77.7, "effect_ms": 126.56, "effect_kind": "cursor", "last_frame_ms": 188.32, "frames": 3}, {"op": "normal.b", "t_send": 11.994582, "before": [5, 42], "after": [5, 38], "first_frame_ms": 94.42, "effect_ms": 158.76, "effect_kind": "cursor", "last_frame_ms": 158.76, "frames": 2}, {"op": "normal.ctrl-d", "t_send": 12.510461, "before": [5, 38], "after": [43, 50], "first_frame_ms": 89.84, "effect_ms": 198.59, "effect_kind": "cursor", "last_frame_ms": 308.26, "frames": 3}, {"op": "normal.ctrl-u", "t_send": 13.125826, "before": [43, 50], "after": [3, 38], "first_frame_ms": 120.32, "effect_ms": 205.14, "effect_kind": "cursor", "last_frame_ms": 205.14, "frames": 2}, {"op": "normal.G", "t_send": 13.744365, "before": [3, 38], "after": [43, 38], "first_frame_ms": 92.65, "effect_ms": 216.35, "effect_kind": "cursor", "last_frame_ms": 216.35, "frames": 2}, {"op": "normal.gg", "t_send": 14.405745, "before": [43, 38], "after": [3, 38], "first_frame_ms": 125.3, "effect_ms": 222.2, "effect_kind": "content", "last_frame_ms": 300.38, "frames": 3}, {"op": "normal.i", "t_send": 15.076449, "before": [3, 38], "after": [3, 38], "first_frame_ms": 85.89, "effect_ms": 135.95, "effect_kind": "content", "last_frame_ms": 135.95, "frames": 2}, {"op": "insert.h", "t_send": 15.839699, "before": [3, 38], "after": [3, 39], "first_frame_ms": 84.01, "effect_ms": 163.84, "effect_kind": "cursor", "last_frame_ms": 404.32, "frames": 3}, {"op": "insert.e", "t_send": 16.400715, "before": [3, 39], "after": [3, 40], "first_frame_ms": 65.88, "effect_ms": 139.98, "effect_kind": "cursor", "last_frame_ms": 378.85, "frames": 4}, {"op": "insert.l", "t_send": 16.968701, "before": [3, 40], "after": [3, 41], "first_frame_ms": 245.96, "effect_ms": 368.76, "effect_kind": "cursor", "last_frame_ms": 368.76, "frames": 3}, {"op": "insert.l", "t_send": 17.534953, "before": [3, 41], "after": [3, 42], "first_frame_ms": 46.75, "effect_ms": 160.37, "effect_kind": "cursor", "last_frame_ms": 400.99, "frames": 5}, {"op": "insert.o", "t_send": 18.107129, "before": [3, 42], "after": [3, 43], "first_frame_ms": 65.24, "effect_ms": 139.33, "effect_kind": "cursor", "last_frame_ms": 380.69, "frames": 4}, {"op": "normal.escape", "t_send": 18.675029, "before": [3, 43], "after": [3, 42], "first_frame_ms": 264.79, "effect_ms": 361.16, "effect_kind": "cursor", "last_frame_ms": 420.75, "frames": 4}, {"op": "normal.u", "t_send": 19.337825, "before": [3, 42], "after": [3, 38], "first_frame_ms": 85.65, "effect_ms": 165.53, "effect_kind": "cursor", "last_frame_ms": 410.09, "frames": 3}, {"op": "normal.ctrl-r", "t_send": 20.208407, "before": [3, 38], "after": [3, 38], "first_frame_ms": 0.14, "effect_ms": 127.63, "effect_kind": "content", "last_frame_ms": 809.23, "frames": 5}], "groups": {"normal.": {"n": 14, "min": 126.56, "median": 162.14, "max": 361.16, "mean": 178.19}, "insert.": {"n": 5, "min": 139.33, "median": 160.37, "max": 368.76, "mean": 194.46}, "native.": null}}

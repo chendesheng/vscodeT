@@ -63,6 +63,9 @@ required for the measurements below.
   and the viewport-tokenization contract.
   Set `VSCODE_TEXTBUFFER_BENCH_FILE` to benchmark another file (default
   `src/tui/app.zig`).
+- An end-to-end profile of the default Debug build and ReleaseFast, including
+  VSCodeVim interaction latency and CPU hotspots, is in
+  [docs/performance-profile-2026-11-20.md](docs/performance-profile-2026-11-20.md).
 
 ## Upstream VS Code checkout
 

@@ -1,0 +1,26 @@
+1/5 tui.benchmark.test.benchmark: open file...[bench] iteration 0 editor=15296us view=77us status=2us controllers=128us refresh=7224us paint=5426us total=28156us rebuilds=1 wraps=1 last_visible=44 tokens_accurate_first_paint=true
+[bench] iteration 1 editor=12906us view=57us status=0us controllers=50us refresh=6580us paint=5507us total=25101us rebuilds=1 wraps=1 last_visible=44 tokens_accurate_first_paint=true
+[bench] iteration 2 editor=13189us view=61us status=1us controllers=50us refresh=6654us paint=5405us total=25363us rebuilds=1 wraps=1 last_visible=44 tokens_accurate_first_paint=true
+[bench] iteration 3 editor=13087us view=55us status=1us controllers=41us refresh=6680us paint=5425us total=25289us rebuilds=1 wraps=1 last_visible=44 tokens_accurate_first_paint=true
+[bench] iteration 4 editor=13274us view=66us status=1us controllers=57us refresh=6819us paint=5471us total=25688us rebuilds=1 wraps=1 last_visible=44 tokens_accurate_first_paint=true
+[bench] open file /tmp/vscodet-perf/1000.zig: first=28156us best=25101us
+OK
+2/5 tui.benchmark.test.benchmark: edit frame...[bench] edit 0: 9185us edit=182 refresh=3521 paint=5482
+[bench] edit 1: 9006us edit=126 refresh=3482 paint=5398
+[bench] edit 2: 9288us edit=128 refresh=3680 paint=5480
+[bench] edit 3: 9172us edit=151 refresh=3607 paint=5414
+[bench] edit 4: 9002us edit=122 refresh=3476 paint=5404
+[bench] edit 5: 8979us edit=118 refresh=3450 paint=5411
+[bench] edit 6: 9008us edit=106 refresh=3509 paint=5393
+[bench] edit 7: 9037us edit=110 refresh=3516 paint=5411
+[bench] edit 8: 8931us edit=114 refresh=3404 paint=5413
+[bench] edit 9: 9114us edit=121 refresh=3434 paint=5559
+[bench] edit frame /tmp/vscodet-perf/1000.zig: best=8931us last=9114us avg_edit=127us avg_refresh=3507us avg_paint=5436us wraps_delta=0
+OK
+3/5 tui.benchmark.test.benchmark: scroll frame...[bench] scroll frame /tmp/vscodet-perf/1000.zig: line_best=7623us avg_refresh=2393us avg_paint=5816us page_best=8165us wheel_best=7689us rebuilds=82
+OK
+4/5 tui.benchmark.test.benchmark: word highlight...[bench] word highlight /tmp/vscodet-perf/1000.zig: 21us matches=0
+OK
+5/5 tui.benchmark.test.benchmark: deferred maintenance...[bench] deferred maintenance /tmp/vscodet-perf/1000.zig: background=161227us(polls=81) folding=2472us(true) bracket_guides=23729us(true)
+OK
+All 5 tests passed.
