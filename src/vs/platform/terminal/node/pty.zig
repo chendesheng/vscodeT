@@ -15,7 +15,9 @@ const builtin = @import("builtin");
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
 
-pub const is_supported = builtin.os.tag != .windows;
+const is_windows = builtin.os.tag == .windows;
+
+pub const is_supported = !is_windows;
 
 pub const EnvVar = struct {
     key: []const u8,
@@ -66,7 +68,7 @@ pub const PtyProcess = struct {
     master_open: bool = true,
 
     pub fn spawn(allocator: Allocator, options: SpawnOptions) !PtyProcess {
-        if (builtin.os.tag == .windows) return error.UnsupportedPlatform;
+        if (comptime is_windows) return error.UnsupportedPlatform;
         return spawnPosix(allocator, options);
     }
 
@@ -118,6 +120,7 @@ pub const PtyProcess = struct {
 
     pub fn deinit(self: *PtyProcess) void {
         self.pending.deinit();
+        if (comptime is_windows) return;
         if (self.exit == null) {
             self.signal(posix.SIG.HUP);
             // Give the shell a moment to run its exit path, then make sure it
@@ -137,6 +140,7 @@ pub const PtyProcess = struct {
     }
 
     pub fn fd(self: *const PtyProcess) ?posix.fd_t {
+        if (comptime is_windows) return null;
         if (!self.master_open) return null;
         return self.master;
     }
@@ -144,6 +148,7 @@ pub const PtyProcess = struct {
     /// Reads available bytes. Returns 0 both for EAGAIN and EOF; EOF is
     /// reflected in `exit` after `pollExit` reaps the child.
     pub fn read(self: *PtyProcess, buffer: []u8) !usize {
+        if (comptime is_windows) return error.UnsupportedPlatform;
         if (!self.master_open or buffer.len == 0) return 0;
         const n = posix.read(self.master, buffer) catch |err| switch (err) {
             error.WouldBlock => return 0,
@@ -160,6 +165,7 @@ pub const PtyProcess = struct {
     /// Queues bytes for the shell. They are flushed immediately when possible;
     /// call `flush` again when the master is writable.
     pub fn write(self: *PtyProcess, bytes: []const u8) !void {
+        if (comptime is_windows) return error.UnsupportedPlatform;
         if (bytes.len == 0) return;
         if (self.exit != null or !self.master_open) return;
         if (self.pending.items.len + bytes.len > max_pending_write) return error.WriteFailed;
@@ -168,11 +174,13 @@ pub const PtyProcess = struct {
     }
 
     pub fn hasPendingWrite(self: *const PtyProcess) bool {
+        if (comptime is_windows) return false;
         return self.pending.items.len != 0;
     }
 
     /// Writes as much of the pending queue as the master accepts.
     pub fn flush(self: *PtyProcess) !void {
+        if (comptime is_windows) return error.UnsupportedPlatform;
         if (!self.master_open) {
             self.pending.clearRetainingCapacity();
             return;
@@ -200,6 +208,7 @@ pub const PtyProcess = struct {
     }
 
     pub fn resize(self: *PtyProcess, cols: u16, rows: u16) !void {
+        if (comptime is_windows) return error.UnsupportedPlatform;
         if (!self.master_open) return;
         var window = posix.winsize{
             .row = rows,
@@ -214,11 +223,13 @@ pub const PtyProcess = struct {
     /// Sends a signal to the child's process group (forkpty made it the
     /// session leader, so the shell and its foreground children are covered).
     pub fn signal(self: *PtyProcess, sig: posix.SIG) void {
+        if (comptime is_windows) return;
         _ = std.c.kill(-self.pid, sig);
     }
 
     /// Non-blocking reap. Returns the exit result once.
     pub fn pollExit(self: *PtyProcess) ?Exit {
+        if (comptime is_windows) return null;
         if (self.exit) |value| return value;
         var status: c_int = 0;
         const result = waitpid(self.pid, &status, posix.W.NOHANG);
@@ -232,6 +243,7 @@ pub const PtyProcess = struct {
     }
 
     pub fn closeMaster(self: *PtyProcess) void {
+        if (comptime is_windows) return;
         if (!self.master_open) return;
         _ = std.c.close(self.master);
         self.master_open = false;
@@ -333,6 +345,7 @@ extern "c" fn forkpty(
 ) c_int;
 
 test "pty: build an explicit environment" {
+    if (comptime is_windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -350,7 +363,7 @@ test "pty: parse wait status" {
 }
 
 test "pty: spawn a shell, read output, resize and reap" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime is_windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var process = PtyProcess.spawn(allocator, .{
         .executable = "/bin/sh",

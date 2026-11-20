@@ -46,6 +46,7 @@ pub fn currentProcessId() u32 {
 }
 
 pub const ExtensionHostError = error{
+    UnsupportedPlatform,
     HostExited,
     HostTimeout,
     InvalidFrame,
@@ -128,6 +129,10 @@ pub const HostManager = struct {
     stopped: bool = false,
 
     pub fn start(allocator: Allocator, options: Options) !*HostManager {
+        // The transport is a Unix socket and the launcher runs through
+        // /bin/sh; neither exists on Windows. The app treats this error as
+        // "extensions disabled" and keeps running.
+        if (comptime builtin.os.tag == .windows) return ExtensionHostError.UnsupportedPlatform;
         const self = try allocator.create(HostManager);
         errdefer allocator.destroy(self);
         self.* = .{
