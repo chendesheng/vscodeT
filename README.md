@@ -37,7 +37,13 @@ required for the measurements below.
   re-reading and constructing a new one.
 - Edits apply the model's raw changes through
   `ProjectedViewModelLines.applyRawChanges` instead of re-wrapping the whole
-  file, matching upstream's incremental view-model update.
+  file, matching upstream's incremental view-model update. A keystroke lets
+  the token store invalidate from the edited line and tokenizes from the first
+  invalid line; it no longer forces a refresh of the whole visible range.
+- Scrolling reuses the overlapping rendered-line window and each line's
+  retained render output. Line caches are invalidated from the model's
+  content/token/decoration events, not on every frame. The terminal paint path
+  has an ASCII fast path for the common case.
 - Folding is scheduled like upstream: a 200 ms minimum debounce, coalesced while
   typing, and driven by the main-loop tick. Fold commands and gutter clicks
   still compute immediately.
@@ -47,14 +53,14 @@ required for the measurements below.
   colorization is disabled. The deferral keeps first paint and key echo fast,
   but the one-time AST build can cause a brief pause when the app is idle after
   opening or editing a large file.
-- Tokenization stays viewport-scoped. The model is not attached to an editor,
-  so the ported background tokenizer's whole-file loop stays dormant; editable
-  views force tokens only up to the last visible line, and scrolling extends
-  that range. Large documents first paint plain text and tokenize the viewport
-  on the next idle main-loop tick; small documents tokenize synchronously. The
-  first open of a language still loads its TextMate grammar once per process.
-- `zig build bench-open` runs the opt-in `benchmark:` tests: open stages, one
-  edit frame, word-highlight scanning, and the viewport-tokenization contract.
+- Visible-line tokens are forced synchronously, as upstream does; the model is
+  attached and the remaining lines are tokenized by the ported
+  `DefaultBackgroundTokenizer` in ~1 ms chunks from idle main-loop ticks.
+  Scrolling extends the visible token range. The first open of a language still
+  loads its TextMate grammar once per process.
+- `zig build bench-open` runs the opt-in `benchmark:` tests: open stages, edit
+  stage breakdown, one-line/page/wheel scroll frames, word-highlight scanning,
+  and the viewport-tokenization contract.
   Set `VSCODE_TEXTBUFFER_BENCH_FILE` to benchmark another file (default
   `src/tui/app.zig`).
 

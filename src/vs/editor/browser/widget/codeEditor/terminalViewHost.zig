@@ -171,6 +171,7 @@ pub const TerminalViewHost = struct {
     view_handlers: std.ArrayListUnmanaged(*ViewEventHandler) = .empty,
     last_version: u32 = 0,
     last_selection_hash: u64 = 0,
+    last_decoration_generation: usize = 0,
     last_start_line: usize = 0,
     last_end_line: usize = 0,
     first_frame: bool = true,
@@ -267,11 +268,15 @@ pub const TerminalViewHost = struct {
             .completelyVisibleEndLineNumber = end_line,
             .lineHeight = 1,
         };
-        self.decorations.onModelDecorationsChanged();
+        const decoration_generation = self.editor.decorationGeneration();
+        if (self.first_frame or decoration_generation != self.last_decoration_generation) {
+            self.decorations.onModelDecorationsChanged();
+            self.view.getViewLines().invalidateDecorations();
+            self.last_decoration_generation = decoration_generation;
+        }
         const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
-        // The terminal view model owns one reusable line-content buffer.
-        // Retained render inputs would point at the previous line's data.
-        self.view.getViewLines().invalidateRenderedInputs();
+        // ViewLine owns copies of its render input, so scrolling can retain
+        // unchanged rendered lines instead of invalidating the whole window.
         // The viewport is a stack value, so `ViewLines.last_viewport` must be
         // refreshed on every pass before overlays query it.
         self.view.getViewLines().forceShouldRender();
@@ -284,7 +289,7 @@ pub const TerminalViewHost = struct {
         const version = self.editor.model.getVersionId();
         const selection_hash = selectionHash(self.selections);
         const range_changed = start_line != self.last_start_line or end_line != self.last_end_line;
-        if (self.first_frame or version != self.last_version or range_changed) {
+        if (self.first_frame or version != self.last_version) {
             self.dispatch(.{ .ViewFlushed = .{} });
             self.dispatch(.{ .ViewZonesChanged = .{} });
         }

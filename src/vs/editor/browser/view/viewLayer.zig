@@ -361,15 +361,65 @@ pub fn VisibleLinesCollection(comptime T: type) type {
             return &self.lines.lines.items[line_number - self.lines.rend_line_number_start];
         }
 
-        /// Rebuilds the line window when needed for `viewport`.
+        /// Synchronizes the rendered window with `viewport`, reusing lines that
+        /// remain visible. Upstream's `ViewLayerRenderer.render` shifts the
+        /// overlap and creates/disposes only the entering/leaving lines; the
+        /// previous terminal version flushed the whole window on every scroll.
         pub fn syncWindow(self: *Self, viewport: *const @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData) !void {
             const start = viewport.startLineNumber;
             const end = viewport.endLineNumber;
-            if (self.lines.getCount() == 0 or self.lines.getStartLineNumber() != start or self.lines.getEndLineNumber() != end) {
-                self.lines.flush();
-                self.lines.rend_line_number_start = start;
-                for (start..end + 1) |_| try self.lines.lines.append(try self.line_factory.create(self.line_factory.context));
+            if (start == 0 or end < start) return;
+            const target_count = end - start + 1;
+
+            const old_start = self.lines.rend_line_number_start;
+            const old_count = self.lines.lines.items.len;
+            if (old_count == target_count and old_start == start) return;
+            const old_end = if (old_count == 0) old_start - 1 else old_start + old_count - 1;
+
+            const overlap_start = @max(start, old_start);
+            const overlap_end = @min(end, old_end);
+            const has_overlap = old_count > 0 and overlap_start <= overlap_end;
+            const before_count = if (has_overlap) overlap_start - start else target_count;
+            const after_count = if (has_overlap) end - overlap_end else 0;
+
+            var before = std.array_list.Managed(T).init(self.allocator);
+            defer before.deinit();
+            var after = std.array_list.Managed(T).init(self.allocator);
+            defer after.deinit();
+            var created_committed = false;
+            defer if (!created_committed) {
+                for (before.items) |*line| self.lines.disposeLine(line);
+                for (after.items) |*line| self.lines.disposeLine(line);
+            };
+
+            try before.ensureTotalCapacity(before_count);
+            for (0..before_count) |_| before.appendAssumeCapacity(try self.line_factory.create(self.line_factory.context));
+            try after.ensureTotalCapacity(after_count);
+            for (0..after_count) |_| after.appendAssumeCapacity(try self.line_factory.create(self.line_factory.context));
+
+            var replacement = std.array_list.Managed(T).init(self.allocator);
+            try replacement.ensureTotalCapacity(target_count);
+            for (before.items) |line| replacement.appendAssumeCapacity(line);
+            if (has_overlap) {
+                for (overlap_start..overlap_end + 1) |line_number| {
+                    replacement.appendAssumeCapacity(self.lines.lines.items[line_number - old_start]);
+                }
             }
+            for (after.items) |line| replacement.appendAssumeCapacity(line);
+
+            // Lines outside the new window leave the collection; lines in the
+            // overlap were copied into `replacement` and must not be freed.
+            for (0..old_count) |index| {
+                const line_number = old_start + index;
+                if (line_number < start or line_number > end) {
+                    self.lines.disposeLine(&self.lines.lines.items[index]);
+                }
+            }
+            self.lines.lines.deinit();
+
+            self.lines.lines = replacement;
+            self.lines.rend_line_number_start = start;
+            created_committed = true;
         }
 
         /// Rebuilds the line window when needed and renders each line into `sb`.
@@ -490,4 +540,89 @@ test "visible lines collection renders the viewport window" {
     sb.reset();
     try collection.renderLines(&viewport, &sb);
     try std.testing.expectEqualStrings("", sb.build());
+}
+
+test "visible lines collection reuses the overlapping scroll window" {
+    const Line = struct {
+        id: usize = 0,
+        fn create(context: *anyopaque) anyerror!@This() {
+            const next: *usize = @ptrCast(@alignCast(context));
+            const line = @This(){ .id = next.* };
+            next.* += 1;
+            return line;
+        }
+    };
+    const layout = @import("../../common/viewModel.zig").IViewLayout{
+        .context = @ptrFromInt(@alignOf(usize)),
+        .get_scroll_width = struct {
+            fn f(_: *anyopaque) f64 {
+                return 0;
+            }
+        }.f,
+        .get_scroll_height = struct {
+            fn f(_: *anyopaque) f64 {
+                return 0;
+            }
+        }.f,
+        .get_current_viewport = struct {
+            fn f(_: *anyopaque) @import("../../common/viewModel.zig").Viewport {
+                return .{ .top = 0, .left = 0, .width = 0, .height = 0 };
+            }
+        }.f,
+        .get_vertical_offset_for_line_number = struct {
+            fn f(_: *anyopaque, _: usize, _: bool) f64 {
+                return 0;
+            }
+        }.f,
+        .get_vertical_offset_after_line_number = struct {
+            fn f(_: *anyopaque, _: usize, _: bool) f64 {
+                return 0;
+            }
+        }.f,
+        .get_line_height_for_line_number = struct {
+            fn f(_: *anyopaque, _: usize) f64 {
+                return 20;
+            }
+        }.f,
+    };
+    const allocator = std.testing.allocator;
+    var next_id: usize = 0;
+    var collection = VisibleLinesCollection(Line).init(allocator, layout, .{
+        .context = &next_id,
+        .create = Line.create,
+    });
+    defer collection.deinit();
+
+    const offsets = [_]f64{ 0, 20 };
+    const first_viewport = @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData{
+        .selections = &.{},
+        .startLineNumber = 5,
+        .endLineNumber = 6,
+        .relativeVerticalOffset = &offsets,
+        .visibleRange = @import("../../common/core/range.zig").Range.init(5, 1, 6, 1),
+        .bigNumbersDelta = 0,
+        .whitespaceViewportData = &.{},
+        .lineHeight = 20,
+        ._model = undefined,
+    };
+    try collection.syncWindow(&first_viewport);
+    const retained_id = collection.getVisibleLine(6).id;
+    try std.testing.expectEqual(@as(usize, 2), next_id);
+
+    const second_viewport = @import("../../common/viewLayout/viewLinesViewportData.zig").ViewportData{
+        .selections = &.{},
+        .startLineNumber = 6,
+        .endLineNumber = 7,
+        .relativeVerticalOffset = &offsets,
+        .visibleRange = @import("../../common/core/range.zig").Range.init(6, 1, 7, 1),
+        .bigNumbersDelta = 0,
+        .whitespaceViewportData = &.{},
+        .lineHeight = 20,
+        ._model = undefined,
+    };
+    try collection.syncWindow(&second_viewport);
+    try std.testing.expectEqual(retained_id, collection.getVisibleLine(6).id);
+    try std.testing.expectEqual(@as(usize, 3), next_id);
+    try std.testing.expectEqual(@as(usize, 6), collection.getStartLineNumber());
+    try std.testing.expectEqual(@as(usize, 7), collection.getEndLineNumber());
 }

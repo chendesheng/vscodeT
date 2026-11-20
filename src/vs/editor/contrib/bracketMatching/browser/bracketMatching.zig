@@ -42,6 +42,9 @@ pub const BracketMatchingController = struct {
 
     last_brackets_data: ArrayList(BracketsData),
     last_version_id: u32 = 0,
+    /// Incremented whenever the visual match data is recomputed or cleared;
+    /// the view uses it to avoid rebuilding identical model decorations.
+    match_generation: usize = 0,
 
     pub fn init(allocator: Allocator, model: *TextModel) BracketMatchingController {
         return .{
@@ -179,12 +182,18 @@ pub const BracketMatchingController = struct {
     /// selections disables matching.
     pub fn updateBrackets(self: *BracketMatchingController, selections: []const Selection) ![]const BracketsData {
         if (self.match_brackets == .never or !self.has_focus) {
+            if (self.last_brackets_data.items.len > 0 or self.last_version_id != 0) {
+                self.match_generation += 1;
+            }
             self.last_brackets_data.clearRetainingCapacity();
             self.last_version_id = 0;
             return self.last_brackets_data.items;
         }
 
         if (selections.len > 100) {
+            if (self.last_brackets_data.items.len > 0 or self.last_version_id != 0) {
+                self.match_generation += 1;
+            }
             self.last_brackets_data.clearRetainingCapacity();
             self.last_version_id = 0;
             return self.last_brackets_data.items;
@@ -216,6 +225,7 @@ pub const BracketMatchingController = struct {
         }
 
         if (self.last_version_id != version_id) self.ensureAstTokens();
+        self.match_generation += 1;
 
         var previous = ArrayList(BracketsData).init(self.allocator);
         defer previous.deinit();
@@ -250,6 +260,10 @@ pub const BracketMatchingController = struct {
         self.last_brackets_data = new_data;
         self.last_version_id = version_id;
         return self.last_brackets_data.items;
+    }
+
+    pub fn matchGeneration(self: *const BracketMatchingController) usize {
+        return self.match_generation;
     }
 };
 

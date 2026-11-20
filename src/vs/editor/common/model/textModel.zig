@@ -215,6 +215,10 @@ pub const TextModel = struct {
         try self._tokenizationTextModelPart.onDidChangeTokens(callback);
     }
 
+    pub fn onDidChangeDecorationsWithContext(self: *TextModel, ctx: anytype, callback: fn (ModelDecorationsChangedEvent, @TypeOf(ctx)) anyerror!void) !void {
+        try self._onDidChangeDecorations.eventWithContext(ctx, callback);
+    }
+
     pub fn onDidChangeLanguage(self: *TextModel, ctx: anytype, callback: fn (ModelLanguageChangedEvent, @TypeOf(ctx)) anyerror!void) !void {
         try self._tokenizationTextModelPart.onDidChangeLanguage(ctx, callback);
     }
@@ -237,13 +241,14 @@ pub const TextModel = struct {
     }
 
     pub fn forceTokenization(self: *TextModel, lineNumber: usize) void {
+        // Bracket pairs react to the token-change event. Marking them dirty
+        // unconditionally here made every frame (including scrolls with no
+        // token change) rebuild/defer the bracket AST.
         self._tokenizationTextModelPart.forceTokenization(lineNumber);
-        self._bracketPairs.markDirty();
     }
 
     pub fn tokenizeIfCheap(self: *TextModel, lineNumber: usize) void {
         self._tokenizationTextModelPart.tokenizeIfCheap(lineNumber);
-        self._bracketPairs.markDirty();
     }
 
     pub fn hasAccurateTokensForLine(self: *TextModel, lineNumber: usize) bool {
@@ -1711,6 +1716,10 @@ pub const TextModel = struct {
     pub fn removeAllDecorationsWithOwnerId(self: *TextModel, ownerId: usize) !void {
         const nodes = try self._decorationsTree.collectNodesFromOwner(ownerId);
         defer nodes.deinit();
+        if (nodes.items.len == 0) return;
+        self._onDidChangeDecorations.beginDeferredEmit();
+        self._onDidChangeDecorations._shouldFireDeferred = true;
+        defer self._onDidChangeDecorations.endDeferredEmit();
         for (nodes.items) |node| {
             self._decorationsTree.delete(node);
             _ = self._decorations.remove(node.id);
@@ -2772,6 +2781,10 @@ const DidChangeDecorationsEmitter = struct {
 
     fn event(self: *DidChangeDecorationsEmitter, callback: fn (ModelDecorationsChangedEvent) void) !void {
         try self._actual.event(callback);
+    }
+
+    pub fn eventWithContext(self: *DidChangeDecorationsEmitter, ctx: anytype, callback: fn (ModelDecorationsChangedEvent, @TypeOf(ctx)) anyerror!void) !void {
+        try self._actual.event(ctx, callback);
     }
 
     pub fn hasListeners(self: *DidChangeDecorationsEmitter) bool {

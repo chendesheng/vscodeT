@@ -14,6 +14,9 @@ const ui = @import("ui");
 
 const view_line_options = @import("./viewLineOptions.zig");
 const view_line_renderer = @import("../../../common/viewLayout/viewLineRenderer.zig");
+const line_tokens_mod = @import("../../../common/tokens/lineTokens.zig");
+const LineTokens = line_tokens_mod.LineTokens;
+const SliceLineTokens = line_tokens_mod.SliceLineTokens;
 const line_decorations_mod = @import("../../../common/viewLayout/lineDecorations.zig");
 const LineDecoration = line_decorations_mod.LineDecoration;
 const inline_decorations_mod = @import("../../../common/viewModel/inlineDecorations.zig");
@@ -26,6 +29,28 @@ const OffsetRange = @import("../../../common/core/ranges/offsetRange.zig").Offse
 
 const ViewLineOptions = view_line_options.ViewLineOptions;
 const RenderingContext = view_context.ViewContext;
+
+fn cloneLineTokens(allocator: Allocator, tokens: IViewLineTokens) !*LineTokens {
+    const owned = try allocator.create(LineTokens);
+    errdefer allocator.destroy(owned);
+    switch (tokens) {
+        .tokens => |line| owned.* = try line.clone(allocator),
+        .slice => |slice| owned.* = try slice._source.clone(allocator),
+    }
+    return owned;
+}
+
+fn tokenView(original: IViewLineTokens, owned: *LineTokens) IViewLineTokens {
+    return switch (original) {
+        .tokens => IViewLineTokens.init(owned),
+        .slice => |slice| IViewLineTokens.initSlice(SliceLineTokens.init(
+            owned,
+            slice._startOffset,
+            slice._endOffset,
+            slice._deltaOffset,
+        )),
+    };
+}
 
 /// Port of `ViewLine` (the `IVisibleLine` implementation used by
 /// `VisibleLinesCollection`).
@@ -45,6 +70,11 @@ pub const ViewLine = struct {
     pub const RenderedViewLine = struct {
         input: view_line_renderer.Input,
         rendered: view_line_renderer.RenderedLine,
+        /// Owned by this record; `input.content` points into it.
+        content: []u8,
+        /// Owned by this record; `input.tokens` points at it. Heap-allocated so
+        /// the address stays valid when the containing `ViewLine` moves.
+        tokens: *LineTokens,
         /// Owned by this record; `input.line_decorations` points into it.
         decorations: []LineDecoration,
         /// Owned by this record; `input.selection_ranges` points into it.
@@ -54,6 +84,9 @@ pub const ViewLine = struct {
 
         pub fn deinit(self: *RenderedViewLine, allocator: Allocator) void {
             self.rendered.deinit(allocator);
+            allocator.free(self.content);
+            self.tokens.deinit();
+            allocator.destroy(self.tokens);
             allocator.free(self.decorations);
             allocator.free(self.selection_ranges);
         }
@@ -168,9 +201,29 @@ pub const ViewLine = struct {
         const owned_selections = selection_ranges.toOwnedSlice() catch return false;
         errdefer self.allocator.free(owned_selections);
 
+        // The view model reuses its line-content and token buffers, so a
+        // retained render input must own stable copies. Without these copies
+        // the host had to invalidate every visible line on every frame.
+        const owned_content = self.allocator.dupe(u8, line_data.content) catch {
+            self.allocator.free(owned_decorations);
+            self.allocator.free(owned_selections);
+            return false;
+        };
+        errdefer self.allocator.free(owned_content);
+        const owned_tokens = cloneLineTokens(self.allocator, line_data.tokens) catch {
+            self.allocator.free(owned_content);
+            self.allocator.free(owned_decorations);
+            self.allocator.free(owned_selections);
+            return false;
+        };
+        errdefer {
+            owned_tokens.deinit();
+            self.allocator.destroy(owned_tokens);
+        }
+
         const input = view_line_renderer.Input{
-            .content = line_data.content,
-            .tokens = line_data.tokens,
+            .content = owned_content,
+            .tokens = tokenView(line_data.tokens, owned_tokens),
             .tab_size = line_data.tabSize,
             .start_visible_column = line_data.startVisibleColumn,
             .render_whitespace = render_whitespace,
@@ -185,8 +238,11 @@ pub const ViewLine = struct {
             .text_direction = line_data.textDirection,
         };
 
-        if (self.rendered_view_line) |rendered| {
+        if (self.rendered_view_line) |*rendered| {
             if (rendered.input.equals(&input)) {
+                self.allocator.free(owned_content);
+                owned_tokens.deinit();
+                self.allocator.destroy(owned_tokens);
                 self.allocator.free(owned_decorations);
                 self.allocator.free(owned_selections);
                 if (sb) |buffer| buffer.appendString(rendered.rendered.bytes) catch return false;
@@ -195,6 +251,9 @@ pub const ViewLine = struct {
         }
 
         var rendered = view_line_renderer.renderLine(self.allocator, input) catch {
+            self.allocator.free(owned_content);
+            owned_tokens.deinit();
+            self.allocator.destroy(owned_tokens);
             self.allocator.free(owned_decorations);
             self.allocator.free(owned_selections);
             return false;
@@ -205,6 +264,8 @@ pub const ViewLine = struct {
         if (self.rendered_view_line) |*previous| previous.deinit(self.allocator);
         self.rendered_view_line = .{
             .input = input,
+            .content = owned_content,
+            .tokens = owned_tokens,
             .rendered = rendered,
             .decorations = owned_decorations,
             .selection_ranges = owned_selections,

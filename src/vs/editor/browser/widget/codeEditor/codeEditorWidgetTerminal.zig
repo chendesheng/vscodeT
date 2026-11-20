@@ -268,6 +268,7 @@ pub const Editor = struct {
     pending_selection_count: usize,
     last_content_change: ?LastContentChange = null,
     tokens_need_refresh: bool,
+    decoration_generation: usize,
     /// The model stays attached for the lifetime of the terminal editor, so
     /// the ported default background tokenizer can run from the main loop.
     attached_view: ?*AttachedView = null,
@@ -574,6 +575,7 @@ pub const Editor = struct {
             .pending_selection = undefined,
             .pending_selection_count = 0,
             .tokens_need_refresh = false,
+            .decoration_generation = 0,
             .keybindings = null,
             .shortcut_commands = CommandRegistry.init(allocator),
             .find_context = null,
@@ -613,6 +615,7 @@ pub const Editor = struct {
         editor.triggerBracketGuidesUpdate(time_compat.milliTimestamp());
 
         try model.onDidChangeContentWithContext(editor, contentChangedCallback);
+        try model.onDidChangeDecorationsWithContext(editor, decorationChangedCallback);
         editor.attached_view = try model.onBeforeAttached();
 
         return editor;
@@ -1036,6 +1039,10 @@ pub const Editor = struct {
 
     fn contentChangedCallback(event: InternalModelContentChangeEvent, editor: *Editor) anyerror!void {
         editor.onModelContentChanged(event);
+    }
+
+    fn decorationChangedCallback(_: @import("../../../common/textModelEvents.zig").ModelDecorationsChangedEvent, editor: *Editor) anyerror!void {
+        editor.decoration_generation +%= 1;
     }
 
     fn onModelContentChanged(self: *Editor, event: InternalModelContentChangeEvent) void {
@@ -1672,6 +1679,7 @@ pub const Editor = struct {
             const first_model_line = self.view_lines.getModelLineNumber(self.top_view_line);
             self.model.tokenization().forceRefreshRange(first_model_line, model_line);
             self.tokens_need_refresh = false;
+            return;
         }
         self.model.forceTokenization(model_line);
     }
@@ -2157,9 +2165,14 @@ pub const Editor = struct {
     }
 
     fn afterEdit(self: *Editor) !void {
-        self.tokens_need_refresh = true;
+        // Ordinary edits are applied incrementally to the wrapping model and
+        // the token store invalidates the edited line via `acceptEdit`.
+        // Forcing a refresh of the whole visible range here re-tokenizes every
+        // visible line on every keystroke; `ensureTokensVisible` can continue
+        // from the first invalid line instead.
         if (self.view_lines.projections.items.len != self.model.getLineCount()) {
             try self.view_lines.rebuildAll();
+            self.tokens_need_refresh = true;
         }
         self.resetCursorViewState() catch {};
         try self.refreshLayout();
@@ -2929,6 +2942,14 @@ pub const Editor = struct {
         const selections = try self.cursorsRef().getSelections(self.allocator);
         defer self.allocator.free(selections);
         return self.bracket_matching.updateBrackets(selections);
+    }
+
+    pub fn bracketMatchGeneration(self: *const Editor) usize {
+        return self.bracket_matching.matchGeneration();
+    }
+
+    pub fn decorationGeneration(self: *const Editor) usize {
+        return self.decoration_generation;
     }
 
     pub fn jumpToBracket(self: *Editor) !void {
@@ -5002,6 +5023,39 @@ test "Editor: reserving the scrollbar avoids a second wrapping pass" {
     defer view.deinit();
     // View.init still sets the same width; it must not trigger another wrap.
     try std.testing.expectEqual(@as(usize, 1), editor.view_lines.rebuildAllCount());
+}
+
+test "Editor: inline edits do not request a full visible refresh" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "const x = 1;\nconst y = 2;\n", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.ensureTokensVisible();
+    try std.testing.expect(!editor.tokens_need_refresh);
+    try editor.insertText("z");
+    try std.testing.expect(!editor.tokens_need_refresh);
+    editor.ensureTokensVisible();
+    try std.testing.expect(editor.model.tokenization().hasAccurateTokensForLine(1));
+    try std.testing.expect(editor.model.tokenization().hasAccurateTokensForLine(2));
+}
+
+test "Editor: forcing accurate tokens does not dirty bracket pairs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "if (a) {\n  b();\n}\n", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.ensureTokensVisible();
+    const pairs = editor.model.bracketPairs();
+    try pairs.updateNow();
+    try std.testing.expect(!pairs.isDirty());
+    editor.model.forceTokenization(1);
+    try std.testing.expect(!pairs.isDirty());
 }
 
 test "Editor: fallback bracket matching (colorization disabled)" {

@@ -260,6 +260,7 @@ pub const View = struct {
     needs_rebuild: bool = true,
     /// Diagnostic counter for tests/benchmarks: full document rebuilds.
     rebuild_count: usize = 0,
+    last_bracket_generation: ?usize = null,
     /// Bridges the terminal editor to the ported `ViewLines` stack. The
     /// renderer below consumes its rendered line records.
     terminal_view_host: *TerminalViewHost,
@@ -808,24 +809,28 @@ pub const View = struct {
         // rebuild: a wheel scroll is allowed to leave it off-screen.
         _ = editor.scrollViewLines(0);
 
-        var bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(self.allocator);
-        defer bracket_decorations.deinit();
         const bracket_data = try editor.updateBracketMatches(self.hasEditorFocus());
-        for (bracket_data) |entry| {
-            const brackets = entry.brackets orelse continue;
-            const overview = entry.options == .with_overview_ruler;
-            try bracket_decorations.append(.{
-                .range = brackets[0],
-                .kind = .bracket_match,
-                .show_in_overview_ruler = overview,
-            });
-            try bracket_decorations.append(.{
-                .range = brackets[1],
-                .kind = .bracket_match,
-                .show_in_overview_ruler = overview,
-            });
+        const bracket_generation = editor.bracketMatchGeneration();
+        if (self.last_bracket_generation == null or self.last_bracket_generation.? != bracket_generation) {
+            var bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(self.allocator);
+            defer bracket_decorations.deinit();
+            for (bracket_data) |entry| {
+                const brackets = entry.brackets orelse continue;
+                const overview = entry.options == .with_overview_ruler;
+                try bracket_decorations.append(.{
+                    .range = brackets[0],
+                    .kind = .bracket_match,
+                    .show_in_overview_ruler = overview,
+                });
+                try bracket_decorations.append(.{
+                    .range = brackets[1],
+                    .kind = .bracket_match,
+                    .show_in_overview_ruler = overview,
+                });
+            }
+            try self.replaceModelDecorations(DecorationOwner.bracket, bracket_decorations.items);
+            self.last_bracket_generation = bracket_generation;
         }
-        try self.replaceModelDecorations(DecorationOwner.bracket, bracket_decorations.items);
 
         const doc = self.surface.document();
         doc.clear();

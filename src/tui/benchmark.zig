@@ -150,18 +150,107 @@ test "benchmark: edit frame" {
 
     var best_us: i64 = std.math.maxInt(i64);
     var last_us: i64 = 0;
+    var edit_total: i64 = 0;
+    var refresh_total: i64 = 0;
+    var paint_total: i64 = 0;
     for (0..10) |i| {
         const start = nowUs(io);
         try tab.editor.insertText("x");
+        const after_edit = nowUs(io);
         try tab.view.refresh();
+        const after_refresh = nowUs(io);
         try tab.view.paint();
-        last_us = nowUs(io) - start;
+        const after_paint = nowUs(io);
+        last_us = after_paint - start;
+        edit_total += after_edit - start;
+        refresh_total += after_refresh - after_edit;
+        paint_total += after_paint - after_refresh;
         best_us = @min(best_us, last_us);
-        std.debug.print("[bench] edit {d}: {d}us\n", .{ i, last_us });
+        std.debug.print("[bench] edit {d}: {d}us edit={d} refresh={d} paint={d}\n", .{
+            i,
+            last_us,
+            after_edit - start,
+            after_refresh - after_edit,
+            after_paint - after_refresh,
+        });
     }
     std.debug.print(
-        "[bench] edit frame {s}: best={d}us last={d}us wraps_delta={d}\n",
-        .{ path, best_us, last_us, tab.editor.view_lines.rebuildAllCount() - wraps_before },
+        "[bench] edit frame {s}: best={d}us last={d}us avg_edit={d}us avg_refresh={d}us avg_paint={d}us wraps_delta={d}\n",
+        .{
+            path,
+            best_us,
+            last_us,
+            @divTrunc(edit_total, 10),
+            @divTrunc(refresh_total, 10),
+            @divTrunc(paint_total, 10),
+            tab.editor.view_lines.rebuildAllCount() - wraps_before,
+        },
+    );
+}
+
+test "benchmark: scroll frame" {
+    if (!enabled()) return error.SkipZigTest;
+    const allocator = std.heap.page_allocator;
+    const io = time_compat.io;
+    const path = benchFile();
+    std.Io.Dir.cwd().access(io, path, .{}) catch return error.SkipZigTest;
+
+    var stages: [6]Stage = undefined;
+    const tab = try openOnce(allocator, io, path, &stages);
+    defer tab.deinit();
+    try tab.view.refresh();
+    try tab.view.paint();
+
+    const line_iterations: usize = 50;
+    var line_best: i64 = std.math.maxInt(i64);
+    var line_refresh: i64 = 0;
+    var line_paint: i64 = 0;
+    for (0..line_iterations) |_| {
+        const start = nowUs(io);
+        _ = tab.editor.scrollViewLines(1);
+        const after_scroll = nowUs(io);
+        try tab.view.refresh();
+        const after_refresh = nowUs(io);
+        try tab.view.paint();
+        const after_paint = nowUs(io);
+        line_best = @min(line_best, after_paint - start);
+        line_refresh += after_refresh - after_scroll;
+        line_paint += after_paint - after_refresh;
+    }
+
+    _ = tab.editor.setTopViewLine(1);
+    const page_iterations: usize = 10;
+    var page_best: i64 = std.math.maxInt(i64);
+    for (0..page_iterations) |_| {
+        const start = nowUs(io);
+        _ = tab.editor.scrollViewLines(@intCast(tab.editor.textHeight()));
+        try tab.view.refresh();
+        try tab.view.paint();
+        page_best = @min(page_best, nowUs(io) - start);
+    }
+
+    _ = tab.editor.setTopViewLine(1);
+    const wheel_iterations: usize = 20;
+    var wheel_best: i64 = std.math.maxInt(i64);
+    for (0..wheel_iterations) |_| {
+        const start = nowUs(io);
+        _ = tab.editor.scrollViewLines(3);
+        try tab.view.refresh();
+        try tab.view.paint();
+        wheel_best = @min(wheel_best, nowUs(io) - start);
+    }
+
+    std.debug.print(
+        "[bench] scroll frame {s}: line_best={d}us avg_refresh={d}us avg_paint={d}us page_best={d}us wheel_best={d}us rebuilds={d}\n",
+        .{
+            path,
+            line_best,
+            @divTrunc(line_refresh, @as(i64, @intCast(line_iterations))),
+            @divTrunc(line_paint, @as(i64, @intCast(line_iterations))),
+            page_best,
+            wheel_best,
+            tab.view.rebuildCount(),
+        },
     );
 }
 

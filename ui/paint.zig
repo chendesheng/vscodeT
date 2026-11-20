@@ -325,6 +325,19 @@ pub fn drawText(
     var column = cell.snap(x);
     var offset: usize = 0;
     while (offset < text.len) {
+        // Fast path for printable ASCII, which is the overwhelming case for
+        // terminal editor text. Avoid decoding/measuring every byte.
+        const byte = text[offset];
+        if (byte >= 0x20 and byte < 0x7f) {
+            offset += 1;
+            if (column >= clip_right) break;
+            if (column >= clip_left) {
+                const cell_paint = if (keep_background) keepBackground(grid, column, row, paint) else paint;
+                grid.putCodepoint(column, row, byte, 1, cell_paint);
+            }
+            column += 1;
+            continue;
+        }
         const decoded = dom.decodeAt(text, offset);
         if (decoded.len == 0) break;
         offset += decoded.len;

@@ -340,6 +340,19 @@ pub const ViewLines = struct {
 
     /// Clears retained inputs on every rendered line. Used by the terminal
     /// host because its view-model line buffers are reused between calls.
+    /// Invalidates decoration-dependent line caches. The terminal host does
+    /// not route `ViewDecorationsChanged` through the ported part list, so it
+    /// calls this directly when the model decoration generation changes.
+    pub fn invalidateDecorations(self: *ViewLines) void {
+        const start = self.visible_lines.getStartLineNumber();
+        const end = self.visible_lines.getEndLineNumber();
+        if (start == 0 or end < start) return;
+        var line_number = start;
+        while (line_number <= end) : (line_number += 1) {
+            self.visible_lines.getVisibleLine(line_number).onDecorationsChanged();
+        }
+    }
+
     pub fn invalidateRenderedInputs(self: *ViewLines) void {
         const start = self.visible_lines.getStartLineNumber();
         const end = self.visible_lines.getEndLineNumber();
