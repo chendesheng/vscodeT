@@ -393,6 +393,18 @@ pub const ProviderFileService = struct {
 
     const ParsedResource = struct { scheme: []const u8, path: []const u8 };
 
+    /// URI-style resource paths use `/`, but Windows disk resources are
+    /// native paths with `\\`. `std.fs.path.basename` reads a leading `//`
+    /// as a UNC server and returns an empty name, so split on both
+    /// separators and ignore empty trailing components instead.
+    fn resourceBasename(path: []const u8) []const u8 {
+        var end = path.len;
+        while (end > 0 and (path[end - 1] == '/' or path[end - 1] == '\\')) end -= 1;
+        var start = end;
+        while (start > 0 and path[start - 1] != '/' and path[start - 1] != '\\') start -= 1;
+        return path[start..end];
+    }
+
     fn parseResource(resource: []const u8) ?ParsedResource {
         // A resource is `scheme:path`. Do not require `/` after the colon:
         // on Windows a native path is `file:C:\...`, and the disk provider
@@ -430,7 +442,7 @@ pub const ProviderFileService = struct {
         const stat_info = try found.provider.getStat(found.parsed.path);
         return .{
             .resource = resource,
-            .name = std.fs.path.basename(found.parsed.path),
+            .name = resourceBasename(found.parsed.path),
             .type = stat_info.type,
             .size = stat_info.size,
             .mtime = @intCast(@max(stat_info.mtime, 0)),
@@ -458,7 +470,7 @@ pub const ProviderFileService = struct {
         const stat_info = try provider.getStat(path);
         var result = files.FileStat{
             .resource = try allocator.dupe(u8, resource),
-            .name = try allocator.dupe(u8, std.fs.path.basename(path)),
+            .name = try allocator.dupe(u8, resourceBasename(path)),
             .type = stat_info.type,
             .size = stat_info.size,
             .mtime = @intCast(@max(stat_info.mtime, 0)),
@@ -469,7 +481,7 @@ pub const ProviderFileService = struct {
         if (resolve_to) |targets| {
             var children = std.array_list.Managed(files.FileStat).init(allocator);
             for (targets) |target| {
-                const name = std.fs.path.basename(target);
+                const name = resourceBasename(target);
                 const child_resource = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ resource, name });
                 const child_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ path, name });
                 const child = try resolveResource(self, allocator, child_resource, provider, child_path, null);
@@ -615,7 +627,7 @@ pub const ProviderFileService = struct {
         if (target) |value| {
             target_copy = value;
             target_copy.?.resource = resource;
-            target_copy.?.name = std.fs.path.basename(resource);
+            target_copy.?.name = resourceBasename(resource);
         }
         try self.on_did_run_operation.fire(.{ .operation = operation, .resource = resource, .target = target_copy });
     }
