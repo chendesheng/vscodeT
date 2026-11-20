@@ -1,10 +1,11 @@
 // Port of the baseline subset of
 // `src/vs/workbench/api/browser/mainThreadLanguageFeatures.ts`.
 //
-// Ported features: hover, completion, definition, document symbols, code
-// actions and document/range/on-type formatting. The actor stores providers by
-// handle in `LanguageFeaturesService`, converts the extension-host DTOs into
-// editor types and forwards provider calls back to `ExtHostLanguageFeatures`.
+// Ported features: hover, completion, definition, declaration,
+// implementation, type definition, references, document symbols, code actions
+// and document/range/on-type formatting. The actor stores providers by handle
+// in `LanguageFeaturesService`, converts the extension-host DTOs into editor
+// types and forwards provider calls back to `ExtHostLanguageFeatures`.
 //
 // Terminal adaptation: provider calls are synchronous with a bounded timeout
 // because the TUI editor has no asynchronous provider boundary. Workspace
@@ -71,7 +72,8 @@ const CompletionState = struct {
     trigger_characters: []const []const u8,
     supports_resolve: bool,
 };
-const DefinitionState = struct { registration: *Registration };
+const LocationState = struct { registration: *Registration };
+const ReferenceState = struct { registration: *Registration };
 const DocumentSymbolState = struct {
     registration: *Registration,
     display_name: []const u8,
@@ -151,7 +153,11 @@ pub const MainThreadLanguageFeatures = struct {
         }
         if (std.mem.eql(u8, method, "$registerHoverProvider")) return self.registerHover(args, arena);
         if (std.mem.eql(u8, method, "$registerCompletionsProvider")) return self.registerCompletion(args, arena);
-        if (std.mem.eql(u8, method, "$registerDefinitionSupport")) return self.registerDefinition(args, arena);
+        if (std.mem.eql(u8, method, "$registerDefinitionSupport")) return self.registerLocationProvider(args, arena, .definition);
+        if (std.mem.eql(u8, method, "$registerDeclarationSupport")) return self.registerLocationProvider(args, arena, .declaration);
+        if (std.mem.eql(u8, method, "$registerImplementationSupport")) return self.registerLocationProvider(args, arena, .implementation);
+        if (std.mem.eql(u8, method, "$registerTypeDefinitionSupport")) return self.registerLocationProvider(args, arena, .type_definition);
+        if (std.mem.eql(u8, method, "$registerReferenceSupport")) return self.registerReference(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentSymbolProvider")) return self.registerDocumentSymbol(args, arena);
         if (std.mem.eql(u8, method, "$registerCodeActionSupport")) return self.registerCodeAction(args, arena);
         if (std.mem.eql(u8, method, "$registerDocumentFormattingSupport")) return self.registerDocumentFormatting(args, arena);
@@ -202,16 +208,46 @@ pub const MainThreadLanguageFeatures = struct {
         return .empty;
     }
 
-    fn registerDefinition(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+    const LocationKind = enum { definition, declaration, implementation, type_definition };
+
+    fn registerLocationProvider(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator, kind: LocationKind) !rpc.HandlerReply {
         const handle = handleArg(args) orelse return error.InvalidArguments;
         const selector_value = jsonArg(args, 1) orelse return error.InvalidArguments;
         const parsed = try parseSelector(arena, selector_value);
         const registration = try self.createRegistration(arena, handle);
-        const state = try registration.arena.allocator().create(DefinitionState);
+        const state = try registration.arena.allocator().create(LocationState);
         state.* = .{ .registration = registration };
-        registration.disposable = try self.features.definition_provider.register(parsed, .{
+        switch (kind) {
+            .definition => registration.disposable = try self.features.definition_provider.register(parsed, .{
+                .context = state,
+                .provide_definition = provideDefinition,
+            }),
+            .declaration => registration.disposable = try self.features.declaration_provider.register(parsed, .{
+                .context = state,
+                .provide_declaration = provideDeclaration,
+            }),
+            .implementation => registration.disposable = try self.features.implementation_provider.register(parsed, .{
+                .context = state,
+                .provide_implementation = provideImplementation,
+            }),
+            .type_definition => registration.disposable = try self.features.type_definition_provider.register(parsed, .{
+                .context = state,
+                .provide_type_definition = provideTypeDefinition,
+            }),
+        }
+        return .empty;
+    }
+
+    fn registerReference(self: *MainThreadLanguageFeatures, args: []const rpc.Arg, arena: Allocator) !rpc.HandlerReply {
+        const handle = handleArg(args) orelse return error.InvalidArguments;
+        const selector_value = jsonArg(args, 1) orelse return error.InvalidArguments;
+        const parsed = try parseSelector(arena, selector_value);
+        const registration = try self.createRegistration(arena, handle);
+        const state = try registration.arena.allocator().create(ReferenceState);
+        state.* = .{ .registration = registration };
+        registration.disposable = try self.features.reference_provider.register(parsed, .{
             .context = state,
-            .provide_definition = provideDefinition,
+            .provide_references = provideReferences,
         });
         return .empty;
     }
@@ -385,7 +421,23 @@ pub const MainThreadLanguageFeatures = struct {
     }
 
     fn provideDefinition(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, token: CancellationToken) anyerror![]languages.LocationLink {
-        const state: *DefinitionState = @ptrCast(@alignCast(context));
+        return provideLocationLinksFor(context, allocator, model, position, token, "$provideDefinition");
+    }
+
+    fn provideDeclaration(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, token: CancellationToken) anyerror![]languages.LocationLink {
+        return provideLocationLinksFor(context, allocator, model, position, token, "$provideDeclaration");
+    }
+
+    fn provideImplementation(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, token: CancellationToken) anyerror![]languages.LocationLink {
+        return provideLocationLinksFor(context, allocator, model, position, token, "$provideImplementation");
+    }
+
+    fn provideTypeDefinition(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, token: CancellationToken) anyerror![]languages.LocationLink {
+        return provideLocationLinksFor(context, allocator, model, position, token, "$provideTypeDefinition");
+    }
+
+    fn provideLocationLinksFor(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, token: CancellationToken, method: []const u8) anyerror![]languages.LocationLink {
+        const state: *LocationState = @ptrCast(@alignCast(context));
         const self = state.registration.owner;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -394,7 +446,7 @@ pub const MainThreadLanguageFeatures = struct {
         try args.append(.{ .json = .{ .integer = state.registration.handle } });
         try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
         try args.append(.{ .json = try positionJson(scratch, model, position) });
-        const reply = self.call(scratch, "$provideDefinition", args.items, token, timeout_default_ms) catch return &.{};
+        const reply = self.call(scratch, method, args.items, token, timeout_default_ms) catch return &.{};
         if (reply != .array) return &.{};
         var result = std.array_list.Managed(languages.LocationLink).init(allocator);
         for (reply.array.items) |item| {
@@ -408,6 +460,36 @@ pub const MainThreadLanguageFeatures = struct {
                 .uri = try resourceKeyFromComponentsJson(allocator, uri_value),
                 .range = range,
                 .target_selection_range = if (object.get("targetSelectionRange")) |value| rangeFromJson(model, value) orelse range else range,
+            });
+        }
+        return result.toOwnedSlice();
+    }
+
+    fn provideReferences(context: *anyopaque, allocator: Allocator, model: *TextModel, position: Position, reference_context: languages.ReferenceContext, token: CancellationToken) anyerror![]languages.Location {
+        const state: *ReferenceState = @ptrCast(@alignCast(context));
+        const self = state.registration.owner;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var args = std.array_list.Managed(rpc.Arg).init(scratch);
+        try args.append(.{ .json = .{ .integer = state.registration.handle } });
+        try args.append(.{ .json = try std_uri.jsonComponents(scratch, model.uri()) });
+        try args.append(.{ .json = try positionJson(scratch, model, position) });
+        var context_json: std.json.ObjectMap = .empty;
+        try context_json.put(scratch, "includeDeclaration", .{ .bool = reference_context.include_declaration });
+        try args.append(.{ .json = .{ .object = context_json } });
+        const reply = self.call(scratch, "$provideReferences", args.items, token, timeout_default_ms) catch return &.{};
+        if (reply != .array) return &.{};
+        var result = std.array_list.Managed(languages.Location).init(allocator);
+        for (reply.array.items) |item| {
+            if (item != .object) continue;
+            const object = item.object;
+            const uri_value = object.get("uri") orelse continue;
+            const range_value = object.get("range") orelse continue;
+            const range = rangeFromJson(model, range_value) orelse continue;
+            try result.append(.{
+                .uri = try resourceKeyFromComponentsJson(allocator, uri_value),
+                .range = range,
             });
         }
         return result.toOwnedSlice();

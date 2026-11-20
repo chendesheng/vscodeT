@@ -128,6 +128,14 @@ const Range = @import("../../editor/common/core/range.zig").Range;
 const LanguageFeaturesService = @import("../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
 const languages = @import("../../editor/common/languages.zig");
 const CancellationToken = @import("../../base/common/cancellation.zig").CancellationToken;
+const go_to_symbol = @import("../../editor/contrib/gotoSymbol/browser/goToSymbol.zig");
+const references_model = @import("../../editor/contrib/gotoSymbol/browser/referencesModel.zig");
+const ReferencesModel = references_model.ReferencesModel;
+const go_to_commands = @import("../../editor/contrib/gotoSymbol/browser/goToCommands.zig");
+const goto_symbol_quick_access = @import("../contrib/codeEditor/browser/quickaccess/gotoSymbolQuickAccess.zig");
+const hover_operation = @import("../../editor/contrib/hover/browser/hoverOperation.zig");
+const hover_types = @import("../../editor/contrib/hover/browser/hoverTypes.zig");
+const strings = @import("../../base/common/strings.zig");
 const std_uri = @import("../../base/common/stdUri.zig");
 const MarkerService = @import("../../platform/markers/common/markerService.zig").MarkerService;
 const MarkerDecorationsService = @import("../../editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
@@ -165,6 +173,11 @@ pub const SplitDirection = grid_mod.Orientation;
 pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal };
 pub const DiffRef = enum { head, index, working, empty };
 const DiffWidgetOptions = diff_widget_mod.Options;
+
+const SymbolActionContext = struct {
+    workbench: *Workbench,
+    action: *const go_to_commands.ActionDescriptor,
+};
 
 /// Pane chrome for the terminal editor part. The active pane's outline uses
 /// the focused border colour and priority 1, so it wins a shared edge in a
@@ -273,6 +286,10 @@ pub const Workbench = struct {
     breadcrumbs_input: ?*EditorInput = null,
     breadcrumbs_host_context: BreadcrumbContext = undefined,
     breadcrumbs_arena: std.heap.ArenaAllocator,
+    navigation_arena: std.heap.ArenaAllocator,
+    pending_references: ?*ReferencesModel = null,
+    pending_symbols: ?[]goto_symbol_quick_access.Entry = null,
+    symbol_action_contexts: [go_to_commands.actions.len]SymbolActionContext = undefined,
     breadcrumbs_dirty: bool = false,
     hovered_tab: ?*Tab = null,
     hovered_pane: ?*GroupPane = null,
@@ -375,6 +392,10 @@ pub const Workbench = struct {
         self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
         self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.breadcrumbs_arena.deinit();
+        self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer self.navigation_arena.deinit();
+        self.pending_references = null;
+        self.pending_symbols = null;
         self.breadcrumbs_control = null;
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
@@ -483,6 +504,10 @@ pub const Workbench = struct {
         self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
         self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.breadcrumbs_arena.deinit();
+        self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer self.navigation_arena.deinit();
+        self.pending_references = null;
+        self.pending_symbols = null;
         self.breadcrumbs_control = null;
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
@@ -607,6 +632,10 @@ pub const Workbench = struct {
         self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
         self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.breadcrumbs_arena.deinit();
+        self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer self.navigation_arena.deinit();
+        self.pending_references = null;
+        self.pending_symbols = null;
         self.breadcrumbs_control = null;
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
@@ -870,6 +899,38 @@ pub const Workbench = struct {
             .{ .id = "editor.action.wordHighlight.prev", .label = "Go to Previous Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightPrevious },
         };
         for (commands) |command| try self.commands.register(command);
+
+        for (go_to_commands.actions, 0..) |_, index| {
+            const action = &go_to_commands.actions[index];
+            self.symbol_action_contexts[index] = .{ .workbench = self, .action = action };
+            try self.commands.register(.{
+                .id = action.id,
+                .label = action.label,
+                .description = action.description,
+                .category = "Go",
+                .context = &self.symbol_action_contexts[index],
+                .requires_editor = true,
+                .run = commandSymbolNavigation,
+            });
+        }
+        try self.commands.register(.{
+            .id = goto_symbol_quick_access.command_id,
+            .label = goto_symbol_quick_access.command_label,
+            .description = "Go to a symbol in the active editor.",
+            .category = "Go",
+            .context = self,
+            .requires_editor = true,
+            .run = commandGotoSymbol,
+        });
+        try self.commands.register(.{
+            .id = "editor.action.showHover",
+            .label = "Show or Focus Hover",
+            .description = "Show or focus the editor hover at the cursor.",
+            .category = "Editor",
+            .context = self,
+            .requires_editor = true,
+            .run = commandShowHover,
+        });
     }
 
     pub fn handleQuickAccessKey(self: *Workbench, event: *ui.KeyEvent) !bool {
@@ -973,6 +1034,7 @@ pub const Workbench = struct {
         }
         self.disposeBreadcrumbs();
         self.breadcrumbs_arena.deinit();
+        self.navigation_arena.deinit();
         self.breadcrumbs_service.deinit();
         self.outline_service.deinit();
         if (self.editor_status) |status| {
@@ -2641,6 +2703,12 @@ pub const Workbench = struct {
         return path[trimmed.len + 1 ..];
     }
 
+    fn pathForUri(allocator: Allocator, uri: []const u8) []const u8 {
+        const parsed = std.Uri.parse(uri) catch return uri;
+        if (!std.mem.eql(u8, parsed.scheme, "file")) return uri;
+        return std_uri.fsPath(parsed, allocator) catch uri;
+    }
+
     const Dimensions = struct { width: usize, height: usize };
 
     fn editorDimensions(self: *Workbench, pane: *GroupPane) Dimensions {
@@ -2750,57 +2818,294 @@ pub const Workbench = struct {
     /// behind upstream's `editor.action.revealDefinition` (F12 in VS Code);
     /// the terminal surfaces it as `Ctrl-]` and through the command bridge.
     pub fn revealDefinition(self: *Workbench) !bool {
-        const tab = self.activeTab() orelse return false;
-        const features = self.language_features orelse return false;
-        const providers = try features.definition_provider.ordered(self.allocator, tab.editor.model, false);
-        defer self.allocator.free(providers);
-        if (providers.len == 0) return false;
+        return self.runLspAction(go_to_commands.definition.id);
+    }
 
-        var target_uri: ?[]u8 = null;
-        var target_range: ?@import("../../editor/common/core/range.zig").Range = null;
-        defer if (target_uri) |uri| self.allocator.free(uri);
-        for (providers) |provider| {
-            const locations = provider.provide_definition(
-                provider.context,
-                self.allocator,
-                tab.editor.model,
-                tab.editor.modelCursorPosition(),
-                CancellationToken.None,
-            ) catch continue;
-            if (locations.len == 0) {
-                self.allocator.free(locations);
-                continue;
-            }
-            target_uri = try self.allocator.dupe(u8, locations[0].uri);
-            target_range = locations[0].target_selection_range;
-            for (locations) |location| self.allocator.free(location.uri);
-            self.allocator.free(locations);
-            break;
+    pub fn revealDeclaration(self: *Workbench) !bool {
+        return self.runLspAction(go_to_commands.declaration.id);
+    }
+
+    pub fn goToTypeDefinition(self: *Workbench) !bool {
+        return self.runLspAction(go_to_commands.type_definition.id);
+    }
+
+    pub fn goToImplementation(self: *Workbench) !bool {
+        return self.runLspAction(go_to_commands.implementation.id);
+    }
+
+    pub fn goToReferences(self: *Workbench) !bool {
+        return self.runLspAction(go_to_commands.go_to_references.id);
+    }
+
+    pub fn showReferences(self: *Workbench) !bool {
+        return self.runLspAction(go_to_commands.find_references.id);
+    }
+
+    /// Runs one of the ported `gotoSymbol` actions by its upstream command id.
+    pub fn runLspAction(self: *Workbench, id: []const u8) !bool {
+        const action = go_to_commands.find(id) orelse return false;
+        return self.executeSymbolNavigation(action);
+    }
+
+    fn executeSymbolNavigation(self: *Workbench, action: *const go_to_commands.ActionDescriptor) !bool {
+        const tab = self.activeTab() orelse return false;
+        if (tab.isDiff()) return false;
+        const features = self.language_features orelse return false;
+        if (self.quick_access.isOpen()) self.quick_access.inputService().hide();
+
+        self.pending_references = null;
+        self.pending_symbols = null;
+        _ = self.navigation_arena.reset(.retain_capacity);
+        const arena = self.navigation_arena.allocator();
+
+        const model = tab.editor.model;
+        const position = tab.editor.modelCursorPosition();
+        const links = switch (action.kind) {
+            .definition => try go_to_symbol.getDefinitionsAtPosition(arena, &features.definition_provider, model, position, false, CancellationToken.None),
+            .declaration => try go_to_symbol.getDeclarationsAtPosition(arena, &features.declaration_provider, model, position, false, CancellationToken.None),
+            .type_definition => try go_to_symbol.getTypeDefinitionsAtPosition(arena, &features.type_definition_provider, model, position, false, CancellationToken.None),
+            .implementation => try go_to_symbol.getImplementationsAtPosition(arena, &features.implementation_provider, model, position, false, CancellationToken.None),
+            .references => try go_to_symbol.getReferencesAtPosition(arena, &features.reference_provider, model, position, action.compact_references, false, CancellationToken.None),
+        };
+
+        const references = try arena.create(ReferencesModel);
+        references.* = try ReferencesModel.init(arena, links, action.title);
+        if (references.references.len == 0) {
+            self.setNoResultMessage(tab.editor, action.kind, position);
+            return false;
         }
-        const uri = target_uri orelse return false;
-        const range = target_range orelse return false;
-        const start = range.getStartPosition();
-        // `LocationLink.uri` is the resource key (`file:///...`), while the
-        // workbench opens filesystem paths. Non-file targets (for example a
-        // virtual scheme) have no terminal editor surface yet.
-        const parsed = std.Uri.parse(uri) catch return false;
-        if (!std.mem.eql(u8, parsed.scheme, "file")) return false;
+        if (references.references.len == 1 and !action.always_show_list) {
+            self.navigateToReference(&references.references[0]) catch |err| {
+                tab.editor.setMessage("Navigation failed: {s}", .{@errorName(err)});
+                return false;
+            };
+            return true;
+        }
+
+        self.pending_references = references;
+        self.showReferencePicker(tab, references, action) catch |err| {
+            self.pending_references = null;
+            tab.editor.setMessage("References failed: {s}", .{@errorName(err)});
+            return false;
+        };
+        return true;
+    }
+
+    fn showReferencePicker(
+        self: *Workbench,
+        tab: *Tab,
+        references: *ReferencesModel,
+        action: *const go_to_commands.ActionDescriptor,
+    ) !void {
+        const arena = self.navigation_arena.allocator();
+        const current_uri = try std_uri.resourceKey(arena, tab.editor.model.uri());
+        const current_reference = references.referenceAt(current_uri, tab.editor.modelCursorPosition());
+
+        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        var active_id: ?[]const u8 = null;
+        var index: usize = 0;
+        for (references.groups) |*group| {
+            const path = pathForUri(arena, group.uri);
+            const basename = std.fs.path.basename(path);
+            const separator_label = try std.fmt.allocPrint(arena, "{s} ({d})", .{ basename, group.children.len });
+            try items.append(.{ .separator = .{ .label = separator_label } });
+
+            const root = self.workspaceFolderPath();
+            const description = if (root) |value| relativeToRoot(path, value) orelse path else path;
+            for (group.children) |*reference| {
+                const id = try std.fmt.allocPrint(arena, "ref:{d}", .{index});
+                const label = try self.referenceItemLabel(arena, reference);
+                try items.append(.{ .item = .{
+                    .id = id,
+                    .label = label,
+                    .description = description,
+                } });
+                if (current_reference != null and current_reference.? == reference) active_id = id;
+                index += 1;
+            }
+        }
+
+        self.quick_access.inputService().showPick(
+            items.items,
+            .{ .placeholder = action.title, .active_id = active_id },
+            onReferencePick,
+            self,
+        ) catch |err| {
+            self.pending_references = null;
+            tab.editor.setMessage("References failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    fn referenceItemLabel(self: *Workbench, allocator: Allocator, reference: *const references_model.OneReference) ![]u8 {
+        const path = pathForUri(allocator, reference.uri());
+        const basename = std.fs.path.basename(path);
+        const range = reference.range();
+        var preview: []const u8 = "";
+        if (self.findOpenInput(path)) |input| {
+            const line = input.editor.model.getLineContent(range.startLineNumber) catch null;
+            if (line) |value| {
+                var owned_line = value;
+                defer owned_line.deinit();
+                const trimmed = std.mem.trim(u8, owned_line.items, " \t\r");
+                preview = try allocator.dupe(u8, strings.safeUtf8Prefix(trimmed, 60));
+            }
+        }
+        if (preview.len > 0) {
+            return std.fmt.allocPrint(allocator, "{s}:{d}:{d}  {s}", .{
+                basename,
+                range.startLineNumber,
+                range.startColumn,
+                preview,
+            });
+        }
+        return std.fmt.allocPrint(allocator, "{s}:{d}:{d}", .{
+            basename,
+            range.startLineNumber,
+            range.startColumn,
+        });
+    }
+
+    fn navigateToReference(self: *Workbench, reference: *const references_model.OneReference) !void {
+        try self.navigateToLink(reference.link);
+    }
+
+    fn navigateToLink(self: *Workbench, link: languages.LocationLink) !void {
+        const range = link.target_selection_range;
+        const active = self.activeTab() orelse return;
+        const parsed = std.Uri.parse(link.uri) catch {
+            active.editor.setMessage("Cannot open location: {s}", .{link.uri});
+            return;
+        };
+        if (!std.mem.eql(u8, parsed.scheme, "file")) {
+            active.editor.setMessage("Cannot open non-file location: {s}", .{link.uri});
+            return;
+        }
+
         var path_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer path_arena.deinit();
         const path = try std_uri.fsPath(parsed, path_arena.allocator());
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        const current_uri = try std_uri.resourceKey(scratch.allocator(), tab.editor.model.uri());
-        if (std.mem.eql(u8, current_uri, uri)) {
-            try tab.editor.setCursorPosition(start);
+        const current_uri = try std_uri.resourceKey(scratch.allocator(), active.editor.model.uri());
+        if (std.mem.eql(u8, current_uri, link.uri)) {
+            try active.editor.setSelection(range);
+            self.focusEditor();
         } else {
-            try self.openPath(path);
-            if (self.activeTab()) |opened| {
-                opened.editor.setCursorPosition(start) catch {};
-            }
+            self.openPath(path) catch |err| {
+                if (self.activeTab()) |tab| tab.editor.setMessage("Cannot open location: {s}", .{@errorName(err)});
+                return;
+            };
+            if (self.activeTab()) |opened| opened.editor.setSelection(range) catch {};
         }
         self.refreshStatus();
         self.revealActiveEditor();
+    }
+
+    fn setNoResultMessage(self: *Workbench, editor: *Editor, kind: go_to_commands.Kind, position: Position) void {
+        _ = self;
+        const word = editor.model.getWordAtPosition(position);
+        if (word) |value| {
+            var owned = value;
+            defer owned.deinit();
+            switch (kind) {
+                .definition => editor.setMessage("No definition found for '{s}'", .{owned.word.items}),
+                .declaration => editor.setMessage("No declaration found for '{s}'", .{owned.word.items}),
+                .type_definition => editor.setMessage("No type definition found for '{s}'", .{owned.word.items}),
+                .implementation => editor.setMessage("No implementation found for '{s}'", .{owned.word.items}),
+                .references => editor.setMessage("No references found for '{s}'", .{owned.word.items}),
+            }
+        } else {
+            switch (kind) {
+                .definition => editor.setMessage("No definition found", .{}),
+                .declaration => editor.setMessage("No declaration found", .{}),
+                .type_definition => editor.setMessage("No type definition found", .{}),
+                .implementation => editor.setMessage("No implementation found", .{}),
+                .references => editor.setMessage("No references found", .{}),
+            }
+        }
+    }
+
+    /// Opens the document-symbol picker for the active editor. Ports the
+    /// portable behavior of `workbench.action.gotoSymbol`.
+    pub fn gotoSymbolInEditor(self: *Workbench) !bool {
+        const tab = self.activeTab() orelse return false;
+        if (tab.isDiff()) return false;
+        const features = self.language_features orelse return false;
+        if (self.quick_access.isOpen()) self.quick_access.inputService().hide();
+
+        self.pending_references = null;
+        self.pending_symbols = null;
+        _ = self.navigation_arena.reset(.retain_capacity);
+        const arena = self.navigation_arena.allocator();
+
+        const providers = try features.document_symbol_provider.ordered(self.allocator, tab.editor.model, false);
+        defer self.allocator.free(providers);
+        if (providers.len == 0) {
+            tab.editor.setMessage("{s}", .{goto_symbol_quick_access.no_provider_message});
+            return false;
+        }
+        const outline = OutlineModel.create(arena, tab.editor.model, providers[0]) catch |err| {
+            tab.editor.setMessage("Symbols failed: {s}", .{@errorName(err)});
+            return false;
+        };
+        const entries = goto_symbol_quick_access.collect(arena, outline) catch |err| {
+            tab.editor.setMessage("Symbols failed: {s}", .{@errorName(err)});
+            return false;
+        };
+        if (entries.len == 0) {
+            tab.editor.setMessage("{s}", .{goto_symbol_quick_access.no_symbols_message});
+            return false;
+        }
+
+        const active_index = goto_symbol_quick_access.activeIndex(entries, tab.editor.modelCursorPosition());
+        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        for (entries, 0..) |entry, index| {
+            const id = try std.fmt.allocPrint(arena, "sym:{d}", .{index});
+            const label = try goto_symbol_quick_access.label(arena, entry);
+            try items.append(.{ .item = .{
+                .id = id,
+                .label = label,
+                .description = goto_symbol_quick_access.kindLabel(entry.symbol.symbol.kind),
+            } });
+        }
+        const active_id = if (active_index) |index| try std.fmt.allocPrint(arena, "sym:{d}", .{index}) else null;
+
+        self.pending_symbols = entries;
+        self.quick_access.inputService().showPick(
+            items.items,
+            .{
+                .placeholder = goto_symbol_quick_access.placeholder,
+                .active_id = active_id,
+                .no_results_label = goto_symbol_quick_access.no_matching_message,
+            },
+            onSymbolPick,
+            self,
+        ) catch |err| {
+            self.pending_symbols = null;
+            tab.editor.setMessage("Symbols failed: {s}", .{@errorName(err)});
+            return false;
+        };
+        return true;
+    }
+
+    /// Shows or focuses the content hover at the cursor, matching upstream's
+    /// `editor.action.showHover`.
+    pub fn showHover(self: *Workbench) !bool {
+        const tab = self.activeTab() orelse return false;
+        if (tab.isDiff()) return false;
+        try tab.ensureControllers();
+        const controllers = tab.controllers orelse return false;
+        if (controllers.hover.isVisible()) {
+            controllers.hover.widget().focus();
+            return true;
+        }
+        const position = tab.editor.modelCursorPosition();
+        controllers.hover.showContentHover(
+            Range.init(position.lineNumber, position.column, position.lineNumber, position.column),
+            hover_operation.HoverStartMode.immediate,
+            hover_types.HoverStartSource.keyboard,
+            false,
+        );
         return true;
     }
 
@@ -3265,7 +3570,9 @@ pub const Workbench = struct {
     pub fn handleGlobalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         if (self.quick_access.isOpen()) return false;
         self.suppress_global_command = false;
-        if (event.key == .f12 or isCtrlChar(event, ']')) {
+        // Ctrl-] is the TUI-specific definition alias. F12 and its modified
+        // variants are registered in the global keybinding rules below.
+        if (isCtrlChar(event, ']')) {
             if (try self.revealDefinition()) return true;
         }
         const service = try self.ensureGlobalService();
@@ -4796,6 +5103,61 @@ fn onBreadcrumbPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
     } else if (std.mem.startsWith(u8, id, "d:")) {
         try self.showBreadcrumbPickerForDir(id[2..], null);
     }
+}
+
+fn onReferencePick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const model = self.pending_references orelse return;
+    const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+    self.pending_references = null;
+    const index = itemIndex(item.id, "ref:") orelse return;
+    if (index >= model.references.len) return;
+    self.navigateToReference(&model.references[index]) catch |err| {
+        if (self.activeTab()) |tab| tab.editor.setMessage("Navigation failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn onSymbolPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const entries = self.pending_symbols orelse return;
+    const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+    self.pending_symbols = null;
+    const index = itemIndex(item.id, "sym:") orelse return;
+    if (index >= entries.len) return;
+    const tab = self.activeTab() orelse return;
+    tab.editor.setSelection(entries[index].symbol.symbol.selection_range) catch |err| {
+        tab.editor.setMessage("Navigation failed: {s}", .{@errorName(err)});
+        return;
+    };
+    self.focusEditor();
+    self.refreshStatus();
+    self.revealActiveEditor();
+}
+
+fn itemIndex(id: []const u8, prefix: []const u8) ?usize {
+    if (!std.mem.startsWith(u8, id, prefix)) return null;
+    return std.fmt.parseInt(usize, id[prefix.len..], 10) catch null;
+}
+
+fn commandSymbolNavigation(context: *anyopaque) anyerror!void {
+    const ctx: *SymbolActionContext = @ptrCast(@alignCast(context));
+    _ = ctx.workbench.executeSymbolNavigation(ctx.action) catch |err| {
+        if (ctx.workbench.activeTab()) |tab| tab.editor.setMessage("Navigation failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn commandGotoSymbol(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = self.gotoSymbolInEditor() catch |err| {
+        if (self.activeTab()) |tab| tab.editor.setMessage("Symbols failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn commandShowHover(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = self.showHover() catch |err| {
+        if (self.activeTab()) |tab| tab.editor.setMessage("Hover failed: {s}", .{@errorName(err)});
+    };
 }
 
 fn hasActiveEditor(context: *anyopaque) bool {
@@ -6797,6 +7159,15 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.terminal.kill", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyW) } },
     .{ .id = "workbench.action.terminal.resizeUp", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.UpArrow) } },
     .{ .id = "workbench.action.terminal.resizeDown", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.DownArrow) } },
+    .{ .id = "editor.action.revealDefinition", .weight = 200, .bindings = .{ .primary = @backingInt(key_codes.KeyCode.F12) } },
+    .{ .id = "editor.action.goToReferences", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.F12) } },
+    .{ .id = "editor.action.goToImplementation", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.F12) } },
+    // Legacy terminals cannot distinguish Ctrl+Shift+O from Ctrl+O; the
+    // secondary binding keeps Go to Symbol reachable in both cases.
+    .{ .id = "workbench.action.gotoSymbol", .weight = 200, .bindings = .{
+        .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyO),
+        .secondary = &.{key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyO)},
+    } },
 };
 
 test "workbench: global shortcuts dispatch through the keybinding registry" {
@@ -7749,4 +8120,176 @@ fn runGitTest(allocator: Allocator, root: []const u8, args: []const []const u8) 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     return result.term == .exited and result.term.exited == 0;
+}
+
+test "Workbench: LSP navigation, references and symbol picker" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "lsp/sample.ts",
+        \\const value = 1;
+        \\value;
+        \\value;
+    );
+    defer allocator.free(path);
+
+    const Fake = struct {
+        fn definition(_: *anyopaque, allocator_: Allocator, model: *@import("../../editor/common/model/textModel.zig").TextModel, _: Position, _: CancellationToken) ![]languages.LocationLink {
+            const uri = try std_uri.resourceKey(allocator_, model.uri());
+            const links = try allocator_.alloc(languages.LocationLink, 1);
+            const range = Range.init(2, 1, 2, 6);
+            links[0] = .{ .uri = uri, .range = range, .target_selection_range = range };
+            return links;
+        }
+        fn references(_: *anyopaque, allocator_: Allocator, model: *@import("../../editor/common/model/textModel.zig").TextModel, _: Position, _: languages.ReferenceContext, _: CancellationToken) ![]languages.Location {
+            const uri = try std_uri.resourceKey(allocator_, model.uri());
+            const locations = try allocator_.alloc(languages.Location, 2);
+            locations[0] = .{ .uri = try allocator_.dupe(u8, uri), .range = Range.init(1, 1, 1, 6) };
+            locations[1] = .{ .uri = try allocator_.dupe(u8, uri), .range = Range.init(2, 1, 2, 6) };
+            allocator_.free(uri);
+            return locations;
+        }
+        fn symbols(_: *anyopaque, allocator_: Allocator, model: *@import("../../editor/common/model/textModel.zig").TextModel, _: CancellationToken) ![]languages.DocumentSymbol {
+            _ = model;
+            const result = try allocator_.alloc(languages.DocumentSymbol, 1);
+            result[0] = .{
+                .name = try allocator_.dupe(u8, "value"),
+                .kind = 13,
+                .range = Range.init(1, 1, 3, 6),
+                .selection_range = Range.init(2, 1, 2, 6),
+            };
+            return result;
+        }
+    };
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+    const features = workbench.language_features.?;
+    var context: u8 = 0;
+    const definition_registration = try features.definition_provider.register(.{ .language = "*" }, .{
+        .context = &context,
+        .provide_definition = Fake.definition,
+    });
+    defer definition_registration.dispose();
+    const reference_registration = try features.reference_provider.register(.{ .language = "*" }, .{
+        .context = &context,
+        .provide_references = Fake.references,
+    });
+    defer reference_registration.dispose();
+    const symbol_registration = try features.document_symbol_provider.register(.{ .language = "*" }, .{
+        .context = &context,
+        .display_name = "fake",
+        .provide_document_symbols = Fake.symbols,
+    });
+    defer symbol_registration.dispose();
+
+    const tab = workbench.activeTab().?;
+    try tab.editor.setCursorPosition(Position.init(3, 1));
+    try std.testing.expect(try workbench.revealDefinition());
+    try std.testing.expectEqual(@as(usize, 2), tab.editor.modelCursorPosition().lineNumber);
+
+    try std.testing.expect(try workbench.gotoSymbolInEditor());
+    try std.testing.expect(workbench.quick_access.isOpen());
+    const picker = workbench.quick_access.inputService().pickerRef();
+    try std.testing.expectEqual(@as(usize, 1), picker.items.items.len);
+    picker.accept();
+    try std.testing.expectEqual(@as(usize, 2), tab.editor.modelCursorPosition().lineNumber);
+
+    try tab.editor.setCursorPosition(Position.init(3, 1));
+    try std.testing.expect(try workbench.goToReferences());
+    try std.testing.expect(workbench.quick_access.isOpen());
+    const reference_picker = workbench.quick_access.inputService().pickerRef();
+    try std.testing.expectEqual(@as(usize, 3), reference_picker.items.items.len);
+    reference_picker.accept();
+    try std.testing.expectEqual(@as(usize, 1), tab.editor.modelCursorPosition().lineNumber);
+
+    try std.testing.expect(try workbench.showHover());
+    try std.testing.expect(tab.controllers.?.hover.isVisible());
+}
+
+test "Workbench: LSP no-result message keeps the word" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "lsp/empty.ts", "value");
+    defer allocator.free(path);
+
+    const Fake = struct {
+        fn empty(_: *anyopaque, _: Allocator, _: *@import("../../editor/common/model/textModel.zig").TextModel, _: Position, _: CancellationToken) ![]languages.LocationLink {
+            return &.{};
+        }
+    };
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 10);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+    const features = workbench.language_features.?;
+    var context: u8 = 0;
+    const registration = try features.definition_provider.register(.{ .language = "*" }, .{
+        .context = &context,
+        .provide_definition = Fake.empty,
+    });
+    defer registration.dispose();
+
+    try std.testing.expect(!(try workbench.revealDefinition()));
+    try std.testing.expect(std.mem.indexOf(u8, workbench.activeTab().?.editor.message(), "No definition found for 'value'") != null);
+}
+
+test "Workbench: F12 and Shift+F12 dispatch through keybindings" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "lsp/keys.ts",
+        \\alpha
+        \\beta
+    );
+    defer allocator.free(path);
+
+    const Fake = struct {
+        fn definition(_: *anyopaque, allocator_: Allocator, model: *@import("../../editor/common/model/textModel.zig").TextModel, _: Position, _: CancellationToken) ![]languages.LocationLink {
+            const uri = try std_uri.resourceKey(allocator_, model.uri());
+            const links = try allocator_.alloc(languages.LocationLink, 1);
+            links[0] = .{ .uri = uri, .range = Range.init(2, 1, 2, 5), .target_selection_range = Range.init(2, 1, 2, 5) };
+            return links;
+        }
+        fn references(_: *anyopaque, allocator_: Allocator, model: *@import("../../editor/common/model/textModel.zig").TextModel, _: Position, _: languages.ReferenceContext, _: CancellationToken) ![]languages.Location {
+            const uri = try std_uri.resourceKey(allocator_, model.uri());
+            const locations = try allocator_.alloc(languages.Location, 2);
+            locations[0] = .{ .uri = try allocator_.dupe(u8, uri), .range = Range.init(1, 1, 1, 5) };
+            locations[1] = .{ .uri = try allocator_.dupe(u8, uri), .range = Range.init(2, 1, 2, 5) };
+            allocator_.free(uri);
+            return locations;
+        }
+    };
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 10);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+    const features = workbench.language_features.?;
+    var context: u8 = 0;
+    const definition_registration = try features.definition_provider.register(.{ .language = "*" }, .{
+        .context = &context,
+        .provide_definition = Fake.definition,
+    });
+    defer definition_registration.dispose();
+    const reference_registration = try features.reference_provider.register(.{ .language = "*" }, .{
+        .context = &context,
+        .provide_references = Fake.references,
+    });
+    defer reference_registration.dispose();
+
+    const tab = workbench.activeTab().?;
+    var f12 = ui.KeyEvent{ .key = .f12 };
+    try std.testing.expect(try workbench.handleGlobalKey(&f12));
+    try std.testing.expectEqual(@as(usize, 2), tab.editor.modelCursorPosition().lineNumber);
+
+    try tab.editor.setCursorPosition(Position.init(1, 1));
+    var shift_f12 = ui.KeyEvent{ .key = .f12, .mods = .{ .shift = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&shift_f12));
+    try std.testing.expect(workbench.quick_access.isOpen());
+    workbench.quick_access.inputService().hide();
 }

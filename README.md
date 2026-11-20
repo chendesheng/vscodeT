@@ -244,7 +244,12 @@ the actual edit (including inserted indentation) to the extension host.
 VSCodeVim 1.32.4 insert/normal/visual
 editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
 `o`/`O` (with the editor's language auto-indent), insert-mode `Tab`/`Shift-Tab` (editor indentation, not VSCodeVim's normal-mode tab command), insert-mode `Backspace`/`Delete` (the core `deleteLeft`/`deleteRight` commands VSCodeVim delegates to), `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
-the status bar shows its mode entry.
+the status bar shows its mode entry. VSCodeVim's `gd`/`gD`
+(`editor.action.goToDeclaration`, which VS Code aliases to definition),
+`<C-]>` (`editor.action.revealDefinition`), `gh` (`editor.action.showHover`),
+`gO` (`outline.focus`, mapped to the terminal symbol picker) and
+`gf file[:line]` reach the same workbench actions. `gf` opens the file under
+the cursor and honors an optional line number.
 
 Declarative built-ins are scanned from `vscode/extensions/theme-defaults`
 and `vscode/extensions/markdown-basics`: their themes, languages, grammars
@@ -256,9 +261,12 @@ JSON and JSONC editors use the bundled VS Code JSON language server when
 `host/dist/jsonServer.mjs` is present. Syntax diagnostics are pulled after
 edits and shown in the status bar's `Problems` entry; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
-bundled grammar and reports no diagnostics. Hover and formatting are forwarded to the same
-server, and the `json.schemas` setting is passed through so configured schemas
-drive validation, completion and hover. Indentation does not come from the
+bundled grammar and reports no diagnostics. Hover, formatting and document
+symbols are forwarded to the same server, and the `json.schemas` setting is
+passed through so configured schemas drive validation, completion and hover.
+JSON document symbols feed breadcrumbs/outline and `Go to Symbol in Editor`.
+The pinned JSON server does not advertise definition or references, so those
+navigation actions stay unavailable for JSON. Indentation does not come from the
 language server: `json-language-features` contributes only the client/server,
 while the indent rules live in the separate built-in `extensions/json`
 language configuration. The build embeds that upstream
@@ -270,8 +278,11 @@ TypeScript and JavaScript editors use VS Code's real
 provisioned. The extension is activated by `onLanguage:<id>` after the document
 delta is queued; its own tsserver client provides semantic/syntax diagnostics
 (shown as squiggly underlines, overview marks and the `Problems` count),
-`Ctrl-Space` completion, hover, `F12`/`Ctrl-]` go-to-definition, `Alt-F`
-document formatting and breadcrumb document symbols. Without the extension bundle, TS/JS tabs keep the bundled
+`Ctrl-Space` completion, hover, `F12`/`Ctrl-]` go-to-definition,
+`Ctrl-F12` go-to-implementation, `Shift-F12` go-to-references, the
+`Go to Declaration`, `Go to Type Definition`, `Peek References` and
+`Find All References` commands, `Ctrl-Shift-O`/`Ctrl-O`/`gO` go-to-symbol,
+`Alt-F` document formatting and breadcrumb document symbols. Without the extension bundle, TS/JS tabs keep the bundled
 grammar and indentation behavior. The extension host receives the extension's
 `contributes.configuration` defaults, so settings such as
 `js/ts.format.enabled` resolve like VS Code. Position-bearing RPCs (diagnostics,
@@ -279,20 +290,20 @@ completion/hover ranges, formatting edits, document changes and selections) are
 converted between the host's UTF-16 code units and the editor's UTF-8 byte
 columns. Semantic tokens, inlay hints, code lens, links, colors, call
 hierarchy and inline completions are registered by the extension but have no
-terminal renderer; definition is wired to `F12`/`Ctrl-]` (and the
-`editor.action.revealDefinition` command), while code actions still have no TUI
-command surface. Configuration writes are accepted in memory and are not
+terminal renderer; navigation and reference results open in the terminal
+quick pick, while code actions still have no TUI command surface. Configuration writes are accepted in memory and are not
 persisted.
 
 Extensions can also contribute language features through the ported
-language-feature bridge: hover, completion, definition, document symbols, code
-actions and document/range/on-type formatting register in
-`LanguageFeaturesService`, and diagnostics feed the marker service, which paints
-squiggly underlines, overview-ruler marks and the `Problems` count. Hover,
-completion, breadcrumb symbols and document formatting are wired to the
-terminal editor. Definition and code-action providers are transported but have
-no TUI command surface yet, and the remaining `MainThreadLanguageFeatures`
-methods stay unsupported. Provider calls are synchronous with a bounded timeout
+language-feature bridge: hover, completion, definition, declaration,
+implementation, type definition, references, document symbols, code actions and
+document/range/on-type formatting register in `LanguageFeaturesService`, and
+diagnostics feed the marker service, which paints squiggly underlines,
+overview-ruler marks and the `Problems` count. Hover, completion, the
+navigation actions, breadcrumb symbols and document formatting are wired to the
+terminal editor. Code-action providers are transported but have no TUI command
+surface yet, and the remaining `MainThreadLanguageFeatures` methods stay
+unsupported. Provider calls are synchronous with a bounded timeout
 because the terminal editor has no asynchronous provider boundary.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally

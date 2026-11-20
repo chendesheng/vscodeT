@@ -32,6 +32,16 @@ const Fake = struct {
             try object.put(self.arena.allocator(), "range", .{ .object = range });
             return rpc.cloneJsonValue(self.arena.allocator(), .{ .object = object });
         }
+        if (std.mem.eql(u8, method, "$provideDefinition") or
+            std.mem.eql(u8, method, "$provideDeclaration") or
+            std.mem.eql(u8, method, "$provideImplementation") or
+            std.mem.eql(u8, method, "$provideTypeDefinition"))
+        {
+            return try locationLinksJson(self.arena.allocator(), 1);
+        }
+        if (std.mem.eql(u8, method, "$provideReferences")) {
+            return try locationsJson(self.arena.allocator());
+        }
         if (std.mem.eql(u8, method, "$provideCompletionItems")) {
             var item: std.json.ObjectMap = .empty;
             try item.put(self.arena.allocator(), "a", .{ .string = "fake" });
@@ -47,6 +57,47 @@ const Fake = struct {
     }
 
     fn notify(_: *anyopaque, _: []const u8, _: []const rpc.Arg) anyerror!void {}
+
+    fn uriJson(arena: std.mem.Allocator, path: []const u8) !std.json.Value {
+        var uri: std.json.ObjectMap = .empty;
+        try uri.put(arena, "$mid", .{ .integer = 1 });
+        try uri.put(arena, "scheme", .{ .string = "file" });
+        try uri.put(arena, "authority", .{ .string = "" });
+        try uri.put(arena, "path", .{ .string = path });
+        try uri.put(arena, "query", .{ .string = "" });
+        try uri.put(arena, "fragment", .{ .string = "" });
+        return .{ .object = uri };
+    }
+
+    fn rangeJson(arena: std.mem.Allocator, line: usize) !std.json.Value {
+        var range: std.json.ObjectMap = .empty;
+        try range.put(arena, "startLineNumber", .{ .integer = @intCast(line) });
+        try range.put(arena, "startColumn", .{ .integer = 1 });
+        try range.put(arena, "endLineNumber", .{ .integer = @intCast(line) });
+        try range.put(arena, "endColumn", .{ .integer = 2 });
+        return .{ .object = range };
+    }
+
+    fn locationLinksJson(arena: std.mem.Allocator, line: usize) !std.json.Value {
+        var item: std.json.ObjectMap = .empty;
+        try item.put(arena, "uri", try uriJson(arena, "/tmp/fake.ts"));
+        try item.put(arena, "range", try rangeJson(arena, line));
+        try item.put(arena, "targetSelectionRange", try rangeJson(arena, line));
+        var items = std.json.Array.init(arena);
+        try items.append(.{ .object = item });
+        return rpc.cloneJsonValue(arena, .{ .array = items });
+    }
+
+    fn locationsJson(arena: std.mem.Allocator) !std.json.Value {
+        var items = std.json.Array.init(arena);
+        for ([_]usize{ 1, 2 }) |line| {
+            var item: std.json.ObjectMap = .empty;
+            try item.put(arena, "uri", try uriJson(arena, "/tmp/fake.ts"));
+            try item.put(arena, "range", try rangeJson(arena, line));
+            try items.append(.{ .object = item });
+        }
+        return rpc.cloneJsonValue(arena, .{ .array = items });
+    }
 };
 
 test "mainThreadLanguageFeatures: hover registration and provider call" {
@@ -119,4 +170,96 @@ test "mainThreadLanguageFeatures: completion registration and result conversion"
     );
     try std.testing.expectEqual(@as(usize, 1), list.items.len);
     try std.testing.expectEqualStrings("fake", list.items[0].label);
+}
+
+test "mainThreadLanguageFeatures: declaration, implementation and type definition conversion" {
+    const allocator = std.testing.allocator;
+    var model = try TestModel.init(allocator, "hello", "typescript");
+    defer model.deinit();
+    var features = LanguageFeaturesService.init(allocator);
+    defer features.deinit();
+    var fake = Fake{ .arena = std.heap.ArenaAllocator.init(allocator) };
+    defer fake.arena.deinit();
+    var actor = MainThreadLanguageFeatures.init(allocator, &features, .{
+        .context = &fake,
+        .request = Fake.request,
+        .notify = Fake.notify,
+    });
+    defer actor.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const selectors = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "[{\"language\":\"typescript\"}]", .{});
+    const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
+    const Position = @import("../../../../editor/common/core/position.zig").Position;
+
+    const declarations = [_]rpc.Arg{
+        .{ .json = .{ .integer = 3 } },
+        .{ .json = selectors },
+    };
+    _ = try actor.invoke("$registerDeclarationSupport", &declarations, null, arena.allocator());
+    const declaration_providers = try features.declaration_provider.ordered(arena.allocator(), model.model, false);
+    try std.testing.expectEqual(@as(usize, 1), declaration_providers.len);
+    const declaration_links = try declaration_providers[0].provide_declaration(
+        declaration_providers[0].context,
+        arena.allocator(),
+        model.model,
+        Position.init(1, 1),
+        CancellationToken.None,
+    );
+    try std.testing.expectEqual(@as(usize, 1), declaration_links.len);
+    try std.testing.expectEqualStrings("file:///tmp/fake.ts", declaration_links[0].uri);
+    try std.testing.expectEqual(@as(usize, 1), declaration_links[0].target_selection_range.startLineNumber);
+
+    const implementations = [_]rpc.Arg{
+        .{ .json = .{ .integer = 4 } },
+        .{ .json = selectors },
+    };
+    _ = try actor.invoke("$registerImplementationSupport", &implementations, null, arena.allocator());
+    const implementation_providers = try features.implementation_provider.ordered(arena.allocator(), model.model, false);
+    try std.testing.expectEqual(@as(usize, 1), implementation_providers.len);
+
+    const type_definitions = [_]rpc.Arg{
+        .{ .json = .{ .integer = 5 } },
+        .{ .json = selectors },
+    };
+    _ = try actor.invoke("$registerTypeDefinitionSupport", &type_definitions, null, arena.allocator());
+    const type_providers = try features.type_definition_provider.ordered(arena.allocator(), model.model, false);
+    try std.testing.expectEqual(@as(usize, 1), type_providers.len);
+}
+
+test "mainThreadLanguageFeatures: reference registration and result conversion" {
+    const allocator = std.testing.allocator;
+    var model = try TestModel.init(allocator, "hello", "typescript");
+    defer model.deinit();
+    var features = LanguageFeaturesService.init(allocator);
+    defer features.deinit();
+    var fake = Fake{ .arena = std.heap.ArenaAllocator.init(allocator) };
+    defer fake.arena.deinit();
+    var actor = MainThreadLanguageFeatures.init(allocator, &features, .{
+        .context = &fake,
+        .request = Fake.request,
+        .notify = Fake.notify,
+    });
+    defer actor.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const selectors = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "[{\"language\":\"*\"}]", .{});
+    const register_args = [_]rpc.Arg{
+        .{ .json = .{ .integer = 6 } },
+        .{ .json = selectors },
+    };
+    _ = try actor.invoke("$registerReferenceSupport", &register_args, null, arena.allocator());
+    const providers = try features.reference_provider.ordered(arena.allocator(), model.model, false);
+    try std.testing.expectEqual(@as(usize, 1), providers.len);
+    const locations = try providers[0].provide_references(
+        providers[0].context,
+        arena.allocator(),
+        model.model,
+        @import("../../../../editor/common/core/position.zig").Position.init(1, 1),
+        .{ .include_declaration = true },
+        @import("../../../../base/common/cancellation.zig").CancellationToken.None,
+    );
+    try std.testing.expectEqual(@as(usize, 2), locations.len);
+    try std.testing.expectEqualStrings("file:///tmp/fake.ts", locations[0].uri);
+    try std.testing.expectEqual(@as(usize, 2), locations[1].range.startLineNumber);
 }

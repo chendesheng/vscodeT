@@ -17,6 +17,8 @@ const CursorStateComputer = @import("../../../common/model/editStack.zig").Curso
 const UndoRedoService = @import("../../../../platform/undoRedo/common/undoRedoService.zig").UndoRedoService;
 const LanguageService = @import("../../../common/services/languageService.zig").LanguageService;
 const LanguageIdCodec = @import("../../../common/languages.zig").LanguageIdCodec;
+const languages = @import("../../../common/languages.zig");
+const position_converter = @import("../../../../workbench/api/common/positionConverter.zig");
 const ProjectedViewModelLines = @import("../../../common/viewModel/viewModelLines.zig").ProjectedViewModelLines;
 const ViewModelEventDispatcher = @import("../../../common/viewModelEventDispatcher.zig").ViewModelEventDispatcher;
 const ViewEventHandler = @import("../../../common/viewEventHandler.zig").ViewEventHandler;
@@ -108,6 +110,72 @@ const MarkerDecorationsService = @import("../../../common/services/markerDecorat
 const markers = @import("../../../../platform/markers/common/markers.zig");
 const std_uri = @import("../../../../base/common/stdUri.zig");
 const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+
+fn convertJsonDocumentSymbol(allocator: Allocator, model: *TextModel, symbol: json_language.JsonDocumentSymbol) !languages.DocumentSymbol {
+    const name = try allocator.dupe(u8, symbol.name);
+    errdefer allocator.free(name);
+    const detail = try allocator.dupe(u8, symbol.detail);
+    errdefer allocator.free(detail);
+    const tags = try allocator.dupe(u32, symbol.tags);
+    errdefer allocator.free(tags);
+    const container_name = if (symbol.container_name) |value| try allocator.dupe(u8, value) else null;
+    errdefer {
+        if (container_name) |value| allocator.free(value);
+    }
+
+    const children = try allocator.alloc(languages.DocumentSymbol, symbol.children.len);
+    var converted: usize = 0;
+    errdefer {
+        for (children[0..converted]) |child| freeJsonDocumentSymbolContents(allocator, child);
+        allocator.free(children);
+    }
+    for (symbol.children, 0..) |child, index| {
+        children[index] = try convertJsonDocumentSymbol(allocator, model, child);
+        converted += 1;
+    }
+
+    return .{
+        .name = name,
+        .detail = detail,
+        .kind = symbol.kind,
+        .tags = tags,
+        .container_name = container_name,
+        .range = jsonRangeToEditorRange(model, symbol.range),
+        .selection_range = jsonRangeToEditorRange(model, symbol.selection_range),
+        .children = children,
+    };
+}
+
+fn freeJsonDocumentSymbols(allocator: Allocator, symbols: []const languages.DocumentSymbol) void {
+    for (symbols) |symbol| freeJsonDocumentSymbolContents(allocator, symbol);
+    allocator.free(symbols);
+}
+
+fn freeJsonDocumentSymbolContents(allocator: Allocator, symbol: languages.DocumentSymbol) void {
+    allocator.free(symbol.name);
+    allocator.free(symbol.detail);
+    allocator.free(symbol.tags);
+    if (symbol.container_name) |name| allocator.free(name);
+    freeJsonDocumentSymbols(allocator, symbol.children);
+}
+
+fn jsonRangeToEditorRange(model: *TextModel, range: json_language.LspRange) Range {
+    const start_line = @as(usize, range.start_line) + 1;
+    const end_line = @as(usize, range.end_line) + 1;
+    return Range.init(
+        start_line,
+        jsonColumnToEditorColumn(model, start_line, range.start_character),
+        end_line,
+        jsonColumnToEditorColumn(model, end_line, range.end_character),
+    );
+}
+
+fn jsonColumnToEditorColumn(model: *TextModel, line_number: usize, character: u32) usize {
+    if (line_number < 1 or line_number > model.getLineCount()) return @as(usize, character) + 1;
+    var line = model.getLineContent(line_number) catch return @as(usize, character) + 1;
+    defer line.deinit();
+    return position_converter.columnForUtf16Offset(line.items, @as(usize, character) + 1);
+}
 
 const MAX_STATUS: usize = 512;
 
@@ -321,6 +389,7 @@ pub const Editor = struct {
     marker_service: ?*MarkerService = null,
     marker_decorations: ?*MarkerDecorationsService = null,
     json_completion_registration: ?IDisposable = null,
+    json_document_symbol_registration: ?IDisposable = null,
 
     /// Terminal host options. `reserve_scrollbar` makes the first wrapping
     /// pass use the final text width, avoiding a second full-file wrap when
@@ -714,9 +783,12 @@ pub const Editor = struct {
     /// Attaches a shared JSON language server to this editor and opens its
     /// document. Only JSON/JSONC editors are attached.
     pub fn setJsonLanguageClient(self: *Editor, client: ?*json_language.Client) void {
+        if (self.json_document_symbol_registration) |registration| registration.dispose();
+        self.json_document_symbol_registration = null;
         self.json_client = client;
         self.attachJsonLanguage() catch |err| self.setMessage("JSON attach failed: {s}", .{@errorName(err)});
         self.registerJsonCompletion();
+        self.registerJsonDocumentSymbols();
     }
 
     pub fn pollJsonLanguage(self: *Editor) bool {
@@ -900,6 +972,7 @@ pub const Editor = struct {
         self.marker_decorations = marker_decorations;
         if (marker_decorations) |service| service.registerModel(self.model) catch {};
         self.registerJsonCompletion();
+        self.registerJsonDocumentSymbols();
     }
 
     fn registerJsonCompletion(self: *Editor) void {
@@ -914,6 +987,51 @@ pub const Editor = struct {
             .provide_completion_items = jsonProvideCompletion,
             .trigger_characters = &.{ "\"", ":" },
         }) catch null;
+    }
+
+    fn registerJsonDocumentSymbols(self: *Editor) void {
+        if (self.json_document_symbol_registration != null) return;
+        const features = self.language_features orelse return;
+        if (self.json_client == null or self.json_uri == null) return;
+        const language_id = self.languageId();
+        if (!std.mem.eql(u8, language_id, "json") and !std.mem.eql(u8, language_id, "jsonc")) return;
+        self.json_document_symbol_registration = features.document_symbol_provider.register(.{ .list = &.{
+            .{ .filter = .{ .language = "json" } },
+            .{ .filter = .{ .language = "jsonc" } },
+        } }, .{
+            .context = self,
+            .display_name = "JSON",
+            .provide_document_symbols = jsonProvideDocumentSymbols,
+        }) catch null;
+    }
+
+    pub fn jsonProvideDocumentSymbols(
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        token: CancellationToken,
+    ) anyerror![]languages.DocumentSymbol {
+        _ = token;
+        const self: *Editor = @ptrCast(@alignCast(context));
+        if (model != self.model) return &.{};
+        const client = self.json_client orelse return &.{};
+        const uri = self.json_uri orelse return &.{};
+        if (self.model.getVersionId() != self.json_version) self.syncJsonDocument() catch {};
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const symbols = client.documentSymbols(arena.allocator(), uri) catch return &.{};
+        const result = try allocator.alloc(languages.DocumentSymbol, symbols.len);
+        var converted: usize = 0;
+        errdefer {
+            for (result[0..converted]) |symbol| freeJsonDocumentSymbolContents(allocator, symbol);
+            allocator.free(result);
+        }
+        for (symbols, 0..) |symbol, index| {
+            result[index] = try convertJsonDocumentSymbol(allocator, self.model, symbol);
+            converted += 1;
+        }
+        return result;
     }
 
     pub fn formatDocument(self: *Editor) !void {
@@ -1024,6 +1142,7 @@ pub const Editor = struct {
 
     pub fn deinit(self: *Editor) void {
         if (self.json_completion_registration) |registration| registration.dispose();
+        if (self.json_document_symbol_registration) |registration| registration.dispose();
         if (self.marker_decorations) |service| service.unregisterModel(self.model);
         if (self.marker_service) |service| {
             const resource = markers.Resource.fromUri(self.allocator, self.model.uri()) catch null;

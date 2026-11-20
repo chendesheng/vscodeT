@@ -1,8 +1,9 @@
 // Port of the concrete registry collection from
 // `src/vs/editor/common/services/languageFeaturesService.ts`.
 //
-// Only the eight registries consumed by `MainThreadLanguageFeatures` are
-// ported; see `languageFeatures.zig` for the deferred set.
+// Only the twelve registries consumed by `MainThreadLanguageFeatures` and the
+// TUI navigation contributions are ported; see `languageFeatures.zig` for the
+// deferred set.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -16,6 +17,10 @@ pub const LanguageFeaturesService = struct {
     hover_provider: registry.LanguageFeatureRegistry(languages.HoverProvider),
     completion_provider: registry.LanguageFeatureRegistry(completion.CompletionItemProvider),
     definition_provider: registry.LanguageFeatureRegistry(languages.DefinitionProvider),
+    declaration_provider: registry.LanguageFeatureRegistry(languages.DeclarationProvider),
+    implementation_provider: registry.LanguageFeatureRegistry(languages.ImplementationProvider),
+    type_definition_provider: registry.LanguageFeatureRegistry(languages.TypeDefinitionProvider),
+    reference_provider: registry.LanguageFeatureRegistry(languages.ReferenceProvider),
     document_symbol_provider: registry.LanguageFeatureRegistry(languages.DocumentSymbolProvider),
     code_action_provider: registry.LanguageFeatureRegistry(languages.CodeActionProvider),
     document_formatting_edit_provider: registry.LanguageFeatureRegistry(languages.DocumentFormattingEditProvider),
@@ -28,6 +33,10 @@ pub const LanguageFeaturesService = struct {
             .hover_provider = registry.LanguageFeatureRegistry(languages.HoverProvider).init(allocator),
             .completion_provider = registry.LanguageFeatureRegistry(completion.CompletionItemProvider).init(allocator),
             .definition_provider = registry.LanguageFeatureRegistry(languages.DefinitionProvider).init(allocator),
+            .declaration_provider = registry.LanguageFeatureRegistry(languages.DeclarationProvider).init(allocator),
+            .implementation_provider = registry.LanguageFeatureRegistry(languages.ImplementationProvider).init(allocator),
+            .type_definition_provider = registry.LanguageFeatureRegistry(languages.TypeDefinitionProvider).init(allocator),
+            .reference_provider = registry.LanguageFeatureRegistry(languages.ReferenceProvider).init(allocator),
             .document_symbol_provider = registry.LanguageFeatureRegistry(languages.DocumentSymbolProvider).init(allocator),
             .code_action_provider = registry.LanguageFeatureRegistry(languages.CodeActionProvider).init(allocator),
             .document_formatting_edit_provider = registry.LanguageFeatureRegistry(languages.DocumentFormattingEditProvider).init(allocator),
@@ -40,6 +49,10 @@ pub const LanguageFeaturesService = struct {
         self.hover_provider.deinit();
         self.completion_provider.deinit();
         self.definition_provider.deinit();
+        self.declaration_provider.deinit();
+        self.implementation_provider.deinit();
+        self.type_definition_provider.deinit();
+        self.reference_provider.deinit();
         self.document_symbol_provider.deinit();
         self.code_action_provider.deinit();
         self.document_formatting_edit_provider.deinit();
@@ -52,6 +65,10 @@ pub const LanguageFeaturesService = struct {
             .hover_provider = &self.hover_provider,
             .completion_provider = &self.completion_provider,
             .definition_provider = &self.definition_provider,
+            .declaration_provider = &self.declaration_provider,
+            .implementation_provider = &self.implementation_provider,
+            .type_definition_provider = &self.type_definition_provider,
+            .reference_provider = &self.reference_provider,
             .document_symbol_provider = &self.document_symbol_provider,
             .code_action_provider = &self.code_action_provider,
             .document_formatting_edit_provider = &self.document_formatting_edit_provider,

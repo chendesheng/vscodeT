@@ -43,6 +43,7 @@ const diagnosticsHost = @import("./mainThreadDiagnostics.zig").HostProxy;
 const markers_mod = @import("../../../platform/markers/common/markers.zig");
 const TextModel = @import("../../../editor/common/model/textModel.zig").TextModel;
 const position_converter = @import("../common/positionConverter.zig");
+const go_to_commands = @import("../../../editor/contrib/gotoSymbol/browser/goToCommands.zig");
 
 const EntryAccessor = statusbar_part.EntryAccessor;
 
@@ -452,6 +453,9 @@ pub const Extensions = struct {
         const self: *Extensions = @ptrCast(@alignCast(context));
         const path = uriPath(uri) orelse return .null;
         self.workbench.openPath(path) catch {};
+        // Make the document known before `workspace.openTextDocument`
+        // resolves; the extension host otherwise waits for the next pump.
+        self.syncActiveDocument() catch {};
         self.needs_render = true;
         return manager.fileUri(arena, path);
     }
@@ -507,10 +511,12 @@ pub const Extensions = struct {
     }
 
     fn textEditorShowDocumentHost(context: *anyopaque, uri: std.json.Value, options: std.json.Value) anyerror!?[]const u8 {
-        _ = options;
         const self: *Extensions = @ptrCast(@alignCast(context));
         const path = uriPath(uri) orelse return null;
         self.workbench.openPath(path) catch {};
+        if (self.workbench.activeTab()) |tab| applyShowDocumentSelection(tab.editor, options);
+        self.syncActiveDocument() catch {};
+        self.syncSelection() catch {};
         self.needs_render = true;
         return "1";
     }
@@ -1070,6 +1076,32 @@ pub const Extensions = struct {
     }
 };
 
+/// Maps command ids issued by extensions/VSCodeVim to the workbench LSP
+/// actions. Returns true when the command was recognized, even when the
+/// action produced no result.
+pub fn runLspCommand(workbench: *Workbench, command: []const u8) bool {
+    if (std.mem.eql(u8, command, "editor.action.showHover")) {
+        _ = workbench.showHover() catch false;
+        return true;
+    }
+    if (std.mem.eql(u8, command, "outline.focus") or
+        std.mem.eql(u8, command, "workbench.action.gotoSymbol"))
+    {
+        _ = workbench.gotoSymbolInEditor() catch false;
+        return true;
+    }
+
+    const id = if (std.mem.eql(u8, command, "editor.action.goToDeclaration"))
+        go_to_commands.definition.id
+    else if (std.mem.eql(u8, command, "editor.action.findReferences"))
+        go_to_commands.peek_references.id
+    else
+        command;
+    if (go_to_commands.find(id) == null) return false;
+    _ = workbench.runLspAction(id) catch false;
+    return true;
+}
+
 fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: std.json.Value, arena: Allocator) anyerror!?std.json.Value {
     const self: *Extensions = @ptrCast(@alignCast(context));
     const args: []const std.json.Value = if (command_args == .array) command_args.array.items else &.{};
@@ -1112,8 +1144,12 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         self.needs_render = true;
         return null;
     }
-    if (std.mem.eql(u8, command, "editor.action.revealDefinition")) {
-        _ = self.workbench.revealDefinition() catch false;
+    if (runLspCommand(self.workbench, command)) {
+        // VSCodeVim reads `activeTextEditor` immediately after the command
+        // resolves. Publish the new document/selection on the same channel
+        // before the command reply so `gd` sees the target cursor.
+        self.syncActiveDocument() catch {};
+        self.syncSelection() catch {};
         self.needs_render = true;
         return null;
     }
@@ -1262,6 +1298,27 @@ fn rangeFromJson(value: std.json.Value) ?Range {
     const end_line = integerField(object, "endLineNumber") orelse return null;
     const end_column = integerField(object, "endColumn") orelse return null;
     return Range.init(start_line, start_column, end_line, end_column);
+}
+
+fn applyShowDocumentSelection(editor: *Editor, options: std.json.Value) void {
+    if (options != .object) return;
+    const selection = options.object.get("selection") orelse return;
+    if (selection != .object) return;
+    const start_line = integerField(selection.object, "startLineNumber") orelse return;
+    const start_column = integerField(selection.object, "startColumn") orelse return;
+    const end_line = integerField(selection.object, "endLineNumber") orelse return;
+    const end_column = integerField(selection.object, "endColumn") orelse return;
+    if (start_line < 1 or end_line < 1) return;
+    var owned = Selection.init(
+        start_line,
+        columnFromUtf16ForModel(editor.model, start_line, start_column),
+        end_line,
+        columnFromUtf16ForModel(editor.model, end_line, end_column),
+    );
+    editor.setSelections(&.{owned}) catch {
+        owned = Selection.init(start_line, 1, end_line, 1);
+        editor.setSelections(&.{owned}) catch {};
+    };
 }
 
 fn integerField(object: std.json.ObjectMap, name: []const u8) ?usize {
@@ -1413,6 +1470,8 @@ test "Extensions: VSCodeVim inserts text into the active TUI editor" {
 }
 
 test "Extensions: language feature registration reaches the workbench registries" {
+    // The fixture registers definition/declaration/implementation/type
+    // definition/reference providers so the bridge actions run without tsserver.
     if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
     std.Io.Dir.cwd().access(time_compat.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(time_compat.io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
@@ -1462,6 +1521,51 @@ test "Extensions: language feature registration reaches the workbench registries
     const symbol_providers = try features.document_symbol_provider.ordered(allocator, model, false);
     defer allocator.free(symbol_providers);
     try std.testing.expect(symbol_providers.len > 0);
+
+    const declaration_providers = try features.declaration_provider.ordered(allocator, model, false);
+    defer allocator.free(declaration_providers);
+    try std.testing.expect(declaration_providers.len > 0);
+    var check_arena = std.heap.ArenaAllocator.init(allocator);
+    defer check_arena.deinit();
+    const check_links = try declaration_providers[0].provide_declaration(
+        declaration_providers[0].context,
+        check_arena.allocator(),
+        model,
+        Position.init(1, 1),
+        @import("../../../base/common/cancellation.zig").CancellationToken.None,
+    );
+    try std.testing.expect(check_links.len > 0);
+    const implementation_providers = try features.implementation_provider.ordered(allocator, model, false);
+    defer allocator.free(implementation_providers);
+    try std.testing.expect(implementation_providers.len > 0);
+    const type_providers = try features.type_definition_provider.ordered(allocator, model, false);
+    defer allocator.free(type_providers);
+    try std.testing.expect(type_providers.len > 0);
+    const reference_providers = try features.reference_provider.ordered(allocator, model, false);
+    defer allocator.free(reference_providers);
+    try std.testing.expect(reference_providers.len > 0);
+
+    // VSCodeVim's command names reach the same workbench actions.
+    try std.testing.expect(runLspCommand(workbench, "editor.action.goToDeclaration"));
+    try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+    try std.testing.expect(runLspCommand(workbench, "editor.action.revealDeclaration"));
+    try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+    try std.testing.expect(runLspCommand(workbench, "editor.action.goToImplementation"));
+    try std.testing.expectEqual(@as(usize, 3), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+    try std.testing.expect(runLspCommand(workbench, "editor.action.goToTypeDefinition"));
+    try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+
+    try std.testing.expect(runLspCommand(workbench, "editor.action.goToReferences"));
+    try std.testing.expect(workbench.quick_access.isOpen());
+    workbench.quick_access.inputService().hide();
+    try std.testing.expect(runLspCommand(workbench, "editor.action.findReferences"));
+    try std.testing.expect(workbench.quick_access.isOpen());
+    workbench.quick_access.inputService().hide();
+    try std.testing.expect(runLspCommand(workbench, "outline.focus"));
+    try std.testing.expect(workbench.quick_access.isOpen());
+    workbench.quick_access.inputService().hide();
+    try std.testing.expect(runLspCommand(workbench, "editor.action.showHover"));
+    try std.testing.expect(workbench.activeTab().?.controllers.?.hover.isVisible());
 }
 
 test "Extensions: real TypeScript extension drives the language features" {
@@ -1696,4 +1800,155 @@ test "Extensions: TypeScript and VSCodeVim share one host" {
         time_compat.sleepMillis(20);
     }
     try std.testing.expect(found);
+}
+
+test "Extensions: showDocument applies a line selection" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "alpha\nbeta\n", "selection.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const options = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"selection\":{\"startLineNumber\":2,\"startColumn\":1,\"endLineNumber\":2,\"endColumn\":2}}", .{});
+    applyShowDocumentSelection(editor, options);
+    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
+    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().column);
+}
+
+test "Extensions: VSCodeVim navigation commands reach the workbench actions" {
+    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "vim-lsp.json", .data = "{\n  \"a\": 1\n}\n" });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPathFile(io, "vim-lsp.json", &path_buffer);
+
+    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_len]}, 80, 24);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+
+    var extension_host = try Extensions.init(allocator, io, workbench, &.{
+        .{ .path = "host/test-fixtures/language-features", .is_under_development = true },
+        .{ .path = ".cache-ext/vim/extension", .is_under_development = true },
+    }, ".cache-ext/data-vim-lsp-test");
+    defer extension_host.deinit();
+
+    const startup_deadline = time_compat.milliTimestamp() + 10_000;
+    while (time_compat.milliTimestamp() < startup_deadline) {
+        _ = extension_host.pump();
+        if (extension_host.active != null) break;
+        time_compat.sleepMillis(10);
+    }
+    try std.testing.expect(extension_host.active != null);
+    const vim_deadline = time_compat.milliTimestamp() + 10_000;
+    while (!extension_host.vim_active and time_compat.milliTimestamp() < vim_deadline) {
+        _ = extension_host.pump();
+        time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(extension_host.vim_active);
+    _ = extension_host.handleKey(&.{ .key = .escape });
+    _ = extension_host.pump();
+    time_compat.sleepMillis(1000);
+
+    const tab = workbench.activeTab().?;
+    try tab.editor.setCursorPosition(Position.init(3, 1));
+    _ = extension_host.pump();
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'g' } });
+    _ = extension_host.pump();
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'd' } });
+    const definition_deadline = time_compat.milliTimestamp() + 10_000;
+    while (time_compat.milliTimestamp() < definition_deadline) {
+        _ = extension_host.pump();
+        if (tab.editor.modelCursorPosition().lineNumber == 1) break;
+        time_compat.sleepMillis(20);
+    }
+    try std.testing.expectEqual(@as(usize, 1), tab.editor.modelCursorPosition().lineNumber);
+
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'g' } });
+    _ = extension_host.pump();
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'h' } });
+    const hover_deadline = time_compat.milliTimestamp() + 5_000;
+    while (time_compat.milliTimestamp() < hover_deadline) {
+        _ = extension_host.pump();
+        if (tab.controllers != null and tab.controllers.?.hover.isVisible()) break;
+        time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(tab.controllers != null and tab.controllers.?.hover.isVisible());
+
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'g' } });
+    _ = extension_host.pump();
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'O' } });
+    const symbol_deadline = time_compat.milliTimestamp() + 5_000;
+    while (time_compat.milliTimestamp() < symbol_deadline) {
+        _ = extension_host.pump();
+        if (workbench.quick_access.isOpen()) break;
+        time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(workbench.quick_access.isOpen());
+    workbench.quick_access.inputService().hide();
+}
+
+test "Extensions: VSCodeVim gf opens the file under the cursor at a line" {
+    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "target.txt", .data = "one\ntwo\nthree\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "source.txt", .data = "target.txt:2\n" });
+    var source_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const source_len = try tmp.dir.realPathFile(io, "source.txt", &source_buffer);
+
+    var workbench = try Workbench.init(allocator, io, &.{source_buffer[0..source_len]}, 80, 24);
+    defer workbench.deinit();
+
+    var extension_host = try Extensions.init(allocator, io, workbench, &.{
+        .{ .path = ".cache-ext/vim/extension", .is_under_development = true },
+    }, ".cache-ext/data-vim-gf-test");
+    defer extension_host.deinit();
+
+    const startup_deadline = time_compat.milliTimestamp() + 10_000;
+    while (time_compat.milliTimestamp() < startup_deadline) {
+        _ = extension_host.pump();
+        if (extension_host.active != null) break;
+        time_compat.sleepMillis(10);
+    }
+    try std.testing.expect(extension_host.active != null);
+    const vim_deadline = time_compat.milliTimestamp() + 10_000;
+    while (!extension_host.vim_active and time_compat.milliTimestamp() < vim_deadline) {
+        _ = extension_host.pump();
+        time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(extension_host.vim_active);
+
+    const tab = workbench.activeTab().?;
+    try tab.editor.setCursorPosition(Position.init(1, 1));
+    _ = extension_host.pump();
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'g' } });
+    _ = extension_host.pump();
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'f' } });
+    const deadline = time_compat.milliTimestamp() + 10_000;
+    while (time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        if (workbench.activeTab()) |opened| {
+            if (std.mem.endsWith(u8, opened.editor.path, "target.txt") and
+                opened.editor.modelCursorPosition().lineNumber == 2) break;
+        }
+        time_compat.sleepMillis(20);
+    }
+    const opened = workbench.activeTab().?;
+    try std.testing.expect(std.mem.endsWith(u8, opened.editor.path, "target.txt"));
+    try std.testing.expectEqual(@as(usize, 2), opened.editor.modelCursorPosition().lineNumber);
 }

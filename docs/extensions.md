@@ -872,7 +872,7 @@ are from 1.147.0.
 | `MainThreadDocuments` | 18 | 3 | S5 | `$tryOpenDocument`, `$tryCreateDocument`, `$trySaveDocument` |
 | `MainThreadTextEditors` | 20 | 13 | S5 | show/options/selections/decorations/edits/snippets/diff |
 | `MainThreadLanguages` | 27 | 5 | S5 | no `$getLanguages`; `$setLanguageStatus`/`$removeLanguageStatus` |
-| `MainThreadLanguageFeatures` | 26 | 47 | S6 | first cut: hover, completion, definition, document symbols, code actions, formatting/range/on-type |
+| `MainThreadLanguageFeatures` | 26 | 47 | S6 | first cut: hover, completion, definition/declaration/type-definition/implementation, references, document symbols, code actions, formatting/range/on-type |
 | `MainThreadDiagnostics` | 16 | 2 | S5 | `$changeMany`, `$clear` |
 | `MainThreadStatusBar` | 36 | 2 | S5 | `$setEntry`, `$disposeEntry` |
 | `MainThreadMessageService` | 29 | 1 | S5 | `$showMessage` |
@@ -1281,13 +1281,15 @@ into the documents-and-editors delta; the host expects the separate events.
 ## 10. Language features
 
 The baseline bridge is ported: `languageSelector.zig`,
-`languageFeatureRegistry.zig`, the eight registries in
+`languageFeatureRegistry.zig`, the twelve registries in
 `languageFeaturesService.zig`, `platform/markers`, `markerDecorationsService`,
 `workbench/api/browser/mainThreadLanguageFeatures.zig` and
-`mainThreadDiagnostics.zig`. Hover/completion/outline/formatting are wired to
-the TUI, diagnostics render as squiggly underlines, overview-ruler marks and the
-`Problems` status count, and synchronous provider calls are bounded by a
-timeout. The remaining `MainThreadLanguageFeatures` methods still reject.
+`mainThreadDiagnostics.zig`. Hover, completion, definition/declaration/type
+definition/implementation, references, document symbols, outline and formatting
+are wired to the TUI, diagnostics render as squiggly underlines, overview-ruler
+marks and the `Problems` status count, and synchronous provider calls are
+bounded by a timeout. The remaining `MainThreadLanguageFeatures` methods still
+reject.
 
 `MainThreadLanguageFeatures` is handle-based: the host registers a provider
 and gets a numeric handle; later requests carry that handle. The baseline
@@ -1296,6 +1298,10 @@ subset is:
 - hover (`$registerHoverProvider`)
 - completion (`$registerCompletionsProvider`)
 - definition (`$registerDefinitionSupport`)
+- declaration (`$registerDeclarationSupport`)
+- implementation (`$registerImplementationSupport`)
+- type definition (`$registerTypeDefinitionSupport`)
+- references (`$registerReferenceSupport`)
 - document symbols (`$registerDocumentSymbolProvider`)
 - code actions (`$registerCodeActionSupport`)
 - formatting (`$registerDocumentFormattingSupport`,
@@ -1317,7 +1323,7 @@ clear rejection rather than a hang.
 
 ### 10.1 Registrations and provider calls
 
-The nine baseline registrations, with their exact argument lists:
+The baseline registrations, with their exact argument lists:
 
 | Workbench method | Arguments after `handle` |
 |---|---|
@@ -1325,6 +1331,10 @@ The nine baseline registrations, with their exact argument lists:
 | `$registerHoverProvider` | `selector` |
 | `$registerCompletionsProvider` | `selector`, `triggerCharacters`, `supportsResolveDetails`, `extensionId` |
 | `$registerDefinitionSupport` | `selector` |
+| `$registerDeclarationSupport` | `selector` |
+| `$registerImplementationSupport` | `selector` |
+| `$registerTypeDefinitionSupport` | `selector` |
+| `$registerReferenceSupport` | `selector` |
 | `$registerDocumentSymbolProvider` | `selector`, `label` |
 | `$registerCodeActionSupport` | `selector`, `metadata`, `displayName`, `extensionID`, `supportsResolve` |
 | `$registerDocumentFormattingSupport` | `selector`, `extensionId`, `displayName` |
@@ -1345,6 +1355,10 @@ Provider invocation is the reverse direction, on `ExtHostLanguageFeatures`:
 | `$provideCompletionItems(handle, resource, position, context, token)` | `ISuggestResultDto` |
 | `$resolveCompletionItem(handle, chainedCacheId, token)` | `ISuggestDataDto` |
 | `$provideDefinition(handle, resource, position, token)` | `ILocationLinkDto[]` |
+| `$provideDeclaration(handle, resource, position, token)` | `ILocationLinkDto[]` |
+| `$provideImplementation(handle, resource, position, token)` | `ILocationLinkDto[]` |
+| `$provideTypeDefinition(handle, resource, position, token)` | `ILocationLinkDto[]` |
+| `$provideReferences(handle, resource, position, context, token)` | `ILocationDto[]` |
 | `$provideDocumentSymbols(handle, resource, token)` | `DocumentSymbol[]` |
 | `$provideCodeActions(handle, resource, range, context, token)` | `ICodeActionListDto` |
 | `$resolveCodeAction(handle, chainedCacheId, token)` | `{ edit?, command? }` |
@@ -1563,7 +1577,7 @@ following slice is required before claiming VSCodeVim support:
 | Text input and `type` override | Ported in `src/vs/workbench/api/browser/extensionHostAdapter.zig`: printable keys, coalesced text runs and Enter go through `$executeContributedCommand("type", …)`; `default:type` inserts into the TUI editor. `default:replacePreviousChar` is still a no-op. | Keep the IME replacement path and fire `onCommand:type` before dispatch when the contribution registry lands. |
 | `window.tabGroups` | All TUI tabs are published in one active group; `:w`, `:bd`, `:bnext` and `gt` work. | Multiple groups, tab move operations, and preview updates; buffer numbers and split navigation. |
 | Configuration writes | `$updateConfigurationOption` is accepted but only acknowledged; the value is not stored or re-pushed. | `Configuration.update` for `Global` (and `Workspace` where the TUI persists settings), including language overrides and persistence. VSCodeVim uses it for `:set`, `editor.*` options, status-bar color customizations and `vim.vimrc.path`. |
-| Built-in command surface | `default:type`, `default:replacePreviousChar` (no-op), `_setContext`/`setContext`, `vscode.open`, `$tryOpenDocument`/`$trySaveDocument`, `$tryShowTextDocument`, `workbench.action.files.save`, `workbench.action.closeActiveEditor`, `nextEditorInGroup`/`previousEditorInGroup`, `splitEditorRight`/`Down`, `insertLineBefore`/`After`, `editor.action.revealDefinition` (F12/Ctrl-]), and `deleteLeft`/`deleteRight` (VSCodeVim's insert-mode Backspace/Delete) are wired. | The rest: `cursorMove`, `editorScroll`, `moveActiveEditor`, `joinAllGroups`, `closeOtherEditors`, snippets, formatting, hover/link, and snippet-placeholder navigation. |
+| Built-in command surface | `default:type`, `default:replacePreviousChar` (no-op), `_setContext`/`setContext`, `vscode.open`, `$tryOpenDocument`/`$trySaveDocument`, `$tryShowTextDocument` (including the optional selection for `gf file:line`), `workbench.action.files.save`, `workbench.action.closeActiveEditor`, `nextEditorInGroup`/`previousEditorInGroup`, `splitEditorRight`/`Down`, `insertLineBefore`/`After`, `editor.action.revealDefinition`, `editor.action.goToDeclaration`, `editor.action.revealDeclaration`, `editor.action.goToTypeDefinition`, `editor.action.goToImplementation`, `editor.action.goToReferences`, `editor.action.referenceSearch.trigger`, `editor.action.findReferences`, `editor.action.showHover`, `outline.focus`/`workbench.action.gotoSymbol`, and `deleteLeft`/`deleteRight` (VSCodeVim's insert-mode Backspace/Delete) are wired. | The rest: `cursorMove`, `editorScroll`, `moveActiveEditor`, `joinAllGroups`, `closeOtherEditors`, snippets, formatting/link actions, and snippet-placeholder navigation. |
 | Extension keybindings | The adapter maps VSCodeVim's printable, Escape, Backspace/Delete, arrows, Home/End, Page keys and Ctrl+letter commands directly. | Feed all 75 contributed rules into `KeybindingsRegistry.setExtensionKeybindings`, resolve against the terminal context, and ensure the TUI does not swallow keys before the extension rule. |
 | Debug breakpoints | Debug is deferred (§16); no `MainThreadDebugService`. | A breakpoint-only subset: `vscode.debug.breakpoints`, add/remove source and function breakpoints and the breakpoint change event. Without it the `:breakpoints` ex-commands fail; core editing still works. |
 | Editor events | §9.1 defines the push shapes. `src/vs/workbench/api/browser/extensionHostAdapter.zig` pushes selection changes through `$acceptEditorPropertiesChanged` whenever the TUI moved the caret itself (click, drag, TUI-handled key, find, tab switch), tagged with the upstream `source` string (`"mouse"`/`"keyboard"`) and deduplicated against the last selection the host applied or received. That is what keeps VSCodeVim's cursor on the clicked position instead of snapping back on the next Vim key. `options` and `visibleRanges` are still sent as `null`. | Fire `onDidChangeActiveTextEditor`/`onDidChangeVisibleTextEditors` and push `options`/`visibleRanges` deltas; VSCodeVim reads mode and view state from those too. |
@@ -1891,18 +1905,21 @@ separately with `host/build-json-server.js` and driven by
 `src/vs/workbench/services/language/common/jsonLanguageClient.zig`, a small
 synchronous LSP client. The client initializes with pull-diagnostics
 capabilities, opens JSON/JSONC documents, sends full-text changes, pulls
-syntax diagnostics, and forwards completion requests.
+syntax diagnostics, forwards completion requests, and requests hierarchical
+document symbols.
 
 The TUI polls only the active editor, publishes a `JSON Problems` status-bar
 entry, registers the server completion provider on JSON/JSONC tabs, forwards
 mouse hover through `TuiHoverProvider` (schemas referenced by `$schema` are
-resolved by the server), and applies `textDocument/formatting` edits through
-`Editor.formatJson` (command `editor.action.formatDocument`). The `json.schemas`
-setting is forwarded to the server so configured schema associations participate
-in validation, completion and hover. The server bundle is optional: without
+resolved by the server), applies `textDocument/formatting` edits through
+`Editor.formatJson` (command `editor.action.formatDocument`), and registers the
+server's document-symbol provider for breadcrumbs/outline and the
+`workbench.action.gotoSymbol` picker. The `json.schemas` setting is forwarded to
+the server so configured schema associations participate in validation,
+completion and hover. The server bundle is optional: without
 `host/dist/jsonServer.mjs` the editor keeps the bundled grammar and no JSON
-language features are attached. Code actions and workspace diagnostics remain
-unwired.
+language features are attached. The pinned server does not advertise definition
+or references; code actions and workspace diagnostics also remain unwired.
 
 Indentation is independent of the language server. It comes from the built-in
 `extensions/json/language-configuration.json` (bracket pairs and
@@ -1943,18 +1960,23 @@ Terminal surfaces use the existing registries: diagnostics feed
 `MainThreadDiagnostics`/`MarkerService`, hover and completion use
 `MainThreadLanguageFeatures`, formatting uses the document and range formatter
 registries (`getRealAndSyntheticDocumentFormattersOrdered` semantics), and
-document symbols feed breadcrumbs/outline. Other provider registrations from
-the extension are accepted and retained for `$unregister`, but their providers
-are not invoked because the terminal has no renderer for semantic tokens,
-inlay hints, code lens, links, colors, call/type hierarchy, linked editing or
-inline completions. Definition and code-action providers are transported but
-still have no TUI command surface. Provider calls remain synchronous with the
+document symbols feed breadcrumbs/outline and the symbol picker. Definition,
+declaration, type definition, implementation and references use the ported
+`gotoSymbol` helpers and the terminal quick pick (`F12`/`Ctrl-]`,
+`Ctrl-F12`, `Shift-F12`, command palette and the extension-host command bridge).
+Other provider registrations from the extension are accepted and retained for
+`$unregister`, but their providers are not invoked because the terminal has no
+renderer for semantic tokens, inlay hints, code lens, links, colors, call/type
+hierarchy, linked editing or inline completions. Code-action providers are
+transported but still have no TUI command surface. Provider calls remain synchronous with the
 existing bounded timeouts; the first tsserver request may return empty while a
 project loads.
 
 The e2e test opens a temp `.ts` file with the extension and asserts
 diagnostics, completion, hover, formatting and an accented-prefix diagnostic
-range, and that VSCodeVim + TypeScript load in one host. The provisioning step
+range, and that VSCodeVim + TypeScript load in one host. Additional gated tests
+drive the language-feature fixture's navigation providers through the command
+bridge and exercise VSCodeVim's `gd`, `gh`, `gO` and `gf file:line` commands. The provisioning step
 is optional: without `host/dist/extensions/typescript-language-features` the
 host still runs VSCodeVim and TS/JS tabs keep the bundled grammar/indent
 behavior.
@@ -1998,8 +2020,10 @@ generic fallback.
 - Semantic tokens, inlay hints, code lens, document links/colors, folding,
   selection ranges, call/type hierarchy, inline completions, paste/drop
   edits: the real TypeScript extension registers them, but the terminal has no
-  renderer; provider calls are never made. Definition/code-action providers are
-  registered but have no TUI command surface.
+  renderer; provider calls are never made. Code-action providers are registered
+  but have no TUI command surface; definition/declaration/type-definition/
+  implementation/references and document symbols are wired to the terminal
+  quick pick.
 - VSCodeVim 1.32.4 is not supported by the baseline: it needs text-input
   `type`/`default:type` dispatch, full `window.tabGroups`, configuration
   writes, extra built-in commands, extension keybinding routing and a
@@ -2097,7 +2121,9 @@ MainThreadLanguages: $changeLanguage, $tokensAtPosition,
   $computeFullSyntaxHighlighting, $setLanguageStatus, $removeLanguageStatus
 MainThreadLanguageFeatures (first cut): $unregister,
   $registerHoverProvider, $registerCompletionsProvider,
-  $registerDefinitionSupport, $registerDocumentSymbolProvider,
+  $registerDefinitionSupport, $registerDeclarationSupport,
+  $registerImplementationSupport, $registerTypeDefinitionSupport,
+  $registerReferenceSupport, $registerDocumentSymbolProvider,
   $registerCodeActionSupport, $registerDocumentFormattingSupport,
   $registerRangeFormattingSupport, $registerOnTypeFormattingSupport
 MainThreadDiagnostics: $changeMany, $clear
@@ -2117,15 +2143,14 @@ MainThreadSecretState: $getPassword, $setPassword, $deletePassword, $getKeys
 MainThreadEditorTabs: $moveTab, $closeTab, $closeGroup
 ```
 
-`MainThreadLanguageFeatures` has 47 methods in 1.147.0. The nine supported
-ones are listed above; the other 38 are deferred and must still reject or
+`MainThreadLanguageFeatures` has 47 methods in 1.147.0. The thirteen supported
+ones are listed above; the other 34 are deferred and must still reject or
 return empty according to their declared return type. In source order they
 are: `$registerCodeLensSupport`, `$emitCodeLensEvent`,
-`$registerDeclarationSupport`, `$registerImplementationSupport`,
-`$registerTypeDefinitionSupport`, `$registerEvaluatableExpressionProvider`,
+`$registerEvaluatableExpressionProvider`,
 `$registerInlineValuesProvider`, `$emitInlineValuesEvent`,
 `$registerDocumentHighlightProvider`, `$registerMultiDocumentHighlightProvider`,
-`$registerLinkedEditingRangeProvider`, `$registerReferenceSupport`,
+`$registerLinkedEditingRangeProvider`,
 `$registerPasteEditProvider`, `$registerNavigateTypeSupport`,
 `$registerRenameSupport`, `$registerNewSymbolNamesProvider`,
 `$registerDocumentSemanticTokensProvider`, `$emitDocumentSemanticTokensEvent`,

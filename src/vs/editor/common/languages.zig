@@ -458,6 +458,58 @@ pub const DefinitionProvider = struct {
     ) anyerror![]LocationLink,
 };
 
+pub const DeclarationProvider = struct {
+    context: *anyopaque,
+    provide_declaration: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        position: Position,
+        token: CancellationToken,
+    ) anyerror![]LocationLink,
+};
+
+pub const ImplementationProvider = struct {
+    context: *anyopaque,
+    provide_implementation: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        position: Position,
+        token: CancellationToken,
+    ) anyerror![]LocationLink,
+};
+
+pub const TypeDefinitionProvider = struct {
+    context: *anyopaque,
+    provide_type_definition: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        position: Position,
+        token: CancellationToken,
+    ) anyerror![]LocationLink,
+};
+
+/// Port of `ReferenceContext` from `src/vs/editor/common/languages.ts`.
+pub const ReferenceContext = struct {
+    include_declaration: bool = false,
+};
+
+/// Port of `ReferenceProvider`. The provider allocates the returned locations
+/// (including each URI) with the supplied allocator.
+pub const ReferenceProvider = struct {
+    context: *anyopaque,
+    provide_references: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        model: *TextModel,
+        position: Position,
+        reference_context: ReferenceContext,
+        token: CancellationToken,
+    ) anyerror![]Location,
+};
+
 /// Port of `DocumentSymbol` from `src/vs/editor/common/languages.ts`.
 /// Children own their fields through the allocator supplied to the provider.
 pub const DocumentSymbol = struct {

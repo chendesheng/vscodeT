@@ -36,6 +36,26 @@ pub const FormattingEdit = struct {
     new_text: []u8,
 };
 
+/// Zero-based LSP range. The caller converts it to the editor's 1-based UTF-8
+/// columns with the target document's lines.
+pub const LspRange = struct {
+    start_line: u32,
+    start_character: u32,
+    end_line: u32,
+    end_character: u32,
+};
+
+pub const JsonDocumentSymbol = struct {
+    name: []u8,
+    detail: []u8 = &.{},
+    kind: u32 = 0,
+    tags: []const u32 = &.{},
+    container_name: ?[]u8 = null,
+    range: LspRange,
+    selection_range: LspRange,
+    children: []JsonDocumentSymbol = &.{},
+};
+
 pub const Error = error{
     ServerUnavailable,
     InvalidMessage,
@@ -96,6 +116,9 @@ pub const Client = struct {
         try completion_item.put(arena.allocator(), "snippetSupport", .{ .bool = false });
         try completion_capability.put(arena.allocator(), "completionItem", .{ .object = completion_item });
         try text_document.put(arena.allocator(), "completion", .{ .object = completion_capability });
+        var document_symbol_capability: std.json.ObjectMap = .empty;
+        try document_symbol_capability.put(arena.allocator(), "hierarchicalDocumentSymbolSupport", .{ .bool = true });
+        try text_document.put(arena.allocator(), "documentSymbol", .{ .object = document_symbol_capability });
         try capabilities.put(arena.allocator(), "textDocument", .{ .object = text_document });
         try params.put(arena.allocator(), "capabilities", .{ .object = capabilities });
         var init_options: std.json.ObjectMap = .empty;
@@ -246,6 +269,15 @@ pub const Client = struct {
         return .{ .text = text };
     }
 
+    pub fn documentSymbols(self: *Client, arena: Allocator, uri: []const u8) ![]JsonDocumentSymbol {
+        var doc: std.json.ObjectMap = .empty;
+        try doc.put(arena, "uri", .{ .string = try arena.dupe(u8, uri) });
+        var params: std.json.ObjectMap = .empty;
+        try params.put(arena, "textDocument", .{ .object = doc });
+        const result = try self.request(arena, "textDocument/documentSymbol", .{ .object = params });
+        return parseDocumentSymbols(arena, result);
+    }
+
     pub fn formatting(self: *Client, arena: Allocator, uri: []const u8, tab_size: u32, insert_spaces: bool) ![]FormattingEdit {
         var doc: std.json.ObjectMap = .empty;
         try doc.put(arena, "uri", .{ .string = try arena.dupe(u8, uri) });
@@ -372,6 +404,100 @@ pub const Client = struct {
         }
     }
 };
+
+fn parseDocumentSymbols(arena: Allocator, result: std.json.Value) ![]JsonDocumentSymbol {
+    if (result != .array) return &.{};
+    var symbols = std.array_list.Managed(JsonDocumentSymbol).init(arena);
+    for (result.array.items) |item| {
+        if (item != .object) continue;
+        const symbol = try parseDocumentSymbol(arena, item.object);
+        if (symbol) |value| try symbols.append(value);
+    }
+    return symbols.toOwnedSlice();
+}
+
+fn parseDocumentSymbol(arena: Allocator, object: std.json.ObjectMap) !?JsonDocumentSymbol {
+    const name_value = object.get("name") orelse return null;
+    if (name_value != .string) return null;
+    const kind: u32 = if (object.get("kind")) |value|
+        if (value == .integer and value.integer >= 0) @intCast(value.integer) else 0
+    else
+        0;
+
+    var range: LspRange = undefined;
+    var selection_range: LspRange = undefined;
+    var children: []JsonDocumentSymbol = &.{};
+    var container_name: ?[]u8 = null;
+    var detail: []u8 = &.{};
+
+    if (object.get("location")) |location| {
+        // Flat `SymbolInformation` shape.
+        if (location != .object) return null;
+        range = parseLspRange(location.object.get("range")) orelse return null;
+        selection_range = range;
+        container_name = try optionalString(arena, object.get("containerName"));
+    } else {
+        range = parseLspRange(object.get("range")) orelse return null;
+        selection_range = parseLspRange(object.get("selectionRange")) orelse range;
+        container_name = try optionalString(arena, object.get("containerName"));
+        detail = if (object.get("detail")) |value|
+            if (value == .string) try arena.dupe(u8, value.string) else &.{}
+        else
+            &.{};
+        if (object.get("children")) |value| {
+            if (value == .array) {
+                var list = std.array_list.Managed(JsonDocumentSymbol).init(arena);
+                for (value.array.items) |child| {
+                    if (child != .object) continue;
+                    if (try parseDocumentSymbol(arena, child.object)) |symbol| try list.append(symbol);
+                }
+                children = try list.toOwnedSlice();
+            }
+        }
+    }
+
+    var tags: []const u32 = &.{};
+    if (object.get("tags")) |value| {
+        if (value == .array) {
+            var list = std.array_list.Managed(u32).init(arena);
+            for (value.array.items) |tag| {
+                if (tag == .integer and tag.integer >= 0) try list.append(@intCast(tag.integer));
+            }
+            tags = try list.toOwnedSlice();
+        }
+    }
+
+    return JsonDocumentSymbol{
+        .name = try arena.dupe(u8, name_value.string),
+        .detail = detail,
+        .kind = kind,
+        .tags = tags,
+        .container_name = container_name,
+        .range = range,
+        .selection_range = selection_range,
+        .children = children,
+    };
+}
+
+fn parseLspRange(value: ?std.json.Value) ?LspRange {
+    const raw = value orelse return null;
+    if (raw != .object) return null;
+    const start = raw.object.get("start") orelse return null;
+    const end = raw.object.get("end") orelse return null;
+    if (start != .object or end != .object) return null;
+    return .{
+        .start_line = integerField(start.object, "line"),
+        .start_character = integerField(start.object, "character"),
+        .end_line = integerField(end.object, "line"),
+        .end_character = integerField(end.object, "character"),
+    };
+}
+
+fn optionalString(arena: Allocator, value: ?std.json.Value) !?[]u8 {
+    const raw = value orelse return null;
+    if (raw != .string) return null;
+    return try arena.dupe(u8, raw.string);
+}
 
 fn contentLength(header: []const u8) ?usize {
     var lines = std.mem.splitSequence(u8, header, "\r\n");
@@ -502,4 +628,61 @@ test "JSON language client applies json.schemas associations" {
     const diagnostics = try client.pullDiagnostics(scratch, uri);
     try std.testing.expect(diagnostics.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, diagnostics[0].message, "string") != null);
+}
+
+test "JSON document symbol parser handles hierarchical and flat shapes" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const value = try std.json.parseFromSliceLeaky(std.json.Value, scratch,
+        \\[
+        \\  {
+        \\    "name": "root",
+        \\    "detail": "",
+        \\    "kind": 19,
+        \\    "range": {"start":{"line":0,"character":0},"end":{"line":2,"character":1}},
+        \\    "selectionRange": {"start":{"line":0,"character":1},"end":{"line":0,"character":5}},
+        \\    "children": [
+        \\      {
+        \\        "name": "a",
+        \\        "kind": 7,
+        \\        "range": {"start":{"line":1,"character":2},"end":{"line":1,"character":7}},
+        \\        "selectionRange": {"start":{"line":1,"character":2},"end":{"line":1,"character":5}}
+        \\      }
+        \\    ]
+        \\  },
+        \\  {
+        \\    "name": "flat",
+        \\    "kind": 12,
+        \\    "location": {
+        \\      "uri": "file:///tmp/test.json",
+        \\      "range": {"start":{"line":3,"character":0},"end":{"line":3,"character":4}}
+        \\    }
+        \\  }
+        \\]
+    , .{});
+    const symbols = try parseDocumentSymbols(scratch, value);
+    try std.testing.expectEqual(@as(usize, 2), symbols.len);
+    try std.testing.expectEqualStrings("root", symbols[0].name);
+    try std.testing.expectEqual(@as(usize, 1), symbols[0].children.len);
+    try std.testing.expectEqualStrings("a", symbols[0].children[0].name);
+    try std.testing.expectEqual(@as(u32, 1), symbols[0].children[0].range.start_line);
+    try std.testing.expectEqualStrings("flat", symbols[1].name);
+    try std.testing.expectEqual(@as(u32, 3), symbols[1].selection_range.start_line);
+}
+
+test "JSON language client returns document symbols" {
+    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const client = try Client.start(allocator, "node", "host/dist/jsonServer.mjs");
+    defer client.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const uri = "file:///tmp/document-symbols.json";
+    try client.didOpen(scratch, uri, "json", "{\n  \"a\": 1\n}\n");
+    const symbols = try client.documentSymbols(scratch, uri);
+    try std.testing.expect(symbols.len > 0);
 }

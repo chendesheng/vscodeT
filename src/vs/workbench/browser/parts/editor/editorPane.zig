@@ -227,10 +227,7 @@ pub const Tab = struct {
     /// Points the tab's registry-backed controllers at the workbench service.
     /// Called when language features are enabled after tabs already exist.
     pub fn attachLanguageRegistry(self: *Tab, features: *LanguageFeaturesService) void {
-        if (self.controllers) |controllers| {
-            controllers.hover_participant.registry = &features.hover_provider;
-            controllers.suggest.model.registry = &features.completion_provider;
-        }
+        if (self.controllers) |controllers| controllers.attachLanguageRegistry(features);
     }
 
     /// Lays the editor view out in the group pane. The height is the editor
@@ -372,6 +369,17 @@ pub const Controllers = struct {
         errdefer self.suggest.deinit();
 
         return self;
+    }
+
+    pub fn attachLanguageRegistry(self: *Controllers, features: *LanguageFeaturesService) void {
+        self.hover_participant.registry = &features.hover_provider;
+        self.suggest.model.registry = &features.completion_provider;
+        if (self.hover_registration == null) {
+            self.hover_registration = features.hover_provider.register(
+                .{ .language = "*" },
+                self.hover_provider.interface(),
+            ) catch null;
+        }
     }
 
     pub fn deinit(self: *Controllers) void {

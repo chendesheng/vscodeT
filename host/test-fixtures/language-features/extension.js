@@ -13,6 +13,38 @@ function activate(context) {
       return [item];
     }
   }, '.'));
+  context.subscriptions.push(vscode.languages.registerDefinitionProvider({ language: 'json' }, {
+    provideDefinition(document) {
+      const range = new vscode.Range(0, 0, 0, 1);
+      return [{ targetUri: document.uri, targetRange: range, targetSelectionRange: range }];
+    }
+  }));
+  context.subscriptions.push(vscode.languages.registerDeclarationProvider({ language: 'json' }, {
+    provideDeclaration(document) {
+      const range = new vscode.Range(1, 0, 1, 1);
+      return [{ targetUri: document.uri, targetRange: range, targetSelectionRange: range }];
+    }
+  }));
+  context.subscriptions.push(vscode.languages.registerImplementationProvider({ language: 'json' }, {
+    provideImplementation(document) {
+      const range = new vscode.Range(2, 0, 2, 1);
+      return [{ targetUri: document.uri, targetRange: range, targetSelectionRange: range }];
+    }
+  }));
+  context.subscriptions.push(vscode.languages.registerTypeDefinitionProvider({ language: 'json' }, {
+    provideTypeDefinition(document) {
+      const range = new vscode.Range(0, 0, 0, 3);
+      return [{ targetUri: document.uri, targetRange: range, targetSelectionRange: range }];
+    }
+  }));
+  context.subscriptions.push(vscode.languages.registerReferenceProvider({ language: 'json' }, {
+    provideReferences(document) {
+      return [
+        new vscode.Location(document.uri, new vscode.Range(0, 0, 0, 1)),
+        new vscode.Location(document.uri, new vscode.Range(1, 0, 1, 1)),
+      ];
+    }
+  }));
   context.subscriptions.push(vscode.languages.registerDocumentSymbolProvider({ language: 'json' }, {
     provideDocumentSymbols() {
       return [new vscode.DocumentSymbol(
