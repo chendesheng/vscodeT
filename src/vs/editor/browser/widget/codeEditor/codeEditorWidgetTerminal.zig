@@ -811,12 +811,7 @@ pub const Editor = struct {
         const language_id = self.languageId();
         if (!std.mem.eql(u8, language_id, "json") and !std.mem.eql(u8, language_id, "jsonc")) return;
         if (self.json_uri != null) return;
-        const absolute = if (std.fs.path.isAbsolute(self.path))
-            try self.allocator.dupe(u8, self.path)
-        else
-            try std.fs.path.resolve(self.allocator, &.{self.path});
-        defer self.allocator.free(absolute);
-        const uri = try fileUri(self.allocator, absolute);
+        const uri = try std_uri.resourceKey(self.allocator, self.model.uri());
         errdefer self.allocator.free(uri);
         const text = try self.model.getValue(.LF, false);
         defer text.deinit();
@@ -3577,6 +3572,21 @@ fn resolvedLanguageConfigurationForBrackets(
     return service.resolved(language_id);
 }
 
+/// Resolves a possibly-relative editor path to the canonical absolute spelling
+/// used by the text model URI. Language providers return absolute `file:` URIs;
+/// keeping a relative model URI would make the same buffer look like a
+/// different document and send navigation to a non-existent path.
+fn absolutePath(allocator: Allocator, io: Io, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) return std.fs.path.resolve(allocator, &.{path});
+    var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+    if (Io.Dir.cwd().realPathFile(io, path, &buffer)) |length| {
+        return try allocator.dupe(u8, buffer[0..length]);
+    } else |_| {}
+    var cwd_buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_length = try Io.Dir.cwd().realPathFile(io, ".", &cwd_buffer);
+    return std.fs.path.resolve(allocator, &.{ cwd_buffer[0..cwd_length], path });
+}
+
 fn createModel(
     allocator: Allocator,
     io: Io,
@@ -3613,7 +3623,7 @@ fn createModel(
     const decoded = try encoding_mod.decode(allocator, raw, encoding);
     defer allocator.free(decoded);
     var fixed = Io.Reader.fixed(decoded);
-    const absolute = if (std.fs.path.isAbsolute(path)) try allocator.dupe(u8, path) else try std.fs.path.resolve(allocator, &.{path});
+    const absolute = try absolutePath(allocator, io, path);
     defer allocator.free(absolute);
     const associated = std.Uri{
         .scheme = "file",
@@ -3626,22 +3636,6 @@ fn createModel(
         .fragment = null,
     };
     return try TextModel.init(allocator, &fixed, language_id, options, associated, undo_redo, language_service);
-}
-
-fn fileUri(allocator: Allocator, absolute_path: []const u8) ![]u8 {
-    var output = std.array_list.Managed(u8).init(allocator);
-    errdefer output.deinit();
-    try output.appendSlice("file://");
-    for (absolute_path) |byte| {
-        if (std.ascii.isAlphanumeric(byte) or byte == '/' or byte == '-' or byte == '_' or byte == '.' or byte == '~') {
-            try output.append(byte);
-        } else {
-            var escaped: [3]u8 = undefined;
-            const encoded = try std.fmt.bufPrint(&escaped, "%{X:0>2}", .{byte});
-            try output.appendSlice(encoded);
-        }
-    }
-    return output.toOwnedSlice();
 }
 
 fn registerDeclarativeGrammar(io: Io, allocator: Allocator, root: []const u8, grammar: extensions_registry.Grammar) void {

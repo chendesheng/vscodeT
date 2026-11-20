@@ -2729,6 +2729,32 @@ pub const Workbench = struct {
         return self.openPathWithOptions(path, .{ .pinned = false });
     }
 
+    /// True when two filesystem paths name the same file after resolving
+    /// relative segments. The editor keeps the path spelling supplied by the
+    /// caller while language providers return canonical absolute URIs, so a
+    /// plain string compare is not enough to detect the current buffer.
+    fn samePath(self: *Workbench, left: []const u8, right: []const u8) bool {
+        if (std.mem.eql(u8, left, right)) return true;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const resolved_left = self.normalizePath(arena.allocator(), left) catch return false;
+        const resolved_right = self.normalizePath(arena.allocator(), right) catch return false;
+        return std.mem.eql(u8, resolved_left, resolved_right);
+    }
+
+    /// Resolves a path to an absolute, normalized spelling. Existing files go
+    /// through `realpath` so symlinks compare equal; otherwise the path is
+    /// joined with the current directory and normalized lexically.
+    fn normalizePath(self: *Workbench, allocator: Allocator, path: []const u8) ![]const u8 {
+        var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+        if (Io.Dir.cwd().realPathFile(self.io, path, &buffer)) |length| {
+            return try allocator.dupe(u8, buffer[0..length]);
+        } else |_| {}
+        var cwd_buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+        const cwd_length = try Io.Dir.cwd().realPathFile(self.io, ".", &cwd_buffer);
+        return try std.fs.path.resolve(allocator, &.{ cwd_buffer[0..cwd_length], path });
+    }
+
     /// Finds the tab/input already showing `path`, if the group model still
     /// owns it. Reusing it avoids reading and constructing a whole editor for
     /// a file that is already open.
@@ -2736,7 +2762,7 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 const file_input = tab.file_input orelse continue;
-                if (!std.mem.eql(u8, file_input.editor.path, path)) continue;
+                if (!self.samePath(file_input.editor.path, path)) continue;
                 if (!pane.group.model.contains(.{ .input = &file_input.base }, .{})) continue;
                 return file_input;
             }
@@ -2987,7 +3013,7 @@ pub const Workbench = struct {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const current_uri = try std_uri.resourceKey(scratch.allocator(), active.editor.model.uri());
-        if (std.mem.eql(u8, current_uri, link.uri)) {
+        if (std.mem.eql(u8, current_uri, link.uri) or self.samePath(active.editor.path, path)) {
             try active.editor.setSelection(range);
             self.focusEditor();
         } else {
@@ -8292,4 +8318,53 @@ test "Workbench: F12 and Shift+F12 dispatch through keybindings" {
     try std.testing.expect(try workbench.handleGlobalKey(&shift_f12));
     try std.testing.expect(workbench.quick_access.isOpen());
     workbench.quick_access.inputService().hide();
+}
+
+test "Workbench: same-file navigation reuses the current editor across path forms" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "lsp/relative.ts",
+        \\const value = 1;
+        \\value;
+    );
+    defer allocator.free(path);
+    var absolute_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const absolute_length = try Io.Dir.cwd().realPathFile(io, path, &absolute_buffer);
+    const absolute = try allocator.dupe(u8, absolute_buffer[0..absolute_length]);
+    defer allocator.free(absolute);
+    const directory = std.fs.path.dirname(absolute) orelse "/";
+    const basename = std.fs.path.basename(absolute);
+
+    const Fake = struct {
+        dir: []const u8,
+        base: []const u8,
+        fn definition(context: *anyopaque, allocator_: Allocator, _: *@import("../../editor/common/model/textModel.zig").TextModel, _: Position, _: CancellationToken) ![]languages.LocationLink {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const uri = try std.fmt.allocPrint(allocator_, "file://{s}/./{s}", .{ self.dir, self.base });
+            const links = try allocator_.alloc(languages.LocationLink, 1);
+            links[0] = .{
+                .uri = uri,
+                .range = Range.init(2, 1, 2, 6),
+                .target_selection_range = Range.init(2, 1, 2, 6),
+            };
+            return links;
+        }
+    };
+    var context = Fake{ .dir = directory, .base = basename };
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+    const registration = try workbench.language_features.?.definition_provider.register(.{ .language = "*" }, .{
+        .context = &context,
+        .provide_definition = Fake.definition,
+    });
+    defer registration.dispose();
+
+    try std.testing.expect(try workbench.revealDefinition());
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expectEqualStrings(path, workbench.activeTab().?.editor.path);
+    try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
 }
