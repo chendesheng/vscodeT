@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 const TextModel = @import("../../../editor/common/model/textModel.zig").TextModel;
 const Selection = @import("../../../editor/common/core/selection.zig").Selection;
 const manager = @import("../../services/extensions/common/extensionHostManager.zig");
+const std_uri = @import("../../../base/common/stdUri.zig");
 const position_converter = @import("../common/positionConverter.zig");
 
 pub const EditorOptions = struct {
@@ -38,18 +39,24 @@ pub const ChangeSpec = struct {
 /// The delta that adds the active document and its editor. The terminal has a
 /// single focused editor id (`"1"`) per active document, matching the adapter's
 /// earlier wire shape.
+///
+/// The document resource is the text model's URI, never the editor's path
+/// spelling: upstream identifies documents by URI, and the language-feature
+/// requests carry `model.uri()`. Using the raw path here made a relative
+/// command-line path look like a different document to the extension host, so
+/// providers never found it and navigation silently produced no result.
 pub fn addDocumentDelta(
     arena: Allocator,
     model: *TextModel,
-    path: []const u8,
     language_id: []const u8,
     is_dirty: bool,
     options: EditorOptions,
     initial_selections: []const Selection,
 ) !std.json.Value {
+    const document_uri = try std_uri.jsonComponents(arena, model.uri());
     var docs = std.json.Array.init(arena);
     var document: std.json.ObjectMap = .empty;
-    try document.put(arena, "uri", try manager.fileUri(arena, path));
+    try document.put(arena, "uri", document_uri);
     try document.put(arena, "versionId", .{ .integer = @intCast(model.getVersionId()) });
     var lines = std.json.Array.init(arena);
     const line_count = model.getLineCount();
@@ -69,7 +76,7 @@ pub fn addDocumentDelta(
     var editors = std.json.Array.init(arena);
     var editor: std.json.ObjectMap = .empty;
     try editor.put(arena, "id", .{ .string = "1" });
-    try editor.put(arena, "documentUri", try manager.fileUri(arena, path));
+    try editor.put(arena, "documentUri", document_uri);
     var editor_options: std.json.ObjectMap = .empty;
     try editor_options.put(arena, "tabSize", .{ .integer = @intCast(options.tab_size) });
     try editor_options.put(arena, "indentSize", .{ .integer = @intCast(options.indent_size) });
@@ -209,4 +216,37 @@ fn utf16Column(model: *TextModel, line_number: usize, column: usize) usize {
     var line = model.getLineContent(line_number) catch return column;
     defer line.deinit();
     return position_converter.utf16OffsetForColumn(line.items, column);
+}
+
+test "documentsAndEditors: the document resource is the model URI" {
+    const Editor = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    // The editor's path is a relative spelling; the model resource is the
+    // canonical absolute URI language-feature requests carry.
+    var editor = try Editor.createFromText(allocator, io, "{\n  \"a\": 1\n}\n", "relative.json", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const delta = try addDocumentDelta(
+        arena.allocator(),
+        editor.model,
+        "json",
+        false,
+        .{ .tab_size = 2, .indent_size = 2, .insert_spaces = true },
+        &.{},
+    );
+    const document_uri = delta.object.get("addedDocuments").?.array.items[0].object.get("uri").?.object;
+    const editor_uri = delta.object.get("addedEditors").?.array.items[0].object.get("documentUri").?.object;
+    const document_path = document_uri.get("path").?.string;
+    try std.testing.expect(std.fs.path.isAbsolute(document_path));
+    // The mirror must not fall back to the editor's relative path spelling:
+    // that is what the extension host could not match to `model.uri()`.
+    try std.testing.expect(!std.mem.eql(u8, editor.path, document_path));
+    try std.testing.expectEqualStrings(document_path, editor_uri.get("path").?.string);
+    try std.testing.expectEqualStrings(try std_uri.fsPath(editor.model.uri(), arena.allocator()), document_path);
 }

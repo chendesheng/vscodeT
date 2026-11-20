@@ -14,6 +14,7 @@ const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
 const proxyIdentifier = @import("../../services/extensions/common/proxyIdentifier.zig");
 const protocol = @import("../common/extHost.protocol.zig");
 const time_compat = @import("../../../base/common/timeCompat.zig");
+const std_uri = @import("../../../base/common/stdUri.zig");
 const Editor = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const TextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
 const Workbench = @import("../../browser/workbench.zig").Workbench;
@@ -458,7 +459,11 @@ pub const Extensions = struct {
         // resolves; the extension host otherwise waits for the next pump.
         self.syncActiveDocument() catch {};
         self.needs_render = true;
-        return manager.fileUri(arena, path);
+        // Return the resource the document mirror registered, not the caller's
+        // path spelling, so an extension-requested open joins the same
+        // document (`$tryOpenDocument` resolves to this URI).
+        const opened = self.workbench.findOpenInput(path) orelse return .null;
+        return try std_uri.jsonComponents(arena, opened.editor.model.uri());
     }
 
     fn documentsCreateHost(context: *anyopaque, options: std.json.Value, arena: Allocator) anyerror!std.json.Value {
@@ -690,21 +695,23 @@ pub const Extensions = struct {
             try self.removeActiveDocument();
         }
 
-        const uri_path = tab.editor.path;
-        const uri = try self.allocator.dupe(u8, uri_path);
+        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_instance.deinit();
+        const arena = arena_instance.allocator();
+        // The mirror resource must be the text model's URI: language-feature
+        // requests carry `model.uri()`, and a raw relative editor path would
+        // name a document the extension host never opened. That mismatch made
+        // `gd` and the F12 actions return no result for relative paths.
+        const uri = try self.allocator.dupe(u8, try std_uri.fsPath(tab.editor.model.uri(), arena));
         errdefer self.allocator.free(uri);
         const language = try self.allocator.dupe(u8, tab.editor.languageId());
         errdefer self.allocator.free(language);
 
-        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena_instance.deinit();
-        const arena = arena_instance.allocator();
         const selections = try tab.editor.getSelections();
         defer tab.editor.allocator.free(selections);
         const delta = try documents_and_editors.addDocumentDelta(
             arena,
             tab.editor.model,
-            uri_path,
             language,
             tab.editor.dirty_state,
             .{
@@ -732,14 +739,16 @@ pub const Extensions = struct {
         for (self.workbench.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 try specs.append(.{
-                    .path = tab.editor.path,
+                    .path = try std_uri.fsPath(tab.editor.model.uri(), arena),
                     .label = std.fs.path.basename(tab.editor.path),
                     .is_active = tab == active_tab,
                     .is_dirty = tab.editor.dirty_state,
                 });
             }
         }
-        if (self.editor_tabs_actor) |*actor| try actor.sync(arena, active_tab.editor.path, specs.items);
+        if (self.editor_tabs_actor) |*actor| {
+            try actor.sync(arena, try std_uri.fsPath(active_tab.editor.model.uri(), arena), specs.items);
+        }
     }
 
     fn removeActiveDocument(self: *Extensions) !void {
@@ -1644,6 +1653,80 @@ test "Extensions: language feature registration reaches the workbench registries
     workbench.quick_access.inputService().hide();
     try std.testing.expect(runLspCommand(workbench, "editor.action.showHover"));
     try std.testing.expect(workbench.activeTab().?.controllers.?.hover.isVisible());
+}
+
+test "Extensions: relative paths mirror the model URI language features use" {
+    // Regression: a relative command-line path used to be mirrored with its
+    // raw spelling while language-feature requests carried the model's
+    // absolute URI. The host never found the document, so `gd`/F12 and the
+    // other navigation actions returned no result for relative paths.
+    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "relative.json", .data = "{\n  \"a\": 1\n}\n" });
+    var absolute_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const absolute_length = try tmp.dir.realPathFile(io, "relative.json", &absolute_buffer);
+    var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_length = try Io.Dir.cwd().realPathFile(io, ".", &cwd_buffer);
+    const relative = try std.fs.path.relativeAlloc(
+        allocator,
+        cwd_buffer[0..cwd_length],
+        null,
+        cwd_buffer[0..cwd_length],
+        absolute_buffer[0..absolute_length],
+    );
+    defer allocator.free(relative);
+    // The bug only manifests when the input spelling is relative.
+    if (std.fs.path.isAbsolute(relative)) return error.SkipZigTest;
+
+    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+
+    var extension_host = try Extensions.init(
+        allocator,
+        io,
+        workbench,
+        &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }},
+        ".cache-ext/data-relative-fixture",
+    );
+    defer extension_host.deinit();
+
+    const tab = workbench.activeTab().?;
+    const model_uri = try std_uri.resourceKey(allocator, tab.editor.model.uri());
+    defer allocator.free(model_uri);
+
+    const deadline = time_compat.milliTimestamp() + 10_000;
+    var mirrored: ?[]u8 = null;
+    while (time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        if (extension_host.active) |active| {
+            mirrored = try std.fmt.allocPrint(allocator, "file://{s}", .{active.uri});
+            break;
+        }
+        time_compat.sleepMillis(10);
+    }
+    defer if (mirrored) |value| allocator.free(value);
+    try std.testing.expect(mirrored != null);
+    try std.testing.expectEqualStrings(model_uri, mirrored.?);
+
+    // The fixture provider sees the mirrored document and the action jumps to
+    // its target range on line 1.
+    try tab.editor.setCursorPosition(Position.init(3, 1));
+    const navigation_deadline = time_compat.milliTimestamp() + 10_000;
+    var navigated = false;
+    while (!navigated and time_compat.milliTimestamp() < navigation_deadline) {
+        _ = extension_host.pump();
+        navigated = workbench.revealDefinition() catch false;
+        if (!navigated) time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(navigated);
+    try std.testing.expectEqual(@as(usize, 1), tab.editor.modelCursorPosition().lineNumber);
 }
 
 test "Extensions: real TypeScript extension drives the language features" {

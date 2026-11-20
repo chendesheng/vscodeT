@@ -1968,6 +1968,14 @@ language-feature positions/ranges, diagnostics markers, document content
 changes, selections and edits at the RPC edge. Emoji/accented text is covered
 by the converter tests and the TypeScript e2e test.
 
+Documents and editor tabs are mirrored under the text model's URI
+(`model.uri()`), never the editor's path spelling. Relative command-line paths
+are canonicalized to an absolute model URI when the model is created, so the
+mirror, the provider requests and the returned diagnostics all name the same
+`file:` resource. Mirroring the raw relative path made the extension host open
+a different document than the one `$provideDefinition` et al. asked for, and
+navigation (`gd`, `F12`) silently returned no result.
+
 Terminal surfaces use the existing registries: diagnostics feed
 `MainThreadDiagnostics`/`MarkerService`, hover and completion use
 `MainThreadLanguageFeatures`, formatting uses the document and range formatter

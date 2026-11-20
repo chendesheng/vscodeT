@@ -2833,7 +2833,7 @@ pub const Workbench = struct {
     /// Finds the tab/input already showing `path`, if the group model still
     /// owns it. Reusing it avoids reading and constructing a whole editor for
     /// a file that is already open.
-    fn findOpenInput(self: *Workbench, path: []const u8) ?*FileEditorInput {
+    pub fn findOpenInput(self: *Workbench, path: []const u8) ?*FileEditorInput {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 const file_input = tab.file_input orelse continue;
@@ -3261,7 +3261,7 @@ pub const Workbench = struct {
     pub fn closePath(self: *Workbench, path: []const u8) !bool {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
-                if (!std.mem.eql(u8, tab.editor.path, path)) continue;
+                if (!self.samePath(tab.editor.path, path)) continue;
                 return self.closeTab(pane, tab);
             }
         }
