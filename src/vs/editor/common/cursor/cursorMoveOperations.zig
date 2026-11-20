@@ -151,11 +151,15 @@ pub const MoveOperations = struct {
         allowMoveOnEdgeLine: bool,
         normalizationAffinity: ?PositionAffinity,
     ) CursorPosition {
-        const currentVisibleColumn = CursorColumns.visibleColumnFromColumn(
+        // `leftoverVisibleColumns` is the difference between the desired
+        // visible column and the one the caret could actually reach. It is
+        // negative when the desired column falls inside a tab and the caret
+        // snapped forward to the tab stop.
+        const currentVisibleColumn: isize = @as(isize, @intCast(CursorColumns.visibleColumnFromColumn(
             model.getLineContent(model.context, lineNumber),
             column,
             config.tabSize,
-        ) + if (leftoverVisibleColumns > 0) @as(usize, @intCast(leftoverVisibleColumns)) else 0;
+        ))) + leftoverVisibleColumns;
         const lineCount = model.getLineCount(model.context);
         const wasOnFirstPosition = lineNumber == 1 and column == 1;
         const wasOnLastPosition = lineNumber == lineCount and column == model.getLineMaxColumn(model.context, lineNumber);
@@ -176,7 +180,10 @@ pub const MoveOperations = struct {
             else
                 @min(model.getLineMaxColumn(model.context, lineCount), column);
         } else {
-            new_column = config.columnFromVisibleColumn(model, @intCast(new_line), currentVisibleColumn);
+            new_column = if (currentVisibleColumn <= 0)
+                1
+            else
+                config.columnFromVisibleColumn(model, @intCast(new_line), @intCast(currentVisibleColumn));
         }
 
         var new_leftover: isize = 0;
@@ -186,7 +193,7 @@ pub const MoveOperations = struct {
                 new_column,
                 config.tabSize,
             );
-            new_leftover = @as(isize, @intCast(currentVisibleColumn)) - @as(isize, @intCast(newVisible));
+            new_leftover = currentVisibleColumn - @as(isize, @intCast(newVisible));
         }
 
         if (normalizationAffinity) |affinity| {
@@ -427,4 +434,49 @@ test "cursor move: moveLeft, moveRight, vertical, and line boundaries" {
     const end = MoveOperations.moveToEndOfLine(&config, model, cursor, false, true);
     try std.testing.expectEqual(@as(usize, 5), end.position.column);
     try std.testing.expect(end.leftoverVisibleColumns > 0);
+}
+
+test "cursor move: vertical keeps the visible column across tab indentation" {
+    // The two lines from the down-arrow report: one tab vs two tabs. The
+    // caret sits before the `h` of `length` on line 1 (column 27, visible
+    // column 29 with tabSize 4), so down must land before `]` on line 2
+    // (column 24, visible column 29), not before `;`.
+    const lines = [_][]const u8{
+        "\twhile (pos < source.length && depth > 0) {",
+        "\t\tconst ch = source[pos];",
+    };
+    var test_model = MoveTestModel{ .lines = &lines };
+    const model = test_model.interface();
+    const config = CursorConfiguration{ .tabSize = 4, .indentSize = 4, .insertSpaces = false, .pageSize = 1 };
+
+    const start_visible = CursorColumns.visibleColumnFromColumn(lines[0], 27, config.tabSize);
+    try std.testing.expectEqual(@as(usize, 29), start_visible);
+    try std.testing.expectEqual(@as(usize, 30), CursorColumns.toStatusbarColumn(lines[0], 27, config.tabSize));
+
+    const down = MoveOperations.down(&config, model, 1, 27, 0, 1, true);
+    try std.testing.expectEqual(@as(usize, 2), down.lineNumber);
+    try std.testing.expectEqual(@as(usize, 24), down.column);
+    try std.testing.expectEqual(@as(isize, 0), down.leftoverVisibleColumns);
+    try std.testing.expectEqual(start_visible, CursorColumns.visibleColumnFromColumn(lines[1], down.column, config.tabSize));
+    try std.testing.expectEqual(@as(usize, 30), CursorColumns.toStatusbarColumn(lines[1], down.column, config.tabSize));
+}
+
+test "cursor move: vertical keeps a negative leftover column" {
+    // Desired visible column 3 lies inside the tab on line 2, so the caret
+    // snaps to the tab's right edge and records -1. Down again must still aim
+    // at visible column 3, not at the tab edge (4), as upstream does.
+    const lines = [_][]const u8{ "   x", "\tx", "   x" };
+    var test_model = MoveTestModel{ .lines = &lines };
+    const model = test_model.interface();
+    const config = CursorConfiguration{ .tabSize = 4, .indentSize = 4, .insertSpaces = true, .pageSize = 1 };
+
+    const first = MoveOperations.down(&config, model, 1, 4, 0, 1, true);
+    try std.testing.expectEqual(@as(usize, 2), first.lineNumber);
+    try std.testing.expectEqual(@as(usize, 2), first.column);
+    try std.testing.expectEqual(@as(isize, -1), first.leftoverVisibleColumns);
+
+    const second = MoveOperations.down(&config, model, 2, first.column, first.leftoverVisibleColumns, 1, true);
+    try std.testing.expectEqual(@as(usize, 3), second.lineNumber);
+    try std.testing.expectEqual(@as(usize, 4), second.column);
+    try std.testing.expectEqual(@as(isize, 0), second.leftoverVisibleColumns);
 }

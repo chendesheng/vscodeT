@@ -1583,6 +1583,18 @@ following slice is required before claiming VSCodeVim support:
 | Editor events | §9.1 defines the push shapes. `src/vs/workbench/api/browser/extensionHostAdapter.zig` pushes selection changes through `$acceptEditorPropertiesChanged` whenever the TUI moved the caret itself (click, drag, TUI-handled key, find, tab switch), tagged with the upstream `source` string (`"mouse"`/`"keyboard"`) and deduplicated against the last selection the host applied or received. That is what keeps VSCodeVim's cursor on the clicked position instead of snapping back on the next Vim key. `options` and `visibleRanges` are still sent as `null`. | Fire `onDidChangeActiveTextEditor`/`onDidChangeVisibleTextEditors` and push `options`/`visibleRanges` deltas; VSCodeVim reads mode and view state from those too. |
 | Storage | In-memory mementos and working-copy history (§16). | Session support is enough to activate; persistence is needed for VSCodeVim history/registers across restarts. `globalStorageUri` plus local `workspace.fs` already covers its file-backed register storage. |
 
+Vertical motions are character-based in VSCodeVim 1.32.4: `MoveDown`/`MoveUp`
+apply `desiredColumn` in UTF-16 code units through `Position.getDown()`, so
+crossing lines with different tab indentation shifts the rendered column
+([VSCodeVim#8840](https://github.com/VSCodeVim/Vim/issues/8840),
+[VSCodeVim#8108](https://github.com/VSCodeVim/Vim/issues/8108)). This is
+upstream behavior and reproduces in VS Code; the port applies the extension's
+selection unchanged. The editor's own vertical movement
+(`CursorMoveCommands.simpleMove`) preserves the visible column and carries the
+signed desired-column leftover. VSCodeVim's `vim.foldfix` path is the upstream
+workaround because it delegates to the core `cursorMove` command, which is
+still in the missing-command list above.
+
 `workspace.applyEdit` appears only in VSCodeVim's tests, not its runtime, so
 `MainThreadBulkEdits` is not required for normal VSCodeVim use. LSP is also
 not involved: VSCodeVim is not a language client.

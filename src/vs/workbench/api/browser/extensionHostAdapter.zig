@@ -24,6 +24,7 @@ const configuration = @import("../../../platform/configuration/common/configurat
 const Range = @import("../../../editor/common/core/range.zig").Range;
 const Selection = @import("../../../editor/common/core/selection.zig").Selection;
 const Position = @import("../../../editor/common/core/position.zig").Position;
+const CursorColumns = @import("../../../editor/common/core/cursorColumns.zig").CursorColumns;
 const ui = @import("ui");
 const MainThreadLanguageFeatures = @import("./mainThreadLanguageFeatures.zig").MainThreadLanguageFeatures;
 const languageFeaturesHost = @import("./mainThreadLanguageFeatures.zig").HostProxy;
@@ -1467,6 +1468,83 @@ test "Extensions: VSCodeVim inserts text into the active TUI editor" {
     const clicked = workbench.activeTab().?.editor.modelCursorPosition();
     try std.testing.expectEqual(@as(usize, 1), clicked.lineNumber);
     try std.testing.expectEqual(@as(usize, 5), clicked.column);
+}
+
+test "Extensions: VSCodeVim vertical motion uses its character column" {
+    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "\twhile (pos < source.length && depth > 0) {\n\t\tconst ch = source[pos];\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "tabs.js", .data = content });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_length = try tmp.dir.realPathFile(io, "tabs.js", &path_buffer);
+
+    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_length]}, 80, 24);
+    defer workbench.deinit();
+    var extension_host = try Extensions.init(allocator, io, workbench, &.{.{ .path = ".cache-ext/vim/extension", .is_under_development = true }}, ".cache-ext/data-tui-test");
+    defer extension_host.deinit();
+
+    const deadline = time_compat.milliTimestamp() + 15_000;
+    while (time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        if (extension_host.active != null and extension_host.vim_active) break;
+        time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(extension_host.active != null);
+    try std.testing.expect(extension_host.vim_active);
+    time_compat.sleepMillis(500);
+    _ = extension_host.pump();
+
+    const editor = workbench.activeTab().?.editor;
+    var line1 = try editor.model.getLineContent(1);
+    defer line1.deinit();
+    var line2 = try editor.model.getLineContent(2);
+    defer line2.deinit();
+    try editor.setCursorPosition(Position.init(1, 27));
+    extension_host.selection_source = .mouse;
+    _ = extension_host.pump();
+    time_compat.sleepMillis(1000);
+    _ = extension_host.pump();
+    try std.testing.expectEqual(@as(usize, 30), CursorColumns.toStatusbarColumn(line1.items, 27, editor.tabSize()));
+
+    // The editor's own vertical movement preserves the rendered column: one
+    // tab on line 1 and two tabs on line 2 both put visible column 29 before
+    // `h` and before `]`.
+    try editor.moveDown(false);
+    const native = editor.modelCursorPosition();
+    try std.testing.expectEqual(@as(usize, 2), native.lineNumber);
+    try std.testing.expectEqual(@as(usize, 24), native.column);
+    try std.testing.expectEqual(@as(usize, 30), CursorColumns.toStatusbarColumn(line2.items, native.column, editor.tabSize()));
+
+    // VSCodeVim 1.32.4 instead applies its character-based `desiredColumn`
+    // (26) to line 2, which has only 25 code units. Normal mode then clamps
+    // to the last character, landing before `;` (column 25) and one rendered
+    // column to the right. That is upstream behavior (VSCodeVim#8840) and
+    // reproduces in VS Code; the bridge must keep applying its selection.
+    try editor.setCursorPosition(Position.init(1, 27));
+    extension_host.selection_source = .mouse;
+    _ = extension_host.pump();
+    time_compat.sleepMillis(1000);
+    _ = extension_host.pump();
+    const before = editor.modelCursorPosition();
+    try std.testing.expectEqual(Position.init(1, 27), before);
+
+    _ = extension_host.handleKey(&.{ .key = .down });
+    const move_deadline = time_compat.milliTimestamp() + 5_000;
+    while (time_compat.milliTimestamp() < move_deadline) {
+        _ = extension_host.pump();
+        if (editor.modelCursorPosition().lineNumber == 2) break;
+        time_compat.sleepMillis(10);
+    }
+    const after = editor.modelCursorPosition();
+    try std.testing.expectEqual(@as(usize, 2), after.lineNumber);
+    try std.testing.expectEqual(@as(usize, 25), after.column);
+    try std.testing.expectEqual(@as(usize, 31), CursorColumns.toStatusbarColumn(line2.items, after.column, editor.tabSize()));
 }
 
 test "Extensions: language feature registration reaches the workbench registries" {

@@ -249,7 +249,12 @@ the status bar shows its mode entry. VSCodeVim's `gd`/`gD`
 `<C-]>` (`editor.action.revealDefinition`), `gh` (`editor.action.showHover`),
 `gO` (`outline.focus`, mapped to the terminal symbol picker) and
 `gf file[:line]` reach the same workbench actions. `gf` opens the file under
-the cursor and honors an optional line number.
+the cursor and honors an optional line number. VSCodeVim's `j`/`k`/`Up`/`Down`
+are not column-preserving across differing tab indentation: its
+`desiredColumn` is a UTF-16 character offset, so the rendered column and the
+status bar `Col` can shift by one or more cells. That is VSCodeVim behavior
+([VSCodeVim#8840](https://github.com/VSCodeVim/Vim/issues/8840)) and matches VS
+Code; the editor's own vertical cursor movement preserves the rendered column.
 
 Declarative built-ins are scanned from `vscode/extensions/theme-defaults`
 and `vscode/extensions/markdown-basics`: their themes, languages, grammars
