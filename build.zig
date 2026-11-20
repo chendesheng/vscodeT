@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
         const ui = ui_dep.module("ui");
         const markdown = markdownModule(b, target, optimize);
         const vscode_syntax = vscodeSyntaxAssets(b, target, optimize);
-        const ghostty_vt = ghosttyVtModule(b);
+        const ghostty_vt = ghosttyVtModule(b, target);
 
         // We will also create a module for our other entry point, 'main.zig'.
         const exe = b.addExecutable(.{
@@ -101,13 +101,19 @@ fn linkPtyLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget)
     }
 }
 
-fn ghosttyVtModule(b: *std.Build) *std.Build.Module {
+fn ghosttyVtModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
     // The TUI does not render Kitty graphics (see README), so keep the
     // feature off. Besides avoiding unused code, this keeps the Wuffs C
     // image decoder out of the build graph: it does not compile with the
     // MSVC-targeted Zig toolchain on Windows.
-    const dep = b.lazyDependency("ghostty", .{ .@"vt-features" = "-kitty-graphics" }) orelse
-        @panic("libghostty-vt dependency was not resolved");
+    //
+    // Ghostty's SIMD path also needs libc++ and the simdutf/highway C++
+    // sources, which the MSVC-targeted build does not supply. Use its
+    // scalar fallback there; the other platforms keep SIMD enabled.
+    const dep = b.lazyDependency("ghostty", .{
+        .@"vt-features" = "-kitty-graphics",
+        .simd = target.result.os.tag != .windows,
+    }) orelse @panic("libghostty-vt dependency was not resolved");
     return dep.module("ghostty-vt");
 }
 
