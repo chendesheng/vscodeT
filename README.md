@@ -212,6 +212,11 @@ step. If the host bundle is missing at startup, the app reports
 `extension host disabled: host/dist/extensionHost.mjs is missing` in the main
 log instead of waiting for the host socket to time out.
 
+On Windows the host is not started: its transport is a Unix socket and the
+launcher runs through `/bin/sh`. The app reports
+`extension host disabled: UnsupportedPlatform` and otherwise keeps running;
+ConPTY and a named-pipe transport are follow-ups.
+
 `npm run build:typescript-extension` (in `host/`) is the optional step that
 provisions VS Code's real `typescript-language-features` extension and
 its TypeScript SDK under `host/dist/extensions`. It uses an installed VS Code by
