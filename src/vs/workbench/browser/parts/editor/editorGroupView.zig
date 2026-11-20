@@ -25,6 +25,7 @@ const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
 const editorPanes = @import("editorPanes.zig");
+const tab_bar = @import("multiEditorTabsControl.zig");
 const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const editor_mod = @import("../../../common/editor.zig");
@@ -60,6 +61,7 @@ pub fn EditorGroupView(comptime View: type) type {
         group: *editor_groups.EditorGroup,
         tabs: std.array_list.Managed(View),
         hits: std.array_list.Managed(TabHit),
+        title_action_hit: ?tab_bar.TitleActionHit = null,
         rect: ui.Rect = .{},
         /// The workbench reserves a breadcrumb row when `breadcrumbs.enabled`.
         breadcrumbs_visible: bool = false,

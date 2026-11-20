@@ -243,6 +243,8 @@ comptime {
     _ = @import("./vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
     _ = @import("./vs/editor/browser/widget/codeEditor/terminalViewHost.zig");
     _ = @import("./tui/editorView.zig");
+    _ = @import("./tui/markdownPreview.zig");
+    _ = @import("./vs/base/common/deadlineTimer.zig");
     _ = @import("./vs/editor/browser/controller/mouseHandler.zig");
     _ = @import("./vs/workbench/services/language/common/bundledLanguages.zig");
     _ = @import("./vs/editor/common/core/wordHelper.zig");
@@ -387,7 +389,15 @@ comptime {
     _ = @import("./vs/editor/contrib/hover/browser/hoverOperation.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverTypes.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverComputer.zig");
-    _ = @import("./vs/editor/contrib/hover/browser/hoverMarkdownRenderer.zig");
+    _ = @import("./vs/editor/common/markdown/markdownTerminalRenderer.zig");
+    _ = @import("./vs/editor/common/markdown/slugify.zig");
+    _ = @import("./vs/workbench/contrib/markdown/browser/sourceLineMap.zig");
+    _ = @import("./vs/workbench/contrib/markdown/test/browser/sourceLineMap.test.zig");
+    _ = @import("./vs/workbench/contrib/markdown/browser/scrollSync.zig");
+    _ = @import("./vs/workbench/contrib/markdown/browser/topmostLineMonitor.zig");
+    _ = @import("./vs/workbench/contrib/markdown/browser/scrolling.zig");
+    _ = @import("./vs/workbench/contrib/markdown/browser/markdownPreviewConfig.zig");
+    _ = @import("./vs/workbench/contrib/markdown/browser/markdownPreviewDocument.zig");
     _ = @import("./vs/editor/contrib/hover/browser/markdownHoverParticipant.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverStatusBar.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverRendered.zig");

@@ -2,7 +2,7 @@
 //
 // Terminal adaptation: hover contents are parsed by the pinned `markdown-zig`
 // CommonMark + GFM package and rendered to `ui` nodes by
-// `hoverMarkdownRenderer.zig` instead of the DOM markdown renderer. Providers
+// `markdownTerminalRenderer.zig` instead of the DOM markdown renderer. Providers
 // are called through the existing `getHover.zig` aggregation; async hover
 // computation is synchronous in this port.
 //
@@ -35,7 +35,7 @@ const IRenderedHoverPart = hoverTypes.IRenderedHoverPart;
 const IEditorHoverParticipant = hoverTypes.IEditorHoverParticipant;
 const IEditorHoverRenderContext = hoverTypes.IEditorHoverRenderContext;
 const getHover = @import("./getHover.zig");
-const markdown = @import("./hoverMarkdownRenderer.zig");
+const markdown = @import("../../../common/markdown/markdownTerminalRenderer.zig");
 
 /// VS Code's defaults for `editor.stopRenderingLineAfter` and
 /// `editor.maxTokenizationLineLength`. The TUI has no configuration service
@@ -406,7 +406,7 @@ fn heightRenderedMarkdown(context: *const anyopaque, width: usize) usize {
             }
             var scratch = std.heap.ArenaAllocator.init(state.allocator);
             defer scratch.deinit();
-            const wrapped = wrapLine(scratch.allocator(), line, width) catch {
+            const wrapped = markdown.wrapLine(scratch.allocator(), line, width) catch {
                 rows += 1;
                 continue;
             };
@@ -457,7 +457,7 @@ fn buildRenderedMarkdown(
                 continue;
             }
 
-            const rows = try wrapLine(allocator, line, width);
+            const rows = try markdown.wrapLine(allocator, line, width);
             for (rows, 0..) |wrapped, index| {
                 const line_row = try appendRow(doc, parent, row);
                 row += 1;
@@ -533,111 +533,6 @@ fn repeat(allocator: Allocator, text: []const u8, count: usize) ![]const u8 {
         @memcpy(result[index * text.len ..][0..text.len], text);
     }
     return result;
-}
-
-const Token = struct {
-    text: []const u8,
-    style: ui.Style,
-    width: usize,
-    is_space: bool = false,
-};
-
-fn wrapLine(allocator: Allocator, line: markdown.Line, width: usize) ![]const []const markdown.Span {
-    const limit = @max(width, 1);
-    var rows = ArrayList([]const markdown.Span).init(allocator);
-    var row = ArrayList(markdown.Span).init(allocator);
-    var row_width: usize = 0;
-
-    var tokens = ArrayList(Token).init(allocator);
-    for (line.spans) |span| try tokenize(&tokens, span);
-    if (tokens.items.len == 0) {
-        try rows.append(try row.toOwnedSlice());
-        return try rows.toOwnedSlice();
-    }
-
-    var index: usize = 0;
-    while (index < tokens.items.len) : (index += 1) {
-        const token = tokens.items[index];
-        const active_limit = if (rows.items.len == 0)
-            limit
-        else
-            limit -| @min(line.indent, limit - 1);
-
-        if (token.is_space) {
-            if (row_width == 0) {
-                // Keep indentation at the start of a row (code blocks rely on
-                // it), but do not start a wrapped prose row with a space.
-                if (token.style.background != null) {
-                    try row.append(.{ .text = token.text, .style = token.style });
-                    row_width += token.width;
-                }
-                continue;
-            }
-            const next_width = if (index + 1 < tokens.items.len) tokens.items[index + 1].width else 0;
-            if (row_width + token.width + next_width > active_limit) {
-                try rows.append(try row.toOwnedSlice());
-                row = ArrayList(markdown.Span).init(allocator);
-                row_width = 0;
-                continue;
-            }
-            try row.append(.{ .text = token.text, .style = token.style });
-            row_width += token.width;
-            continue;
-        }
-
-        if (token.width <= active_limit -| row_width) {
-            try row.append(.{ .text = token.text, .style = token.style });
-            row_width += token.width;
-            continue;
-        }
-
-        if (row_width > 0) {
-            try rows.append(try row.toOwnedSlice());
-            row = ArrayList(markdown.Span).init(allocator);
-            row_width = 0;
-        }
-
-        // A single word wider than a row is split at cell boundaries; the
-        // style is preserved for every piece.
-        const split_limit = if (rows.items.len == 0)
-            limit
-        else
-            limit -| @min(line.indent, limit - 1);
-        var remaining = token.text;
-        while (remaining.len > 0) {
-            const split = markdown.splitAtWidth(remaining, split_limit);
-            if (split == 0) break;
-            try row.append(.{ .text = remaining[0..split], .style = token.style });
-            remaining = remaining[split..];
-            try rows.append(try row.toOwnedSlice());
-            row = ArrayList(markdown.Span).init(allocator);
-            row_width = 0;
-        }
-    }
-
-    if (row.items.len > 0) try rows.append(try row.toOwnedSlice());
-    if (rows.items.len == 0) try rows.append(&.{});
-    return try rows.toOwnedSlice();
-}
-
-fn tokenize(tokens: *ArrayList(Token), span: markdown.Span) !void {
-    var index: usize = 0;
-    const text = span.text;
-    while (index < text.len) {
-        const space = text[index] == ' ' or text[index] == '\t';
-        const start = index;
-        while (index < text.len and ((text[index] == ' ' or text[index] == '\t') == space)) {
-            const decoded = ui.dom.decodeAt(text, index);
-            if (decoded.len == 0) break;
-            index += decoded.len;
-        }
-        try tokens.append(.{
-            .text = text[start..index],
-            .style = span.style,
-            .width = markdown.textWidth(text[start..index]),
-            .is_space = space,
-        });
-    }
 }
 
 fn accessibleText(allocator: Allocator, contents: []const markdown.Content) ![]const u8 {

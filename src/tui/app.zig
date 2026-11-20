@@ -488,6 +488,7 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.pollSearch(now_ms)) needs_render = true;
         if (workbench.pollJsonLanguage()) needs_render = true;
         if (workbench.pollGit(now_ms)) needs_render = true;
+        if (workbench.markdownPreviewTick(now_ms)) needs_render = true;
         if (extension_host) |ext| {
             if (ext.pump()) needs_render = true;
         }
@@ -514,6 +515,9 @@ pub fn main(init: std.process.Init) !void {
             if (needs_render) timeout = 0;
         }
         if (workbench.gitWantsTick()) timeout = @min(timeout, 200);
+        if (workbench.markdownPreviewTimeout(now_ms)) |preview_timeout| {
+            timeout = @min(timeout, @as(i32, @intCast(@min(preview_timeout, 250))));
+        }
         if (workbench.quickAccessWantsTick()) timeout = 0;
         if (workbench.searchWantsTick()) timeout = 0;
         if (workbench.fileWatcherTimeout(now_ms)) |watcher_timeout| {
@@ -722,6 +726,11 @@ pub fn main(init: std.process.Init) !void {
                     const current = workbench.activeTab() orelse continue;
                     if (event.kind == .down) {
                         workbench.focusEditor();
+                    }
+                    if (!current.isDiff() and current.handleMarkdownPreviewMouse(&adjusted, now_ms)) {
+                        if (event.kind == .move) workbench.leaveEditorHover();
+                        needs_render = true;
+                        continue;
                     }
                     if (current.isDiff()) {
                         _ = current.handleDiffMouse(&adjusted) catch false;

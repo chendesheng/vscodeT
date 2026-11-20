@@ -36,6 +36,8 @@ const TuiHoverProvider = @import("../../../../editor/contrib/hover/browser/termi
 const completion = @import("../../../../editor/common/languages/completion.zig");
 const LanguageFeaturesService = @import("../../../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
 const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const MarkdownPreview = @import("../../../../../tui/markdownPreview.zig").MarkdownPreview;
+const MarkdownPreviewConfig = @import("../../../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
 
 pub const Tab = struct {
     allocator: Allocator,
@@ -49,6 +51,11 @@ pub const Tab = struct {
     input: *EditorInput,
     controllers: ?*Controllers = null,
     diff: ?*DiffView = null,
+    markdown_preview: ?*MarkdownPreview = null,
+    markdown_preview_visible: bool = false,
+    last_width: usize = 0,
+    last_height: usize = 0,
+    preview_rect: ?ui.Rect = null,
 
     pub fn init(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Tab {
         return initWithDeclarative(allocator, io, path, width, height, null);
@@ -174,8 +181,25 @@ pub const Tab = struct {
             try diff.paint(frame, x, y, w, h);
             return;
         }
+        if (self.last_width != w or self.last_height != h) self.layoutCells(w, h);
+        const preview_width = if (self.markdown_preview_visible) markdownPreviewWidth(w) else 0;
+        if (preview_width == 0 or self.markdown_preview == null) {
+            try self.view.paint();
+            try ui.CellGrid.blit(&frame.next, self.view.grid(), x, y, w, h);
+            return;
+        }
+        const editor_width = w -| preview_width -| 1;
         try self.view.paint();
-        try ui.CellGrid.blit(&frame.next, self.view.grid(), x, y, w, h);
+        try ui.CellGrid.blit(&frame.next, self.view.grid(), x, y, editor_width, h);
+        const divider = ui.cell.PaintStyle{
+            .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
+            .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }),
+        };
+        var row: usize = 0;
+        while (row < h) : (row += 1) {
+            frame.next.putCodepoint(x + editor_width, y + row, '│', 1, divider);
+        }
+        try self.markdown_preview.?.paint(frame, x + editor_width + 1, y, preview_width, h);
     }
 
     pub fn cursorCell(self: *Tab) ?Cell {
@@ -233,15 +257,120 @@ pub const Tab = struct {
     /// Lays the editor view out in the group pane. The height is the editor
     /// content height; the tab strip row is owned by the workbench.
     pub fn layoutCells(self: *Tab, width: usize, height: usize) void {
+        self.last_width = width;
+        self.last_height = height;
         if (self.diff) |diff| {
             diff.layout(@max(width, 1), @max(height, 1));
             return;
         }
-        self.editor.setViewport(@max(width, 1), @max(height, 1));
+        const preview_width = if (self.markdown_preview_visible) markdownPreviewWidth(width) else 0;
+        const editor_width = if (preview_width > 0) width -| preview_width -| 1 else width;
+        self.editor.setViewport(@max(editor_width, 1), @max(height, 1));
         self.view.resize() catch {};
+        if (preview_width > 0) {
+            if (self.markdown_preview) |preview| {
+                preview.resize(preview_width, height) catch {};
+            }
+            self.preview_rect = .{
+                .x = @floatFromInt(editor_width + 1),
+                .y = 0,
+                .w = @floatFromInt(preview_width),
+                .h = @floatFromInt(height),
+            };
+        } else {
+            self.preview_rect = null;
+            if (self.markdown_preview) |preview| {
+                preview.resize(0, 0) catch {};
+            }
+        }
+    }
+
+    pub fn isMarkdown(self: *const Tab) bool {
+        return self.diff == null and std.mem.eql(u8, self.editor.languageId(), "markdown");
+    }
+
+    pub fn markdownPreviewVisible(self: *const Tab) bool {
+        return self.markdown_preview_visible;
+    }
+
+    pub fn ensureMarkdownPreview(self: *Tab) !?*MarkdownPreview {
+        if (!self.isMarkdown()) return null;
+        if (self.markdown_preview == null) {
+            self.markdown_preview = try MarkdownPreview.init(self.allocator, self.editor);
+        }
+        return self.markdown_preview;
+    }
+
+    pub fn setMarkdownPreviewVisible(self: *Tab, visible: bool) !void {
+        if (visible) {
+            const preview = (try self.ensureMarkdownPreview()) orelse return error.NotMarkdown;
+            self.markdown_preview_visible = true;
+            if (self.last_width > 0 or self.last_height > 0) {
+                self.layoutCells(self.last_width, self.last_height);
+            }
+            preview.open(null) catch |err| {
+                self.editor.setMessage("markdown preview: {s}", .{@errorName(err)});
+            };
+        } else {
+            self.markdown_preview_visible = false;
+            if (self.markdown_preview) |preview| preview.close();
+            if (self.last_width > 0 or self.last_height > 0) {
+                self.layoutCells(self.last_width, self.last_height);
+            }
+        }
+    }
+
+    pub fn toggleMarkdownPreview(self: *Tab) !void {
+        try self.setMarkdownPreviewVisible(!self.markdown_preview_visible);
+    }
+
+    pub fn setMarkdownPreviewConfig(self: *Tab, config: MarkdownPreviewConfig) void {
+        if (self.markdown_preview) |preview| preview.setConfig(config);
+    }
+
+    pub fn refreshMarkdownPreview(self: *Tab, force: bool) void {
+        if (self.markdown_preview) |preview| preview.refresh(force);
+    }
+
+    pub fn onMarkdownPreviewTick(self: *Tab, now_ms: i64) bool {
+        if (self.markdown_preview) |preview| return preview.onTick(now_ms);
+        return false;
+    }
+
+    pub fn markdownPreviewTimeout(self: *const Tab, now_ms: i64) ?u32 {
+        if (self.markdown_preview) |preview| return preview.nextTimeout(now_ms);
+        return null;
+    }
+
+    /// Routes a pane-content-relative mouse event to the preview. Returns true
+    /// when the preview consumed it.
+    pub fn handleMarkdownPreviewMouse(self: *Tab, event: *const ui.MouseEvent, now_ms: i64) bool {
+        if (!self.markdown_preview_visible) return false;
+        const rect = self.preview_rect orelse return false;
+        const x = ui.cell.snap(rect.x);
+        const y = ui.cell.snap(rect.y);
+        const w = ui.cell.snap(rect.w);
+        const h = ui.cell.snap(rect.h);
+        if (event.x < x or event.y < y or event.x >= x + w or event.y >= y + h) return false;
+        var local = event.*;
+        local.x -= x;
+        local.y -= y;
+        return if (self.markdown_preview) |preview| preview.handleMouse(&local, now_ms) else false;
+    }
+
+    fn markdownPreviewWidth(total: usize) usize {
+        if (total < 33) return 0;
+        const preview = @max(@as(usize, 12), total / 2);
+        const editor = total -| preview -| 1;
+        if (editor < 20) return 0;
+        return preview;
     }
 
     pub fn deinit(self: *Tab) void {
+        if (self.markdown_preview) |preview| {
+            preview.deinit();
+            self.markdown_preview = null;
+        }
         if (self.controllers) |controllers| {
             controllers.deinit();
             self.controllers = null;

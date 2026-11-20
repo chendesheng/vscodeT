@@ -825,7 +825,7 @@ Markdown:
 - Hover markdown is parsed by the pinned `taggon/markdown-zig` package
   (commit `85bcc67`, MIT), a CommonMark + GFM parser that produces mdast. The
   terminal renderer in
-  `src/vs/editor/contrib/hover/browser/hoverMarkdownRenderer.zig` maps that
+  `src/vs/editor/common/markdown/markdownTerminalRenderer.zig` maps that
   tree to styles and cells: paragraphs, headings, nested/ordered/task lists,
   block quotes, fenced and indented code, thematic breaks, GFM tables,
   emphasis, strikethrough, inline code, links/autolinks and images. Fenced
@@ -840,6 +840,32 @@ Markdown:
   sanitizer or renderer); one blank line separates sibling blocks in place of
   browser margins; tabs expand to four spaces. MDX, math and frontmatter are
   disabled; there is no clickable-link or image support.
+
+Markdown preview:
+
+- `Markdown: Open Preview to the Side`, `Markdown: Toggle Preview`
+  (`Ctrl-Shift-V`) and `Markdown: Refresh Preview` open a rendered preview
+  beside the source in the active tab. The active Markdown editor also shows a
+  two-cell `◫⌕` preview button at the right end of its tab row; clicking it
+  toggles the split, and the icon is highlighted while the preview is open.
+- The preview shares the terminal Markdown renderer and keeps VS Code's
+  bidirectional scroll sync: `markdown.preview.scrollPreviewWithEditor`
+  (editor to preview) and `markdown.preview.scrollEditorWithPreview` (preview
+  wheel to editor) default to true. `markdown.preview.markEditorSelection`
+  marks the cursor's block, and `markdown.preview.breaks` renders source soft
+  breaks as rows. Timers use the same 300 ms refresh debounce, 50 ms throttles,
+  and 50/200 ms scroll-suppression windows as `preview.ts`/`scroll-sync.ts`.
+- Headings get GitHub-style anchors; clicking an internal `#fragment` link in
+  the preview scrolls to that heading. The rendered block model carries source
+  line ranges for the ported `scroll-sync` mapping, including multi-line code
+  blocks.
+- Terminal substitutions: the preview is a fixed 50/50 side pane rather than a
+  webview; there is no HTML/CSS/script execution, image rendering, external
+  link opening, security selector, preview lock, in-place preview
+  (`markdown.showPreview`), or `markdown.styles`/font/line-height setting.
+  External links are not clickable and the `Ctrl-K V` chord is not bound (the
+  command palette is available instead). Preview visibility and scroll are not
+  serialized in sessions.
 
 
 TUI editor:
@@ -988,8 +1014,8 @@ Editor contributions:
   area, line scrolling with wheel/arrows/PageUp/PageDown/Home/End, click to
   focus, Escape to close), and the markdown participant. Hover contents are
   parsed by the pinned `taggon/markdown-zig` CommonMark + GFM parser (commit
-  `85bcc67`, MIT) and rendered to styled cells by `markdownHoverRenderer.zig`;
-  tables, nested/task lists, setext and indented code, autolinks and reference
+  `85bcc67`, MIT) and rendered to styled cells by
+  `markdownTerminalRenderer.zig`; tables, nested/task lists, setext and indented code, autolinks and reference
   links are supported. The hovered range is painted through the same
   `LineDecoration.filter`/`extractWrapped` path as find and bracket highlights
   (`hoverHighlight`). The app registers a TUI-local provider

@@ -1,6 +1,6 @@
-//! Terminal renderer for hover markdown.
+//! Terminal renderer for hover and document-preview markdown.
 //!
-//! Upstream renders hover contents with `IMarkdownRendererService`
+//! Hover contents are rendered with `IMarkdownRendererService`
 //! (`src/vs/platform/markdown/browser/markdownRenderer.ts`), which is a
 //! VS Code-owned wrapper around the vendored marked parser: it applies custom
 //! renderers, converts the result to HTML, sanitizes it and inserts it into the
@@ -25,20 +25,24 @@
 //!  * one blank line separates sibling blocks, substituting for the margins of
 //!    the browser's block elements.
 //!
-//! Strings are copied into the renderer's arena, so callers may drop the
-//! markdown string after `parse` returns.
+//! `Mode.document` additionally stamps `data-line`-style block metadata and
+//! heading anchors and joins soft line breaks, mirroring the Markdown preview's
+//! `code-line` output. The metadata is ignored by hover. Strings are copied
+//! into the renderer's arena, so callers may drop the markdown string after
+//! `parse` returns.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const ui = @import("ui");
 const markdown = @import("markdown");
-const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
-const IState = @import("../../../common/languages.zig").IState;
-const TokenPacked = @import("../../../common/tokens/lineTokens.zig").TokenPacked;
-const TokenMetadata = @import("../../../common/encodedTokenAttributes.zig").TokenMetadata;
-const textMateTokenizer = @import("../../../common/model/tokens/textMateTokenizer.zig");
-const TokenizationRegistry = @import("../../../common/tokenizationRegistry.zig").TokenizationRegistry;
+const CursorColumns = @import("../core/cursorColumns.zig").CursorColumns;
+const IState = @import("../languages.zig").IState;
+const TokenPacked = @import("../tokens/lineTokens.zig").TokenPacked;
+const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
+const textMateTokenizer = @import("../model/tokens/textMateTokenizer.zig");
+const TokenizationRegistry = @import("../tokenizationRegistry.zig").TokenizationRegistry;
+const slugify = @import("slugify.zig");
 
 const Node = markdown.Node;
 const NodeData = markdown.NodeData;
@@ -70,6 +74,41 @@ const RenderError = Allocator.Error;
 pub const Span = struct {
     text: []const u8,
     style: ui.Style = .{},
+    /// Present on link text so the document preview can hit-test `#fragment`
+    /// links. Hover ignores it.
+    link: ?[]const u8 = null,
+};
+
+pub const Mode = enum { hover, document };
+
+/// HTML-like block kinds used by the terminal document preview. Upstream
+/// attaches `class="code-line" data-line="..."` to the corresponding tokens.
+pub const BlockKind = enum(u8) {
+    none,
+    heading1,
+    heading2,
+    heading3,
+    heading4,
+    heading5,
+    heading6,
+    paragraph,
+    block_quote,
+    list_item,
+    code_block,
+    table,
+    table_row,
+    thematic_break,
+    footnote,
+};
+
+pub const BlockInfo = struct {
+    /// Zero means no block (blank separator rows).
+    id: u32 = 0,
+    source_line: usize = 0,
+    source_end_line: ?usize = null,
+    kind: BlockKind = .none,
+    depth: u16 = 0,
+    anchor: ?[]const u8 = null,
 };
 
 pub const Line = struct {
@@ -84,6 +123,8 @@ pub const Line = struct {
     rule: bool = false,
     /// A table row: keep it on one physical row and clip it instead of wrapping.
     no_wrap: bool = false,
+    /// Document-mode source/block metadata. Hover leaves this at the default.
+    block: BlockInfo = .{},
 
     pub fn width(self: Line) usize {
         var cells: usize = 0;
@@ -112,21 +153,60 @@ const Definition = struct {
     title: ?[]const u8,
 };
 
+const ParseState = struct {
+    next_block_id: u32 = 1,
+    slugs: slugify.SlugBuilder,
+};
+
 const Context = struct {
     prefix: []const u8 = "",
     prefix_style: ui.Style = .{},
     /// Language used for a fenced code block without an info string.
     code_fence_fallback_language: []const u8 = "plaintext",
+    mode: Mode = .hover,
+    /// Upstream `markdown.preview.breaks`: render soft line breaks as rows.
+    preview_breaks: bool = false,
+    block: BlockInfo = .{},
+    state: ?*ParseState = null,
+
+    fn withoutBlock(self: Context) Context {
+        var result = self;
+        result.block = .{};
+        return result;
+    }
+
+    fn withBlock(self: Context, block: BlockInfo) Context {
+        var result = self;
+        result.block = block;
+        return result;
+    }
+
+    fn withPrefix(self: Context, prefix: []const u8, style: ui.Style) Context {
+        var result = self;
+        result.prefix = prefix;
+        result.prefix_style = style;
+        return result;
+    }
 };
 
 pub const ParseOptions = struct {
     /// Upstream falls back to the editor's language when a fence has no info
     /// string. The participant supplies the model language here.
     code_fence_fallback_language: []const u8 = "plaintext",
+    mode: Mode = .hover,
+    /// Document mode only: render source soft breaks as hard rows.
+    preview_breaks: bool = false,
 };
 
 pub fn parse(parent: Allocator, source: []const u8) !Content {
     return parseWithOptions(parent, source, .{});
+}
+
+/// Parses with the document metadata used by the Markdown preview.
+pub fn parseDocument(parent: Allocator, source: []const u8, options: ParseOptions) !Content {
+    var document_options = options;
+    document_options.mode = .document;
+    return parseWithOptions(parent, source, document_options);
 }
 
 pub fn parseWithOptions(parent: Allocator, source: []const u8, options: ParseOptions) !Content {
@@ -147,9 +227,13 @@ pub fn parseWithOptions(parent: Allocator, source: []const u8, options: ParseOpt
     var definitions = std.StringHashMap(Definition).init(allocator);
     try collectDefinitions(&definitions, root);
 
+    var state = ParseState{ .slugs = slugify.SlugBuilder.init(allocator) };
     var lines = std.array_list.Managed(Line).init(allocator);
     try renderBlocks(allocator, &lines, &definitions, root, .{
         .code_fence_fallback_language = options.code_fence_fallback_language,
+        .mode = options.mode,
+        .preview_breaks = options.preview_breaks,
+        .state = &state,
     }, true, 0);
     const owned_lines = try lines.toOwnedSlice();
     return .{ .arena = arena, .lines = owned_lines };
@@ -184,6 +268,60 @@ fn collectDefinitions(definitions: *std.StringHashMap(Definition), node: *const 
     }
 }
 
+fn nextBlock(ctx: Context, node: *const Node, kind: BlockKind, depth: usize) BlockInfo {
+    if (ctx.mode != .document) return .{};
+    const state = ctx.state orelse return .{};
+    const id = state.next_block_id;
+    state.next_block_id += 1;
+    const position = node.position orelse return .{
+        .id = id,
+        .kind = kind,
+        .depth = @intCast(@min(depth, std.math.maxInt(u16))),
+    };
+    const start: usize = position.start.line -| 1;
+    const end: usize = @max(start, position.end.line -| 1);
+    return .{
+        .id = id,
+        .source_line = start,
+        .source_end_line = end,
+        .kind = kind,
+        .depth = @intCast(@min(depth, std.math.maxInt(u16))),
+    };
+}
+
+fn headingKind(depth: u8) BlockKind {
+    return switch (depth) {
+        1 => .heading1,
+        2 => .heading2,
+        3 => .heading3,
+        4 => .heading4,
+        5 => .heading5,
+        else => .heading6,
+    };
+}
+
+fn headingStyle(kind: BlockKind) ui.Style {
+    var style = ui.Style{ .bold = true, .color = heading_color };
+    if (kind == .heading1) style.underline = true;
+    if (kind == .heading5 or kind == .heading6) style.dim = true;
+    return style;
+}
+
+fn headingAnchor(ctx: Context, node: *const Node) !?[]const u8 {
+    if (ctx.mode != .document) return null;
+    const state = ctx.state orelse return null;
+    var text = std.array_list.Managed(u8).init(ctx.state.?.slugs.allocator);
+    defer text.deinit();
+    try flattenText(&text, node);
+    const trimmed = std.mem.trim(u8, text.items, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return try state.slugs.add(trimmed);
+}
+
+fn isDocument(ctx: Context) bool {
+    return ctx.mode == .document;
+}
+
 fn makeLine(
     allocator: Allocator,
     ctx: Context,
@@ -206,6 +344,7 @@ fn makeLine(
         .indent = textWidth(ctx.prefix) + extra_indent,
         .rule = rule,
         .no_wrap = no_wrap,
+        .block = ctx.block,
     };
 }
 
@@ -282,8 +421,11 @@ fn renderBlock(
     switch (node.data) {
         .paragraph => try renderParagraph(allocator, out, definitions, node, ctx, depth),
         .heading => try renderHeading(allocator, out, definitions, node, ctx, depth),
-        .code => try renderCode(allocator, out, node, ctx),
-        .thematic_break => try out.append(try makeLine(allocator, ctx, &.{}, 0, true, false)),
+        .code => try renderCode(allocator, out, node, ctx, depth),
+        .thematic_break => {
+            const block = nextBlock(ctx, node, .thematic_break, depth);
+            try out.append(try makeLine(allocator, ctx.withBlock(block), &.{}, 0, true, false));
+        },
         .blockquote => try renderQuote(allocator, out, definitions, node, ctx, depth),
         .list => try renderList(allocator, out, definitions, node, ctx, depth),
         .table => try renderTable(allocator, out, definitions, node, ctx, depth),
@@ -302,7 +444,8 @@ fn renderParagraph(
     ctx: Context,
     depth: usize,
 ) !void {
-    var builder = InlineBuilder.init(allocator, ctx, out);
+    const block_ctx = ctx.withBlock(nextBlock(ctx, node, .paragraph, depth));
+    var builder = InlineBuilder.init(allocator, block_ctx, out);
     try renderInlineChildren(allocator, &builder, node, .{ .color = text_color }, definitions, depth);
     try builder.finish();
 }
@@ -315,11 +458,16 @@ fn renderHeading(
     ctx: Context,
     depth: usize,
 ) !void {
-    var style = ui.Style{ .bold = true, .color = heading_color };
-    if (node.data.heading.depth == 1) style.underline = true;
-    var builder = InlineBuilder.init(allocator, ctx, out);
-    try renderInlineChildren(allocator, &builder, node, style, definitions, depth);
+    const kind = headingKind(node.data.heading.depth);
+    var block = nextBlock(ctx, node, kind, depth);
+    block.anchor = try headingAnchor(ctx, node);
+    const block_ctx = ctx.withBlock(block);
+    var builder = InlineBuilder.init(allocator, block_ctx, out);
+    try renderInlineChildren(allocator, &builder, node, headingStyle(kind), definitions, depth);
     try builder.finish();
+    if (isDocument(ctx) and (kind == .heading1 or kind == .heading2)) {
+        try out.append(try makeLine(allocator, block_ctx, &.{}, 0, true, false));
+    }
 }
 
 fn renderCode(
@@ -327,11 +475,22 @@ fn renderCode(
     out: *std.array_list.Managed(Line),
     node: *const Node,
     ctx: Context,
+    depth: usize,
 ) RenderError!void {
     const code = node.data.code;
     var value = code.value;
     if (std.mem.endsWith(u8, value, "\n")) value = value[0 .. value.len - 1];
     if (value.len == 0) return;
+
+    var block = nextBlock(ctx, node, .code_block, depth);
+    if (block.id != 0) {
+        var line_count: usize = 1;
+        for (value) |byte| {
+            if (byte == '\n') line_count += 1;
+        }
+        block.source_end_line = block.source_line + line_count - 1;
+    }
+    const block_ctx = ctx.withBlock(block);
 
     const language = resolveCodeFenceLanguage(code.lang, ctx.code_fence_fallback_language);
     const support_opt = textMateTokenizer.create(allocator, language) catch |err| switch (err) {
@@ -357,13 +516,13 @@ fn renderCode(
             const support = support_opt.?;
             const result = support.tokenizeEncoded(allocator, expanded, false, state.?) catch {
                 use_highlight = false;
-                try appendPlainCodeLine(allocator, out, ctx, expanded);
+                try appendPlainCodeLine(allocator, out, block_ctx, expanded);
                 continue;
             };
             state = result.endState;
-            try appendHighlightedCodeLine(allocator, out, ctx, expanded, result.tokens);
+            try appendHighlightedCodeLine(allocator, out, block_ctx, expanded, result.tokens);
         } else {
-            try appendPlainCodeLine(allocator, out, ctx, expanded);
+            try appendPlainCodeLine(allocator, out, block_ctx, expanded);
         }
     }
 }
@@ -517,15 +676,12 @@ fn renderQuote(
     depth: usize,
 ) RenderError!void {
     const prefix = try std.mem.concat(allocator, u8, &.{ ctx.prefix, "│ " });
-    const child_ctx = Context{
-        .prefix = prefix,
-        .prefix_style = .{ .dim = true, .color = rule_color },
-        .code_fence_fallback_language = ctx.code_fence_fallback_language,
-    };
+    const child_ctx = ctx.withPrefix(prefix, .{ .dim = true, .color = rule_color });
     var lines = std.array_list.Managed(Line).init(allocator);
     try renderBlocks(allocator, &lines, definitions, node, child_ctx, true, depth + 1);
     if (lines.items.len == 0) {
-        try out.append(try makeLine(allocator, child_ctx, &.{}, 0, false, false));
+        const block = nextBlock(ctx, node, .block_quote, depth);
+        try out.append(try makeLine(allocator, child_ctx.withBlock(block), &.{}, 0, false, false));
     } else {
         try out.appendSlice(lines.items);
     }
@@ -558,9 +714,11 @@ fn renderList(
         }
 
         if (item_index > 0 and list.spread) {
-            try out.append(try makeLine(allocator, ctx, &.{}, 0, false, false));
+            try out.append(try makeLine(allocator, ctx.withoutBlock(), &.{}, 0, false, false));
         }
 
+        const item_block = nextBlock(ctx, item, .list_item, depth + 1);
+        const item_ctx = ctx.withBlock(item_block);
         const item_data = item.data.list_item;
         const marker: []const u8 = if (item_data.checked) |checked|
             (if (checked) "[x] " else "[ ] ")
@@ -573,11 +731,14 @@ fn renderList(
 
         var item_lines = std.array_list.Managed(Line).init(allocator);
         try renderBlocks(allocator, &item_lines, definitions, item, ctx, list.spread, depth + 1);
+        for (item_lines.items) |*line| {
+            if (line.block.id == 0) line.block = item_block;
+        }
 
         if (item_lines.items.len == 0) {
             const spans = try allocator.alloc(Span, 1);
             spans[0] = .{ .text = marker, .style = marker_style };
-            try out.append(try makeLine(allocator, ctx, spans, marker_width, false, false));
+            try out.append(try makeLine(allocator, item_ctx, spans, marker_width, false, false));
             item_index += 1;
             continue;
         }
@@ -589,7 +750,7 @@ fn renderList(
             // marker on its own line so the nested marker is not doubled.
             const marker_spans = try allocator.alloc(Span, 1);
             marker_spans[0] = .{ .text = marker, .style = marker_style };
-            try out.append(try makeLine(allocator, ctx, marker_spans, marker_width, false, false));
+            try out.append(try makeLine(allocator, item_ctx, marker_spans, marker_width, false, false));
             for (item_lines.items) |*line| {
                 try prependSpan(allocator, line, marker_spaces, .{});
                 try prependContinuation(allocator, line, marker_spaces, .{});
@@ -622,16 +783,16 @@ fn renderFootnoteDefinition(
 ) RenderError!void {
     const definition = node.data.footnote_definition;
     const prefix = try std.fmt.allocPrint(allocator, "{s}[^{s}]: ", .{ ctx.prefix, definition.label });
-    const child_ctx = Context{
-        .prefix = prefix,
-        .prefix_style = .{ .dim = true, .color = text_color },
-        .code_fence_fallback_language = ctx.code_fence_fallback_language,
-    };
+    const child_ctx = ctx.withPrefix(prefix, .{ .dim = true, .color = text_color });
+    const block = nextBlock(ctx, node, .footnote, depth);
     var lines = std.array_list.Managed(Line).init(allocator);
     try renderBlocks(allocator, &lines, definitions, node, child_ctx, false, depth + 1);
     if (lines.items.len == 0) {
-        try out.append(try makeLine(allocator, child_ctx, &.{}, 0, false, false));
+        try out.append(try makeLine(allocator, child_ctx.withBlock(block), &.{}, 0, false, false));
     } else {
+        for (lines.items) |*line| {
+            if (line.block.id == 0) line.block = block;
+        }
         try out.appendSlice(lines.items);
     }
 }
@@ -652,9 +813,11 @@ fn renderTable(
     const alignments = node.data.table.align_;
 
     var rows = std.array_list.Managed([]Cell).init(allocator);
+    var row_nodes = std.array_list.Managed(*const Node).init(allocator);
     var row_node = node.first_child;
     while (row_node) |row| : (row_node = row.next) {
         if (row.data != .table_row) continue;
+        try row_nodes.append(row);
         var cells = std.array_list.Managed(Cell).init(allocator);
         var cell_node = row.first_child;
         while (cell_node) |cell| : (cell_node = cell.next) {
@@ -683,13 +846,20 @@ fn renderTable(
     }
     shrinkTable(widths);
 
-    try out.append(try makeLine(allocator, ctx, try borderSpans(allocator, "┌", "┬", "┐", widths), 0, false, true));
-    try out.append(try makeLine(allocator, ctx, try rowSpans(allocator, rows.items[0], widths, alignments, true), 0, false, true));
-    try out.append(try makeLine(allocator, ctx, try borderSpans(allocator, "├", "┼", "┤", widths), 0, false, true));
-    for (rows.items[1..]) |row| {
-        try out.append(try makeLine(allocator, ctx, try rowSpans(allocator, row, widths, alignments, false), 0, false, true));
+    const table_block = nextBlock(ctx, node, .table, depth);
+    const table_ctx = ctx.withBlock(table_block);
+    const header_block = nextBlock(ctx, row_nodes.items[0], .table_row, depth + 1);
+    try out.append(try makeLine(allocator, table_ctx, try borderSpans(allocator, "┌", "┬", "┐", widths), 0, false, true));
+    try out.append(try makeLine(allocator, ctx.withBlock(header_block), try rowSpans(allocator, rows.items[0], widths, alignments, true), 0, false, true));
+    try out.append(try makeLine(allocator, table_ctx, try borderSpans(allocator, "├", "┼", "┤", widths), 0, false, true));
+    for (rows.items[1..], 1..) |row, row_index| {
+        const block = if (row_index < row_nodes.items.len)
+            nextBlock(ctx, row_nodes.items[row_index], .table_row, depth + 1)
+        else
+            table_block;
+        try out.append(try makeLine(allocator, ctx.withBlock(block), try rowSpans(allocator, row, widths, alignments, false), 0, false, true));
     }
-    try out.append(try makeLine(allocator, ctx, try borderSpans(allocator, "└", "┴", "┘", widths), 0, false, true));
+    try out.append(try makeLine(allocator, table_ctx, try borderSpans(allocator, "└", "┴", "┘", widths), 0, false, true));
 }
 
 fn spansWidth(spans: []const Span) usize {
@@ -818,6 +988,7 @@ const InlineBuilder = struct {
     ctx: Context,
     out: *std.array_list.Managed(Line),
     replace_newline: bool = false,
+    link: ?[]const u8 = null,
     spans: std.array_list.Managed(Span),
 
     fn init(allocator: Allocator, ctx: Context, out: *std.array_list.Managed(Line)) InlineBuilder {
@@ -834,7 +1005,7 @@ const InlineBuilder = struct {
         while (index < text.len) {
             if (std.mem.indexOfScalarPos(u8, text, index, '\n')) |line_end| {
                 if (line_end > index) try self.appendChunk(text[index..line_end], style);
-                try self.newline();
+                try self.softBreak(style);
                 index = line_end + 1;
                 continue;
             }
@@ -846,10 +1017,18 @@ const InlineBuilder = struct {
     fn appendChunk(self: *InlineBuilder, text: []const u8, style: ui.Style) !void {
         const expanded = try expandTabs(self.allocator, text);
         if (expanded.len == 0) return;
-        try self.spans.append(.{ .text = expanded, .style = style });
+        try self.spans.append(.{ .text = expanded, .style = style, .link = self.link });
     }
 
-    fn newline(self: *InlineBuilder) !void {
+    fn softBreak(self: *InlineBuilder, style: ui.Style) !void {
+        if (self.replace_newline or (self.ctx.mode == .document and !self.ctx.preview_breaks)) {
+            try self.spans.append(.{ .text = " ", .style = style, .link = self.link });
+            return;
+        }
+        try self.flush();
+    }
+
+    fn hardBreak(self: *InlineBuilder) !void {
         if (self.replace_newline) {
             try self.spans.append(.{ .text = " ", .style = .{ .color = text_color } });
             return;
@@ -918,16 +1097,22 @@ fn renderInline(
             var link_style = style;
             link_style.color = link_color;
             link_style.underline = true;
+            const previous = builder.link;
+            builder.link = link.url;
             try renderInlineChildren(allocator, builder, node, link_style, definitions, depth);
-            try appendLinkUrl(allocator, builder, node, link.url);
+            builder.link = previous;
+            if (!isDocument(builder.ctx)) try appendLinkUrl(allocator, builder, node, link.url);
         },
         .link_reference => |reference| {
             if (definitions.get(reference.identifier)) |definition| {
                 var link_style = style;
                 link_style.color = link_color;
                 link_style.underline = true;
+                const previous = builder.link;
+                builder.link = definition.url;
                 try renderInlineChildren(allocator, builder, node, link_style, definitions, depth);
-                try appendLinkUrl(allocator, builder, node, definition.url);
+                builder.link = previous;
+                if (!isDocument(builder.ctx)) try appendLinkUrl(allocator, builder, node, definition.url);
             } else {
                 try renderInlineChildren(allocator, builder, node, style, definitions, depth);
             }
@@ -942,7 +1127,7 @@ fn renderInline(
                 try builder.appendText(image.alt, .{ .dim = true, .color = text_color });
             }
         },
-        .break_ => try builder.newline(),
+        .break_ => try builder.hardBreak(),
         .footnote_reference => |reference| {
             const text = try std.fmt.allocPrint(allocator, "[^{s}]", .{reference.label});
             try builder.appendText(text, .{ .dim = true, .color = text_color });
@@ -1011,6 +1196,113 @@ pub fn splitAtWidth(text: []const u8, width: usize) usize {
         offset += decoded.len;
     }
     return offset;
+}
+
+const Token = struct {
+    text: []const u8,
+    style: ui.Style,
+    width: usize,
+    is_space: bool = false,
+    link: ?[]const u8 = null,
+};
+
+pub fn wrapLine(allocator: Allocator, line: Line, width: usize) ![]const []const Span {
+    const limit = @max(width, 1);
+    var rows = std.array_list.Managed([]const Span).init(allocator);
+    var row = std.array_list.Managed(Span).init(allocator);
+    var row_width: usize = 0;
+
+    var tokens = std.array_list.Managed(Token).init(allocator);
+    for (line.spans) |span| try tokenize(&tokens, span);
+    if (tokens.items.len == 0) {
+        try rows.append(try row.toOwnedSlice());
+        return try rows.toOwnedSlice();
+    }
+
+    var index: usize = 0;
+    while (index < tokens.items.len) : (index += 1) {
+        const token = tokens.items[index];
+        const active_limit = if (rows.items.len == 0)
+            limit
+        else
+            limit -| @min(line.indent, limit - 1);
+
+        if (token.is_space) {
+            if (row_width == 0) {
+                // Keep indentation at the start of a row (code blocks rely on
+                // it), but do not start a wrapped prose row with a space.
+                if (token.style.background != null) {
+                    try row.append(.{ .text = token.text, .style = token.style, .link = token.link });
+                    row_width += token.width;
+                }
+                continue;
+            }
+            const next_width = if (index + 1 < tokens.items.len) tokens.items[index + 1].width else 0;
+            if (row_width + token.width + next_width > active_limit) {
+                try rows.append(try row.toOwnedSlice());
+                row = std.array_list.Managed(Span).init(allocator);
+                row_width = 0;
+                continue;
+            }
+            try row.append(.{ .text = token.text, .style = token.style, .link = token.link });
+            row_width += token.width;
+            continue;
+        }
+
+        if (token.width <= active_limit -| row_width) {
+            try row.append(.{ .text = token.text, .style = token.style, .link = token.link });
+            row_width += token.width;
+            continue;
+        }
+
+        if (row_width > 0) {
+            try rows.append(try row.toOwnedSlice());
+            row = std.array_list.Managed(Span).init(allocator);
+            row_width = 0;
+        }
+
+        // A single word wider than a row is split at cell boundaries; the
+        // style is preserved for every piece.
+        const split_limit = if (rows.items.len == 0)
+            limit
+        else
+            limit -| @min(line.indent, limit - 1);
+        var remaining = token.text;
+        while (remaining.len > 0) {
+            const split = splitAtWidth(remaining, split_limit);
+            if (split == 0) break;
+            try row.append(.{ .text = remaining[0..split], .style = token.style, .link = token.link });
+            remaining = remaining[split..];
+            try rows.append(try row.toOwnedSlice());
+            row = std.array_list.Managed(Span).init(allocator);
+            row_width = 0;
+        }
+    }
+
+    if (row.items.len > 0) try rows.append(try row.toOwnedSlice());
+    if (rows.items.len == 0) try rows.append(&.{});
+    return try rows.toOwnedSlice();
+}
+
+fn tokenize(tokens: *std.array_list.Managed(Token), span: Span) !void {
+    var index: usize = 0;
+    const text = span.text;
+    while (index < text.len) {
+        const space = text[index] == ' ' or text[index] == '\t';
+        const start = index;
+        while (index < text.len and ((text[index] == ' ' or text[index] == '\t') == space)) {
+            const decoded = ui.dom.decodeAt(text, index);
+            if (decoded.len == 0) break;
+            index += decoded.len;
+        }
+        try tokens.append(.{
+            .text = text[start..index],
+            .style = span.style,
+            .width = textWidth(text[start..index]),
+            .is_space = space,
+            .link = span.link,
+        });
+    }
 }
 
 fn findLine(content: *const Content, needle: []const u8) ?Line {

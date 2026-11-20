@@ -35,6 +35,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
+const cellMetrics = @import("./cellMetrics.zig");
 
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const TerminalViewHost = @import("../vs/editor/browser/widget/codeEditor/terminalViewHost.zig").TerminalViewHost;
@@ -298,7 +299,7 @@ pub const View = struct {
             .cols = editor.screen_width,
             .rows = editor.screen_height,
             .tab_size = editor.tabSize(),
-            .measure_width = measureCodepoint,
+            .measure_width = cellMetrics.measureCodepoint,
         });
         errdefer self.surface.deinit();
         // The first paint/render flushes the initial rebuild. Callers that
@@ -735,7 +736,7 @@ pub const View = struct {
             .cols = width,
             .rows = height,
             .tab_size = self.editor.tabSize(),
-            .measure_width = measureCodepoint,
+            .measure_width = cellMetrics.measureCodepoint,
         });
 
         var previous = self.surface;
@@ -1326,11 +1327,6 @@ fn viewRowForModelLine(editor: *Editor, top: usize, model_line: usize) ?usize {
     const row = view_position.lineNumber - top;
     if (row >= editor.textHeight()) return null;
     return row;
-}
-
-fn measureCodepoint(cp: u21) u2 {
-    const next = CursorColumns.nextVisibleColumn(cp, 0, 1);
-    return @intCast(@min(next, 2));
 }
 
 fn color(rgb: [3]u8) ui.Color {

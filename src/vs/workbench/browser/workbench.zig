@@ -136,6 +136,8 @@ const goto_symbol_quick_access = @import("../contrib/codeEditor/browser/quickacc
 const hover_operation = @import("../../editor/contrib/hover/browser/hoverOperation.zig");
 const hover_types = @import("../../editor/contrib/hover/browser/hoverTypes.zig");
 const strings = @import("../../base/common/strings.zig");
+const topmost_line_monitor = @import("../contrib/markdown/browser/topmostLineMonitor.zig");
+const MarkdownPreviewConfig = @import("../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
 const std_uri = @import("../../base/common/stdUri.zig");
 const MarkerService = @import("../../platform/markers/common/markerService.zig").MarkerService;
 const MarkerDecorationsService = @import("../../editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
@@ -293,6 +295,7 @@ pub const Workbench = struct {
     breadcrumbs_dirty: bool = false,
     hovered_tab: ?*Tab = null,
     hovered_pane: ?*GroupPane = null,
+    hovered_title_action_pane: ?*GroupPane = null,
     last_tab_click: ?TabClick = null,
     expanded_pane: ?*GroupPane = null,
     declarative: ?*const extensions_registry.Registry = null,
@@ -846,6 +849,9 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.terminal.focusPrevious", .label = "Focus Previous Terminal", .category = "Terminal", .context = self, .run = commandFocusPreviousTerminal },
             .{ .id = "workbench.action.terminal.resizeUp", .label = "Resize Terminal Panel Up", .category = "Terminal", .context = self, .run = commandResizeTerminalUp },
             .{ .id = "workbench.action.terminal.resizeDown", .label = "Resize Terminal Panel Down", .category = "Terminal", .context = self, .run = commandResizeTerminalDown },
+            .{ .id = "markdown.showPreviewToSide", .label = "Open Preview to the Side", .category = "Markdown", .requires_editor = true, .context = self, .run = commandShowMarkdownPreview },
+            .{ .id = "markdown.togglePreview", .label = "Toggle Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandToggleMarkdownPreview },
+            .{ .id = "markdown.preview.refresh", .label = "Refresh Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandRefreshMarkdownPreview },
             .{ .id = "workbench.action.findInFiles", .label = "Find in Files", .category = "Search", .context = self, .run = commandFindInFiles },
             .{ .id = "workbench.action.replaceInFiles", .label = "Replace in Files", .category = "Search", .context = self, .run = commandReplaceInFiles },
             .{ .id = "toggleSearchCaseSensitive", .label = "Toggle Case Sensitive", .category = "Search", .context = self, .run = commandToggleSearchCase },
@@ -1309,6 +1315,7 @@ pub const Workbench = struct {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.applyConfiguredLanguageAssociationsToAllEditors();
         self.applyBreadcrumbsSettings();
+        self.applyMarkdownPreviewConfig();
         if (self.quick_diff_controller) |controller| {
             controller.setIgnoreTrimWhitespace(self.resolvedIgnoreTrimWhitespace());
             controller.setConfig(.{
@@ -2720,6 +2727,74 @@ pub const Workbench = struct {
     }
 
     // --- end git / source control
+
+    pub fn markdownPreviewConfig(self: *Workbench) MarkdownPreviewConfig {
+        return MarkdownPreviewConfig.load(self.configuration);
+    }
+
+    fn applyMarkdownPreviewConfig(self: *Workbench) void {
+        const config = self.markdownPreviewConfig();
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.markdown_preview == null) continue;
+                const previous = tab.markdown_preview.?.options;
+                tab.setMarkdownPreviewConfig(config);
+                if (!MarkdownPreviewConfig.eql(previous, config) and tab.markdown_preview_visible) {
+                    tab.refreshMarkdownPreview(true);
+                }
+            }
+        }
+    }
+
+    pub fn toggleMarkdownPreview(self: *Workbench, pane: *GroupPane) !void {
+        const tab = pane.activeTab() orelse return;
+        if (!tab.isMarkdown()) {
+            tab.editor.setMessage("Markdown preview is available for Markdown files only.", .{});
+            return;
+        }
+        if (tab.markdown_preview_visible) {
+            try tab.setMarkdownPreviewVisible(false);
+            pane.layout();
+            self.refreshStatus();
+            return;
+        }
+
+        const start_line = topmost_line_monitor.getVisibleLine(tab.editor);
+        tab.setMarkdownPreviewConfig(self.markdownPreviewConfig());
+        try tab.setMarkdownPreviewVisible(true);
+        pane.layout();
+        if (tab.markdown_preview) |preview| {
+            preview.open(start_line) catch |err| {
+                tab.editor.setMessage("markdown preview: {s}", .{@errorName(err)});
+            };
+        }
+        self.focusEditor();
+        self.refreshStatus();
+    }
+
+    pub fn showMarkdownPreviewToSide(self: *Workbench) !void {
+        const pane = self.activePane() orelse return;
+        const tab = pane.activeTab() orelse return;
+        if (!tab.isMarkdown()) {
+            tab.editor.setMessage("Markdown preview is available for Markdown files only.", .{});
+            return;
+        }
+        if (!tab.markdown_preview_visible) try self.toggleMarkdownPreview(pane);
+    }
+
+    pub fn refreshMarkdownPreview(self: *Workbench) void {
+        if (self.activeTab()) |tab| tab.refreshMarkdownPreview(true);
+    }
+
+    pub fn markdownPreviewTick(self: *Workbench, now_ms: i64) bool {
+        if (self.activeTab()) |tab| return tab.onMarkdownPreviewTick(now_ms);
+        return false;
+    }
+
+    pub fn markdownPreviewTimeout(self: *Workbench, now_ms: i64) ?u32 {
+        if (self.activeTab()) |tab| return tab.markdownPreviewTimeout(now_ms);
+        return null;
+    }
 
     pub fn openPath(self: *Workbench, path: []const u8) !void {
         return self.openPathWithOptions(path, .{});
@@ -4242,6 +4317,14 @@ pub const Workbench = struct {
         if (event.kind == .move) {
             if (event.y == pane_y) {
                 self.hovered_pane = pane;
+                if (pane.title_action_hit) |hit| {
+                    if (event.x >= hit.start and event.x < hit.end) {
+                        self.hovered_title_action_pane = pane;
+                        self.hovered_tab = null;
+                        return true;
+                    }
+                }
+                self.hovered_title_action_pane = null;
                 if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                     self.hovered_tab = self.orderedTabAt(pane, index);
                 } else {
@@ -4326,6 +4409,15 @@ pub const Workbench = struct {
                 }
             }
 
+            if (event.button == .left) {
+                if (pane.title_action_hit) |hit| {
+                    if (event.x >= hit.start and event.x < hit.end) {
+                        self.toggleMarkdownPreview(pane) catch {};
+                        self.focusEditor();
+                        return true;
+                    }
+                }
+            }
             if (event.button == .middle) {
                 if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                     if (self.orderedTabAt(pane, index)) |tab| {
@@ -4379,6 +4471,7 @@ pub const Workbench = struct {
     fn clearTabHover(self: *Workbench) void {
         self.hovered_tab = null;
         self.hovered_pane = null;
+        self.hovered_title_action_pane = null;
         if (self.breadcrumbs_control) |control| control.clearHover();
     }
 
@@ -4594,7 +4687,15 @@ pub const Workbench = struct {
                 }
             }
         }
-        try tab_bar.draw(
+        const active_tab = pane.activeTab();
+        const title_action: ?tab_bar.TitleAction = if (active_tab) |tab| blk: {
+            if (!tab.isMarkdown()) break :blk null;
+            break :blk .{
+                .active = tab.markdownPreviewVisible(),
+                .hovered = self.hovered_title_action_pane == pane,
+            };
+        } else null;
+        pane.title_action_hit = try tab_bar.draw(
             &self.frame.next,
             infos,
             pane.activeIndex(ordered.items),
@@ -4602,7 +4703,7 @@ pub const Workbench = struct {
             y,
             width,
             &pane.hits,
-            .{ .group_active = active_group, .hovered = hovered_index },
+            .{ .group_active = active_group, .hovered = hovered_index, .title_action = title_action },
         );
 
         const chrome = pane.chromeHeight();
@@ -5318,6 +5419,22 @@ fn commandCloseEditor(context: *anyopaque) anyerror!void {
     _ = try self.closeActive();
 }
 
+fn commandShowMarkdownPreview(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showMarkdownPreviewToSide();
+}
+
+fn commandToggleMarkdownPreview(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const pane = self.activePane() orelse return;
+    try self.toggleMarkdownPreview(pane);
+}
+
+fn commandRefreshMarkdownPreview(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.refreshMarkdownPreview();
+}
+
 fn commandSplitEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.splitActive(.horizontal);
@@ -5997,6 +6114,117 @@ test "Workbench: opening a new file rebuilds its view once" {
     defer out.deinit();
     try workbench.render(&out.writer);
     try std.testing.expectEqual(@as(usize, 1), tab.view.rebuildCount());
+}
+
+test "Workbench: markdown preview icon and split render the document" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "preview.md", "# Title\n\nHello **world**\n");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 14);
+    defer workbench.deinit();
+
+    const pane = workbench.activePane().?;
+    const tab = pane.activeTab().?;
+    try std.testing.expect(tab.isMarkdown());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const hit = pane.title_action_hit orelse return error.TestUnexpectedResult;
+    const row = ui.cell.snap(pane.rect.y);
+    const grid = &workbench.frame.prev;
+    try std.testing.expectEqual(@as(u32, 0x25EB), grid.cluster[grid.index(hit.start, row)]);
+    try std.testing.expectEqual(@as(u32, 0x2315), grid.cluster[grid.index(hit.start + 1, row)]);
+
+    try workbench.toggleMarkdownPreview(pane);
+    try std.testing.expect(tab.markdown_preview_visible);
+    try std.testing.expect(tab.markdown_preview != null);
+
+    var close_key = ui.KeyEvent{ .key = .{ .char = 'v' }, .mods = .{ .ctrl = true, .shift = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&close_key));
+    try std.testing.expect(!tab.markdown_preview_visible);
+    try std.testing.expect(try workbench.handleGlobalKey(&close_key));
+    try std.testing.expect(tab.markdown_preview_visible);
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "Title") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "world") != null);
+
+    const preview_surface = &tab.markdown_preview.?.surface.?;
+    var saw_title = false;
+    var saw_world = false;
+    var preview_row: usize = 0;
+    while (preview_row < preview_surface.grid().rows) : (preview_row += 1) {
+        const text = try preview_surface.grid().rowText(allocator, preview_row);
+        defer allocator.free(text);
+        if (std.mem.indexOf(u8, text, "Title") != null) saw_title = true;
+        if (std.mem.indexOf(u8, text, "world") != null) saw_world = true;
+    }
+    try std.testing.expect(saw_title);
+    try std.testing.expect(saw_world);
+}
+
+test "Workbench: markdown preview title action is absent for plain text" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "plain.txt", "plain\n");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 50, 10);
+    defer workbench.deinit();
+    const pane = workbench.activePane().?;
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(pane.title_action_hit == null);
+    try workbench.toggleMarkdownPreview(pane);
+    try std.testing.expect(!pane.activeTab().?.markdown_preview_visible);
+}
+
+test "Workbench: markdown preview follows editor scroll and can reveal the editor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var body: std.Io.Writer.Allocating = .init(allocator);
+    defer body.deinit();
+    var line: usize = 0;
+    while (line < 80) : (line += 1) {
+        try body.writer.print("paragraph {d}\n\n", .{line});
+    }
+    const path = try seedFile(allocator, io, &tmp, "scroll.md", body.written());
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 18);
+    defer workbench.deinit();
+    const pane = workbench.activePane().?;
+    const tab = pane.activeTab().?;
+    try workbench.toggleMarkdownPreview(pane);
+    try std.testing.expect(tab.markdown_preview_visible);
+
+    _ = tab.editor.setTopViewLine(30);
+    const now = @import("../../base/common/timeCompat.zig").milliTimestamp();
+    _ = tab.onMarkdownPreviewTick(now + 60);
+    try std.testing.expect(tab.markdown_preview.?.scroll > 0);
+    _ = tab.onMarkdownPreviewTick(now + 120);
+
+    const before = tab.editor.topViewLine();
+    var wheel = ui.MouseEvent{
+        .kind = .wheel,
+        .x = ui.cell.snap(tab.preview_rect.?.x) + 2,
+        .y = 1,
+        .delta_y = 20,
+    };
+    _ = tab.handleMarkdownPreviewMouse(&wheel, now + 100);
+    try std.testing.expect(tab.editor.topViewLine() != before);
 }
 
 test "Workbench: split moves the active tab into a second group" {
@@ -7181,6 +7409,7 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "breadcrumbs.focusAndSelect", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Period) } },
     .{ .id = "breadcrumbs.focus", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Semicolon) } },
     .{ .id = "workbench.action.terminal.toggleTerminal", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyT) } },
+    .{ .id = "markdown.togglePreview", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyV) } },
     .{ .id = "workbench.action.terminal.new", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyN) } },
     .{ .id = "workbench.action.terminal.kill", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyW) } },
     .{ .id = "workbench.action.terminal.resizeUp", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.UpArrow) } },
