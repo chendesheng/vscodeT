@@ -327,6 +327,9 @@ console API for raw mode, sizing and input polling.
 - [TUI review](docs/tui-review.md) — current file-by-file verdict on `src/tui/`:
   what still has a VS Code port, what moves into `ui/`, what is dead or
   duplicated, and the dependency-ordered path to a thin host.
+- [Git integration and diff view plan](docs/git-diff-plan.md) — proposed
+  read-only Git/SCM integration, quick-diff decorations and a terminal
+  side-by-side diff viewer, with the view-parts wiring and test plan.
 
 ## Terminal UI library
 
