@@ -141,12 +141,16 @@ fn markdownModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
 const VscodeGrammar = struct {
     language: []const u8,
     scope: []const u8,
+    /// Path in the pinned VS Code checkout.
     path: []const u8,
+    /// Vendored copy for checkouts without the `vscode/` submodule.
+    fallback_path: []const u8 = "",
 };
 
 /// Grammars taken from the VS Code checkout, mirroring the extensions those
-/// languages ship in. Languages without a working VS Code grammar (zig, toml,
-/// yaml) keep the pinned package's grammar.
+/// languages ship in. `src/support/grammars` keeps vendored fallbacks for the
+/// languages without a usable extension grammar (zig, toml, yaml) and for the
+/// pinned Markdown grammar.
 const vscode_grammars = [_]VscodeGrammar{
     .{ .language = "json", .scope = "source.json", .path = "vscode/extensions/json/syntaxes/JSON.tmLanguage.json" },
     .{ .language = "jsonc", .scope = "source.json.comments", .path = "vscode/extensions/json/syntaxes/JSONC.tmLanguage.json" },
@@ -165,7 +169,7 @@ const vscode_grammars = [_]VscodeGrammar{
     .{ .language = "", .scope = "text.html.derivative", .path = "vscode/extensions/html/syntaxes/html-derivative.tmLanguage.json" },
     .{ .language = "css", .scope = "source.css", .path = "vscode/extensions/css/syntaxes/css.tmLanguage.json" },
     .{ .language = "scss", .scope = "source.css.scss", .path = "vscode/extensions/scss/syntaxes/scss.tmLanguage.json" },
-    .{ .language = "markdown", .scope = "text.html.markdown", .path = "vscode/extensions/markdown-basics/syntaxes/markdown.tmLanguage.json" },
+    .{ .language = "markdown", .scope = "text.html.markdown", .path = "vscode/extensions/markdown-basics/syntaxes/markdown.tmLanguage.json", .fallback_path = "src/support/grammars/markdown.json" },
     .{ .language = "shellscript", .scope = "source.shell", .path = "vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
     .{ .language = "bash", .scope = "source.shell", .path = "vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
 };
@@ -226,17 +230,31 @@ fn vscodeSyntaxAssets(
         \\
     ) catch @panic("OOM");
 
+    var missing_grammars: usize = 0;
     for (vscode_grammars) |grammar| {
-        if (!fileExists(b, grammar.path)) continue;
-        const file_name = std.fs.path.basename(grammar.path);
+        const source_path = if (fileExists(b, grammar.path))
+            grammar.path
+        else if (grammar.fallback_path.len > 0 and fileExists(b, grammar.fallback_path))
+            grammar.fallback_path
+        else {
+            missing_grammars += 1;
+            continue;
+        };
+        const file_name = std.fs.path.basename(source_path);
         const dest = std.fmt.allocPrint(b.allocator, "grammars/{s}", .{file_name}) catch @panic("OOM");
-        _ = files.addCopyFile(.{ .cwd_relative = grammar.path }, dest);
+        _ = files.addCopyFile(.{ .cwd_relative = source_path }, dest);
         const line = std.fmt.allocPrint(
             b.allocator,
             "    .{{ .language = \"{s}\", .scope = \"{s}\", .data = @embedFile(\"{s}\") }},\n",
             .{ grammar.language, grammar.scope, dest },
         ) catch @panic("OOM");
         source.appendSlice(line) catch @panic("OOM");
+    }
+    if (missing_grammars > 0) {
+        std.debug.print(
+            "warning: {d} VS Code grammar(s) missing; run `git submodule update --init --depth 1 vscode` and rebuild for every language\n",
+            .{missing_grammars},
+        );
     }
 
     _ = files.add(

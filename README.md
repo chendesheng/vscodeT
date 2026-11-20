@@ -87,8 +87,9 @@ git submodule update --init --depth 1
 ```
 
 Without an initialized submodule, `zig build` still works with the vendored
-grammar and theme fallbacks in `src/support/`; the upstream syntax/theme assets,
-language configurations and the Node extension host need `vscode/`.
+grammar and theme fallbacks in `src/support/` (Zig, TOML, YAML and Markdown,
+plus Dark+); the remaining upstream syntax/theme assets, language
+configurations and the Node extension host need `vscode/`.
 `-Dvscode-source=<dir>` / `VSCODE_SOURCE_PATH` can point the host bundle at
 another checkout, but it must be the same 1.147.0 tree.
 
@@ -103,8 +104,8 @@ Notes for the Zig 0.17 port:
   build system (`addTranslateC`) and imported as the `oniguruma` module. The
   build searches the standard Homebrew and Linux prefixes for the header and
   library. The editor tokenizer uses the standalone `vscode_textmate` package
-  in `textmate/`; Zig/TOML/YAML fallback grammars and the fallback Dark+ theme
-  are vendored under `src/support/`.
+  in `textmate/`; Zig/TOML/YAML/Markdown fallback grammars and the fallback
+  Dark+ theme are vendored under `src/support/`.
 - `std.io` was replaced by the `std.Io` reader/writer interfaces; the app
   receives its `Io` instance through `std.process.Init`.
 - `std.ArrayList` is unmanaged in Zig 0.17. This port currently uses the
@@ -714,7 +715,8 @@ TextMate tokenization:
   originals, embedded from `vscode/extensions/*/syntaxes/*.tmLanguage.json`
   at build time (`vscode-syntax`). `zig`, `toml` and `yaml` use vendored
   fallback grammars in `src/support/grammars` (the current VS Code YAML
-  grammar does not tokenize with this parser). The vendored Dark+ theme is the
+  grammar does not tokenize with this parser), and `markdown` falls back to a
+  vendored copy of its pinned VS Code grammar. The vendored Dark+ theme is the
   fallback when the `vscode/` submodule is not initialized.
 - Language configurations for the same languages are read from each
   extension's upstream `language-configuration.json` and embedded by
