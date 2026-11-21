@@ -139,8 +139,11 @@ For each row:
 - `5cbb73a` breadcrumbs: persist inactive controls and fix widget states.
   One control per inactive group, disabled-click gating, focused.selected and
   hover precedence, separator color, and the split-path active-tab fix. Added
-  widget and persistent-control tests. Widget emitters, home/root model cases,
-  picker parent/outline and editor-type/drop remain pending.
+  widget and persistent-control tests.
+- `f40c6ff` breadcrumbs: add the picker parent and root rule. Added the
+  `..` parent entry, the upstream multi-root/single-folder root condition and
+  pure model/picker tests. Widget emitters, home labels, outline picker and
+  editor-type/drop remain pending.
 
 ## Next slice
 
