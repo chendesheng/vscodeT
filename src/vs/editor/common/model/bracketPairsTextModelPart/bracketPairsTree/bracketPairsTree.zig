@@ -611,6 +611,19 @@ fn utf8Len(text: []const u8) usize {
     return std.unicode.utf8ByteSequenceLength(text[0]) catch 1;
 }
 
+/// Terminal adaptation: at or below this many lines the bracket AST may
+/// tokenize the whole document so its first pass already respects
+/// string/comment tokens. Above it the view defers the initial build and the
+/// parser starts from upstream's fast, token-agnostic tree until the
+/// background tokenizer completes.
+pub const eager_build_line_count: usize = 500;
+
+/// Token state is contiguous, so the last line being accurate means every
+/// earlier line is accurate too.
+pub fn allLinesHaveAccurateTokens(model: *TextModel) bool {
+    return model.getLineCount() == 0 or model.hasAccurateTokensForLine(model.getLineCount());
+}
+
 pub fn parseDocument(allocator: Allocator, model: *TextModel, languageService: *LanguageService) !ParsedDocument {
     return parseDocumentIncremental(allocator, model, languageService, &.{}, null);
 }
@@ -645,10 +658,18 @@ pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languag
 
     var tokenizer = Tokenizer.init(allocator, model, languageService, &ids, &brackets);
     defer tokenizer.deinit();
-    // Terminal adaptation: with bracket-pair colorization disabled there is
-    // no completed background tokenization to wait for, so use upstream's
-    // fast initial tree for guides instead of the token-aware parser.
-    if (!model.getOptions().bracketPairColorizationOptions.enabled) {
+    // Terminal adaptation: colorization consumes token types. The fast tree is
+    // only used for the *initial* build while tokens are incomplete; once an
+    // AST exists, incremental parses stay token-aware (missing tokens for the
+    // edited lines simply act as "balanced" until their token update is
+    // queued). Small documents are tokenized eagerly by the model, so their
+    // first tree already sees accurate tokens. With colorization off there is
+    // no token consumer beyond guides, so keep the fast tree.
+    const use_fast = !model.getOptions().bracketPairColorizationOptions.enabled or
+        (oldRoot == null and
+            !allLinesHaveAccurateTokens(model) and
+            model.getBackgroundTokenizationState() != .Completed);
+    if (use_fast) {
         try tokenizer.tokenizeFast();
     } else {
         try tokenizer.tokenize();

@@ -862,22 +862,35 @@ Library constraints:
   model computes a guide count per visible model line, including the upstream
   blank-line rule that inherits from the surrounding content, and the view
   overlays a dim `│` at each `(level - 1) * indentSize` column inside the
-  leading whitespace. This follows Flow's whitespace-indent glyph. Vertical
-  bracket-pair guides come from
+  leading whitespace. This follows Flow's whitespace-indent glyph. Indent
+  guide colors follow upstream's cycled
+  `editorIndentGuide.background1..6` / `activeBackground1..6` pools; because
+  the default themes only define level 1, the guides are a single gray unless
+  a theme opts into per-level colors. Vertical bracket-pair guides come from
   `src/vs/editor/browser/viewParts/indentGuides/indentGuides.zig`, which reads
-  the existing bracket-pairs model and colors each guide by nesting level. The
-  active indentation scope around the caret and the bracket pair containing
-  the caret are painted with brighter guide colors. A guide is only painted
-  in a leading-whitespace or blank cell, because one terminal cell cannot show
-  both a guide and a text glyph; horizontal bracket guide segments are
-  therefore not painted. Wrapped continuation lines do not get guides.
+  the existing bracket-pairs model. They use
+  `editorBracketPairGuide.background1..6` / `activeBackground1..6` when the
+  theme defines them, and otherwise derive from the same-level
+  `editorBracketHighlight.foreground1..6` color at 30% opacity (inactive) or
+  full opacity (active pair), matching upstream. The indentation scope around
+  the caret is painted with the active indent-guide color. A guide is only
+  painted in a leading-whitespace or blank cell, because one terminal cell
+  cannot show both a guide and a text glyph; horizontal bracket guide segments
+  are therefore not painted. Wrapped continuation lines do not get guides.
 - Find, bracket and word ranges are stored in the model as `TextModel`
   decorations (`findMatch`, `currentFindMatch`, `bracket-match`,
   `wordHighlight*`). `View.ModelDecorationSink` replaces each contribution's
   owner ID directly against the model; the view's bracket pass does the same.
   The rebuild reads the model's inline and overview-ruler decorations back
   through `getLineDecorations` / `getOverviewRulerDecorations`. This gives all
-  contributions one range tracking and z-order path.
+  contributions one range tracking and z-order path. Bracket colorization is
+  the model-wide provider on the same path: its `bracket-highlighting-N` and
+  `unexpected-closing-bracket` inline classes are resolved to cell foregrounds
+  from `editorBracketHighlight.foreground1..6` /
+  `editorBracketHighlight.unexpectedBracket.foreground` at the paint boundary,
+  instead of through CSS. The view prepares the bracket AST before resolving
+  these decorations, and the AST change event invalidates the resolved
+  decoration cache.
 - The suggest contribution (`src/vs/editor/contrib/suggest`) is the first
   end-to-end completion UI. `SuggestModel` schedules quick suggestions 10 ms
   after a typed word character, opens immediately for provider trigger

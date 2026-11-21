@@ -204,20 +204,21 @@ pub fn applyModelSettings(model: *text_model_mod.TextModel, reader: Reader, lang
         }
     }
 
-    if (readBool(reader, "editor.bracketPairColorization.enabled", language_id, resource)) |enabled| {
-        if (model.getOptions().bracketPairColorizationOptions.enabled != enabled) {
-            model.updateOptions(.{
-                .tabSize = null,
-                .indentSize = null,
-                .insertSpaces = null,
-                .trimAutoWhitespace = null,
-                .bracketColorizationOptions = .{
-                    .enabled = enabled,
-                    .independentColorPoolPerBracketType = false,
-                },
-            });
-            changed = true;
-        }
+    const colorization = model.getOptions().bracketPairColorizationOptions;
+    const colorization_enabled = readBool(reader, "editor.bracketPairColorization.enabled", language_id, resource) orelse colorization.enabled;
+    const independent_pool = readBool(reader, "editor.bracketPairColorization.independentColorPoolPerBracketType", language_id, resource) orelse colorization.independentColorPoolPerBracketType;
+    if (colorization.enabled != colorization_enabled or colorization.independentColorPoolPerBracketType != independent_pool) {
+        model.updateOptions(.{
+            .tabSize = null,
+            .indentSize = null,
+            .insertSpaces = null,
+            .trimAutoWhitespace = null,
+            .bracketColorizationOptions = .{
+                .enabled = colorization_enabled,
+                .independentColorPoolPerBracketType = independent_pool,
+            },
+        });
+        changed = true;
     }
 
     return changed;
@@ -402,4 +403,16 @@ test "terminalEditorConfiguration: model indentation and bracket colorization" {
     try settings.set("editor.tabSize", .{ .integer = 8 });
     try std.testing.expect(!applyModelSettings(model.model, settings.reader(), null, null));
     try std.testing.expectEqual(@as(usize, 2), model.model.getOptions().tabSize);
+
+    // Both colorization options apply independently.
+    try settings.set("editor.bracketPairColorization.enabled", .{ .bool = true });
+    try settings.set("editor.bracketPairColorization.independentColorPoolPerBracketType", .{ .bool = true });
+    try std.testing.expect(applyModelSettings(model.model, settings.reader(), null, null));
+    try std.testing.expect(model.model.getOptions().bracketPairColorizationOptions.enabled);
+    try std.testing.expect(model.model.getOptions().bracketPairColorizationOptions.independentColorPoolPerBracketType);
+
+    // Removing the independent-pool setting keeps the model's last value.
+    try settings.set("editor.bracketPairColorization.independentColorPoolPerBracketType", .{ .null = {} });
+    try std.testing.expect(!applyModelSettings(model.model, settings.reader(), null, null));
+    try std.testing.expect(model.model.getOptions().bracketPairColorizationOptions.independentColorPoolPerBracketType);
 }

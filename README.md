@@ -47,12 +47,13 @@ required for the measurements below.
 - Folding is scheduled like upstream: a 200 ms minimum debounce, coalesced while
   typing, and driven by the main-loop tick. Fold commands and gutter clicks
   still compute immediately.
-- Large documents defer the bracket-pair AST/guide build (another
-  whole-document pass) until the debounced main-loop tick; bracket matching
-  itself uses the ported upstream fallback matcher when bracket-pair
-  colorization is disabled. The deferral keeps first paint and key echo fast,
-  but the one-time AST build can cause a brief pause when the app is idle after
-  opening or editing a large file.
+- Large documents defer the initial bracket-pair AST/guide/colorization build
+  (another whole-document pass) until the debounced main-loop tick. Bracket
+  matching uses the ported upstream fallback matcher when bracket-pair
+  colorization is disabled, and the AST otherwise, as upstream does. The
+  deferral keeps first paint and key echo fast, but the one-time AST build can
+  cause a brief pause when the app is idle after opening or editing a large
+  file.
 - Visible-line tokens are forced synchronously, as upstream does; the model is
   attached and the remaining lines are tokenized by the ported
   `DefaultBackgroundTokenizer` in ~1 ms chunks from idle main-loop ticks.
@@ -794,13 +795,30 @@ Bracket-pair colorization:
 - `TextModel.bracketPairs()` exposes `getBracketPairsInRange`,
   `getBracketsInRange`, matching/enclosing/navigation helpers, and
   unmatched-closing detection. The upstream non-AST fallback matcher is ported
-  as well; the TUI uses it when bracket-pair colorization is disabled (the
-  default), so matching does not force tokenization of the whole document. The
-  AST is still built for the visible bracket guides and is deferred for large
-  documents.
+  as well; the TUI uses it when bracket-pair colorization is disabled. The AST
+  is built for the visible bracket guides and colorization and is deferred for
+  large documents.
 - `ColorizedBracketPairsDecorationProvider` turns colorized brackets into
   `bracket-highlighting-N` / `unexpected-closing-bracket` decorations, honoring
-  `bracketPairColorizationOptions`.
+  `bracketPairColorizationOptions`. The view resolves them before decorations,
+  and the AST's change event invalidates the resolved decoration cache. A dirty
+  AST produces no colorization decorations, so a paint never triggers a
+  whole-document parse.
+- Colorization is enabled by default, matching
+  `EDITOR_MODEL_DEFAULTS`/upstream. `editor.bracketPairColorization.enabled` and
+  `editor.bracketPairColorization.independentColorPoolPerBracketType` are read
+  from settings. The TUI paint boundary maps `bracket-highlighting-N` to
+  `editorBracketHighlight.foreground1..6`, skipping transparent/missing entries
+  and cycling the rest exactly like upstream's theme participant; unmatched
+  closing brackets use
+  `editorBracketHighlight.unexpectedBracket.foreground`. When the active theme
+  does not define the ids (the default themes do not), the scheme-specific
+  upstream defaults are used.
+- Small documents (at most 500 lines) are tokenized eagerly for the first AST so
+  strings/comments are respected immediately. Larger documents start from
+  upstream's fast initial tree and are rebuilt token-aware when the background
+  tokenizer completes. Content edits and retokenized line ranges are queued as
+  same-length edits for the incremental parser, like upstream.
 - Language configurations are registered on `LanguageService` with
   `registerLanguageConfiguration` and promoted on first use into the ported
   `LanguageConfigurationRegistry`, which implements upstream priority merging,
@@ -971,12 +989,24 @@ TUI editor:
   `getOverviewRulerDecorations`, so edits track the ranges and all highlights
   share one z-order. The `View.set*` setters remain as test/compatibility
   wrappers.
+- Rainbow bracket colorization is on by default: matching `{ }`, `[ ]` and
+  `( )` pairs are painted by nesting level with the theme's
+  `editorBracketHighlight.foreground1..6` colors, and an unmatched closing
+  bracket is red. `editor.bracketPairColorization.enabled` turns it off.
 - Indentation and bracket guides: a dim `│` is drawn at each indentation
   column of a line's leading whitespace, using the ported
   `common/model/guidesTextModelPart.zig` rules. Blank lines inherit the guide
-  count from the surrounding content. Vertical bracket-pair guides are
-  computed from the existing bracket-pairs model and colored by nesting level.
-  The guide level around the caret and the bracket pair containing the caret
+  count from the surrounding content. Indentation guides cycle the
+  `editorIndentGuide.background1..6` / `activeBackground1..6` pools (the
+  deprecated unnumbered ids supply level 1); the default themes only define
+  level 1, so indentation guides are a single gray, matching upstream.
+  Vertical bracket-pair guides are computed from the existing bracket-pairs
+  model and colored by nesting level: inactive guides use
+  `editorBracketPairGuide.background1..6` or the same-level bracket-highlight
+  color at 30% opacity, and the active pair uses
+  `activeBackground1..6` or the full bracket-highlight color. That is why
+  bracket guides are rainbow-tinted while indentation guides are not. The
+  indentation scope around the caret and the bracket pair containing the caret
   are highlighted. Guides are only painted over leading whitespace or blank
   cells, so a guide never replaces a text glyph; horizontal guide segments are
   not painted. Flow uses the same solid `│` glyph for its indent whitespace

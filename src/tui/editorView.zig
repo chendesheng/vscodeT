@@ -18,7 +18,10 @@
 //! decorations by `ModelDecorationSink` or by the view's bracket pass.
 //! `TerminalViewHost` resolves them through the ported `ViewModelDecorations`,
 //! and the ported `ViewLine` filters/clips them and exposes the merged inline
-//! classes; this file maps those classes to terminal cell flags.
+//! classes; this file maps those classes to terminal cell flags. Bracket
+//! colorization classes (`bracket-highlighting-N` and
+//! `unexpected-closing-bracket`) become cell foregrounds here instead of the
+//! CSS color rules the browser renderer would apply.
 //!
 //! Indentation guides are painted as dim `│` cells over the leading
 //! whitespace, using the ported `GuidesTextModelPart` count. Vertical
@@ -81,15 +84,6 @@ const continuation_color = [3]u8{ 90, 90, 90 };
 const tilde_color = [3]u8{ 70, 70, 70 };
 const indent_guide_color = [3]u8{ 60, 62, 64 };
 const indent_guide_active_color = [3]u8{ 96, 100, 104 };
-const bracket_guide_colors = [_][3]u8{
-    .{ 70, 76, 84 },
-    .{ 82, 74, 80 },
-    .{ 72, 84, 78 },
-    .{ 86, 80, 70 },
-    .{ 78, 74, 88 },
-    .{ 70, 84, 86 },
-};
-const bracket_guide_active_color = [3]u8{ 132, 138, 144 };
 const bracket_guide_ids = [_][]const u8{
     "editorBracketPairGuide.background1",
     "editorBracketPairGuide.background2",
@@ -98,6 +92,64 @@ const bracket_guide_ids = [_][]const u8{
     "editorBracketPairGuide.background5",
     "editorBracketPairGuide.background6",
 };
+const bracket_guide_active_ids = [_][]const u8{
+    "editorBracketPairGuide.activeBackground1",
+    "editorBracketPairGuide.activeBackground2",
+    "editorBracketPairGuide.activeBackground3",
+    "editorBracketPairGuide.activeBackground4",
+    "editorBracketPairGuide.activeBackground5",
+    "editorBracketPairGuide.activeBackground6",
+};
+const indent_guide_ids = [_][]const u8{
+    "editorIndentGuide.background1",
+    "editorIndentGuide.background2",
+    "editorIndentGuide.background3",
+    "editorIndentGuide.background4",
+    "editorIndentGuide.background5",
+    "editorIndentGuide.background6",
+};
+const indent_guide_active_ids = [_][]const u8{
+    "editorIndentGuide.activeBackground1",
+    "editorIndentGuide.activeBackground2",
+    "editorIndentGuide.activeBackground3",
+    "editorIndentGuide.activeBackground4",
+    "editorIndentGuide.activeBackground5",
+    "editorIndentGuide.activeBackground6",
+};
+
+/// Upstream `ColorProvider.getInlineClassNameOfLevel` colors
+/// `bracket-highlighting-N` with `colorValues[N % colorValues.length]`, where
+/// `colorValues` is the active theme's non-transparent
+/// `editorBracketHighlight.foreground1..6` list. VS Code registers defaults
+/// for those ids; the terminal's color registry does not, so the default
+/// palettes below stand in for the scheme-specific registrations.
+const bracket_highlight_ids = [_][]const u8{
+    "editorBracketHighlight.foreground1",
+    "editorBracketHighlight.foreground2",
+    "editorBracketHighlight.foreground3",
+    "editorBracketHighlight.foreground4",
+    "editorBracketHighlight.foreground5",
+    "editorBracketHighlight.foreground6",
+};
+const dark_bracket_highlight_colors = [_][3]u8{
+    .{ 255, 215, 0 },
+    .{ 218, 112, 214 },
+    .{ 23, 159, 255 },
+};
+const light_bracket_highlight_colors = [_][3]u8{
+    .{ 4, 49, 250 },
+    .{ 49, 147, 49 },
+    .{ 123, 56, 20 },
+};
+const hc_dark_bracket_highlight_colors = [_][3]u8{
+    .{ 255, 215, 0 },
+    .{ 218, 112, 214 },
+    .{ 135, 206, 250 },
+};
+const dark_unexpected_bracket_color = [3]u8{ 210, 20, 21 };
+const light_unexpected_bracket_color = [3]u8{ 255, 65, 65 };
+const hc_dark_unexpected_bracket_color = [3]u8{ 255, 50, 50 };
+const hc_light_unexpected_bracket_color = [3]u8{ 181, 32, 13 };
 
 const find_options = makeDecorationOptions("findMatch", .Left, overview_find_color, 10);
 const current_find_options = makeDecorationOptions("currentFindMatch", .Full, overview_current_find_color, 13);
@@ -294,6 +346,19 @@ pub const View = struct {
     terminal_view_host: *TerminalViewHost,
     /// Active color-theme palette; null keeps the standalone fallback colors.
     theme_colors: ?*const theme_colors_mod.ThemeColors = null,
+    /// Non-transparent bracket-highlight colors, in theme order, cycled by
+    /// `bracket-highlighting-N`. Refreshed when the palette changes.
+    bracket_highlight_colors: [6]ui.Color = undefined,
+    bracket_highlight_color_count: usize = 0,
+    /// The same pool before transparent entries are dropped. Guide colors are
+    /// derived from the color at the *same* level, like upstream, not from the
+    /// cycled colorization pool.
+    bracket_highlight_by_level: [6]?ui.Color = undefined,
+    bracket_guide_colors: [6]GuideColors = undefined,
+    bracket_guide_color_count: usize = 0,
+    indent_guide_colors: [6]GuideColors = undefined,
+    indent_guide_color_count: usize = 0,
+    unexpected_bracket_color: ui.Color = .{ .r = 210, .g = 20, .b = 21 },
 
     pub fn init(allocator: std.mem.Allocator, editor: *Editor) !*View {
         const self = try allocator.create(View);
@@ -306,6 +371,7 @@ pub const View = struct {
 
             .terminal_view_host = undefined,
         };
+        self.refreshBracketHighlightColors();
         self.terminal_view_host = try TerminalViewHost.init(allocator, editor);
         errdefer self.terminal_view_host.deinit();
 
@@ -772,7 +838,114 @@ pub const View = struct {
     /// path used after an input batch; batching call sites use `invalidate`.
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme_colors = palette;
+        self.refreshBracketHighlightColors();
         self.invalidate();
+    }
+
+    /// Rebuilds the bracket color pool from the active theme. Upstream's
+    /// theming participant filters missing/transparent colors and cycles the
+    /// remaining ones, so levels 4..6 fall back to the first colors in the
+    /// default themes instead of painting transparent cells. The same pass
+    /// refreshes the per-level guide colors.
+    fn refreshBracketHighlightColors(self: *View) void {
+        const fallback = bracketFallbackPalette(self.theme_colors);
+        self.bracket_highlight_color_count = 0;
+        for (bracket_highlight_ids, 0..) |id, index| {
+            var resolved: ?ui.Color = null;
+            if (self.theme_colors) |palette| {
+                if (palette.rawColor(id)) |raw| {
+                    if (raw.a > 0.001) resolved = palette.compositeColor(raw);
+                } else if (index < fallback.levels.len) {
+                    resolved = color(fallback.levels[index]);
+                }
+            } else if (index < fallback.levels.len) {
+                resolved = color(fallback.levels[index]);
+            }
+            self.bracket_highlight_by_level[index] = resolved;
+            if (resolved) |value| {
+                self.bracket_highlight_colors[self.bracket_highlight_color_count] = value;
+                self.bracket_highlight_color_count += 1;
+            }
+        }
+        self.unexpected_bracket_color = if (self.theme_colors) |palette|
+            palette.color("editorBracketHighlight.unexpectedBracket.foreground", fallback.unexpected)
+        else
+            color(fallback.unexpected);
+        self.refreshBracketGuideColors();
+        self.refreshIndentGuideColors();
+    }
+
+    /// Upstream `indentGuides.ts` derives bracket-pair guide colors from the
+    /// same-level bracket highlight color when the guide-specific color is
+    /// transparent/missing: 30% opacity for inactive guides and the full
+    /// color for the active pair.
+    fn refreshBracketGuideColors(self: *View) void {
+        self.bracket_guide_color_count = 0;
+        for (0..bracket_guide_ids.len) |index| {
+            const bracket_color = self.bracket_highlight_by_level[index];
+            const guide = self.resolveThemeColor(bracket_guide_ids[index]);
+            const active_guide = self.resolveThemeColor(bracket_guide_active_ids[index]);
+            var inactive: ?ui.Color = guide;
+            if (inactive == null) {
+                if (bracket_color) |value| inactive = self.fadedColor(value, 0.3);
+            }
+            var active: ?ui.Color = active_guide;
+            if (active == null) active = bracket_color;
+            if (inactive != null and active != null) {
+                self.bracket_guide_colors[self.bracket_guide_color_count] = .{ .inactive = inactive.?, .active = active.? };
+                self.bracket_guide_color_count += 1;
+            }
+        }
+    }
+
+    /// Upstream `indentGuides.ts`: `editorIndentGuide.backgroundN` and
+    /// `activeBackgroundN` form a cycled pool; the deprecated ids supply
+    /// level 1 when the numbered ids are absent. Default themes only define
+    /// level 1, so indentation guides stay a single gray unless a theme opts
+    /// into per-level colors.
+    fn refreshIndentGuideColors(self: *View) void {
+        self.indent_guide_color_count = 0;
+        for (0..indent_guide_ids.len) |index| {
+            var inactive = self.resolveThemeColor(indent_guide_ids[index]);
+            var active = self.resolveThemeColor(indent_guide_active_ids[index]);
+            if (index == 0) {
+                if (inactive == null) inactive = self.resolveThemeColor("editorIndentGuide.background");
+                if (active == null) active = self.resolveThemeColor("editorIndentGuide.activeBackground");
+            }
+            if (inactive != null and active != null) {
+                self.indent_guide_colors[self.indent_guide_color_count] = .{ .inactive = inactive.?, .active = active.? };
+                self.indent_guide_color_count += 1;
+            }
+        }
+        if (self.indent_guide_color_count == 0) {
+            self.indent_guide_colors[0] = .{
+                .inactive = color(indent_guide_color),
+                .active = color(indent_guide_active_color),
+            };
+            self.indent_guide_color_count = 1;
+        }
+    }
+
+    fn resolveThemeColor(self: *const View, id: []const u8) ?ui.Color {
+        const palette = self.theme_colors orelse return null;
+        const raw = palette.rawColor(id) orelse return null;
+        if (raw.a <= 0.001) return null;
+        return palette.compositeColor(raw);
+    }
+
+    fn fadedColor(self: *const View, value: ui.Color, alpha: f32) ui.Color {
+        const background = if (self.theme_colors) |palette| palette.background else color([3]u8{ 30, 30, 33 });
+        return fadeOver(value, alpha, background);
+    }
+
+    fn bracketGuideColors(self: *const View, level: usize, active: bool) ?ui.Color {
+        if (self.bracket_guide_color_count == 0) return null;
+        const colors = self.bracket_guide_colors[level % self.bracket_guide_color_count];
+        return if (active) colors.active else colors.inactive;
+    }
+
+    fn indentGuideColors(self: *const View, level: usize) GuideColors {
+        return self.indent_guide_colors[level % self.indent_guide_color_count];
     }
 
     /// Applies `editor.*` view settings to the ported options and fans a
@@ -798,11 +971,6 @@ pub const View = struct {
     /// leave the content background untouched; the focus-only variant keeps
     /// painting because the view does not track focus separately from the
     /// workbench.
-    fn themeRgb(self: *const View, id: []const u8, fallback: [3]u8) [3]u8 {
-        const resolved = if (self.theme_colors) |palette| palette.color(id, fallback) else color(fallback);
-        return .{ resolved.r, resolved.g, resolved.b };
-    }
-
     fn currentLineBackground(self: *const View) ?ui.Color {
         return switch (self.terminal_view_host.options.get(.renderLineHighlight)) {
             .none, .gutter => null,
@@ -882,37 +1050,48 @@ pub const View = struct {
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
         editor.ensureTokensVisible();
+        // Colorization decorations are derived from the bracket AST, so it
+        // must exist before line decorations are resolved. Small documents
+        // build it here; a large document's initial build is deferred and the
+        // decorations are refreshed by the AST's change event.
+        const bracket_ast_deferred = editor.prepareBracketPairs(time_compat.milliTimestamp());
         // Folding is scheduled by the debounced main-loop pass; rebuilding
         // must not block on a full-document range scan.
         // The cursor is revealed by cursor moves and edits, not on every
         // rebuild: a wheel scroll is allowed to leave it off-screen.
         _ = editor.scrollViewLines(0);
 
-        const bracket_data = try editor.updateBracketMatches(self.hasEditorFocus());
-        const bracket_generation = editor.bracketMatchGeneration();
-        if (self.last_bracket_generation == null or self.last_bracket_generation.? != bracket_generation) {
-            var bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(self.allocator);
-            defer bracket_decorations.deinit();
-            // `editor.matchBrackets: "never"` drops the highlight but still
-            // advances the generation so the previous decorations are cleared.
-            if (self.terminal_view_host.options.get(.matchBrackets) != .never) {
-                for (bracket_data) |entry| {
-                    const brackets = entry.brackets orelse continue;
-                    const overview = entry.options == .with_overview_ruler;
-                    try bracket_decorations.append(.{
-                        .range = brackets[0],
-                        .kind = .bracket_match,
-                        .show_in_overview_ruler = overview,
-                    });
-                    try bracket_decorations.append(.{
-                        .range = brackets[1],
-                        .kind = .bracket_match,
-                        .show_in_overview_ruler = overview,
-                    });
+        // A bracket-match query builds the AST when colorization is enabled.
+        // While the initial large-document build is deferred, leave the
+        // bracket highlight for the frame after the maintenance pass instead
+        // of forcing that build from paint.
+        if (!bracket_ast_deferred) {
+            const bracket_data = try editor.updateBracketMatches(self.hasEditorFocus());
+            const bracket_generation = editor.bracketMatchGeneration();
+            if (self.last_bracket_generation == null or self.last_bracket_generation.? != bracket_generation) {
+                var bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(self.allocator);
+                defer bracket_decorations.deinit();
+                // `editor.matchBrackets: "never"` drops the highlight but still
+                // advances the generation so the previous decorations are cleared.
+                if (self.terminal_view_host.options.get(.matchBrackets) != .never) {
+                    for (bracket_data) |entry| {
+                        const brackets = entry.brackets orelse continue;
+                        const overview = entry.options == .with_overview_ruler;
+                        try bracket_decorations.append(.{
+                            .range = brackets[0],
+                            .kind = .bracket_match,
+                            .show_in_overview_ruler = overview,
+                        });
+                        try bracket_decorations.append(.{
+                            .range = brackets[1],
+                            .kind = .bracket_match,
+                            .show_in_overview_ruler = overview,
+                        });
+                    }
                 }
+                try self.replaceModelDecorations(DecorationOwner.bracket, bracket_decorations.items);
+                self.last_bracket_generation = bracket_generation;
             }
-            try self.replaceModelDecorations(DecorationOwner.bracket, bracket_decorations.items);
-            self.last_bracket_generation = bracket_generation;
         }
 
         const doc = self.surface.document();
@@ -973,7 +1152,7 @@ pub const View = struct {
                     const guide_col = level * indent_size;
                     if (guide_col >= text_width) break;
                     if (indent_width >= 0 and guide_col >= @as(usize, @intCast(indent_width))) break;
-                    try guide_specs.append(.{ .row = row, .col = guide_col, .color = self.themeRgb("editorIndentGuide.background1", indent_guide_color) });
+                    try guide_specs.append(.{ .row = row, .col = guide_col, .color = rgbOf(self.indentGuideColors(level).inactive) });
                 }
             }
 
@@ -1003,7 +1182,7 @@ pub const View = struct {
                         try guide_specs.append(.{
                             .row = row,
                             .col = (active_level - 1) * indent_size,
-                            .color = self.themeRgb("editorIndentGuide.activeBackground1", indent_guide_active_color),
+                            .color = rgbOf(self.indentGuideColors(active_level - 1).active),
                         });
                     }
                 }
@@ -1037,16 +1216,11 @@ pub const View = struct {
                         for (line_guides.items) |guide| {
                             if (guide.column >= text_width) continue;
                             if (indent_width >= 0 and guide.column >= @as(usize, @intCast(indent_width))) continue;
+                            const guide_color = self.bracketGuideColors(guide.level, guide.active) orelse continue;
                             try guide_specs.append(.{
                                 .row = row,
                                 .col = guide.column,
-                                .color = if (guide.active)
-                                    self.themeRgb("editorBracketPairGuide.activeBackground1", bracket_guide_active_color)
-                                else
-                                    self.themeRgb(
-                                        bracket_guide_ids[guide.level % bracket_guide_ids.len],
-                                        bracket_guide_colors[guide.level % bracket_guide_colors.len],
-                                    ),
+                                .color = rgbOf(guide_color),
                             });
                         }
                     }
@@ -1219,10 +1393,63 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
 
 /// Terminal paint adapter for one rendered part and its cell flags. The
 /// context is the owning `View`, so the theme palette reaches the flag styles.
+const BracketFallbackPalette = struct {
+    levels: [3][3]u8,
+    unexpected: [3]u8,
+};
+
+const GuideColors = struct {
+    inactive: ui.Color,
+    active: ui.Color,
+};
+
+fn bracketFallbackPalette(palette: ?*const theme_colors_mod.ThemeColors) BracketFallbackPalette {
+    const theme_type = if (palette) |p| p.theme.theme_type else .DARK;
+    return switch (theme_type) {
+        .DARK => .{ .levels = dark_bracket_highlight_colors, .unexpected = dark_unexpected_bracket_color },
+        .LIGHT => .{ .levels = light_bracket_highlight_colors, .unexpected = light_unexpected_bracket_color },
+        .HIGH_CONTRAST_DARK => .{ .levels = hc_dark_bracket_highlight_colors, .unexpected = hc_dark_unexpected_bracket_color },
+        .HIGH_CONTRAST_LIGHT => .{ .levels = light_bracket_highlight_colors, .unexpected = hc_light_unexpected_bracket_color },
+    };
+}
+
+fn bracketHighlightingLevel(class_name: []const u8) ?usize {
+    const prefix = "bracket-highlighting-";
+    if (!std.mem.startsWith(u8, class_name, prefix)) return null;
+    const digits = class_name[prefix.len..];
+    if (digits.len == 0) return null;
+    return std.fmt.parseInt(usize, digits, 10) catch null;
+}
+
+/// Terminal replacement for the CSS rules registered by the upstream
+/// colorization provider: the class name chooses a foreground color. Flags
+/// are applied first because their terminal styles also set a foreground
+/// (an adaptation), whereas upstream foreground comes from the colorization
+/// class and the decoration only contributes background/border.
+fn applyBracketHighlightStyle(style: *ui.Style, classes: []const u8, view: *const View) void {
+    var iterator = std.mem.splitScalar(u8, classes, ' ');
+    while (iterator.next()) |class_name| {
+        if (std.mem.eql(u8, class_name, "unexpected-closing-bracket")) {
+            style.color = view.unexpected_bracket_color;
+            return;
+        }
+        if (bracketHighlightingLevel(class_name)) |level| {
+            if (view.bracket_highlight_color_count > 0) {
+                style.color = view.bracket_highlight_colors[level % view.bracket_highlight_color_count];
+            }
+            return;
+        }
+    }
+}
+
 fn lineStyleForPart(context: ?*const anyopaque, part: line_renderer.RenderedPart, flag: u32) ui.Style {
     const view: *const View = @ptrCast(@alignCast(context orelse return tokenStyle(part)));
     var style = tokenStyle(part);
     applyFlagStyle(&style, flag, view.theme_colors);
+    // Upstream's colorization classes set the foreground while find/bracket
+    // decorations only add a background/border, so the rainbow color survives
+    // a highlight.
+    if (part.decoration_class) |classes| applyBracketHighlightStyle(&style, classes, view);
     return style;
 }
 
@@ -1412,6 +1639,28 @@ fn viewRowForModelLine(editor: *Editor, top: usize, model_line: usize) ?usize {
 
 fn color(rgb: [3]u8) ui.Color {
     return .{ .r = rgb[0], .g = rgb[1], .b = rgb[2] };
+}
+
+fn rgbOf(value: ui.Color) [3]u8 {
+    return .{ value.r, value.g, value.b };
+}
+
+/// Terminal cells have no alpha, so upstream's `Color.transparent(0.3)`
+/// guide color is composited over the editor background here.
+fn fadeOver(value: ui.Color, alpha: f32, background: ui.Color) ui.Color {
+    const a = std.math.clamp(alpha, 0, 1);
+    const keep = 1 - a;
+    return .{
+        .r = mixChannel(value.r, background.r, a, keep),
+        .g = mixChannel(value.g, background.g, a, keep),
+        .b = mixChannel(value.b, background.b, a, keep),
+    };
+}
+
+fn mixChannel(value: u8, background: u8, alpha: f32, keep: f32) u8 {
+    const blended = @as(f32, @floatFromInt(value)) * alpha +
+        @as(f32, @floatFromInt(background)) * keep;
+    return @intFromFloat(@round(std.math.clamp(blended, 0, 255)));
 }
 
 fn rowText(view: *View, allocator: std.mem.Allocator, row: usize) ![]u8 {
@@ -1862,6 +2111,182 @@ test "View: content widget flips above and clamps to the text area" {
     try view.refresh();
     try view.render(&out.writer);
     try std.testing.expectEqual(@as(usize, 0), view.terminal_view_host.viewRef().contentWidgets().entries.items[0].top);
+}
+
+test "View: bracket colorization paints nesting levels" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "{ [ ] }\nplain", "test.zig", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.setCursorPosition(Position.init(2, 1));
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const level0 = dark_bracket_highlight_colors[0];
+    const level1 = dark_bracket_highlight_colors[1];
+    const open_brace = ui.cell.unpackColor(grid.fg[grid.index(gutter, 0)]);
+    try std.testing.expectEqual(level0[0], open_brace.r);
+    try std.testing.expectEqual(level0[1], open_brace.g);
+    try std.testing.expectEqual(level0[2], open_brace.b);
+    const open_bracket = ui.cell.unpackColor(grid.fg[grid.index(gutter + 2, 0)]);
+    try std.testing.expectEqual(level1[0], open_bracket.r);
+    try std.testing.expectEqual(level1[1], open_bracket.g);
+    try std.testing.expectEqual(level1[2], open_bracket.b);
+    const close_bracket = ui.cell.unpackColor(grid.fg[grid.index(gutter + 4, 0)]);
+    try std.testing.expectEqual(level1[0], close_bracket.r);
+    const close_brace = ui.cell.unpackColor(grid.fg[grid.index(gutter + 6, 0)]);
+    try std.testing.expectEqual(level0[0], close_brace.r);
+}
+
+test "View: unexpected closing bracket paints red" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "}\nplain", "test.zig", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.setCursorPosition(Position.init(2, 1));
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const closed = ui.cell.unpackColor(grid.fg[grid.index(gutter, 0)]);
+    try std.testing.expectEqual(dark_unexpected_bracket_color[0], closed.r);
+    try std.testing.expectEqual(dark_unexpected_bracket_color[1], closed.g);
+    try std.testing.expectEqual(dark_unexpected_bracket_color[2], closed.b);
+}
+
+test "View: bracket match keeps the colorized foreground" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "{ x }", "test.zig", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.setCursorPosition(Position.init(1, 1));
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    // The bracket-match decoration adds a background, but the upstream
+    // `.bracket-match` rule never overrides the colorization foreground.
+    try std.testing.expect(grid.bg[grid.index(gutter, 0)] != 0);
+    const bracket = ui.cell.unpackColor(grid.fg[grid.index(gutter, 0)]);
+    try std.testing.expectEqual(dark_bracket_highlight_colors[0][0], bracket.r);
+    try std.testing.expectEqual(dark_bracket_highlight_colors[0][1], bracket.g);
+    try std.testing.expectEqual(dark_bracket_highlight_colors[0][2], bracket.b);
+}
+
+test "View: bracket colorization respects theme colors" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "{ x }\nplain", "test.zig", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.setCursorPosition(Position.init(2, 1));
+
+    const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+    const color_theme = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test-dark", &.{
+        .{ "editor.background", "#101010" },
+        .{ "editorBracketHighlight.foreground1", "#010203" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    view.setThemeColors(&palette);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const open_brace = ui.cell.unpackColor(grid.fg[grid.index(gutter, 0)]);
+    try std.testing.expectEqual(@as(u8, 1), open_brace.r);
+    try std.testing.expectEqual(@as(u8, 2), open_brace.g);
+    try std.testing.expectEqual(@as(u8, 3), open_brace.b);
+}
+
+test "View: disabling bracket colorization leaves token colors" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "{ x }\nplain", "test.zig", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.setCursorPosition(Position.init(2, 1));
+    editor.model.updateOptions(.{
+        .tabSize = null,
+        .indentSize = null,
+        .insertSpaces = null,
+        .trimAutoWhitespace = null,
+        .bracketColorizationOptions = .{ .enabled = false, .independentColorPoolPerBracketType = false },
+    });
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const open_brace = ui.cell.unpackColor(grid.fg[grid.index(gutter, 0)]);
+    try std.testing.expect(!(open_brace.r == 255 and open_brace.g == 215 and open_brace.b == 0));
+}
+
+test "View: strings are not bracket-colorized after eager tokenization" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "\"{\"\n{\n}\nplain", "test.zig", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.setCursorPosition(Position.init(4, 1));
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const in_string = ui.cell.unpackColor(grid.fg[grid.index(gutter + 1, 0)]);
+    try std.testing.expect(!(in_string.r == 255 and in_string.g == 215 and in_string.b == 0));
+    const opening = ui.cell.unpackColor(grid.fg[grid.index(gutter, 1)]);
+    try std.testing.expectEqual(@as(u8, 255), opening.r);
+    try std.testing.expectEqual(@as(u8, 215), opening.g);
+    try std.testing.expectEqual(@as(u8, 0), opening.b);
 }
 
 test "View: word highlight decorations paint text and strong colors" {
@@ -2841,6 +3266,49 @@ test "View: indent guides mark leading whitespace and blank lines" {
     try std.testing.expectEqual(@as(u32, 'e'), grid.cluster[grid.index(gutter, 6)]);
 }
 
+test "View: indent guides honor per-level theme colors" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text =
+        "root\n" ++
+        "    child\n" ++
+        "        grand\n";
+    const editor = try Editor.createFromText(allocator, io, text, "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+    const color_theme = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test-dark", &.{
+        .{ "editor.background", "#101010" },
+        .{ "editorIndentGuide.background1", "#ff0000" },
+        .{ "editorIndentGuide.activeBackground1", "#aa0000" },
+        .{ "editorIndentGuide.background2", "#00ff00" },
+        .{ "editorIndentGuide.activeBackground2", "#00aa00" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+
+    try editor.setCursorPosition(Position.init(1, 1));
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    view.setThemeColors(&palette);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const level1 = grid.fg[grid.index(gutter, 1)];
+    try std.testing.expectEqual(ui.cell.packColor(.{ .r = 255, .g = 0, .b = 0 }), level1);
+    const level2 = grid.fg[grid.index(gutter + 4, 2)];
+    try std.testing.expectEqual(ui.cell.packColor(.{ .r = 0, .g = 255, .b = 0 }), level2);
+}
+
 test "View: bracket guides follow pairs and highlight the active pair" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -2867,8 +3335,15 @@ test "View: bracket guides follow pairs and highlight the active pair" {
 
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
-    const active_fg = ui.cell.packColor(color(bracket_guide_active_color));
-    const inner_fg = ui.cell.packColor(color(bracket_guide_colors[1]));
+    // Upstream derives guide colors from the bracket highlight color: the
+    // active pair uses the full color, inactive guides use it at 30% opacity
+    // composited over the editor background.
+    const active_fg = ui.cell.packColor(color(dark_bracket_highlight_colors[0]));
+    const inner_fg = ui.cell.packColor(fadeOver(
+        color(dark_bracket_highlight_colors[1]),
+        0.3,
+        color([3]u8{ 30, 30, 33 }),
+    ));
 
     // The opening line keeps its text; a guide is not painted over `f`.
     try std.testing.expectEqual(@as(u32, 'f'), grid.cluster[grid.index(gutter, 0)]);

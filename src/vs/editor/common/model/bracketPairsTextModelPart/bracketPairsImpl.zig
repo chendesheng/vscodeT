@@ -1,11 +1,13 @@
 // Port of `src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsImpl.ts`.
 //
 // The AST-backed queries and the upstream fallback matching/search helpers are
-// both ported. Terminal adaptation: bracket-pair colorization is disabled and
-// the terminal tokenizes only the viewport, so matching uses the fallback when
+// both ported. Terminal adaptation: bracket colorization and guides consume the
+// same AST. The view prepares it before resolving decorations; a large
+// document's initial build is deferred to the maintenance pass. Small documents
+// are tokenized eagerly so their first tree sees string/comment tokens; larger
+// ones start from upstream's fast tree and are rebuilt token-aware when the
+// background tokenizer completes. Matching uses the upstream fallback only when
 // colorization is off (or the document exceeds the upstream AST size limit).
-// The fallback tokenizes only the lines it scans; the AST is still built for
-// the view's bracket guides when colorization is off.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -20,6 +22,7 @@ const tree = @import("./bracketPairsTree/bracketPairsTree.zig");
 const TextEditInfo = @import("./bracketPairsTree/beforeEditPositionMapper.zig").TextEditInfo;
 const combineTextEditInfos = @import("./bracketPairsTree/combineTextEditInfos.zig").combineTextEditInfos;
 const ModelContentChangedEvent = @import("../../textModelEvents.zig").ModelContentChangedEvent;
+const ModelTokensChangedEvent = @import("../../textModelEvents.zig").ModelTokensChangedEvent;
 const ResolvedLanguageConfiguration = @import("../../languages/languageConfigurationRegistry.zig").ResolvedLanguageConfiguration;
 const RichEditBrackets = @import("../../languages/supports/richEditBrackets.zig").RichEditBrackets;
 const RichEditBracket = @import("../../languages/supports/richEditBrackets.zig").RichEditBracket;
@@ -76,7 +79,11 @@ pub const BracketPairsTextModelPart = struct {
     _brackets: ArrayList(BracketInfo),
     _dirty: bool,
     _fullRebuild: bool,
+    _building: bool,
     _document: ?tree.ParsedDocument,
+    /// Whether the current document was parsed without token metadata. Such a
+    /// tree has to be rebuilt when background tokenization completes.
+    _uses_fast_tokens: bool,
     _queuedEdits: ArrayList(TextEditInfo),
     _onDidChange: Emitter(void),
     language_configuration_provider: ?LanguageConfigurationProvider = null,
@@ -90,7 +97,9 @@ pub const BracketPairsTextModelPart = struct {
             ._brackets = ArrayList(BracketInfo).init(allocator),
             ._dirty = true,
             ._fullRebuild = true,
+            ._building = false,
             ._document = null,
+            ._uses_fast_tokens = true,
             ._queuedEdits = ArrayList(TextEditInfo).init(allocator),
             ._onDidChange = Emitter(void).init(allocator),
         };
@@ -133,6 +142,16 @@ pub const BracketPairsTextModelPart = struct {
         try self._onDidChange.eventVoid(callback);
     }
 
+    pub fn onDidChangeWithContext(self: *Self, ctx: anytype, callback: fn (void, @TypeOf(ctx)) anyerror!void) !void {
+        try self._onDidChange.event(ctx, callback);
+    }
+
+    /// Whether an AST has been built already. The view uses this to defer only
+    /// the initial whole-document build for large documents.
+    pub fn hasDocument(self: *const Self) bool {
+        return self._document != null;
+    }
+
     pub fn handleDidChangeContent(self: *Self, change: ModelContentChangedEvent) void {
         if (self._fullRebuild or self._document == null) return;
         var edits = ArrayList(TextEditInfo).init(self.allocator);
@@ -166,10 +185,74 @@ pub const BracketPairsTextModelPart = struct {
 
     pub fn handleDidChangeOptions(self: *Self) void {
         self.markDirty();
+        self._onDidChange.fire({}) catch {};
     }
 
     pub fn handleDidChangeLanguage(self: *Self) void {
         self.markDirty();
+        self._onDidChange.fire({}) catch {};
+    }
+
+    /// Upstream `handleDidChangeBackgroundTokenizationState`: the fast initial
+    /// tree is only a lower-fidelity stand-in, so replace it with the
+    /// token-aware tree once the background tokenizer has seen every line.
+    pub fn handleDidChangeBackgroundTokenizationState(self: *Self) void {
+        if (!self.textModel.getOptions().bracketPairColorizationOptions.enabled) return;
+        const had_document = self._document != null;
+        self.markDirty();
+        if (had_document) {
+            // Running from the idle maintenance pass: update now so the view
+            // never repaints with the fast tree's colors once accurate tokens
+            // are available.
+            self.updateNow() catch {
+                self._onDidChange.fire({}) catch {};
+            };
+        } else {
+            self._onDidChange.fire({}) catch {};
+        }
+    }
+
+    /// Upstream `handleDidChangeTokens`: queue a same-length reparse of every
+    /// retokenized line range. While the initial fast tree is still in use,
+    /// token updates cannot change it; the background-tokenization completion
+    /// event performs the one-time switch to the token-aware tree instead.
+    pub fn handleDidChangeTokens(self: *Self, event: ModelTokensChangedEvent) void {
+        if (self._uses_fast_tokens) {
+            if (self.textModel.getBackgroundTokenizationState() != .Completed) return;
+            self.markDirty();
+            self._onDidChange.fire({}) catch {};
+            return;
+        }
+        if (self._document == null or event.ranges.len == 0) return;
+
+        var edits = ArrayList(TextEditInfo).init(self.allocator);
+        defer edits.deinit();
+        for (event.ranges) |range| {
+            if (range.fromLineNumber == 0 or range.toLineNumber < range.fromLineNumber) continue;
+            edits.append(.{
+                .startOffset = tree.toLength(range.fromLineNumber - 1, 0),
+                .endOffset = tree.toLength(range.toLineNumber, 0),
+                .newLength = tree.toLength(range.toLineNumber - range.fromLineNumber + 1, 0),
+            }) catch {
+                self.markDirty();
+                return;
+            };
+        }
+        if (edits.items.len == 0) return;
+        if (self._queuedEdits.items.len == 0) {
+            self._queuedEdits.appendSlice(edits.items) catch {
+                self.markDirty();
+                return;
+            };
+        } else {
+            const combined = combineTextEditInfos(self.allocator, self._queuedEdits.items, edits.items) catch {
+                self.markDirty();
+                return;
+            };
+            self._queuedEdits.deinit();
+            self._queuedEdits = combined;
+        }
+        self._dirty = true;
     }
 
     pub fn markDirty(self: *Self) void {
@@ -189,13 +272,35 @@ pub const BracketPairsTextModelPart = struct {
     }
 
     fn ensureUpToDate(self: *Self) !void {
+        if (self._building) {
+            self._dirty = true;
+            return;
+        }
         if (!self._dirty) return;
         self._dirty = false;
+        self._building = true;
+        defer self._building = false;
         self._pairs.clearRetainingCapacity();
         self._brackets.clearRetainingCapacity();
 
+        const full_rebuild = self._fullRebuild or self._document == null;
+        const colorization_enabled = self.textModel.getOptions().bracketPairColorizationOptions.enabled;
+        if (full_rebuild) {
+            if (colorization_enabled and self.textModel.getLineCount() <= tree.eager_build_line_count and
+                !tree.allLinesHaveAccurateTokens(self.textModel))
+            {
+                // Eager whole-document tokenization is only affordable for
+                // small documents; above the threshold the fast initial tree
+                // is used until the background tokenizer completes.
+                self.textModel.forceTokenization(self.textModel.getLineCount());
+            }
+            self._uses_fast_tokens = colorization_enabled and
+                !tree.allLinesHaveAccurateTokens(self.textModel) and
+                self.textModel.getBackgroundTokenizationState() != .Completed;
+        }
+
         var doc: tree.ParsedDocument = undefined;
-        if (self._fullRebuild or self._document == null) {
+        if (full_rebuild) {
             doc = tree.parseDocument(self.allocator, self.textModel, self.languageService) catch |err| {
                 self._dirty = true;
                 return err;
@@ -207,6 +312,7 @@ pub const BracketPairsTextModelPart = struct {
         }
         if (self._document) |*old| old.deinit();
         self._document = doc;
+        self._dirty = false;
         self._fullRebuild = false;
         self._queuedEdits.clearRetainingCapacity();
         var counts = std.StringHashMap(usize).init(self.allocator);

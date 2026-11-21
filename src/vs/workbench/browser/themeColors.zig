@@ -44,6 +44,19 @@ pub const ThemeColors = struct {
         return self.composite(raw);
     }
 
+    /// Raw theme color, including its alpha. Surfaces that need to know
+    /// whether a color was defined at all (for example the bracket-highlight
+    /// pool, which skips transparent entries like upstream's `ColorProvider`)
+    /// use this instead of `color`.
+    pub fn rawColor(self: ThemeColors, id: []const u8) ?base_color.Color {
+        return resolve(self.theme, id);
+    }
+
+    /// Composites an already-resolved color over the theme background.
+    pub fn compositeColor(self: ThemeColors, value: base_color.Color) ui.Color {
+        return self.composite(value);
+    }
+
     /// Resolved foreground for plain text in the editor area.
     pub fn text(self: ThemeColors) ui.Color {
         return self.foreground;

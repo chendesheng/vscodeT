@@ -95,6 +95,9 @@ fn makeConfig(brackets: []CharacterPair, colorized: ?[]CharacterPair) LanguageCo
 }
 
 fn bracketClasses(allocator: std.mem.Allocator, model: *@import("../../../../common/model/textModel.zig").TextModel) !ArrayList([]const u8) {
+    // The provider only reads an up-to-date AST; the view normally prepares
+    // it before resolving decorations.
+    try model.bracketPairs().updateNow();
     const decorations = try model.getDecorationsInRange(model.getFullModelRange(), 0, false, false, false);
     defer allocator.free(decorations);
     var classes = ArrayList([]const u8).init(allocator);
@@ -150,6 +153,59 @@ test "bracket pairs: colorization decorations" {
     try std.testing.expectEqualStrings("bracket-highlighting-1", classes.items[1]);
     try std.testing.expectEqualStrings("bracket-highlighting-1", classes.items[2]);
     try std.testing.expectEqualStrings("bracket-highlighting-0", classes.items[3]);
+}
+
+test "bracket pairs: colorization decorations ignore the decoration owner" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "{ }", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(1);
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    const decorations = try fixture.ctx.model.getDecorationsInRange(
+        fixture.ctx.model.getFullModelRange(),
+        42,
+        false,
+        false,
+        false,
+    );
+    defer allocator.free(decorations);
+    var count: usize = 0;
+    for (decorations) |decoration| {
+        if (decoration.options.inlineClassName) |name| {
+            if (std.mem.startsWith(u8, name, "bracket-highlighting-")) count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "bracket pairs: tokenization completion replaces the fast initial tree" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var text = ArrayList(u8).init(allocator);
+    defer text.deinit();
+    // 501 lines: a brace inside a string, then a real pair spanning the
+    // document. Above 500 lines the first tree is the fast, token-agnostic one.
+    try text.appendSlice("\"{\"\n{\n");
+    for (0..498) |_| try text.appendSlice("x\n");
+    try text.appendSlice("}\n");
+    var fixture = try Fixture.init(allocator, text.items, makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+
+    var fast = try bracketClasses(allocator, fixture.ctx.model);
+    defer fast.deinit();
+    // The fast tokenizer does not know the first brace is inside a string.
+    try std.testing.expectEqual(@as(usize, 3), fast.items.len);
+
+    // Tokenizing every line completes background tokenization, which rebuilds
+    // the tree token-aware and invalidates the colorization decorations.
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    var token_aware = try bracketClasses(allocator, fixture.ctx.model);
+    defer token_aware.deinit();
+    try std.testing.expectEqual(@as(usize, 2), token_aware.items.len);
+    try std.testing.expectEqualStrings("bracket-highlighting-0", token_aware.items[0]);
+    try std.testing.expectEqualStrings("bracket-highlighting-0", token_aware.items[1]);
 }
 
 test "bracket pairs: angle brackets are parsed but not colorized by default" {
@@ -267,8 +323,9 @@ test "bracket pairs: unmatched closing query waits for tokenization" {
     var fixture = try Fixture.init(allocator, "\"}\"\n}", makeConfig(&brackets, &brackets));
     defer fixture.deinit();
 
-    var all = try fixture.ctx.model.getBracketsInRange(fixture.ctx.model.getFullModelRange(), true);
-    all.deinit();
+    // The query must not act on lines whose tokens are still unknown. (Small
+    // documents are eagerly tokenized when the AST is built, so query before
+    // building it here.)
     try std.testing.expect(!fixture.ctx.model.hasUnmatchedClosingBracketAfter(Position.init(1, 1), "{"));
 
     fixture.ctx.model.forceTokenization(2);

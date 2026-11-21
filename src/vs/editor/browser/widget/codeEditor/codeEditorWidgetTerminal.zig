@@ -9,6 +9,7 @@ const Range = @import("../../../common/core/range.zig").Range;
 const Selection = @import("../../../common/core/selection.zig").Selection;
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+const bracket_pairs_tree = @import("../../../common/model/bracketPairsTextModelPart/bracketPairsTree/bracketPairsTree.zig");
 const TextModelCreationOptions = @import("../../../common/model.zig").TextModelCreationOptions;
 const PositionAffinity = @import("../../../common/model.zig").PositionAffinity;
 const IdentifiedSingleEditOperation = @import("../../../common/model.zig").IdentifiedSingleEditOperation;
@@ -1599,7 +1600,10 @@ pub const Editor = struct {
     const folding_debounce_min_ms: i64 = 200;
     const folding_debounce_max_ms: i64 = 40_000;
     const bracket_guides_debounce_ms: i64 = 200;
-    const bracket_guides_defer_line_count: usize = 500;
+    // Shared with the parser's eager-tokenization cut-off so a document that
+    // is too large for an eager AST build is also the one whose initial build
+    // is deferred to the maintenance pass.
+    const bracket_guides_defer_line_count: usize = bracket_pairs_tree.eager_build_line_count;
 
     fn foldingDue(context: *anyopaque) void {
         const self: *Editor = @ptrCast(@alignCast(context));
@@ -1616,6 +1620,24 @@ pub const Editor = struct {
     pub fn shouldDeferBracketGuides(self: *Editor) bool {
         return self.model.getLineCount() > bracket_guides_defer_line_count and
             self.model.bracketPairs().isDirty();
+    }
+
+    /// Builds the bracket AST before the view resolves colorization
+    /// decorations. Only a large document's first whole-document build is
+    /// deferred to the maintenance pass; incremental edits and the
+    /// token-aware rebuild stay on the paint path so decorations never come
+    /// from a stale tree. Returns true while that initial build is deferred;
+    /// the view then skips bracket-match queries, which would otherwise build
+    /// the AST synchronously from the paint path.
+    pub fn prepareBracketPairs(self: *Editor, now_ms: i64) bool {
+        const pairs = self.model.bracketPairs();
+        if (!pairs.isDirty()) return false;
+        if (!pairs.hasDocument() and self.model.getLineCount() > bracket_guides_defer_line_count) {
+            self.triggerBracketGuidesUpdate(now_ms);
+            return true;
+        }
+        pairs.updateNow() catch {};
+        return false;
     }
 
     /// Reschedules the deferred bracket guides when the view noticed that
@@ -4053,7 +4075,10 @@ fn createModel(
         .defaultEOL = .LF,
         .isForSimpleWidget = false,
         .largeFileOptimizations = true,
-        .bracketPairColorizationOptions = .{ .enabled = false, .independentColorPoolPerBracketType = false },
+        // Upstream default: bracket-pair colorization is on unless a setting
+        // disables it. `View.rebuild` prepares the AST before decorations and
+        // defers the initial build for large documents.
+        .bracketPairColorizationOptions = .{ .enabled = true, .independentColorPoolPerBracketType = false },
     };
 
     const raw: []u8 = if (text) |content|
@@ -5886,6 +5911,62 @@ test "Editor: forcing accurate tokens does not dirty bracket pairs" {
     try std.testing.expect(!pairs.isDirty());
 }
 
+fn disableBracketColorization(model: *TextModel) void {
+    model.updateOptions(.{
+        .tabSize = null,
+        .indentSize = null,
+        .insertSpaces = null,
+        .trimAutoWhitespace = null,
+        .bracketColorizationOptions = .{
+            .enabled = false,
+            .independentColorPoolPerBracketType = false,
+        },
+    });
+}
+
+test "Editor: bracket colorization is enabled by default" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "{\n  x\n}", "test.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try std.testing.expect(editor.model.getOptions().bracketPairColorizationOptions.enabled);
+    try std.testing.expect(!editor.model.getOptions().bracketPairColorizationOptions.independentColorPoolPerBracketType);
+    editor.ensureTokensVisible();
+    try editor.model.bracketPairs().updateNow();
+    const pair = editor.model.bracketPairs().matchBracket(Position.init(1, 1), null);
+    try std.testing.expect(pair != null);
+    try std.testing.expectEqual(Position.init(3, 1), pair.?[1].getStartPosition());
+}
+
+test "Editor: large document defers the initial bracket AST build" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var text: std.Io.Writer.Allocating = .init(allocator);
+    defer text.deinit();
+    for (0..600) |i| {
+        try text.writer.print("const value_{d} = {{\n}};\n", .{i});
+    }
+    var editor = try Editor.createFromText(allocator, io, text.written(), "test.zig", 80, 20);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const pairs = editor.model.bracketPairs();
+    try std.testing.expect(pairs.isDirty());
+    try std.testing.expect(editor.prepareBracketPairs(0));
+    try std.testing.expect(pairs.isDirty());
+    try std.testing.expect(!pairs.hasDocument());
+
+    try std.testing.expect(editor.pollBracketGuides(250));
+    try std.testing.expect(!pairs.isDirty());
+    try std.testing.expect(pairs.hasDocument());
+    try std.testing.expect(!editor.prepareBracketPairs(0));
+}
+
 test "Editor: fallback bracket matching (colorization disabled)" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -5894,7 +5975,9 @@ test "Editor: fallback bracket matching (colorization disabled)" {
         editor.deinit();
         allocator.destroy(editor);
     }
+    disableBracketColorization(editor.model);
     editor.ensureTokensVisible();
+    try std.testing.expect(editor.model.bracketPairs().useFallbackMatcher());
     const bracket_pairs = editor.model.bracketPairs();
     const matched = bracket_pairs.matchBracket(Position.init(1, 2), null);
     try std.testing.expect(matched != null);
@@ -5909,6 +5992,7 @@ test "Editor: fallback bracket matching (colorization disabled)" {
         multi.deinit();
         allocator.destroy(multi);
     }
+    disableBracketColorization(multi.model);
     multi.ensureTokensVisible();
     const multi_pairs = multi.model.bracketPairs();
     const braces = multi_pairs.matchBracket(Position.init(1, 8), null).?;
@@ -5929,6 +6013,7 @@ test "Editor: fallback bracket matching (colorization disabled)" {
         stringed.deinit();
         allocator.destroy(stringed);
     }
+    disableBracketColorization(stringed.model);
     stringed.ensureTokensVisible();
     try std.testing.expect(stringed.model.bracketPairs().matchBracket(Position.init(1, 12), null) == null);
 }

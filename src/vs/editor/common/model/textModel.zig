@@ -444,8 +444,26 @@ pub const TextModel = struct {
         };
         model._tokenizationTextModelPart.registerCallbacks(&model._attachedViews);
         model._tokenizationTextModelPart.onDidChangeTokensWithContext(&model._bracketPairs, struct {
-            fn cb(_: ModelTokensChangedEvent, pairs: *BracketPairsTextModelPart) !void {
-                pairs.markDirty();
+            fn cb(e: ModelTokensChangedEvent, pairs: *BracketPairsTextModelPart) !void {
+                pairs.handleDidChangeTokens(e);
+            }
+        }.cb) catch {};
+        model._tokenizationTextModelPart.onDidChangeBackgroundTokenizationStateWithContext(&model._bracketPairs, struct {
+            fn cb(_: void, pairs: *BracketPairsTextModelPart) !void {
+                pairs.handleDidChangeBackgroundTokenizationState();
+            }
+        }.cb) catch {};
+        // Upstream event chain: bracket tree change -> colorization provider
+        // change -> model decorations changed (the view invalidates its
+        // resolved decorations and repaints with the new colors).
+        model._bracketPairs.onDidChangeWithContext(&model._decorationProvider, struct {
+            fn cb(_: void, provider: *ColorizedBracketPairsDecorationProvider) !void {
+                provider.handleDidChange();
+            }
+        }.cb) catch {};
+        model._decorationProvider.onDidChangeWithContext(model, struct {
+            fn cb(_: void, m: *TextModel) !void {
+                m._onDidChangeDecorations.fire();
             }
         }.cb) catch {};
         return model;

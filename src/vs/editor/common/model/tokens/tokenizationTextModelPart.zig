@@ -160,6 +160,12 @@ pub const TokenizationTextModelPart = struct {
         return self.tokens.super.getBackgroundTokenizationState();
     }
 
+    /// Upstream `onDidChangeBackgroundTokenizationState`: fired once the
+    /// background tokenizer has processed every line.
+    pub fn onDidChangeBackgroundTokenizationStateWithContext(self: *TokenizationTextModelPart, ctx: anytype, callback: fn (void, @TypeOf(ctx)) anyerror!void) !void {
+        try self.tokens.super.onDidChangeBackgroundTokenizationState(ctx, callback);
+    }
+
     pub fn forceTokenization(self: *TokenizationTextModelPart, lineNumber: usize) void {
         self.validateLineNumber(lineNumber);
         self.tokens.forceTokenization(lineNumber);
