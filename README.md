@@ -260,9 +260,11 @@ with `"vim.enabled": true` in the user settings or after startup with the
 `Vim: Enable` / `Vim: Toggle` commands. It does not use the Node extension
 host. The editor core knows only the generic built-in extension and
 key-input interfaces; the Vim extension registers its own key handler through
-them. The normal/insert/visual modes, counts, operators, text objects,
-registers, undo/redo (`u`/`Ctrl-R`), search (`/`, `?`, `n`, `N`) and the basic
-`:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`,
+them. The normal/insert/replace/visual character/line/block modes, counts, motions
+(`{`/`}`, `H`/`M`/`L`, `gj`/`gk`, `f`/`t`), operators, text objects, marks,
+registers, undo/redo (`u`/`U`/`Ctrl-R`), dot-repeat, regular-expression search
+(`/`, `?`, `n`, `N`), viewport commands (`zz`/`zt`/`zb`, `Ctrl-D`/`U`) and the
+basic `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`,
 `:vsp`, `:noh`) are implemented in Zig.
 
 Vim uses the editor's own state instead of a parallel history:

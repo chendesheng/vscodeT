@@ -128,8 +128,10 @@ pub fn editorInterface(editor: *Editor) ITextEditor {
         .get_selections_fn = editorGetSelections,
         .set_selections_fn = editorSetSelections,
         .cursor_position_fn = editorCursorPosition,
+        .cursor_view_line_fn = editorCursorViewLine,
         .set_cursor_fn = editorSetCursor,
         .move_logical_line_fn = editorMoveLogicalLine,
+        .move_wrapped_line_fn = editorMoveWrappedLine,
         .clamp_normal_fn = editorClampNormal,
         .apply_edits_fn = editorApplyEdits,
         .insert_text_fn = editorInsertText,
@@ -175,12 +177,25 @@ fn editorCursorPosition(context: *anyopaque) Position {
     return editorFrom(context).modelCursorPosition();
 }
 
+fn editorCursorViewLine(context: *anyopaque) usize {
+    const editor = editorFrom(context);
+    return editor.viewPositionOfModelPosition(editor.modelCursorPosition()).lineNumber;
+}
+
 fn editorSetCursor(context: *anyopaque, position: Position) anyerror!void {
     return editorFrom(context).setCursorPosition(position);
 }
 
 fn editorMoveLogicalLine(context: *anyopaque, down: bool, select: bool, count: usize) anyerror!void {
     return editorFrom(context).moveLogicalLine(down, select, count);
+}
+
+fn editorMoveWrappedLine(context: *anyopaque, down: bool, select: bool, count: usize) anyerror!void {
+    const editor = editorFrom(context);
+    var remaining = @max(count, 1);
+    while (remaining > 0) : (remaining -= 1) {
+        if (down) try editor.moveDown(select) else try editor.moveUp(select);
+    }
 }
 
 fn editorClampNormal(context: *anyopaque) anyerror!void {

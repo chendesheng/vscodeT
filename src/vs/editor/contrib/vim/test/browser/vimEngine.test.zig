@@ -16,10 +16,14 @@ const Harness = struct {
     window: WindowState,
 
     fn init(allocator: std.mem.Allocator, text: []const u8) !*Harness {
+        return initWithWidth(allocator, text, 60);
+    }
+
+    fn initWithWidth(allocator: std.mem.Allocator, text: []const u8, width: usize) !*Harness {
         const io = std.Io.Threaded.global_single_threaded.io();
         const self = try allocator.create(Harness);
         errdefer allocator.destroy(self);
-        const editor = try Editor.createFromText(allocator, io, text, "test.txt", 60, 12);
+        const editor = try Editor.createFromText(allocator, io, text, "test.txt", width, 12);
         errdefer {
             editor.deinit();
             allocator.destroy(editor);
@@ -470,4 +474,104 @@ test "Vim: >j and visual > indent lines" {
     try visual.sendChar('V');
     try visual.sendChar('>');
     try visual.expectValue("    one\ntwo");
+}
+
+test "Vim: G goes to the last line, paragraphs and screen lines work" {
+    const g = try Harness.init(std.testing.allocator, "one\ntwo\nthree");
+    defer g.deinit();
+    try g.sendChar('G');
+    try std.testing.expectEqual(Position.init(3, 1), g.editor.modelCursorPosition());
+
+    const paragraphs = try Harness.init(std.testing.allocator, "one\ntwo\n\nthree\nfour");
+    defer paragraphs.deinit();
+    try paragraphs.sendChar('}');
+    try std.testing.expectEqual(@as(usize, 3), paragraphs.editor.modelCursorPosition().lineNumber);
+    try paragraphs.sendChar('{');
+    try std.testing.expectEqual(@as(usize, 1), paragraphs.editor.modelCursorPosition().lineNumber);
+
+    const long_line = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz";
+    const screen = try Harness.initWithWidth(std.testing.allocator, long_line, 20);
+    defer screen.deinit();
+    try screen.sendChar('g');
+    try screen.sendChar('j');
+    try std.testing.expectEqual(@as(usize, 1), screen.editor.modelCursorPosition().lineNumber);
+    try std.testing.expect(screen.editor.modelCursorPosition().column > 1);
+    try screen.sendChar('g');
+    try screen.sendChar('k');
+    try std.testing.expectEqual(@as(usize, 1), screen.editor.modelCursorPosition().column);
+}
+
+test "Vim: v% selects the matching bracket pair" {
+    const h = try Harness.init(std.testing.allocator, "(foo)");
+    defer h.deinit();
+    try h.sendChar('v');
+    try h.sendChar('%');
+    try h.sendChar('d');
+    try h.expectValue("");
+}
+
+test "Vim: zz keeps the cursor in the viewport" {
+    const lines = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25";
+    const h = try Harness.init(std.testing.allocator, lines);
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(20, 1));
+    try h.sendChar('z');
+    try h.sendChar('z');
+    const view = h.editor.viewPositionOfModelPosition(h.editor.modelCursorPosition()).lineNumber;
+    const top = h.editor.topViewLine();
+    const height = h.editor.textHeight();
+    try std.testing.expect(view >= top);
+    try std.testing.expect(view < top + height);
+}
+
+test "Vim: star and hash search the word under the cursor" {
+    const h = try Harness.init(std.testing.allocator, "foo bar foo");
+    defer h.deinit();
+    try h.sendChar('*');
+    try std.testing.expectEqual(@as(usize, 9), h.editor.modelCursorPosition().column);
+    try h.sendChar('#');
+    try std.testing.expectEqual(@as(usize, 1), h.editor.modelCursorPosition().column);
+}
+
+test "Vim: f and t work as operator motions" {
+    const f = try Harness.init(std.testing.allocator, "abc def");
+    defer f.deinit();
+    try f.sendChar('d');
+    try f.sendChar('f');
+    try f.sendChar(' ');
+    try f.expectValue("def");
+
+    const t = try Harness.init(std.testing.allocator, "abc def");
+    defer t.deinit();
+    try t.sendChar('d');
+    try t.sendChar('t');
+    try t.sendChar(' ');
+    try t.expectValue(" def");
+}
+
+test "Vim: local marks jump to the exact position or first non-blank" {
+    const h = try Harness.init(std.testing.allocator, "one\n  two\nthree");
+    defer h.deinit();
+    try h.sendChar('j');
+    try h.sendChar('l');
+    try h.sendChar('l');
+    try h.sendChar('m');
+    try h.sendChar('a');
+    try h.sendChar('G');
+    try h.sendChar('`');
+    try h.sendChar('a');
+    try std.testing.expectEqual(Position.init(2, 3), h.editor.modelCursorPosition());
+    try h.sendChar('G');
+    try h.sendChar('\'');
+    try h.sendChar('a');
+    try std.testing.expectEqual(Position.init(2, 3), h.editor.modelCursorPosition());
+}
+
+test "Vim: vG extends the visual selection to the last line" {
+    const h = try Harness.init(std.testing.allocator, "a\nb\nc");
+    defer h.deinit();
+    try h.sendChar('v');
+    try h.sendChar('G');
+    try h.sendChar('d');
+    try h.expectValue("");
 }

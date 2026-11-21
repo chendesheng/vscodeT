@@ -37,8 +37,10 @@ pub const ITextEditor = struct {
     get_selections_fn: *const fn (context: *anyopaque, allocator: Allocator) anyerror![]Selection,
     set_selections_fn: *const fn (context: *anyopaque, selections: []const Selection) anyerror!void,
     cursor_position_fn: *const fn (context: *anyopaque) Position,
+    cursor_view_line_fn: *const fn (context: *anyopaque) usize,
     set_cursor_fn: *const fn (context: *anyopaque, position: Position) anyerror!void,
     move_logical_line_fn: *const fn (context: *anyopaque, down: bool, select: bool, count: usize) anyerror!void,
+    move_wrapped_line_fn: *const fn (context: *anyopaque, down: bool, select: bool, count: usize) anyerror!void,
     clamp_normal_fn: *const fn (context: *anyopaque) anyerror!void,
     apply_edits_fn: *const fn (context: *anyopaque, edits: []const ITextEdit, cursors: []const Position) anyerror!void,
     insert_text_fn: *const fn (context: *anyopaque, text: []const u8) anyerror!void,
@@ -72,11 +74,17 @@ pub const ITextEditor = struct {
     pub fn cursorPosition(self: ITextEditor) Position {
         return self.cursor_position_fn(self.context);
     }
+    pub fn cursorViewLine(self: ITextEditor) usize {
+        return self.cursor_view_line_fn(self.context);
+    }
     pub fn setCursor(self: ITextEditor, position: Position) !void {
         return self.set_cursor_fn(self.context, position);
     }
     pub fn moveLogicalLine(self: ITextEditor, down: bool, select: bool, count: usize) !void {
         return self.move_logical_line_fn(self.context, down, select, count);
+    }
+    pub fn moveWrappedLine(self: ITextEditor, down: bool, select: bool, count: usize) !void {
+        return self.move_wrapped_line_fn(self.context, down, select, count);
     }
     pub fn clampNormal(self: ITextEditor) !void {
         return self.clamp_normal_fn(self.context);

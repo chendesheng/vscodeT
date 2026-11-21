@@ -109,6 +109,9 @@ pub const VimEngine = struct {
     last_insert_position: ?Position = null,
     line_undo: ?LineUndo = null,
     visual_block: ?BlockSelection = null,
+    marks: [26]?Position = std.mem.zeroes([26]?Position),
+    pending_mark_set: bool = false,
+    pending_mark_jump_exact: ?bool = null,
     pending_keys: ArrayList(RecordedKey),
     last_change: ArrayList(RecordedKey),
     replaying: bool = false,
@@ -387,6 +390,28 @@ pub const VimEngine = struct {
                     }
                     return true;
                 },
+                '%' => {
+                    if (try self.matchBracketTarget()) |target| try self.extendSelection(target);
+                    return true;
+                },
+                '0' => {
+                    try self.extendSelection(Position.init(self.editor.cursorPosition().lineNumber, 1));
+                    return true;
+                },
+                '^' => {
+                    try self.extendSelection(self.firstNonBlank(self.editor.cursorPosition().lineNumber));
+                    return true;
+                },
+                '$' => {
+                    try self.extendSelection(self.lineEndPosition(self.editor.cursorPosition().lineNumber, true));
+                    return true;
+                },
+                'G' => {
+                    const line = if (self.count_active) self.takeCount() else self.editor.model.getLineCount();
+                    const target = if (self.mode == .visual_line) Position.init(line, 1) else Position.init(line, self.lineMaxColumn(line));
+                    try self.extendSelection(target);
+                    return true;
+                },
                 else => {},
             }
         }
@@ -402,7 +427,25 @@ pub const VimEngine = struct {
         if (self.pending_find) |find| {
             self.pending_find = null;
             self.last_find = .{ .char = char, .forward = find.forward, .till = find.till };
-            try self.findChar(char, find.forward, find.till, self.takeCount());
+            const motion_count = self.takeCount();
+            if (self.operator != .none) {
+                const operator = self.operator;
+                const count = self.operator_count * motion_count;
+                self.operator = .none;
+                self.operator_count = 1;
+                self.mode = .normal;
+                const found = try self.findCharPosition(char, find.forward, find.till, count) orelse return true;
+                const cursor = self.editor.cursorPosition();
+                const range = if (find.forward)
+                    Range.fromPositions(cursor, try self.afterPosition(found))
+                else if (find.till)
+                    Range.fromPositions(try self.afterPosition(found), try self.afterPosition(cursor))
+                else
+                    Range.fromPositions(found, try self.afterPosition(cursor));
+                try self.applyOperator(operator, range, false);
+                return true;
+            }
+            try self.findChar(char, find.forward, find.till, motion_count);
             return true;
         }
         if (self.pending_text_object) |around| {
@@ -413,7 +456,12 @@ pub const VimEngine = struct {
         if (self.pending_g) {
             self.pending_g = false;
             if (char == 'g') {
-                try self.gotoLine(self.takeCount());
+                const line = self.takeCount();
+                if (self.mode == .visual or self.mode == .visual_line) {
+                    try self.extendSelection(Position.init(line, 1));
+                } else {
+                    try self.gotoLine(line);
+                }
             } else if (char == 'f') {
                 try self.gotoFileUnderCursor();
             } else if (char == 'd') {
@@ -430,6 +478,19 @@ pub const VimEngine = struct {
                 try self.reselectVisual();
             } else if (char == 'i') {
                 try self.gotoLastInsert();
+            } else if (char == 'j') {
+                try self.editor.moveWrappedLine(true, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                if (self.mode == .normal) try self.clampNormal();
+            } else if (char == 'k') {
+                try self.editor.moveWrappedLine(false, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                if (self.mode == .normal) try self.clampNormal();
+            } else if (char == '_') {
+                const line = self.editor.cursorPosition().lineNumber;
+                try self.editor.setCursor(self.lastNonBlank(line));
+            } else if (char == '0' or char == '^') {
+                try self.editor.setCursor(self.firstNonBlank(self.editor.cursorPosition().lineNumber));
+            } else if (char == '$') {
+                try self.editor.setCursor(self.lineEndPosition(self.editor.cursorPosition().lineNumber, true));
             }
             return true;
         }
@@ -440,6 +501,24 @@ pub const VimEngine = struct {
         if (self.pending_window) {
             self.pending_window = false;
             return self.handleWindowCommand(char);
+        }
+        if (self.pending_mark_set or self.pending_mark_jump_exact != null) {
+            if (char < 'a' or char > 'z') {
+                self.pending_mark_set = false;
+                self.pending_mark_jump_exact = null;
+                return true;
+            }
+            const index: usize = char - 'a';
+            if (self.pending_mark_set) {
+                self.pending_mark_set = false;
+                self.marks[index] = self.editor.cursorPosition();
+                return true;
+            }
+            const exact = self.pending_mark_jump_exact.?;
+            self.pending_mark_jump_exact = null;
+            const mark = self.marks[index] orelse return true;
+            try self.editor.setCursor(if (exact) mark else self.firstNonBlank(mark.lineNumber));
+            return true;
         }
         if (self.operator != .none) {
             return self.handleOperatorKey(char);
@@ -484,8 +563,24 @@ pub const VimEngine = struct {
             },
             'g' => self.pending_g = true,
             'z' => self.pending_z = true,
-            'G' => try self.gotoLine(self.takeCount()),
+            'G' => {
+                const line = if (self.count_active) self.takeCount() else self.editor.model.getLineCount();
+                try self.gotoLine(line);
+            },
             '%' => try self.matchBracketMotion(),
+            '{' => try self.moveParagraph(false, self.takeCount(), self.mode == .visual or self.mode == .visual_line),
+            '}' => try self.moveParagraph(true, self.takeCount(), self.mode == .visual or self.mode == .visual_line),
+            '+' => try self.gotoLine(@min(self.editor.cursorPosition().lineNumber + self.takeCount(), self.editor.model.getLineCount())),
+            '-' => try self.gotoLine(self.editor.cursorPosition().lineNumber -| self.takeCount()),
+            '_' => try self.editor.setCursor(self.firstNonBlank(@min(self.editor.cursorPosition().lineNumber + self.takeCount() - 1, self.editor.model.getLineCount()))),
+            'm' => self.pending_mark_set = true,
+            '\'' => self.pending_mark_jump_exact = false,
+            '`' => self.pending_mark_jump_exact = true,
+            'H' => try self.moveToScreenLine(.top),
+            'M' => try self.moveToScreenLine(.middle),
+            'L' => try self.moveToScreenLine(.bottom),
+            '*' => try self.searchWord(true),
+            '#' => try self.searchWord(false),
             'd' => try self.startOperator(.delete),
             'c' => try self.startOperator(.change),
             'y' => try self.startOperator(.yank),
@@ -548,10 +643,10 @@ pub const VimEngine = struct {
         switch (char) {
             'r' => try self.editor.redo(),
             'w' => self.pending_window = true,
-            'd' => _ = self.editor.scrollViewLines(@intCast(self.editor.textHeight() / 2)),
-            'u' => _ = self.editor.scrollViewLines(-@as(isize, @intCast(self.editor.textHeight() / 2))),
-            'f' => _ = self.editor.scrollViewLines(@intCast(self.editor.textHeight())),
-            'b' => _ = self.editor.scrollViewLines(-@as(isize, @intCast(self.editor.textHeight()))),
+            'd' => try self.scrollHalfPage(true),
+            'u' => try self.scrollHalfPage(false),
+            'f' => try self.scrollPage(true),
+            'b' => try self.scrollPage(false),
             'e' => _ = self.editor.scrollViewLines(1),
             'y' => _ = self.editor.scrollViewLines(-1),
             ']' => _ = try self.commands.execute("editor.action.revealDefinition"),
@@ -584,6 +679,14 @@ pub const VimEngine = struct {
     }
 
     fn handleOperatorKey(self: *VimEngine, char: u21) !bool {
+        if (char == 'f' or char == 'F' or char == 't' or char == 'T') {
+            self.pending_find = .{
+                .char = 0,
+                .forward = char == 'f' or char == 't',
+                .till = char == 't' or char == 'T',
+            };
+            return true;
+        }
         if (char == 'i' or char == 'a') {
             self.pending_text_object = char == 'a';
             return true;
@@ -651,9 +754,24 @@ pub const VimEngine = struct {
                 const position = try self.wordPosition(cursor, count, char == 'E', .end);
                 return Range.fromPositions(cursor, try self.afterPosition(position));
             },
+            '{', '}' => {
+                const target_line = try self.paragraphTarget(char == '}', count);
+                if (char == '}') return Range.fromPositions(Position.init(cursor.lineNumber, 1), Position.init(target_line, 1));
+                return Range.fromPositions(Position.init(target_line, 1), Position.init(cursor.lineNumber, 1));
+            },
+            '%' => {
+                const target = try self.matchBracketTarget() orelse return null;
+                return Range.fromPositions(cursor, target);
+            },
             '0' => return Range.fromPositions(Position.init(cursor.lineNumber, 1), cursor),
             '^' => return Range.fromPositions(self.firstNonBlank(cursor.lineNumber), cursor),
             '$' => return Range.fromPositions(cursor, Position.init(cursor.lineNumber, self.lineMaxColumn(cursor.lineNumber))),
+            'f', 'F', 't', 'T' => {
+                const found = try self.findCharPosition(char, char == 'f' or char == 't', char == 't' or char == 'T', count) orelse return null;
+                if (char == 'f' or char == 't') return Range.fromPositions(cursor, try self.afterPosition(found));
+                if (char == 'F') return Range.fromPositions(found, try self.afterPosition(cursor));
+                return Range.fromPositions(try self.afterPosition(found), try self.afterPosition(cursor));
+            },
             'G' => {
                 const line = self.editor.model.getLineCount();
                 return @as(?Range, try self.linewiseRange(cursor.lineNumber, line - cursor.lineNumber + 1));
@@ -694,88 +812,103 @@ pub const VimEngine = struct {
         try self.applyOperator(if (indent) .indent else .outdent, range, true);
     }
 
-    fn matchBracketMotion(self: *VimEngine) !void {
+    fn matchBracketTarget(self: *VimEngine) !?Position {
         const model = self.editor.model;
         const cursor = self.editor.cursorPosition();
         if (model.bracketPairs().matchBracket(cursor, null)) |pair| {
             const opening = pair[0];
-            const target = if (opening.containsPosition(&cursor)) pair[1].startPosition() else opening.startPosition();
-            try self.editor.setCursor(target);
-            try self.clampNormal();
-            return;
+            return if (opening.containsPosition(&cursor)) pair[1].startPosition() else opening.startPosition();
         }
-
-        // Plaintext files have no language bracket configuration, so fall
-        // back to a same-line matcher for `%`.
         const line = try model.getLineContent(cursor.lineNumber);
         defer line.deinit();
         var index = @min(cursor.column -| 1, line.items.len);
         while (index < line.items.len) : (index += 1) {
             const kind = bracketKind(line.items[index]) orelse continue;
-            const target = scanBracket(line.items, index, kind) orelse return;
-            try self.editor.setCursor(Position.init(cursor.lineNumber, target + 1));
-            try self.clampNormal();
-            return;
-        }
-    }
-
-    const BracketKind = enum { open_paren, close_paren, open_square, close_square, open_brace, close_brace };
-
-    fn bracketKind(byte: u8) ?BracketKind {
-        return switch (byte) {
-            '(' => .open_paren,
-            ')' => .close_paren,
-            '[' => .open_square,
-            ']' => .close_square,
-            '{' => .open_brace,
-            '}' => .close_brace,
-            else => null,
-        };
-    }
-
-    fn scanBracket(line: []const u8, start: usize, kind: BracketKind) ?usize {
-        const open: u8 = switch (kind) {
-            .open_paren => '(',
-            .close_paren => ')',
-            .open_square => '[',
-            .close_square => ']',
-            .open_brace => '{',
-            .close_brace => '}',
-        };
-        const close: u8 = switch (kind) {
-            .open_paren => ')',
-            .close_paren => '(',
-            .open_square => ']',
-            .close_square => '[',
-            .open_brace => '}',
-            .close_brace => '{',
-        };
-        const forward = switch (kind) {
-            .open_paren, .open_square, .open_brace => true,
-            else => false,
-        };
-        var depth: isize = 0;
-        if (forward) {
-            var index = start;
-            while (index < line.len) : (index += 1) {
-                if (line[index] == open) depth += 1;
-                if (line[index] == close) {
-                    depth -= 1;
-                    if (depth == 0) return index;
-                }
-            }
-        } else {
-            var index: isize = @intCast(start);
-            while (index >= 0) : (index -= 1) {
-                const byte = line[@intCast(index)];
-                if (byte == open) depth += 1;
-                if (byte == close) {
-                    depth -= 1;
-                    if (depth == 0) return @intCast(index);
-                }
-            }
+            const target = scanBracket(line.items, index, kind) orelse return null;
+            return Position.init(cursor.lineNumber, target + 1);
         }
         return null;
+    }
+
+    fn matchBracketMotion(self: *VimEngine) !void {
+        if (try self.matchBracketTarget()) |position| {
+            try self.editor.setCursor(position);
+            try self.clampNormal();
+        }
+    }
+
+    fn paragraphTarget(self: *VimEngine, forward: bool, count: usize) !usize {
+        const line_count = self.editor.model.getLineCount();
+        var line = self.editor.cursorPosition().lineNumber;
+        var remaining = @max(count, 1);
+        while (remaining > 0) : (remaining -= 1) {
+            if (forward) {
+                line += 1;
+                while (line <= line_count and !try self.isBlankLine(line)) : (line += 1) {}
+                if (line > line_count) return line_count;
+            } else {
+                line -|= 1;
+                while (line > 1 and !try self.isBlankLine(line)) : (line -= 1) {}
+                if (line == 0) return 1;
+            }
+        }
+        return line;
+    }
+
+    fn isBlankLine(self: *VimEngine, line: usize) !bool {
+        var content = try self.editor.model.getLineContent(line);
+        defer content.deinit();
+        for (content.items) |byte| {
+            if (byte != ' ' and byte != '\t') return false;
+        }
+        return true;
+    }
+
+    fn moveParagraph(self: *VimEngine, forward: bool, count: usize, select: bool) !void {
+        const target = Position.init(try self.paragraphTarget(forward, count), 1);
+        if (select) try self.extendSelection(target) else try self.editor.setCursor(target);
+    }
+
+    fn moveToScreenLine(self: *VimEngine, where: enum { top, middle, bottom }) !void {
+        const height = self.editor.textHeight();
+        const top = self.editor.topViewLine();
+        const max_view = self.editor.viewLineCount();
+        const target_view = switch (where) {
+            .top => top,
+            .middle => @min(top + height / 2, max_view),
+            .bottom => @min(top + height -| 1, max_view),
+        };
+        const line = @min(self.editor.modelLineNumber(target_view), self.editor.model.getLineCount());
+        try self.editor.setCursor(self.firstNonBlank(line));
+    }
+
+    fn searchWord(self: *VimEngine, forward: bool) !void {
+        const cursor = self.editor.cursorPosition();
+        var line = try self.editor.model.getLineContent(cursor.lineNumber);
+        defer line.deinit();
+        var start = @min(cursor.column - 1, line.items.len);
+        while (start > 0 and isWordByte(line.items[start - 1])) start -= 1;
+        var end = @min(cursor.column - 1, line.items.len);
+        while (end < line.items.len and isWordByte(line.items[end])) end += 1;
+        if (end <= start) return;
+        self.last_search.clearRetainingCapacity();
+        try self.last_search.appendSlice(line.items[start..end]);
+        self.last_search_match = null;
+        const was_regex = self.search_is_regex;
+        self.search_is_regex = false;
+        defer self.search_is_regex = was_regex;
+        try self.searchAgain(1, forward);
+    }
+
+    fn lastNonBlank(self: *VimEngine, line: usize) Position {
+        const content = self.editor.model.getLineContent(line) catch return Position.init(line, 1);
+        var mutable = content;
+        defer mutable.deinit();
+        var index = mutable.items.len;
+        while (index > 0) : (index -= 1) {
+            if (mutable.items[index - 1] != ' ' and mutable.items[index - 1] != '\t') break;
+        }
+        return Position.init(line, if (index == 0) 1 else index);
     }
 
     fn applyOperator(self: *VimEngine, operator: Operator, range: Range, linewise: bool) !void {
@@ -1227,7 +1360,7 @@ pub const VimEngine = struct {
         const line = try self.editor.model.getLineContent(position.lineNumber);
         defer line.deinit();
         var start = @min(position.column - 1, line.items.len);
-        while (start > 0 and !isWordByte(line.items[start - 1])) start -= 1;
+        while (start > 0 and isWordByte(line.items[start - 1])) start -= 1;
         var end = @min(position.column - 1, line.items.len);
         while (end < line.items.len and isWordByte(line.items[end])) end += 1;
         if (end <= start) return;
@@ -1236,16 +1369,15 @@ pub const VimEngine = struct {
 
     fn handleZ(self: *VimEngine, char: u21) !bool {
         const height = self.editor.textHeight();
+        const cursor_view = self.editor.cursorViewLine();
+        const max_top = @max(1, self.editor.viewLineCount() -| height + 1);
         switch (char) {
             'z' => {
-                const top = self.editor.topViewLine() + height / 2;
-                _ = self.editor.setTopViewLine(top);
+                const top = if (cursor_view > height / 2) cursor_view - height / 2 else 1;
+                _ = self.editor.setTopViewLine(@min(top, max_top));
             },
-            't' => _ = self.editor.setTopViewLine(self.editor.topViewLine()),
-            'b' => {
-                const top = self.editor.topViewLine() + height - 1;
-                _ = self.editor.setTopViewLine(top);
-            },
+            't' => _ = self.editor.setTopViewLine(@min(cursor_view, max_top)),
+            'b' => _ = self.editor.setTopViewLine(@min(cursor_view -| (height -| 1), max_top)),
             'a' => _ = try self.commands.execute("editor.toggleFold"),
             'c' => _ = try self.commands.execute("editor.fold"),
             'o' => _ = try self.commands.execute("editor.unfold"),
@@ -1254,6 +1386,24 @@ pub const VimEngine = struct {
             else => return false,
         }
         return true;
+    }
+
+    fn scrollHalfPage(self: *VimEngine, down: bool) !void {
+        const delta: usize = @max(self.editor.textHeight() / 2, 1);
+        const top = self.editor.topViewLine();
+        const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
+        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
+        try self.editor.moveWrappedLine(down, false, delta);
+        self.editor.ensureCursorVisible();
+    }
+
+    fn scrollPage(self: *VimEngine, down: bool) !void {
+        const delta: usize = @max(self.editor.textHeight() -| 1, 1);
+        const top = self.editor.topViewLine();
+        const max_top = @max(1, self.editor.viewLineCount() -| self.editor.textHeight() + 1);
+        _ = self.editor.setTopViewLine(if (down) @min(top + delta, max_top) else top -| delta);
+        try self.editor.moveWrappedLine(down, false, delta);
+        self.editor.ensureCursorVisible();
     }
 
     fn handleWindowCommand(self: *VimEngine, char: u21) !bool {
@@ -1597,11 +1747,11 @@ pub const VimEngine = struct {
         );
     }
 
-    fn findChar(self: *VimEngine, char: u21, forward: bool, till: bool, count: usize) !void {
+    fn findCharPosition(self: *VimEngine, char: u21, forward: bool, till: bool, count: usize) !?Position {
         const cursor = self.editor.cursorPosition();
-        const line = try self.editor.model.getLineContent(cursor.lineNumber);
+        var line = try self.editor.model.getLineContent(cursor.lineNumber);
         defer line.deinit();
-        const needle: u8 = if (char <= 0xff) @intCast(char) else return;
+        const needle: u8 = if (char <= 0xff) @intCast(char) else return null;
         var found: ?usize = null;
         var remaining = count;
         var index: usize = if (forward) cursor.column else cursor.column -| 2;
@@ -1610,13 +1760,13 @@ pub const VimEngine = struct {
                 while (index < line.items.len) : (index += 1) {
                     if (line.items[index] == needle) break;
                 }
-                if (index >= line.items.len) return;
+                if (index >= line.items.len) return null;
                 found = index;
                 index += 1;
             } else {
                 while (true) {
                     if (line.items[index] == needle) break;
-                    if (index == 0) return;
+                    if (index == 0) return null;
                     index -= 1;
                 }
                 found = index;
@@ -1624,9 +1774,19 @@ pub const VimEngine = struct {
                 index -= 1;
             }
         }
-        var column = (found orelse return) + 1;
+        var column = (found orelse return null) + 1;
         if (till) column = if (forward) column - 1 else column + 1;
-        try self.editor.setCursor(Position.init(cursor.lineNumber, column));
+        return Position.init(cursor.lineNumber, column);
+    }
+
+    fn findChar(self: *VimEngine, char: u21, forward: bool, till: bool, count: usize) !void {
+        if (try self.findCharPosition(char, forward, till, count)) |position| {
+            if (self.mode == .visual or self.mode == .visual_line) {
+                try self.extendSelection(position);
+            } else {
+                try self.editor.setCursor(position);
+            }
+        }
     }
 
     fn deleteWordBefore(self: *VimEngine) !void {
@@ -1890,6 +2050,65 @@ pub const VimEngine = struct {
         return count;
     }
 };
+
+const BracketKind = enum { open_paren, close_paren, open_square, close_square, open_brace, close_brace };
+
+fn bracketKind(byte: u8) ?BracketKind {
+    return switch (byte) {
+        '(' => .open_paren,
+        ')' => .close_paren,
+        '[' => .open_square,
+        ']' => .close_square,
+        '{' => .open_brace,
+        '}' => .close_brace,
+        else => null,
+    };
+}
+
+fn scanBracket(line: []const u8, start: usize, kind: BracketKind) ?usize {
+    const open: u8 = switch (kind) {
+        .open_paren => '(',
+        .close_paren => ')',
+        .open_square => '[',
+        .close_square => ']',
+        .open_brace => '{',
+        .close_brace => '}',
+    };
+    const close: u8 = switch (kind) {
+        .open_paren => ')',
+        .close_paren => '(',
+        .open_square => ']',
+        .close_square => '[',
+        .open_brace => '}',
+        .close_brace => '{',
+    };
+    const forward = switch (kind) {
+        .open_paren, .open_square, .open_brace => true,
+        else => false,
+    };
+    var depth: isize = 0;
+    if (forward) {
+        var index = start;
+        while (index < line.len) : (index += 1) {
+            if (line[index] == open) depth += 1;
+            if (line[index] == close) {
+                depth -= 1;
+                if (depth == 0) return index;
+            }
+        }
+    } else {
+        var index: isize = @intCast(start);
+        while (index >= 0) : (index -= 1) {
+            const byte = line[@intCast(index)];
+            if (byte == open) depth += 1;
+            if (byte == close) {
+                depth -= 1;
+                if (depth == 0) return @intCast(index);
+            }
+        }
+    }
+    return null;
+}
 
 fn wordClass(byte: u8) u8 {
     if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') return 0;
