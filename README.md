@@ -735,19 +735,32 @@ console API for raw mode, sizing and input polling.
   workspace root is transparent and list mode flattens files, matching
   upstream. The
   result count and empty/limit messages use upstream grammar.
-  `files.exclude` and `search.exclude` are now honored through
+  `files.exclude` and `search.exclude` are honored through
   `src/vs/workbench/services/search/common/search.zig` and the ported glob
   expression, including `false` entries, `!` exceptions and `{ when: ... }`
-  sibling clauses; `search.useIgnoreFiles` disables ignore-file loading. The
-  implementation still honors `.gitignore`/`.ignore` through
-  `IgnoreFile` (`src/vs/workbench/services/search/common/ignoreFile.zig`) when
-  enabled, and skips symlinks, binary/invalid-UTF-8 files, files over 10 MB,
-  version control metadata and Zig build output. Not ported: AI/notebook/
-  search-editor results, only-open-editors and SCM changed-files modes,
-  multi-selection, context menus, drag/drop, clipboard actions, search history
-  and view-state persistence, compressed folder chains, and `./`/absolute
-  search-path expansion or per-folder settings. The filesystem is not watched;
-  edits to the active editor schedule a debounced re-search instead.
+  sibling clauses; `search.useIgnoreFiles`, `useParentIgnoreFiles`,
+  `useGlobalIgnoreFiles` and `search.followSymlinks` are read by the query
+  builder. Workspace files are searched by `rg --json`
+  (`src/vs/workbench/services/search/node/ripgrepTextSearchEngine.zig` and
+  `textSearchWorker.zig`): one bounded worker streams matches from each
+  workspace folder while the event loop stays responsive, and open/dirty editor
+  buffers are searched synchronously with the editor matcher and suppress the
+  stale on-disk result for the same path. `rg` must be installed and on `PATH`;
+  a missing binary is reported in the panel. `surroundingContext` /
+  `ITextSearchContext` rows are collected by the parser and stored on
+  `FileMatch` (the pinned upstream Search view also keeps them as file-match
+  data rather than separate tree rows). `.gitignore`/`.ignore`, binary files,
+  oversized files and symlinks are left to ripgrep (plus the same 10 MB guard
+  for open buffers). Not ported: explicit `files.encoding` conversion,
+  extension-provider/remote text search, AI/notebook/search-editor results,
+  only-open-editors and SCM changed-files modes, multi-selection, context
+  menus, drag/drop, clipboard actions, search history and view-state
+  persistence, compressed folder chains, and `./`/absolute search-path
+  expansion or per-folder settings. PCRE2-specific patterns require an `rg`
+  built with PCRE2, and the AST-level `fixRegexNewline` rewrites are not
+  ported. Workspace folders are searched sequentially, not in parallel. The
+  filesystem is not watched; edits to the active editor schedule a debounced
+  re-search instead.
 - Folder opening follows the workspace model: a directory argument stat'd from
   the CLI becomes a `Workspace` folder through
   `src/vs/platform/workspace/common/workspace.zig` and
@@ -818,7 +831,8 @@ console API for raw mode, sizing and input polling.
   is not used by the picker. `rg` must be installed and on `PATH`; a missing
   binary is reported in the picker instead of hanging. macOS Unicode
   normalization and the bundled `@vscode/ripgrep-universal` download are not
-  ported. Text search in the Search view still uses the Zig walker.
+  ported. Text search in the Search view is ripgrep-backed too; see the Search
+  panel paragraph above.
   Symbol (`@`), go-to-line
   (`:`), link and help providers, absolute/relative path queries, open-to-side,
   icons, quick-input buttons and keybinding labels are not ported. Command

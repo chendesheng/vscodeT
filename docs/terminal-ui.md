@@ -886,8 +886,11 @@ Library constraints:
   missing binary is reported once through the picker error path. Icons,
   buttons, keybinding labels, virtualized lists, symbol/go-to-line/link
   providers and the browser `fuzzyScorer.ts` path-aware scorer are not ported.
-  macOS Unicode normalization is not ported, and text search still uses the Zig
-  walker.
+  macOS Unicode normalization is not ported. The Search view's text search uses
+  the same `rg` prerequisite: open buffers are searched synchronously by the
+  editor matcher, workspace folders stream through `rg --json` on a bounded
+  worker, and parser context events are stored on `FileMatch` like upstream
+  `surroundingContext`.
 - Content widgets use the terminal adaptation of upstream `IContentWidget`: the
   widget reports a model position plus an `above`/`below` preference, and
   `View.buildContentWidgets` converts it with the view model
@@ -1201,18 +1204,21 @@ Library constraints:
   active viewlet's optimal width and the `workbench.sidebar.activeviewletid`
   storage persistence.
 - The Search panel is split into a portable search service/tree and a terminal
-  view. `searchService.zig` walks workspace folders in bounded steps, reads
-  open-editor content through a host callback, applies the ported regex/word
-  matcher and streams owned file matches. `ignoreFile.zig` ports upstream's
-  `IgnoreFile`, and the search walk plus the quick-open index build a
-  per-directory ignore chain from `.gitignore`/`.ignore`, including nested
-  files, directory-only patterns and `!` negations. `glob.zig` grew the
-  pattern language that port needs: `**`, `?`, `{}` groups, `[...]` character
-  classes, `trimForExclusions` and `ignoreCase`. `searchTreeModel` ports the result
-  hierarchy, replacement pattern and change events. `queryBuilder.zig` builds
-  the text query and `searchService.zig` applies `files.exclude`/
-  `search.exclude` through the ported glob expression, including `false`
-  entries, `!` exceptions and `{ when: ... }` sibling clauses.
+  view. `searchService.zig` searches open/dirty editor buffers synchronously
+  through the host callback and the ported regex/word matcher, then delegates
+  workspace files to `ripgrepTextSearchEngine.zig`/`textSearchWorker.zig`
+  (`rg --json`) on one bounded worker thread. The worker streams per-file
+  matches and surrounding-context rows; the main thread applies query filters
+  and publishes owned results. `glob.zig` provides the pattern language used by
+  the query filter: `**`, `?`, `{}` groups, `[...]` character classes,
+  `trimForExclusions`, `ignoreCase` and `!` exceptions. `.gitignore`/`.ignore`
+  filtering is left to ripgrep for workspace files; the Explorer still uses
+  `ignoreFile.zig` for its own tree. `searchTreeModel` ports the result
+  hierarchy, replacement pattern and change events, and stores context rows on
+  `FileMatch` like upstream. `queryBuilder.zig` builds the text query and
+  `searchService.zig` applies `files.exclude`/`search.exclude` through the
+  ported glob expression, including `false` entries, `!` exceptions and
+  `{ when: ... }` sibling clauses.
   `src/vs/workbench/contrib/search/browser/searchView.zig` is the portable view
   controller (query lifecycle, focus state, counts/messages and replace-all
   request/execute); `searchResultsView.zig` owns the data source, ordering,
