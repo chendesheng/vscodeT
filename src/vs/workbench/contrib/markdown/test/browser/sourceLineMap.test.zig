@@ -149,10 +149,10 @@ test "sourceLineMap: agrees with the legacy scan for arbitrary mappings" {
 }
 
 test "sourceLineMap: synchronizes moved blocks and their descendants" {
-    const child = LineElement{ .line_value = "1" };
-    var alpha = LineElement{ .line_value = "0", .descendants = &.{child} };
-    const incoming_child = LineElement{ .line_value = "3" };
-    var incoming = LineElement{ .line_value = "2", .descendants = &.{incoming_child} };
+    var alpha_children = [_]LineElement{.{ .line_value = "1" }};
+    var alpha = LineElement{ .line_value = "0", .descendants = &alpha_children };
+    var incoming_children = [_]LineElement{.{ .line_value = "3" }};
+    var incoming = LineElement{ .line_value = "2", .descendants = &incoming_children };
     sourceLineMap.updateSourceLineAttributes(&alpha, &incoming);
     var beta = LineElement{ .line_value = "2" };
     var incoming_beta = LineElement{ .line_value = "4" };
@@ -170,10 +170,10 @@ test "sourceLineMap: synchronizes moved blocks and their descendants" {
 }
 
 test "sourceLineMap: does not rewrite unchanged attributes" {
-    const child = LineElement{ .line_value = "2" };
-    var root = LineElement{ .line_value = null, .descendants = &.{child} };
-    const incoming_child = LineElement{ .line_value = "2" };
-    var incoming = LineElement{ .line_value = null, .descendants = &.{incoming_child} };
+    var root_children = [_]LineElement{.{ .line_value = "2" }};
+    var root = LineElement{ .line_value = null, .descendants = &root_children };
+    var incoming_children = [_]LineElement{.{ .line_value = "2" }};
+    var incoming = LineElement{ .line_value = null, .descendants = &incoming_children };
     sourceLineMap.updateSourceLineAttributes(&root, &incoming);
     try std.testing.expect(root.line_value == null);
     try std.testing.expectEqualStrings("2", root.descendants[0].line_value.?);
@@ -182,10 +182,10 @@ test "sourceLineMap: does not rewrite unchanged attributes" {
 }
 
 test "sourceLineMap: updateSourceLineAttributes rewrites only changed nodes" {
-    const child = LineElement{ .line_value = "1" };
-    var alpha = LineElement{ .line_value = "0", .descendants = &.{child} };
-    const incoming_child = LineElement{ .line_value = "3" };
-    var incoming = LineElement{ .line_value = "2", .descendants = &.{incoming_child} };
+    var alpha_children = [_]LineElement{.{ .line_value = "1" }};
+    var alpha = LineElement{ .line_value = "0", .descendants = &alpha_children };
+    var incoming_children = [_]LineElement{.{ .line_value = "3" }};
+    var incoming = LineElement{ .line_value = "2", .descendants = &incoming_children };
     sourceLineMap.updateSourceLineAttributes(&alpha, &incoming);
     try std.testing.expectEqualStrings("2", alpha.line_value.?);
     try std.testing.expectEqualStrings("3", alpha.descendants[0].line_value.?);
