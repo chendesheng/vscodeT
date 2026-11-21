@@ -928,7 +928,7 @@ console API for raw mode, sizing and input polling.
   editor group; files on the command line still open as tabs. Opening only
   files uses an empty workspace, as upstream does.
 - The editor is rendered through the library (`src/tui/editorView.zig`): text,
-  syntax colors, `marginClassName` gutter row tints and marker-cell glyphs for
+  syntax colors, configured ruler columns (`editor.rulers`), `marginClassName` gutter row tints and marker-cell glyphs for
   the known diff/edit/comment line classes (the marker cell is reserved while
   such a decoration exists), glyph-margin glyphs (compacted 1-3 cell lanes with a themed
   `●`/`▲` mapping for the known glyph classes, reserved only while a glyph

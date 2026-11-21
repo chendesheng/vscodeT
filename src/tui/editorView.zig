@@ -82,6 +82,7 @@ const scrollbar_state = @import("../vs/base/browser/ui/scrollbar/scrollbarState.
 const GuidesTextModelPart = @import("../vs/editor/common/model/guidesTextModelPart.zig").GuidesTextModelPart;
 const computeIndentLevel = @import("../vs/editor/common/model/utils.zig").computeIndentLevel;
 const indent_guides = @import("../vs/editor/browser/viewParts/indentGuides/indentGuides.zig");
+const rulers_mod = @import("../vs/editor/browser/viewParts/rulers/rulers.zig");
 const overlay_widgets_mod = @import("../vs/editor/browser/viewParts/overlayWidgets/overlayWidgets.zig");
 const mouse_target = @import("../vs/editor/browser/controller/mouseTarget.zig");
 const mouse_handler_mod = @import("../vs/editor/browser/controller/mouseHandler.zig");
@@ -1717,6 +1718,37 @@ pub const View = struct {
                             });
                         }
                     }
+                }
+            }
+        }
+
+        // Rulers are vertical column guides in the browser. The terminal
+        // paints the same column through the guide layer only where a text
+        // glyph does not occupy the cell.
+        const ruler_columns = try rulers_mod.columns(
+            self.allocator,
+            self.terminal_view_host.options.get(.rulers),
+            text_width,
+        );
+        defer self.allocator.free(ruler_columns);
+        if (ruler_columns.len > 0) {
+            const ruler_color = themedColor(self.theme_colors, "editorRuler.foreground", .{ 90, 90, 90 });
+            for (ruler_columns) |column| {
+                var ruler_row: usize = 0;
+                while (ruler_row < text_height) : (ruler_row += 1) {
+                    const view_line = top + ruler_row;
+                    if (view_line > total) break;
+                    const model_line = self.editor.modelLineNumber(view_line);
+                    var content = try self.editor.model.getLineContent(model_line);
+                    defer content.deinit();
+                    if (column < content.items.len and content.items[column] != ' ' and content.items[column] != '\t') {
+                        continue;
+                    }
+                    try guide_specs.append(.{
+                        .row = ruler_row,
+                        .col = column,
+                        .color = rgbOf(ruler_color),
+                    });
                 }
             }
         }
@@ -4999,4 +5031,28 @@ test "View: focus-only line highlight follows forwarded focus" {
     try view.renderAnsi(&out.writer);
     try std.testing.expect(view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth(), 0)] !=
         ui.cell.packColor(color(current_line_background)));
+}
+
+test "View: rulers paint a guide column" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 40, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    view.terminal_view_host.options.set(.rulers, &.{
+        .{ .column = 10, .color = null },
+    });
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const col = editor.gutterWidth() + 10 - 1;
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(col, 0)]);
 }

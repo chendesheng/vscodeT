@@ -976,6 +976,8 @@ Library constraints:
   `currentMove` uses `diffEditor.moveActive.border`, drawn as a one-cell
   border instead of the browser's 2 px border. Unknown block classes stay
   invisible, just as an upstream class with no CSS rule does.
+- Configured `editor.rulers` paint one-cell vertical guides in empty cells;
+  a cell cannot show both the ruler and a text glyph.
 - Glyph-margin decorations are ported through
   `src/vs/editor/browser/viewParts/glyphMargin/glyphMargin.zig`. The terminal
   reserves one cell per compacted `GlyphMarginLanesModel` lane (up to three)
