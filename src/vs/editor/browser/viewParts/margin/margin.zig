@@ -25,12 +25,27 @@ const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
 const FoldingDecorationProvider = @import("../../../contrib/folding/browser/foldingDecorations.zig").FoldingDecorationProvider;
 const glyph_margin = @import("../glyphMargin/glyphMargin.zig");
 const current_line_mod = @import("../currentLineHighlight/currentLineHighlight.zig");
+const margin_decorations_mod = @import("../marginDecorations/marginDecorations.zig");
 const GlyphMarginOverlay = glyph_margin.GlyphMarginOverlay;
 const Glyph = glyph_margin.Glyph;
 
 /// Terminal colors for the gutter. The TUI resolves the upstream color ids and
 /// passes this bundle; the editor-layer view part keeps the defaults so a
 /// standalone editor and tests need no theme service.
+fn optionalColorEqual(a: ?ui.Color, b: ?ui.Color) bool {
+    if (a == null or b == null) return (a == null) == (b == null);
+    return a.?.eql(b.?);
+}
+
+/// Terminal mapping for the upstream `marginClassName` families. Unknown
+/// classes stay invisible, like an upstream class without a CSS rule.
+fn marginDecorationColor(class_name: []const u8, theme: Theme) ?ui.Color {
+    if (std.mem.eql(u8, class_name, "gutter-insert")) return theme.added_primary;
+    if (std.mem.eql(u8, class_name, "gutter-delete")) return theme.deleted_primary;
+    if (std.mem.eql(u8, class_name, "chat-editing-last-edit")) return .{ .r = 50, .g = 90, .b = 140 };
+    return null;
+}
+
 pub const Theme = struct {
     line_number: ui.Color = .{ .r = 110, .g = 110, .b = 110 },
     line_number_active: ui.Color = .{ .r = 204, .g = 204, .b = 204 },
@@ -86,6 +101,7 @@ pub const TerminalMargin = struct {
         node: *ui.Node,
         highlight: *ui.Node,
         margin_highlight: bool = false,
+        margin_decoration: ?ui.Color = null,
         glyph_cells: [3]*ui.Node,
         glyph_texts: [3]*ui.Node,
         number_line: *ui.Node,
@@ -120,6 +136,7 @@ pub const TerminalMargin = struct {
         number_active: bool = false,
         glyphs: [3]?Glyph = .{ null, null, null },
         margin_highlight: bool = false,
+        margin_decoration: ?ui.Color = null,
         number_buf: [32]u8 = undefined,
         number_len: usize = 0,
         /// Text owned by the line-number overlay; only valid for the duration
@@ -180,6 +197,7 @@ pub const TerminalMargin = struct {
         line_decorations: *const LinesDecorationsOverlay,
         glyph_margin_overlay: ?*const GlyphMarginOverlay,
         line_highlight: ?*const current_line_mod.AbstractLineHighlightOverlay,
+        margin_decorations: *const margin_decorations_mod.MarginViewLineDecorationsOverlay,
         folding: *const FoldingDecorationProvider,
         gutter: usize,
         text_height: usize,
@@ -229,6 +247,7 @@ pub const TerminalMargin = struct {
                 line_decorations,
                 glyph_margin_overlay,
                 line_highlight,
+                margin_decorations,
                 folding,
                 view_line,
                 total,
@@ -285,6 +304,7 @@ pub const TerminalMargin = struct {
         line_decorations: *const LinesDecorationsOverlay,
         glyph_margin_overlay: ?*const GlyphMarginOverlay,
         line_highlight: ?*const current_line_mod.AbstractLineHighlightOverlay,
+        margin_decorations: *const margin_decorations_mod.MarginViewLineDecorationsOverlay,
         folding: *const FoldingDecorationProvider,
         view_line: usize,
         total: usize,
@@ -352,6 +372,17 @@ pub const TerminalMargin = struct {
         if (line_highlight) |overlay| {
             if (overlay.renderedLine(view_line)) |highlight| {
                 paint.margin_highlight = highlight.in_margin;
+            }
+        }
+        if (margin_decorations.renderedLine(view_line)) |line| {
+            var best_z: i32 = std.math.minInt(i32);
+            for (line.getDecorations()) |decoration| {
+                if (marginDecorationColor(decoration.class_name, self.theme)) |color| {
+                    if (decoration.z_index >= best_z) {
+                        best_z = decoration.z_index;
+                        paint.margin_decoration = color;
+                    }
+                }
             }
         }
         return paint;
@@ -557,16 +588,22 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
         changed = true;
     }
 
-    if (row.margin_highlight != paint.margin_highlight) {
+    const highlight_changed = row.margin_highlight != paint.margin_highlight or
+        !optionalColorEqual(row.margin_decoration, paint.margin_decoration);
+    if (highlight_changed) {
         row.margin_highlight = paint.margin_highlight;
-        if (paint.margin_highlight) {
+        row.margin_decoration = paint.margin_decoration;
+        const background = paint.margin_decoration orelse
+            (if (paint.margin_highlight) self.theme.current_line_background else null);
+        if (background) |color| {
             row.highlight.setStyle(.{
                 .position = .absolute,
                 .left = .{ .cells = 0 },
                 .top = .{ .cells = 0 },
                 .width = .{ .cells = @floatFromInt(row.gutter_width) },
                 .height = .{ .cells = 1 },
-                .background = self.theme.current_line_background,
+                .background = color,
+                .display = .block,
             });
         } else {
             setDisplay(row.highlight, false);
@@ -795,6 +832,7 @@ test "margin: theme colors the line numbers and the active line" {
         &host.line_decorations,
         host.glyphMargin(),
         null,
+        host.marginDecorations(),
         &folding,
         editor.gutterWidth(),
         editor.textHeight(),
@@ -850,6 +888,7 @@ test "margin: paints the line-number map, blank filler and the quick-diff cell" 
         &host.line_decorations,
         host.glyphMargin(),
         null,
+        host.marginDecorations(),
         &folding,
         editor.gutterWidth(),
         editor.textHeight(),

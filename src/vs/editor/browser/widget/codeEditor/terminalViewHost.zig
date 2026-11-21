@@ -30,6 +30,7 @@ const lines_decorations_mod = @import("../../viewParts/linesDecorations/linesDec
 const decorations_overlay_mod = @import("../../viewParts/decorations/decorations.zig");
 const block_decorations_mod = @import("../../viewParts/blockDecorations/blockDecorations.zig");
 const glyph_margin_mod = @import("../../viewParts/glyphMargin/glyphMargin.zig");
+const margin_decorations_mod = @import("../../viewParts/marginDecorations/marginDecorations.zig");
 const restricted_context = @import("../../view/renderingContext.zig");
 const rendering_context = @import("../../view/renderingContext.zig");
 const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
@@ -177,6 +178,7 @@ pub const TerminalViewHost = struct {
     decorations_overlay: DecorationsOverlay,
     block_decorations: BlockDecorations,
     glyph_margin: GlyphMarginOverlay,
+    margin_decorations: margin_decorations_mod.MarginViewLineDecorationsOverlay,
     glyph_lanes: GlyphMarginLanesModel,
     glyph_margin_dirty: bool = true,
     selections_overlay: SelectionsOverlay,
@@ -212,6 +214,7 @@ pub const TerminalViewHost = struct {
             .decorations_overlay = undefined,
             .block_decorations = undefined,
             .glyph_margin = undefined,
+            .margin_decorations = undefined,
             .glyph_lanes = undefined,
             .selections_overlay = undefined,
             .current_line = undefined,
@@ -249,6 +252,7 @@ pub const TerminalViewHost = struct {
         self.decorations_overlay.init(allocator, &self.context);
         self.block_decorations.init(allocator, &self.context);
         self.glyph_margin.init(allocator, &self.context, &self.glyph_lanes);
+        self.margin_decorations.init(allocator, &self.context);
         self.selections_overlay.init(allocator, &self.context);
         self.current_line.initContent(allocator, &self.context);
         self.current_line_margin.initMargin(allocator, &self.context);
@@ -263,6 +267,7 @@ pub const TerminalViewHost = struct {
         try self.view.addContentOverlay(&self.current_line.base);
         try self.view.addContentOverlay(&self.current_line_margin.base);
         try self.view.addContentOverlay(&self.glyph_margin.base);
+        try self.view.addContentOverlay(&self.margin_decorations.base);
         try self.view.addViewPart(&self.block_decorations.base);
 
         self.view_model_handler = ViewEventHandler.init(self, .{
@@ -315,6 +320,7 @@ pub const TerminalViewHost = struct {
         self.selections_overlay.deinit();
         self.block_decorations.deinit();
         self.glyph_margin.deinit();
+        self.margin_decorations.deinit();
         self.glyph_lanes.deinit();
         self.decorations_overlay.deinit();
         self.line_decorations.deinit();
@@ -433,6 +439,11 @@ pub const TerminalViewHost = struct {
     /// The ported glyph-margin overlay.
     pub fn glyphMargin(self: *TerminalViewHost) *GlyphMarginOverlay {
         return &self.glyph_margin;
+    }
+
+    /// The ported `marginClassName` overlay.
+    pub fn marginDecorations(self: *TerminalViewHost) *margin_decorations_mod.MarginViewLineDecorationsOverlay {
+        return &self.margin_decorations;
     }
 
     /// The ported content-line highlight overlay; the margin consumes its

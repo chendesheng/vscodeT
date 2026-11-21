@@ -22,6 +22,7 @@ const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.z
 const margin_mod = @import("./viewParts/margin/margin.zig");
 const glyph_margin_mod = @import("./viewParts/glyphMargin/glyphMargin.zig");
 const current_line_mod = @import("./viewParts/currentLineHighlight/currentLineHighlight.zig");
+const margin_decorations_mod = @import("./viewParts/marginDecorations/marginDecorations.zig");
 const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
 const view_event_handler = @import("../common/viewEventHandler.zig");
 const ViewEventHandler = view_event_handler.ViewEventHandler;
@@ -183,6 +184,7 @@ pub const View = struct {
         line_decorations: *const LinesDecorationsOverlay,
         glyph_margin: *const glyph_margin_mod.GlyphMarginOverlay,
         line_highlight: ?*const current_line_mod.AbstractLineHighlightOverlay,
+        margin_decorations: *const margin_decorations_mod.MarginViewLineDecorationsOverlay,
         folding: *const FoldingDecorationProvider,
     };
 
@@ -196,6 +198,7 @@ pub const View = struct {
             options.line_decorations,
             options.glyph_margin,
             options.line_highlight,
+            options.margin_decorations,
             options.folding,
             options.gutter,
             options.text_height,

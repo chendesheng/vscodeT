@@ -1813,6 +1813,7 @@ pub const View = struct {
             .line_decorations = &self.terminal_view_host.line_decorations,
             .glyph_margin = self.terminal_view_host.glyphMargin(),
             .line_highlight = self.terminal_view_host.currentLineMargin(),
+            .margin_decorations = self.terminal_view_host.marginDecorations(),
             .folding = self.terminal_view_host.foldingDecorations(),
         });
         try updateStatus(self, doc, chrome_host_ptr, status_root, rows);
@@ -4876,4 +4877,34 @@ test "View: gutter-only line highlight paints the margin" {
     const grid = view.surface.grid();
     try std.testing.expectEqual(ui.cell.packColor(.{ .r = 40, .g = 40, .b = 40 }), grid.bg[grid.index(0, 0)]);
     try std.testing.expect(grid.bg[grid.index(editor.gutterWidth(), 0)] != ui.cell.packColor(.{ .r = 40, .g = 40, .b = 40 }));
+}
+
+test "View: margin decorations paint the gutter row" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var options = ModelDecorationOptions.init("insert-margin", .AlwaysGrowsWhenTypingAtEdges);
+    options.marginClassName = "gutter-insert";
+    const deltas = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(2, 1, 2, 1), .options = &options },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 66);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(
+        ui.cell.packColor(.{ .r = 72, .g = 126, .b = 2 }),
+        grid.bg[grid.index(0, 1)],
+    );
 }
