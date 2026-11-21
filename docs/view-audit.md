@@ -151,6 +151,10 @@ For each row:
   Hide/Manage Extension actions through the quick pick; left-click keeps the
   command/focus path. Added a context-menu hide test. Tooltip pin/Escape
   remains pending.
+- `dcde701` tabs: open the context menu on right-click. The quick-pick menu
+  offers Close, Close Others, Close All and Pin/Unpin; added a menu-close test.
+  Tab options, labels/actions, overflow and the control-layer variants remain
+  pending.
 
 ## Next slice
 
