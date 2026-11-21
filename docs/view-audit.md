@@ -175,7 +175,11 @@ For each row:
 - `96bfa0a` gutter: reserve the marker cell automatically. `prepareFrame`
   reserves/releases the marker cell for mapped `linesDecorationsClassName`
   decorations; quick-diff configuration still owns its width. Extended the
-  marker-cell test. Glyph tooltips and focus-only tracking remain pending.
+  marker-cell test.
+- `892f580` editor: forward focus to the view overlays. `View.setFocused` is the
+  terminal focus boundary and the active tab is synchronized before each
+  workbench frame; focus-only line highlighting now works in content and
+  gutter. Added a regression test. Glyph tooltips remain pending.
 
 ## Next slice
 
