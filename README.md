@@ -536,7 +536,12 @@ console API for raw mode, sizing and input polling.
   `--preview` remains a single-file mode.
 - The breadcrumb row shows the workspace-relative file path (absolute segments
   outside the workspace) with `>` separators and the Explorer's Nerd Font file
-  icon; `>` and the segments follow the upstream focus/selection rules.
+  icon; `>` and the segments follow the upstream focus/selection rules. Each
+  editor group keeps one persistent breadcrumb control, so an inactive group
+  is not rebuilt every frame; disabled breadcrumbs ignore clicks, hover only
+  applies when the item is neither focused nor selected, `focused.selected`
+  uses `breadcrumb.activeSelectionForeground`, and separators inherit
+  `breadcrumb.foreground`.
   Clicking a folder or file opens the terminal quick pick with the directory's
   children, and clicking a symbol reveals it. Symbol segments are supplied by
   the ported `IOutlineService`/`IOutline` plumbing. The real TypeScript

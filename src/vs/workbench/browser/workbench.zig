@@ -587,6 +587,9 @@ pub const Workbench = struct {
     breadcrumbs_pane: ?*GroupPane = null,
     breadcrumbs_input: ?*EditorInput = null,
     breadcrumbs_host_context: BreadcrumbContext = undefined,
+    /// Persistent breadcrumb controls for inactive groups, keyed by group id.
+    /// Rendering an inactive group must not rebuild its outline every frame.
+    breadcrumbs_inactive: std.AutoHashMapUnmanaged(u32, *InactiveBreadcrumb) = .empty,
     breadcrumbs_arena: std.heap.ArenaAllocator,
     navigation_arena: std.heap.ArenaAllocator,
     pending_references: ?*ReferencesModel = null,
@@ -739,6 +742,7 @@ pub const Workbench = struct {
         self.pending_references = null;
         self.pending_symbols = null;
         self.breadcrumbs_control = null;
+        self.breadcrumbs_inactive = .empty;
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
         self.breadcrumbs_pane = null;
@@ -890,6 +894,7 @@ pub const Workbench = struct {
         self.pending_references = null;
         self.pending_symbols = null;
         self.breadcrumbs_control = null;
+        self.breadcrumbs_inactive = .empty;
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
         self.breadcrumbs_pane = null;
@@ -1074,6 +1079,7 @@ pub const Workbench = struct {
         self.pending_references = null;
         self.pending_symbols = null;
         self.breadcrumbs_control = null;
+        self.breadcrumbs_inactive = .empty;
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
         self.breadcrumbs_pane = null;
@@ -1691,6 +1697,7 @@ pub const Workbench = struct {
             self.document_symbol_listener = null;
         }
         self.disposeBreadcrumbs();
+        self.disposeAllInactiveBreadcrumbs();
         self.breadcrumbs_arena.deinit();
         self.navigation_arena.deinit();
         self.breadcrumbs_service.deinit();
@@ -3020,6 +3027,7 @@ pub const Workbench = struct {
     /// promoting its sibling. The last group is kept so the workbench always
     /// has a target for the next editor.
     fn collapseEmptyPane(self: *Workbench, pane: *GroupPane) void {
+        self.disposeInactiveBreadcrumbs(pane.group.id);
         if (self.expanded_pane == pane) self.expanded_pane = null;
         _ = self.part.collapseView(pane);
     }
@@ -5798,6 +5806,12 @@ pub const Workbench = struct {
         _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
         _ = source.removeTab(tab);
         source.syncActivePane();
+        // Moving the last active tab leaves the model without an active editor
+        // even when the group still has tabs; activate one so the group keeps
+        // its breadcrumb/editor chrome.
+        if (source.activeTab() == null and source.tabs.items.len > 0) {
+            try source.activateTab(source.tabs.items[0]);
+        }
         _ = try new_pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
         try new_pane.addTab(tab);
 
@@ -6636,6 +6650,8 @@ pub const Workbench = struct {
         if (self.search_view) |view| view.setThemeColors(palette);
         if (self.scm_view) |view| view.setThemeColors(palette);
         if (self.breadcrumbs_control) |control| control.setThemeColors(palette);
+        var inactive_it = self.breadcrumbs_inactive.iterator();
+        while (inactive_it.next()) |entry| entry.value_ptr.*.control.setThemeColors(palette);
         self.statusbar.main_part.setThemeColors(palette);
         self.quick_access.setThemeColors(palette);
         for (self.part.group_views.items) |pane| {
@@ -7041,6 +7057,12 @@ pub const Workbench = struct {
         _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
         _ = source.removeTab(tab);
         source.syncActivePane();
+        // Moving the last active tab leaves the model without an active editor
+        // even when the group still has tabs; activate one so the group keeps
+        // its breadcrumb/editor chrome.
+        if (source.activeTab() == null and source.tabs.items.len > 0) {
+            try source.activateTab(source.tabs.items[0]);
+        }
         _ = try dest.group.model.openEditor(tab.input, .{ .pinned = true, .active = true, .index = index });
         try dest.addTab(tab);
         self.service.activateGroup(dest.group);
@@ -8231,7 +8253,12 @@ pub const Workbench = struct {
         if (self.breadcrumbs_control) |control| {
             control.setSettings(self.breadcrumbs_settings) catch {};
         }
-        if (!self.breadcrumbs_settings.enabled) self.disposeBreadcrumbs();
+        var it = self.breadcrumbs_inactive.iterator();
+        while (it.next()) |entry| entry.value_ptr.*.control.setSettings(self.breadcrumbs_settings) catch {};
+        if (!self.breadcrumbs_settings.enabled) {
+            self.disposeBreadcrumbs();
+            self.disposeAllInactiveBreadcrumbs();
+        }
         self.layoutAll();
         self.breadcrumbs_dirty = true;
     }
@@ -8239,6 +8266,7 @@ pub const Workbench = struct {
     fn ensureBreadcrumbsControl(self: *Workbench, pane: *GroupPane) !*BreadcrumbsControl {
         const tab = pane.activeTab() orelse return error.NoActiveTab;
         if (tab.isImage()) return error.NoActiveTab;
+        self.disposeInactiveBreadcrumbs(pane.group.id);
         if (self.breadcrumbs_control) |control| {
             if (self.breadcrumbs_pane == pane and self.breadcrumbs_input == tab.editorInput()) {
                 if (self.breadcrumbs_group != pane.group.id) {
@@ -8272,6 +8300,65 @@ pub const Workbench = struct {
         return control;
     }
 
+    fn disposeInactiveBreadcrumbs(self: *Workbench, group: u32) void {
+        if (self.breadcrumbs_inactive.fetchRemove(group)) |entry| {
+            entry.value.registration.dispose();
+            entry.value.control.deinit();
+            self.allocator.destroy(entry.value);
+        }
+    }
+
+    fn disposeAllInactiveBreadcrumbs(self: *Workbench) void {
+        var it = self.breadcrumbs_inactive.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.registration.dispose();
+            entry.value_ptr.*.control.deinit();
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.breadcrumbs_inactive.deinit(self.allocator);
+        self.breadcrumbs_inactive = .empty;
+    }
+
+    fn ensureInactiveBreadcrumbs(self: *Workbench, pane: *GroupPane) ?*BreadcrumbsControl {
+        const tab = pane.activeTab() orelse return null;
+        if (tab.isImage()) return null;
+        if (self.breadcrumbs_inactive.get(pane.group.id)) |entry| {
+            if (entry.pane == pane and entry.input == tab.editorInput()) return entry.control;
+            self.disposeInactiveBreadcrumbs(pane.group.id);
+        }
+
+        const entry = self.allocator.create(InactiveBreadcrumb) catch return null;
+        entry.pane = pane;
+        entry.input = tab.editorInput();
+        entry.context = .{ .workbench = self, .pane = pane };
+        const control = BreadcrumbsControl.init(
+            self.allocator,
+            breadcrumbHost(&entry.context),
+            self.workspace,
+            self.configuration,
+            &self.outline_service,
+        ) catch {
+            self.allocator.destroy(entry);
+            return null;
+        };
+        control.setGroup(pane.group.id);
+        control.setThemeColors(self.theme_palette);
+        const registration = self.breadcrumbs_service.register(pane.group.id, control) catch {
+            control.deinit();
+            self.allocator.destroy(entry);
+            return null;
+        };
+        entry.control = control;
+        entry.registration = registration;
+        self.breadcrumbs_inactive.put(self.allocator, pane.group.id, entry) catch {
+            registration.dispose();
+            control.deinit();
+            self.allocator.destroy(entry);
+            return null;
+        };
+        return control;
+    }
+
     fn renderBreadcrumbs(self: *Workbench, pane: *GroupPane, x: usize, y: usize, width: usize, active_group: bool) !void {
         if (!self.breadcrumbsEnabled() or width == 0) return;
         const row_background = ui.cell.PaintStyle{
@@ -8295,17 +8382,12 @@ pub const Workbench = struct {
             return;
         }
 
-        // Inactive groups only need the path readout. Build a short-lived
-        // control so rendering stays on the same model/widget path.
-        var context = BreadcrumbContext{ .workbench = self, .pane = pane };
-        const control = BreadcrumbsControl.init(
-            self.allocator,
-            breadcrumbHost(&context),
-            self.workspace,
-            self.configuration,
-            &self.outline_service,
-        ) catch return;
-        defer control.deinit();
+        // Inactive groups keep one persistent control each, so rendering the
+        // group does not recreate its outline model every frame.
+        const control = self.ensureInactiveBreadcrumbs(pane) orelse return;
+        if (!std.meta.eql(control.settings, self.breadcrumbs_settings)) {
+            control.setSettings(self.breadcrumbs_settings) catch {};
+        }
         try control.draw(&self.frame.next, .{
             .x = @floatFromInt(x),
             .y = @floatFromInt(y),
@@ -8569,6 +8651,14 @@ fn outlineRevealRange(context: *anyopaque, range: Range) !void {
 }
 
 fn outlineRequestRender(_: *anyopaque) void {}
+
+const InactiveBreadcrumb = struct {
+    control: *BreadcrumbsControl,
+    context: BreadcrumbContext,
+    registration: IDisposable,
+    pane: *GroupPane,
+    input: *EditorInput,
+};
 
 const BreadcrumbContext = struct {
     workbench: *Workbench,
@@ -14284,4 +14374,32 @@ test "Workbench: right click on a tab neither closes nor activates it" {
 
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
     try std.testing.expectEqualStrings("right_b.txt", workbench.activeTab().?.input.getName());
+}
+
+test "Workbench: inactive breadcrumbs reuse a persistent control" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "crumb_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "crumb_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expectEqual(@as(usize, 1), workbench.breadcrumbs_inactive.count());
+    const first = workbench.breadcrumbs_inactive.get(workbench.part.group_views.items[0].group.id).?;
+
+    try workbench.render(&out.writer);
+    try std.testing.expectEqual(@as(usize, 1), workbench.breadcrumbs_inactive.count());
+    try std.testing.expectEqual(first, workbench.breadcrumbs_inactive.get(workbench.part.group_views.items[0].group.id).?);
 }
