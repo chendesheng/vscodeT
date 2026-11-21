@@ -276,8 +276,8 @@ pub const DiffEditorWidget = struct {
         const widths = self.paneWidths();
         self.original_editor.setViewport(widths.original, self.height);
         self.modified_editor.setViewport(widths.modified, self.height);
-        self.original_view.resize() catch {};
-        self.modified_view.resize() catch {};
+        self.original_view.invalidate();
+        self.modified_view.invalidate();
         if (self.sync_top_line) self.syncTopLines();
     }
 
@@ -302,7 +302,7 @@ pub const DiffEditorWidget = struct {
         }
         const focused_view = self.focusedView();
         const other_view = if (self.focused == .original) self.modified_view else self.original_view;
-        other_view.resize() catch {};
+        other_view.invalidate();
         _ = focused_view;
     }
 

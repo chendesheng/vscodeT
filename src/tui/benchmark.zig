@@ -109,10 +109,10 @@ test "benchmark: open file" {
         var extra_buf: [192]u8 = undefined;
         const extra = std.fmt.bufPrint(
             &extra_buf,
-            "total={d}us rebuilds={d} wraps={d} last_visible={d} tokens_accurate_first_paint={}",
+            "total={d}us renders={d} wraps={d} last_visible={d} tokens_accurate_first_paint={}",
             .{
                 total_us,
-                tab.view.rebuildCount(),
+                tab.view.renderCount(),
                 tab.editor.view_lines.rebuildAllCount(),
                 last_visible,
                 accurate,
@@ -173,7 +173,7 @@ test "benchmark: edit frame" {
     }
     const edit_perf = tab.view.perfCounters();
     std.debug.print(
-        "[bench] edit frame {s}: best={d}us last={d}us avg_edit={d}us avg_refresh={d}us avg_paint={d}us wraps_delta={d} chrome_rebuilds={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
+        "[bench] edit frame {s}: best={d}us last={d}us avg_edit={d}us avg_refresh={d}us avg_paint={d}us wraps_delta={d} chrome_renders={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
         .{
             path,
             best_us,
@@ -246,7 +246,7 @@ test "benchmark: scroll frame" {
 
     const scroll_perf = tab.view.perfCounters();
     std.debug.print(
-        "[bench] scroll frame {s}: line_best={d}us avg_refresh={d}us avg_paint={d}us page_best={d}us wheel_best={d}us rebuilds={d} chrome_rebuilds={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
+        "[bench] scroll frame {s}: line_best={d}us avg_refresh={d}us avg_paint={d}us page_best={d}us wheel_best={d}us renders={d} chrome_renders={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
         .{
             path,
             line_best,
@@ -254,7 +254,7 @@ test "benchmark: scroll frame" {
             @divTrunc(line_paint, @as(i64, @intCast(line_iterations))),
             page_best,
             wheel_best,
-            tab.view.rebuildCount(),
+            tab.view.renderCount(),
             scroll_perf.chrome_rebuilds,
             scroll_perf.chrome_subtrees_added,
             scroll_perf.chrome_subtrees_rebuilt,
@@ -428,7 +428,7 @@ test "benchmark: workbench scroll frame" {
 
     const workbench_perf = tab.view.perfCounters();
     std.debug.print(
-        "[bench] workbench scroll {s}: best={d}us avg_scroll={d}us avg_refresh={d}us avg_render={d}us chrome_rebuilds={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
+        "[bench] workbench scroll {s}: best={d}us avg_scroll={d}us avg_refresh={d}us avg_render={d}us chrome_renders={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
         .{
             path,
             best,

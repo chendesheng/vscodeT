@@ -419,7 +419,7 @@ pub const Tab = struct {
         const preview_width = if (self.markdown_preview_visible) markdownPreviewWidth(width) else 0;
         const editor_width = if (preview_width > 0) width -| preview_width -| 1 else width;
         self.editor.setViewport(@max(editor_width, 1), @max(height, 1));
-        self.view.resize() catch {};
+        self.view.invalidate();
         if (preview_width > 0) {
             if (self.markdown_preview) |preview| {
                 preview.resize(preview_width, height) catch {};

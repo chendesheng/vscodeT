@@ -8,14 +8,14 @@
 //! (viewLayer, viewLines, selections, cursors) are collapsed into this file
 //! until the view model is ported.
 //!
-//! The document is rebuilt from the editor when `refresh` is called (after a
-//! key, an edit or a resize). `Document.clear` keeps the arena and the
-//! `Surface` frame so the renderer still emits only the changed cells. The
-//! vertical scroll position comes from the editor's line-granular `ViewLayout`
-//! (upstream `viewLayout.ts`), and `refresh` renders the viewport through the
-//! ported `ViewLines` window instead of forcing a full line pass. The view
-//! also owns the terminal mouse adaptation: click/drag caret placement, drag
-//! selection, click synthesis and the scrollbar-owned wheel path.
+//! The document is updated from the editor when `render`/`refresh` runs (after
+//! a key, an edit or a viewport change). The retained line window and chrome
+//! parts update in place; `Document.clear` is only used when the document is
+//! created or reset. The vertical scroll position comes from the editor's
+//! line-granular `ViewLayout` (upstream `viewLayout.ts`), and the render pass
+//! uses the ported `ViewLines` window instead of forcing a full line pass. The
+//! view also owns the terminal mouse adaptation: click/drag caret placement,
+//! drag selection, click synthesis and the scrollbar-owned wheel path.
 //!
 //! Find, bracket, word and hover ranges are materialized as `TextModel`
 //! decorations by `ModelDecorationSink` or by the view's bracket pass.
@@ -402,8 +402,8 @@ pub const View = struct {
     status_bar_visible: bool = true,
     /// Set when a widget/status/layout change made the current document
     /// stale. The next paint/render flushes it, so a burst of registrations
-    /// costs one rebuild instead of one per call.
-    needs_rebuild: bool = true,
+    /// costs one render instead of one per call.
+    needs_render: bool = true,
     /// The retained document roots (viewport, windowed content, chrome). They
     /// are rebuilt only on resize/theme/capacity resets; ordinary refreshes
     /// update the existing tree in place.
@@ -434,8 +434,8 @@ pub const View = struct {
     /// Retained-path work counters; the benchmark prints these so a chrome
     /// retainer can be measured against the line path instead of guessed.
     perf: PerfCounters = .{},
-    /// Diagnostic counter for tests/benchmarks: full document rebuilds.
-    rebuild_count: usize = 0,
+    /// Diagnostic counter for tests/benchmarks: immediate render passes.
+    render_count: usize = 0,
     last_bracket_generation: ?usize = null,
     /// Contribution callbacks notified after `editor.*` view settings change.
     configuration_listeners: std.array_list.Managed(ConfigurationListener),
@@ -485,9 +485,9 @@ pub const View = struct {
             .measure_width = cellMetrics.measureCodepoint,
         });
         errdefer self.surface.deinit();
-        // The first paint/render flushes the initial rebuild. Callers that
-        // only construct a view (the workbench open path) can batch widget
-        // and layout changes before paying for it.
+        // The first paint/render flushes the initial render. Callers that only
+        // construct a view (the workbench open path) can batch widget and
+        // layout changes before paying for it.
         return self;
     }
 
@@ -514,27 +514,27 @@ pub const View = struct {
         }
     }
 
-    /// Marks the current document stale. The next paint/render rebuilds it.
+    /// Marks the current document stale. The next paint/render flushes it.
     pub fn invalidate(self: *View) void {
-        self.needs_rebuild = true;
+        self.needs_render = true;
     }
 
-    pub fn needsRebuild(self: *const View) bool {
-        return self.needs_rebuild;
+    pub fn needsRender(self: *const View) bool {
+        return self.needs_render;
     }
 
-    /// Diagnostic counter for tests/benchmarks: full document rebuilds.
-    pub fn rebuildCount(self: *const View) usize {
-        return self.rebuild_count;
+    /// Diagnostic counter for tests/benchmarks: immediate render passes.
+    pub fn renderCount(self: *const View) usize {
+        return self.render_count;
     }
 
     pub fn perfCounters(self: *const View) PerfCounters {
         return self.perf;
     }
 
-    fn ensureBuilt(self: *View) !void {
-        if (!self.needs_rebuild) return;
-        try self.rebuild();
+    fn ensureRendered(self: *View) !void {
+        if (!self.needs_render) return;
+        try self.render(true, false);
     }
 
     /// Registers an overlay widget. The caller owns the widget struct and must
@@ -676,7 +676,7 @@ pub const View = struct {
     /// Returns true when a listener consumed it, so the editor must not also
     /// handle the key.
     pub fn dispatchKey(self: *View, event: *ui.KeyEvent) bool {
-        self.ensureBuilt() catch return false;
+        self.ensureRendered() catch return false;
         const doc = self.surface.document();
         if (doc.active_element == null) return false;
         doc.dispatchEvent(event);
@@ -687,7 +687,7 @@ pub const View = struct {
     /// default actions: a press places the caret, a drag selects, and the wheel
     /// scrolls the viewport. Returns true when the caret or selection changed.
     pub fn dispatchMouse(self: *View, event: *ui.MouseEvent) !bool {
-        try self.ensureBuilt();
+        try self.ensureRendered();
         const doc = self.surface.document();
         const target = (try self.surface.elementFromPoint(event.x, event.y)) orelse
             (doc.root orelse return false);
@@ -854,7 +854,7 @@ pub const View = struct {
     /// The mouse target for a cell, classified by the ported
     /// `MouseTargetFactory` subset.
     pub fn mouseTargetAt(self: *View, x: usize, y: usize) !editorBrowser.MouseTarget {
-        try self.ensureBuilt();
+        try self.ensureRendered();
         return mouse_target.createMouseTarget(.{
             .context = self,
             .element_at = mouseElementAt,
@@ -928,7 +928,7 @@ pub const View = struct {
     fn toggleFoldControl(self: *View, x: usize, y: usize) !bool {
         const view_line = self.foldControlAt(x, y) orelse return false;
         const changed = try self.editor.toggleFoldAtViewLine(view_line);
-        if (changed) try self.rebuild();
+        if (changed) self.invalidate();
         return changed;
     }
 
@@ -943,40 +943,24 @@ pub const View = struct {
         });
     }
 
-    /// Recreates the surface at the editor's current viewport size. The caller
-    /// clears the screen because the new surface starts a fresh frame.
-    pub fn resize(self: *View) !void {
-        self.terminal_view_host.viewRef().scrollbarPart().endDrag();
+    /// Brings the ui surface and document in step with the editor viewport.
+    /// The surface and retained roots are reused; only the line window is
+    /// discarded because the view-line mapping may change with the width.
+    fn synchronizeViewport(self: *View) !void {
         const width = self.editor.screen_width;
         const height = self.editor.screen_height;
-        if (self.surface.document().cols == width and self.surface.document().rows == height) {
-            self.invalidate();
-            return;
-        }
+        const doc = self.surface.document();
+        if (doc.cols == width and doc.rows == height) return;
 
-        const replacement = try ui.Surface.init(self.allocator, .{
-            .cols = width,
-            .rows = height,
-            .tab_size = self.editor.tabSize(),
-            .measure_width = cellMetrics.measureCodepoint,
-        });
-
-        // The line elements belong to the surface document that is about to be
-        // destroyed; drop the window without touching their DOM nodes.
-        self.terminal_view_host.viewRef().getViewLines().flushWindow();
-        self.document_ready = false;
-        self.resetChromeRoots();
-        self.root_node = null;
-        self.content_root = null;
+        self.terminal_view_host.viewRef().scrollbarPart().endDrag();
+        try self.surface.resize(width, height);
+        self.terminal_view_host.viewRef().getViewLines().clearWindow();
+        doc.tab_size = self.editor.tabSize();
         self.needs_full_box_rebuild = true;
-        var previous = self.surface;
-        self.surface = replacement;
-        previous.deinit();
-        self.invalidate();
     }
 
-    /// Rebuilds the whole document from the editor state. This is the forced
-    /// path used after an input batch; batching call sites use `invalidate`.
+    /// Resets the theme-dependent document roots; the next render recreates
+    /// them because the registry colors are cached per document.
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme_colors = palette;
         self.clearPaintStyles();
@@ -1137,7 +1121,7 @@ pub const View = struct {
         _ = self.terminal_view_host.viewRef().onConfigurationChanged(&event);
         for (self.configuration_listeners.items) |listener| listener.notify(listener.context);
         self.document_ready = false;
-        self.needs_rebuild = true;
+        self.needs_render = true;
         return true;
     }
 
@@ -1155,8 +1139,31 @@ pub const View = struct {
         };
     }
 
+    /// Port of the upstream `View.render(now, everything)` entry point.
+    /// `now=false` only records that a render is pending; the terminal host
+    /// has no animation-frame scheduler, so the caller flushes on paint.
+    pub fn render(self: *View, now: bool, everything: bool) !void {
+        if (everything) {
+            // Upstream forces every view part to render. The terminal parts
+            // are always visited by the flush pass, so this only needs to
+            // guarantee that a pass happens.
+            self.needs_render = true;
+        }
+        if (!now) {
+            self.needs_render = true;
+            return;
+        }
+        if (!self.needs_render) return;
+        try self.flushAccumulatedAndRenderNow();
+    }
+
+    /// Host convenience used after an input batch: force one immediate render
+    /// pass even when no view event marked the document dirty. This is the
+    /// terminal equivalent of `render(now, everything)` without forcing a
+    /// whole box-tree rebuild.
     pub fn refresh(self: *View) !void {
-        try self.rebuild();
+        self.needs_render = true;
+        try self.render(true, false);
     }
 
     /// The text row of a model position, or null when it is outside the
@@ -1178,7 +1185,7 @@ pub const View = struct {
     /// Paints into the view's own frame without writing ANSI. The multi-file
     /// workbench composites this grid below the tab strip.
     pub fn paint(self: *View) !void {
-        try self.ensureBuilt();
+        try self.ensureRendered();
         try self.surface.paintFrame();
     }
 
@@ -1186,15 +1193,18 @@ pub const View = struct {
         return self.surface.grid();
     }
 
-    pub fn render(self: *View, writer: *std.Io.Writer) !void {
-        try self.ensureBuilt();
+    /// Renders the surface diff to an ANSI writer. This is the standalone
+    /// preview/read-loop entry point; it is not the upstream `View.render`
+    /// orchestration entry point.
+    pub fn renderAnsi(self: *View, writer: *std.Io.Writer) !void {
+        try self.ensureRendered();
         try self.surface.render(writer, .{ .synchronized = true });
     }
 
-    /// The hardware cursor cell, valid after `render` has laid the tree out.
-    /// Returns null when the caret is outside the text area.
+    /// The hardware cursor cell, valid after the render pass has laid the tree
+    /// out. Returns null when the caret is outside the text area.
     pub fn cursorCell(self: *View) ?Cell {
-        self.ensureBuilt() catch return null;
+        self.ensureRendered() catch return null;
         // A focused widget paints its own block caret; the hardware cursor
         // belongs to the editor.
         if (self.surface.document().active_element != null) return null;
@@ -1281,8 +1291,12 @@ pub const View = struct {
         return true;
     }
 
-    fn rebuild(self: *View) !void {
-        self.rebuild_count += 1;
+    /// Port of upstream `View._flushAccumulatedAndRenderNow`: prepare the
+    /// editor, render the visible lines, then the retained chrome parts and
+    /// their boxes.
+    fn flushAccumulatedAndRenderNow(self: *View) !void {
+        self.render_count += 1;
+        try self.synchronizeViewport();
         const editor = self.editor;
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
@@ -1637,7 +1651,7 @@ pub const View = struct {
         if (chrome_host.ops.total() > 0) self.perf.chrome_rebuilds += 1;
         if (chrome_host.failed) self.needs_full_box_rebuild = true;
         try self.syncBoxes(doc);
-        self.needs_rebuild = false;
+        self.needs_render = false;
     }
 
     /// Brings the box tree/layout in step with the retained DOM. The view owns
@@ -1668,7 +1682,7 @@ pub const View = struct {
 
         self.perf.incremental_syncs += 1;
         // The retained chrome parts already applied their explicit box deltas
-        // while rebuilding; only the windowed line pass remains here.
+        // while rendering; only the windowed line pass remains here.
 
         const lines = self.terminal_view_host.viewRef().getViewLines();
         const start = lines.windowStart();
@@ -2168,7 +2182,7 @@ test "View: text, gutter and status" {
     view.setStatusText("test status", "");
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const row0 = try rowText(view, allocator, 0);
     defer allocator.free(row0);
@@ -2203,7 +2217,7 @@ test "View: CJK and tab runs keep the caret on the right cell" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const row = try rowText(view, allocator, 0);
     defer allocator.free(row);
@@ -2236,7 +2250,7 @@ test "View: wrapped continuation gets a gutter arrow" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     var found_arrow = false;
     var row: usize = 0;
@@ -2268,7 +2282,7 @@ test "View: selection paints inverted cells" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -2290,20 +2304,20 @@ test "View: refresh keeps the frame diff and the cursor visible" {
 
     var first: std.Io.Writer.Allocating = .init(allocator);
     defer first.deinit();
-    try view.render(&first.writer);
+    try view.renderAnsi(&first.writer);
     try std.testing.expect(first.written().len > 0);
 
     var unchanged: std.Io.Writer.Allocating = .init(allocator);
     defer unchanged.deinit();
     try view.refresh();
-    try view.render(&unchanged.writer);
+    try view.renderAnsi(&unchanged.writer);
     try std.testing.expectEqual(@as(usize, 0), unchanged.written().len);
 
     try editor.moveDown(false);
     try view.refresh();
     var moved: std.Io.Writer.Allocating = .init(allocator);
     defer moved.deinit();
-    try view.render(&moved.writer);
+    try view.renderAnsi(&moved.writer);
     try std.testing.expect(moved.written().len > 0);
     try std.testing.expectEqual(@as(usize, 1), view.cursorCell().?.row);
 }
@@ -2400,7 +2414,7 @@ test "View: overlay widget is placed top-right and takes focused keys" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const row = try rowText(view, allocator, 0);
     defer allocator.free(row);
@@ -2504,7 +2518,7 @@ test "View: content widget anchors to a model position" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     try std.testing.expectEqual(@as(usize, 1), view.terminal_view_host.viewRef().contentWidgets().entries.items.len);
     const entry = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
@@ -2545,7 +2559,7 @@ test "View: content widget anchors on a wrapped line" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     try std.testing.expectEqual(@as(usize, 2), view.terminal_view_host.viewRef().contentWidgets().entries.items[0].top);
     // Column 18 is the third cell of the wrapped segment, which starts at the
@@ -2575,7 +2589,7 @@ test "View: content widget flips above and clamps to the text area" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     // Row 1 is the anchor; two rows below do not fit the three-row text area,
     // so the widget is clamped to its last two rows.
@@ -2583,7 +2597,7 @@ test "View: content widget flips above and clamps to the text area" {
 
     below.preference = .above;
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     try std.testing.expectEqual(@as(usize, 0), view.terminal_view_host.viewRef().contentWidgets().entries.items[0].top);
 }
 
@@ -2601,7 +2615,7 @@ test "View: bracket colorization paints nesting levels" {
     defer view.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -2635,7 +2649,7 @@ test "View: unexpected closing bracket paints red" {
     defer view.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -2659,7 +2673,7 @@ test "View: bracket match keeps the colorized foreground" {
     defer view.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -2698,7 +2712,7 @@ test "View: bracket colorization respects theme colors" {
     view.setThemeColors(&palette);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -2729,7 +2743,7 @@ test "View: disabling bracket colorization leaves token colors" {
     defer view.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -2751,7 +2765,7 @@ test "View: strings are not bracket-colorized after eager tokenization" {
     defer view.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -2782,7 +2796,7 @@ test "View: word highlight decorations paint text and strong colors" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -2813,7 +2827,7 @@ test "View: hover highlight paints the anchor range" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     // Gutter is 2; columns 2..4 of the text are highlighted.
@@ -2845,7 +2859,7 @@ test "View: guides from folded hidden lines do not overwrite text" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const row = try rowText(view, allocator, 0);
     defer allocator.free(row);
@@ -2876,7 +2890,7 @@ test "View: gutter fold control collapses and expands a region" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
@@ -2889,7 +2903,7 @@ test "View: gutter fold control collapses and expands a region" {
     try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
     try std.testing.expectEqual(@as(usize, 5), editor.modelLineNumber(2));
 
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     try std.testing.expectEqual(@as(u32, '▸'), grid.cluster[grid.index(gutter - 1, 0)]);
     const row1 = try rowText(view, allocator, 1);
     defer allocator.free(row1);
@@ -2904,7 +2918,7 @@ test "View: gutter fold control collapses and expands a region" {
     var down_again = testMouse(.down, gutter - 1, 0);
     try std.testing.expect(try view.dispatchMouse(&down_again));
     try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const unfolded_row1 = try rowText(view, allocator, 1);
     defer allocator.free(unfolded_row1);
     try std.testing.expect(std.mem.indexOf(u8, unfolded_row1, "void f") != null);
@@ -2953,7 +2967,7 @@ test "View: mouse target distinguishes text, empty area, gutter and status" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const on_text = try view.mouseTargetAt(4, 0);
     try std.testing.expectEqual(editorBrowser.MouseTargetType.content_text, on_text.type);
@@ -2989,7 +3003,7 @@ test "View: the gutter keeps a blank cell before the text" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
@@ -3021,7 +3035,7 @@ test "View: scrolling reuses the visible line DOM nodes" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const view_lines = view.terminal_view_host.viewRef().getViewLines();
     const first_window_start = view_lines.windowStart();
@@ -3230,7 +3244,7 @@ test "View: the wheel scrolls without moving the caret and clamps" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const row = try rowText(view, allocator, 0);
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "line3") != null);
@@ -3272,7 +3286,7 @@ test "View: matching brackets are highlighted while the cursor is on one" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const bracket_bg = ui.cell.packColor(color(bracket_match_background));
@@ -3283,7 +3297,7 @@ test "View: matching brackets are highlighted while the cursor is on one" {
     // Cursor off any bracket clears the highlights.
     try editor.setCursorPosition(Position.init(4, 1));
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     grid = view.surface.grid();
     try std.testing.expect(grid.bg[grid.index(gutter, 0)] != bracket_bg);
     try std.testing.expect(grid.bg[grid.index(gutter + 2, 0)] != bracket_bg);
@@ -3291,7 +3305,7 @@ test "View: matching brackets are highlighted while the cursor is on one" {
     // A pair spanning lines highlights both brackets.
     try editor.setCursorPosition(Position.init(2, 2));
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     grid = view.surface.grid();
     try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter, 1)]);
     try std.testing.expectEqual(bracket_bg, grid.bg[grid.index(gutter, 2)]);
@@ -3316,7 +3330,7 @@ test "View: a focused widget hides bracket highlights" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const gutter = editor.gutterWidth();
     const bracket_bg = ui.cell.packColor(color(bracket_match_background));
     const grid = view.surface.grid();
@@ -3339,7 +3353,7 @@ test "View: typing an auto-closed bracket highlights the pair" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const bracket_bg = ui.cell.packColor(color(bracket_match_background));
@@ -3364,7 +3378,7 @@ test "View: bracket highlights stay on their wrapped segment" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const bracket_bg = ui.cell.packColor(color(bracket_match_background));
@@ -3396,7 +3410,7 @@ test "View: find decorations stay on their wrapped segment" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const match_bg = ui.cell.packColor(color(find_match_background));
@@ -3429,7 +3443,7 @@ test "View: bracket highlights include the synthetic wrap indentation" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const cols = view.surface.document().cols;
@@ -3485,7 +3499,7 @@ test "View: right column paints markers and the overlapping thumb" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const cols = view.surface.document().cols;
     const grid = view.surface.grid();
@@ -3541,7 +3555,7 @@ test "View: short document has no scrollbar thumb" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const cols = view.surface.document().cols;
     const grid = view.surface.grid();
@@ -3620,7 +3634,7 @@ test "View: narrow terminal hides the scrollbar columns" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const cols = view.surface.document().cols;
     const target = try view.mouseTargetAt(cols - 1, 0);
@@ -3707,7 +3721,7 @@ test "View: three overview lanes use half-cell glyphs" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const cols = view.surface.document().cols;
     const grid = view.surface.grid();
@@ -3746,7 +3760,7 @@ test "View: half-cell thumb uses quadrant edges" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const cols = view.surface.document().cols;
     const grid = view.surface.grid();
@@ -3785,7 +3799,7 @@ test "View: indent guides mark leading whitespace and blank lines" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
@@ -3841,7 +3855,7 @@ test "View: indent guides honor per-level theme colors" {
     view.setThemeColors(&palette);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -3873,7 +3887,7 @@ test "View: bracket guides follow pairs and highlight the active pair" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
@@ -3925,7 +3939,7 @@ test "View: active indentation guide follows the cursor scope" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
@@ -4060,7 +4074,7 @@ test "view: marker error ranges paint a curly underline" {
     defer view.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -4073,7 +4087,7 @@ test "view: marker error ranges paint a curly underline" {
     try std.testing.expect((grid.attrs[grid.index(gutter + 4, 0)] & ui.cell.Attr.underline) == 0);
 }
 
-test "View: init, paint and invalidate batch rebuilds" {
+test "View: init, paint and invalidate batch renders" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 5);
@@ -4084,17 +4098,58 @@ test "View: init, paint and invalidate batch rebuilds" {
     const view = try View.init(allocator, editor);
     defer view.deinit();
 
-    try std.testing.expectEqual(@as(usize, 0), view.rebuildCount());
+    try std.testing.expectEqual(@as(usize, 0), view.renderCount());
     try view.paint();
-    try std.testing.expectEqual(@as(usize, 1), view.rebuildCount());
+    try std.testing.expectEqual(@as(usize, 1), view.renderCount());
     try view.paint();
-    try std.testing.expectEqual(@as(usize, 1), view.rebuildCount());
+    try std.testing.expectEqual(@as(usize, 1), view.renderCount());
 
     view.invalidate();
-    try std.testing.expect(view.needsRebuild());
+    try std.testing.expect(view.needsRender());
     try view.paint();
-    try std.testing.expectEqual(@as(usize, 2), view.rebuildCount());
-    try std.testing.expect(!view.needsRebuild());
+    try std.testing.expectEqual(@as(usize, 2), view.renderCount());
+    try std.testing.expect(!view.needsRender());
+}
+
+test "View: has no terminal-only rebuild or resize method" {
+    try std.testing.expect(!@hasDecl(View, "rebuild"));
+    try std.testing.expect(!@hasDecl(View, "resize"));
+    try std.testing.expect(@hasDecl(View, "render"));
+}
+
+test "View: viewport change resizes in place and retains chrome roots" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "alpha\nbeta", "test.txt", 20, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    try view.paint();
+    const root_before = view.root_node.?;
+    const content_before = view.content_root.?;
+    const gutter_before = view.gutter_root.?;
+    const scrollbar_before = view.scrollbar_root.?;
+    const status_before = view.status_root.?;
+
+    editor.setViewport(30, 8);
+    view.invalidate();
+    try view.paint();
+
+    try std.testing.expectEqual(@as(usize, 30), view.surface.document().cols);
+    try std.testing.expectEqual(@as(usize, 8), view.surface.document().rows);
+    try std.testing.expect(view.root_node.? == root_before);
+    try std.testing.expect(view.content_root.? == content_before);
+    try std.testing.expect(view.gutter_root.? == gutter_before);
+    try std.testing.expect(view.scrollbar_root.? == scrollbar_before);
+    try std.testing.expect(view.status_root.? == status_before);
+
+    const row = try view.grid().rowText(allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "alpha") != null);
 }
 
 test "View: diff line backgrounds and filler rows composite over the dark theme" {
@@ -4123,7 +4178,7 @@ test "View: diff line backgrounds and filler rows composite over the dark theme"
     defer view.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -4161,7 +4216,7 @@ test "View: char-insert and char-delete inline classes paint cell backgrounds" {
     defer view.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -4197,7 +4252,7 @@ test "View: quick-diff gutter marker" {
     defer view.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     try std.testing.expectEqual(@as(usize, 4), editor.gutterWidth());
@@ -4235,7 +4290,7 @@ test "View: fold control sits before the quick-diff cell" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     try std.testing.expectEqual(@as(u32, '▾'), grid.cluster[grid.index(editor.foldCellColumn(), 0)]);
