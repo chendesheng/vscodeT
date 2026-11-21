@@ -58,12 +58,31 @@ pub const Frame = struct {
         return if (self.have_prev) &self.prev else &self.next;
     }
 
+    /// The grid a host may decorate after painting. Terminal graphics placeholders
+    /// are written here between `paintFrame` and the composite, so they take part
+    /// in the next frame diff like any other cell.
+    pub fn presentMut(self: *Frame) *CellGrid {
+        return if (self.have_prev) &self.prev else &self.next;
+    }
+
     pub fn swap(self: *Frame) void {
         std.mem.swap(CellGrid, &self.prev, &self.next);
         self.next.clear();
         self.have_prev = true;
     }
 };
+
+test "Frame exposes the painted grid for terminal graphics overlays" {
+    const allocator = std.testing.allocator;
+    var frame = try Frame.init(allocator, 2, 1);
+    defer frame.deinit();
+
+    frame.begin();
+    frame.next.putCodepoint(0, 0, 'x', 1, .{});
+    frame.swap();
+    frame.presentMut().putCodepoint(1, 0, 'y', 1, .{});
+    try std.testing.expectEqual(@as(u32, 'y'), frame.present().cluster[1]);
+}
 
 test "Frame swaps buffers and keeps the presented grid" {
     const allocator = std.testing.allocator;

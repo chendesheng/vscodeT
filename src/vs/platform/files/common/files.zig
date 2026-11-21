@@ -519,3 +519,38 @@ pub const DirectoryEntry = struct {
     name: []const u8,
     type: u8,
 };
+
+/// Port of upstream `ByteSize.formatSize` (the terminal has no localized
+/// formatting, so the units are plain ASCII).
+pub const ByteSize = struct {
+    pub const KB: u64 = 1024;
+    pub const MB: u64 = KB * KB;
+    pub const GB: u64 = MB * KB;
+    pub const TB: u64 = GB * KB;
+
+    pub fn formatSize(buffer: []u8, size: u64) []const u8 {
+        if (size < KB) {
+            return std.fmt.bufPrint(buffer, "{d}B", .{size}) catch "0B";
+        }
+        if (size < MB) {
+            return std.fmt.bufPrint(buffer, "{d:.2}KB", .{@as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(KB))}) catch "0KB";
+        }
+        if (size < GB) {
+            return std.fmt.bufPrint(buffer, "{d:.2}MB", .{@as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(MB))}) catch "0MB";
+        }
+        if (size < TB) {
+            return std.fmt.bufPrint(buffer, "{d:.2}GB", .{@as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(GB))}) catch "0GB";
+        }
+        return std.fmt.bufPrint(buffer, "{d:.2}TB", .{@as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(TB))}) catch "0TB";
+    }
+};
+
+test "files: ByteSize formatting matches VS Code" {
+    var buffer: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("0B", ByteSize.formatSize(&buffer, 0));
+    try std.testing.expectEqualStrings("1023B", ByteSize.formatSize(&buffer, 1023));
+    try std.testing.expectEqualStrings("1.00KB", ByteSize.formatSize(&buffer, 1024));
+    try std.testing.expectEqualStrings("1.50KB", ByteSize.formatSize(&buffer, 1536));
+    try std.testing.expectEqualStrings("2.50MB", ByteSize.formatSize(&buffer, 5 * ByteSize.MB / 2));
+    try std.testing.expectEqualStrings("1.50GB", ByteSize.formatSize(&buffer, 3 * ByteSize.GB / 2));
+}

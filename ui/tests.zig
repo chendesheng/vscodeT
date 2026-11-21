@@ -7,6 +7,7 @@ comptime {
     _ = @import("dom.zig");
     _ = @import("event.zig");
     _ = @import("frame.zig");
+    _ = @import("image.zig");
     _ = @import("input.zig");
     _ = @import("inputbox.zig");
     _ = @import("layout.zig");

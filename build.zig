@@ -33,6 +33,8 @@ pub fn build(b: *std.Build) void {
         const vscode_textmate = vscode_textmate_dep.module("vscode_textmate");
         const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
         const ui = ui_dep.module("ui");
+        const zigimg_dep = b.dependency("zigimg", .{ .target = target, .optimize = optimize });
+        const zigimg = zigimg_dep.module("zigimg");
         const markdown = markdownModule(b, target, optimize);
         const vscode_syntax = vscodeSyntaxAssets(b, target, optimize);
         const ghostty_vt = ghosttyVtModule(b, target);
@@ -53,6 +55,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("oniguruma", onig);
         exe.root_module.addImport("vscode_textmate", vscode_textmate);
         exe.root_module.addImport("ui", ui);
+        exe.root_module.addImport("zigimg", zigimg);
         exe.root_module.addImport("markdown", markdown);
         exe.root_module.addImport("vscode-syntax", vscode_syntax);
         exe.root_module.addImport("ghostty-vt", ghostty_vt);
@@ -103,10 +106,11 @@ fn linkPtyLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget)
 }
 
 fn ghosttyVtModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
-    // The TUI does not render Kitty graphics (see README), so keep the
-    // feature off. Besides avoiding unused code, this keeps the Wuffs C
-    // image decoder out of the build graph: it does not compile with the
-    // MSVC-targeted Zig toolchain on Windows.
+    // The workbench renders kitty images itself (see docs/terminal-ui.md);
+    // the integrated-terminal engine still has no kitty-graphics support, so
+    // keep the feature off here. Besides avoiding unused code, this keeps the
+    // Wuffs C image decoder out of the build graph: it does not compile with
+    // the MSVC-targeted Zig toolchain on Windows.
     //
     // Ghostty's SIMD path also needs libc++ and the simdutf/highway C++
     // sources, which the MSVC-targeted build does not supply. Use its
@@ -490,6 +494,8 @@ fn createTestRootModule(
     module.addImport("oniguruma", onig);
     module.addImport("vscode_textmate", vscode_textmate);
     module.addImport("ui", ui);
+    const zigimg_dep = b.dependency("zigimg", .{ .target = target, .optimize = optimize });
+    module.addImport("zigimg", zigimg_dep.module("zigimg"));
     module.addImport("markdown", markdown);
     module.addImport("vscode-syntax", vscode_syntax);
     module.addImport("ghostty-vt", ghostty_vt);

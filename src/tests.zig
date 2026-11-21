@@ -258,6 +258,8 @@ comptime {
     _ = @import("./vs/editor/browser/widget/codeEditor/terminalViewHost.zig");
     _ = @import("./tui/editorView.zig");
     _ = @import("./tui/markdownPreview.zig");
+    _ = @import("./tui/terminalImage.zig");
+    _ = @import("./tui/imagePreview.zig");
     _ = @import("./vs/base/common/deadlineTimer.zig");
     _ = @import("./vs/editor/browser/controller/mouseHandler.zig");
     _ = @import("./vs/workbench/services/language/common/bundledLanguages.zig");
@@ -412,6 +414,17 @@ comptime {
     _ = @import("./vs/workbench/contrib/markdown/browser/scrolling.zig");
     _ = @import("./vs/workbench/contrib/markdown/browser/markdownPreviewConfig.zig");
     _ = @import("./vs/workbench/contrib/markdown/browser/markdownPreviewDocument.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/common/mediaPreview.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/common/mediaImage.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/browser/imageViewer.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/browser/imagePreviewEditor.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/browser/mediaPreviewStatusBar.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/browser/mediaPreviewActions.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/test/browser/imageViewer.test.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/test/browser/imagePreviewEditor.test.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/test/browser/mediaPreviewEditorInputs.test.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/test/common/mediaPreview.test.zig");
+    _ = @import("./vs/workbench/contrib/mediaPreview/test/common/mediaImage.test.zig");
     _ = @import("./vs/editor/contrib/hover/browser/markdownHoverParticipant.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverStatusBar.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverRendered.zig");

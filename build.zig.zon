@@ -81,6 +81,10 @@
             .url = "https://release.files.ghostty.org/libghostty-vt/1.0.1/libghostty-vt-1.0.1.tar.gz",
             .hash = "ghostty-1.4.1-dev-5UdBC7mPUgFIzAVXNJOixiryPYogwYwnmN0zZWud4iSr",
         },
+        .zigimg = .{
+            .url = "https://github.com/zigimg/zigimg/archive/bbdbb8623c38b55985f968e9652a2dc17ba56ee9.tar.gz",
+            .hash = "zigimg-0.1.0-8_eo2qBpGADeVlkaFseD4JHHWhAG_i2-I8ZOppCUk6rR",
+        },
     },
 
     // Specifies the set of files and directories that are included in this package.

@@ -92,6 +92,13 @@ pub const Surface = struct {
         return self.frame.present();
     }
 
+    /// Writable view of the grid the last `paintFrame` produced. Terminal
+    /// graphics overlays (image placeholders) write here before the caller
+    /// composites the grid; the writes are part of the following frame diff.
+    pub fn presentedGrid(self: *Surface) *cell.CellGrid {
+        return self.frame.presentMut();
+    }
+
     /// Reallocates the double buffers for a new terminal viewport and marks the
     /// box tree dirty. The caller owns the document and should rebuild (or
     /// adjust) its tree afterwards; the next layout pass resolves percentages

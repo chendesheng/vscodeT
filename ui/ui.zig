@@ -12,6 +12,7 @@ pub const dialog = @import("dialog.zig");
 pub const dom = @import("dom.zig");
 pub const event = @import("event.zig");
 pub const frame = @import("frame.zig");
+pub const image = @import("image.zig");
 pub const input = @import("input.zig");
 pub const inputbox = @import("inputbox.zig");
 pub const layout = @import("layout.zig");

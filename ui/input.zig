@@ -165,6 +165,10 @@ const State = enum {
     dcs,
     /// An Operating System Command (`ESC ] ... BEL|ST`); replies are swallowed.
     osc,
+    /// An Application Programming Command (`ESC _ ... ST`). Kitty graphics
+    /// replies use this form; a standalone `ESC _` is Alt+Shift+- and stays a
+    /// key event.
+    apc,
 };
 
 fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
@@ -204,6 +208,11 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
                     last_pos = pos + 1;
                 } else if (chr == ']' and pos + 1 < input.len and std.ascii.isDigit(input[pos + 1])) {
                     state = .osc;
+                    last_pos = pos + 1;
+                } else if (chr == '_' and pos + 1 < input.len and input[pos + 1] == 'G') {
+                    // Only swallow kitty graphics replies (`ESC _ G`); a bare
+                    // `ESC _` is Alt+Shift+- and must stay a key event.
+                    state = .apc;
                     last_pos = pos + 1;
                 } else if (chr == '/') {
                     // Terminals send `ESC /` for Alt+/; `/` is otherwise an
@@ -295,6 +304,16 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
                     last_pos = pos + 1;
                 }
             },
+            .apc => {
+                if (chr == 0x9c) {
+                    state = .normal;
+                    last_pos = pos + 1;
+                } else if (chr == ESC and pos + 1 < input.len and input[pos + 1] == '\\') {
+                    state = .normal;
+                    pos += 1;
+                    last_pos = pos + 1;
+                }
+            },
         }
         pos += 1;
     }
@@ -306,7 +325,7 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
         // A trailing partial sequence must be decoded again when the rest of
         // its bytes arrive. Typing its tail as text would turn a split SGR
         // mouse report such as `ESC [ <35;...M` into `<35;...M` in the editor.
-        .esc_parameter, .esc_parameter_intermediate, .esc_intermediate, .dcs, .osc => {
+        .esc_parameter, .esc_parameter_intermediate, .esc_intermediate, .dcs, .osc, .apc => {
             consumed = sequence_start orelse input.len;
         },
         else => {
@@ -546,6 +565,18 @@ test "input: terminal DCS and OSC replies are ignored" {
     defer osc.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), osc.items.len);
     try std.testing.expectEqualStrings("b", osc.items[0].key.text);
+}
+
+test "input: kitty graphics APC replies are ignored" {
+    const allocator = std.testing.allocator;
+    // Both probe replies arrive as APC strings and must not become keys.
+    var events = try decodeKeys(
+        allocator,
+        "\x1b_Gi=31;OK\x1b\\\x1b_Gi=32,e=T,U=1;OK\x1b\\\x1b[?62;22cc",
+    );
+    defer events.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expectEqualStrings("c", events.items[0].key.text);
 }
 
 test "input: DCS filtering does not swallow Alt-Shift-P or Alt-]" {
