@@ -75,11 +75,39 @@ pub fn decode(allocator: Allocator, bytes: []const u8, encoding: Encoding) ![]u8
     const content = bytes[offset..];
 
     return switch (baseEncoding(encoding)) {
-        .utf8 => allocator.dupe(u8, content),
+        .utf8 => decodeUTF8(allocator, content),
         .utf16le => decodeUTF16(allocator, content, .little),
         .utf16be => decodeUTF16(allocator, content, .big),
         else => unreachable,
     };
+}
+
+/// VS Code decodes invalid UTF-8 sequences as U+FFFD instead of rejecting the
+/// file. The terminal port does the same so opening a binary or mis-encoded
+/// file as text (for example the image editor's "Open in Text Editor") cannot
+/// feed invalid bytes into the text model.
+fn decodeUTF8(allocator: Allocator, bytes: []const u8) ![]u8 {
+    if (std.unicode.utf8ValidateSlice(bytes)) return allocator.dupe(u8, bytes);
+
+    var result = std.array_list.Managed(u8).init(allocator);
+    errdefer result.deinit();
+    const replacement = [_]u8{ 0xEF, 0xBF, 0xBD };
+    var index: usize = 0;
+    while (index < bytes.len) {
+        const length = std.unicode.utf8ByteSequenceLength(bytes[index]) catch {
+            try result.appendSlice(&replacement);
+            index += 1;
+            continue;
+        };
+        if (index + length > bytes.len or !std.unicode.utf8ValidateSlice(bytes[index .. index + length])) {
+            try result.appendSlice(&replacement);
+            index += 1;
+            continue;
+        }
+        try result.appendSlice(bytes[index .. index + length]);
+        index += length;
+    }
+    return result.toOwnedSlice();
 }
 
 fn decodeUTF16(allocator: Allocator, bytes: []const u8, endian: std.builtin.Endian) ![]u8 {
@@ -150,4 +178,15 @@ fn encodeUTF16(allocator: Allocator, text: []const u8, endian: std.builtin.Endia
         std.mem.writeInt(u16, result[unit_index * 2 ..][0..2], unit, endian);
     }
     return result;
+}
+
+test "encoding: invalid UTF-8 is decoded with replacement characters" {
+    const allocator = std.testing.allocator;
+    const decoded = try decode(allocator, &.{ 'a', 0x89, 0xFF, 'b' }, .utf8);
+    defer allocator.free(decoded);
+    try std.testing.expectEqualStrings("a\u{FFFD}\u{FFFD}b", decoded);
+
+    const valid = try decode(allocator, "caf\u{00E9}", .utf8);
+    defer allocator.free(valid);
+    try std.testing.expectEqualStrings("caf\u{00E9}", valid);
 }
