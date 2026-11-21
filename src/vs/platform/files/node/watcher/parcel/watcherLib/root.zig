@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const event_mod = @import("event.zig");
@@ -67,8 +68,13 @@ const Backend = struct {
     }
 };
 
-fn makeBackend(allocator: Allocator, io: Io) !Backend {
+fn makeBackend(allocator: Allocator, io: Io, force_kqueue: bool) !Backend {
     if (builtin.os.tag == .macos) {
+        if (!force_kqueue and build_options.fsevents) {
+            const Fsevents = @import("fsevents.zig").Backend;
+            const context = try Fsevents.create(allocator, io);
+            return .{ .context = @ptrCast(context), .vtable = &fsevents_vtable };
+        }
         const Kqueue = @import("kqueue.zig").Backend;
         const context = try allocator.create(Kqueue);
         errdefer allocator.destroy(context);
@@ -126,6 +132,49 @@ const inotify_vtable: BackendVTable = if (builtin.os.tag == .linux) blk: {
         .wait_handle = struct {
             fn call(context: *anyopaque) WaitHandle {
                 const self: *Inotify = @ptrCast(@alignCast(context));
+                return self.waitHandle();
+            }
+        }.call,
+    };
+} else .{
+    .deinit = undefined,
+    .subscribe = undefined,
+    .unsubscribe = undefined,
+    .poll = undefined,
+    .wait_handle = undefined,
+};
+
+const fsevents_vtable: BackendVTable = if (builtin.os.tag == .macos and build_options.fsevents) blk: {
+    const Fsevents = @import("fsevents.zig").Backend;
+    break :blk .{
+        .deinit = struct {
+            fn call(context: *anyopaque) void {
+                const self: *Fsevents = @ptrCast(@alignCast(context));
+                self.deinit();
+                self.allocator.destroy(self);
+            }
+        }.call,
+        .subscribe = struct {
+            fn call(context: *anyopaque, watcher: *Watcher) anyerror!void {
+                const self: *Fsevents = @ptrCast(@alignCast(context));
+                return self.subscribe(watcher);
+            }
+        }.call,
+        .unsubscribe = struct {
+            fn call(context: *anyopaque, watcher: *Watcher) void {
+                const self: *Fsevents = @ptrCast(@alignCast(context));
+                self.unsubscribe(watcher);
+            }
+        }.call,
+        .poll = struct {
+            fn call(context: *anyopaque, now_ms: i64) anyerror!bool {
+                const self: *Fsevents = @ptrCast(@alignCast(context));
+                return self.poll(now_ms);
+            }
+        }.call,
+        .wait_handle = struct {
+            fn call(context: *anyopaque) WaitHandle {
+                const self: *Fsevents = @ptrCast(@alignCast(context));
                 return self.waitHandle();
             }
         }.call,
@@ -286,12 +335,19 @@ pub const Lib = struct {
     disposed: bool = false,
 
     pub fn init(allocator: Allocator, io: Io) !*Lib {
+        return initWithBackend(allocator, io, false);
+    }
+
+    /// `force_kqueue` keeps non-recursive requests on the kqueue backend when
+    /// the recursive side uses FSEvents. FSEvents only watches directories,
+    /// while the settings watcher and `NodeJSWatcher` watch individual files.
+    pub fn initWithBackend(allocator: Allocator, io: Io, force_kqueue: bool) !*Lib {
         const self = try allocator.create(Lib);
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
             .io = io,
-            .backend = try makeBackend(allocator, io),
+            .backend = try makeBackend(allocator, io, force_kqueue),
             .watchers = std.array_list.Managed(*Watcher).init(allocator),
         };
         return self;

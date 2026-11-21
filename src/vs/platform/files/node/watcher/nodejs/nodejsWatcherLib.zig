@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const common = @import("../../../common/watcher.zig");
@@ -123,7 +124,10 @@ pub const NodeJSWatcher = struct {
     const BaseWatcher = @import("../baseWatcher.zig").BaseWatcher;
 
     pub fn init(allocator: Allocator, io: Io, options: Options) !*NodeJSWatcher {
-        const lib = try plib.Lib.init(allocator, io);
+        // FSEvents watches directories only; non-recursive file requests keep
+        // the kqueue backend on macOS.
+        const force_kqueue = builtin.os.tag == .macos and build_options.fsevents;
+        const lib = try plib.Lib.initWithBackend(allocator, io, force_kqueue);
         errdefer lib.deinit();
         return initWithLib(allocator, io, lib, options, true);
     }

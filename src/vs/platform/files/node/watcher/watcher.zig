@@ -2,10 +2,14 @@
 // shape of `nodejsWatcher.ts`.
 //
 // The terminal uses one in-process `UniversalWatcher`: recursive requests go
-// to `ParcelWatcher`, non-recursive requests to `NodeJSWatcher`. Both share one
-// parcel-watcher backend so the TUI polls a single inotify/kqueue handle.
+// to `ParcelWatcher`, non-recursive requests to `NodeJSWatcher`. On Linux and
+// Windows both share one parcel-watcher backend. On macOS with the FSEvents
+// backend the recursive side gets its own `Lib`, while non-recursive requests
+// stay on kqueue because FSEvents only supports directories.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const build_options = @import("build_options");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const common = @import("../../common/watcher.zig");
@@ -23,7 +27,8 @@ const NodeJSWatcher = nodejs_mod.NodeJSWatcher;
 pub const UniversalWatcher = struct {
     allocator: Allocator,
     io: Io,
-    lib: *plib.Lib,
+    recursive_lib: *plib.Lib,
+    non_recursive_lib: *plib.Lib,
     recursive: *ParcelWatcher,
     non_recursive: *NodeJSWatcher,
 
@@ -35,17 +40,24 @@ pub const UniversalWatcher = struct {
         const self = try allocator.create(UniversalWatcher);
         errdefer allocator.destroy(self);
 
-        const lib = try plib.Lib.init(allocator, io);
-        errdefer lib.deinit();
-        const recursive = try ParcelWatcher.initWithLib(allocator, io, lib, .{}, false);
+        const recursive_lib = try plib.Lib.init(allocator, io);
+        errdefer recursive_lib.deinit();
+        const split_backends = builtin.os.tag == .macos and build_options.fsevents;
+        const non_recursive_lib = if (split_backends)
+            try plib.Lib.initWithBackend(allocator, io, true)
+        else
+            recursive_lib;
+        errdefer if (split_backends) non_recursive_lib.deinit();
+        const recursive = try ParcelWatcher.initWithLib(allocator, io, recursive_lib, .{}, false);
         errdefer recursive.deinit();
-        const non_recursive = try NodeJSWatcher.initWithLib(allocator, io, lib, .{}, false);
+        const non_recursive = try NodeJSWatcher.initWithLib(allocator, io, non_recursive_lib, .{}, false);
         errdefer non_recursive.deinit();
 
         self.* = .{
             .allocator = allocator,
             .io = io,
-            .lib = lib,
+            .recursive_lib = recursive_lib,
+            .non_recursive_lib = non_recursive_lib,
             .recursive = recursive,
             .non_recursive = non_recursive,
             .on_change = Emitter([]const FileChange).init(allocator),
@@ -67,7 +79,8 @@ pub const UniversalWatcher = struct {
         self.on_change.deinit();
         self.on_log.deinit();
         self.on_error.deinit();
-        self.lib.deinit();
+        if (self.non_recursive_lib != self.recursive_lib) self.non_recursive_lib.deinit();
+        self.recursive_lib.deinit();
         self.allocator.destroy(self);
     }
 
@@ -100,7 +113,8 @@ pub const UniversalWatcher = struct {
     }
 
     pub fn setCancelFlag(self: *UniversalWatcher, flag: ?*std.atomic.Value(bool)) void {
-        self.lib.setCancelFlag(flag);
+        self.recursive_lib.setCancelFlag(flag);
+        if (self.non_recursive_lib != self.recursive_lib) self.non_recursive_lib.setCancelFlag(flag);
     }
 
     pub fn poll(self: *UniversalWatcher, now_ms: i64) !bool {
@@ -111,11 +125,18 @@ pub const UniversalWatcher = struct {
     }
 
     pub fn nextTimeout(self: *const UniversalWatcher, now_ms: i64) ?u32 {
-        return self.lib.nextTimeout(now_ms);
+        const recursive_timeout = self.recursive_lib.nextTimeout(now_ms);
+        if (self.non_recursive_lib == self.recursive_lib) return recursive_timeout;
+        const non_recursive_timeout = self.non_recursive_lib.nextTimeout(now_ms);
+        if (recursive_timeout) |a| {
+            if (non_recursive_timeout) |b| return @min(a, b);
+            return a;
+        }
+        return non_recursive_timeout;
     }
 
     pub fn waitHandle(self: *const UniversalWatcher) plib.WaitHandle {
-        return self.lib.waitHandle();
+        return self.non_recursive_lib.waitHandle();
     }
 
     pub fn isSuspended(self: *const UniversalWatcher, request: *const WatchRequest) @import("baseWatcher.zig").SuspensionState {

@@ -1947,7 +1947,10 @@ pub const Workbench = struct {
     /// ones keep the user's in-memory content (upstream marks the conflict).
     pub fn handleFileChanges(self: *Workbench, changes: []const @import("../../platform/files/common/files.zig").FileChange) void {
         for (changes) |change| {
-            if (change.type != .UPDATED) continue;
+            if (change.type == .DELETED) continue;
+            // FSEvents can report a pre-existing path as ADDED on its first
+            // event because it has no initial directory snapshot. For an open
+            // editor that is a content change just like UPDATED.
             self.git_status_dirty = true;
             self.files_changed = true;
             for (self.part.group_views.items) |pane| {

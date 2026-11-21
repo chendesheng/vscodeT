@@ -16,6 +16,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const watcher_only = b.option(bool, "watcher-only", "Build only the file-watcher tests") orelse false;
+    const enable_fsevents = fseventsEnabled(b, target);
     const onig_paths = OnigPaths{
         .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h"),
         .lib_dir = b.option([]const u8, "onig-lib", "Directory containing the oniguruma library"),
@@ -51,6 +52,7 @@ pub fn build(b: *std.Build) void {
 
         const app_build_options = b.addOptions();
         app_build_options.addOption(bool, "e2e", false);
+        app_build_options.addOption(bool, "fsevents", enable_fsevents);
         exe.root_module.addOptions("build_options", app_build_options);
         exe.root_module.addImport("oniguruma", onig);
         exe.root_module.addImport("vscode_textmate", vscode_textmate);
@@ -62,6 +64,7 @@ pub fn build(b: *std.Build) void {
         addOnigLibraryPath(b, exe.root_module, onig_paths);
         exe.root_module.linkSystemLibrary("onig", .{});
         linkPtyLibraries(exe.root_module, target);
+        linkMacFrameworks(exe.root_module, target, enable_fsevents);
 
         // This declares intent for the executable to be installed into the
         // standard location when the user invokes the "install" step (the default
@@ -103,6 +106,20 @@ fn linkPtyLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget)
     if (target.result.os.tag == .linux and target.result.abi == .gnu) {
         module.linkSystemLibrary("util", .{});
     }
+}
+
+/// The FSEvents backend is selected on macOS when the host can link the
+/// CoreServices framework. Cross-compiling a macOS watcher test from Linux
+/// keeps the kqueue fallback so the CI type-check does not need an SDK.
+fn fseventsEnabled(b: *std.Build, target: std.Build.ResolvedTarget) bool {
+    return target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos;
+}
+
+fn linkMacFrameworks(module: *std.Build.Module, target: std.Build.ResolvedTarget, enabled: bool) void {
+    if (!enabled) return;
+    _ = target;
+    module.linkFramework("CoreServices", .{});
+    module.linkFramework("CoreFoundation", .{});
 }
 
 fn ghosttyVtModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
@@ -455,13 +472,19 @@ fn setupWatcherTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: 
     // Watcher-only tests: compile and run without the POSIX TUI. This root is
     // also used to cross-check the Linux/macOS/Windows backends on a host that
     // cannot run the other targets' tests.
+    const watcher_module = b.createModule(.{
+        .root_source_file = b.path("src/watcher_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const enable_fsevents = fseventsEnabled(b, target);
+    const watcher_options = b.addOptions();
+    watcher_options.addOption(bool, "fsevents", enable_fsevents);
+    watcher_module.addOptions("build_options", watcher_options);
+    linkMacFrameworks(watcher_module, target, enable_fsevents);
     const watcher_tests = b.addTest(.{
         .name = "watcher_tests",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/watcher_tests.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = watcher_module,
     });
     const run_watcher_tests = b.addRunArtifact(watcher_tests);
     const watcher_test_step = b.step("test-watcher", "Run file-watcher tests");
@@ -507,7 +530,10 @@ fn createTestRootModule(
     build_options.addOption(bool, "bench", bench);
     build_options.addOption(bool, "e2e", e2e);
     build_options.addOption([]const u8, "bench_file", bench_file);
+    const enable_fsevents = fseventsEnabled(b, target);
+    build_options.addOption(bool, "fsevents", enable_fsevents);
     module.addOptions("build_options", build_options);
+    linkMacFrameworks(module, target, enable_fsevents);
     return module;
 }
 
