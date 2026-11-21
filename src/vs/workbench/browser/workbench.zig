@@ -7891,6 +7891,19 @@ pub const Workbench = struct {
     /// Publishes the search result count as the Search activity badge. This
     /// is the first live activity-service badge source in the terminal
     /// workbench; view containers without a source have no badge.
+    /// The terminal boundary for upstream editor focus/blur: only the active
+    /// tab of the active group receives focus while the editor owns focus.
+    fn syncEditorFocus(self: *Workbench) void {
+        const active_pane = self.activePane();
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const desired = self.focus == .editor and
+                    pane == active_pane and pane.activeTab() == tab;
+                if (tab.view.isFocused() != desired) _ = tab.view.setFocused(desired);
+            }
+        }
+    }
+
     fn syncSearchActivity(self: *Workbench) void {
         const count = if (self.search_view) |view| view.matchCount() else 0;
         if (self.search_badge_count == count) return;
@@ -7983,6 +7996,7 @@ pub const Workbench = struct {
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
         self.syncSearchActivity();
+        self.syncEditorFocus();
         self.frame.begin();
         if (self.theme_palette) |palette| {
             self.frame.next.fillRect(
