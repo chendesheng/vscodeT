@@ -935,7 +935,8 @@ console API for raw mode, sizing and input polling.
   (`src/vs/workbench/browser/parts/statusbar/`) and the ported editor-status
   controller (`src/vs/workbench/browser/parts/editor/editorStatus.zig`):
   entries use upstream alignment/priority/compact rules and resolve the
-  `statusBarItem.*` kind/hover colors, the bar builds a one-row flex `ui` surface
+  `statusBarItem.*` kind/hover colors (including the compact-group hover pair),
+  the bar builds a one-row flex `ui` surface
   (left items grow and right items are row-reverse), and the right side
   shows selection, indentation, encoding, EOL and language. Clicking an entry
   focuses it and runs its command: selection opens Go to Line/Column, and the
