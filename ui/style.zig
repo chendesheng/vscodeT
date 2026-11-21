@@ -201,6 +201,18 @@ pub const AlignContent = enum {
     space_evenly,
 };
 
+/// Terminal text-decoration underline shapes (ECMA-48 SGR 4 subparameters).
+/// `single` is the fallback every terminal understands; `curly` approximates
+/// the browser's wavy squiggle. The value is stored in the cell attribute
+/// field, so keep the numeric order stable.
+pub const UnderlineStyle = enum(u3) {
+    single = 0,
+    double = 1,
+    curly = 2,
+    dotted = 3,
+    dashed = 4,
+};
+
 pub const Style = struct {
     position: Position = .static,
     top: Dimension = .auto,
@@ -259,6 +271,7 @@ pub const Style = struct {
     bold: bool = false,
     italic: bool = false,
     underline: bool = false,
+    underline_style: UnderlineStyle = .single,
     strikethrough: bool = false,
     dim: bool = false,
     reverse: bool = false,
@@ -278,6 +291,7 @@ pub const PaintStyle = struct {
     bold: bool = false,
     italic: bool = false,
     underline: bool = false,
+    underline_style: UnderlineStyle = .single,
     strikethrough: bool = false,
     dim: bool = false,
     reverse: bool = false,
@@ -302,6 +316,7 @@ pub fn paintStyleOf(style: Style) PaintStyle {
         .bold = style.bold,
         .italic = style.italic,
         .underline = style.underline,
+        .underline_style = style.underline_style,
         .strikethrough = style.strikethrough,
         .dim = style.dim,
         .reverse = style.reverse,

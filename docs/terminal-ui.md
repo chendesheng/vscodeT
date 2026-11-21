@@ -437,7 +437,7 @@ One `CellGrid` per frame, as parallel typed arrays:
 | `cluster` | `u32` | `0` = empty; printable ASCII stored directly; other graphemes interned in an append-only table as `0x8000_0000 \| id` |
 | `fg` | `u32` | packed RGB; `0` = terminal default |
 | `bg` | `u32` | packed RGB; `0` = terminal default |
-| `attrs` | `u16` | bold, dim, italic, underline/double, strikethrough, overline, inverse, blink, plus glyph width |
+| `attrs` | `u16` | bold, dim, italic, underline style (single/double/curly/dotted/dashed), strikethrough, overline, inverse, blink, plus glyph width |
 | `border` | `u16` | interned cell-border set id; `0` = none. The id points into a table shared by the frame's two grids. |
 
 - Wide glyphs set their width and leave the continuation cell `cluster = 0`.
@@ -502,6 +502,11 @@ The encoder follows TermDOM's `generateANSI`:
 - Wrap each frame in synchronized-output markers (`CSI ?2026h` / `CSI ?2026l`).
 - Color depth is configurable (`rgb`, `256`, `ansi`) with the same quantization
   fallback as TermDOM.
+- Underlined cells emit SGR `4` and then the ECMA-48 underline-shape
+  subparameter when the style is not single (`4:2` double, `4:3` curly, `4:4`
+  dotted, `4:5` dashed). Emitting plain `4` first is the fallback for terminals
+  that do not implement underline subparameters. `Style.underline_style`
+  selects the shape; `underline = false` ignores it.
 - Park the cursor at the end of the frame (at the caret once editing exists).
 
 ### 6.5 Scroll shift (design hook, deferred)
@@ -785,7 +790,8 @@ Public surface for the POC:
   (visible/hidden/clip), `text_align`, `white_space`
   (normal/nowrap/pre/pre_wrap/pre_line/break_spaces), `word_break`,
   `overflow_wrap`, `visibility`, `color`, `background`,
-  `bold`, `italic`, `underline`, `strikethrough`, `dim`, `reverse`, `z_index`,
+  `bold`, `italic`, `underline`, `underline_style`, `strikethrough`, `dim`,
+  `reverse`, `z_index`,
   `translate_x/y`, plus `margin` (`Margin` with per-side auto), `padding`,
   `border`, `border_style` and `border_color`. Flex adds `flex_direction`,
   `flex_wrap`, `justify_content`, `align_items`, `align_self`, `align_content`,
@@ -1053,9 +1059,21 @@ Library constraints:
   accessibility announcements.
 
 - **Diagnostics.** Marker decorations use the upstream `squiggly-*` class
-  names. Cells have no wavy underline or glyph margin, so the view paints the
-  range as an underline in the severity color (hint/unnecessary dimmed) and the
-  existing overview-ruler lane carries the marker color. The workbench
+  names. They are `className` decorations, not inline classes, so the view
+  paints them through the ported `DecorationsOverlay`: the overlay maps each
+  marker range with `RenderingContext.linesVisibleRangesForRange` to visible
+  cell ranges, and `TerminalViewHost` turns those ranges into the same cell flags
+  `ViewLine` uses for inline classes. Error/warning/info ranges get a curly
+  underline in `editorError`/`editorWarning`/`editorInfo.foreground`, hints get
+  a dotted underline, unused code is dimmed with a dashed underline, and
+  deprecated ranges are struck through. The underline shape is emitted as SGR
+  `4:2`/`4:3`/`4:4`/`4:5` after a plain `4`, so terminals without ECMA-48
+  underline subparameters fall back to a single underline. Cells cannot carry an
+  underline without a glyph: a collapsed marker past the last rendered glyph
+  paints no cell, though the Problems view and overview ruler still report it.
+  The translucent `editorError.background`-style range backgrounds are not
+  painted (the default themes leave them unset). The existing overview-ruler
+  lane carries the marker color. The workbench
   `status.problems` entry shows workspace-wide error/warning/info counts from
   `MarkerService.getStatistics()`, and the Problems panel view groups
   markers by file with selection, preview/open and scrolling. Selecting a

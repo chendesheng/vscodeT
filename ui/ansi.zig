@@ -5,6 +5,11 @@
 //! only the cells that are not empty. A row that did not change is skipped
 //! entirely, so an idle frame writes nothing. A cell-border set on a cell is
 //! emitted as the terminal's border pen around that cell's glyph.
+//!
+//! Underlined cells emit SGR `4` and then the ECMA-48 style subparameter
+//! (`4:2` double, `4:3` curly, `4:4` dotted, `4:5` dashed) when the cell
+//! carries a non-single style. The plain `4` is the fallback for terminals
+//! that do not implement underline subparameters.
 
 const std = @import("std");
 const cell = @import("cell.zig");
@@ -179,7 +184,18 @@ fn emitStyle(
     if ((wanted.attrs & cell.Attr.bold) != 0) try out.appendSlice(allocator, "\x1b[1m");
     if ((wanted.attrs & cell.Attr.dim) != 0) try out.appendSlice(allocator, "\x1b[2m");
     if ((wanted.attrs & cell.Attr.italic) != 0) try out.appendSlice(allocator, "\x1b[3m");
-    if ((wanted.attrs & cell.Attr.underline) != 0) try out.appendSlice(allocator, "\x1b[4m");
+    if ((wanted.attrs & (cell.Attr.underline | cell.Attr.underline_style_mask)) != 0) {
+        // Emit a plain underline first: terminals without ECMA-48 4:x
+        // subparameters keep it and ignore or mis-parse only the extra SGR.
+        try out.appendSlice(allocator, "\x1b[4m");
+        switch (cell.underlineStyleOf(wanted.attrs)) {
+            .single => {},
+            .double => try out.appendSlice(allocator, "\x1b[4:2m"),
+            .curly => try out.appendSlice(allocator, "\x1b[4:3m"),
+            .dotted => try out.appendSlice(allocator, "\x1b[4:4m"),
+            .dashed => try out.appendSlice(allocator, "\x1b[4:5m"),
+        }
+    }
     if ((wanted.attrs & cell.Attr.blink) != 0) try out.appendSlice(allocator, "\x1b[5m");
     if ((wanted.attrs & cell.Attr.inverse) != 0) try out.appendSlice(allocator, "\x1b[7m");
     if ((wanted.attrs & cell.Attr.strikethrough) != 0) try out.appendSlice(allocator, "\x1b[9m");
@@ -373,4 +389,39 @@ test "ansi: emits interned grapheme bytes" {
     defer allocator.free(encoded);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "e\u{301}") != null);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\u{1F469}\u{200D}\u{1F4BB}") != null);
+}
+
+test "ansi: underline styles emit SGR 4 subparameters after a plain fallback" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct {
+        style: @import("style.zig").UnderlineStyle,
+        sequence: []const u8,
+    }{
+        .{ .style = .single, .sequence = "\x1b[4m" },
+        .{ .style = .double, .sequence = "\x1b[4m\x1b[4:2m" },
+        .{ .style = .curly, .sequence = "\x1b[4m\x1b[4:3m" },
+        .{ .style = .dotted, .sequence = "\x1b[4m\x1b[4:4m" },
+        .{ .style = .dashed, .sequence = "\x1b[4m\x1b[4:5m" },
+    };
+    for (cases) |case| {
+        var grid = try CellGrid.init(allocator, 1, 1);
+        defer grid.deinit();
+        grid.putCodepoint(0, 0, 'x', 1, .{ .attrs = cell.underlineAttr(case.style) });
+        const encoded = try encode(allocator, null, &grid, .{ .synchronized = false });
+        defer allocator.free(encoded);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, case.sequence) != null);
+        if (case.style == .single) {
+            try std.testing.expect(std.mem.indexOf(u8, encoded, "\x1b[4:") == null);
+        }
+    }
+
+    // A style change resets the pen and re-emits the new subparameter.
+    var grid = try CellGrid.init(allocator, 2, 1);
+    defer grid.deinit();
+    grid.putCodepoint(0, 0, 'a', 1, .{ .attrs = cell.underlineAttr(.curly) });
+    grid.putCodepoint(1, 0, 'b', 1, .{ .attrs = cell.underlineAttr(.dotted) });
+    const encoded = try encode(allocator, null, &grid, .{ .synchronized = false });
+    defer allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\x1b[4m\x1b[4:3ma") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\x1b[4m\x1b[4:4mb") != null);
 }

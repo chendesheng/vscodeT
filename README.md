@@ -383,7 +383,8 @@ pairs and off-side folding even when the built-in grammar was already bundled.
 
 JSON and JSONC editors use the bundled VS Code JSON language server when
 `host/dist/jsonServer.mjs` is present. Syntax diagnostics are pulled after
-edits and shown in the `Problems` panel view and status-bar counts; `Ctrl-Space` completion
+edits and shown as severity-colored squiggle underlines over their ranges in
+the editor, in the `Problems` panel view and in the status-bar counts; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
 bundled grammar and reports no diagnostics. Hover, formatting and document
 symbols are forwarded to the same server, and the `json.schemas` setting is
@@ -422,8 +423,8 @@ Extensions can also contribute language features through the ported
 language-feature bridge: hover, completion, definition, declaration,
 implementation, type definition, references, document symbols, code actions and
 document/range/on-type formatting register in `LanguageFeaturesService`, and
-diagnostics feed the marker service, which paints squiggly underlines,
-overview-ruler marks, the `Problems` panel view and the workspace
+diagnostics feed the marker service, which paints severity-colored squiggly
+range underlines, overview-ruler marks, the `Problems` panel view and the workspace
 error/warning/info status counts. Selecting a problem highlights its code range
 in the editor while the Problems view owns focus. Hover, completion, the
 navigation actions, breadcrumb symbols and document formatting are wired to the

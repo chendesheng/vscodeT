@@ -23,9 +23,15 @@ pub const Attr = struct {
     pub const blink: u16 = 1 << 6;
     pub const overline: u16 = 1 << 7;
 
-    pub const width_shift: u4 = 8;
+    /// The underline shape lives in the three bits after `overline`; the
+    /// presence bit stays `underline` so code that only wants a plain
+    /// underline keeps setting a single flag.
+    pub const underline_style_shift: u4 = 8;
+    pub const underline_style_mask: u16 = 0b111 << underline_style_shift;
+
+    pub const width_shift: u4 = 11;
     pub const width_mask: u16 = 0b11 << width_shift;
-    pub const style_mask: u16 = 0xff;
+    pub const style_mask: u16 = 0x7ff;
 };
 
 pub const PaintStyle = struct {
@@ -37,6 +43,23 @@ pub const PaintStyle = struct {
         return a.fg == b.fg and a.bg == b.bg and a.attrs == b.attrs;
     }
 };
+
+/// Cell attribute bits for an underlined text run.
+pub fn underlineAttr(value: style.UnderlineStyle) u16 {
+    return Attr.underline | (@as(u16, @backingInt(value)) << Attr.underline_style_shift);
+}
+
+/// The underline shape stored in `attrs`; `.single` when only the presence bit
+/// is set (the default for all existing callers).
+pub fn underlineStyleOf(attrs: u16) style.UnderlineStyle {
+    return switch ((attrs & Attr.underline_style_mask) >> Attr.underline_style_shift) {
+        1 => .double,
+        2 => .curly,
+        3 => .dotted,
+        4 => .dashed,
+        else => .single,
+    };
+}
 
 pub fn packColor(color: style.Color) u32 {
     return (1 << 24) | (@as(u32, color.r) << 16) | (@as(u32, color.g) << 8) | color.b;
