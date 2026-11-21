@@ -1206,7 +1206,12 @@ direct/service/watcher tests), BOM-based UTF-8/UTF-16 encoding
 save participants (modify/skip/error), soft/hard revert with revert events and
 the working-copy registry/dirty tracking with its events, the working-copy
 editor handler registry/find path, all wired to TUI editors on
-open/restore/close; heuristic charset guessing is a documented terminal
+open/restore/close; interactive open, explorer expansion, image/Markdown
+preview loads and remote Markdown image fetches run through a workbench-owned
+`std.Io.Threaded` and `Io.async` (results applied on the TUI poll tick), and the
+terminal request service (`base/parts/request/common/request.zig`,
+`platform/request/node/requestService.zig`) ports the `std.http` network path;
+heuristic charset guessing is a documented terminal
 omission; clean editors
 now reload on external changes
 (`Workbench.handleFileChanges` → `Editor.reloadFromDisk`), with dirty editors

@@ -41,6 +41,20 @@ required for the measurements below.
   ports. `main.log`
   records `startup:` stage timings (`workbench-init`, `themes`,
   `workspace-git`, `first-frame`, `after-restored`) for diagnosing them.
+- Interactive file and directory reads run off the TUI thread. `Workbench`
+  owns a dedicated `std.Io.Threaded` instance (passed explicitly as `async_io`)
+  and starts work with `Io.async`: opening a file (read + BOM decode +
+  canonical path), expanding an explorer directory, loading image tabs and
+  Markdown images, and fetching remote Markdown images. Each feature owns its
+  `Io.Future` plus a completion flag; the event loop polls those flags, applies
+  results on the TUI thread and clamps the input timeout while a short read is
+  pending. Background workers (search, watcher, JSON server, extension host)
+  keep their own threads, matching upstream's worker model. The synchronous
+  `openPath` remains for startup/session restore and tests. Settings/theme
+  reloads and clean-editor external-change reloads triggered by the watcher
+  still read synchronously on the poll tick; converting those services is a
+  follow-up. Mouse-click preview opens and extension-host `openPath` calls also
+  still use the synchronous path.
 - Opening a file performs one view rebuild and one full wrapping pass. The
   workbench reserves the overview-ruler/scrollbar columns before that pass, and
   a path that is already open reuses its existing tab/editor instead of
@@ -1112,11 +1126,13 @@ Markdown preview:
   blocks.
 - Local raster images render as image blocks through the same kitty
   Unicode-placeholder path as the image preview: PNG is sent unchanged and
-  JPEG/GIF/BMP/TIFF are decoded by `zigimg`. Missing, remote, `data:` and SVG
-  images keep their alt text, as does any image when the terminal has no
-  placeholder support. Because a cell grid has no replaced inline element, an
-  image occupies its own rows at the content left edge; text before and after
-  continues on the surrounding rows.
+  JPEG/GIF/BMP/TIFF are decoded by `zigimg`. Image reads/decodes and remote
+  http(s) fetches run on the async Io; a missing, failed, `data:` or SVG image
+  keeps its alt text, as does any image when the terminal has no placeholder
+  support. Remote images use the ported request service (30 s deadline, 32 MiB
+  body cap) and are fetched only while the preview is visible. Because a cell
+  grid has no replaced inline element, an image occupies its own rows at the
+  content left edge; text before and after continues on the surrounding rows.
 - Terminal substitutions: the preview is a fixed 50/50 side pane rather than a
   webview; there is no HTML/CSS/script execution, external link opening,
   security selector, preview lock, in-place preview (`markdown.showPreview`),
@@ -1139,9 +1155,10 @@ Image preview:
   placeholder support keep a message and an **Open in Text Editor** button.
 - PNG is transmitted as-is. JPEG, GIF (first frame), BMP and TIFF are decoded by
   the pinned `zigimg` package (commit `bbdbb86`, MIT) and re-encoded as PNG;
-  WebP, AVIF and ICO report
-  an unsupported format, LFS pointer files report the upstream message, and
-  remote/`data:` resources are not fetched.
+  WebP, AVIF and ICO report an unsupported format, LFS pointer files report the
+  upstream message, and remote/`data:` resources are not fetched. Local image
+  reads and decodes run on the async Io; the loading placeholder is replaced on
+  the completion tick.
 - Fit/zoom/scroll: click zooms in, Ctrl/Alt+click zooms out, Ctrl/Alt+wheel
   zooms and a plain wheel scrolls. `+`/`=`/`-`/`0` and
   arrows/PageUp/PageDown/Home/End are TUI-specific keyboard alternatives. The
@@ -1623,6 +1640,18 @@ Editor contributions:
   `watch` requests and filters host-forwarded watcher changes through
   `deliverChanges`, and is tested directly, through `ProviderFileService` and
   for watcher filtering.
+
+- The terminal network request layer is ported in
+  `base/parts/request/common/request.zig` and
+  `platform/request/node/requestService.zig`: `IHeaders`/`IRequestOptions`/
+  `IRequestContext`, `std.http.Client` transport, status and response-header
+  copying, a buffered body cap, redirect limits, Basic auth and TLS through
+  Zig's system CA bundle. Proxy fields are available on the service
+  (`configure`) but are not wired to `http.proxy` settings yet. Remote Markdown
+  images are the first consumer; requests run on the workbench async Io. The
+  Node retry/backoff policy, proxy agent, Kerberos, request timeout enforcement
+  (the Markdown job enforces its own 30 s deadline) and streaming response
+  bodies are documented terminal omissions.
 
 - `ExperimentalSettingsService` (`workbench/services/configuration/common/experimentalSettings.zig`)
   is ported: assignment membership updates synchronously while change

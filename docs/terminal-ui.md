@@ -1397,6 +1397,45 @@ integrated terminal panel does not forward kitty images; only the editor's
 Markdown/image previews use them. Cursor shape is the outer terminal's; bar/underline settings are
 approximated by the cursor position and block/inverse paint.
 
+### 8.1.1 Async I/O and the event loop
+
+Interactive file, directory and network work uses Zig's `Io.async` directly; no
+Promise/Task framework is introduced. `Workbench` owns a dedicated
+`std.Io.Threaded` instance (passed as `async_io`) configured with an unlimited
+async limit, separate from the terminal/synchronous-startup `io`. Features that
+can block read from it:
+
+- `Workbench.requestOpenPath` reads, BOM-detects, decodes and canonicalizes the
+  file in a job; the TUI thread only builds the editor from `LoadedText` when
+  the completion flag is set.
+- Explorer expansion uses `Sidebar.requestLoad`; the listing is applied and the
+  node expanded by `Sidebar.pollLoad` on the event-loop tick. Expansion is
+  deferred until the listing lands (there is no synthetic loading row yet); a
+  new expansion cancels and joins the previous one.
+- Image tabs and Markdown images use `ImagePreviewPane.requestLoad` and
+  `MarkdownPreview` image jobs; local reads/decodes and remote http(s) fetches
+  never touch the TUI thread. Remote jobs have a 30 s deadline enforced by
+  the poll loop.
+- `platform/request/node/requestService.zig` is a synchronous `std.http`
+  request layer; callers wrap it in `Io.async` when they need the TUI thread
+  free.
+
+Each owner keeps a heap job holding `Io.Future(T)`, an atomic `done` flag and
+the request data. `Workbench.pollAsyncReads` (open/image previews),
+`pollFileWatcher` (explorer) and `markdownPreviewTick` (Markdown images) apply
+completed results on the TUI thread. `Workbench.hasLatencySensitiveReads`
+clamps the input poll timeout to 4 ms while a short read is pending; remote
+network jobs are not latency-sensitive and complete on the next regular tick.
+Shutdown cancels and joins every job before the async `Io.Threaded` and the
+services/panes that own the results are freed. Background workers (search,
+watcher JSON server, extension host) continue to use dedicated threads, which
+is the terminal counterpart of upstream's worker processes.
+
+Known boundaries: provider methods remain synchronous and are only called from
+the TUI thread today; save/close/quit keeps a synchronous write pipeline;
+startup workspace/theme/extension scans happen before the first frame. These
+are listed in the README as remaining async-port work.
+
 ### 8.2 Source Control, quick diff and diff editor
 
 The terminal workbench ports the read-only Git/SCM pipeline without the

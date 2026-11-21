@@ -715,3 +715,8 @@ comptime {
     _ = @import("./vs/platform/files/test/node/watcherStats.test.zig");
     _ = @import("./vs/platform/files/test/node/watcherClient.test.zig");
 }
+comptime {
+    _ = @import("./vs/base/parts/request/common/request.zig");
+    _ = @import("./vs/platform/request/node/requestService.zig");
+    _ = @import("./vs/platform/request/test/node/requestService.test.zig");
+}

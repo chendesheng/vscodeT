@@ -66,6 +66,8 @@ pub const Tab = struct {
     image_preview: ?*ImagePreviewPane = null,
     image_input: ?*ImagePreviewEditorInput = null,
     image_runtime: ?*ui.image.Runtime = null,
+    /// Io handed over by the workbench for async preview/image loads.
+    async_io: ?Io = null,
     last_width: usize = 0,
     last_height: usize = 0,
     preview_rect: ?ui.Rect = null,
@@ -140,10 +142,11 @@ pub const Tab = struct {
         width: usize,
         height: usize,
         runtime: *ui.image.Runtime,
+        async_io: ?Io,
     ) !*Tab {
         const input = try ImagePreviewEditorInput.init(allocator, path);
         errdefer input.deinit();
-        return initImageFromInput(allocator, io, input, width, height, runtime);
+        return initImageFromInput(allocator, io, input, width, height, runtime, async_io);
     }
 
     pub fn initImageFromInput(
@@ -153,6 +156,7 @@ pub const Tab = struct {
         width: usize,
         height: usize,
         runtime: *ui.image.Runtime,
+        async_io: ?Io,
     ) !*Tab {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
@@ -167,7 +171,10 @@ pub const Tab = struct {
         const view = try View.init(allocator, editor);
         errdefer view.deinit();
 
-        const pane = try ImagePreviewPane.init(allocator, io, runtime, image_input.path);
+        const pane = if (async_io) |load_io|
+            try ImagePreviewPane.initAsync(allocator, io, load_io, runtime, image_input.path)
+        else
+            try ImagePreviewPane.init(allocator, io, runtime, image_input.path);
         errdefer pane.deinit();
 
         self.* = .{
@@ -443,8 +450,16 @@ pub const Tab = struct {
         if (self.markdown_preview == null) {
             self.markdown_preview = try MarkdownPreview.init(self.allocator, self.editor);
             self.markdown_preview.?.setImageRuntime(self.image_runtime);
+            if (self.async_io) |io| self.markdown_preview.?.setAsyncIo(io);
         }
         return self.markdown_preview;
+    }
+
+    /// Stores the workbench's async Io so previews created later can read
+    /// images off the TUI thread. Called by the workbench when it creates a tab.
+    pub fn setAsyncIo(self: *Tab, io: Io) void {
+        self.async_io = io;
+        if (self.markdown_preview) |preview| preview.setAsyncIo(io);
     }
 
     pub fn setMarkdownPreviewVisible(self: *Tab, visible: bool) !void {

@@ -275,6 +275,21 @@ pub const ChangeListener = struct {
     callback: *const fn (context: *anyopaque) void,
 };
 
+/// Text already read and decoded off the TUI thread. The open job owns these
+/// slices until `Editor.create*FromLoadedText` has built the model; the
+/// constructor copies what the model keeps.
+pub const LoadedText = struct {
+    text: []u8,
+    encoding: encoding_mod.Encoding,
+    absolute_path: []u8,
+
+    pub fn deinit(self: *LoadedText, allocator: Allocator) void {
+        allocator.free(self.text);
+        allocator.free(self.absolute_path);
+        self.* = undefined;
+    }
+};
+
 pub const Editor = struct {
     allocator: Allocator,
     io: Io,
@@ -434,7 +449,7 @@ pub const Editor = struct {
     }
 
     pub fn create(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Editor {
-        return createInternal(allocator, io, path, width, height, null, null, .{});
+        return createInternal(allocator, io, path, width, height, null, null, .{}, null);
     }
 
     pub fn createWithOptions(
@@ -445,7 +460,7 @@ pub const Editor = struct {
         height: usize,
         options: CreateOptions,
     ) !*Editor {
-        return createInternal(allocator, io, path, width, height, null, null, options);
+        return createInternal(allocator, io, path, width, height, null, null, options, null);
     }
 
     pub fn createWithDeclarative(
@@ -456,7 +471,7 @@ pub const Editor = struct {
         height: usize,
         declarative: ?*const extensions_registry.Registry,
     ) !*Editor {
-        return createInternal(allocator, io, path, width, height, null, declarative, .{});
+        return createInternal(allocator, io, path, width, height, null, declarative, .{}, null);
     }
 
     pub fn createWithDeclarativeOptions(
@@ -468,7 +483,7 @@ pub const Editor = struct {
         declarative: ?*const extensions_registry.Registry,
         options: CreateOptions,
     ) !*Editor {
-        return createInternal(allocator, io, path, width, height, null, declarative, options);
+        return createInternal(allocator, io, path, width, height, null, declarative, options, null);
     }
 
     pub fn createWithExtensions(
@@ -493,21 +508,53 @@ pub const Editor = struct {
         json_client: ?*json_language.Client,
         options: CreateOptions,
     ) !*Editor {
-        const editor = try createInternal(allocator, io, path, width, height, null, declarative, options);
+        const editor = try createInternal(allocator, io, path, width, height, null, declarative, options, null);
         editor.json_client = json_client;
         editor.attachJsonLanguage() catch {};
         return editor;
     }
 
     pub fn createFromText(allocator: Allocator, io: Io, text: []const u8, path: []const u8, width: usize, height: usize) !*Editor {
-        return createInternal(allocator, io, path, width, height, text, null, .{});
+        return createInternal(allocator, io, path, width, height, text, null, .{}, null);
     }
 
     pub fn createFromTextWithOptions(allocator: Allocator, io: Io, text: []const u8, path: []const u8, width: usize, height: usize, options: CreateOptions) !*Editor {
-        return createInternal(allocator, io, path, width, height, text, null, options);
+        return createInternal(allocator, io, path, width, height, text, null, options, null);
     }
 
-    fn createInternal(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize, text: ?[]const u8, declarative: ?*const extensions_registry.Registry, options: CreateOptions) !*Editor {
+    /// Builds an editor from text the caller already read and decoded on a
+    /// worker thread. Used by `Workbench.requestOpenPath` so the TUI thread
+    /// never performs the disk read/realpath.
+    pub fn createFromLoadedText(
+        allocator: Allocator,
+        io: Io,
+        loaded: *const LoadedText,
+        path: []const u8,
+        width: usize,
+        height: usize,
+        options: CreateOptions,
+    ) !*Editor {
+        return createInternal(allocator, io, path, width, height, null, null, options, loaded);
+    }
+
+    pub fn createWithExtensionsFromLoadedText(
+        allocator: Allocator,
+        io: Io,
+        loaded: *const LoadedText,
+        path: []const u8,
+        width: usize,
+        height: usize,
+        declarative: ?*const extensions_registry.Registry,
+        json_client: ?*json_language.Client,
+        options: CreateOptions,
+    ) !*Editor {
+        const editor = try createInternal(allocator, io, path, width, height, null, declarative, options, loaded);
+        editor.json_client = json_client;
+        editor.attachJsonLanguage() catch {};
+        return editor;
+    }
+
+    fn createInternal(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize, text: ?[]const u8, declarative: ?*const extensions_registry.Registry, options: CreateOptions, loaded: ?*const LoadedText) !*Editor {
         const editor = try allocator.create(Editor);
         errdefer allocator.destroy(editor);
 
@@ -604,7 +651,7 @@ pub const Editor = struct {
         errdefer undo_redo.deinit();
 
         var encoding: encoding_mod.Encoding = .utf8;
-        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, text, &encoding);
+        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, text, loaded, &encoding);
         errdefer {
             model.deinit();
             allocator.destroy(model);
@@ -4278,7 +4325,7 @@ fn resolvedLanguageConfigurationForBrackets(
 /// used by the text model URI. Language providers return absolute `file:` URIs;
 /// keeping a relative model URI would make the same buffer look like a
 /// different document and send navigation to a non-existent path.
-fn absolutePath(allocator: Allocator, io: Io, path: []const u8) ![]u8 {
+pub fn absolutePath(allocator: Allocator, io: Io, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return std.fs.path.resolve(allocator, &.{path});
     var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
     if (Io.Dir.cwd().realPathFile(io, path, &buffer)) |length| {
@@ -4297,6 +4344,7 @@ fn createModel(
     undo_redo: *UndoRedoService,
     language_service: *LanguageService,
     text: ?[]const u8,
+    loaded: ?*const LoadedText,
     encoding_out: *encoding_mod.Encoding,
 ) !*TextModel {
     const options = TextModelCreationOptions{
@@ -4313,6 +4361,24 @@ fn createModel(
         // defers the initial build for large documents.
         .bracketPairColorizationOptions = .{ .enabled = true, .independentColorPoolPerBracketType = false },
     };
+
+    if (loaded) |value| {
+        // The open job already read, decoded and canonicalized the file on a
+        // worker thread; building the model must not touch the disk again.
+        encoding_out.* = value.encoding;
+        var fixed = Io.Reader.fixed(value.text);
+        const associated = std.Uri{
+            .scheme = "file",
+            .user = null,
+            .password = null,
+            .host = .{ .raw = "" },
+            .port = null,
+            .path = .{ .raw = try allocator.dupe(u8, value.absolute_path) },
+            .query = null,
+            .fragment = null,
+        };
+        return try TextModel.init(allocator, &fixed, language_id, options, associated, undo_redo, language_service);
+    }
 
     const raw: []u8 = if (text) |content|
         try allocator.dupe(u8, content)

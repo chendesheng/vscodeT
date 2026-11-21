@@ -6,14 +6,17 @@
 // writes a placeholder message on failure. The terminal port keeps the load
 // result state (file size, dimensions, message, has-image, reload) and the
 // `ImageViewer` model, while file reading, decoding and terminal painting are
-// supplied through a `Host`. Loads are synchronous: the file is read on the
-// workbench main loop, so there is no pending-load race to guard against.
+// supplied through a `Host`. The synchronous `load` remains for tests and
+// host-driven callers; `beginLoad`/`applyLoaded` split the portable load state
+// so the terminal pane can read and decode on the async Io and apply the
+// result on the TUI thread. `loadId` still guards against stale results.
 //
 // Browser-only omissions: object URLs, `<img>` decoding, the message
 // button's DOM subtree, view-state mementos and the media-player inputs.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 const mediaImage = @import("../common/mediaImage.zig");
 const media_preview = @import("../common/mediaPreview.zig");
@@ -28,6 +31,7 @@ pub const message_too_large = "The image is too large to preview.";
 pub const message_corrupt = "An error occurred while loading the image.";
 pub const message_read_error = "The image could not be read.";
 pub const message_empty = "The image file is empty.";
+pub const message_loading = "Loading image...";
 
 pub const FileContent = struct {
     /// Owned by the caller.
@@ -38,6 +42,18 @@ pub const FileContent = struct {
 /// Host boundary. `read` returns owned bytes; `show` takes ownership of the
 /// decoded payload (including on failure) and uploads it to the terminal;
 /// `clear` discards the currently displayed image (for example before a reload).
+/// Result of reading and decoding an image on a worker thread. The terminal
+/// pane keeps the portable message/state decisions in `applyLoaded`.
+pub const LoadedImage = union(enum) {
+    image: struct { decoded: mediaImage.Decoded, size: usize },
+    empty,
+    git_lfs: usize,
+    unsupported: usize,
+    too_large: usize,
+    corrupt: usize,
+    read_error,
+};
+
 pub const Host = struct {
     context: *anyopaque,
     read: *const fn (context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!FileContent,
@@ -55,9 +71,19 @@ pub const ImagePreviewEditor = struct {
     /// View state captured by `reload` and applied by the view once it knows
     /// the pane's cell geometry.
     pending_view_state: ?ViewState = null,
+    /// View state captured by `beginLoad` until `applyLoaded` runs.
+    load_previous_view_state: ?ViewState = null,
     load_id: u32 = 0,
 
     pub fn init(allocator: Allocator, host: Host, path: []const u8) !*ImagePreviewEditor {
+        const self = try initDeferred(allocator, host, path);
+        self.load(false);
+        return self;
+    }
+
+    /// Creates the controller without reading anything. The caller starts an
+    /// async load and later calls `beginLoad`/`applyLoaded`.
+    pub fn initDeferred(allocator: Allocator, host: Host, path: []const u8) !*ImagePreviewEditor {
         const self = try allocator.create(ImagePreviewEditor);
         errdefer allocator.destroy(self);
         self.* = .{
@@ -65,8 +91,82 @@ pub const ImagePreviewEditor = struct {
             .host = host,
             .path = try allocator.dupe(u8, path),
         };
-        self.load(false);
         return self;
+    }
+
+    /// Resets the load state and returns the load id the result must match.
+    pub fn beginLoad(self: *ImagePreviewEditor, preserve_view_state: bool) u32 {
+        self.load_id += 1;
+        self.load_previous_view_state = if (preserve_view_state) self.viewer.getViewState() else null;
+        self.host.clear(self.host.context);
+        self.viewer.clear();
+        self.message = null;
+        self.file_size = null;
+        return self.load_id;
+    }
+
+    /// Reads, checks and decodes an image. Pure worker-thread work: it does not
+    /// touch the viewer or terminal, only the supplied allocator/io.
+    pub fn loadContent(allocator: Allocator, io: Io, path: []const u8) LoadedImage {
+        const bytes = Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(mediaImage.max_file_bytes)) catch |err| {
+            return if (err == error.FileTooBig or err == error.StreamTooLong) .{ .too_large = 0 } else .read_error;
+        };
+        defer allocator.free(bytes);
+        const size = bytes.len;
+        if (size == 0) return .empty;
+        if (media_preview.isGitLfsPointer(bytes)) return .{ .git_lfs = size };
+        const decoded = mediaImage.decode(allocator, bytes) catch |err| return switch (err) {
+            error.UnsupportedFormat => .{ .unsupported = size },
+            error.ImageTooLarge => .{ .too_large = size },
+            error.CorruptImage => .{ .corrupt = size },
+            else => .read_error,
+        };
+        return .{ .image = .{ .decoded = decoded, .size = size } };
+    }
+
+    /// Applies a `loadContent` result on the TUI thread. Stale results (a newer
+    /// reload started meanwhile) take ownership of their payload and drop it.
+    pub fn applyLoaded(self: *ImagePreviewEditor, load_id: u32, loaded: LoadedImage) void {
+        if (load_id != self.load_id) {
+            if (loaded == .image) {
+                var decoded = loaded.image.decoded;
+                decoded.deinit(self.allocator);
+            }
+            return;
+        }
+        self.message = null;
+        self.file_size = null;
+        switch (loaded) {
+            .image => |value| {
+                self.file_size = value.size;
+                self.viewer.setImage(.{ .width = value.decoded.width, .height = value.decoded.height });
+                // `show` takes ownership of the decoded payload even on error.
+                self.host.show(self.host.context, value.decoded) catch {
+                    self.viewer.clear();
+                    self.message = message_read_error;
+                };
+            },
+            .empty => self.message = message_empty,
+            .git_lfs => |size| {
+                self.file_size = size;
+                self.message = message_git_lfs;
+            },
+            .unsupported => |size| {
+                self.file_size = size;
+                self.message = message_unsupported;
+            },
+            .too_large => |size| {
+                self.file_size = if (size == 0) null else size;
+                self.message = message_too_large;
+            },
+            .corrupt => |size| {
+                self.file_size = size;
+                self.message = message_corrupt;
+            },
+            .read_error => self.message = message_read_error,
+        }
+        self.pending_view_state = self.load_previous_view_state;
+        self.load_previous_view_state = null;
     }
 
     pub fn deinit(self: *ImagePreviewEditor) void {

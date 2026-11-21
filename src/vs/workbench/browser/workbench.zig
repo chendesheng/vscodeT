@@ -28,6 +28,14 @@
 //! active input and gives each pane independent view state. Duplicating an
 //! `Editor` would duplicate the text model, so the move preserves the one
 //! model until the editor is split into model/view state.
+//!
+//! Async terminal adaptation: interactive read paths (`requestOpenPath`,
+//! explorer expansion, image/Markdown previews and remote Markdown images) run
+//! on the workbench's dedicated `std.Io.Threaded` via `Io.async`. No generic
+//! Task/Promise type is introduced: each owner keeps an `Io.Future` plus a
+//! completion flag, and `pollAsyncReads`/`pollFileWatcher`/`markdownPreviewTick`
+//! apply results on the TUI thread. `openPath` stays synchronous for startup,
+//! session restore and tests.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -348,9 +356,39 @@ const editor_mod = @import("../common/editor.zig");
 const text_editor_selection_mod = @import("./parts/editor/textEditor.zig");
 const editor_widget = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
 
+/// Result of reading and decoding a file on the async Io. The text is owned by
+/// the job until `Editor.create*FromLoadedText` has copied what the model
+/// needs.
+const OpenOutcome = union(enum) {
+    text: editor_widget.LoadedText,
+    err: anyerror,
+};
+
+/// One interactive text open on the async Io. No generic Task/Promise layer:
+/// the job owns the raw `Io.Future`, the completion flag and the request data.
+const OpenJob = struct {
+    owner: *Workbench,
+    future: Io.Future(OpenOutcome),
+    done: std.atomic.Value(bool) = .init(false),
+    path: []u8,
+    generation: u64,
+    options: Workbench.OpenOptions,
+};
+
 pub const Workbench = struct {
     allocator: Allocator,
     io: Io,
+    /// Io used to run interactive file/dir/network work off the TUI thread.
+    /// It is a separate instance from `io` with `async_limit = .unlimited` so
+    /// `Io.async` never falls back to running a blocking read inline on the
+    /// TUI thread just because the default pool is busy. `io` remains the
+    /// terminal/synchronous-startup instance.
+    async_io_state: Io.Threaded,
+    async_io: Io,
+    /// The single interactive open currently in flight. A newer request
+    /// supersedes it; the generation is checked again when the result lands.
+    pending_open: ?*OpenJob = null,
+    open_generation: u64 = 0,
     cols: usize,
     rows: usize,
 
@@ -381,6 +419,9 @@ pub const Workbench = struct {
     activity_service: ActivityService,
     editor_status: ?*EditorStatus = null,
     status_hint_accessor: ?EntryAccessor = null,
+    /// Stable storage for the transient "Opening ..." status hint; the
+    /// status-bar entry keeps the slice.
+    status_hint_buf: [256]u8 = undefined,
     markers_status: ?*MarkersStatusBar = null,
     problems_view: ?*ProblemsView = null,
     marker_listener: ?@import("../../base/common/event.zig").Emitter(MarkerChangeEvent).ListenerId = null,
@@ -502,6 +543,14 @@ pub const Workbench = struct {
         self.* = undefined;
         self.allocator = allocator;
         self.io = io;
+        self.async_io_state = Io.Threaded.init(allocator, .{
+            .async_limit = .unlimited,
+            .environ = asyncEnviron(),
+        });
+        errdefer self.async_io_state.deinit();
+        self.async_io = self.async_io_state.io();
+        self.pending_open = null;
+        self.open_generation = 0;
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
@@ -632,6 +681,14 @@ pub const Workbench = struct {
         self.* = undefined;
         self.allocator = allocator;
         self.io = io;
+        self.async_io_state = Io.Threaded.init(allocator, .{
+            .async_limit = .unlimited,
+            .environ = asyncEnviron(),
+        });
+        errdefer self.async_io_state.deinit();
+        self.async_io = self.async_io_state.io();
+        self.pending_open = null;
+        self.open_generation = 0;
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
@@ -758,6 +815,7 @@ pub const Workbench = struct {
                     self.cols,
                     @max(self.rows -| 2, 1),
                     &self.images,
+                    null,
                 );
                 try tab.view.setStatusBarVisible(false);
                 try pane.addTab(tab);
@@ -794,6 +852,14 @@ pub const Workbench = struct {
         self.* = undefined;
         self.allocator = allocator;
         self.io = io;
+        self.async_io_state = Io.Threaded.init(allocator, .{
+            .async_limit = .unlimited,
+            .environ = asyncEnviron(),
+        });
+        errdefer self.async_io_state.deinit();
+        self.async_io = self.async_io_state.io();
+        self.pending_open = null;
+        self.open_generation = 0;
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
@@ -915,6 +981,7 @@ pub const Workbench = struct {
                         self.cols,
                         @max(self.rows -| 2, 1),
                         &self.images,
+                        null,
                     );
                     try tab.view.setStatusBarVisible(false);
                     try pane.addTab(tab);
@@ -1438,6 +1505,7 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
+        self.cancelAsyncJobs();
         if (self.dialog) |dialog| {
             dialog.deinit();
             self.dialog = null;
@@ -1538,6 +1606,7 @@ pub const Workbench = struct {
             self.allocator.destroy(service);
         }
         self.frame.deinit();
+        self.async_io_state.deinit();
         self.allocator.destroy(self);
     }
 
@@ -2045,6 +2114,9 @@ pub const Workbench = struct {
 
     pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
         var changed = false;
+        if (self.sidebar) |sidebar| {
+            if (sidebar.pollLoad()) changed = true;
+        }
         if (self.settings_watcher) |watcher| {
             changed = watcher.poll(now_ms) catch false;
             if (changed) {
@@ -2121,6 +2193,7 @@ pub const Workbench = struct {
                 self.workspace,
                 self.configuration.?,
             );
+            self.sidebar.?.setAsyncIo(self.async_io);
         }
         if (self.search_view == null) try self.initSearchFromWorkspace();
         self.sidebar.?.setOpenEditorQuery(.{ .context = self, .is_open = isPathOpen });
@@ -3993,7 +4066,7 @@ pub const Workbench = struct {
         self.pruneTabs(pane);
     }
 
-    fn openImagePath(self: *Workbench, path: []const u8, options: OpenOptions) !void {
+    fn openImagePath(self: *Workbench, path: []const u8, options: OpenOptions, async_io: ?Io) !void {
         const input = try ImagePreviewEditorInput.init(self.allocator, path);
         errdefer input.deinit();
 
@@ -4018,7 +4091,7 @@ pub const Workbench = struct {
             return;
         }
 
-        const tab = try Tab.initImageFromInput(self.allocator, self.io, input, self.cols, self.editorContentHeight(), &self.images);
+        const tab = try Tab.initImageFromInput(self.allocator, self.io, input, self.cols, self.editorContentHeight(), &self.images, async_io);
         try tab.view.setStatusBarVisible(false);
         try pane.addTab(tab);
         self.applyEditorSettingsToTab(tab);
@@ -4056,7 +4129,7 @@ pub const Workbench = struct {
             if (self.findOpenImageInput(path)) |existing| {
                 return self.openExistingImageInput(path, existing, options);
             }
-            return self.openImagePath(path, options);
+            return self.openImagePath(path, options, null);
         }
         if (self.findOpenInput(path)) |existing| {
             return self.openExistingInput(path, existing, options);
@@ -4107,6 +4180,246 @@ pub const Workbench = struct {
         try tab.ensureControllers();
         try self.history.add(path);
         self.pruneTabs(pane);
+    }
+
+    /// The Io used for interactive reads and network work. Callers pass this
+    /// explicitly to `io.async`; it is deliberately separate from `io` so the
+    /// async pool does not fall back to inline execution on the TUI thread.
+    pub fn asyncIo(self: *const Workbench) Io {
+        return self.async_io;
+    }
+
+    /// Interactive open: reads/decodes on the async Io and applies the result
+    /// from `pollAsyncReads`. The synchronous `openPath` remains for startup,
+    /// session restore, tests and callers that already run off the TUI thread.
+    pub fn requestOpenPath(self: *Workbench, path: []const u8) void {
+        self.requestOpenPathWithOptions(path, .{});
+    }
+
+    pub fn requestOpenPathWithOptions(self: *Workbench, path: []const u8, options: OpenOptions) void {
+        self.cancelPendingOpen();
+        self.clearStatusHint();
+        // Image tabs load their payload through `ImagePreviewPane.initAsync`;
+        // constructing the tab itself does no file I/O.
+        if (!options.force_text and media_preview.opensInImagePreview(path)) {
+            if (self.findOpenImageInput(path)) |existing| {
+                self.recordNavigation();
+                self.openExistingImageInput(path, existing, options) catch |err| {
+                    self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+                };
+                return;
+            }
+            self.recordNavigation();
+            self.openImagePath(path, options, self.async_io) catch |err| {
+                self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+            };
+            return;
+        }
+        if (self.findOpenInput(path)) |existing| {
+            self.recordNavigation();
+            self.openExistingInput(path, existing, options) catch |err| {
+                self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+            };
+            return;
+        }
+
+        const job = self.allocator.create(OpenJob) catch {
+            self.setStatusHint("Open failed: out of memory", .{});
+            return;
+        };
+        const path_copy = self.allocator.dupe(u8, path) catch {
+            self.allocator.destroy(job);
+            self.setStatusHint("Open failed: out of memory", .{});
+            return;
+        };
+        self.open_generation += 1;
+        job.* = .{
+            .owner = self,
+            .future = undefined,
+            .path = path_copy,
+            .generation = self.open_generation,
+            .options = options,
+        };
+        job.future = self.async_io.async(runOpenJob, .{job});
+        self.pending_open = job;
+        self.setStatusHint("Opening {s}...", .{std.fs.path.basename(path)});
+    }
+
+    fn cancelPendingOpen(self: *Workbench) void {
+        const job = self.pending_open orelse return;
+        self.pending_open = null;
+        const outcome = job.future.cancel(self.async_io);
+        self.freeOpenOutcome(outcome);
+        self.allocator.free(job.path);
+        self.allocator.destroy(job);
+    }
+
+    fn freeOpenOutcome(self: *Workbench, outcome: OpenOutcome) void {
+        switch (outcome) {
+            .text => |value| {
+                var loaded = value;
+                loaded.deinit(self.allocator);
+            },
+            .err => {},
+        }
+    }
+
+    fn openLoadedTextEditor(self: *Workbench, path: []const u8, loaded: *const editor_widget.LoadedText, options: OpenOptions) !void {
+        const editor = try Editor.createWithExtensionsFromLoadedText(
+            self.allocator,
+            self.io,
+            loaded,
+            path,
+            self.cols,
+            self.editorContentHeight(),
+            self.declarative,
+            self.json_client,
+            .{ .reserve_scrollbar = true },
+        );
+        errdefer {
+            editor.deinit();
+            self.allocator.destroy(editor);
+        }
+        self.applyConfiguredLanguageAssociations(editor);
+        if (self.language_features) |features| {
+            editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
+        }
+        const input = try FileEditorInput.init(self.allocator, editor);
+        errdefer input.deinit();
+
+        const opened = try self.service.openEditor(
+            &input.base,
+            null,
+            .{ .open = .{ .pinned = options.pinned, .active = true } },
+        );
+
+        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (self.autoRevealEnabled(path)) {
+            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
+        }
+        if (!opened.result.is_new) {
+            input.deinit();
+            if (pane.tabForInput(opened.result.editor)) |tab| {
+                try pane.activateTab(tab);
+                if (self.language_features) |features| tab.attachLanguageRegistry(features);
+                try tab.ensureControllers();
+                tab.focusEditor();
+            }
+            try self.history.add(path);
+            self.pruneTabs(pane);
+            return;
+        }
+
+        const tab = try Tab.initFromInput(self.allocator, input);
+        tab.setImageRuntime(&self.images);
+        try tab.view.setStatusBarVisible(false);
+        try pane.addTab(tab);
+        self.applyEditorSettingsToTab(tab);
+        self.registerWorkingCopy(tab);
+        if (self.quick_diff_controller) |controller| controller.attach(tab.editor, tab.editor.path) catch {};
+        if (self.language_features) |features| tab.attachLanguageRegistry(features);
+        try tab.ensureControllers();
+        try self.history.add(path);
+        self.pruneTabs(pane);
+    }
+
+    /// Drains completed async reads on the TUI thread. Returns true when a
+    /// result was applied and a repaint is needed.
+    pub fn pollAsyncReads(self: *Workbench) bool {
+        var changed = false;
+        if (self.pending_open) |job| {
+            if (job.done.load(.acquire)) {
+                const outcome = job.future.await(self.async_io);
+                self.pending_open = null;
+                const path = job.path;
+                const options = job.options;
+                const generation = job.generation;
+                self.allocator.destroy(job);
+                defer self.allocator.free(path);
+                if (generation != self.open_generation) {
+                    self.freeOpenOutcome(outcome);
+                    return true;
+                }
+                switch (outcome) {
+                    .text => |value| {
+                        var loaded = value;
+                        defer loaded.deinit(self.allocator);
+                        self.recordNavigation();
+                        self.openLoadedTextEditor(path, &loaded, options) catch |err| {
+                            self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+                            return true;
+                        };
+                        self.clearStatusHint();
+                    },
+                    .err => |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)}),
+                }
+                changed = true;
+            }
+        }
+        if (self.pollImagePreviews()) changed = true;
+        return changed;
+    }
+
+    fn pollImagePreviews(self: *Workbench) bool {
+        var changed = false;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.image_preview) |preview| {
+                    if (preview.poll()) changed = true;
+                }
+            }
+        }
+        return changed;
+    }
+
+    fn hasPendingImageLoads(self: *const Workbench) bool {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.image_preview) |preview| {
+                    if (preview.hasPendingLoad()) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// True while a short read is in flight. The main loop clamps its input
+    /// poll timeout so the result is applied promptly without busy-spinning
+    /// the idle maintenance work.
+    pub fn hasLatencySensitiveReads(self: *Workbench) bool {
+        if (self.pending_open != null or self.hasPendingImageLoads()) return true;
+        if (self.sidebar) |sidebar| {
+            if (sidebar.hasPendingLoad()) return true;
+        }
+        if (self.activeTab()) |tab| {
+            if (tab.markdown_preview) |preview| {
+                if (preview.hasPendingLocalImages()) return true;
+            }
+        }
+        return false;
+    }
+
+    fn setStatusHint(self: *Workbench, comptime fmt: []const u8, args: anytype) void {
+        const accessor = self.status_hint_accessor orelse return;
+        const text = std.fmt.bufPrint(&self.status_hint_buf, fmt, args) catch return;
+        accessor.update(.{ .name = "Source Control", .text = text });
+    }
+
+    fn clearStatusHint(self: *Workbench) void {
+        if (self.status_hint_accessor) |accessor| {
+            accessor.update(.{ .name = "Source Control", .text = "" });
+        }
+    }
+
+    fn cancelAsyncJobs(self: *Workbench) void {
+        self.cancelPendingOpen();
+        if (self.sidebar) |sidebar| sidebar.cancelLoad();
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.image_preview) |preview| preview.cancelLoad();
+                if (tab.markdown_preview) |preview| preview.cancelImageJobs();
+            }
+        }
     }
 
     /// Replaces the active image preview tab with a text editor for the same
@@ -6120,7 +6433,7 @@ pub const Workbench = struct {
         if (self.sidebar == null) return false;
         switch (try self.sidebar.?.handleKey(event)) {
             .open => |path| {
-                try self.openPath(path);
+                self.requestOpenPath(path);
                 self.focus = .editor;
                 return true;
             },
@@ -7100,7 +7413,7 @@ pub const Workbench = struct {
     }
 
     fn openBreadcrumbFile(self: *Workbench, path: []const u8) !void {
-        try self.openPath(path);
+        self.requestOpenPath(path);
         self.focusEditor();
     }
 
@@ -7416,7 +7729,7 @@ fn hasActiveEditor(context: *anyopaque) bool {
 
 fn quickOpenFile(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    return self.openPath(path);
+    self.requestOpenPath(path);
 }
 
 fn quickGetExcludes(context: *anyopaque, allocator: Allocator) anyerror![]glob.ExcludeEntry {
@@ -10115,6 +10428,11 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     var enter = ui.KeyEvent{ .key = .enter };
     _ = try workbench.handleQuickAccessKey(&enter);
     try std.testing.expect(!workbench.isQuickAccessOpen());
+    var open_guard: usize = 0;
+    while (workbench.tabCount() == 0 and open_guard < 2000) : (open_guard += 1) {
+        _ = workbench.pollAsyncReads();
+        std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
+    }
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("alpha.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqual(@as(usize, 1), workbench.history.getHistory().len);
@@ -11008,6 +11326,43 @@ fn dupeOwnedPaths(allocator: Allocator, paths: []const []const u8) ![]const []co
 fn freeOwnedPaths(allocator: Allocator, paths: []const []const u8) void {
     for (paths) |path| allocator.free(path);
     if (paths.len > 0) allocator.free(paths);
+}
+
+/// Process environment for the async Io instance. Mirrors the worker helpers
+/// in `search/node/*Worker.zig` and `extensionHostManager.zig`: the terminal's
+/// Io needs the environment for executable resolution/spawn and for HTTP proxy
+/// discovery, but the library must not assume libc is linked.
+fn asyncEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        else => if (builtin.link_libc)
+            .{ .block = .{ .slice = @ptrCast(@as([:null]?[*:0]u8, std.mem.span(std.c.environ))) } }
+        else
+            .empty,
+    };
+}
+
+/// Reads, BOM-detects, decodes and canonicalizes a file. Runs on the async Io,
+/// never on the TUI thread for interactive opens.
+fn loadOpenText(allocator: Allocator, io: Io, path: []const u8) !editor_widget.LoadedText {
+    const raw = Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| switch (err) {
+        // The synchronous open path treats a missing file as a new, empty
+        // buffer; keep that behavior for interactive opens too.
+        error.FileNotFound => try allocator.alloc(u8, 0),
+        else => return err,
+    };
+    defer allocator.free(raw);
+
+    const encoding = if (encoding_mod.detectBOM(raw)) |bom| bom.encoding else .utf8;
+    const text = try encoding_mod.decode(allocator, raw, encoding);
+    errdefer allocator.free(text);
+    const absolute = try editor_widget.absolutePath(allocator, io, path);
+    return .{ .text = text, .encoding = encoding, .absolute_path = absolute };
+}
+
+fn runOpenJob(job: *OpenJob) OpenOutcome {
+    defer job.done.store(true, .release);
+    return .{ .text = loadOpenText(job.owner.allocator, job.owner.async_io, job.path) catch |err| return .{ .err = err } };
 }
 
 test "Workbench: files.associations change the opened editor language" {
@@ -12637,4 +12992,43 @@ test "Workbench: closing an image tab releases the terminal image" {
     defer second.deinit();
     try workbench.render(&second.writer);
     try std.testing.expect(std.mem.indexOf(u8, second.written(), "a=d,d=I") != null);
+}
+
+test "Workbench: interactive open reads on the async Io" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "async-open.txt", "async body");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 40, 10);
+    defer workbench.deinit();
+
+    workbench.requestOpenPath(path);
+    try std.testing.expect(workbench.pending_open != null);
+    try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
+
+    var waited: usize = 0;
+    while (!workbench.pollAsyncReads() and waited < 2000) : (waited += 1) {
+        std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    const tab = workbench.activeTab().?;
+    var content = try tab.editor.model.getLineContent(1);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("async body", content.items);
+}
+
+test "Workbench: cancelling an in-flight open leaves no tab and no pending job" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "cancel-open.txt", "body");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 40, 10);
+    workbench.requestOpenPath(path);
+    workbench.deinit();
 }

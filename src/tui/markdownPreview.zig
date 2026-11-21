@@ -1,5 +1,11 @@
 //! Markdown document preview pane for the terminal workbench.
 //!
+//! Async terminal adaptation: local image reads/decodes and remote http(s)
+//! fetches run on the workbench `async_io` as per-preview jobs; the preview
+//! only publishes loaded entries and keeps alt text until `pollImageJobs`
+//! applies a result. Remote image requests use the ported `RequestService`
+//! (30 s deadline, 32 MiB cap) and are only issued while the preview exists.
+//!
 //! The portable behavior is ported from
 //! `vscode/extensions/markdown-language-features/preview/preview.ts`,
 //! `preview-src/index.ts` and `preview-src/scroll-sync.ts`. The webview/DOM
@@ -30,6 +36,11 @@ const preview_config = @import("../vs/workbench/contrib/markdown/browser/markdow
 const mediaImage = @import("../vs/workbench/contrib/mediaPreview/common/mediaImage.zig");
 const TerminalImage = @import("./terminalImage.zig").TerminalImage;
 const cellMetrics = @import("./cellMetrics.zig");
+const RequestService = @import("../vs/platform/request/node/requestService.zig").RequestService;
+
+/// Upper bound for image reads/fetches in flight per preview. Completed jobs
+/// rebuild the document, which queues the next batch on the following tick.
+const max_concurrent_image_jobs = 4;
 
 const base_preview_background = ui.Color{ .r = 30, .g = 30, .b = 33 };
 const base_preview_foreground = ui.Color{ .r = 204, .g = 204, .b = 204 };
@@ -39,13 +50,98 @@ const base_scrollbar_track = ui.Color{ .r = 30, .g = 32, .b = 40 };
 const base_scrollbar_thumb = ui.Color{ .r = 105, .g = 108, .b = 122 };
 const base_divider_color = ui.Color{ .r = 70, .g = 70, .b = 70 };
 
+/// One image read/decode job started by `syncImagesAsync`. The result is
+/// applied on the TUI thread in `pollImageJobs`.
+const MarkdownImagePayload = struct {
+    decoded: mediaImage.Decoded,
+    size: usize,
+    mtime: Io.Timestamp,
+};
+
+const MarkdownImageResult = union(enum) {
+    image: MarkdownImagePayload,
+    failed,
+};
+
+const MarkdownImageJob = struct {
+    const Source = union(enum) {
+        file: []u8,
+        url: []u8,
+    };
+
+    preview: *MarkdownPreview,
+    future: Io.Future(MarkdownImageResult),
+    done: std.atomic.Value(bool) = .init(false),
+    key: []u8,
+    /// True once `publishImage` took ownership of `key` as the entry path.
+    key_consumed: bool = false,
+    source: Source,
+    /// File reads are short and latency-sensitive; remote requests are not.
+    local: bool,
+    /// Remote requests are canceled by the poll loop after this timestamp.
+    deadline_ms: ?i64 = null,
+
+    fn deinit(self: *MarkdownImageJob, allocator: Allocator) void {
+        if (!self.key_consumed) allocator.free(self.key);
+        switch (self.source) {
+            .file => |path| allocator.free(path),
+            .url => |url| allocator.free(url),
+        }
+        allocator.destroy(self);
+    }
+};
+
+fn runMarkdownImageJob(job: *MarkdownImageJob) MarkdownImageResult {
+    defer job.done.store(true, .release);
+    const async_io = job.preview.async_io orelse return .failed;
+    return switch (job.source) {
+        .file => |path| loadMarkdownLocalImage(job.preview.allocator, async_io, path),
+        .url => |url| loadMarkdownRemoteImage(job.preview, url),
+    };
+}
+
+fn loadMarkdownLocalImage(allocator: Allocator, io: Io, path: []const u8) MarkdownImageResult {
+    const info = Io.Dir.cwd().statFile(io, path, .{}) catch return .failed;
+    if (info.kind == .directory) return .failed;
+    const bytes = Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(mediaImage.max_file_bytes)) catch return .failed;
+    defer allocator.free(bytes);
+    if (bytes.len == 0) return .failed;
+    const decoded = mediaImage.decode(allocator, bytes) catch return .failed;
+    return .{ .image = .{ .decoded = decoded, .size = bytes.len, .mtime = info.mtime } };
+}
+
+fn loadMarkdownRemoteImage(preview: *MarkdownPreview, url: []const u8) MarkdownImageResult {
+    const service = if (preview.request_service) |*value| value else return .failed;
+    const options = @import("../vs/base/parts/request/common/request.zig").IRequestOptions{
+        .url = url,
+        .call_site = "markdownPreview.image",
+        .timeout = 30_000,
+    };
+    var context = service.request(options) catch return .failed;
+    defer context.deinit();
+    if (context.body.bytes.len == 0 or context.body.bytes.len > mediaImage.max_file_bytes) return .failed;
+    const decoded = mediaImage.decode(preview.allocator, context.body.bytes) catch return .failed;
+    return .{ .image = .{ .decoded = decoded, .size = context.body.bytes.len, .mtime = Io.Timestamp.zero } };
+}
+
 pub const MarkdownPreview = struct {
     allocator: Allocator,
     editor: *Editor,
     runtime: ?*ui.image.Runtime = null,
     base_dir: []u8 = &.{},
+    /// Io used for file/network image reads. Null keeps the synchronous local
+    /// image path used by tests and by previews created before the workbench
+    /// hands over its async Io.
+    async_io: ?Io = null,
+    request_service: ?RequestService = null,
     image_entries: std.StringHashMap(*ImageEntry),
     image_specs: std.array_list.Managed(preview_doc.ImageSpec),
+    /// In-flight image loads keyed by resolved path or URL. Keys are owned by
+    /// their job and removed before the job is freed.
+    image_loading: std.StringHashMap(*MarkdownImageJob),
+    image_jobs: std.array_list.Managed(*MarkdownImageJob),
+    /// Negative cache so a failing image is not re-requested on every paint.
+    image_failed: std.StringHashMap(void),
     surface: ?ui.Surface = null,
     content: ?markdown.Content = null,
     document: ?preview_doc.Document = null,
@@ -85,8 +181,14 @@ pub const MarkdownPreview = struct {
             .editor = editor,
             .image_entries = std.StringHashMap(*ImageEntry).init(allocator),
             .image_specs = std.array_list.Managed(preview_doc.ImageSpec).init(allocator),
+            .image_loading = std.StringHashMap(*MarkdownImageJob).init(allocator),
+            .image_jobs = std.array_list.Managed(*MarkdownImageJob).init(allocator),
+            .image_failed = std.StringHashMap(void).init(allocator),
         };
         errdefer {
+            self.image_failed.deinit();
+            self.image_jobs.deinit();
+            self.image_loading.deinit();
             self.image_specs.deinit();
             self.image_entries.deinit();
         }
@@ -109,13 +211,28 @@ pub const MarkdownPreview = struct {
         self.dirty = true;
     }
 
+    /// Enables asynchronous local image reads and remote image requests.
+    /// Called by the workbench when it creates the preview.
+    pub fn setAsyncIo(self: *MarkdownPreview, io: Io) void {
+        if (self.async_io != null) return;
+        self.async_io = io;
+        self.request_service = RequestService.init(self.allocator, io);
+    }
+
     pub fn setThemeColors(self: *MarkdownPreview, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme = palette;
         self.dirty = true;
     }
 
     pub fn deinit(self: *MarkdownPreview) void {
+        self.cancelImageJobs();
+        if (self.request_service) |*service| service.deinit();
+        self.request_service = null;
         self.releaseAllImages();
+        self.freeFailedImages();
+        self.image_failed.deinit();
+        self.image_jobs.deinit();
+        self.image_loading.deinit();
         self.image_specs.deinit();
         self.image_entries.deinit();
         if (self.base_dir.len > 0) self.allocator.free(self.base_dir);
@@ -200,6 +317,7 @@ pub const MarkdownPreview = struct {
     pub fn close(self: *MarkdownPreview) void {
         self.visible = false;
         self.refresh_timer.cancel();
+        self.cancelImageJobs();
     }
 
     pub fn refresh(self: *MarkdownPreview, force: bool) void {
@@ -243,6 +361,7 @@ pub const MarkdownPreview = struct {
 
     pub fn onTick(self: *MarkdownPreview, now_ms: i64) bool {
         var changed = false;
+        if (self.pollImageJobs()) changed = true;
         changed = self.refresh_timer.tick(now_ms) or changed;
         changed = self.scrolling_timer.tick(now_ms) or changed;
         changed = self.scroll_disabled_timer.tick(now_ms) or changed;
@@ -519,6 +638,7 @@ pub const MarkdownPreview = struct {
     }
 
     fn syncImages(self: *MarkdownPreview, content: *const markdown.Content) !void {
+        if (self.async_io != null) return self.syncImagesAsync(content);
         self.image_specs.clearRetainingCapacity();
         var iterator = self.image_entries.iterator();
         while (iterator.next()) |entry| entry.value_ptr.*.used = false;
@@ -551,6 +671,235 @@ pub const MarkdownPreview = struct {
             }
         }
         self.releaseUnusedImages();
+    }
+
+    fn syncImagesAsync(self: *MarkdownPreview, content: *const markdown.Content) !void {
+        self.image_specs.clearRetainingCapacity();
+        var iterator = self.image_entries.iterator();
+        while (iterator.next()) |entry| entry.value_ptr.*.used = false;
+
+        const runtime = self.runtime orelse {
+            self.releaseUnusedImages();
+            return;
+        };
+        if (!runtime.enabled()) {
+            self.releaseUnusedImages();
+            return;
+        }
+
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+        for (content.lines) |line| {
+            for (line.spans) |span| {
+                const image = span.image orelse continue;
+                if (seen.contains(image.url)) continue;
+                try seen.put(image.url, {});
+
+                const trimmed = std.mem.trim(u8, image.url, " \t\r\n");
+                if (trimmed.len == 0) continue;
+                if (std.mem.startsWith(u8, trimmed, "data:")) continue;
+                const remote = std.mem.startsWith(u8, trimmed, "http://") or
+                    std.mem.startsWith(u8, trimmed, "https://");
+                if (remote) {
+                    if (self.image_entries.get(trimmed)) |entry| {
+                        entry.used = true;
+                        try self.appendSpec(image.url, entry);
+                        continue;
+                    }
+                    if (self.image_loading.contains(trimmed) or self.image_failed.contains(trimmed)) continue;
+                    if (self.image_jobs.items.len >= max_concurrent_image_jobs) continue;
+                    try self.queueImageLoad(trimmed, .{ .url = trimmed }, false);
+                    continue;
+                }
+
+                const path = (try self.resolveImagePath(self.allocator, image.url)) orelse continue;
+                defer self.allocator.free(path);
+                if (self.image_entries.get(path)) |entry| {
+                    entry.used = true;
+                    try self.appendSpec(image.url, entry);
+                    continue;
+                }
+                if (self.image_loading.contains(path) or self.image_failed.contains(path)) continue;
+                if (self.image_jobs.items.len >= max_concurrent_image_jobs) continue;
+                try self.queueImageLoad(path, .{ .file = path }, true);
+            }
+        }
+        self.releaseUnusedImages();
+    }
+
+    fn appendSpec(self: *MarkdownPreview, url: []const u8, entry: *const ImageEntry) !void {
+        try self.image_specs.append(.{
+            .url = url,
+            .width = entry.width,
+            .height = entry.height,
+            .image_id = entry.terminal.id,
+        });
+    }
+
+    const ImageSource = union(enum) {
+        file: []const u8,
+        url: []const u8,
+    };
+
+    fn queueImageLoad(self: *MarkdownPreview, key: []const u8, source: ImageSource, local: bool) !void {
+        const async_io = self.async_io orelse return;
+        const key_copy = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(key_copy);
+        const source_copy: MarkdownImageJob.Source = switch (source) {
+            .file => |path| .{ .file = try self.allocator.dupe(u8, path) },
+            .url => |url| .{ .url = try self.allocator.dupe(u8, url) },
+        };
+        const job = try self.allocator.create(MarkdownImageJob);
+        errdefer self.allocator.destroy(job);
+        job.* = .{
+            .preview = self,
+            .future = undefined,
+            .key = key_copy,
+            .source = source_copy,
+            .local = local,
+            .deadline_ms = if (local) null else time_compat.milliTimestamp() + 30_000,
+        };
+        job.future = async_io.async(runMarkdownImageJob, .{job});
+        self.image_jobs.append(job) catch |err| {
+            _ = job.future.cancel(async_io);
+            if (job.future.result == .image) {
+                var decoded = job.future.result.image.decoded;
+                decoded.deinit(self.allocator);
+            }
+            job.deinit(self.allocator);
+            return err;
+        };
+        self.image_loading.put(job.key, job) catch |err| {
+            _ = self.image_jobs.pop();
+            _ = job.future.cancel(async_io);
+            if (job.future.result == .image) {
+                var decoded = job.future.result.image.decoded;
+                decoded.deinit(self.allocator);
+            }
+            job.deinit(self.allocator);
+            return err;
+        };
+    }
+
+    /// Applies completed image jobs on the TUI thread. Returns true when at
+    /// least one image entry or failure was published.
+    fn pollImageJobs(self: *MarkdownPreview) bool {
+        const async_io = self.async_io orelse return false;
+        var applied = false;
+        var index = self.image_jobs.items.len;
+        while (index > 0) {
+            index -= 1;
+            const job = self.image_jobs.items[index];
+            const expired = if (job.deadline_ms) |deadline| time_compat.milliTimestamp() >= deadline else false;
+            if (!job.done.load(.acquire) and !expired) continue;
+            const result = if (expired)
+                job.future.cancel(async_io)
+            else
+                job.future.await(async_io);
+            _ = self.image_jobs.orderedRemove(index);
+            _ = self.image_loading.fetchRemove(job.key);
+            switch (result) {
+                .image => |payload| {
+                    if (self.publishImage(job.key, payload)) |_| {
+                        job.key_consumed = true;
+                    } else {
+                        self.markImageFailed(job.key);
+                    }
+                },
+                .failed => self.markImageFailed(job.key),
+            }
+            job.deinit(self.allocator);
+            applied = true;
+        }
+        if (applied) self.rebuildDocumentAfterImages();
+        return applied;
+    }
+
+    fn rebuildDocumentAfterImages(self: *MarkdownPreview) void {
+        const content = if (self.content) |*value| value else return;
+        const replacement = self.buildDocument(content) catch |err| {
+            self.last_error = err;
+            return;
+        };
+        if (self.document) |*document| document.deinit();
+        self.document = replacement;
+        self.clampScroll();
+        self.dirty = true;
+    }
+
+    fn publishImage(self: *MarkdownPreview, key: []u8, payload: MarkdownImagePayload) ?*ImageEntry {
+        const runtime = self.runtime orelse {
+            var decoded = payload.decoded;
+            decoded.deinit(self.allocator);
+            return null;
+        };
+        if (!runtime.enabled()) {
+            var decoded = payload.decoded;
+            decoded.deinit(self.allocator);
+            return null;
+        }
+        const width = payload.decoded.width;
+        const height = payload.decoded.height;
+        const terminal = TerminalImage.init(self.allocator, runtime, payload.decoded) catch {
+            var decoded = payload.decoded;
+            decoded.deinit(self.allocator);
+            return null;
+        };
+        const entry = self.allocator.create(ImageEntry) catch {
+            terminal.deinit();
+            return null;
+        };
+        entry.* = .{
+            .path = key,
+            .mtime = payload.mtime,
+            .size = payload.size,
+            .width = width,
+            .height = height,
+            .terminal = terminal,
+            .used = true,
+        };
+        self.image_entries.put(key, entry) catch {
+            terminal.deinit();
+            self.allocator.destroy(entry);
+            return null;
+        };
+        self.dirty = true;
+        return entry;
+    }
+
+    fn markImageFailed(self: *MarkdownPreview, key: []const u8) void {
+        if (self.image_failed.count() >= 64) return;
+        const copy = self.allocator.dupe(u8, key) catch return;
+        self.image_failed.put(copy, {}) catch {
+            self.allocator.free(copy);
+        };
+    }
+
+    fn freeFailedImages(self: *MarkdownPreview) void {
+        var iterator = self.image_failed.keyIterator();
+        while (iterator.next()) |key| self.allocator.free(key.*);
+        self.image_failed.clearRetainingCapacity();
+    }
+
+    pub fn cancelImageJobs(self: *MarkdownPreview) void {
+        const async_io = self.async_io orelse return;
+        for (self.image_jobs.items) |job| {
+            const result = job.future.cancel(async_io);
+            if (result == .image) {
+                var decoded = result.image.decoded;
+                decoded.deinit(self.allocator);
+            }
+            job.deinit(self.allocator);
+        }
+        self.image_jobs.clearRetainingCapacity();
+        self.image_loading.clearRetainingCapacity();
+    }
+
+    pub fn hasPendingLocalImages(self: *const MarkdownPreview) bool {
+        for (self.image_jobs.items) |job| {
+            if (job.local) return true;
+        }
+        return false;
     }
 
     fn getOrLoadImage(self: *MarkdownPreview, path: []const u8) !?*ImageEntry {
@@ -919,9 +1268,61 @@ test "markdownPreview: resolves local image URLs and skips remote ones" {
     try std.testing.expect((try preview.resolveImagePath(allocator, "data:image/png;base64,AAAA")) == null);
 }
 
+test "markdownPreview: async local image load lands on the poll tick" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "image.png", .data = &async_png_1x1 });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const length = try tmp.dir.realPathFile(io, "image.png", &path_buffer);
+    const path = path_buffer[0..length];
+
+    var io_state = Io.Threaded.init(allocator, .{});
+    defer io_state.deinit();
+    const async_io = io_state.io();
+
+    var runtime = ui.image.Runtime.init(allocator);
+    defer runtime.deinit();
+    runtime.setProtocol(.unicode_placeholders);
+    runtime.setCellSize(8, 16);
+
+    const editor = try Editor.createFromText(allocator, io, "# title", "/tmp/docs/readme.md", 40, 10);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const preview = try MarkdownPreview.init(allocator, editor);
+    defer preview.deinit();
+    preview.setImageRuntime(&runtime);
+    preview.setAsyncIo(async_io);
+
+    try preview.queueImageLoad(path, .{ .file = path }, true);
+    try std.testing.expect(preview.image_loading.contains(path));
+
+    var waited: usize = 0;
+    while (!preview.pollImageJobs() and waited < 2000) : (waited += 1) {
+        async_io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(preview.usesImagePath(path));
+    try std.testing.expect(!preview.image_loading.contains(path));
+}
+
 test "markdownPreview: percent decoding keeps malformed escapes" {
     const allocator = std.testing.allocator;
     const decoded = try MarkdownPreview.percentDecode(allocator, "a%20b%zzc%");
     defer allocator.free(decoded);
     try std.testing.expectEqualStrings("a b%zzc%", decoded);
 }
+
+const async_png_1x1 = [_]u8{
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+    0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
+    0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+    0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D,
+    0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+    0x44, 0xAE, 0x42, 0x60, 0x82,
+};

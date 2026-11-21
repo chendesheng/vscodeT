@@ -87,9 +87,82 @@ pub const RenderOptions = struct {
     show_header: bool = true,
 };
 
+/// One async directory listing. It owns only the raw entry data; the tree item
+/// is mutated when the result is applied on the TUI thread.
+const ExplorerEntry = struct {
+    name: []u8,
+    is_directory: bool,
+};
+
+const ExplorerLoadResult = union(enum) {
+    entries: []ExplorerEntry,
+    err: anyerror,
+};
+
+const ExplorerLoadJob = struct {
+    sidebar: *Sidebar,
+    future: Io.Future(ExplorerLoadResult),
+    done: std.atomic.Value(bool) = .init(false),
+    item: *ExplorerItem,
+    path: []u8,
+    io: Io,
+
+    fn deinit(self: *ExplorerLoadJob, allocator: Allocator) void {
+        allocator.free(self.path);
+        allocator.destroy(self);
+    }
+};
+
+fn runExplorerLoad(job: *ExplorerLoadJob) ExplorerLoadResult {
+    defer job.done.store(true, .release);
+    const allocator = job.sidebar.allocator;
+    const io = job.sidebar.async_io orelse return .{ .err = error.AsyncIoUnavailable };
+    var dir = Io.Dir.cwd().openDir(io, job.path, .{ .iterate = true }) catch |err| return .{ .err = err };
+    defer dir.close(io);
+
+    var entries = std.array_list.Managed(ExplorerEntry).init(allocator);
+    var iterator = dir.iterate();
+    while (iterator.next(io) catch |err| {
+        freeExplorerEntryList(allocator, &entries);
+        return .{ .err = err };
+    }) |entry| {
+        if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
+        const name = allocator.dupe(u8, entry.name) catch |err| {
+            freeExplorerEntryList(allocator, &entries);
+            return .{ .err = err };
+        };
+        entries.append(.{
+            .name = name,
+            .is_directory = entry.kind == .directory,
+        }) catch |err| {
+            allocator.free(name);
+            freeExplorerEntryList(allocator, &entries);
+            return .{ .err = err };
+        };
+    }
+    return .{ .entries = entries.toOwnedSlice() catch |err| {
+        freeExplorerEntryList(allocator, &entries);
+        return .{ .err = err };
+    } };
+}
+
+fn freeExplorerEntryList(allocator: Allocator, entries: *std.array_list.Managed(ExplorerEntry)) void {
+    for (entries.items) |entry| allocator.free(entry.name);
+    entries.deinit();
+}
+
+fn freeExplorerEntries(allocator: Allocator, entries: []ExplorerEntry) void {
+    for (entries) |entry| allocator.free(entry.name);
+    allocator.free(entries);
+}
+
 pub const Sidebar = struct {
     allocator: Allocator,
     io: Io,
+    /// Io handed over by the workbench for interactive directory expansion.
+    /// Null keeps the synchronous startup/test path.
+    async_io: ?Io = null,
+    load_job: ?*ExplorerLoadJob = null,
     model: *ExplorerModel,
     files_filter: FilesFilter,
     tree: *CompressibleTree,
@@ -167,11 +240,100 @@ pub const Sidebar = struct {
     }
 
     pub fn deinit(self: *Sidebar) void {
+        self.cancelLoad();
         self.tree.deinit();
         self.force_expanded.deinit();
         self.files_filter.deinit();
         self.model.deinit();
         self.allocator.destroy(self);
+    }
+
+    /// Enables async interactive expansion. Startup/root loads stay sync.
+    pub fn setAsyncIo(self: *Sidebar, io: Io) void {
+        self.async_io = io;
+    }
+
+    pub fn hasPendingLoad(self: *const Sidebar) bool {
+        return self.load_job != null;
+    }
+
+    fn requestLoad(self: *Sidebar, item: *ExplorerItem) !void {
+        const async_io = self.async_io orelse return;
+        if (self.load_job) |job| {
+            if (job.item == item) return;
+            self.cancelLoad();
+        }
+        const path = try self.allocator.dupe(u8, item.resource);
+        errdefer self.allocator.free(path);
+        const job = try self.allocator.create(ExplorerLoadJob);
+        errdefer self.allocator.destroy(job);
+        job.* = .{
+            .sidebar = self,
+            .future = undefined,
+            .item = item,
+            .path = path,
+            .io = async_io,
+        };
+        job.future = async_io.async(runExplorerLoad, .{job});
+        self.load_job = job;
+    }
+
+    /// Drains a completed directory listing on the TUI thread.
+    pub fn pollLoad(self: *Sidebar) bool {
+        const job = self.load_job orelse return false;
+        if (!job.done.load(.acquire)) return false;
+        const result = job.future.await(job.io);
+        self.load_job = null;
+        const item = job.item;
+        job.deinit(self.allocator);
+
+        var changed = false;
+        switch (result) {
+            .entries => |entries| {
+                defer freeExplorerEntries(self.allocator, entries);
+                if (item.is_directory_resolved or !self.isAttached(item)) return false;
+                for (entries) |entry| {
+                    const path = std.fs.path.join(self.allocator, &.{ item.resource, entry.name }) catch continue;
+                    defer self.allocator.free(path);
+                    const child = ExplorerItem.create(
+                        self.allocator,
+                        path,
+                        entry.name,
+                        item,
+                        entry.is_directory,
+                    ) catch continue;
+                    item.children.append(child) catch {
+                        child.destroy();
+                        continue;
+                    };
+                }
+                item.sortChildren(self.sort_order);
+                item.is_directory_resolved = true;
+                self.files_filter.prepare(item) catch {};
+                self.setChildren(item, item.children.items) catch {};
+                _ = self.tree.setCollapsed(item, false, false) catch {};
+                self.selectElement(item);
+                changed = true;
+            },
+            .err => {},
+        }
+        return changed;
+    }
+
+    pub fn cancelLoad(self: *Sidebar) void {
+        const job = self.load_job orelse return;
+        self.load_job = null;
+        const result = job.future.cancel(job.io);
+        if (result == .entries) freeExplorerEntries(self.allocator, result.entries);
+        job.deinit(self.allocator);
+    }
+
+    fn isAttached(self: *Sidebar, item: *ExplorerItem) bool {
+        const root = item.root();
+        for (self.model.roots.items) |candidate| {
+            if (candidate == root) return true;
+        }
+        return false;
     }
 
     fn loadChildren(self: *Sidebar, item: *ExplorerItem) !void {
@@ -245,6 +407,11 @@ pub const Sidebar = struct {
     fn toggle(self: *Sidebar, item: *ExplorerItem) !?[]const u8 {
         if (!item.is_directory) return item.resource;
         if (self.tree.isCollapsed(item)) {
+            if (!item.is_directory_resolved and self.async_io != null) {
+                try self.requestLoad(item);
+                self.selectElement(item);
+                return null;
+            }
             try self.loadChildren(item);
             try self.setChildren(item, item.children.items);
             _ = try self.tree.setCollapsed(item, false, false);
@@ -1148,4 +1315,49 @@ test "explorer tree sidebar: compressed paths keep the tree filter" {
     try std.testing.expectEqualStrings("c", sidebar.renderedItem(0).?.name);
     try std.testing.expectEqualStrings("visible.txt", sidebar.renderedItem(1).?.name);
     try std.testing.expectEqualStrings(".gitignore", sidebar.renderedItem(2).?.name);
+}
+
+test "explorer tree sidebar: expansion reads directories on the async Io" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "alpha");
+    var nested = try tmp.dir.createFile(io, "alpha/beta.txt", .{});
+    try nested.writeStreamingAll(io, "b");
+    nested.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+
+    var async_state = Io.Threaded.init(allocator, .{});
+    defer async_state.deinit();
+
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+    sidebar.setAsyncIo(async_state.io());
+
+    var home = ui.KeyEvent{ .key = .home };
+    _ = try sidebar.handleKey(&home);
+    const alpha = sidebar.selectedNode().?;
+    try std.testing.expect(!sidebar.isExpanded(alpha));
+
+    var right = ui.KeyEvent{ .key = .right };
+    _ = try sidebar.handleKey(&right);
+    try std.testing.expect(sidebar.hasPendingLoad());
+    try std.testing.expect(!sidebar.isExpanded(alpha));
+
+    var waited: usize = 0;
+    while (!sidebar.pollLoad() and waited < 2000) : (waited += 1) {
+        sidebar.async_io.?.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(!sidebar.hasPendingLoad());
+    try std.testing.expect(sidebar.isExpanded(alpha));
+    try std.testing.expect(alpha.is_directory_resolved);
+    try std.testing.expect(alpha.getChild("beta.txt") != null);
 }

@@ -461,9 +461,11 @@ pub const IFileChangeListener = struct {
 };
 
 /// The terminal provider contract. Resources are canonical path strings (the
-/// repository-wide terminal substitution for `URI`). Mutations are synchronous;
-/// `readFile`/`readdir` allocate results that the caller frees with the same
-/// allocator.
+/// repository-wide terminal substitution for `URI`). Mutations and reads are
+/// synchronous and, like the disk provider's shared state, are currently only
+/// called from the TUI thread. Interactive file/dir reads that must not block
+/// the TUI bypass this registry and run on the workbench async Io instead;
+/// making the provider vtable itself async remains a follow-up.
 pub const IFileSystemProvider = struct {
     context: *anyopaque,
     capabilities: *const fn (context: *anyopaque) u32,

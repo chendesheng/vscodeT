@@ -594,6 +594,7 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.pollJsonLanguage()) needs_render = true;
         if (workbench.pollGit(now_ms)) needs_render = true;
         if (workbench.markdownPreviewTick(now_ms)) needs_render = true;
+        if (workbench.pollAsyncReads()) needs_render = true;
         if (extension_host) |ext| {
             if (ext.pump()) needs_render = true;
         }
@@ -639,6 +640,7 @@ pub fn main(init: std.process.Init) !void {
             timeout = @min(timeout, @as(i32, @intCast(@min(guides_timeout, 250))));
         }
         if (workbench.backgroundTokenizationPending()) timeout = 0;
+        if (workbench.hasLatencySensitiveReads()) timeout = @min(timeout, 4);
 
         workbench.flushTerminals();
         if (workbench.hasPendingTerminalWrites()) timeout = @min(timeout, 20);
