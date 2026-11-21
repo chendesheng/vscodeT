@@ -127,6 +127,11 @@ For each row:
   and the active top stroke are themed. Added tab-strip and Workbench
   regression tests. The control-layer variants, tab options, labels/actions,
   context menu and clickable overflow remain pending.
+- `fe65946` gutter: paint the glyph-margin host. Added the ported
+  `GlyphMarginOverlay`, a dynamic one-cell glyph gutter, known-class glyph
+  mapping and the `.gutter_glyph_margin` hit target; added overlay and View
+  tests. Multiple lanes/compaction, glyph tooltips, margin decorations and all
+  line-decoration classes remain pending.
 
 ## Next slice
 
