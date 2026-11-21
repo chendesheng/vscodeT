@@ -60,7 +60,8 @@ Normal/edit:
 - `i I a A o O`, `p P`, `r`, `~`, `J`/`gJ`, `Ctrl-A`/`Ctrl-X`.
 - Registers: unnamed and named (`"a`–`"z`).
 - Macro recording/replay (`q{a-z}`, `@{a-z}`, `@@`) with a recursion guard.
-- Text objects: `iw aw iW aW`.
+- Text objects: `iw aw iW aW`, `i(`/`a(`/`ib`/`ab`, `i[`/`a[`,
+  `i{`/`a{`, `i<`/`a<`, and `i"`/`a"`, `i'`/`a'`, `` i` ``/`` a` ``.
 - `%`, `(`, `)`, `g_`, `g0`/`g^`/`g$`, `*`/`#`, `U`, `gv`, `gi`, and `.`
   dot-repeat for the last change. Local marks use `m` and the mark-jump
   keys. Visual-block `I`/`A` prefix/suffix every selected line in one undo

@@ -91,6 +91,7 @@ pub const VimEngine = struct {
     operator_count: usize = 1,
     pending_register: ?u8 = null,
     pending_text_object: ?bool = null,
+    pending_visual_text_object: ?bool = null,
     pending_g: bool = false,
     pending_z: bool = false,
     pending_window: bool = false,
@@ -453,12 +454,29 @@ pub const VimEngine = struct {
 
     fn handleChar(self: *VimEngine, char: u21) !bool {
         if (self.mode == .visual or self.mode == .visual_line) {
+            if (self.pending_visual_text_object) |around| {
+                self.pending_visual_text_object = null;
+                if (try self.textObjectRange(around, char)) |range| {
+                    const start = range.startPosition();
+                    const end = range.endPosition();
+                    try self.editor.setSelections(&[_]Selection{Selection.init(start.lineNumber, start.column, end.lineNumber, end.column)});
+                }
+                return true;
+            }
             switch (char) {
                 'd' => return self.applyVisualOperator(.delete),
                 'c' => return self.applyVisualOperator(.change),
                 'y' => return self.applyVisualOperator(.yank),
                 '>' => return self.applyVisualOperator(.indent),
                 '<' => return self.applyVisualOperator(.outdent),
+                'i' => {
+                    self.pending_visual_text_object = false;
+                    return true;
+                },
+                'a' => {
+                    self.pending_visual_text_object = true;
+                    return true;
+                },
                 'o' => {
                     const selections = try self.editor.getSelections(self.allocator);
                     defer self.allocator.free(selections);
@@ -1921,13 +1939,134 @@ pub const VimEngine = struct {
     }
 
     fn applyTextObject(self: *VimEngine, around: bool, char: u21) !void {
-        if (char != 'w' and char != 'W') return;
-        const range = try self.wordObject(around, char == 'W');
+        const range = try self.textObjectRange(around, char) orelse return;
         const operator = self.operator;
         self.operator = .none;
         self.operator_count = 1;
         self.mode = .normal;
         try self.applyOperator(operator, range, false);
+    }
+
+    fn textObjectRange(self: *VimEngine, around: bool, char: u21) !?Range {
+        return switch (char) {
+            'w' => try self.wordObject(around, false),
+            'W' => try self.wordObject(around, true),
+            'b', '(', ')' => try self.bracketObject(around, '(', ')'),
+            '[', ']' => try self.bracketObject(around, '[', ']'),
+            '{', '}' => try self.bracketObject(around, '{', '}'),
+            '<', '>' => try self.bracketObject(around, '<', '>'),
+            '"', '\'', '`' => try self.quoteObject(around, @intCast(char)),
+            else => null,
+        };
+    }
+
+    fn bracketObject(self: *VimEngine, around: bool, open: u8, close: u8) !?Range {
+        var value = try self.editor.model.getValue(.LF, false);
+        defer value.deinit();
+        var offset = self.editor.model.getOffsetAt(self.editor.cursorPosition());
+        if (offset >= value.items.len) offset = value.items.len -| 1;
+
+        var open_index: ?usize = null;
+        var close_index: ?usize = null;
+        if (value.items[offset] == open) {
+            open_index = offset;
+        } else if (value.items[offset] == close) {
+            var depth: isize = 1;
+            var index = offset;
+            while (index > 0) {
+                index -= 1;
+                if (value.items[index] == close) {
+                    depth += 1;
+                } else if (value.items[index] == open) {
+                    depth -= 1;
+                    if (depth == 0) {
+                        open_index = index;
+                        close_index = offset;
+                        break;
+                    }
+                }
+            }
+        } else {
+            var depth: isize = 0;
+            var index = offset;
+            while (index > 0) {
+                index -= 1;
+                if (value.items[index] == close) {
+                    depth += 1;
+                } else if (value.items[index] == open) {
+                    if (depth == 0) {
+                        open_index = index;
+                        break;
+                    }
+                    depth -= 1;
+                }
+            }
+        }
+        const start = open_index orelse return null;
+        if (close_index == null) {
+            var depth: isize = 0;
+            var index = start + 1;
+            while (index < value.items.len) : (index += 1) {
+                if (value.items[index] == open) {
+                    depth += 1;
+                } else if (value.items[index] == close) {
+                    if (depth == 0) {
+                        close_index = index;
+                        break;
+                    }
+                    depth -= 1;
+                }
+            }
+        }
+        const end = close_index orelse return null;
+        const start_offset = if (around) start else start + 1;
+        const end_offset = if (around) end + 1 else end;
+        return Range.fromPositions(self.editor.model.getPositionAt(start_offset), self.editor.model.getPositionAt(end_offset));
+    }
+
+    fn quoteObject(self: *VimEngine, around: bool, quote: u8) !?Range {
+        const cursor = self.editor.cursorPosition();
+        var line = try self.editor.model.getLineContent(cursor.lineNumber);
+        defer line.deinit();
+        if (line.items.len == 0) return null;
+        const position = @min(cursor.column - 1, line.items.len -| 1);
+        var open_index: ?usize = null;
+        var close_index: ?usize = null;
+
+        if (line.items[position] == quote) {
+            open_index = position;
+        } else {
+            var index = position;
+            while (index > 0) {
+                index -= 1;
+                if (line.items[index] == quote and !isEscaped(line.items, index)) {
+                    open_index = index;
+                    break;
+                }
+            }
+        }
+        const start = open_index orelse return null;
+        var index = start + 1;
+        while (index < line.items.len) : (index += 1) {
+            if (line.items[index] == quote and !isEscaped(line.items, index)) {
+                close_index = index;
+                break;
+            }
+        }
+        const end = close_index orelse return null;
+        const start_offset = if (around) start else start + 1;
+        const end_offset = if (around) end + 1 else end;
+        return Range.fromPositions(
+            Position.init(cursor.lineNumber, start_offset + 1),
+            Position.init(cursor.lineNumber, end_offset + 1),
+        );
+    }
+
+    fn isEscaped(line: []const u8, index: usize) bool {
+        var backslashes: usize = 0;
+        var i = index;
+        while (i > 0 and line[i - 1] == '\\') : (i -= 1) backslashes += 1;
+        return backslashes % 2 == 1;
     }
 
     fn wordObject(self: *VimEngine, around: bool, big: bool) !Range {
@@ -2312,6 +2451,7 @@ pub const VimEngine = struct {
         self.operator_count = 1;
         self.pending_register = null;
         self.pending_text_object = null;
+        self.pending_visual_text_object = null;
         self.pending_g = false;
         self.pending_z = false;
         self.pending_window = false;

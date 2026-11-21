@@ -706,3 +706,46 @@ test "Vim: macro insert, count and repeat" {
     try count.sendChar('a');
     try count.expectValue("def");
 }
+
+test "Vim: bracket and quote text objects, including b alias" {
+    const paren = try Harness.init(std.testing.allocator, "f(a, (b), c)");
+    defer paren.deinit();
+    try paren.editor.setCursorPosition(Position.init(1, 7));
+    try paren.sendChar('d');
+    try paren.sendChar('i');
+    try paren.sendChar('b');
+    try paren.expectValue("f(a, (), c)");
+
+    const around = try Harness.init(std.testing.allocator, "f(a, (b), c)");
+    defer around.deinit();
+    try around.editor.setCursorPosition(Position.init(1, 7));
+    try around.sendChar('d');
+    try around.sendChar('a');
+    try around.sendChar('(');
+    try around.expectValue("f(a, , c)");
+
+    const square = try Harness.init(std.testing.allocator, "x = [one]");
+    defer square.deinit();
+    try square.editor.setCursorPosition(Position.init(1, 7));
+    try square.sendChar('d');
+    try square.sendChar('i');
+    try square.sendChar(']');
+    try square.expectValue("x = []");
+
+    const quote = try Harness.init(std.testing.allocator, "x = \"hello\";");
+    defer quote.deinit();
+    try quote.editor.setCursorPosition(Position.init(1, 7));
+    try quote.sendChar('d');
+    try quote.sendChar('i');
+    try quote.sendChar('"');
+    try quote.expectValue("x = \"\";");
+
+    const visual = try Harness.init(std.testing.allocator, "f(inner)");
+    defer visual.deinit();
+    try visual.editor.setCursorPosition(Position.init(1, 3));
+    try visual.sendChar('v');
+    try visual.sendChar('i');
+    try visual.sendChar('(');
+    try visual.sendChar('d');
+    try visual.expectValue("f()");
+}
