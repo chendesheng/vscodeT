@@ -338,6 +338,7 @@ const DialogRequest = union(enum) {
 
 const editor_mod = @import("../common/editor.zig");
 const text_editor_selection_mod = @import("./parts/editor/textEditor.zig");
+const editor_widget = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
 
 pub const Workbench = struct {
     allocator: Allocator,
@@ -394,6 +395,7 @@ pub const Workbench = struct {
     history_state_path: ?[]u8 = null,
     history_tab: ?*Tab = null,
     history_selection_listener: ?Tab.SelectionListener = null,
+    history_content_listener: ?editor_widget.ChangeListener = null,
     in_closed_batch: bool = false,
     commands: CommandRegistry,
     working_copy_service: WorkingCopyService,
@@ -1443,6 +1445,7 @@ pub const Workbench = struct {
         self.saveHistoryState() catch {};
         if (self.history_tab) |tab| {
             if (self.history_selection_listener) |listener| tab.removeSelectionListener(listener);
+            if (self.history_content_listener) |listener| tab.editor.removeWorkingCopyContentListener(listener);
             self.history_tab = null;
         }
         if (self.history_state_path) |path| self.allocator.free(path);
@@ -2689,9 +2692,11 @@ pub const Workbench = struct {
         if (self.history_tab == tab) return;
         if (self.history_tab) |old_tab| {
             if (self.history_selection_listener) |listener| old_tab.removeSelectionListener(listener);
+            if (self.history_content_listener) |listener| old_tab.editor.removeWorkingCopyContentListener(listener);
         }
         self.history_tab = tab;
         self.history_selection_listener = null;
+        self.history_content_listener = null;
         const next = tab orelse return;
         const listener = Tab.SelectionListener{
             .context = self,
@@ -2699,13 +2704,23 @@ pub const Workbench = struct {
         };
         next.addSelectionListener(listener) catch return;
         self.history_selection_listener = listener;
+        const content_listener = editor_widget.ChangeListener{ .context = self, .callback = onHistoryContentChanged };
+        next.editor.addWorkingCopyContentListener(content_listener);
+        self.history_content_listener = content_listener;
     }
 
     fn detachHistoryTab(self: *Workbench, tab: *Tab) void {
         if (self.history_tab != tab) return;
         if (self.history_selection_listener) |listener| tab.removeSelectionListener(listener);
+        if (self.history_content_listener) |listener| tab.editor.removeWorkingCopyContentListener(listener);
         self.history_tab = null;
         self.history_selection_listener = null;
+        self.history_content_listener = null;
+    }
+
+    fn onHistoryContentChanged(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.recordNavigationWithReason(.EDIT);
     }
 
     fn onHistorySelectionChanged(context: *anyopaque, reason: editor_mod.EditorPaneSelectionChangeReason) void {
@@ -4961,6 +4976,14 @@ pub const Workbench = struct {
             const closed = self.history.closed_editors.pop().?;
             defer self.allocator.free(closed.path);
             self.openPath(closed.path) catch continue;
+            if (self.activePane()) |pane| {
+                if (pane.activeTab()) |tab| {
+                    if (closed.index < pane.tabs.items.len) {
+                        _ = pane.group.model.moveEditor(tab.input, @intCast(closed.index)) catch {};
+                    }
+                    if (closed.pinned) _ = pane.group.model.pin(tab.input) catch {};
+                }
+            }
             reopened = true;
         }
         return reopened;
