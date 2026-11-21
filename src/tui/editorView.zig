@@ -342,6 +342,14 @@ const PaintStyleKey = struct {
 
 const default_paint_style: ui.style.PaintStyle = .{};
 
+pub const PerfCounters = struct {
+    full_box_solves: usize = 0,
+    chrome_rebuilds: usize = 0,
+    line_added: usize = 0,
+    line_rebuilt: usize = 0,
+    line_translated: usize = 0,
+};
+
 pub const View = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
@@ -387,6 +395,9 @@ pub const View = struct {
     /// The box tree has to be rebuilt from scratch (first frame, resize,
     /// theme rescan or the incremental capacity bound).
     needs_full_box_rebuild: bool = true,
+    /// Retained-path work counters; the benchmark prints these so a chrome
+    /// retainer can be measured against the line path instead of guessed.
+    perf: PerfCounters = .{},
     /// Diagnostic counter for tests/benchmarks: full document rebuilds.
     rebuild_count: usize = 0,
     last_bracket_generation: ?usize = null,
@@ -479,6 +490,10 @@ pub const View = struct {
     /// Diagnostic counter for tests/benchmarks: full document rebuilds.
     pub fn rebuildCount(self: *const View) usize {
         return self.rebuild_count;
+    }
+
+    pub fn perfCounters(self: *const View) PerfCounters {
+        return self.perf;
     }
 
     fn ensureBuilt(self: *View) !void {
@@ -1550,9 +1565,21 @@ pub const View = struct {
             try @import("ui").layout.layoutTree(tree, doc);
             tree.setAutoInvalidate(false);
             self.needs_full_box_rebuild = false;
+            self.perf.full_box_solves += 1;
+            // The full solve already built every line box, including the ones
+            // painted this frame; consume their dirty flags so the next refresh
+            // does not rebuild them as if only their children had changed.
+            const lines = self.terminal_view_host.viewRef().getViewLines();
+            const start = lines.windowStart();
+            const end = lines.windowEnd();
+            if (start != 0) {
+                var line_number = start;
+                while (line_number <= end) : (line_number += 1) _ = lines.lineAt(line_number).takeChildrenDirty();
+            }
             return;
         }
 
+        self.perf.chrome_rebuilds += 1;
         if (self.chrome_root) |chrome| {
             if (try tree.rebuildSubtree(chrome)) |box| {
                 try @import("ui").layout.layoutSubtree(tree, doc, box);
@@ -1578,6 +1605,7 @@ pub const View = struct {
                     return;
                 };
                 try @import("ui").layout.layoutSubtree(tree, doc, added);
+                self.perf.line_added += 1;
             } else if (line.takeChildrenDirty()) {
                 const box = try tree.rebuildSubtree(node) orelse {
                     self.needs_full_box_rebuild = true;
@@ -1587,9 +1615,11 @@ pub const View = struct {
                 // children; refresh the box style before solving.
                 _ = tree.translateSubtree(node, 0, 0);
                 try @import("ui").layout.layoutSubtree(tree, doc, box);
+                self.perf.line_rebuilt += 1;
             } else {
                 const dy = line.paintedTop() - existing.?.rect.y;
                 _ = tree.translateSubtree(node, 0, dy);
+                self.perf.line_translated += 1;
             }
         }
 
@@ -2854,6 +2884,15 @@ test "View: scrolling reuses the visible line DOM nodes" {
     // The retained line's box is moved, not rebuilt or re-laid-out.
     try std.testing.expectEqual(box_before, view.surface.box_tree.find(node_before).?);
     try std.testing.expectEqual(box_y_before - 1, box_before.rect.y);
+
+    const perf = view.perfCounters();
+    try std.testing.expectEqual(@as(usize, 1), perf.full_box_solves);
+    try std.testing.expectEqual(@as(usize, 1), perf.line_added);
+    try std.testing.expectEqual(@as(usize, 0), perf.line_rebuilt);
+    try std.testing.expectEqual(
+        view_lines.windowEnd() - view_lines.windowStart(),
+        perf.line_translated,
+    );
 
     // The content root holds exactly the windowed line nodes: the leaving line
     // was unlinked and the entering line got a node, so the DOM count stays at
