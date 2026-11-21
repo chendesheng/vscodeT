@@ -28,6 +28,7 @@
 //   repository is not a hard disable: `discover` returns null so another
 //   workspace folder can still be opened.
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const git_common = @import("../vs/workbench/contrib/git/common/gitService.zig");
@@ -346,16 +347,47 @@ pub const GitCli = struct {
 
         if (try self.runRevParse(start, "--show-toplevel", discovery_output_limit)) |top| {
             defer self.allocator.free(top);
-            return try self.absoluteRoot(start, top);
+            const root = try self.absoluteRoot(start, top);
+            return normalizeRoot(root, builtin.os.tag == .windows);
         }
 
         if (try self.runRevParse(start, "--git-common-dir", discovery_output_limit)) |common| {
             defer self.allocator.free(common);
-            return try self.rootFromCommonDir(start, common);
+            const root = try self.rootFromCommonDir(start, common);
+            return normalizeRoot(root, builtin.os.tag == .windows);
         }
 
         if (!self.disabled) self.reportNoRepository();
         return null;
+    }
+
+    /// Compares cached repository roots with a caller's spelling. Windows
+    /// treats `/` and `\` as interchangeable separators, so a workspace folder
+    /// passed as `C:/repo` still finds the repository discovered as `C:\repo`.
+    fn equalRoots(left: []const u8, right: []const u8, comptime windows: bool) bool {
+        if (!windows) return std.mem.eql(u8, left, right);
+        if (left.len != right.len) return false;
+        for (left, right) |left_byte, right_byte| {
+            if (left_byte == right_byte) continue;
+            const left_sep = left_byte == '/' or left_byte == '\\';
+            const right_sep = right_byte == '/' or right_byte == '\\';
+            if (!left_sep or !right_sep) return false;
+        }
+        return true;
+    }
+
+    /// Git for Windows prints repository roots with forward slashes, while the
+    /// caller spelled the workspace folder with native separators. Normalize
+    /// before the root is cached or compared with `repositoryForRoot`/`discover`
+    /// results. `/` is only a separator on Windows; it is a legal filename byte
+    /// elsewhere.
+    fn normalizeRoot(root: []u8, comptime windows: bool) []u8 {
+        if (windows) {
+            for (root) |*byte| {
+                if (byte.* == '/') byte.* = '\\';
+            }
+        }
+        return root;
     }
 
     fn absoluteRoot(self: *GitCli, start: []const u8, raw: []const u8) ![]u8 {
@@ -564,7 +596,7 @@ pub const GitCli = struct {
 
     fn findRepository(self: *GitCli, root: []const u8) ?*git_browser.GitRepository {
         for (self.repo_list.items) |repository| {
-            if (std.mem.eql(u8, repository.rootPath(), root)) return repository;
+            if (equalRoots(repository.rootPath(), root, builtin.os.tag == .windows)) return repository;
         }
         return null;
     }
@@ -1564,6 +1596,23 @@ test "discover: non-repository and disabled provider do not crash" {
     defer missing.deinit();
     try std.testing.expect((try missing.discover(root)) == null);
     try std.testing.expect(missing.isDisabled());
+}
+
+test "discover: git roots are normalized to native separators" {
+    // Git for Windows prints `--show-toplevel` with `/`; the workspace folder
+    // is spelled with `\`, so both must compare equal after discovery.
+    var posix = [_]u8{ '/', 'a', '/', 'b' };
+    try std.testing.expectEqualStrings("/a/b", GitCli.normalizeRoot(&posix, false));
+
+    var windows = [_]u8{ 'C', ':', '/', 'a', '/', 'b' };
+    try std.testing.expectEqualStrings("C:\\a\\b", GitCli.normalizeRoot(&windows, true));
+}
+
+test "discover: repository lookup accepts either separator on Windows" {
+    try std.testing.expect(GitCli.equalRoots("C:/a/b", "C:\\a\\b", true));
+    try std.testing.expect(!GitCli.equalRoots("C:/a/b", "C:/a/c", true));
+    try std.testing.expect(!GitCli.equalRoots("C:/a/b", "C:\\a\\c", true));
+    try std.testing.expect(!GitCli.equalRoots("/a/b", "\\a\\b", false));
 }
 
 fn runTestGit(allocator: Allocator, cwd: []const u8, args: []const []const u8) !std.process.RunResult {

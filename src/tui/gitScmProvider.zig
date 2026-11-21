@@ -9,6 +9,7 @@
 // Groups: `Merge Changes`, `Staged Changes`, `Changes` (working-tree changes
 // with untracked files mixed in, matching `git.untrackedChanges=mixed`).
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const scm = @import("../vs/workbench/contrib/scm/common/scm.zig");
@@ -399,6 +400,10 @@ fn getOriginal(
 
 const testing = std.testing;
 
+/// The fake repository root is spelled the way the host spells an absolute
+/// path, so the provider's `std.fs.path.join` expectations match production.
+const test_root = if (builtin.os.tag == .windows) "C:\\repo" else "/repo";
+
 const FakeDelegate = struct {
     base: git_common.IGitExtensionDelegate = undefined,
 
@@ -459,12 +464,12 @@ test "gitScmProvider: groups, status letters and resource opening" {
     var fake = FakeDelegate{};
     fake.init();
     var state = try makeState(allocator);
-    const repository = try GitRepository.create(allocator, "/repo", state, &fake.base);
+    const repository = try GitRepository.create(allocator, test_root, state, &fake.base);
     defer repository.destroy();
     state.deinit(allocator);
 
     var host = TestHost{};
-    const provider = try GitScmProvider.create(allocator, null, repository, "/repo", .{
+    const provider = try GitScmProvider.create(allocator, null, repository, test_root, .{
         .context = &host,
         .open_change = TestHost.openChange,
     });
@@ -482,7 +487,9 @@ test "gitScmProvider: groups, status letters and resource opening" {
     try testing.expectEqual(@as(usize, 1), groups[0].resources().len);
     try testing.expectEqual(@as(u8, 'U'), provider.groups[0].resources.items[0].status);
     try testing.expectEqual(@as(usize, 2), groups[2].resources().len);
-    try testing.expectEqualStrings("/repo/new.zig", groups[2].resources()[1].source_path);
+    const expected_untracked = try std.fs.path.join(allocator, &.{ test_root, "new.zig" });
+    defer allocator.free(expected_untracked);
+    try testing.expectEqualStrings(expected_untracked, groups[2].resources()[1].source_path);
     try testing.expectEqual(@as(usize, 4), provider.count());
 
     try groups[1].resources()[0].open(false);
@@ -496,12 +503,12 @@ test "gitScmProvider: refresh rebuilds from the repository state" {
     var fake = FakeDelegate{};
     fake.init();
     var state = try makeState(allocator);
-    const repository = try GitRepository.create(allocator, "/repo", state, &fake.base);
+    const repository = try GitRepository.create(allocator, test_root, state, &fake.base);
     defer repository.destroy();
     state.deinit(allocator);
 
     var host = TestHost{};
-    const provider = try GitScmProvider.create(allocator, null, repository, "/repo", .{
+    const provider = try GitScmProvider.create(allocator, null, repository, test_root, .{
         .context = &host,
         .open_change = TestHost.openChange,
     });
@@ -517,5 +524,7 @@ test "gitScmProvider: refresh rebuilds from the repository state" {
     try provider.refresh();
     try testing.expectEqual(@as(usize, 1), provider.count());
     const groups = provider.interface().groups();
-    try testing.expectEqualStrings("/repo/only-staged.zig", groups[1].resources()[0].source_path);
+    const expected_staged = try std.fs.path.join(allocator, &.{ test_root, "only-staged.zig" });
+    defer allocator.free(expected_staged);
+    try testing.expectEqualStrings(expected_staged, groups[1].resources()[0].source_path);
 }
