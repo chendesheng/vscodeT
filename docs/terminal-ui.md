@@ -825,12 +825,22 @@ Library constraints:
   terminal cannot distinguish `Ctrl-Shift-P`. While a picker is open,
   `Ctrl-N`/`Ctrl-P` select the next/previous item (the terminal form of the
   macOS quick-pick bindings; arrows, pages and Ctrl-Home/End work as well), and
-  the chord never reaches the filter input. The workspace file index is a
-  TUI adapter (`src/vs/workbench/services/search/common/fileIndex.zig`) that walks the workspace instead of
-  calling the search process, but it honors `.gitignore`/`.ignore` through the
-  same ported `IgnoreFile`. Icons, buttons, keybinding labels,
-  virtualized lists, symbol/go-to-line/link providers and the browser
-  `fuzzyScorer.ts` path-aware scorer are not ported.
+  the chord never reaches the filter input. Go to File uses a dedicated worker
+  thread (`src/vs/workbench/services/search/node/fileSearchWorker.zig`) that
+  spawns one `rg --files` per picker session and streams the listing into an
+  owned path cache. Keystrokes queue a filter; the worker applies the ported
+  `isFilePatternMatch` rules and `fuzzyScorer.scoreItemFuzzy`, and publishes at
+  most 512 owned results. The event-loop thread only copies a published result
+  into the picker arena, so the input, rendering and terminal output keep
+  running while a large checkout is listed or scored. `files.exclude`,
+  `search.exclude`, the `search.useIgnoreFiles`/`useParentIgnoreFiles`/
+  `useGlobalIgnoreFiles` settings and `search.followSymlinks` are read through
+  the same query/exclude helpers as text search. `rg` must be on `PATH`; a
+  missing binary is reported once through the picker error path. Icons,
+  buttons, keybinding labels, virtualized lists, symbol/go-to-line/link
+  providers and the browser `fuzzyScorer.ts` path-aware scorer are not ported.
+  macOS Unicode normalization is not ported, and text search still uses the Zig
+  walker.
 - Content widgets use the terminal adaptation of upstream `IContentWidget`: the
   widget reports a model position plus an `above`/`below` preference, and
   `View.buildContentWidgets` converts it with the view model
