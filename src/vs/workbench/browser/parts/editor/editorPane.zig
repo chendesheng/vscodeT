@@ -38,6 +38,8 @@ const LanguageFeaturesService = @import("../../../../editor/common/services/lang
 const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 const MarkdownPreview = @import("../../../../../tui/markdownPreview.zig").MarkdownPreview;
 const MarkdownPreviewConfig = @import("../../../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
+const ImagePreviewPane = @import("../../../../../tui/imagePreview.zig").ImagePreviewPane;
+const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 
 pub const Tab = struct {
     allocator: Allocator,
@@ -53,6 +55,10 @@ pub const Tab = struct {
     diff: ?*DiffView = null,
     markdown_preview: ?*MarkdownPreview = null,
     markdown_preview_visible: bool = false,
+    /// Image preview pane; also marks this as an image tab.
+    image_preview: ?*ImagePreviewPane = null,
+    image_input: ?*ImagePreviewEditorInput = null,
+    image_runtime: ?*ui.image.Runtime = null,
     last_width: usize = 0,
     last_height: usize = 0,
     preview_rect: ?ui.Rect = null,
@@ -113,6 +119,60 @@ pub const Tab = struct {
         return self;
     }
 
+    /// Builds a read-only image preview tab. A text editor is still created
+    /// with an empty model so the many workbench paths that read
+    /// `tab.editor.path`/`view` keep working; it is read-only and never saved,
+    /// and `paint`/`layoutCells` route to the image pane instead.
+    pub fn initImage(
+        allocator: Allocator,
+        io: Io,
+        path: []const u8,
+        width: usize,
+        height: usize,
+        runtime: *ui.image.Runtime,
+    ) !*Tab {
+        const input = try ImagePreviewEditorInput.init(allocator, path);
+        errdefer input.deinit();
+        return initImageFromInput(allocator, io, input, width, height, runtime);
+    }
+
+    pub fn initImageFromInput(
+        allocator: Allocator,
+        io: Io,
+        image_input: *ImagePreviewEditorInput,
+        width: usize,
+        height: usize,
+        runtime: *ui.image.Runtime,
+    ) !*Tab {
+        const self = try allocator.create(Tab);
+        errdefer allocator.destroy(self);
+
+        const editor = try Editor.createFromText(allocator, io, "", image_input.path, width, height);
+        errdefer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+        editor.setReadOnly(true);
+
+        const view = try View.init(allocator, editor);
+        errdefer view.deinit();
+
+        const pane = try ImagePreviewPane.init(allocator, io, runtime, image_input.path);
+        errdefer pane.deinit();
+
+        self.* = .{
+            .allocator = allocator,
+            .editor = editor,
+            .view = view,
+            .file_input = null,
+            .image_input = image_input,
+            .image_preview = pane,
+            .image_runtime = runtime,
+            .input = &image_input.base,
+        };
+        return self;
+    }
+
     /// Builds a diff tab around an already created `DiffView`.
     pub fn initDiff(allocator: Allocator, diff: *DiffView) !*Tab {
         const self = try allocator.create(Tab);
@@ -131,7 +191,7 @@ pub const Tab = struct {
     /// Creates the editor contributions on first activation. The tab must have
     /// been attached to a view before any key/mouse event is routed to it.
     pub fn ensureControllers(self: *Tab) !void {
-        if (self.controllers != null or self.diff != null) return;
+        if (self.controllers != null or self.diff != null or self.image_preview != null) return;
 
         const controllers = try Controllers.init(self.allocator, self.editor, self.view);
         errdefer controllers.deinit();
@@ -154,6 +214,11 @@ pub const Tab = struct {
     }
 
     pub fn refresh(self: *Tab) !void {
+        if (self.image_preview) |pane| {
+            if (pane.dirty) return;
+            pane.dirty = true;
+            return;
+        }
         if (self.diff) |diff| {
             diff.widget.original_view.refresh() catch {};
             diff.widget.modified_view.refresh() catch {};
@@ -164,6 +229,18 @@ pub const Tab = struct {
 
     pub fn isDiff(self: *const Tab) bool {
         return self.diff != null;
+    }
+
+    pub fn isImage(self: *const Tab) bool {
+        return self.image_preview != null;
+    }
+
+    pub fn setImageRuntime(self: *Tab, runtime: *ui.image.Runtime) void {
+        self.image_runtime = runtime;
+    }
+
+    pub fn imagePreview(self: *Tab) ?*ImagePreviewPane {
+        return self.image_preview;
     }
 
     /// Refreshes the cached modified editor/view after a `DiffView` replaced
@@ -177,6 +254,11 @@ pub const Tab = struct {
     /// Paints the tab into `frame`. A file tab paints its single view; a diff
     /// tab paints both panes plus the center gutter.
     pub fn paint(self: *Tab, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
+        if (self.image_preview) |pane| {
+            if (self.last_width != w or self.last_height != h) try self.layoutImage(w, h);
+            try pane.paint(frame, x, y, w, h);
+            return;
+        }
         if (self.diff) |diff| {
             try diff.paint(frame, x, y, w, h);
             return;
@@ -203,6 +285,7 @@ pub const Tab = struct {
     }
 
     pub fn cursorCell(self: *Tab) ?Cell {
+        if (self.image_preview != null) return null;
         if (self.diff) |diff| {
             const cell = diff.cursorCell() orelse return null;
             return .{ .row = cell.row, .col = cell.col };
@@ -211,6 +294,10 @@ pub const Tab = struct {
     }
 
     pub fn focusEditor(self: *Tab) void {
+        if (self.image_preview) |pane| {
+            pane.setFocused(true);
+            return;
+        }
         if (self.diff) |diff| {
             diff.focus();
             return;
@@ -256,9 +343,56 @@ pub const Tab = struct {
 
     /// Lays the editor view out in the group pane. The height is the editor
     /// content height; the tab strip row is owned by the workbench.
+    fn layoutImage(self: *Tab, width: usize, height: usize) !void {
+        self.last_width = width;
+        self.last_height = height;
+        if (self.image_preview) |pane| try pane.layout(@max(width, 1), @max(height, 1));
+    }
+
+    pub fn imageStatusInfo(self: *Tab) ?@import("../../../contrib/mediaPreview/browser/mediaPreviewStatusBar.zig").Info {
+        const pane = self.image_preview orelse return null;
+        return pane.statusInfo();
+    }
+
+    pub fn handleImageKey(self: *Tab, event: *const ui.KeyEvent) @import("../../../../../tui/imagePreview.zig").Action {
+        const pane = self.image_preview orelse return .none;
+        return pane.handleKey(event);
+    }
+
+    pub fn handleImageMouse(
+        self: *Tab,
+        event: *const ui.MouseEvent,
+        focus_gained: bool,
+    ) @import("../../../../../tui/imagePreview.zig").Action {
+        const pane = self.image_preview orelse return .none;
+        return pane.handleMouse(event, focus_gained);
+    }
+
+    pub fn reloadImage(self: *Tab) void {
+        if (self.image_preview) |pane| pane.reload();
+    }
+
+    pub fn invalidateImages(self: *Tab) void {
+        if (self.image_preview) |pane| pane.invalidateImage();
+        if (self.markdown_preview) |preview| preview.invalidateImages();
+    }
+
+    pub fn imageUsesPath(self: *Tab, path: []const u8) bool {
+        const pane = self.image_preview orelse return false;
+        return pane.usesPath(path);
+    }
+
+    pub fn imagePath(self: *const Tab) ?[]const u8 {
+        return if (self.image_input) |input| input.path else null;
+    }
+
     pub fn layoutCells(self: *Tab, width: usize, height: usize) void {
         self.last_width = width;
         self.last_height = height;
+        if (self.image_preview) |pane| {
+            pane.layout(@max(width, 1), @max(height, 1)) catch {};
+            return;
+        }
         if (self.diff) |diff| {
             diff.layout(@max(width, 1), @max(height, 1));
             return;
@@ -297,6 +431,7 @@ pub const Tab = struct {
         if (!self.isMarkdown()) return null;
         if (self.markdown_preview == null) {
             self.markdown_preview = try MarkdownPreview.init(self.allocator, self.editor);
+            self.markdown_preview.?.setImageRuntime(self.image_runtime);
         }
         return self.markdown_preview;
     }
@@ -367,6 +502,10 @@ pub const Tab = struct {
     }
 
     pub fn deinit(self: *Tab) void {
+        if (self.image_preview) |pane| {
+            pane.deinit();
+            self.image_preview = null;
+        }
         if (self.markdown_preview) |preview| {
             preview.deinit();
             self.markdown_preview = null;
@@ -382,7 +521,13 @@ pub const Tab = struct {
             return;
         }
         self.view.deinit();
-        if (self.file_input) |input| input.deinit();
+        if (self.image_input) |input| {
+            self.editor.deinit();
+            self.allocator.destroy(self.editor);
+            input.deinit();
+        } else if (self.file_input) |input| {
+            input.deinit();
+        }
         self.allocator.destroy(self);
     }
 };

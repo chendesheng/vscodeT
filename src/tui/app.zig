@@ -15,6 +15,8 @@ const VimRuntime = @import("../vs/workbench/contrib/vim/browser/vimRuntime.zig")
 const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
 const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
 const FileEditorSerializer = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorSerializer;
+const ImagePreviewEditorInput = @import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
+const ImagePreviewEditorInputSerializer = @import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInputSerializer;
 const FileEditorInput = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const EditorFactoryRegistry = @import("../vs/workbench/common/editor/editorFactory.zig").EditorFactoryRegistry;
 const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
@@ -150,6 +152,14 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
     if (parsed.preview and parsed.session != null) return error.PreviewWithSession;
     if (parsed.preview and paths.items.len != 1) return error.InvalidPreviewPaths;
     return parsed;
+}
+
+fn terminalPlaceholderHint(environ: *const std.process.Environ.Map) bool {
+    if (environ.get("KITTY_WINDOW_ID") != null) return true;
+    if (environ.get("TERM_PROGRAM")) |program| {
+        if (std.ascii.eqlIgnoreCase(program, "ghostty")) return true;
+    }
+    return false;
 }
 
 const ProbeHost = struct {
@@ -289,6 +299,27 @@ pub fn main(init: std.process.Init) !void {
     });
     defer border_probe.deinit(allocator);
 
+    // The kitty graphics probe is separate because its replies are APC
+    // strings rather than the cell-border DCS. Known placeholder-capable
+    // terminals that predate the 0.50 feature query are recognized through
+    // their environment; the query wins when the terminal answers it.
+    const image_probe = ui.image.probe(
+        allocator,
+        io,
+        out,
+        .{ .context = &probe_host, .poll = ProbeHost.poll, .read = ProbeHost.read },
+        terminalPlaceholderHint(init.environ_map),
+    ) catch |err| blk: {
+        infoLog(log_service, "image protocol probe failed: {s}", .{@errorName(err)});
+        break :blk ui.image.ProbeResult{};
+    };
+    defer image_probe.deinit(allocator);
+    infoLog(log_service, "image protocol: {s} (graphics={} feature={})", .{
+        @tagName(image_probe.capability),
+        image_probe.graphics_ok,
+        image_probe.feature_ok,
+    });
+
     var folders = ArrayList([]u8).init(allocator);
     defer {
         for (folders.items) |folder| allocator.free(folder);
@@ -322,6 +353,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var file_serializer: ?FileEditorSerializer = null;
+    var image_serializer: ?ImagePreviewEditorInputSerializer = null;
     var registry: ?EditorFactoryRegistry = null;
     if (args.session != null) {
         // The workbench status bar takes one row and each group's tab strip
@@ -329,8 +361,10 @@ pub fn main(init: std.process.Init) !void {
         // content height is the remaining rows.
         const restored_editor_height = @max(size.height -| 2, 1);
         file_serializer = FileEditorSerializer.init(allocator, io, size.width, restored_editor_height);
+        image_serializer = ImagePreviewEditorInputSerializer.init(allocator);
         registry = EditorFactoryRegistry.init(allocator);
         try registry.?.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.?.interface());
+        try registry.?.registerEditorSerializer(ImagePreviewEditorInput.ID, image_serializer.?.interface());
     }
     defer if (registry) |*value| value.deinit();
 
@@ -376,6 +410,8 @@ pub fn main(init: std.process.Init) !void {
     }
     defer workbench.deinit();
     workbench.setCellBorders(border_probe.supported);
+    workbench.setImageProtocol(image_probe.capability);
+    workbench.setCellPixelSize(size.cell_width_px, size.cell_height_px);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
     workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
     workbench.setJsonLanguageClient(json_client);
@@ -484,6 +520,7 @@ pub fn main(init: std.process.Init) !void {
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
     if (border_probe.leftover) |leftover| try input_buffer.appendSlice(leftover);
+    if (image_probe.leftover) |leftover| try input_buffer.appendSlice(leftover);
 
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
@@ -600,6 +637,7 @@ pub fn main(init: std.process.Init) !void {
         if (try tui.resizedSize()) |new_size| {
             size = new_size;
             try workbench.resize(size.width, size.height);
+            workbench.setCellPixelSize(size.cell_width_px, size.cell_height_px);
             try tui.clearScreen(out);
             resized = true;
         }
@@ -693,7 +731,7 @@ pub fn main(init: std.process.Init) !void {
 
                     if (vim_runtime.host) |host| {
                         const editor_focused = workbench.focus == .editor;
-                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() else false;
+                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isImage() else false;
                         if (!workbench.is_pasting and editor_focused and normal_tab and host.dispatchKey(event)) {
                             needs_render = true;
                             continue;
@@ -709,6 +747,20 @@ pub fn main(init: std.process.Init) !void {
                     if (try workbench.handleBreadcrumbsKey(event)) continue;
 
                     const current = workbench.activeTab() orelse continue;
+                    if (current.isImage()) {
+                        switch (current.handleImageKey(event)) {
+                            .changed => {
+                                workbench.refreshStatus();
+                                needs_render = true;
+                            },
+                            .open_text => {
+                                try workbench.openActiveImageAsText();
+                                needs_render = true;
+                            },
+                            .none => {},
+                        }
+                        continue;
+                    }
                     if (current.isDiff()) {
                         if (current.handleDiffKey(event)) needs_render = true;
                         continue;
@@ -744,6 +796,22 @@ pub fn main(init: std.process.Init) !void {
 
                     var adjusted = workbench.editorMouseEvent(event.*) orelse continue;
                     const current = workbench.activeTab() orelse continue;
+                    if (current.isImage()) {
+                        const focus_gained = workbench.focus != .editor;
+                        if (event.kind == .down) workbench.focusEditor();
+                        switch (current.handleImageMouse(&adjusted, focus_gained)) {
+                            .changed => {
+                                workbench.refreshStatus();
+                                needs_render = true;
+                            },
+                            .open_text => {
+                                try workbench.openActiveImageAsText();
+                                needs_render = true;
+                            },
+                            .none => {},
+                        }
+                        continue;
+                    }
                     if (event.kind == .down) {
                         workbench.focusEditor();
                         if (vim_runtime.host) |host| host.resetKeyInput();
@@ -791,9 +859,13 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (workbench.activeTab()) |current| {
-            current.onEditorChanged(time_compat.milliTimestamp());
-            workbench.onSearchEditorChanged();
-            try current.view.refresh();
+            if (!current.isImage()) {
+                current.onEditorChanged(time_compat.milliTimestamp());
+                workbench.onSearchEditorChanged();
+                try current.view.refresh();
+            } else {
+                try current.refresh();
+            }
         }
         workbench.refreshStatus();
         try tui.hideCursor(out);

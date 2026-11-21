@@ -170,6 +170,11 @@ const hover_types = @import("../../editor/contrib/hover/browser/hoverTypes.zig")
 const strings = @import("../../base/common/strings.zig");
 const topmost_line_monitor = @import("../contrib/markdown/browser/topmostLineMonitor.zig");
 const MarkdownPreviewConfig = @import("../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
+const media_preview = @import("../contrib/mediaPreview/common/mediaPreview.zig");
+const ImagePreviewEditorInput = @import("../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
+const ImagePreviewEditorInputSerializer = @import("../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInputSerializer;
+const MediaPreviewStatus = @import("../contrib/mediaPreview/browser/mediaPreviewStatusBar.zig").MediaPreviewStatus;
+const media_actions = @import("../contrib/mediaPreview/browser/mediaPreviewActions.zig");
 const std_uri = @import("../../base/common/stdUri.zig");
 const MarkerService = @import("../../platform/markers/common/markerService.zig").MarkerService;
 const MarkerChangeEvent = @import("../../platform/markers/common/markerService.zig").MarkerChangeEvent;
@@ -357,6 +362,11 @@ pub const Workbench = struct {
     view_containers_registry: views_mod.ViewContainersRegistry,
     view_descriptor_service: ViewDescriptorService,
     statusbar: StatusbarService,
+    images: ui.image.Runtime,
+    media_status: ?*MediaPreviewStatus = null,
+    /// Set when a file watcher change was applied so the TUI repaints even if
+    /// the change produced no other input.
+    files_changed: bool = false,
     activity_service: ActivityService,
     editor_status: ?*EditorStatus = null,
     status_hint_accessor: ?EntryAccessor = null,
@@ -502,6 +512,9 @@ pub const Workbench = struct {
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
+        self.images = ui.image.Runtime.init(allocator);
+        self.media_status = null;
+        self.files_changed = false;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -623,6 +636,9 @@ pub const Workbench = struct {
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
+        self.images = ui.image.Runtime.init(allocator);
+        self.media_status = null;
+        self.files_changed = false;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -694,9 +710,25 @@ pub const Workbench = struct {
         const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
         defer allocator.free(editors);
         for (editors) |input| {
+            if (std.mem.eql(u8, input.type_id, ImagePreviewEditorInput.ID)) {
+                const image_input: *ImagePreviewEditorInput = @ptrCast(@alignCast(input.impl.?));
+                const tab = try Tab.initImageFromInput(
+                    allocator,
+                    self.io,
+                    image_input,
+                    self.cols,
+                    @max(self.rows -| 2, 1),
+                    &self.images,
+                );
+                try tab.view.setStatusBarVisible(false);
+                try pane.addTab(tab);
+                try self.history.add(image_input.path);
+                continue;
+            }
             if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
             const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
             const tab = try Tab.initFromInput(allocator, file_input);
+            tab.setImageRuntime(&self.images);
             if (tab.file_input != null) try tab.view.setStatusBarVisible(false);
             try pane.addTab(tab);
             self.registerWorkingCopy(tab);
@@ -760,6 +792,9 @@ pub const Workbench = struct {
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
+        self.images = ui.image.Runtime.init(allocator);
+        self.media_status = null;
+        self.files_changed = false;
         self.pending_tab_drag = null;
         self.drag_tab = null;
         self.drag_source_pane = null;
@@ -826,9 +861,25 @@ pub const Workbench = struct {
             const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
             defer allocator.free(editors);
             for (editors) |input| {
+                if (std.mem.eql(u8, input.type_id, ImagePreviewEditorInput.ID)) {
+                    const image_input: *ImagePreviewEditorInput = @ptrCast(@alignCast(input.impl.?));
+                    const tab = try Tab.initImageFromInput(
+                        allocator,
+                        self.io,
+                        image_input,
+                        self.cols,
+                        @max(self.rows -| 2, 1),
+                        &self.images,
+                    );
+                    try tab.view.setStatusBarVisible(false);
+                    try pane.addTab(tab);
+                    try self.history.add(image_input.path);
+                    continue;
+                }
                 if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
                 const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
                 const tab = try Tab.initFromInput(allocator, file_input);
+                tab.setImageRuntime(&self.images);
                 if (tab.file_input != null) try tab.view.setStatusBarVisible(false);
                 try pane.addTab(tab);
                 self.registerWorkingCopy(tab);
@@ -1053,6 +1104,11 @@ pub const Workbench = struct {
             if (self.editor_status) |status| status.deinit();
             self.editor_status = null;
         }
+        self.media_status = try MediaPreviewStatus.init(self.allocator, &self.statusbar);
+        errdefer {
+            if (self.media_status) |status| status.deinit();
+            self.media_status = null;
+        }
 
         try self.registerDefaultCommands();
         self.statusbar.setCommandExecutor(.{
@@ -1142,6 +1198,10 @@ pub const Workbench = struct {
             .{ .id = "markdown.showPreviewToSide", .label = "Open Preview to the Side", .category = "Markdown", .requires_editor = true, .context = self, .run = commandShowMarkdownPreview },
             .{ .id = "markdown.togglePreview", .label = "Toggle Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandToggleMarkdownPreview },
             .{ .id = "markdown.preview.refresh", .label = "Refresh Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandRefreshMarkdownPreview },
+            .{ .id = media_actions.zoom_in_id, .label = media_actions.zoom_in_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageZoomIn },
+            .{ .id = media_actions.zoom_out_id, .label = media_actions.zoom_out_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageZoomOut },
+            .{ .id = media_actions.select_zoom_level_id, .label = media_actions.select_zoom_level_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageSelectZoomLevel },
+            .{ .id = media_actions.open_in_text_id, .label = media_actions.open_in_text_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageOpenInTextEditor },
             .{ .id = "workbench.action.findInFiles", .label = "Find in Files", .category = "Search", .context = self, .run = commandFindInFiles },
             .{ .id = "workbench.action.replaceInFiles", .label = "Replace in Files", .category = "Search", .context = self, .run = commandReplaceInFiles },
             .{ .id = "toggleSearchCaseSensitive", .label = "Toggle Case Sensitive", .category = "Search", .context = self, .run = commandToggleSearchCase },
@@ -1338,6 +1398,10 @@ pub const Workbench = struct {
         self.navigation_arena.deinit();
         self.breadcrumbs_service.deinit();
         self.outline_service.deinit();
+        if (self.media_status) |status| {
+            status.deinit();
+            self.media_status = null;
+        }
         if (self.editor_status) |status| {
             status.deinit();
             self.editor_status = null;
@@ -1387,6 +1451,7 @@ pub const Workbench = struct {
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
+        self.images.deinit();
         if (self.word_completion_registration) |registration| registration.dispose();
         if (self.word_completion_provider) |provider| self.allocator.destroy(provider);
         if (self.marker_decorations) |service| service.deinit();
@@ -1745,6 +1810,9 @@ pub const Workbench = struct {
         _ = tab.editor.applyEditorSettings(reader, language_id, resource) catch false;
         _ = tab.view.applyEditorSettings(reader, language_id, resource) catch false;
         if (self.theme_palette) |palette| tab.view.setThemeColors(palette);
+        if (self.theme_palette) |palette| {
+            if (tab.image_preview) |pane| pane.setThemeColors(palette);
+        }
     }
 
     fn applyEditorSettingsToAllTabs(self: *Workbench) void {
@@ -1802,10 +1870,19 @@ pub const Workbench = struct {
         for (changes) |change| {
             if (change.type != .UPDATED) continue;
             self.git_status_dirty = true;
+            self.files_changed = true;
             for (self.part.group_views.items) |pane| {
                 for (pane.tabs.items) |tab| {
+                    if (tab.isImage()) {
+                        const image_path = tab.imagePath() orelse continue;
+                        if (self.samePath(image_path, change.resource)) tab.reloadImage();
+                        continue;
+                    }
+                    if (tab.markdown_preview) |preview| {
+                        if (preview.usesImagePath(change.resource)) preview.refresh(false);
+                    }
                     if (tab.isDiff()) continue;
-                    if (!std.mem.eql(u8, tab.editor.path, change.resource)) continue;
+                    if (!self.samePath(tab.editor.path, change.resource)) continue;
                     if (tab.editor.isDirty()) {
                         tab.editor.markConflict();
                         continue;
@@ -1838,6 +1915,10 @@ pub const Workbench = struct {
         }
         if (self.files_watcher) |watcher| {
             _ = watcher.poll(now_ms) catch false;
+        }
+        if (self.files_changed) {
+            self.files_changed = false;
+            changed = true;
         }
         return changed;
     }
@@ -2611,6 +2692,9 @@ pub const Workbench = struct {
     pub const OpenOptions = struct {
         /// Preview editors are replaced by the next preview in the group.
         pinned: bool = true,
+        /// Open the file in a text editor even when its extension normally
+        /// selects the image preview (the "Open in Text Editor" action).
+        force_text: bool = false,
     };
 
     /// Opens a path through the editor-groups service. If the resource is
@@ -3506,6 +3590,79 @@ pub const Workbench = struct {
         return null;
     }
 
+    /// Finds an already-open image preview tab for `path`.
+    pub fn findOpenImageInput(self: *Workbench, path: []const u8) ?*ImagePreviewEditorInput {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const input = tab.image_input orelse continue;
+                if (!self.samePath(input.path, path)) continue;
+                if (!pane.group.model.contains(.{ .input = &input.base }, .{})) continue;
+                return input;
+            }
+        }
+        return null;
+    }
+
+    fn openExistingImageInput(
+        self: *Workbench,
+        path: []const u8,
+        existing: *ImagePreviewEditorInput,
+        options: OpenOptions,
+    ) !void {
+        const opened = try self.service.openEditor(
+            &existing.base,
+            null,
+            .{ .open = .{ .pinned = options.pinned, .active = true } },
+        );
+        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (self.autoRevealEnabled(path)) {
+            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
+        }
+        if (pane.tabForInput(opened.result.editor)) |tab| {
+            try pane.activateTab(tab);
+            tab.setImageRuntime(&self.images);
+            tab.focusEditor();
+        }
+        try self.history.add(path);
+        self.pruneTabs(pane);
+    }
+
+    fn openImagePath(self: *Workbench, path: []const u8, options: OpenOptions) !void {
+        const input = try ImagePreviewEditorInput.init(self.allocator, path);
+        errdefer input.deinit();
+
+        const opened = try self.service.openEditor(
+            &input.base,
+            null,
+            .{ .open = .{ .pinned = options.pinned, .active = true } },
+        );
+        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (self.autoRevealEnabled(path)) {
+            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
+        }
+        if (!opened.result.is_new) {
+            input.deinit();
+            if (pane.tabForInput(opened.result.editor)) |tab| {
+                try pane.activateTab(tab);
+                tab.setImageRuntime(&self.images);
+                tab.focusEditor();
+            }
+            try self.history.add(path);
+            self.pruneTabs(pane);
+            return;
+        }
+
+        const tab = try Tab.initImageFromInput(self.allocator, self.io, input, self.cols, self.editorContentHeight(), &self.images);
+        try tab.view.setStatusBarVisible(false);
+        try pane.addTab(tab);
+        self.applyEditorSettingsToTab(tab);
+        try pane.activateTab(tab);
+        self.focusEditor();
+        tab.focusEditor();
+        try self.history.add(path);
+        self.pruneTabs(pane);
+    }
+
     fn openExistingInput(self: *Workbench, path: []const u8, existing: *FileEditorInput, options: OpenOptions) !void {
         const opened = try self.service.openEditor(
             &existing.base,
@@ -3518,6 +3675,7 @@ pub const Workbench = struct {
         }
         if (pane.tabForInput(opened.result.editor)) |tab| {
             try pane.activateTab(tab);
+            tab.setImageRuntime(&self.images);
             if (self.language_features) |features| tab.attachLanguageRegistry(features);
             try tab.ensureControllers();
             tab.focusEditor();
@@ -3527,6 +3685,12 @@ pub const Workbench = struct {
     }
 
     pub fn openPathWithOptions(self: *Workbench, path: []const u8, options: OpenOptions) !void {
+        if (!options.force_text and media_preview.opensInImagePreview(path)) {
+            if (self.findOpenImageInput(path)) |existing| {
+                return self.openExistingImageInput(path, existing, options);
+            }
+            return self.openImagePath(path, options);
+        }
         if (self.findOpenInput(path)) |existing| {
             return self.openExistingInput(path, existing, options);
         }
@@ -3566,6 +3730,7 @@ pub const Workbench = struct {
         }
 
         const tab = try Tab.initFromInput(self.allocator, input);
+        tab.setImageRuntime(&self.images);
         try tab.view.setStatusBarVisible(false);
         try pane.addTab(tab);
         self.applyEditorSettingsToTab(tab);
@@ -3575,6 +3740,21 @@ pub const Workbench = struct {
         try tab.ensureControllers();
         try self.history.add(path);
         self.pruneTabs(pane);
+    }
+
+    /// Replaces the active image preview tab with a text editor for the same
+    /// file. This backs the message button and the
+    /// `imagePreview.openInTextEditor` command (upstream exposes the same
+    /// action as a button, and only as a command for SVG).
+    pub fn openActiveImageAsText(self: *Workbench) !void {
+        const pane = self.activePane() orelse return;
+        const tab = pane.activeTab() orelse return;
+        const input = tab.image_input orelse return;
+        const path = try self.allocator.dupe(u8, input.path);
+        defer self.allocator.free(path);
+        const pinned = pane.group.model.isPinned(.{ .editor = tab.input });
+        try self.openPathWithOptions(path, .{ .force_text = true, .pinned = pinned });
+        try self.performCloseTab(pane, tab);
     }
 
     /// Opens the first definition target for the cursor. Ports the action
@@ -4510,8 +4690,10 @@ pub const Workbench = struct {
         pane.syncActivePane();
         if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
         if (self.hovered_tab == tab) self.hovered_tab = null;
-        self.unregisterWorkingCopy(tab);
-        if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
+        if (!tab.isImage()) {
+            self.unregisterWorkingCopy(tab);
+            if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
+        }
         tab.deinit();
 
         if (self.tabCount() == 0) return;
@@ -4805,6 +4987,7 @@ pub const Workbench = struct {
             for (pane.tabs.items) |tab| {
                 if (!tab.isDiff()) tab.view.setThemeColors(palette);
                 if (tab.markdown_preview) |preview| preview.setThemeColors(palette);
+                if (tab.image_preview) |image_pane| image_pane.setThemeColors(palette);
             }
         }
     }
@@ -5805,10 +5988,18 @@ pub const Workbench = struct {
     /// quick-picker commands so a click opens the same action as upstream.
     pub fn refreshStatus(self: *Workbench) void {
         self.pinDirtyPreviews();
+        if (self.activeTab()) |tab| {
+            if (tab.isImage()) {
+                if (self.editor_status) |status| status.update(null) catch {};
+                if (self.media_status) |status| status.update(tab.imageStatusInfo());
+                return;
+            }
+        }
         const target = if (self.activeTab()) |tab| tab.editor.statusTarget() else null;
         if (self.editor_status) |status| {
             status.update(target) catch {};
         }
+        if (self.media_status) |status| status.update(null);
     }
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
@@ -5923,14 +6114,21 @@ pub const Workbench = struct {
         try self.quick_access.render(&self.frame.next);
         if (self.dialog) |dialog| dialog.render(&self.frame.next);
 
+        // Image uploads/placements must reach the terminal before the frame
+        // body, in the same synchronized update, so a frame never shows
+        // placeholder cells without their image data.
+        const image_output = self.images.hasPending();
+        if (image_output) try writer.writeAll("\x1b[?2026h");
+        try self.images.flush(writer);
         const encoded = try ui.ansi.encode(
             self.allocator,
             if (self.frame.have_prev) &self.frame.prev else null,
             &self.frame.next,
-            .{ .synchronized = true },
+            .{ .synchronized = !image_output },
         );
         defer self.allocator.free(encoded);
         if (encoded.len > 0) try writer.writeAll(encoded);
+        if (image_output) try writer.writeAll("\x1b[?2026l");
 
         self.frame.swap();
     }
@@ -5994,7 +6192,7 @@ pub const Workbench = struct {
         for (ordered.items, 0..) |tab, index| {
             infos[index] = .{
                 .label = tab.input.getName(),
-                .language = tab.editor.languageId(),
+                .language = if (tab.isImage()) "" else tab.editor.languageId(),
                 .dirty = tab.input.isDirty(),
                 .pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
                 .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
@@ -6184,6 +6382,7 @@ pub const Workbench = struct {
 
     fn ensureBreadcrumbsControl(self: *Workbench, pane: *GroupPane) !*BreadcrumbsControl {
         const tab = pane.activeTab() orelse return error.NoActiveTab;
+        if (tab.isImage()) return error.NoActiveTab;
         if (self.breadcrumbs_control) |control| {
             if (self.breadcrumbs_pane == pane and self.breadcrumbs_input == tab.editorInput()) {
                 if (self.breadcrumbs_group != pane.group.id) {
@@ -6426,6 +6625,44 @@ pub const Workbench = struct {
     /// the split gutters from consuming a column/row; the fallback keeps them.
     pub fn setCellBorders(self: *Workbench, enabled: bool) void {
         self.part.setCellBorders(enabled);
+    }
+
+    /// Hosts call this after the kitty graphics probe (and when it changes).
+    pub fn setImageProtocol(self: *Workbench, capability: ui.image.Capability) void {
+        if (self.images.protocol == capability) return;
+        self.images.setProtocol(capability);
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.isImage()) {
+                    tab.invalidateImages();
+                    continue;
+                }
+                if (tab.markdown_preview) |preview| {
+                    preview.invalidateImages();
+                    preview.forceRefresh() catch {};
+                }
+            }
+        }
+    }
+
+    /// Terminal cell pixel size (from `TIOCGWINSZ`). Image row counts and the
+    /// image-preview fit depend on it.
+    pub fn setCellPixelSize(self: *Workbench, width_px: usize, height_px: usize) void {
+        if (width_px == 0 or height_px == 0) return;
+        if (width_px == self.images.cell_width_px and height_px == self.images.cell_height_px) return;
+        self.images.setCellSize(width_px, height_px);
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.isImage()) {
+                    tab.invalidateImages();
+                    continue;
+                }
+                if (tab.markdown_preview) |preview| {
+                    preview.invalidateImages();
+                    preview.forceRefresh() catch {};
+                }
+            }
+        }
     }
 
     pub fn syncCursor(self: *Workbench, out: *std.Io.Writer) !void {
@@ -6890,7 +7127,7 @@ fn diffRefFromLabel(label: []const u8) DiffRef {
 
 fn commandSave(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
-    if (tab.isDiff()) return;
+    if (tab.isDiff() or tab.isImage()) return;
     try tab.editor.save();
     const self: *Workbench = @ptrCast(@alignCast(context));
     self.git_status_dirty = true;
@@ -6898,7 +7135,7 @@ fn commandSave(context: *anyopaque) anyerror!void {
 
 fn commandRevert(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
-    if (tab.isDiff()) return;
+    if (tab.isDiff() or tab.isImage()) return;
     try tab.editor.reloadFromDisk();
 }
 
@@ -6926,6 +7163,75 @@ fn commandToggleMarkdownPreview(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const pane = self.activePane() orelse return;
     try self.toggleMarkdownPreview(pane);
+}
+
+fn commandImageZoomIn(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return;
+    const pane = tab.image_preview orelse return;
+    pane.zoomIn();
+    self.refreshStatus();
+}
+
+fn commandImageZoomOut(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return;
+    const pane = tab.image_preview orelse return;
+    pane.zoomOut();
+    self.refreshStatus();
+}
+
+const image_zoom_pick_items = [_]QuickPickItem{
+    .{ .item = .{ .id = "10", .label = "1000%" } },
+    .{ .item = .{ .id = "5", .label = "500%" } },
+    .{ .item = .{ .id = "2", .label = "200%" } },
+    .{ .item = .{ .id = "1", .label = "100%" } },
+    .{ .item = .{ .id = "0.5", .label = "50%" } },
+    .{ .item = .{ .id = "0.2", .label = "20%" } },
+    .{ .item = .{ .id = "fit", .label = "Whole Image" } },
+};
+
+fn commandImageSelectZoomLevel(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return;
+    const pane = tab.image_preview orelse return;
+    const active_id = switch (pane.currentScale()) {
+        .fit => "fit",
+        .number => |value| blk: {
+            if (value == 10) break :blk "10";
+            if (value == 5) break :blk "5";
+            if (value == 2) break :blk "2";
+            if (value == 1) break :blk "1";
+            if (value == 0.5) break :blk "0.5";
+            if (value == 0.2) break :blk "0.2";
+            break :blk "";
+        },
+    };
+    try self.quick_access.inputService().showPick(
+        &image_zoom_pick_items,
+        .{ .placeholder = "Select zoom level", .active_id = if (active_id.len > 0) active_id else null },
+        onImageZoomLevelAccepted,
+        self,
+    );
+}
+
+fn onImageZoomLevelAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return;
+    const pane = tab.image_preview orelse return;
+    const item = picker.selectedItem() orelse return;
+    if (std.mem.eql(u8, item.id, "fit")) {
+        pane.setScale(.fit);
+    } else {
+        const value = std.fmt.parseFloat(f64, item.id) catch return;
+        pane.setScale(.{ .number = value });
+    }
+    self.refreshStatus();
+}
+
+fn commandImageOpenInTextEditor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.openActiveImageAsText();
 }
 
 fn commandRefreshMarkdownPreview(context: *anyopaque) anyerror!void {
@@ -11154,4 +11460,251 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
     };
     try std.testing.expect(workbench.handleTerminalMouse(&click));
     try std.testing.expect(workbench.focus == .terminal);
+}
+
+const test_png_1x1 = [_]u8{
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+    0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
+    0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+    0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D,
+    0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+    0x44, 0xAE, 0x42, 0x60, 0x82,
+};
+
+fn seedBinary(
+    allocator: Allocator,
+    io: Io,
+    tmp: *std.testing.TmpDir,
+    name: []const u8,
+    contents: []const u8,
+) ![]u8 {
+    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = contents });
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const length = try tmp.dir.realPathFile(io, name, &buffer);
+    return allocator.dupe(u8, buffer[0..length]);
+}
+
+fn paneTextAlloc(allocator: Allocator, pane: *@import("../../../tui/imagePreview.zig").ImagePreviewPane) ![]u8 {
+    const surface = &(pane.surface orelse return allocator.alloc(u8, 0));
+    var text = std.array_list.Managed(u8).init(allocator);
+    errdefer text.deinit();
+    var row: usize = 0;
+    while (row < surface.grid().rows) : (row += 1) {
+        const line = try surface.grid().rowText(allocator, row);
+        defer allocator.free(line);
+        try text.appendSlice(line);
+        try text.append('\n');
+    }
+    return text.toOwnedSlice();
+}
+
+test "Workbench: image files open in an image preview tab without touching the file" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
+    defer workbench.deinit();
+    const tab = workbench.activeTab().?;
+    try std.testing.expect(tab.isImage());
+    try std.testing.expect(tab.image_input != null);
+    try std.testing.expect(tab.file_input == null);
+    try std.testing.expect(tab.editor.read_only);
+    try std.testing.expectEqualStrings("logo.png", tab.input.getName());
+
+    // No kitty support: the pane renders the message instead of alt/binary text.
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const message_text = try paneTextAlloc(allocator, tab.image_preview.?);
+    defer allocator.free(message_text);
+    try std.testing.expect(std.mem.indexOf(u8, message_text, "kitty graphics") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "kitty graphics") != null);
+
+    // Ctrl-S is a no-op for image tabs.
+    try workbench.commands.execute("workbench.action.files.save");
+    const bytes = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(4096));
+    defer allocator.free(bytes);
+    try std.testing.expectEqualSlices(u8, &test_png_1x1, bytes);
+}
+
+test "Workbench: a capable terminal uploads and paints the image" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
+    defer workbench.deinit();
+    workbench.setImageProtocol(.unicode_placeholders);
+    workbench.setCellPixelSize(8, 16);
+    const tab = workbench.activeTab().?;
+    try std.testing.expect(tab.isImage());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b_Ga=t,f=100") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\u{10EEEE}") != null);
+    var saw_placeholder = false;
+    const surface = &tab.image_preview.?.surface.?;
+    var row: usize = 0;
+    while (row < surface.grid().rows) : (row += 1) {
+        var col: usize = 0;
+        while (col < surface.grid().cols) : (col += 1) {
+            if (surface.grid().cluster[surface.grid().index(col, row)] == ui.image.placeholder_codepoint) saw_placeholder = true;
+        }
+    }
+    try std.testing.expect(saw_placeholder);
+
+    // The zoom command updates the viewer and the status entries.
+    try workbench.commands.execute("imagePreview.zoomIn");
+    workbench.refreshStatus();
+    try std.testing.expect(workbench.media_status.?.last.scale != null);
+    const scale = tagScale(workbench.media_status.?.last.scale.?);
+    try std.testing.expect(scale > 1);
+
+    // Zoomed clicks change the pane's scale too.
+    var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = 2, .y = 2 };
+    try std.testing.expectEqual(
+        @import("../../../tui/imagePreview.zig").Action.changed,
+        tab.handleImageMouse(&click, false),
+    );
+}
+
+fn tagScale(scale: @import("../contrib/mediaPreview/browser/imageViewer.zig").Scale) f64 {
+    return switch (scale) {
+        .fit => 1,
+        .number => |value| value,
+    };
+}
+
+test "Workbench: image files reload on change and open in a text editor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
+    defer workbench.deinit();
+    workbench.setImageProtocol(.unicode_placeholders);
+    const tab = workbench.activeTab().?;
+    const pane = tab.image_preview.?;
+    const before = pane.editor.load_id;
+
+    workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
+    try std.testing.expect(pane.editor.load_id > before);
+    try std.testing.expect(workbench.pollFileWatcher(time_compat.milliTimestamp()));
+
+    try workbench.openActiveImageAsText();
+    const text_tab = workbench.activeTab().?;
+    try std.testing.expect(!text_tab.isImage());
+    try std.testing.expectEqualStrings("logo.png", text_tab.input.getName());
+}
+
+test "Workbench: session serialization restores image tabs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
+    defer workbench.deinit();
+
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    var file_serializer = FileEditorSerializer.init(allocator, io, 40, 10);
+    _ = try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.interface());
+    var image_serializer = ImagePreviewEditorInputSerializer.init(allocator);
+    _ = try registry.registerEditorSerializer(ImagePreviewEditorInput.ID, image_serializer.interface());
+
+    var serialized = try workbench.serializePart(allocator, &registry);
+    defer serialized.deinit(allocator);
+
+    const restored = try Workbench.initFromSerializedPart(allocator, io, serialized, &registry, 40, 12);
+    defer restored.deinit();
+    const restored_tab = restored.activeTab().?;
+    try std.testing.expect(restored_tab.isImage());
+    try std.testing.expectEqualStrings("logo.png", restored_tab.input.getName());
+}
+
+test "Workbench: markdown preview shows displayable images" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const image_path = try seedBinary(allocator, io, &tmp, "shot.png", &test_png_1x1);
+    defer allocator.free(image_path);
+    const markdown_path = try seedFile(allocator, io, &tmp, "with-image.md", "# Title\n\n![shot](shot.png)\n");
+    defer allocator.free(markdown_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{markdown_path}, 70, 18);
+    defer workbench.deinit();
+    const pane = workbench.activePane().?;
+    const tab = pane.activeTab().?;
+    try workbench.toggleMarkdownPreview(pane);
+    try std.testing.expect(tab.markdown_preview_visible);
+
+    // Without placeholder support the alt text is preserved and no image is
+    // loaded into the document.
+    var plain: std.Io.Writer.Allocating = .init(allocator);
+    defer plain.deinit();
+    try workbench.render(&plain.writer);
+    try std.testing.expectEqual(@as(usize, 0), tab.markdown_preview.?.document.?.images.len);
+    var saw_alt = false;
+    const preview_surface = &tab.markdown_preview.?.surface.?;
+    var alt_row: usize = 0;
+    while (alt_row < preview_surface.grid().rows) : (alt_row += 1) {
+        const text = try preview_surface.grid().rowText(allocator, alt_row);
+        defer allocator.free(text);
+        if (std.mem.indexOf(u8, text, "shot") != null) saw_alt = true;
+    }
+    try std.testing.expect(saw_alt);
+
+    workbench.setImageProtocol(.unicode_placeholders);
+    workbench.setCellPixelSize(8, 16);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\u{10EEEE}") != null);
+
+    const preview = tab.markdown_preview.?;
+    try std.testing.expect(preview.document != null);
+    try std.testing.expectEqual(@as(usize, 1), preview.document.?.images.len);
+}
+
+test "Workbench: closing an image tab releases the terminal image" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
+    defer workbench.deinit();
+    workbench.setImageProtocol(.unicode_placeholders);
+    var first: std.Io.Writer.Allocating = .init(allocator);
+    defer first.deinit();
+    try workbench.render(&first.writer);
+    try std.testing.expect(std.mem.indexOf(u8, first.written(), "a=t,f=100") != null);
+
+    try workbench.commands.execute("workbench.action.closeActiveEditor");
+    try std.testing.expect(workbench.images.hasPending());
+    var second: std.Io.Writer.Allocating = .init(allocator);
+    defer second.deinit();
+    try workbench.render(&second.writer);
+    try std.testing.expect(std.mem.indexOf(u8, second.written(), "a=d,d=I") != null);
 }

@@ -200,6 +200,10 @@ pub const Point = struct {
 pub const Size = struct {
     width: usize,
     height: usize,
+    /// Cell pixel size when the terminal reports it through `TIOCGWINSZ`
+    /// (`ws_xpixel`/`ws_ypixel`); the terminal UI uses it to size images.
+    cell_width_px: usize = 8,
+    cell_height_px: usize = 16,
 
     pub fn equals(self: *const Size, other: Size) bool {
         return self.width == other.width and self.height == other.height;
@@ -210,9 +214,13 @@ pub fn getTerminalSize() !Size {
     if (is_windows) return getTerminalSizeWindows();
     var size: posix.winsize = std.mem.zeroes(posix.winsize);
     _ = posix.system.ioctl(posix.STDOUT_FILENO, posix.T.IOCGWINSZ, @intFromPtr(&size));
+    const width = if (size.col == 0) 80 else size.col;
+    const height = if (size.row == 0) 24 else size.row;
     return .{
-        .width = if (size.col == 0) 80 else size.col,
-        .height = if (size.row == 0) 24 else size.row,
+        .width = width,
+        .height = height,
+        .cell_width_px = if (size.xpixel > 0 and size.col > 0) @max(size.xpixel / size.col, 1) else 8,
+        .cell_height_px = if (size.ypixel > 0 and size.row > 0) @max(size.ypixel / size.row, 1) else 16,
     };
 }
 
@@ -358,7 +366,11 @@ pub fn resizedSize() !?Size {
             windows_last_size = current;
             return null;
         }
-        if (current.width != windows_last_size.width or current.height != windows_last_size.height) {
+        if (current.width != windows_last_size.width or
+            current.height != windows_last_size.height or
+            current.cell_width_px != windows_last_size.cell_width_px or
+            current.cell_height_px != windows_last_size.cell_height_px)
+        {
             windows_last_size = current;
             return current;
         }
