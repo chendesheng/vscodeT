@@ -51,7 +51,9 @@ const Align = markdown.node.Align;
 const tab_width: usize = 4;
 const text_color = ui.Color{ .r = 204, .g = 204, .b = 204 };
 const code_color = ui.Color{ .r = 215, .g = 186, .b = 125 };
-const code_background = ui.Color{ .r = 30, .g = 30, .b = 30 };
+/// Test fixture only; production code resolves `textCodeBlock.background` from
+/// the active theme (see `ParseOptions.code_background`).
+const test_code_background = ui.Color{ .r = 30, .g = 30, .b = 30 };
 const code_block_color = ui.Color{ .r = 212, .g = 212, .b = 212 };
 const link_color = ui.Color{ .r = 55, .g = 148, .b = 255 };
 const heading_color = ui.Color{ .r = 235, .g = 235, .b = 235 };
@@ -82,6 +84,9 @@ pub const Image = struct {
 pub const Span = struct {
     text: []const u8,
     style: ui.Style = .{},
+    /// Fenced/indented code. Wrapping keeps leading spaces for code spans even
+    /// when the theme leaves their background transparent.
+    is_code: bool = false,
     /// Present on link text so the document preview can hit-test `#fragment`
     /// links. Hover ignores it.
     link: ?[]const u8 = null,
@@ -174,6 +179,9 @@ const Context = struct {
     prefix_style: ui.Style = .{},
     /// Language used for a fenced code block without an info string.
     code_fence_fallback_language: []const u8 = "plaintext",
+    /// Theme-resolved `textCodeBlock.background`; null keeps the surface
+    /// background (hover popup, preview row) visible.
+    code_background: ?ui.Color = null,
     mode: Mode = .hover,
     /// Upstream `markdown.preview.breaks`: render soft line breaks as rows.
     preview_breaks: bool = false,
@@ -204,6 +212,9 @@ pub const ParseOptions = struct {
     /// Upstream falls back to the editor's language when a fence has no info
     /// string. The participant supplies the model language here.
     code_fence_fallback_language: []const u8 = "plaintext",
+    /// Theme-resolved `textCodeBlock.background`. Null leaves code spans
+    /// transparent so the hover widget background shows through.
+    code_background: ?ui.Color = null,
     mode: Mode = .hover,
     /// Document mode only: render source soft breaks as hard rows.
     preview_breaks: bool = false,
@@ -242,6 +253,7 @@ pub fn parseWithOptions(parent: Allocator, source: []const u8, options: ParseOpt
     var lines = std.array_list.Managed(Line).init(allocator);
     try renderBlocks(allocator, &lines, &definitions, root, .{
         .code_fence_fallback_language = options.code_fence_fallback_language,
+        .code_background = options.code_background,
         .mode = options.mode,
         .preview_breaks = options.preview_breaks,
         .state = &state,
@@ -546,7 +558,7 @@ fn appendPlainCodeLine(
 ) !void {
     const text = try std.mem.concat(allocator, u8, &.{ "  ", expanded });
     const spans = try allocator.alloc(Span, 1);
-    spans[0] = .{ .text = text, .style = codeBlockStyle() };
+    spans[0] = .{ .text = text, .style = codeBlockStyle(ctx), .is_code = true };
     try out.append(try makeLine(allocator, ctx, spans, 0, false, false));
 }
 
@@ -558,7 +570,7 @@ fn appendHighlightedCodeLine(
     tokens: []const TokenPacked,
 ) !void {
     var spans = std.array_list.Managed(Span).init(allocator);
-    try spans.append(.{ .text = "  ", .style = codeBlockStyle() });
+    try spans.append(.{ .text = "  ", .style = codeBlockStyle(ctx), .is_code = true });
 
     var start: usize = 0;
     for (tokens, 0..) |token, index| {
@@ -567,26 +579,27 @@ fn appendHighlightedCodeLine(
         if (end > start) {
             try spans.append(.{
                 .text = expanded[start..end],
-                .style = tokenStyle(token.metadata),
+                .style = tokenStyle(ctx, token.metadata),
+                .is_code = true,
             });
         }
         start = end;
     }
     if (start < expanded.len) {
-        try spans.append(.{ .text = expanded[start..], .style = codeBlockStyle() });
+        try spans.append(.{ .text = expanded[start..], .style = codeBlockStyle(ctx), .is_code = true });
     }
 
     try out.append(try makeLine(allocator, ctx, try spans.toOwnedSlice(), 0, false, false));
 }
 
-fn codeBlockStyle() ui.Style {
-    return .{ .color = code_block_color, .background = code_background };
+fn codeBlockStyle(ctx: Context) ui.Style {
+    return .{ .color = code_block_color, .background = ctx.code_background };
 }
 
-fn tokenStyle(metadata: TokenMetadata) ui.Style {
+fn tokenStyle(ctx: Context, metadata: TokenMetadata) ui.Style {
     return .{
         .color = tokenColor(metadata.foreground) orelse code_block_color,
-        .background = code_background,
+        .background = ctx.code_background,
         .bold = metadata.fontStyle.bold,
         .italic = metadata.fontStyle.italic,
         .underline = metadata.fontStyle.underline,
@@ -1231,6 +1244,7 @@ const Token = struct {
     style: ui.Style,
     width: usize,
     is_space: bool = false,
+    is_code: bool = false,
     link: ?[]const u8 = null,
 };
 
@@ -1259,7 +1273,7 @@ pub fn wrapLine(allocator: Allocator, line: Line, width: usize) ![]const []const
             if (row_width == 0) {
                 // Keep indentation at the start of a row (code blocks rely on
                 // it), but do not start a wrapped prose row with a space.
-                if (token.style.background != null) {
+                if (token.is_code) {
                     try row.append(.{ .text = token.text, .style = token.style, .link = token.link });
                     row_width += token.width;
                 }
@@ -1328,6 +1342,7 @@ fn tokenize(tokens: *std.array_list.Managed(Token), span: Span) !void {
             .style = span.style,
             .width = textWidth(text[start..index]),
             .is_space = space,
+            .is_code = span.is_code,
             .link = span.link,
         });
     }
@@ -1358,7 +1373,7 @@ fn findTextLine(allocator: Allocator, content: *const Content, needle: []const u
 
 test "markdown: headings, nested lists and code blocks" {
     const testing = std.testing;
-    var content = try parse(testing.allocator,
+    var content = try parseWithOptions(testing.allocator,
         \\# Title
         \\- one
         \\  - nested
@@ -1367,7 +1382,7 @@ test "markdown: headings, nested lists and code blocks" {
         \\```zig
         \\const x = 1;
         \\```
-    );
+    , .{ .code_background = test_code_background });
     defer content.deinit();
 
     const heading = findLine(&content, "Title").?;
@@ -1380,7 +1395,7 @@ test "markdown: headings, nested lists and code blocks" {
     try testing.expect(findTextLine(testing.allocator, &content, "[ ] todo") != null);
 
     const code = findTextLine(testing.allocator, &content, "const x = 1;").?;
-    try testing.expectEqual(code_background, code.spans[0].style.background.?);
+    try testing.expectEqual(test_code_background, code.spans[0].style.background.?);
 }
 
 test "markdown: GFM table renders a clipped box grid" {
@@ -1446,7 +1461,7 @@ test "markdown: setext headings and indented code" {
     try testing.expect(heading.spans[0].style.underline);
 
     const code = findLine(&content, "indented code").?;
-    try testing.expectEqual(code_background, code.spans[0].style.background.?);
+    try testing.expectEqual(@as(?ui.Color, null), code.spans[0].style.background);
 }
 
 test "markdown: links, autolinks and reference links" {
@@ -1530,7 +1545,7 @@ test "markdown: fenced code uses TextMate token colors" {
     var saw_comment = false;
     for (content.lines) |line| {
         for (line.spans) |span| {
-            if (span.style.background == null) continue;
+            if (!span.is_code) continue;
             const color = span.style.color orelse continue;
             if (color.r == 197 and color.g == 134 and color.b == 192) saw_keyword = true;
             if (color.r == 106 and color.g == 153 and color.b == 85) saw_comment = true;
@@ -1551,7 +1566,7 @@ test "markdown: unknown fenced language stays plain" {
 
     for (content.lines) |line| {
         for (line.spans) |span| {
-            if (span.style.background == null) continue;
+            if (!span.is_code) continue;
             try testing.expectEqual(code_block_color, span.style.color.?);
         }
     }

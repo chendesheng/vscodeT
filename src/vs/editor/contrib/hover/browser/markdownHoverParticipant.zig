@@ -63,6 +63,9 @@ pub const MarkdownHoverParticipant = struct {
     providers: []const HoverProvider,
     registry: ?*@import("../../../common/languageFeatureRegistry.zig").LanguageFeatureRegistry(HoverProvider) = null,
     hover_ordinal: i32 = 3,
+    /// Theme-resolved `textCodeBlock.background`. Null leaves fenced code
+    /// transparent so the hover widget background shows through.
+    code_background: ?ui.Color = null,
 
     /// Payloads of the current computation (parts and copied markdown). Reset
     /// at the start of each async pass, which is the first pass of a cycle.
@@ -84,6 +87,10 @@ pub const MarkdownHoverParticipant = struct {
             .parts_arena = std.heap.ArenaAllocator.init(allocator),
             .rendered_arena = std.heap.ArenaAllocator.init(allocator),
         };
+    }
+
+    pub fn setCodeBackground(self: *MarkdownHoverParticipant, background: ?ui.Color) void {
+        self.code_background = background;
     }
 
     pub fn deinit(self: *MarkdownHoverParticipant) void {
@@ -329,6 +336,7 @@ pub const MarkdownHoverParticipant = struct {
                 if (isEmptyMarkdownString(content.value)) continue;
                 try contents.append(try markdown.parseWithOptions(allocator, content.value, .{
                     .code_fence_fallback_language = self.model.getLanguageId(),
+                    .code_background = self.code_background,
                 }));
             }
             if (contents.items.len == 0) continue;

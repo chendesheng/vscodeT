@@ -1136,7 +1136,10 @@ Markdown:
   code blocks are tokenized with the same TextMate grammars as the editor; the
   fence info string resolves through common aliases (`js`, `ts`, `py`, `sh`,
   ...), a fence without a language falls back to the editor's language, and an
-  unknown language renders as plain code.
+  unknown language renders as plain code. Code-block backgrounds resolve
+  `textCodeBlock.background` from the active theme; when the theme does not
+  define it, code spans stay transparent and the hover/preview surface shows
+  through.
 - Terminal substitutions: a link shows its text underlined and, when the URL
   differs, the URL in dim text because cells cannot open a link; hover images
   show their alt text; tables render as box-drawing grids with width-capped

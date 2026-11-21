@@ -6175,6 +6175,7 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 if (!tab.isDiff()) tab.view.setThemeColors(palette);
+                if (tab.controllers) |controllers| controllers.setThemeColors(palette);
                 if (tab.markdown_preview) |preview| preview.setThemeColors(palette);
                 if (tab.image_preview) |image_pane| image_pane.setThemeColors(palette);
             }

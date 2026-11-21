@@ -1098,7 +1098,9 @@ Library constraints:
   links are supported; wide table rows are clipped to the hover width. Fenced
   code blocks use the editor's TextMate tokenizer: the fence info string is
   resolved through common aliases, a missing language falls back to the editor
-  model language, and unknown languages render plain.
+  model language, and unknown languages render plain. Their background comes
+  from the theme's `textCodeBlock.background`; without that entry the code
+  spans are transparent so the hover/preview surface shows through.
 - `ui/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
   `(anchor, cursor)` selection with keyboard/mouse extension and selection
   paint, shell-like word movement/deletion, Ctrl+A, clipboard hooks

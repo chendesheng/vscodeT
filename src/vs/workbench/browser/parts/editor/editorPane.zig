@@ -30,6 +30,7 @@ const view_events = @import("../../../../editor/common/viewEvents.zig");
 const cursor_events = @import("../../../../editor/common/cursorEvents.zig");
 const text_editor_selection = @import("./textEditor.zig");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
+const theme_colors_mod = @import("../../themeColors.zig");
 const languages = @import("../../../../editor/common/languages.zig");
 const hoverTypes = @import("../../../../editor/contrib/hover/browser/hoverTypes.zig");
 const ContentHoverController = @import("../../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
@@ -659,6 +660,19 @@ pub const Controllers = struct {
     hover_registration: ?IDisposable = null,
     suggest: *SuggestController,
 
+    /// Applies the palette-derived hover code-block background. Upstream's
+    /// hover CSS uses `--vscode-textCodeBlock-background`; a theme that does
+    /// not define it leaves fenced code transparent.
+    pub fn setThemeColors(self: *Controllers, palette: ?*const theme_colors_mod.ThemeColors) void {
+        var code_background: ?ui.Color = null;
+        if (palette) |colors| {
+            if (colors.rawColor("textCodeBlock.background")) |raw| {
+                code_background = colors.compositeColor(raw);
+            }
+        }
+        self.hover_participant.setCodeBackground(code_background);
+    }
+
     pub fn init(allocator: Allocator, editor: *Editor, view: *View) !*Controllers {
         const self = try allocator.create(Controllers);
         errdefer allocator.destroy(self);
@@ -698,6 +712,7 @@ pub const Controllers = struct {
         else
             MarkdownHoverParticipant.init(allocator, editor.model, &self.hover_providers);
         errdefer self.hover_participant.deinit();
+        self.setThemeColors(view.theme_colors);
         self.participants = .{self.hover_participant.interface()};
 
         self.hover = try ContentHoverController.init(allocator, editor.model, &self.participants, .{}, .{
