@@ -572,7 +572,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const vim_tests = b.addTest(.{
         .name = "vim_tests",
         .root_module = tests.root_module,
-        .filters = &.{ "Vim:", "historyService:", "TextEditorPaneSelection" },
+        .filters = &.{ "Vim:", "historyService:", "TextEditorPaneSelection", "TokenizationUndo" },
     });
     const run_vim_tests = b.addRunArtifact(vim_tests);
     const vim_test_step = b.step("test-vim", "Run Vim and editor-history tests");

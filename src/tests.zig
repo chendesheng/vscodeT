@@ -205,6 +205,7 @@ comptime {
     _ = @import("./vs/editor/common/model/tokens/abstractSyntaxTokenBackend.zig");
     _ = @import("./vs/editor/common/model/tokens/tokenizerSyntaxTokenBackend.zig");
     _ = @import("./vs/editor/common/model/tokens/tokenizationTextModelPart.zig");
+    _ = @import("./vs/editor/common/model/tokens/test/browser/tokenizationUndo.test.zig");
     _ = @import("./vs/editor/common/tokenizationRegistry.zig");
     _ = @import("./vs/editor/common/tokens/common.zig");
     _ = @import("./vs/editor/common/tokens/lineTokens.zig");

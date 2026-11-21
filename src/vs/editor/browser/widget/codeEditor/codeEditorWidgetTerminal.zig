@@ -3499,6 +3499,10 @@ pub const Editor = struct {
 
     fn afterUndoRedo(self: *Editor) !void {
         self.tokens_need_refresh = true;
+        // Undo/redo can restore text that the incremental token store only
+        // knows heuristically. Refresh the visible range before the next paint
+        // so token colors cannot lag behind the restored buffer.
+        self.ensureTokensVisible();
         if (self.view_lines.projections.items.len != self.model.getLineCount()) {
             try self.view_lines.rebuildAll();
         }
