@@ -964,6 +964,16 @@ Library constraints:
   `GUTTER_LINE_NUMBERS`, `GUTTER_LINE_DECORATIONS`, `STATUS`,
   `CONTENT_WIDGET` and `OVERLAY_WIDGET` through `View.mouseTargetAt`, which the
   hover controller consumes instead of the browser's `onMouseMove` target.
+- Block decorations are ported from
+  `src/vs/editor/browser/viewParts/blockDecorations/blockDecorations.zig`.
+  The view part computes the upstream `blockClassName` ranges and the
+  `blockIsAfterEnd`/`blockDoesNotCollapse` branches in scrolled rows; the
+  terminal compositor paints each block as an absolute cell layer under the
+  text. Upstream's CSS-defined look becomes a terminal style rule:
+  `movedOriginal`/`movedModified` use `diffEditor.move.border` and
+  `currentMove` uses `diffEditor.moveActive.border`, drawn as a one-cell
+  border instead of the browser's 2 px border. Unknown block classes stay
+  invisible, just as an upstream class with no CSS rule does.
 - Folding is applied at the view-model boundary:
   `src/vs/editor/contrib/folding/browser/folding.zig` computes indentation
   ranges, keeps collapse state and produces hidden model-line ranges;

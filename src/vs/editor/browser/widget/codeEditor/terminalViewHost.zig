@@ -28,6 +28,7 @@ const view_cursors_mod = @import("../../viewParts/viewCursors/viewCursors.zig");
 const folding_decorations_mod = @import("../../../contrib/folding/browser/foldingDecorations.zig");
 const lines_decorations_mod = @import("../../viewParts/linesDecorations/linesDecorations.zig");
 const decorations_overlay_mod = @import("../../viewParts/decorations/decorations.zig");
+const block_decorations_mod = @import("../../viewParts/blockDecorations/blockDecorations.zig");
 const restricted_context = @import("../../view/renderingContext.zig");
 const rendering_context = @import("../../view/renderingContext.zig");
 const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
@@ -62,6 +63,7 @@ const ViewCursors = view_cursors_mod.ViewCursors;
 const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvider;
 const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
 const DecorationsOverlay = decorations_overlay_mod.DecorationsOverlay;
+const BlockDecorations = block_decorations_mod.BlockDecorations;
 const CursorState = @import("../../../common/cursorCommon.zig").CursorState;
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const ViewLine = @import("../../viewParts/viewLines/viewLine.zig").ViewLine;
@@ -170,6 +172,7 @@ pub const TerminalViewHost = struct {
     line_numbers: LineNumbersOverlay,
     line_decorations: LinesDecorationsOverlay,
     decorations_overlay: DecorationsOverlay,
+    block_decorations: BlockDecorations,
     selections_overlay: SelectionsOverlay,
     current_line: CurrentLineHighlightOverlay,
     view_cursors: ViewCursors,
@@ -200,6 +203,7 @@ pub const TerminalViewHost = struct {
             .line_numbers = undefined,
             .line_decorations = undefined,
             .decorations_overlay = undefined,
+            .block_decorations = undefined,
             .selections_overlay = undefined,
             .current_line = undefined,
             .view_cursors = undefined,
@@ -231,6 +235,7 @@ pub const TerminalViewHost = struct {
         self.line_numbers.init(allocator, &self.context);
         self.line_decorations.init(allocator, &self.context);
         self.decorations_overlay.init(allocator, &self.context);
+        self.block_decorations.init(allocator, &self.context);
         self.selections_overlay.init(allocator, &self.context);
         self.current_line.initContent(allocator, &self.context);
         self.view_cursors.init(allocator, &self.context);
@@ -242,6 +247,7 @@ pub const TerminalViewHost = struct {
         try self.view.addContentOverlay(&self.decorations_overlay.base);
         try self.view.addContentOverlay(&self.selections_overlay.base);
         try self.view.addContentOverlay(&self.current_line.base);
+        try self.view.addViewPart(&self.block_decorations.base);
 
         self.view_model_handler = ViewEventHandler.init(self, .{
             .onLineMappingChanged = onEditorLineMappingChanged,
@@ -278,6 +284,7 @@ pub const TerminalViewHost = struct {
         self.view_cursors.deinit();
         self.current_line.deinit();
         self.selections_overlay.deinit();
+        self.block_decorations.deinit();
         self.decorations_overlay.deinit();
         self.line_decorations.deinit();
         self.line_numbers.deinit();
@@ -384,6 +391,12 @@ pub const TerminalViewHost = struct {
 
     pub fn foldingDecorationsConst(self: *const TerminalViewHost) *const FoldingDecorationProvider {
         return &self.folding_decorations;
+    }
+
+    /// The ported `BlockDecorations` view part. The compositor paints the
+    /// blocks it computed for the current viewport.
+    pub fn blockDecorations(self: *TerminalViewHost) *BlockDecorations {
+        return &self.block_decorations;
     }
 
     pub fn foldingShowsEllipsis(self: *const TerminalViewHost, model_line: usize) bool {
