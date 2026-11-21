@@ -20,8 +20,8 @@ test "breadcrumbsWidget draws items, separators and hits" {
     defer widget.deinit();
     const items = [_]Item{
         .{ .label = "src", .kind = .folder },
-        .{ .label = "file.ts", .kind = .file, .icon = "TS" },
-        .{ .label = "main", .kind = .symbol, .icon = "ƒ" },
+        .{ .label = "file.ts", .kind = .file, .icon = .{ .text = "TS" } },
+        .{ .label = "main", .kind = .symbol, .icon = .{ .text = "ƒ" } },
     };
     try widget.setItems(&items);
     const style = Style{
@@ -72,4 +72,31 @@ test "breadcrumbsWidget hides leading items and reveals the last" {
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "file.ts") != null or std.mem.indexOf(u8, text, ">") != null);
     try std.testing.expect(widget.first_visible > 0);
+}
+
+test "breadcrumbsWidget paints a coloured file glyph" {
+    const allocator = std.testing.allocator;
+    var grid = try ui.CellGrid.init(allocator, 20, 1);
+    defer grid.deinit();
+
+    var widget = BreadcrumbsWidget.init(allocator);
+    defer widget.deinit();
+    const color = ui.Color{ .r = 0x31, .g = 0x78, .b = 0xC6 };
+    const items = [_]Item{
+        .{ .label = "file.ts", .kind = .file, .icon = .{ .glyph = .{ .codepoint = 0xE628, .color = color } } },
+    };
+    try widget.setItems(&items);
+    const style = Style{
+        .background = .{},
+        .item = .{},
+        .focused = .{},
+        .hovered = .{},
+        .separator = .{},
+        .icon = .{},
+    };
+    try widget.draw(&grid, 0, 0, grid.cols, style, true);
+
+    try std.testing.expectEqual(@as(u32, 0xE628), grid.cluster[grid.index(0, 0)]);
+    try std.testing.expectEqual(ui.cell.packColor(color), grid.fg[grid.index(0, 0)]);
+    try std.testing.expectEqual(@as(usize, 1 + 1 + "file.ts".len), widget_mod.itemWidth(items[0]));
 }

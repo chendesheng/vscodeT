@@ -1,4 +1,4 @@
-// Terminal file icons for the Explorer.
+// Terminal file icons for the Explorer, editor tabs and the breadcrumb row.
 //
 // VS Code renders file icon themes (`workbench.iconTheme`, Seti by default) as
 // SVG images. The terminal has no image layer, so this module is the terminal
@@ -9,7 +9,9 @@
 //
 // The glyph table follows the Nerd Fonts / Seti codepoints used by common
 // terminal file managers. Folder icons match VS Code's folder/file icon
-// distinction; the Explorer still paints its own twistie before the icon.
+// distinction; the Explorer still paints its own twistie before the icon. The
+// editor tab header and the breadcrumb file segment call the same table, so
+// one file shows the same glyph and color in all three places.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -113,6 +115,12 @@ pub fn file(name: []const u8) Icon {
     return .{ .glyph = 0xF15B, .color = default_file_color };
 }
 
+/// Picks the icon for a path using its base name. Editor tabs and breadcrumbs
+/// carry resource paths, while the Explorer table is keyed by file name.
+pub fn forPath(path: []const u8) Icon {
+    return file(std.fs.path.basename(path));
+}
+
 test "fileIcon: folders and common extensions use Nerd Font glyphs" {
     try std.testing.expectEqual(@as(u21, 0xF07B), folder(false).glyph);
     try std.testing.expectEqual(@as(u21, 0xF07C), folder(true).glyph);
@@ -126,4 +134,8 @@ test "fileIcon: folders and common extensions use Nerd Font glyphs" {
     try std.testing.expectEqual(@as(u21, 0xF023), file("Cargo.lock").glyph);
     try std.testing.expectEqual(@as(u21, 0xF15B), file("notes.unknown").glyph);
     try std.testing.expectEqual(@as(u21, 0xF15B), file("LICENSE-MIT").glyph);
+
+    try std.testing.expectEqual(@as(u21, 0xE6A9), forPath("/repo/src/main.zig").glyph);
+    try std.testing.expectEqual(@as(u21, 0xE73E), forPath("/repo/README.md").glyph);
+    try std.testing.expectEqual(@as(u21, 0xF15B), forPath("/repo/notes.unknown").glyph);
 }

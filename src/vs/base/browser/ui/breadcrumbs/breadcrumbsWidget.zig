@@ -10,8 +10,9 @@
 // - No horizontal scrollbar: overflow drops leading items behind a leading
 //   ellipsis and truncates the final label with a trailing ellipsis.
 // - The separator is the cell glyph `>` instead of the codicon chevron.
-// - Hover/focus colors and the underline come from direct `PaintStyle`s; an
-//   item's `icon` is supplied by the caller (language badge or symbol glyph).
+// - Hover/focus colors and the underline come from direct `PaintStyle`s. An
+//   item's icon is either one Nerd Font file glyph with its own colour (the
+//   Explorer's table, supplied by the control) or pre-rendered symbol text.
 //
 // Item labels and icons are borrowed from the breadcrumbs control/model and
 // must stay valid until the next `setItems` call.
@@ -24,11 +25,29 @@ const PaintStyle = ui.cell.PaintStyle;
 
 pub const ItemKind = enum { file, folder, symbol, placeholder };
 
+pub const Icon = union(enum) {
+    none,
+    /// One Nerd Font file glyph painted with the Explorer's icon colour.
+    glyph: struct {
+        codepoint: u21,
+        color: ui.Color,
+    },
+    /// Pre-rendered icon text (0-2 cells) painted with `Style.icon`.
+    text: []const u8,
+
+    fn width(self: Icon) usize {
+        return switch (self) {
+            .none => 0,
+            .glyph => 1,
+            .text => |text| textWidth(text),
+        };
+    }
+};
+
 pub const Item = struct {
     label: []const u8,
     kind: ItemKind = .file,
-    /// Pre-rendered icon text (0-2 cells), or empty for no icon.
-    icon: []const u8 = "",
+    icon: Icon = .none,
 };
 
 pub const Hit = struct {
@@ -218,13 +237,28 @@ pub const BreadcrumbsWidget = struct {
 
             const start = col;
             var icon_width: usize = 0;
-            if (item.icon.len > 0) {
-                icon_width = drawIcon(grid, x + col, row, item.icon, cols -| col, style.icon);
-                col += icon_width;
-                if (icon_width > 0 and col < cols) {
-                    grid.putCodepoint(x + col, row, ' ', 1, style.background);
-                    col += 1;
-                }
+            switch (item.icon) {
+                .none => {},
+                .glyph => |icon| {
+                    if (cols -| col >= 1) {
+                        grid.putCodepoint(x + col, row, icon.codepoint, 1, .{
+                            .fg = ui.cell.packColor(icon.color),
+                            .bg = style.icon.bg,
+                            .attrs = style.icon.attrs,
+                        });
+                        icon_width = 1;
+                    }
+                },
+                .text => |text| {
+                    if (text.len > 0) {
+                        icon_width = drawIcon(grid, x + col, row, text, cols -| col, style.icon);
+                    }
+                },
+            }
+            col += icon_width;
+            if (icon_width > 0 and col < cols) {
+                grid.putCodepoint(x + col, row, ' ', 1, style.background);
+                col += 1;
             }
 
             const available = cols -| col;
@@ -259,8 +293,8 @@ fn drawIcon(grid: *CellGrid, x: usize, row: usize, icon: []const u8, max_cells: 
     return col;
 }
 
-fn iconWidth(icon: []const u8) usize {
-    return textWidth(icon);
+fn iconWidth(icon: Icon) usize {
+    return icon.width();
 }
 
 pub fn textWidth(text: []const u8) usize {
@@ -275,7 +309,8 @@ pub fn textWidth(text: []const u8) usize {
 }
 
 pub fn itemWidth(item: Item) usize {
-    return iconWidth(item.icon) + @as(usize, if (item.icon.len > 0) 1 else 0) + textWidth(item.label);
+    const width = iconWidth(item.icon);
+    return width + @as(usize, if (width > 0) 1 else 0) + textWidth(item.label);
 }
 
 fn truncateText(text: []const u8, max_cells: usize) []const u8 {

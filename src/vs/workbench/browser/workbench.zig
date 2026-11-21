@@ -14,8 +14,9 @@
 //! frame before encoding a single ANSI diff. Each
 //! tab owns a persistent `View`, so switching tabs or groups keeps scroll
 //! position and decorations. The port keeps Grid's branch-demotion behavior
-//! when a group empties, its sash resize, and tab drag/drop into a group or
-//! onto a pane edge; the full N-ary branch model is not ported yet.
+//! when a group empties, its sash resize, and tab drag/drop into a group,
+//! onto a pane edge, or onto a tab strip with an insertion preview; the full
+//! N-ary branch model is not ported yet.
 //!
 //! With cell-border support the panes use the article's chrome: each pane is
 //! outlined on its own cell edges, the active pane's outline has priority 1,
@@ -50,6 +51,7 @@ const terminal_editor_config = @import("../../editor/browser/config/terminalEdit
 const editor_options = @import("../../editor/common/config/editorOptions.zig");
 const ViewCell = @import("../../../tui/editorView.zig").Cell;
 const tab_bar = @import("./parts/editor/multiEditorTabsControl.zig");
+const file_icon = @import("./fileIcon.zig");
 const Sidebar = @import("../contrib/files/browser/views/explorerView.zig").Sidebar;
 const activity_bar_mod = @import("./parts/activitybar/activitybarPart.zig");
 const ActivityBarPart = @import("./parts/activitybar/activitybarPart.zig").ActivityBarPart;
@@ -293,11 +295,15 @@ const inactive_pane_border = ui.Color{ .r = 70, .g = 70, .b = 70 };
 const active_pane_border = ui.Color{ .r = 0x4d, .g = 0x9b, .b = 0xd6 };
 const pane_border_width: u8 = 32;
 
-/// A tab drag can drop in the middle of a pane (move into that group) or on an
-/// edge (split that pane and move into the new group), mirroring the drop
-/// locations of VS Code's grid.
+/// A tab drag can drop in the middle of a pane (move into that group), on an
+/// edge (split that pane and move into the new group), or on a tab strip
+/// (insert at the previewed tab position), mirroring VS Code's drop locations.
 const DropZone = editor_drop_target.Zone;
 const DropTarget = editor_drop_target.Target(*GroupPane);
+/// Upstream `MultiEditorTabsControl.dropTarget`: the tab strip under a live
+/// drag and the ordered insertion index. Mutually exclusive with
+/// `drag_target`, the editor-content split/placement target.
+const TabDrop = struct { pane: *GroupPane, index: usize };
 const PendingTabDrag = struct { pane: *GroupPane, tab: *Tab, x: usize, y: usize };
 const TabClick = struct {
     pane: *GroupPane,
@@ -355,6 +361,7 @@ pub const Workbench = struct {
     drag_tab: ?*Tab = null,
     drag_source_pane: ?*GroupPane = null,
     drag_target: ?DropTarget = null,
+    drag_tab_drop: ?TabDrop = null,
     sidebar: ?*Sidebar = null,
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
@@ -532,6 +539,7 @@ pub const Workbench = struct {
         self.drag_tab = null;
         self.drag_source_pane = null;
         self.drag_target = null;
+        self.drag_tab_drop = null;
         self.focus = .editor;
         self.sidebar = null;
         self.search_view = null;
@@ -656,6 +664,7 @@ pub const Workbench = struct {
         self.drag_tab = null;
         self.drag_source_pane = null;
         self.drag_target = null;
+        self.drag_tab_drop = null;
         self.focus = .editor;
         self.sidebar = null;
         self.search_view = null;
@@ -812,6 +821,7 @@ pub const Workbench = struct {
         self.drag_tab = null;
         self.drag_source_pane = null;
         self.drag_target = null;
+        self.drag_tab_drop = null;
         self.focus = .editor;
         self.sidebar = null;
         self.search_view = null;
@@ -5660,11 +5670,20 @@ pub const Workbench = struct {
         self.drag_tab = null;
         self.drag_source_pane = null;
         self.drag_target = null;
+        self.drag_tab_drop = null;
     }
 
     fn updateDragTarget(self: *Workbench, event: *const ui.MouseEvent) void {
         self.drag_target = null;
+        self.drag_tab_drop = null;
         const pane = self.paneAt(event.x, event.y) orelse return;
+        if (event.y == ui.cell.snap(pane.rect.y)) {
+            self.drag_tab_drop = .{
+                .pane = pane,
+                .index = tab_bar.dropIndexAt(pane.hits.items, event.x, pane.tabs.items.len),
+            };
+            return;
+        }
         const zone = editor_drop_target.zoneAt(pane.rect, event.x, event.y) orelse return;
         self.drag_target = .{ .pane = pane, .zone = zone };
     }
@@ -5673,25 +5692,59 @@ pub const Workbench = struct {
         const tab = self.drag_tab;
         const source = self.drag_source_pane;
         const target = self.drag_target;
+        const strip_target = self.drag_tab_drop;
         self.clearTabDrag();
-        if (tab == null or source == null or target == null) return;
-        self.dropTab(source.?, tab.?, target.?.pane, target.?.zone) catch |err| {
+        if (tab == null or source == null) return;
+        if (strip_target) |drop| {
+            self.dropTabOnTabBar(source.?, tab.?, drop.pane, drop.index) catch |err| {
+                if (self.activeTab()) |active| {
+                    active.editor.setMessage("tile: {s}", .{@errorName(err)});
+                }
+            };
+            return;
+        }
+        const pane_target = target orelse return;
+        self.dropTab(source.?, tab.?, pane_target.pane, pane_target.zone) catch |err| {
             if (self.activeTab()) |active| {
                 active.editor.setMessage("tile: {s}", .{@errorName(err)});
             }
         };
     }
 
-    fn moveTabToPane(self: *Workbench, source: *GroupPane, dest: *GroupPane, tab: *Tab) !void {
+    fn moveTabToPane(self: *Workbench, source: *GroupPane, dest: *GroupPane, tab: *Tab, index: ?isize) !void {
         _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
         _ = source.removeTab(tab);
         source.syncActivePane();
-        _ = try dest.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
+        _ = try dest.group.model.openEditor(tab.input, .{ .pinned = true, .active = true, .index = index });
         try dest.addTab(tab);
         self.service.activateGroup(dest.group);
         try tab.ensureControllers();
         tab.focusEditor();
         self.focus = .editor;
+    }
+
+    /// Port of the tab-strip branches of upstream `MultiEditorTabsControl.onDrop`:
+    /// a same-group drop reorders with upstream's target-index decrement, and a
+    /// drop on another strip inserts at the previewed index.
+    fn dropTabOnTabBar(self: *Workbench, source: *GroupPane, tab: *Tab, target: *GroupPane, index: usize) !void {
+        if (source == target) {
+            const from = target.group.model.indexOf(.{ .input = tab.input }) orelse return;
+            var to = index;
+            if (from < to) to -= 1;
+            if (to == from) return;
+            _ = try target.group.model.moveEditor(tab.input, @intCast(to));
+            target.syncActivePane();
+            self.service.activateGroup(target.group);
+            self.focus = .editor;
+            tab.focusEditor();
+            return;
+        }
+        // The target group may already show this input; moving would create a
+        // second Tab for one model.
+        if (target.tabForInput(tab.input) != null) return;
+        try self.moveTabToPane(source, target, tab, @intCast(index));
+        self.collapseEmptyPane(source);
+        self.layoutAll();
     }
 
     fn dropTab(self: *Workbench, source: *GroupPane, tab: *Tab, target: *GroupPane, zone: DropZone) !void {
@@ -5700,7 +5753,7 @@ pub const Workbench = struct {
             // The target group may already show this input; moving would
             // create a second Tab for one model.
             if (target.tabForInput(tab.input) != null) return;
-            try self.moveTabToPane(source, target, tab);
+            try self.moveTabToPane(source, target, tab, null);
             self.collapseEmptyPane(source);
             self.layoutAll();
             return;
@@ -5712,7 +5765,7 @@ pub const Workbench = struct {
         // Insert before collapsing the source: if source and target are
         // siblings, collapsing first would promote and destroy the target leaf.
         const new_pane = try self.part.splitGroup(target, direction, new_first);
-        try self.moveTabToPane(source, new_pane, tab);
+        try self.moveTabToPane(source, new_pane, tab, null);
 
         self.collapseEmptyPane(source);
         self.layoutAll();
@@ -6567,7 +6620,7 @@ pub const Workbench = struct {
         for (ordered.items, 0..) |tab, index| {
             infos[index] = .{
                 .label = tab.input.getName(),
-                .language = if (tab.isImage()) "" else tab.editor.languageId(),
+                .file_name = std.fs.path.basename(tab.editor.path),
                 .dirty = tab.input.isDirty(),
                 .pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
                 .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
@@ -6593,6 +6646,10 @@ pub const Workbench = struct {
                 .hovered = self.hovered_title_action_pane == pane,
             };
         } else null;
+        var drop_index: ?usize = null;
+        if (self.drag_tab_drop) |drop| {
+            if (drop.pane == pane) drop_index = drop.index;
+        }
         pane.title_action_hit = try tab_bar.draw(
             &self.frame.next,
             infos,
@@ -6601,7 +6658,13 @@ pub const Workbench = struct {
             y,
             width,
             &pane.hits,
-            .{ .group_active = active_group, .hovered = hovered_index, .title_action = title_action },
+            .{
+                .group_active = active_group,
+                .hovered = hovered_index,
+                .title_action = title_action,
+                .drop_index = drop_index,
+                .cell_borders = self.part.cell_borders,
+            },
             self.theme_palette,
         );
 
@@ -7112,7 +7175,7 @@ fn breadcrumbHost(context: *BreadcrumbContext) BreadcrumbsHost {
         .active_resource = breadcrumbActiveResource,
         .active_language = breadcrumbActiveLanguage,
         .outline_editor = breadcrumbOutlineEditor,
-        .file_badge = breadcrumbFileBadge,
+        .file_icon = breadcrumbFileIcon,
         .symbol_icon = breadcrumbSymbolIcon,
         .open_element = breadcrumbOpenElement,
         .reveal_element = breadcrumbRevealElement,
@@ -7143,8 +7206,11 @@ fn breadcrumbOutlineEditor(context: *anyopaque) ?OutlineEditor {
     };
 }
 
-fn breadcrumbFileBadge(context: *anyopaque) []const u8 {
-    return tab_bar.languageBadge(breadcrumbActiveLanguage(context));
+fn breadcrumbFileIcon(context: *anyopaque) ?file_icon.Icon {
+    const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return null;
+    if (tab.editor.path.len == 0) return null;
+    return file_icon.forPath(tab.editor.path);
 }
 
 fn breadcrumbSymbolIcon(_: *anyopaque, kind: ?u32) []const u8 {
@@ -9022,6 +9088,122 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
     const first = workbench.part.group_views.items[0];
     const second = workbench.part.group_views.items[1];
     try std.testing.expectEqual(ui.cell.snap(first.rect.right()), ui.cell.snap(second.rect.x));
+}
+
+test "Workbench: dragging over a tab strip previews the insertion and reorders on drop" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "strip_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "strip_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    workbench.setCellBorders(true);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    const tab_y = ui.cell.snap(pane.rect.y);
+    var down = ui.MouseEvent{ .kind = .down, .x = pane.hits.items[0].start, .y = tab_y, .button = .left };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+
+    // Right half of the second tab: insert after it, not a top-edge split.
+    const second = pane.hits.items[1];
+    var move = ui.MouseEvent{
+        .kind = .move,
+        .x = second.start + (second.end - second.start) / 2 + 1,
+        .y = tab_y,
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&move));
+    try std.testing.expect(workbench.drag_tab != null);
+    try std.testing.expect(workbench.drag_target == null);
+    try std.testing.expect(workbench.drag_tab_drop != null);
+    try std.testing.expect(workbench.drag_tab_drop.?.pane == pane);
+    try std.testing.expectEqual(@as(usize, 2), workbench.drag_tab_drop.?.index);
+
+    // The strip paints upstream's drop-target-right line at the last tab edge.
+    try workbench.render(&out.writer);
+    const last = pane.hits.items[pane.hits.items.len - 1];
+    const border = workbench.frame.prev.borderSetAt(last.end - 1, tab_y);
+    try std.testing.expect(border.strokeAt(ui.cell_border.Segment.right) != null);
+
+    var up = move;
+    up.kind = .up;
+    try std.testing.expect(workbench.handleTabDragMouse(&up));
+
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    var ordered = std.array_list.Managed(*Tab).init(allocator);
+    defer ordered.deinit();
+    try pane.orderedTabs(allocator, &ordered);
+    try std.testing.expectEqual(@as(usize, 2), ordered.items.len);
+    try std.testing.expect(std.mem.endsWith(u8, ordered.items[0].editor.path, "strip_b.txt"));
+    try std.testing.expect(std.mem.endsWith(u8, ordered.items[1].editor.path, "strip_a.txt"));
+}
+
+test "Workbench: dropping a tab on another strip inserts at the previewed index" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "strip_insert_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "strip_insert_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const source = workbench.part.group_views.items[0];
+    const target = workbench.part.group_views.items[1];
+    const source_y = ui.cell.snap(source.rect.y);
+    var down = ui.MouseEvent{ .kind = .down, .x = source.hits.items[0].start, .y = source_y, .button = .left };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+
+    // The right half of the target's only tab inserts after it.
+    const target_y = ui.cell.snap(target.rect.y);
+    const target_hit = target.hits.items[0];
+    var move = ui.MouseEvent{
+        .kind = .move,
+        .x = target_hit.end - 1,
+        .y = target_y,
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&move));
+    try std.testing.expect(workbench.drag_tab_drop != null);
+    try std.testing.expect(workbench.drag_tab_drop.?.pane == target);
+    try std.testing.expectEqual(@as(usize, 1), workbench.drag_tab_drop.?.index);
+
+    var up = move;
+    up.kind = .up;
+    try std.testing.expect(workbench.handleTabDragMouse(&up));
+
+    // The source group empties and collapses; the target keeps the insert order.
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    const remaining = workbench.part.group_views.items[0];
+    var ordered = std.array_list.Managed(*Tab).init(allocator);
+    defer ordered.deinit();
+    try remaining.orderedTabs(allocator, &ordered);
+    try std.testing.expectEqual(@as(usize, 2), ordered.items.len);
+    try std.testing.expect(std.mem.endsWith(u8, ordered.items[0].editor.path, "strip_insert_b.txt"));
+    try std.testing.expect(std.mem.endsWith(u8, ordered.items[1].editor.path, "strip_insert_a.txt"));
 }
 
 test "Workbench: openPath reveals an already-open file in another group" {
@@ -10944,6 +11126,27 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     // The first breadcrumb item opens the folder picker.
     const control = workbench.breadcrumbs_control.?;
     try std.testing.expect(control.widget.itemCount() >= 2);
+
+    // The tab header and the breadcrumb file segment use the Explorer's icon.
+    const expected_icon = file_icon.file("http-proxy.js");
+    const tab_row = ui.cell.snap(pane.rect.y);
+    const tab_icon_cell = pane.hits.items[0].start + 1;
+    try std.testing.expectEqual(
+        @as(u32, expected_icon.glyph),
+        workbench.frame.prev.cluster[workbench.frame.prev.index(tab_icon_cell, tab_row)],
+    );
+    try std.testing.expectEqual(
+        ui.cell.packColor(expected_icon.color),
+        workbench.frame.prev.fg[workbench.frame.prev.index(tab_icon_cell, tab_row)],
+    );
+    const file_item = control.widget.items.items[control.widget.itemCount() - 1];
+    const breadcrumb_icon = switch (file_item.icon) {
+        .glyph => |glyph| glyph,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(expected_icon.glyph, breadcrumb_icon.codepoint);
+    try std.testing.expectEqual(expected_icon.color, breadcrumb_icon.color);
+
     const hit = control.widget.hits.items[0];
     var click = ui.MouseEvent{ .kind = .down, .x = hit.start, .y = 1, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&click));

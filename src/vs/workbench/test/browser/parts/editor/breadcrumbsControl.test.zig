@@ -14,6 +14,7 @@ const Selection = control_mod.Selection;
 const SelectMode = control_mod.SelectMode;
 const OutlineEditor = @import("../../../../services/outline/browser/outline.zig").OutlineEditor;
 const IOutline = @import("../../../../services/outline/browser/outline.zig").IOutline;
+const file_icon = @import("../../../../browser/fileIcon.zig");
 
 test "BreadcrumbsControl: labels and item kinds from a path model" {
     const allocator = std.testing.allocator;
@@ -31,8 +32,8 @@ test "BreadcrumbsControl: labels and item kinds from a path model" {
         fn outlineEditor(_: *anyopaque) ?OutlineEditor {
             return null;
         }
-        fn badge(_: *anyopaque) []const u8 {
-            return "TS";
+        fn fileIcon(_: *anyopaque) ?file_icon.Icon {
+            return file_icon.file("file.ts");
         }
         fn symbol(_: *anyopaque, _: ?u32) []const u8 {
             return "ƒ";
@@ -48,7 +49,7 @@ test "BreadcrumbsControl: labels and item kinds from a path model" {
         .active_resource = HostImpl.activeResource,
         .active_language = HostImpl.activeLanguage,
         .outline_editor = HostImpl.outlineEditor,
-        .file_badge = HostImpl.badge,
+        .file_icon = HostImpl.fileIcon,
         .symbol_icon = HostImpl.symbol,
         .open_element = HostImpl.open,
         .reveal_element = HostImpl.reveal,
@@ -62,7 +63,13 @@ test "BreadcrumbsControl: labels and item kinds from a path model" {
     try std.testing.expectEqual(@as(usize, 2), control.widget.itemCount());
     try std.testing.expectEqualStrings("src", control.widget.items.items[0].label);
     try std.testing.expectEqualStrings("file.ts", control.widget.items.items[1].label);
-    try std.testing.expectEqualStrings("TS", control.widget.items.items[1].icon);
+    const file_icon_item = switch (control.widget.items.items[1].icon) {
+        .glyph => |glyph| glyph,
+        else => return error.TestUnexpectedResult,
+    };
+    const expected = file_icon.file("file.ts");
+    try std.testing.expectEqual(expected.glyph, file_icon_item.codepoint);
+    try std.testing.expectEqual(expected.color, file_icon_item.color);
 }
 
 test "BreadcrumbsControl: focus, selection and escape return focus to the editor" {
@@ -79,8 +86,8 @@ test "BreadcrumbsControl: focus, selection and escape return focus to the editor
         fn outlineEditor(_: *anyopaque) ?OutlineEditor {
             return null;
         }
-        fn badge(_: *anyopaque) []const u8 {
-            return "TS";
+        fn fileIcon(_: *anyopaque) ?file_icon.Icon {
+            return file_icon.file("file.ts");
         }
         fn symbol(_: *anyopaque, _: ?u32) []const u8 {
             return "ƒ";
@@ -102,7 +109,7 @@ test "BreadcrumbsControl: focus, selection and escape return focus to the editor
         .active_resource = State.activeResource,
         .active_language = State.activeLanguage,
         .outline_editor = State.outlineEditor,
-        .file_badge = State.badge,
+        .file_icon = State.fileIcon,
         .symbol_icon = State.symbol,
         .open_element = State.open,
         .reveal_element = State.reveal,
