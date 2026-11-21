@@ -15,6 +15,8 @@ pub const ViewDescriptor = struct {
     visible: bool = true,
     collapsed: bool = false,
     order: usize = 0,
+    /// Share of the container body; the terminal splits expanded views by it.
+    weight: usize = 20,
 };
 
 pub const ViewContainer = struct {
@@ -76,6 +78,13 @@ pub const ViewContainerModel = struct {
     pub fn isVisible(self: *const ViewContainerModel, id: []const u8) bool {
         for (self.views.items) |view| {
             if (std.mem.eql(u8, view.id, id)) return view.visible;
+        }
+        return false;
+    }
+
+    pub fn isCollapsed(self: *const ViewContainerModel, id: []const u8) bool {
+        for (self.views.items) |view| {
+            if (std.mem.eql(u8, view.id, id)) return view.collapsed;
         }
         return false;
     }

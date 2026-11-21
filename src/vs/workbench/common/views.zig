@@ -170,6 +170,18 @@ pub fn sortByOrder(containers: []*const ViewContainer) void {
     }.lessThan);
 }
 
+/// A single-cell title action, shared by the panel/side-bar titles and the
+/// collapsible view headers. Port of the terminal projection of `IAction`.
+pub const TitleAction = struct {
+    id: []const u8,
+    label: []const u8,
+    glyph: u21,
+    enabled: bool = true,
+    /// Upstream secondary actions collapse into the toolbar overflow menu. The
+    /// terminal paints them after the primary actions; there is no overflow.
+    secondary: bool = false,
+};
+
 test "views: registration, location and duplicate handling" {
     const allocator = std.testing.allocator;
     var registry = ViewContainersRegistry.init(allocator);

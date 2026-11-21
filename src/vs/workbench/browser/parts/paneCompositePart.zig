@@ -40,19 +40,9 @@ pub const PaneCompositeDescriptor = struct {
 /// bar.
 pub const CompositeBarPosition = enum { top, title, bottom };
 
-/// A title toolbar action. Upstream the toolbar is filled from
-/// `composite.getActions()` / `getSecondaryActions()` and rendered with icon
-/// theme actions; the terminal view supplies a single-cell glyph per action.
-pub const TitleAction = struct {
-    id: []const u8,
-    label: []const u8,
-    glyph: u21,
-    enabled: bool = true,
-    /// Upstream secondary actions collapse into the toolbar overflow menu. The
-    /// terminal paints them after the primary actions; there is no overflow
-    /// menu.
-    secondary: bool = false,
-};
+/// Terminal projection of a title toolbar action; shared with the collapsible
+/// view headers.
+pub const TitleAction = views.TitleAction;
 
 /// Port of `ICompositeTitleLabel`: the shared title label and the keybinding
 /// label upstream shows in its tooltip.
