@@ -42,6 +42,7 @@ const widget_mod = @import("../../../../base/browser/ui/breadcrumbs/breadcrumbsW
 const BreadcrumbsWidget = widget_mod.BreadcrumbsWidget;
 const Item = widget_mod.Item;
 const ItemKind = widget_mod.ItemKind;
+const file_icon_mod = @import("../../fileIcon.zig");
 
 pub const SelectMode = enum { pick, reveal };
 
@@ -56,7 +57,7 @@ pub const Host = struct {
     active_resource: *const fn (context: *anyopaque) ?[]const u8,
     active_language: *const fn (context: *anyopaque) []const u8,
     outline_editor: *const fn (context: *anyopaque) ?OutlineEditor,
-    file_badge: *const fn (context: *anyopaque) []const u8,
+    file_icon: *const fn (context: *anyopaque) ?file_icon_mod.Icon,
     symbol_icon: *const fn (context: *anyopaque, kind: ?u32) []const u8,
     open_element: *const fn (context: *anyopaque, selection: Selection, mode: SelectMode) anyerror!void,
     reveal_element: *const fn (context: *anyopaque, outline: *IOutline, element: *anyopaque) anyerror!void,
@@ -209,13 +210,19 @@ pub const BreadcrumbsControl = struct {
                 .file => |file| {
                     const label = if (file.label) |value| value else basenameAny(file.path);
                     const is_file = file.kind == .FILE;
+                    var icon: widget_mod.Icon = .none;
+                    if (self.settings.icons and is_file) {
+                        if (self.host.file_icon(self.host.context)) |file_icon| {
+                            icon = .{ .glyph = .{
+                                .codepoint = file_icon.glyph,
+                                .color = file_icon.color,
+                            } };
+                        }
+                    }
                     try items.append(.{
                         .label = label,
                         .kind = if (is_file) .file else .folder,
-                        .icon = if (self.settings.icons and is_file)
-                            self.host.file_badge(self.host.context)
-                        else
-                            "",
+                        .icon = icon,
                     });
                 },
                 .outline => |outline| {
@@ -223,9 +230,9 @@ pub const BreadcrumbsControl = struct {
                         .label = outline.label,
                         .kind = .symbol,
                         .icon = if (self.settings.icons)
-                            self.host.symbol_icon(self.host.context, outline.symbol_kind)
+                            .{ .text = self.host.symbol_icon(self.host.context, outline.symbol_kind) }
                         else
-                            "",
+                            .none,
                     });
                 },
                 .placeholder => try items.append(.{ .label = "…", .kind = .placeholder }),

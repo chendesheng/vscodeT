@@ -410,12 +410,13 @@ console API for raw mode, sizing and input polling.
   the outline service under `src/vs/workbench/services/outline/`). Each tab keeps
   its own `Editor`, `View` and lazy editor contributions; only the active view is
   composited under the two chrome rows, so switching tabs preserves scroll
-  position and decorations. Tabs show a two-cell language badge (the file icon
-  theme is not ported), preview italics, a close cell and a dirty dot; the close
-  cell and middle click close the tab, and `Ctrl-W` closes the active tab. A
-  dirty tab first opens VS Code's save confirmation (Save / Don't Save /
-  Cancel): Save writes and then closes only if the buffer is clean, Don't Save
-  discards the changes, and Cancel or Escape leaves the tab open. The dialog is
+  position and decorations. Tabs show the Explorer's Nerd Font file icon (the
+  terminal adaptation of the file icon theme), preview italics, a close cell
+  and a dirty dot; the close cell and middle click close the tab, and `Ctrl-W`
+  closes the active tab. A dirty tab first opens VS Code's save confirmation
+  (Save / Don't Save / Cancel): Save writes and then closes only if the buffer
+  is clean, Don't Save discards the changes, and Cancel or Escape leaves the
+  tab open. The dialog is
   modal, names the file, dims the rest of the workbench and hides the caret;
   short terminals collapse its vertical buttons to one row.
   Double-clicking a preview tab pins it; double-clicking a pinned
@@ -428,23 +429,26 @@ console API for raw mode, sizing and input polling.
   tabs, `Ctrl-Q` opens the same save confirmation for all of them (Save All /
   Don't Save / Cancel) and exits after saving or discarding. Empty groups
   collapse out of the split tree when their last tab closes, the divider between panes is a
-  draggable sash, and dragging a tab into another pane (or onto its edge)
-  retiles the editor part. `--preview` remains a single-file mode.
+  draggable sash, and dragging a tab into another pane (or onto its edge) retiles the
+  editor part. A drag over a tab strip previews the insertion position; dropping
+  reorders the tab within its strip or inserts it at that position in another group.
+  `--preview` remains a single-file mode.
 - The breadcrumb row shows the workspace-relative file path (absolute segments
-  outside the workspace) with `>` separators and a 2-cell language badge; `>` and
-  the segments follow the upstream focus/selection rules. Clicking a folder or
-  file opens the terminal quick pick with the directory's children, and clicking
-  a symbol reveals it. Symbol segments are supplied by the ported
-  `IOutlineService`/`IOutline` plumbing. The real TypeScript extension registers
-  a document-symbol provider for TS/JS files; other languages still show only the
-  file path until an extension provider is registered. `Ctrl+Shift+.` focuses/selects the last segment
+  outside the workspace) with `>` separators and the Explorer's Nerd Font file
+  icon; `>` and the segments follow the upstream focus/selection rules.
+  Clicking a folder or file opens the terminal quick pick with the directory's
+  children, and clicking a symbol reveals it. Symbol segments are supplied by
+  the ported `IOutlineService`/`IOutline` plumbing. The real TypeScript
+  extension registers a document-symbol provider for TS/JS files; other
+  languages still show only the file path until an extension provider is
+  registered. `Ctrl+Shift+.` focuses/selects the last segment
   and `Ctrl+Shift+;` focuses it; Left/Right navigate, Enter/Down opens the picker,
   Space reveals and Escape returns to the editor. Terminal substitutions: the
-  browser chevron/codicon is `>`, the file icon theme is the language badge, the
-  tree picker is the existing quick pick, and overflow clips leading segments
-  behind an ellipsis instead of a horizontal scrollbar. The editor-type dropdown,
-  breadcrumb drag-and-drop, tab context menus/actions toolbar and the symbol-kind
-  filters are not ported.
+  browser chevron/codicon is `>`, the file icon theme is the Explorer's Nerd Font
+  file icon, the tree picker is the existing quick pick, and overflow clips
+  leading segments behind an ellipsis instead of a horizontal scrollbar. The
+  editor-type dropdown, breadcrumb drag-and-drop, tab context menus/actions
+  toolbar and the symbol-kind filters are not ported.
 - A terminal Explorer sidebar (`src/vs/workbench/contrib/files/browser/views/explorerView.zig`) sits left of the editor
   area over the ported `ExplorerModel`
   (`src/vs/workbench/contrib/files/common/explorerModel.zig`). It lists the
@@ -1370,8 +1374,9 @@ Editor contributions:
   session format (the in-memory backup/history services are ported but not
   wired into session restore). Side-by-side/diff inputs exist at the workbench
   layer while the TUI tab strip remains single-editor; the Settings editor is
-  still a placeholder; tab drag-and-drop moves tabs between groups but does not
-  reorder them within one strip. Quick open searches
+  still a placeholder; tab drag-and-drop moves tabs between groups, inserts at
+  the previewed tab-strip position and reorders within one strip. Quick open
+  searches
   workspace files and the TUI command table; extension-contributed commands and
   files outside the workspace are not reachable through it yet.
 - Known limitations: `MoveLinesCommand` does not yet implement VS Code's

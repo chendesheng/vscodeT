@@ -8,8 +8,12 @@
 //! file only decides how the labels are laid out in cells.
 //!
 //! Terminal adaptations, documented in `README.md` and `docs/terminal-ui.md`:
-//! - The file icon theme is not ported, so the tab icon is a two-cell language
-//!   badge (`JS`); see `fileIcon.zig`.
+//! - The file icon theme is adapted as the Explorer's Nerd Font glyphs; tabs
+//!   reuse `fileIcon.zig`, so the header and the breadcrumb row paint the same
+//!   glyph and color for one file.
+//! - A live tab drag over the strip paints upstream's `drop-target-left`/
+//!   `drop-target-right` insertion feedback: a thin cell-border stroke where
+//!   the terminal supports it, or a one-eighth block glyph otherwise.
 //! - The browser's 1px active-tab top border has no partial-cell equivalent;
 //!   the active tab uses its background and bold text instead.
 //! - Tab action space is always reserved (`tabActionReserveSpace`), but only
@@ -21,6 +25,7 @@
 const std = @import("std");
 const ui = @import("ui");
 const theme_colors_mod = @import("../../themeColors.zig");
+const file_icon = @import("../../fileIcon.zig");
 const editor_group_view = @import("./editorGroupView.zig");
 
 const CellGrid = ui.CellGrid;
@@ -28,7 +33,8 @@ const PaintStyle = ui.cell.PaintStyle;
 
 pub const TabInfo = struct {
     label: []const u8,
-    language: []const u8 = "",
+    /// Base file name used for the Explorer file icon; empty shows no icon.
+    file_name: []const u8 = "",
     dirty: bool = false,
     /// Upstream `!isPinned`: preview tabs are italic.
     pinned: bool = true,
@@ -52,6 +58,12 @@ pub const DrawOptions = struct {
     group_active: bool = true,
     hovered: ?usize = null,
     title_action: ?TitleAction = null,
+    /// Ordered insertion index of a live tab drag over this strip, or null.
+    /// Upstream paints this as `drop-target-left`/`drop-target-right`.
+    drop_index: ?usize = null,
+    /// Whether the terminal negotiated the cell-border protocol; without it
+    /// the insertion feedback falls back to a block glyph.
+    cell_borders: bool = false,
 };
 
 /// The terminal tab strip's hit rectangle; the group view keeps this cache.
@@ -95,6 +107,10 @@ const base_title_action_active_style = PaintStyle{
     .bg = ui.cell.packColor(.{ .r = 45, .g = 75, .b = 105 }),
     .attrs = ui.cell.Attr.bold,
 };
+/// Upstream `tab.dragAndDropBorder`; the default is the active tab foreground.
+const base_drop_style = PaintStyle{
+    .fg = ui.cell.packColor(.{ .r = 245, .g = 245, .b = 245 }),
+};
 
 fn textWidth(text: []const u8) usize {
     var width: usize = 0;
@@ -107,14 +123,14 @@ fn textWidth(text: []const u8) usize {
     return width;
 }
 
-fn badgeWidth(tab: TabInfo) usize {
-    if (iconFor(tab).len == 0) return 0;
-    return iconFor(tab).len + 1;
+fn iconFor(tab: TabInfo) ?file_icon.Icon {
+    if (tab.file_name.len == 0) return null;
+    return file_icon.file(tab.file_name);
 }
 
-fn iconFor(tab: TabInfo) []const u8 {
-    if (tab.language.len == 0) return "";
-    return languageBadge(tab.language);
+/// One glyph cell plus the gap after it.
+fn iconSpace(tab: TabInfo) usize {
+    return if (iconFor(tab) != null) 2 else 0;
 }
 
 fn closeWidth(tab: TabInfo) usize {
@@ -122,7 +138,7 @@ fn closeWidth(tab: TabInfo) usize {
 }
 
 fn tabWidth(tab: TabInfo, cols: usize) usize {
-    const width = textWidth(tab.label) + 2 + badgeWidth(tab) + closeWidth(tab);
+    const width = textWidth(tab.label) + 2 + iconSpace(tab) + closeWidth(tab);
     return @min(@max(width, 4), @max(cols -| 1, 1));
 }
 
@@ -182,6 +198,7 @@ pub fn draw(
     var title_action_style = base_title_action_style;
     var title_action_hover_style = base_title_action_hover_style;
     var title_action_active_style = base_title_action_active_style;
+    var drop_style = base_drop_style;
     if (palette) |colors| {
         strip_background = .{
             .fg = ui.cell.packColor(colors.color("tab.inactiveForeground", .{ 190, 190, 190 })),
@@ -219,6 +236,9 @@ pub fn draw(
         title_action_active_style = .{
             .fg = ui.cell.packColor(colors.color("tab.activeForeground", .{ 255, 255, 255 })),
             .bg = ui.cell.packColor(colors.color("toolbar.activeBackground", .{ 75, 75, 78 })),
+        };
+        drop_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.dragAndDropBorder", .{ 245, 245, 245 })),
         };
     }
     grid.fillRect(@floatFromInt(x), @floatFromInt(row), @floatFromInt(cols), 1, strip_background);
@@ -269,17 +289,18 @@ pub fn draw(
 
         var cursor = screen_col + 1;
 
-        // Language badge, then a gap.
-        const icon = iconFor(tab);
-        if (icon.len > 0 and cursor + 2 <= screen_col + tab_width -| closeWidth(tab)) {
-            const badge_paint = PaintStyle{
-                .fg = if (is_active) ui.cell.packColor(.{ .r = 210, .g = 190, .b = 120 }) else ui.cell.packColor(.{ .r = 160, .g = 160, .b = 160 }),
-                .bg = paint.bg,
-            };
-            _ = drawBadge(grid, cursor, row, icon, 2, badge_paint);
-            cursor += 2;
-            grid.putCodepoint(cursor, row, ' ', 1, paint);
-            cursor += 1;
+        // Explorer file icon, then a gap.
+        if (iconFor(tab)) |icon| {
+            if (cursor + 2 <= screen_col + tab_width -| closeWidth(tab)) {
+                const icon_paint = PaintStyle{
+                    .fg = ui.cell.packColor(icon.color),
+                    .bg = paint.bg,
+                };
+                grid.putCodepoint(cursor, row, icon.glyph, 1, icon_paint);
+                cursor += 1;
+                grid.putCodepoint(cursor, row, ' ', 1, paint);
+                cursor += 1;
+            }
         }
 
         const reserved_close = closeWidth(tab);
@@ -317,6 +338,12 @@ pub fn draw(
 
         try hits.append(.{ .start = screen_col, .end = screen_col + tab_width, .index = index });
         col += tab_width;
+    }
+
+    // Upstream `updateDropFeedback`: preview the insertion boundary of a live
+    // tab drag. The title action keeps its right corner.
+    if (options.drop_index) |drop_index| {
+        drawDropIndicator(grid, row, x, layout_cols, hits.items, drop_index, drop_style, options.cell_borders);
     }
 
     if (options.title_action) |action| {
@@ -379,6 +406,96 @@ pub fn closeHitAt(hits: []const Hit, col: usize) ?usize {
     return null;
 }
 
+/// Ordered insertion index for a tab drag at `col`, the terminal reduction of
+/// upstream `getTabDragOverLocation` + `computeDropTarget`. The pointer's tab
+/// half chooses before/after that tab; the leading ellipsis and the gaps map
+/// to the next visible tab; the trailing strip maps to `tab_count`.
+pub fn dropIndexAt(hits: []const Hit, col: usize, tab_count: usize) usize {
+    if (hits.len == 0) return 0;
+    for (hits) |hit| {
+        if (col >= hit.start and col < hit.end) {
+            const midpoint = (hit.end - hit.start) / 2;
+            const after = col - hit.start > midpoint;
+            return @min(hit.index + @as(usize, @intFromBool(after)), tab_count);
+        }
+        if (col < hit.start) return @min(hit.index, tab_count);
+    }
+    return tab_count;
+}
+
+const DropBoundary = struct {
+    cell: usize,
+    segment: u12,
+    /// The first free cell after the boundary, used by the glyph fallback.
+    free_cell: usize,
+};
+
+fn dropBoundary(hits: []const Hit, drop_index: usize) ?DropBoundary {
+    if (hits.len == 0) return null;
+    if (drop_index < hits[0].index) {
+        return .{
+            .cell = hits[0].start,
+            .segment = ui.cell_border.Segment.left,
+            .free_cell = hits[0].start,
+        };
+    }
+    for (hits) |hit| {
+        if (hit.index == drop_index) {
+            return .{
+                .cell = hit.start,
+                .segment = ui.cell_border.Segment.left,
+                .free_cell = hit.start,
+            };
+        }
+        if (hit.index > drop_index) break;
+    }
+    const last = hits[hits.len - 1];
+    if (last.end == 0) return null;
+    return .{
+        .cell = last.end - 1,
+        .segment = ui.cell_border.Segment.right,
+        .free_cell = last.end,
+    };
+}
+
+fn drawDropIndicator(
+    grid: *CellGrid,
+    row: usize,
+    strip_x: usize,
+    layout_cols: usize,
+    hits: []const Hit,
+    drop_index: usize,
+    style: PaintStyle,
+    cell_borders: bool,
+) void {
+    if (hits.len == 0 or layout_cols == 0) return;
+    const strip_end = strip_x + layout_cols;
+    const boundary = dropBoundary(hits, drop_index) orelse return;
+    if (boundary.cell < strip_x or boundary.cell >= strip_end) return;
+
+    if (cell_borders) {
+        grid.addBorder(boundary.cell, row, boundary.segment, .{
+            .width = 96,
+            .color = .{ .rgb = ui.cell.unpackColor(style.fg) },
+            .placement = .centered,
+            .layer = .above_text,
+            .priority = 3,
+        });
+        return;
+    }
+
+    // Without the cell-border protocol a one-eighth block stands in for the
+    // browser's 2px line. Between tabs it replaces the tab's leading padding;
+    // at the end it uses the free cell after the last tab when there is one.
+    var cell = boundary.cell;
+    if (boundary.segment == ui.cell_border.Segment.right and boundary.free_cell < strip_end) {
+        cell = boundary.free_cell;
+    }
+    if (cell < strip_x or cell >= strip_end) return;
+    const index = grid.index(cell, row);
+    grid.putCodepoint(cell, row, 0x258F, 1, .{ .fg = style.fg, .bg = grid.bg[index] });
+}
+
 test "tabBar draws labels, active state and hits" {
     const allocator = std.testing.allocator;
     var grid = try CellGrid.init(allocator, 32, 1);
@@ -388,9 +505,9 @@ test "tabBar draws labels, active state and hits" {
     defer hits.deinit();
 
     const tabs = [_]TabInfo{
-        .{ .label = "a.txt", .language = "plaintext" },
-        .{ .label = "b.txt", .language = "typescript", .dirty = true },
-        .{ .label = "c.txt", .language = "plaintext" },
+        .{ .label = "a.txt", .file_name = "a.txt" },
+        .{ .label = "b.ts", .file_name = "b.ts", .dirty = true },
+        .{ .label = "c.md", .file_name = "c.md" },
     };
     _ = try draw(&grid, &tabs, 1, 0, 0, grid.cols, &hits, .{}, null);
 
@@ -401,8 +518,8 @@ test "tabBar draws labels, active state and hits" {
     const text = try grid.rowText(allocator, 0);
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "a.txt") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "b.txt") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "TS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "b.ts") != null);
+    try std.testing.expectEqual(@as(u32, 0xE628), grid.cluster[grid.index(hits.items[1].start + 1, 0)]);
     // The dirty tab paints its dot in the close cell.
     try std.testing.expect(std.mem.indexOf(u8, text, "\u{25CF}") != null);
 }
@@ -416,8 +533,8 @@ test "tabBar close hits and hovered close" {
     defer hits.deinit();
 
     const tabs = [_]TabInfo{
-        .{ .label = "a.txt", .language = "plaintext" },
-        .{ .label = "b.txt", .language = "plaintext" },
+        .{ .label = "a.txt", .file_name = "a.txt" },
+        .{ .label = "b.txt", .file_name = "b.txt" },
     };
     _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{ .hovered = 1 }, null);
     try std.testing.expectEqual(@as(usize, 2), hits.items.len);
@@ -436,9 +553,9 @@ test "tabBar scrolls to keep the active tab visible" {
     defer hits.deinit();
 
     const tabs = [_]TabInfo{
-        .{ .label = "first.txt", .language = "plaintext" },
-        .{ .label = "second.txt", .language = "plaintext" },
-        .{ .label = "third.txt", .language = "plaintext" },
+        .{ .label = "first.txt", .file_name = "first.txt" },
+        .{ .label = "second.txt", .file_name = "second.txt" },
+        .{ .label = "third.txt", .file_name = "third.txt" },
     };
     _ = try draw(&grid, &tabs, 2, 0, 0, grid.cols, &hits, .{}, null);
 
@@ -456,7 +573,7 @@ test "tabBar italicizes preview tabs" {
     defer hits.deinit();
 
     const tabs = [_]TabInfo{
-        .{ .label = "p.ts", .language = "typescript", .pinned = false },
+        .{ .label = "p.ts", .file_name = "p.ts", .pinned = false },
     };
     _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{}, null);
     var col = hits.items[0].start;
@@ -467,49 +584,6 @@ test "tabBar italicizes preview tabs" {
     try std.testing.expect(found_italic);
 }
 
-/// Returns the badge text for a language id. The result is at most two cells
-/// and is a static string owned by this module.
-pub fn languageBadge(language_id: []const u8) []const u8 {
-    const table = .{
-        .{ "javascript", "JS" },
-        .{ "typescript", "TS" },
-        .{ "javascriptreact", "JX" },
-        .{ "typescriptreact", "TX" },
-        .{ "zig", "ZG" },
-        .{ "python", "PY" },
-        .{ "rust", "RS" },
-        .{ "go", "GO" },
-        .{ "c", "C" },
-        .{ "cpp", "C+" },
-        .{ "java", "JV" },
-        .{ "html", "HT" },
-        .{ "css", "CS" },
-        .{ "scss", "SC" },
-        .{ "markdown", "MD" },
-        .{ "yaml", "YM" },
-        .{ "toml", "TM" },
-        .{ "shellscript", "SH" },
-        .{ "json", "{}" },
-        .{ "jsonc", "{}" },
-    };
-    inline for (table) |entry| {
-        if (std.mem.eql(u8, entry[0], language_id)) return entry[1];
-    }
-    if (std.mem.eql(u8, language_id, "plaintext") or language_id.len == 0) return "";
-    return "??";
-}
-
-/// Width of a badge in cells. Badges are ASCII, so this is the byte length.
-/// Paints a badge's text, returning the number of cells written.
-pub fn drawBadge(grid: *ui.CellGrid, x: usize, row: usize, text: []const u8, max_cells: usize, style: ui.cell.PaintStyle) usize {
-    const visible = @min(text.len, max_cells);
-    var col: usize = 0;
-    while (col < visible) : (col += 1) {
-        grid.putCodepoint(x + col, row, text[col], 1, style);
-    }
-    return visible;
-}
-
 test "tabBar: title action reserves the right corner and reports its hit" {
     const allocator = std.testing.allocator;
     var grid = try CellGrid.init(allocator, 30, 1);
@@ -518,11 +592,12 @@ test "tabBar: title action reserves the right corner and reports its hit" {
     defer hits.deinit();
 
     const tabs = [_]TabInfo{
-        .{ .label = "a.md", .language = "markdown" },
-        .{ .label = "b.md", .language = "markdown" },
+        .{ .label = "a.md", .file_name = "a.md" },
+        .{ .label = "b.md", .file_name = "b.md" },
     };
     const action_hit = (try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{
         .title_action = .{ .active = true },
+        .drop_index = 2,
     }, null)).?;
     try std.testing.expectEqual(@as(usize, 28), action_hit.start);
     try std.testing.expectEqual(@as(usize, 30), action_hit.end);
@@ -531,12 +606,89 @@ test "tabBar: title action reserves the right corner and reports its hit" {
     for (hits.items) |hit| try std.testing.expect(hit.end <= 27);
 }
 
-test "tabBar: language badges" {
-    try std.testing.expectEqualStrings("JS", languageBadge("javascript"));
-    try std.testing.expectEqualStrings("TS", languageBadge("typescript"));
-    try std.testing.expectEqualStrings("ZG", languageBadge("zig"));
-    try std.testing.expectEqualStrings("{}", languageBadge("json"));
-    try std.testing.expectEqualStrings("", languageBadge("plaintext"));
-    try std.testing.expectEqualStrings("??", languageBadge("a-b?"));
-    try std.testing.expectEqual(@as(usize, 2), languageBadge("javascript").len);
+test "tabBar: file icons come from the shared Explorer table" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 70, 1);
+    defer grid.deinit();
+
+    var hits = std.array_list.Managed(Hit).init(allocator);
+    defer hits.deinit();
+
+    const tabs = [_]TabInfo{
+        .{ .label = "app.js", .file_name = "app.js" },
+        .{ .label = "main.zig", .file_name = "main.zig" },
+        .{ .label = "notes.unknown", .file_name = "notes.unknown" },
+        .{ .label = "no-file", .file_name = "" },
+    };
+    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{}, null);
+
+    const expected = [_]file_icon.Icon{
+        file_icon.file("app.js"),
+        file_icon.file("main.zig"),
+        file_icon.file("notes.unknown"),
+    };
+    for (expected, 0..) |icon, index| {
+        const icon_col = hits.items[index].start + 1;
+        try std.testing.expectEqual(@as(u32, icon.glyph), grid.cluster[grid.index(icon_col, 0)]);
+        try std.testing.expectEqual(ui.cell.packColor(icon.color), grid.fg[grid.index(icon_col, 0)]);
+    }
+    // An empty file name suppresses the icon; the label starts in its place.
+    try std.testing.expectEqual(@as(u32, 'n'), grid.cluster[grid.index(hits.items[3].start + 1, 0)]);
+}
+
+test "tabBar: drop index follows the tab halves" {
+    const hits = [_]Hit{
+        .{ .start = 2, .end = 10, .index = 0 },
+        .{ .start = 11, .end = 20, .index = 1 },
+    };
+    try std.testing.expectEqual(@as(usize, 0), dropIndexAt(&hits, 2, 3));
+    try std.testing.expectEqual(@as(usize, 0), dropIndexAt(&hits, 6, 3));
+    try std.testing.expectEqual(@as(usize, 1), dropIndexAt(&hits, 7, 3));
+    try std.testing.expectEqual(@as(usize, 1), dropIndexAt(&hits, 10, 3));
+    try std.testing.expectEqual(@as(usize, 1), dropIndexAt(&hits, 15, 3));
+    try std.testing.expectEqual(@as(usize, 2), dropIndexAt(&hits, 16, 3));
+    try std.testing.expectEqual(@as(usize, 3), dropIndexAt(&hits, 25, 3));
+    try std.testing.expectEqual(@as(usize, 0), dropIndexAt(&hits, 0, 3));
+    try std.testing.expectEqual(@as(usize, 0), dropIndexAt(&[_]Hit{}, 0, 3));
+}
+
+test "tabBar: drop preview marks the insertion cell" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 30, 1);
+    defer grid.deinit();
+
+    var hits = std.array_list.Managed(Hit).init(allocator);
+    defer hits.deinit();
+
+    const tabs = [_]TabInfo{
+        .{ .label = "a.txt", .file_name = "a.txt" },
+        .{ .label = "b.txt", .file_name = "b.txt" },
+    };
+
+    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{ .drop_index = 1 }, null);
+    try std.testing.expectEqual(@as(u32, 0x258F), grid.cluster[grid.index(hits.items[1].start, 0)]);
+
+    // An end-of-strip insertion prefers the free cell after the last tab.
+    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{ .drop_index = 2 }, null);
+    try std.testing.expectEqual(@as(u32, 0x258F), grid.cluster[grid.index(hits.items[1].end, 0)]);
+}
+
+test "tabBar: drop preview uses a cell-border stroke when available" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 30, 1);
+    defer grid.deinit();
+
+    var hits = std.array_list.Managed(Hit).init(allocator);
+    defer hits.deinit();
+
+    const tabs = [_]TabInfo{
+        .{ .label = "a.txt", .file_name = "a.txt" },
+        .{ .label = "b.txt", .file_name = "b.txt" },
+    };
+    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{
+        .drop_index = 1,
+        .cell_borders = true,
+    }, null);
+    const set = grid.borderSetAt(hits.items[1].start, 0);
+    try std.testing.expect(set.strokeAt(ui.cell_border.Segment.left) != null);
 }

@@ -562,9 +562,14 @@ the sash hit zone: a left-button drag updates the split ratio (clamped to a
 10-column/3-row minimum), and closing the last tab in a pane removes the group
 from the split tree and promotes its sibling, mirroring Grid branch demotion.
 Dragging a tab moves it between groups: dropping in a pane's middle moves it
-there, and dropping on an edge splits that pane in that direction and moves the
-tab into the new group. While dragging, the target pane gets a bright outline
-(with cell borders; the glyph fallback has no drag indicator).
+there, dropping on an edge splits that pane in that direction and moves the tab
+into the new group, and dropping on a tab strip inserts the tab at the previewed
+position (reordering within the same group). While dragging over editor content,
+the target pane gets a bright outline (with cell borders; the glyph fallback has
+no drag indicator). Over a tab strip, the insertion boundary gets upstream's
+`drop-target-left`/`drop-target-right` feedback in `tab.dragAndDropBorder`: a
+thin cell-border stroke when the terminal supports it, otherwise a `▏` block
+glyph.
 The full N-ary `Grid` branch model is not ported; the terminal keeps a binary
 oriented split tree, which represents the same guillotine tilings.
 
@@ -577,11 +582,12 @@ still surrounds the whole chrome+content rectangle, and the cursor/mouse
 coordinate translation subtracts the same chrome height.
 
 The tab strip is the cell adaptation of `editorTabsControl.ts`/
-`multiEditorTabsControl.ts`: the file icon theme is a two-cell language badge
-(`JS`, `TS`, `ZG`, …), preview tabs are italic, the active tab uses the active
-background and bold text, and every tab reserves action space. The active or
-hovered tab paints `×`; a modified tab paints `●` in the same cell (hovering it
-paints `×`). Clicking that cell or middle-clicking the tab closes it; a dirty
+`multiEditorTabsControl.ts`: the file icon theme is the Explorer's Nerd Font
+file glyph and color (one cell plus a gap), preview tabs are italic, the active
+tab uses the active background and bold text, and every tab reserves action
+space. The active or hovered tab paints `×`; a modified tab paints `●` in the
+same cell (hovering it paints `×`). Clicking that cell or middle-clicking the
+tab closes it; a dirty
 tab first opens the modal save confirmation and `Ctrl-W` takes the same close
 path. Double-clicking a preview tab pins it; double-clicking a pinned tab
 toggles the group's expanded state (default
@@ -590,10 +596,9 @@ group is laid out over the whole editor area and its siblings are not painted;
 toggling it off restores the split from the existing grid rects. Sash resizing
 and tab dragging are disabled while a group is expanded. There is no 1px
 active-tab top border, horizontal scrollbar, editor actions toolbar, Add Tab
-control, tab context menu or tab drag reordering; overflow clips leading tabs
-behind an ellipsis and reveals the active tab. Preview editors come from
-Explorer single clicks; Enter/quick open/CLI/session opens stay pinned, and an
-edit pins a preview.
+control or tab context menu; overflow clips leading tabs behind an ellipsis and
+reveals the active tab. Preview editors come from Explorer single clicks;
+Enter/quick open/CLI/session opens stay pinned, and an edit pins a preview.
 
 ### Editor close confirmation dialog
 
@@ -631,7 +636,9 @@ leave the event loop.
 
 The breadcrumb row is the cell adaptation of `breadcrumbsWidget.ts` and
 `breadcrumbsControl.ts`. Items are painted left to right with a dim `>` between
-them; focused/selected items are underlined and white, hovered items brighten,
+them; a file segment starts with the Explorer's Nerd Font file icon (glyph and
+color), while folder segments have no icon, matching upstream's `hideIcon`;
+focused/selected items are underlined and white, hovered items brighten,
 and long paths drop leading items behind `…`. A directory/file click opens the
 terminal quick pick for the item's sibling directory (the browser tree picker is
 replaced by the existing quick pick); a symbol click/space calls
