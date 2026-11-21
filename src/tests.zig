@@ -96,12 +96,15 @@ comptime {
     _ = @import("./vs/workbench/contrib/files/browser/views/explorerView.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorPane.zig");
     _ = @import("./vs/workbench/contrib/scm/common/scm.zig");
+    _ = @import("./vs/workbench/contrib/scm/common/history.zig");
     _ = @import("./vs/workbench/contrib/scm/common/scmService.zig");
     _ = @import("./vs/workbench/contrib/scm/common/quickDiff.zig");
     _ = @import("./vs/workbench/contrib/scm/common/quickDiffService.zig");
     _ = @import("./vs/workbench/contrib/scm/browser/quickDiffModel.zig");
     _ = @import("./vs/workbench/contrib/scm/browser/quickDiffDecorator.zig");
+    _ = @import("./vs/workbench/contrib/scm/browser/scmHistory.zig");
     _ = @import("./vs/workbench/contrib/scm/test/browser/quickDiffModel.test.zig");
+    _ = @import("./vs/workbench/contrib/scm/test/browser/scmHistory.test.zig");
     _ = @import("./vs/workbench/contrib/git/common/gitService.zig");
     _ = @import("./vs/workbench/contrib/git/browser/gitService.zig");
     _ = @import("./vs/workbench/contrib/git/test/common/gitService.test.zig");

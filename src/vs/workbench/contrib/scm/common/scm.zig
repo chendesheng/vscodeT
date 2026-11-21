@@ -7,13 +7,15 @@
 // - `Event` fields become emitters reachable through accessors, and
 //   `IObservable` provider properties (count, context value, ...) become plain
 //   fields refreshed by the provider. The observable system is not ported.
-// - Menus, artifacts, history, input validation/history and the multi-repository
-//   view service are outside the read-only terminal scope and are not ported.
+// - Menus, artifacts, input validation/history and the multi-repository view
+//   service are outside the read-only terminal scope and are not ported. The
+//   history provider is exposed here so the Graph view can reach it.
 const std = @import("std");
 
 const languages = @import("../../../../editor/common/languages.zig");
 const language_selector = @import("../../../../editor/common/languageSelector.zig");
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
+const history = @import("./history.zig");
 
 pub const Command = languages.Command;
 pub const Selector = language_selector.Selector;
@@ -85,6 +87,9 @@ pub const ISCMProvider = struct {
     /// Short terminal detail for the repository row (for Git, the branch name).
     detail: ?[]const u8 = null,
     status_bar_commands: []const Command = &.{},
+    /// Terminal projection of the upstream `historyProvider` observable. Null
+    /// when the provider cannot supply history (for example no Git repository).
+    history_provider: ?*history.ISCMHistoryProvider = null,
     groups_fn: *const fn (context: *anyopaque) []const *ISCMResourceGroup,
     on_did_change_resource_groups: *Emitter(void),
     on_did_change_resources: *Emitter(void),
