@@ -273,6 +273,7 @@ pub const TextSearchWorker = struct {
             .stdin = .ignore,
             .stdout = .pipe,
             .stderr = .pipe,
+            .pgid = ripgrep.child_process_group,
             .create_no_window = builtin.os.tag == .windows,
         }) catch |err| switch (err) {
             error.FileNotFound => {
@@ -419,7 +420,7 @@ pub const TextSearchWorker = struct {
         self.child_mutex.lockUncancelable(self.io);
         defer self.child_mutex.unlock(self.io);
         if (!running.killed and !running.reaping) {
-            running.child.kill(running.io);
+            ripgrep.killChild(&running.child, running.io);
             running.killed = true;
         }
     }
@@ -429,7 +430,7 @@ pub const TextSearchWorker = struct {
         defer self.child_mutex.unlock(self.io);
         if (self.active_child) |running| {
             if (!running.killed and !running.reaping) {
-                running.child.kill(running.io);
+                ripgrep.killChild(&running.child, running.io);
                 running.killed = true;
             }
         }

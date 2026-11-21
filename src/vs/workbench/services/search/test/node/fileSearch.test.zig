@@ -120,6 +120,23 @@ fn writeScript(tmp: *std.testing.TmpDir, io: Io, allocator: Allocator, path: []c
     return std.fs.path.join(allocator, &.{ buffer[0..length], path });
 }
 
+/// Waits until `path` exists. Cancellation tests use this to cancel a child
+/// that has actually started, instead of racing process startup.
+fn waitForPath(io: Io, path: []const u8, timeout_ms: i64) !void {
+    const deadline = time_compat.milliTimestamp() + timeout_ms;
+    while (true) {
+        std.Io.Dir.accessAbsolute(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => {
+                if (time_compat.milliTimestamp() >= deadline) return error.Timeout;
+                time_compat.sleepMillis(5);
+                continue;
+            },
+            else => return err,
+        };
+        return;
+    }
+}
+
 test "FileSearch: simple" {
     const allocator = std.testing.allocator;
     const fixtures = try requireFixtures(allocator);
@@ -497,15 +514,21 @@ test "FileSearch: cancellation kills a sleeping rg and returns quickly" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const script = try writeScript(&tmp, io, allocator, "sleep-rg.sh",
-        \\#!/bin/sh
-        \\sleep 5
-        \\printf 'late.txt\n'
-    );
-    defer allocator.free(script);
     var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(io, &root_buffer);
     const root = root_buffer[0..root_len];
+    const ready = try std.fs.path.join(allocator, &.{ root, "ready.txt" });
+    defer allocator.free(ready);
+    const contents = try std.fmt.allocPrint(allocator,
+        \\#!/bin/sh
+        \\sleep 5 &
+        \\echo "$!" > "{s}"
+        \\wait "$!"
+        \\printf 'late.txt\n'
+    , .{ready});
+    defer allocator.free(contents);
+    const script = try writeScript(&tmp, io, allocator, "sleep-rg.sh", contents);
+    defer allocator.free(script);
 
     var query = try search.FileQuery.init(allocator, &.{.{ .resource = root, .name = "root" }}, .{});
     defer query.deinit();
@@ -527,7 +550,9 @@ test "FileSearch: cancellation kills a sleeping rg and returns quickly" {
     };
     var context = ThreadContext{ .walker = &walker };
     const thread = try std.Thread.spawn(.{}, ThreadContext.run, .{&context});
-    time_compat.sleepMillis(20);
+    // Wait for the wrapper's sleep child: it holds the stdout pipe open, so
+    // cancellation must kill the whole process group to return promptly.
+    try waitForPath(io, ready, 3000);
     const started = time_compat.milliTimestamp();
     walker.cancel();
     thread.join();

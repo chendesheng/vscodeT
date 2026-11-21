@@ -12,8 +12,8 @@
 //   ported (the upstream file search no longer uses the fallback).
 //
 // The walker owns every returned string. Cancellation sets the flag and kills
-// the active child through `child_mutex`; the walker discards partial output
-// before returning `error.Canceled`.
+// the active child's process group through `child_mutex`; the walker discards
+// partial output before returning `error.Canceled`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -143,7 +143,7 @@ pub const FileWalker = struct {
         defer self.child_mutex.unlock(self.io);
         if (self.active_child) |running| {
             if (!running.killed and !running.reaping) {
-                running.child.kill(running.io);
+                ripgrep.killChild(&running.child, running.io);
                 running.killed = true;
             }
         }
@@ -346,13 +346,13 @@ pub const FileWalker = struct {
         }) catch |err| return err;
 
         const stdout = spawned.child.stdout orelse {
-            spawned.child.kill(self.io);
+            ripgrep.killChild(&spawned.child, self.io);
             spawned.args.deinit();
             self.allocator.free(spawned.cwd);
             return error.RipgrepPipeFailure;
         };
         const stderr = spawned.child.stderr orelse {
-            spawned.child.kill(self.io);
+            ripgrep.killChild(&spawned.child, self.io);
             stdout.close(self.io);
             spawned.args.deinit();
             self.allocator.free(spawned.cwd);
@@ -362,7 +362,7 @@ pub const FileWalker = struct {
         spawned.child.stderr = null;
 
         const running = self.allocator.create(RunningChild) catch |err| {
-            spawned.child.kill(self.io);
+            ripgrep.killChild(&spawned.child, self.io);
             stdout.close(self.io);
             stderr.close(self.io);
             spawned.args.deinit();
@@ -463,7 +463,7 @@ pub const FileWalker = struct {
         self.child_mutex.lockUncancelable(self.io);
         defer self.child_mutex.unlock(self.io);
         if (!running.killed and !running.reaping) {
-            running.child.kill(running.io);
+            ripgrep.killChild(&running.child, running.io);
             running.killed = true;
         }
     }
@@ -477,7 +477,7 @@ pub const FileWalker = struct {
             return .{ .unknown = 0 };
         }
         if (self.cancelled.load(.acquire)) {
-            running.child.kill(running.io);
+            ripgrep.killChild(&running.child, running.io);
             running.killed = true;
             self.active_child = null;
             self.child_mutex.unlock(self.io);

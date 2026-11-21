@@ -11,6 +11,11 @@
 // walker takes ownership of the two pipe handles and clears the fields on the
 // child struct, which lets a cancelling thread kill the child without closing
 // a pipe that the walker is still draining.
+//
+// On POSIX the child leads its own process group so cancellation kills the
+// whole ripgrep process tree. Killing only the direct child lets a wrapper
+// script's foreground command keep the stdout/stderr pipes open, and the
+// reader then waits for the rest of the wrapper instead of cancelling.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -20,6 +25,25 @@ const glob = @import("../../../../base/common/glob.zig");
 const search = @import("../common/search.zig");
 
 pub const rg_executable = "rg";
+
+/// Spawn option that puts ripgrep in its own process group on POSIX. Zero is
+/// `setpgid(0, 0)` / `POSIX_SPAWN_SETPGROUP`, making the child the group
+/// leader. Windows has no equivalent here, so the child is killed directly.
+pub const child_process_group: ?std.posix.pid_t = if (builtin.os.tag == .windows) null else 0;
+
+/// Kills a ripgrep child spawned with `child_process_group` and reaps it.
+pub fn killChild(child: *std.process.Child, io: Io) void {
+    switch (builtin.os.tag) {
+        .windows => {},
+        else => {
+            if (child.id) |id| {
+                const pid: std.posix.pid_t = @intCast(id);
+                std.posix.kill(-pid, .TERM) catch {};
+            }
+        },
+    }
+    child.kill(io);
+}
 
 /// The number of symbolic link loops a single ripgrep run may report before we
 /// stop following symbolic links, mirroring upstream.
@@ -61,7 +85,7 @@ pub const Spawned = struct {
     cwd: []u8,
 
     pub fn deinit(self: *Spawned) void {
-        if (self.child.id != null) self.child.kill(self.io);
+        if (self.child.id != null) killChild(&self.child, self.io);
         self.args.deinit();
         self.allocator.free(self.cwd);
     }
@@ -186,12 +210,13 @@ pub fn spawn(
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
+        .pgid = child_process_group,
         .create_no_window = builtin.os.tag == .windows,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.RipgrepNotFound,
         else => return err,
     };
-    errdefer if (child.id != null) child.kill(io);
+    errdefer if (child.id != null) killChild(&child, io);
 
     if (child.stdout == null or child.stderr == null) return error.RipgrepPipeFailure;
 

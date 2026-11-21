@@ -51,6 +51,23 @@ fn readFile(allocator: Allocator, io: Io, path: []const u8) ![]u8 {
     return Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024));
 }
 
+/// Waits until `path` exists. Cancellation tests use this to cancel a child
+/// that has actually started, instead of racing process startup.
+fn waitForPath(io: Io, path: []const u8, timeout_ms: i64) !void {
+    const deadline = time_compat.milliTimestamp() + timeout_ms;
+    while (true) {
+        std.Io.Dir.accessAbsolute(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => {
+                if (time_compat.milliTimestamp() >= deadline) return error.Timeout;
+                time_compat.sleepMillis(5);
+                continue;
+            },
+            else => return err,
+        };
+        return;
+    }
+}
+
 test "FileSearchWorker: one listing serves many queries" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
@@ -197,10 +214,16 @@ test "FileSearchWorker: endSession cancels a sleeping listing quickly" {
     defer allocator.free(root);
     const log_path = try std.fs.path.join(allocator, &.{ root, "spawns.log" });
     defer allocator.free(log_path);
-    const script = try writeFakeRg(&tmp, io, allocator, "sleep-rg.sh", log_path,
-        \\sleep 5
+    const ready = try std.fs.path.join(allocator, &.{ root, "ready.txt" });
+    defer allocator.free(ready);
+    const body = try std.fmt.allocPrint(allocator,
+        \\sleep 5 &
+        \\echo "$!" > "{s}"
+        \\wait "$!"
         \\printf 'late.txt\n'
-    );
+    , .{ready});
+    defer allocator.free(body);
+    const script = try writeFakeRg(&tmp, io, allocator, "sleep-rg.sh", log_path, body);
     defer allocator.free(script);
 
     const worker = try FileSearchWorker.init(allocator, .{ .rg_path = script });
@@ -208,7 +231,9 @@ test "FileSearchWorker: endSession cancels a sleeping listing quickly" {
 
     try worker.beginSession(&.{.{ .resource = root, .name = "root" }}, &.{}, .{});
     try worker.request("late");
-    time_compat.sleepMillis(30);
+    // Wait for the wrapper's sleep child: it holds the stdout pipe open, so
+    // endSession must kill the whole process group to return promptly.
+    try waitForPath(io, ready, 3000);
     const started = time_compat.milliTimestamp();
     worker.endSession();
     const elapsed = time_compat.milliTimestamp() - started;
