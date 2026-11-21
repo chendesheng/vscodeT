@@ -22,10 +22,20 @@ const State = struct {
     opened: [64]u8 = std.mem.zeroes([64]u8),
     opened_len: usize = 0,
     started: usize = 0,
+    requested: usize = 0,
 
     fn start(context: *anyopaque) void {
         const self: *@This() = @ptrCast(@alignCast(context));
         self.started += 1;
+    }
+
+    fn request(context: *anyopaque, _: []const u8) void {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        self.requested += 1;
+    }
+
+    fn hasResult(_: *anyopaque, _: []const u8) bool {
+        return true;
     }
 
     fn isIndexing(_: *anyopaque) bool {
@@ -63,6 +73,8 @@ test "anythingQuickAccess: recent files on empty filter and file results while t
         .{
             .context = &state,
             .start = State.start,
+            .request = State.request,
+            .has_result = State.hasResult,
             .is_indexing = State.isIndexing,
             .recent = State.recent,
             .search = State.search,

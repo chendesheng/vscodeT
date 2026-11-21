@@ -618,7 +618,6 @@ comptime {
     _ = @import("./vs/workbench/test/browser/quickAccess.test.zig");
     _ = @import("./vs/workbench/browser/commands.zig");
     _ = @import("./vs/platform/quickinput/browser/quickInputList.zig");
-    _ = @import("./vs/workbench/services/search/common/fileIndex.zig");
     _ = @import("./vs/workbench/browser/quickaccess.zig");
     _ = @import("./vs/workbench/api/browser/extensionHostAdapter.zig");
     _ = @import("./vs/workbench/api/common/keyInput.zig");

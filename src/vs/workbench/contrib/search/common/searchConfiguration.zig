@@ -16,6 +16,9 @@ pub const defaults_json =
     \\      "**/*.code-search": true
     \\    },
     \\    "useIgnoreFiles": true,
+    \\    "useParentIgnoreFiles": true,
+    \\    "useGlobalIgnoreFiles": true,
+    \\    "followSymlinks": true,
     \\    "smartCase": false,
     \\    "maxResults": 20000,
     \\    "sortOrder": "default",

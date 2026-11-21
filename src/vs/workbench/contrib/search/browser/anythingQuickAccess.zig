@@ -9,9 +9,10 @@
 // workspace symbols (`@`), go-to-line (`:`), link handling, help picks,
 // AI-related picks, absolute/relative path resolution, open-to-side and
 // background accept, history-removal buttons and configuration
-// (`includeHistory`, `preserveInput`). File scoring uses the existing
-// `filters.fuzzyScore` subset instead of the browser `fuzzyScorer.ts`
-// path-aware scorer; label and description ranges are still highlighted.
+// (`includeHistory`, `preserveInput`). File results arrive asynchronously from
+// `FileSearchWorker`; recent-editor scoring still uses the smaller
+// `filters.fuzzyScore` helper. Both paths produce label/description highlight
+// ranges.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -41,12 +42,20 @@ pub const FileMatch = struct {
 
 pub const FileSource = struct {
     context: *anyopaque,
+    /// Starts the per-picker file-listing session. Subsequent calls are
+    /// no-ops until the session ends.
     start: *const fn (context: *anyopaque) void,
+    /// Queues a filter for the background worker. Results are published
+    /// asynchronously and consumed by `search`.
+    request: *const fn (context: *anyopaque, filter: []const u8) void,
+    /// Whether a result for exactly this filter is ready.
+    has_result: *const fn (context: *anyopaque, filter: []const u8) bool,
     is_indexing: *const fn (context: *anyopaque) bool,
     recent: *const fn (
         context: *anyopaque,
         allocator: Allocator,
     ) anyerror![]RecentFile,
+    /// Copies the ready worker result into the provider arena.
     search: *const fn (
         context: *anyopaque,
         filter: []const u8,
@@ -142,6 +151,18 @@ pub const AnythingQuickAccessProvider = struct {
 
     fn getPicks(context: *anyopaque, filter: []const u8, _: Allocator) anyerror!?[]QuickPickItem {
         const self: *AnythingQuickAccessProvider = @ptrCast(@alignCast(context));
+
+        // While a file search is in flight, return null before resetting the
+        // arena: the picker keeps the previous items and only the busy state
+        // changes (see `pickerQuickAccess.update`).
+        if (filter.len > 0 and !self.source.has_result(self.source.context, filter)) {
+            // `start` is idempotent; it also covers providers that were shown
+            // without going through `QuickAccessService.showFilePicker`.
+            self.source.start(self.source.context);
+            self.source.request(self.source.context, filter);
+            return null;
+        }
+
         _ = self.arena.reset(.retain_capacity);
         const arena = self.arena.allocator();
 

@@ -90,7 +90,15 @@ fn update(
         }
     }
 
-    const picks = try impl.get_picks(impl.context, filter_value, picker.allocator) orelse return;
+    // The provider may return null while an asynchronous search is in flight.
+    // Keep the busy indicator accurate on that path as well as after items are
+    // published.
+    if (impl.is_busy) |is_busy| picker.setBusy(is_busy(impl.context));
+
+    const picks = try impl.get_picks(impl.context, filter_value, picker.allocator) orelse {
+        if (impl.is_busy) |is_busy| picker.setBusy(is_busy(impl.context));
+        return;
+    };
     if (token) |value| {
         if (value.isCancellationRequested()) return;
     }

@@ -141,6 +141,7 @@ const SearchView = search_view_mod.SearchView;
 const search_service_mod = @import("../services/search/common/searchService.zig");
 const SearchService = search_service_mod.SearchService;
 const search_types = @import("../services/search/common/search.zig");
+const glob = @import("../../base/common/glob.zig");
 const FileContentProvider = search_types.FileContentProvider;
 const replace_service_mod = @import("../contrib/search/browser/replaceService.zig");
 const replace_types = replace_service_mod;
@@ -1036,6 +1037,8 @@ pub const Workbench = struct {
                 .open_file = quickOpenFile,
                 .report_error = quickReportError,
                 .cancel_popups = quickCancelPopups,
+                .get_excludes = quickGetExcludes,
+                .get_file_search_settings = quickGetFileSearchSettings,
             },
         );
         errdefer self.quick_access.deinit();
@@ -1639,9 +1642,10 @@ pub const Workbench = struct {
             configuration.deinit();
             self.configuration = null;
         }
-        // Stop the quick-open index while the old workspace is still alive:
-        // its worker may be walking it.
-        try self.quick_access.setWorkspace(replacement);
+        // Stop the quick-open listing while the old workspace snapshot is
+        // still alive; the worker owns copies, but this keeps the ordering
+        // explicit and drops picker items that borrow old paths.
+        self.quick_access.endFileSession();
         self.workspace.deinit();
         self.workspace = replacement;
         replacement_owned = true;
@@ -1649,6 +1653,7 @@ pub const Workbench = struct {
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
         self.disposeBreadcrumbs();
         self.layoutAll();
+        try self.quick_access.setWorkspace(self.workspace);
         self.startFilesWatcher() catch {};
     }
 
@@ -6645,6 +6650,29 @@ fn quickOpenFile(context: *anyopaque, path: []const u8) anyerror!void {
     return self.openPath(path);
 }
 
+fn quickGetExcludes(context: *anyopaque, allocator: Allocator) anyerror![]glob.ExcludeEntry {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.ensureConfiguration() catch {};
+    const configuration = self.configuration orelse return allocator.alloc(glob.ExcludeEntry, 0);
+    return search_types.getExcludes(
+        allocator,
+        configuration.getValue("files.exclude", .{}),
+        configuration.getValue("search.exclude", .{}),
+    );
+}
+
+fn quickGetFileSearchSettings(context: *anyopaque) search_types.FileSearchSettings {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.ensureConfiguration() catch {};
+    const configuration = self.configuration orelse return .{};
+    return .{
+        .use_ignore_files = configuration.getBool("search.useIgnoreFiles", true),
+        .use_parent_ignore_files = configuration.getBool("search.useParentIgnoreFiles", true),
+        .use_global_ignore_files = configuration.getBool("search.useGlobalIgnoreFiles", true),
+        .follow_symlinks = configuration.getBool("search.followSymlinks", true),
+    };
+}
+
 fn quickReportError(context: *anyopaque, message: []const u8) void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (self.activeTab()) |tab| {
@@ -8944,7 +8972,7 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     const picker = workbench.quick_access.controller.pickerRef();
     try picker.setValue("alp");
     var guard: usize = 0;
-    while (workbench.quickAccessWantsTick() and guard < 200) : (guard += 1) {
+    while (workbench.quickAccessWantsTick() and guard < 2000) : (guard += 1) {
         _ = try workbench.pollQuickAccess(0);
     }
     try std.testing.expectEqualStrings("alpha.txt", picker.activeItem().?.label);
